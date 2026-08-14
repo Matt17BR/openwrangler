@@ -72,6 +72,9 @@ import {
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   activateWithOnePreDispatchReacquisition,
+  assertCodePreviewDocumentChecks,
+  codePreviewDocumentReceipt,
+  codePreviewReceiptDiagnostic,
   computeCodePreviewScrollPlan,
   diagnoseThenReacquireAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
@@ -82,6 +85,8 @@ import {
   probeAcceptanceBeforeDeadline,
   pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
+  runFailClosedCategoricalUndo,
+  runReplaceableCodePreviewGeneration,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
@@ -535,9 +540,10 @@ export async function run(): Promise<void> {
   assert.ok(
     testSelector === undefined ||
       testSelector === "categorical-operations" ||
+      testSelector === "value-operations" ||
       testSelector === "interactive-terminal" ||
       testSelector === "literate-documents",
-    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "interactive-terminal", or "literate-documents".'
+    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents".'
   );
   assert.ok(
     testSelector === undefined || phase === "jupyter-r",
@@ -2221,10 +2227,10 @@ async function assertReleasedRRuntimeBinding(
 }
 
 type ReleasedRAcceptanceCoverageProfile = Readonly<{
-  name: "categorical-operations" | "comprehensive" | "representative";
+  name: "categorical-operations" | "value-operations" | "comprehensive" | "representative";
   gridPaging: "all-blocks" | "single-round-trip";
-  editing: "catalog-without-categorical" | "rename-lifecycle";
-  focusedCategoricalEditing: boolean;
+  editing: "core-catalog" | "rename-lifecycle";
+  focusedEditing: "none" | "categorical-operations" | "value-operations";
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
   nativeFrameEditing: "rename-and-drop" | "one-operation-per-flavor";
@@ -2233,8 +2239,8 @@ type ReleasedRAcceptanceCoverageProfile = Readonly<{
 const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   name: "comprehensive",
   gridPaging: "all-blocks",
-  editing: "catalog-without-categorical",
-  focusedCategoricalEditing: false,
+  editing: "core-catalog",
+  focusedEditing: "none",
   openCollapseSessions: true,
   openNativeFramesInViewingMode: true,
   nativeFrameEditing: "rename-and-drop"
@@ -2244,7 +2250,7 @@ const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = O
   name: "representative",
   gridPaging: "single-round-trip",
   editing: "rename-lifecycle",
-  focusedCategoricalEditing: false,
+  focusedEditing: "none",
   openCollapseSessions: false,
   openNativeFramesInViewingMode: false,
   nativeFrameEditing: "one-operation-per-flavor"
@@ -2253,12 +2259,21 @@ const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = O
 const RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
   name: "categorical-operations",
-  focusedCategoricalEditing: true
+  focusedEditing: "categorical-operations"
+});
+
+const RELEASED_R_VALUE_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
+  name: "value-operations",
+  focusedEditing: "value-operations"
 });
 
 function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
   if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations") {
     return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
+  }
+  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "value-operations") {
+    return RELEASED_R_VALUE_OPERATIONS_COVERAGE;
   }
   if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
   return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
@@ -2584,7 +2599,7 @@ async function exerciseReleasedRJupyterExtension(
       .getByRole("button", { name: "Close panel" })
       .click();
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");
-    if (coverage.editing === "catalog-without-categorical") {
+    if (coverage.editing === "core-catalog") {
       await exerciseReleasedREditingJourney(
         testing,
         workbench,
@@ -2597,9 +2612,21 @@ async function exerciseReleasedRJupyterExtension(
       );
     } else {
       await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, phase);
-      if (phase === "jupyter-r" && coverage.focusedCategoricalEditing) {
+      if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {
         await exerciseReleasedROneHotJourney(testing, workbench, base.sessionId);
         await exerciseReleasedRMultiLabelJourney(testing, workbench, base.sessionId);
+      }
+      if (phase === "jupyter-r" && coverage.focusedEditing === "value-operations") {
+        await exerciseReleasedRValueOperationsJourney(
+          testing,
+          workbench,
+          base.sessionId,
+          notebook,
+          notebookPath,
+          directory,
+          phase,
+          screenshotOutput
+        );
       }
     }
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "complete");
@@ -2765,7 +2792,8 @@ async function exerciseReleasedRJupyterExtension(
           workbench,
           session.sessionId,
           droppedColumn,
-          expected.name
+          expected.name,
+          `${phase}:${expected.name}:editing:drop-code-preview`
         );
         app = dropPreview.app;
         assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
@@ -5204,19 +5232,29 @@ async function exerciseReleasedRGridJourney(
   const active = testing.activeSession();
   assert.ok(active, "The native R profile journey requires an active session.");
   assert.equal(active.sessionId, sessionId, "The native R profile journey must stay on its exact session.");
+  const scoreColumn = columnReference(active.metadata, "score");
 
   const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
   await profiles.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await profiles.isEnabled(), true);
   assert.equal(await profiles.getAttribute("aria-pressed"), "false", "R header profiles must start off.");
   let columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
-  await columnSearch.fill("score");
+  await columnSearch.fill(scoreColumn.name);
   await app
     .getByRole("option", { name: /^score,/u })
     .first()
     .waitFor({ state: "visible", timeout: 10_000 });
   await columnSearch.press("Enter");
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return current?.sessionId === sessionId && current.viewState.selectedColumnId === scoreColumn.id;
+    },
+    10_000,
+    "the native R grid to select its exact score column before profiling"
+  );
 
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected native R score profile");
   const profileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
   await profileToggle.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await profileToggle.isEnabled(), true);
@@ -6609,6 +6647,112 @@ async function exerciseReleasedRRepresentativeEditingJourney(
   recordAcceptanceProgress(`${phase}:editing:representative:complete`);
 }
 
+async function assertReleasedRValueOperationsCleanState(
+  testing: TestApi,
+  sessionId: string,
+  checkpoint: "entry" | "strip-discard-restored" | "split-discard-restored" | "exit"
+): Promise<void> {
+  const active = testing.activeSession();
+  assert.equal(
+    active?.sessionId,
+    sessionId,
+    `The focused R value catalog must retain its exact session at ${checkpoint}.`
+  );
+  assert.ok(active, `The focused R value catalog requires one active session at ${checkpoint}.`);
+  assert.equal(active.metadata.backend, "r");
+  assert.deepEqual(active.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+  assert.equal(
+    active.metadata.steps.length,
+    0,
+    `The focused R value catalog must have no applied step at ${checkpoint}.`
+  );
+  assert.equal(
+    active.metadata.draftStep,
+    undefined,
+    `The focused R value catalog must have no draft at ${checkpoint}.`
+  );
+  assert.equal(active.code ?? "", "", `The focused R value catalog must have no generated code at ${checkpoint}.`);
+  assert.deepEqual(active.viewState.filterModel.filters, []);
+  assert.deepEqual(active.viewState.filterModel.sort, []);
+  const expectedSchema = [
+    "row_id",
+    "group",
+    "score",
+    "label",
+    "fractional_score",
+    ...Array.from({ length: 20 }, (_value, index) => `extra_${String(index + 1).padStart(2, "0")}`)
+  ];
+  assert.deepEqual(active.metadata.shape, { rows: 1_205, columns: expectedSchema.length });
+  assert.deepEqual(
+    active.metadata.schema.map((column) => column.name),
+    expectedSchema,
+    `The focused R value catalog must restore its exact source schema at ${checkpoint}.`
+  );
+  const page = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: `jupyter-r-value-${checkpoint}`,
+    offset: 0,
+    limit: 1,
+    filterModel: active.viewState.filterModel,
+    columnOffset: 0,
+    columnLimit: 4
+  });
+  assert.equal(page.kind, "page", `The focused R value catalog must return its restored page at ${checkpoint}.`);
+  if (page.kind !== "page") throw new Error(`The focused R value catalog page did not resolve at ${checkpoint}.`);
+  assert.deepEqual(
+    page.page.columnIds,
+    active.metadata.schema.slice(0, 4).map((column) => column.id)
+  );
+  assert.deepEqual(
+    page.page.rows[0]?.values.map((value) => value.display),
+    ["1", "A", "1", "row-0001"]
+  );
+  recordAcceptanceProgress(`jupyter-r:editing:value-operations:${checkpoint}`);
+}
+
+function recordReleasedRValueOperationCheckpoint(
+  operation:
+    | "find-replace"
+    | "format-datetime"
+    | "min-max-scale"
+    | "round"
+    | "floor"
+    | "ceiling"
+    | "capitalize"
+    | "lowercase"
+    | "uppercase"
+    | "strip"
+    | "split",
+  boundary: "start" | "complete"
+): void {
+  recordAcceptanceProgress(`jupyter-r:editing:value-operations:${operation}:${boundary}`);
+}
+
+async function exerciseReleasedRValueOperationsJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  notebook: vscode.NotebookDocument,
+  notebookPath: string,
+  outputDirectory: string,
+  phase: "jupyter-r",
+  screenshotOutput?: string
+): Promise<void> {
+  await exerciseReleasedREditingJourney(
+    testing,
+    workbench,
+    sessionId,
+    notebook,
+    notebookPath,
+    outputDirectory,
+    phase,
+    screenshotOutput,
+    "value-operations"
+  );
+}
+
 async function exerciseReleasedREditingJourney(
   testing: TestApi,
   workbench: Page,
@@ -6617,9 +6761,10 @@ async function exerciseReleasedREditingJourney(
   notebookPath: string,
   outputDirectory: string,
   phase: "jupyter-r" | "jupyter-r-remote",
-  screenshotOutput?: string
+  screenshotOutput?: string,
+  editingCatalog: "core-catalog" | "value-operations" = "core-catalog"
 ): Promise<void> {
-  recordAcceptanceProgress(`${phase}:editing:open`);
+  recordAcceptanceProgress(`${phase}:editing:${editingCatalog}:open`);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -6654,897 +6799,951 @@ async function exerciseReleasedREditingJourney(
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
-  if (phase === "jupyter-r") {
-    await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
-    await exerciseReleasedRRowReductionJourney(testing, workbench, sessionId, phase);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
-    await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
+  if (editingCatalog === "value-operations") {
+    await assertReleasedRValueOperationsCleanState(testing, sessionId, "entry");
   }
 
-  recordAcceptanceProgress(`${phase}:editing:preview-discard`);
-  const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
-  app = discarded.app;
-  const discardedReview = app.getByRole("region", { name: "Draft review" });
-  await discardedReview.getByText("Rename column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  await discardedReview
-    .locator('[aria-label="Data diff summary"]')
-    .getByText("No value changes in this block", { exact: true })
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await app.locator('th[data-column="record_id"]').waitFor({ state: "visible", timeout: 10_000 });
-  await discardedReview.getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.schema[0]?.name === "row_id" &&
-        (active.code ?? "") === ""
-      );
-    },
-    30_000,
-    "discarding the native R rename preview"
-  );
-  await discardedReview.waitFor({ state: "hidden", timeout: 10_000 });
+  let coreScreenshot: Readonly<{ insertedRCellIndex: number; generatedCode: string }> | undefined;
+  if (editingCatalog === "core-catalog") {
+    if (phase === "jupyter-r") {
+      await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
+      app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
+      await exerciseReleasedRRowReductionJourney(testing, workbench, sessionId, phase);
+      app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
+      await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
+      app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
+    }
 
-  recordAcceptanceProgress(`${phase}:editing:preview-apply`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after discarding its draft");
-  const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
-  app = previewed.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "renameColumn" &&
-        step.id === previewed.stepId &&
-        step.params.column.name === "row_id" &&
-        step.params.newName === "record_id" &&
-        active.metadata.schema[0]?.name === "record_id"
-      );
-    },
-    30_000,
-    "applying the native R rename step"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R rename must be acknowledged before inspection."
-  );
-  const firstApplied = testing.activeSession();
-  assert.ok(firstApplied, "The applied native R rename must retain its session.");
-  assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
-  assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
-  assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
-  assert.equal(firstApplied.metadata.capabilities.exportParquet, true);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
-  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-
-  recordAcceptanceProgress(`${phase}:editing:export-cleaned-csv`);
-  const notebookVersionBeforeExport = notebook.version;
-  const notebookDirtyBeforeExport = notebook.isDirty;
-  const notebookSourcesBeforeExport = notebook.getCells().map((cell) => cell.document.getText());
-  const notebookBytesBeforeExport = readFileSync(notebookPath);
-  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
-  let exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
-  await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
-  await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
-  let exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
-  const exportAdvancedFilters = exportFilterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
-  if ((await exportAdvancedFilters.count()) > 0) await exportAdvancedFilters.click();
-  await exportFilterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
-  await exportFilterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
-  await exportFilterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
-  await exportFilterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
-  await waitFor(
-    () => {
-      const current = testing.activeSession();
-      return (
-        current?.sessionId === sessionId &&
-        current.metadata.filteredShape.rows === 603 &&
-        current.viewState.filterModel.filters.length === 1 &&
-        current.viewState.filterModel.filters[0]?.column === "group"
-      );
-    },
-    30_000,
-    "the R notebook export viewing filter"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook export view");
-  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
-  await exportDrawer.getByRole("button", { name: "Close panel" }).click();
-  await exportDrawer.waitFor({ state: "hidden", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
-  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
-  const exportView = testing.activeSession();
-  assert.ok(exportView, "The filtered R notebook export requires its exact active session.");
-  assert.equal(exportView.sessionId, sessionId);
-  assert.equal(exportView.metadata.source.kind, "notebookVariable");
-  assert.equal(exportView.metadata.source.uri, notebook.uri.toString());
-  assert.equal(exportView.metadata.source.variableName, "orders_frame");
-  assert.equal(exportView.metadata.shape.rows, 1_205);
-  assert.equal(exportView.metadata.filteredShape.rows, 603);
-  const exportViewModel = JSON.parse(JSON.stringify(exportView.viewState.filterModel)) as FilterModel;
-
-  const exportPath = path.join(outputDirectory, `${phase}.orders.clean.csv`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook session before CSV export");
-  await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
-  await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R notebook CSV export to appear");
-  const exportedLines = readFileSync(exportPath, "utf8").split(/\r?\n/u);
-  assert.equal(exportedLines.at(-1), "", "The native R CSV export must end with one newline.");
-  exportedLines.pop();
-  assert.equal(exportedLines.length, 1_206, "The native R CSV export must contain all source rows plus its header.");
-  assert.equal(exportedLines[0], releasedRNotebookCleanedCsvHeader());
-  assert.equal(exportedLines[1], releasedRNotebookCleanedCsvRow(1));
-  assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
-  assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
-  const parquetExportPath = path.join(outputDirectory, `${phase}.orders.clean.parquet`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
-  await exportCleanedDataThroughWorkbench(app, workbench, parquetExportPath, "parquet");
-  await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R notebook Parquet export to appear");
-  assertParquetFile(parquetExportPath, "The public R notebook export");
-  assert.deepEqual(
-    readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
-    [],
-    "R notebook exports must not retain a sibling temporary file."
-  );
-  assert.deepEqual(
-    testing.activeSession()?.viewState.filterModel,
-    exportViewModel,
-    "Exporting all committed rows must not alter the active viewing filter or sort."
-  );
-  assert.equal(notebook.version, notebookVersionBeforeExport, "Export must not change the source notebook version.");
-  assert.equal(notebook.isDirty, notebookDirtyBeforeExport, "Export must not change the source notebook dirty state.");
-  assert.deepEqual(
-    notebook.getCells().map((cell) => cell.document.getText()),
-    notebookSourcesBeforeExport,
-    "Export must not edit any source notebook cell."
-  );
-  assertExactBytes(
-    readFileSync(notebookPath),
-    notebookBytesBeforeExport,
-    "Export must not change the notebook on disk."
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after data export");
-  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
-  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
-  await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
-  await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
-  exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
-  await exportFilterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
-  await waitFor(
-    () => {
-      const current = testing.activeSession();
-      return (
-        current?.sessionId === sessionId &&
-        current.metadata.filteredShape.rows === 1_205 &&
-        current.viewState.filterModel.filters.length === 0 &&
-        current.viewState.filterModel.sort.length === 0
-      );
-    },
-    30_000,
-    "clearing the R notebook export view"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared R notebook export view");
-  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
-  await exportDrawer.getByRole("button", { name: "Close panel" }).click();
-
-  recordAcceptanceProgress(`${phase}:editing:inspect`);
-  await vscode.commands.executeCommand("openWrangler.selectStep", previewed.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === previewed.stepId,
-    30_000,
-    "the applied native R rename inspection"
-  );
-  const inspected = testing.activeSession()?.stepInspection;
-  assert.ok(inspected, "Selecting the applied R rename must publish its inspection.");
-  assert.deepEqual(
-    inspected.inputSchema.slice(0, 3).map((column) => column.name),
-    ["row_id", "group", "score"]
-  );
-  assert.deepEqual(
-    inspected.outputSchema.slice(0, 3).map((column) => column.name),
-    ["record_id", "group", "score"]
-  );
-  assert.deepEqual(inspected.diff, {
-    addedRows: 0,
-    removedRows: 0,
-    addedColumns: [],
-    removedColumns: [],
-    changedCells: 0,
-    cells: [],
-    truncated: false
-  });
-  assertReleasedRGeneratedCode(inspected.code, "record_id");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R rename session");
-  const inspection = app.getByRole("region", { name: "Selected applied-step inspection" });
-  await inspection.getByText(/Inspecting Rename column/u).waitFor({ state: "visible", timeout: 10_000 });
-  await inspection
-    .locator('[aria-label="Selected step data diff summary"]')
-    .getByText("0 changed cells", { exact: true })
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await inspection.getByRole("button", { name: "Show confirmed data", exact: true }).click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R applied-step inspection"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:edit-latest`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the confirmed R rename session");
-  const replacement = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "case_id", {
-    replaceStepId: previewed.stepId,
-    previousName: "record_id"
-  });
-  app = replacement.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.id === previewed.stepId &&
-        step.kind === "renameColumn" &&
-        step.params.column.name === "row_id" &&
-        step.params.newName === "case_id" &&
-        active.metadata.schema[0]?.name === "case_id"
-      );
-    },
-    30_000,
-    "reapplying the edited native R rename step"
-  );
-  const reapplied = testing.activeSession();
-  assert.ok(reapplied, "The edited native R rename must retain its session.");
-  assertReleasedRGeneratedCode(reapplied.code ?? "", "case_id");
-
-  recordAcceptanceProgress(`${phase}:editing:copy-export`);
-  const generatedCode = reapplied.code ?? "";
-  const priorClipboard = await vscode.env.clipboard.readText();
-  try {
-    const copied = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
-    assert.equal(copied, generatedCode, "The public Copy Generated Code command must copy native R code.");
-    assert.equal(
-      (await vscode.env.clipboard.readText()).replaceAll("\r\n", "\n"),
-      generatedCode.replaceAll("\r\n", "\n")
-    );
-  } finally {
-    await vscode.env.clipboard.writeText(priorClipboard);
-  }
-  await assert.rejects(
-    testing.exportCodeTo(vscode.Uri.file(notebookPath)),
-    /never overwrites the active source/u,
-    "The deterministic R script writer must reject the originating notebook."
-  );
-  const scriptPath = path.join(outputDirectory, `${phase}.orders.clean.R`);
-  await exerciseRealScriptSaveDialog(workbench, vscode.Uri.file(notebookPath), scriptPath, {
-    language: "R",
-    defaultSuffix: ".clean.R"
-  });
-  assert.equal(readFileSync(scriptPath, "utf8"), generatedCode, "The public Save dialog must export native R code.");
-  assert.deepEqual(
-    readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
-    [],
-    "The R script export must not retain sibling temporary files."
-  );
-  const insertedRCellIndex = await assertReleasedRNotebookCodeInsertion(
-    testing,
-    notebook,
-    reapplied,
-    generatedCode,
-    "orders_frame",
-    phase,
-    outputDirectory
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:undo`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before undo");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema[0]?.name === "row_id" &&
-        (active.code ?? "") === ""
-      );
-    },
-    30_000,
-    "undoing the edited native R rename step"
-  );
-  const restored = testing.activeSession();
-  assert.ok(restored, "Undoing the R rename must retain the session.");
-  const restoredPage = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    sessionId,
-    revision: restored.metadata.revision,
-    viewRequestId: `${phase}-editing-restored-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: restored.viewState.filterModel
-  });
-  assert.equal(restoredPage.kind, "page");
-  if (restoredPage.kind !== "page") throw new Error("The undone R session did not return its original page.");
-  assert.equal(restoredPage.metadata.schema[0]?.name, "row_id");
-  assert.equal(restoredPage.page.rows[0]?.values[0]?.display, "1");
-
-  recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
-  const discardedDrop = await previewReleasedRDrop(testing, workbench, sessionId, "label");
-  app = discardedDrop.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema.some((column) => column.name === "label")
-      );
-    },
-    30_000,
-    "discarding the native R Drop Columns preview"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Drop Columns");
-  const dropped = await previewReleasedRDrop(testing, workbench, sessionId, "label");
-  app = dropped.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "dropColumns" &&
-        step.id === dropped.stepId &&
-        !active.metadata.schema.some((column) => column.name === "label")
-      );
-    },
-    30_000,
-    "applying the native R Drop Columns step"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Drop Columns step must be acknowledged before inspection."
-  );
-  await vscode.commands.executeCommand("openWrangler.selectStep", dropped.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === dropped.stepId,
-    30_000,
-    "the applied native R Drop Columns inspection"
-  );
-  const dropInspection = testing.activeSession()?.stepInspection;
-  assert.ok(dropInspection, "Selecting the applied R Drop Columns step must publish its inspection.");
-  assert.deepEqual(dropInspection.diff.removedColumns, ["label"]);
-  assert.equal(
-    dropInspection.inputSchema.some((column) => column.name === "label"),
-    true
-  );
-  assert.equal(
-    dropInspection.outputSchema.some((column) => column.name === "label"),
-    false
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Drop Columns session");
-  await app
-    .getByRole("region", { name: "Selected applied-step inspection" })
-    .getByRole("button", { name: "Show confirmed data", exact: true })
-    .click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R Drop Columns inspection"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop Columns session before undo");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema.some((column) => column.name === "label")
-      );
-    },
-    30_000,
-    "undoing the native R Drop Columns step"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:select-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Select Columns");
-  const selected = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
-  app = selected.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
-      );
-    },
-    30_000,
-    "discarding the native R Select Columns preview"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:select-preview-apply-inspect-undo`);
-  app = await releasedRSessionApp(
-    workbench,
-    testing,
-    sessionId,
-    "the restored R session before applying Select Columns"
-  );
-  const appliedSelection = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
-  app = appliedSelection.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "selectColumns" &&
-        step.id === appliedSelection.stepId &&
-        active.metadata.schema.map((column) => column.name).join("\u0000") === "score\u0000row_id\u0000label"
-      );
-    },
-    30_000,
-    "applying the native R Select Columns step"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Select Columns step must be acknowledged before inspection."
-  );
-  await vscode.commands.executeCommand("openWrangler.selectStep", appliedSelection.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === appliedSelection.stepId,
-    30_000,
-    "the applied native R Select Columns inspection"
-  );
-  const selectInspection = testing.activeSession()?.stepInspection;
-  assert.ok(selectInspection, "Selecting the applied R Select Columns step must publish its inspection.");
-  const selectedColumnIds = new Set(selectInspection.outputSchema.map((column) => column.id));
-  assert.deepEqual(
-    selectInspection.diff.removedColumns,
-    selectInspection.inputSchema.filter((column) => !selectedColumnIds.has(column.id)).map((column) => column.name)
-  );
-  assert.deepEqual(
-    selectInspection.outputSchema.map((column) => column.name),
-    ["score", "row_id", "label"]
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Select Columns session");
-  await app
-    .getByRole("region", { name: "Selected applied-step inspection" })
-    .getByRole("button", { name: "Show confirmed data", exact: true })
-    .click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R Select Columns inspection"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Select Columns session before undo");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
-      );
-    },
-    30_000,
-    "undoing the native R Select Columns step"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:clone-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Clone Column");
-  const discardedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_discarded");
-  app = discardedClone.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        !active.metadata.schema.some((column) => column.name === "score_discarded") &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
-      );
-    },
-    30_000,
-    "discarding the native R Clone Column preview"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:clone-preview-apply-inspect-edit-undo`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Clone Column");
-  const cloned = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_copy");
-  app = cloned.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      const sourceColumn = active?.metadata.schema.find((column) => column.name === "score");
-      const clone = active?.metadata.schema.at(-1);
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "cloneColumn" &&
-        step.id === cloned.stepId &&
-        step.params.column.name === "score" &&
-        step.params.newName === "score_copy" &&
-        clone?.id === `c:step:${cloned.stepId}:0` &&
-        clone.name === "score_copy" &&
-        clone.type === sourceColumn?.type &&
-        clone.rawType === sourceColumn.rawType &&
-        clone.nullable === sourceColumn.nullable
-      );
-    },
-    30_000,
-    "applying the native R Clone Column step"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Clone Column step must be acknowledged before inspection."
-  );
-  const firstClone = testing.activeSession();
-  assert.ok(firstClone, "The applied native R clone must retain its session.");
-  assertReleasedRCloneGeneratedCode(firstClone.code ?? "", "score", "score_copy");
-  const sidebar = await arrangePackagedProductSidebar(workbench, "inspection");
-  const cleaningSteps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
-  const appliedClone = cleaningSteps.getByRole("treeitem", { name: /^1\. Clone column/u }).first();
-  await appliedClone.waitFor({ state: "visible", timeout: 10_000 });
-  await appliedClone.click();
-  try {
+    recordAcceptanceProgress(`${phase}:editing:preview-discard`);
+    const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
+    app = discarded.app;
+    const discardedReview = app.getByRole("region", { name: "Draft review" });
+    await discardedReview.getByText("Rename column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await discardedReview
+      .locator('[aria-label="Data diff summary"]')
+      .getByText("No value changes in this block", { exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await app.locator('th[data-column="record_id"]').waitFor({ state: "visible", timeout: 10_000 });
+    await discardedReview.getByRole("button", { name: "Discard", exact: true }).click();
     await waitFor(
       () => {
         const active = testing.activeSession();
-        return active?.stepInspectionActive || active?.stepInspection?.stepId === cloned.stepId;
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.schema[0]?.name === "row_id" &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "discarding the native R rename preview"
+    );
+    await discardedReview.waitFor({ state: "hidden", timeout: 10_000 });
+
+    recordAcceptanceProgress(`${phase}:editing:preview-apply`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after discarding its draft");
+    const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
+    app = previewed.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "renameColumn" &&
+          step.id === previewed.stepId &&
+          step.params.column.name === "row_id" &&
+          step.params.newName === "record_id" &&
+          active.metadata.schema[0]?.name === "record_id"
+        );
+      },
+      30_000,
+      "applying the native R rename step"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R rename must be acknowledged before inspection."
+    );
+    const firstApplied = testing.activeSession();
+    assert.ok(firstApplied, "The applied native R rename must retain its session.");
+    assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
+    assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
+    assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
+    assert.equal(firstApplied.metadata.capabilities.exportParquet, true);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
+    await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+    recordAcceptanceProgress(`${phase}:editing:export-cleaned-csv`);
+    const notebookVersionBeforeExport = notebook.version;
+    const notebookDirtyBeforeExport = notebook.isDirty;
+    const notebookSourcesBeforeExport = notebook.getCells().map((cell) => cell.document.getText());
+    const notebookBytesBeforeExport = readFileSync(notebookPath);
+    await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+    let exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
+    await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+    let exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
+    const exportAdvancedFilters = exportFilterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+    if ((await exportAdvancedFilters.count()) > 0) await exportAdvancedFilters.click();
+    await exportFilterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+    await exportFilterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+    await exportFilterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+    await exportFilterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.sessionId === sessionId &&
+          current.metadata.filteredShape.rows === 603 &&
+          current.viewState.filterModel.filters.length === 1 &&
+          current.viewState.filterModel.filters[0]?.column === "group"
+        );
+      },
+      30_000,
+      "the R notebook export viewing filter"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook export view");
+    exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await exportDrawer.getByRole("button", { name: "Close panel" }).click();
+    await exportDrawer.waitFor({ state: "hidden", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+    await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+    await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
+    const exportView = testing.activeSession();
+    assert.ok(exportView, "The filtered R notebook export requires its exact active session.");
+    assert.equal(exportView.sessionId, sessionId);
+    assert.equal(exportView.metadata.source.kind, "notebookVariable");
+    assert.equal(exportView.metadata.source.uri, notebook.uri.toString());
+    assert.equal(exportView.metadata.source.variableName, "orders_frame");
+    assert.equal(exportView.metadata.shape.rows, 1_205);
+    assert.equal(exportView.metadata.filteredShape.rows, 603);
+    const exportViewModel = JSON.parse(JSON.stringify(exportView.viewState.filterModel)) as FilterModel;
+
+    const exportPath = path.join(outputDirectory, `${phase}.orders.clean.csv`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook session before CSV export");
+    await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
+    await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R notebook CSV export to appear");
+    const exportedLines = readFileSync(exportPath, "utf8").split(/\r?\n/u);
+    assert.equal(exportedLines.at(-1), "", "The native R CSV export must end with one newline.");
+    exportedLines.pop();
+    assert.equal(exportedLines.length, 1_206, "The native R CSV export must contain all source rows plus its header.");
+    assert.equal(exportedLines[0], releasedRNotebookCleanedCsvHeader());
+    assert.equal(exportedLines[1], releasedRNotebookCleanedCsvRow(1));
+    assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
+    assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
+    const parquetExportPath = path.join(outputDirectory, `${phase}.orders.clean.parquet`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
+    await exportCleanedDataThroughWorkbench(app, workbench, parquetExportPath, "parquet");
+    await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R notebook Parquet export to appear");
+    assertParquetFile(parquetExportPath, "The public R notebook export");
+    assert.deepEqual(
+      readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
+      [],
+      "R notebook exports must not retain a sibling temporary file."
+    );
+    assert.deepEqual(
+      testing.activeSession()?.viewState.filterModel,
+      exportViewModel,
+      "Exporting all committed rows must not alter the active viewing filter or sort."
+    );
+    assert.equal(notebook.version, notebookVersionBeforeExport, "Export must not change the source notebook version.");
+    assert.equal(
+      notebook.isDirty,
+      notebookDirtyBeforeExport,
+      "Export must not change the source notebook dirty state."
+    );
+    assert.deepEqual(
+      notebook.getCells().map((cell) => cell.document.getText()),
+      notebookSourcesBeforeExport,
+      "Export must not edit any source notebook cell."
+    );
+    assertExactBytes(
+      readFileSync(notebookPath),
+      notebookBytesBeforeExport,
+      "Export must not change the notebook on disk."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after data export");
+    await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+    exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
+    await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+    exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
+    await exportFilterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.sessionId === sessionId &&
+          current.metadata.filteredShape.rows === 1_205 &&
+          current.viewState.filterModel.filters.length === 0 &&
+          current.viewState.filterModel.sort.length === 0
+        );
+      },
+      30_000,
+      "clearing the R notebook export view"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared R notebook export view");
+    exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await exportDrawer.getByRole("button", { name: "Close panel" }).click();
+
+    recordAcceptanceProgress(`${phase}:editing:inspect`);
+    await vscode.commands.executeCommand("openWrangler.selectStep", previewed.stepId);
+    await waitFor(
+      () => testing.activeSession()?.stepInspection?.stepId === previewed.stepId,
+      30_000,
+      "the applied native R rename inspection"
+    );
+    const inspected = testing.activeSession()?.stepInspection;
+    assert.ok(inspected, "Selecting the applied R rename must publish its inspection.");
+    assert.deepEqual(
+      inspected.inputSchema.slice(0, 3).map((column) => column.name),
+      ["row_id", "group", "score"]
+    );
+    assert.deepEqual(
+      inspected.outputSchema.slice(0, 3).map((column) => column.name),
+      ["record_id", "group", "score"]
+    );
+    assert.deepEqual(inspected.diff, {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    });
+    assertReleasedRGeneratedCode(inspected.code, "record_id");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R rename session");
+    const inspection = app.getByRole("region", { name: "Selected applied-step inspection" });
+    await inspection.getByText(/Inspecting Rename column/u).waitFor({ state: "visible", timeout: 10_000 });
+    await inspection
+      .locator('[aria-label="Selected step data diff summary"]')
+      .getByText("0 changed cells", { exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await inspection.getByRole("button", { name: "Show confirmed data", exact: true }).click();
+    await waitFor(
+      () => testing.activeSession()?.stepInspection === undefined,
+      10_000,
+      "returning from the native R applied-step inspection"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:edit-latest`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the confirmed R rename session");
+    const replacement = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "case_id", {
+      replaceStepId: previewed.stepId,
+      previousName: "record_id"
+    });
+    app = replacement.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.id === previewed.stepId &&
+          step.kind === "renameColumn" &&
+          step.params.column.name === "row_id" &&
+          step.params.newName === "case_id" &&
+          active.metadata.schema[0]?.name === "case_id"
+        );
+      },
+      30_000,
+      "reapplying the edited native R rename step"
+    );
+    const reapplied = testing.activeSession();
+    assert.ok(reapplied, "The edited native R rename must retain its session.");
+    assertReleasedRGeneratedCode(reapplied.code ?? "", "case_id");
+
+    recordAcceptanceProgress(`${phase}:editing:copy-export`);
+    const generatedCode = reapplied.code ?? "";
+    const priorClipboard = await vscode.env.clipboard.readText();
+    try {
+      const copied = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
+      assert.equal(copied, generatedCode, "The public Copy Generated Code command must copy native R code.");
+      assert.equal(
+        (await vscode.env.clipboard.readText()).replaceAll("\r\n", "\n"),
+        generatedCode.replaceAll("\r\n", "\n")
+      );
+    } finally {
+      await vscode.env.clipboard.writeText(priorClipboard);
+    }
+    await assert.rejects(
+      testing.exportCodeTo(vscode.Uri.file(notebookPath)),
+      /never overwrites the active source/u,
+      "The deterministic R script writer must reject the originating notebook."
+    );
+    const scriptPath = path.join(outputDirectory, `${phase}.orders.clean.R`);
+    await exerciseRealScriptSaveDialog(workbench, vscode.Uri.file(notebookPath), scriptPath, {
+      language: "R",
+      defaultSuffix: ".clean.R"
+    });
+    assert.equal(readFileSync(scriptPath, "utf8"), generatedCode, "The public Save dialog must export native R code.");
+    assert.deepEqual(
+      readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
+      [],
+      "The R script export must not retain sibling temporary files."
+    );
+    const insertedRCellIndex = await assertReleasedRNotebookCodeInsertion(
+      testing,
+      notebook,
+      reapplied,
+      generatedCode,
+      "orders_frame",
+      phase,
+      outputDirectory
+    );
+    coreScreenshot = { insertedRCellIndex, generatedCode };
+
+    recordAcceptanceProgress(`${phase}:editing:undo`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema[0]?.name === "row_id" &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing the edited native R rename step"
+    );
+    const restored = testing.activeSession();
+    assert.ok(restored, "Undoing the R rename must retain the session.");
+    const restoredPage = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      sessionId,
+      revision: restored.metadata.revision,
+      viewRequestId: `${phase}-editing-restored-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: restored.viewState.filterModel
+    });
+    assert.equal(restoredPage.kind, "page");
+    if (restoredPage.kind !== "page") throw new Error("The undone R session did not return its original page.");
+    assert.equal(restoredPage.metadata.schema[0]?.name, "row_id");
+    assert.equal(restoredPage.page.rows[0]?.values[0]?.display, "1");
+
+    recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
+    const discardedDrop = await previewReleasedRDrop(
+      testing,
+      workbench,
+      sessionId,
+      "label",
+      "orders_frame",
+      `${phase}:editing:drop-code-preview`
+    );
+    app = discardedDrop.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema.some((column) => column.name === "label")
+        );
+      },
+      30_000,
+      "discarding the native R Drop Columns preview"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
+    app = await releasedRSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      "the restored R session before applying Drop Columns"
+    );
+    const dropped = await previewReleasedRDrop(
+      testing,
+      workbench,
+      sessionId,
+      "label",
+      "orders_frame",
+      `${phase}:editing:drop-code-preview`
+    );
+    app = dropped.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "dropColumns" &&
+          step.id === dropped.stepId &&
+          !active.metadata.schema.some((column) => column.name === "label")
+        );
+      },
+      30_000,
+      "applying the native R Drop Columns step"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Drop Columns step must be acknowledged before inspection."
+    );
+    await vscode.commands.executeCommand("openWrangler.selectStep", dropped.stepId);
+    await waitFor(
+      () => testing.activeSession()?.stepInspection?.stepId === dropped.stepId,
+      30_000,
+      "the applied native R Drop Columns inspection"
+    );
+    const dropInspection = testing.activeSession()?.stepInspection;
+    assert.ok(dropInspection, "Selecting the applied R Drop Columns step must publish its inspection.");
+    assert.deepEqual(dropInspection.diff.removedColumns, ["label"]);
+    assert.equal(
+      dropInspection.inputSchema.some((column) => column.name === "label"),
+      true
+    );
+    assert.equal(
+      dropInspection.outputSchema.some((column) => column.name === "label"),
+      false
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Drop Columns session");
+    await app
+      .getByRole("region", { name: "Selected applied-step inspection" })
+      .getByRole("button", { name: "Show confirmed data", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.stepInspection === undefined,
+      10_000,
+      "returning from the native R Drop Columns inspection"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop Columns session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema.some((column) => column.name === "label")
+        );
+      },
+      30_000,
+      "undoing the native R Drop Columns step"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:select-preview-discard`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Select Columns");
+    const selected = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
+    app = selected.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema
+            .slice(0, 4)
+            .map((column) => column.name)
+            .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
+        );
+      },
+      30_000,
+      "discarding the native R Select Columns preview"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:select-preview-apply-inspect-undo`);
+    app = await releasedRSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      "the restored R session before applying Select Columns"
+    );
+    const appliedSelection = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
+    app = appliedSelection.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "selectColumns" &&
+          step.id === appliedSelection.stepId &&
+          active.metadata.schema.map((column) => column.name).join("\u0000") === "score\u0000row_id\u0000label"
+        );
+      },
+      30_000,
+      "applying the native R Select Columns step"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Select Columns step must be acknowledged before inspection."
+    );
+    await vscode.commands.executeCommand("openWrangler.selectStep", appliedSelection.stepId);
+    await waitFor(
+      () => testing.activeSession()?.stepInspection?.stepId === appliedSelection.stepId,
+      30_000,
+      "the applied native R Select Columns inspection"
+    );
+    const selectInspection = testing.activeSession()?.stepInspection;
+    assert.ok(selectInspection, "Selecting the applied R Select Columns step must publish its inspection.");
+    const selectedColumnIds = new Set(selectInspection.outputSchema.map((column) => column.id));
+    assert.deepEqual(
+      selectInspection.diff.removedColumns,
+      selectInspection.inputSchema.filter((column) => !selectedColumnIds.has(column.id)).map((column) => column.name)
+    );
+    assert.deepEqual(
+      selectInspection.outputSchema.map((column) => column.name),
+      ["score", "row_id", "label"]
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Select Columns session");
+    await app
+      .getByRole("region", { name: "Selected applied-step inspection" })
+      .getByRole("button", { name: "Show confirmed data", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.stepInspection === undefined,
+      10_000,
+      "returning from the native R Select Columns inspection"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Select Columns session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema
+            .slice(0, 4)
+            .map((column) => column.name)
+            .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
+        );
+      },
+      30_000,
+      "undoing the native R Select Columns step"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:clone-preview-discard`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Clone Column");
+    const discardedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_discarded");
+    app = discardedClone.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "score_discarded") &&
+          active.metadata.schema
+            .slice(0, 4)
+            .map((column) => column.name)
+            .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
+        );
+      },
+      30_000,
+      "discarding the native R Clone Column preview"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:clone-preview-apply-inspect-edit-undo`);
+    app = await releasedRSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      "the restored R session before applying Clone Column"
+    );
+    const cloned = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_copy");
+    app = cloned.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        const sourceColumn = active?.metadata.schema.find((column) => column.name === "score");
+        const clone = active?.metadata.schema.at(-1);
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "cloneColumn" &&
+          step.id === cloned.stepId &&
+          step.params.column.name === "score" &&
+          step.params.newName === "score_copy" &&
+          clone?.id === `c:step:${cloned.stepId}:0` &&
+          clone.name === "score_copy" &&
+          clone.type === sourceColumn?.type &&
+          clone.rawType === sourceColumn.rawType &&
+          clone.nullable === sourceColumn.nullable
+        );
+      },
+      30_000,
+      "applying the native R Clone Column step"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Clone Column step must be acknowledged before inspection."
+    );
+    const firstClone = testing.activeSession();
+    assert.ok(firstClone, "The applied native R clone must retain its session.");
+    assertReleasedRCloneGeneratedCode(firstClone.code ?? "", "score", "score_copy");
+    const sidebar = await arrangePackagedProductSidebar(workbench, "inspection");
+    const cleaningSteps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
+    const appliedClone = cleaningSteps.getByRole("treeitem", { name: /^1\. Clone column/u }).first();
+    await appliedClone.waitFor({ state: "visible", timeout: 10_000 });
+    await appliedClone.click();
+    try {
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return active?.stepInspectionActive || active?.stepInspection?.stepId === cloned.stepId;
+        },
+        10_000,
+        "dispatching the applied native R Clone Column inspection"
+      );
+      await waitFor(
+        () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
+        30_000,
+        "the applied native R Clone Column inspection"
+      );
+    } catch (error) {
+      const active = testing.activeSession();
+      throw new Error(
+        `The Cleaning Steps selection did not complete for ${cloned.stepId}. State: ${JSON.stringify({
+          sessionId: active?.sessionId,
+          stepInspectionActive: active?.stepInspectionActive ?? false,
+          inspectedStepId: active?.stepInspection?.stepId,
+          appliedStepIds: active?.metadata.steps.map((step) => step.id),
+          scheduler: testing.sessionSchedulerState(sessionId),
+          panelHydrated: testing.panelHydrated(sessionId),
+          panelSynchronizable: testing.panelSynchronizable(sessionId)
+        })}`,
+        { cause: error }
+      );
+    }
+    const cloneInspection = testing.activeSession()?.stepInspection;
+    assert.ok(cloneInspection, "Selecting the applied R Clone Column step must publish its inspection.");
+    assert.deepEqual(cloneInspection.diff, {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: ["score_copy"],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    });
+    assert.equal(
+      cloneInspection.inputSchema.some((column) => column.name === "score_copy"),
+      false
+    );
+    const inspectedClone = cloneInspection.outputSchema.at(-1);
+    assert.ok(inspectedClone, "The R Clone Column inspection must include its derived output.");
+    assert.equal(inspectedClone.id, `c:step:${cloned.stepId}:0`);
+    assert.equal(inspectedClone.name, "score_copy");
+    assertReleasedRCloneGeneratedCode(cloneInspection.code, "score", "score_copy");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Clone Column session");
+    await app
+      .getByRole("region", { name: "Selected applied-step inspection" })
+      .getByRole("button", { name: "Show confirmed data", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.stepInspection === undefined,
+      10_000,
+      "returning from the native R Clone Column inspection"
+    );
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the confirmed R Clone Column session");
+    const editedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_duplicate", {
+      replaceStepId: cloned.stepId,
+      previousName: "score_copy"
+    });
+    assert.equal(editedClone.stepId, cloned.stepId);
+    app = editedClone.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        const clone = active?.metadata.schema.at(-1);
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "cloneColumn" &&
+          step.id === cloned.stepId &&
+          step.params.newName === "score_duplicate" &&
+          clone?.id === `c:step:${cloned.stepId}:0` &&
+          clone.name === "score_duplicate"
+        );
+      },
+      30_000,
+      "applying the edited native R Clone Column step"
+    );
+    const reappliedClone = testing.activeSession();
+    assert.ok(reappliedClone, "The edited native R clone must retain its session.");
+    assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.id === `c:step:${cloned.stepId}:0`) &&
+          active.metadata.schema
+            .slice(0, 4)
+            .map((column) => column.name)
+            .join("\u0000") === "row_id\u0000group\u0000score\u0000label" &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing the edited native R Clone Column step"
+    );
+    recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Text Length");
+    const discardedLength = await previewReleasedRTextLength(
+      testing,
+      workbench,
+      sessionId,
+      "label",
+      "discarded_label_length"
+    );
+    app = discardedLength.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "discarded_label_length")
+        );
+      },
+      30_000,
+      "discarding the native R Text Length preview"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
+    app = await releasedRSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      "the restored R session before applying Text Length"
+    );
+    const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
+    app = measured.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        const output = active?.metadata.schema.at(-1);
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "textLength" &&
+          step.id === measured.stepId &&
+          step.params.column.name === "label" &&
+          step.params.newColumn === "label_length" &&
+          output?.id === `c:step:${measured.stepId}:0` &&
+          output.name === "label_length" &&
+          output.type === "integer"
+        );
+      },
+      30_000,
+      "applying the native R Text Length step"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Text Length step before inspection");
+    const appliedLength = testing.activeSession();
+    assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
+    assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
+    const derivedColumnId = `c:step:${measured.stepId}:0`;
+    const lengthColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await lengthColumnSearch.fill("label_length");
+    await app
+      .getByRole("option", { name: /^label_length,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await lengthColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === derivedColumnId,
+      10_000,
+      "selecting the applied native R Text Length output through column search"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Text Length output column");
+    const lengthHeader = app.locator('th[data-column="label_length"]').first();
+    await lengthHeader.waitFor({ state: "visible", timeout: 10_000 });
+    const lengthColumnPosition = await lengthHeader.getAttribute("data-grid-column");
+    assert.notEqual(lengthColumnPosition, null, "The R Text Length output must expose its full-schema grid position.");
+    const firstLengthCell = app.locator(`td[data-grid-row="0"][data-grid-column="${lengthColumnPosition}"]`).first();
+    await firstLengthCell.getByText("8", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal((await firstLengthCell.textContent())?.trim(), "8");
+    await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
+    await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
+    await waitFor(
+      () => testing.activeSession()?.stepInspection?.stepId === measured.stepId,
+      30_000,
+      "the applied native R Text Length inspection"
+    );
+    const lengthInspection = testing.activeSession()?.stepInspection;
+    assert.ok(lengthInspection, "Selecting the applied R Text Length step must publish its inspection.");
+    assert.deepEqual(lengthInspection.diff, {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: ["label_length"],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    });
+    assert.equal(
+      lengthInspection.inputSchema.some((column) => column.name === "label_length"),
+      false
+    );
+    assert.deepEqual(
+      lengthInspection.outputSchema.at(-1),
+      appliedLength.metadata.schema.at(-1),
+      "The R Text Length inspection must retain the derived column identity and type."
+    );
+    assertReleasedRTextLengthGeneratedCode(lengthInspection.code, "label", "label_length");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Text Length session");
+    await app
+      .getByRole("region", { name: "Selected applied-step inspection" })
+      .getByRole("button", { name: "Show confirmed data", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.stepInspection === undefined,
+      10_000,
+      "returning from the native R Text Length inspection"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Text Length session before undo");
+    const lengthUndoState = (): Record<string, unknown> => {
+      const active = testing.activeSession();
+      return {
+        revision: active?.metadata.revision,
+        appliedRevision: appliedLength.metadata.revision,
+        stepCount: active?.metadata.steps.length,
+        draft: active?.metadata.draftStep?.kind,
+        derivedColumnPresent: active?.metadata.schema.some((column) => column.id === derivedColumnId),
+        firstColumns: active?.metadata.schema.slice(0, 4).map((column) => column.name),
+        codeEmpty: (active?.code ?? "") === "",
+        scheduler: testing.sessionSchedulerState(sessionId),
+        panel: {
+          hydrated: testing.panelHydrated(sessionId),
+          synchronizable: testing.panelSynchronizable(sessionId),
+          receipt: testing.panelSynchronizationReceipt(sessionId)
+        }
+      };
+    };
+    await waitFor(
+      () => {
+        const scheduler = testing.sessionSchedulerState(sessionId);
+        return (
+          scheduler?.sessionId === sessionId &&
+          scheduler.activeForegroundOperation === false &&
+          scheduler.interactiveQueueLength === 0
+        );
       },
       10_000,
-      "dispatching the applied native R Clone Column inspection"
+      "the native R foreground lane to settle before Undo",
+      () => JSON.stringify(lengthUndoState())
+    );
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const scheduler = testing.sessionSchedulerState(sessionId);
+        return (
+          active?.sessionId === sessionId &&
+          ((active.metadata.revision ?? appliedLength.metadata.revision) > appliedLength.metadata.revision ||
+            scheduler?.activeForegroundOperation === true ||
+            (scheduler?.interactiveQueueLength ?? 0) > 0)
+        );
+      },
+      5_000,
+      "the native R Text Length Undo click to dispatch once",
+      () => JSON.stringify(lengthUndoState())
     );
     await waitFor(
-      () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
-      30_000,
-      "the applied native R Clone Column inspection"
-    );
-  } catch (error) {
-    const active = testing.activeSession();
-    throw new Error(
-      `The Cleaning Steps selection did not complete for ${cloned.stepId}. State: ${JSON.stringify({
-        sessionId: active?.sessionId,
-        stepInspectionActive: active?.stepInspectionActive ?? false,
-        inspectedStepId: active?.stepInspection?.stepId,
-        appliedStepIds: active?.metadata.steps.map((step) => step.id),
-        scheduler: testing.sessionSchedulerState(sessionId),
-        panelHydrated: testing.panelHydrated(sessionId),
-        panelSynchronizable: testing.panelSynchronizable(sessionId)
-      })}`,
-      { cause: error }
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.id === `c:step:${measured.stepId}:0`) &&
+          active.metadata.schema
+            .slice(0, 4)
+            .map((column) => column.name)
+            .join("\u0000") === "row_id\u0000group\u0000score\u0000label" &&
+          (active.code ?? "") === ""
+        );
+      },
+      QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
+      "undoing the native R Text Length step",
+      () => JSON.stringify(lengthUndoState())
     );
   }
-  const cloneInspection = testing.activeSession()?.stepInspection;
-  assert.ok(cloneInspection, "Selecting the applied R Clone Column step must publish its inspection.");
-  assert.deepEqual(cloneInspection.diff, {
-    addedRows: 0,
-    removedRows: 0,
-    addedColumns: ["score_copy"],
-    removedColumns: [],
-    changedCells: 0,
-    cells: [],
-    truncated: false
-  });
-  assert.equal(
-    cloneInspection.inputSchema.some((column) => column.name === "score_copy"),
-    false
-  );
-  const inspectedClone = cloneInspection.outputSchema.at(-1);
-  assert.ok(inspectedClone, "The R Clone Column inspection must include its derived output.");
-  assert.equal(inspectedClone.id, `c:step:${cloned.stepId}:0`);
-  assert.equal(inspectedClone.name, "score_copy");
-  assertReleasedRCloneGeneratedCode(cloneInspection.code, "score", "score_copy");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Clone Column session");
-  await app
-    .getByRole("region", { name: "Selected applied-step inspection" })
-    .getByRole("button", { name: "Show confirmed data", exact: true })
-    .click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R Clone Column inspection"
-  );
 
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the confirmed R Clone Column session");
-  const editedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_duplicate", {
-    replaceStepId: cloned.stepId,
-    previousName: "score_copy"
-  });
-  assert.equal(editedClone.stepId, cloned.stepId);
-  app = editedClone.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      const clone = active?.metadata.schema.at(-1);
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "cloneColumn" &&
-        step.id === cloned.stepId &&
-        step.params.newName === "score_duplicate" &&
-        clone?.id === `c:step:${cloned.stepId}:0` &&
-        clone.name === "score_duplicate"
-      );
-    },
-    30_000,
-    "applying the edited native R Clone Column step"
-  );
-  const reappliedClone = testing.activeSession();
-  assert.ok(reappliedClone, "The edited native R clone must retain its session.");
-  assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        !active.metadata.schema.some((column) => column.id === `c:step:${cloned.stepId}:0`) &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label" &&
-        (active.code ?? "") === ""
-      );
-    },
-    30_000,
-    "undoing the edited native R Clone Column step"
-  );
-  recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Text Length");
-  const discardedLength = await previewReleasedRTextLength(
-    testing,
-    workbench,
-    sessionId,
-    "label",
-    "discarded_label_length"
-  );
-  app = discardedLength.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        !active.metadata.schema.some((column) => column.name === "discarded_label_length")
-      );
-    },
-    30_000,
-    "discarding the native R Text Length preview"
-  );
-
-  recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Text Length");
-  const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
-  app = measured.app;
-  await app
-    .getByRole("region", { name: "Draft review" })
-    .getByRole("button", { name: "Apply step", exact: true })
-    .click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      const output = active?.metadata.schema.at(-1);
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "textLength" &&
-        step.id === measured.stepId &&
-        step.params.column.name === "label" &&
-        step.params.newColumn === "label_length" &&
-        output?.id === `c:step:${measured.stepId}:0` &&
-        output.name === "label_length" &&
-        output.type === "integer"
-      );
-    },
-    30_000,
-    "applying the native R Text Length step"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Text Length step before inspection");
-  const appliedLength = testing.activeSession();
-  assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
-  assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
-  const derivedColumnId = `c:step:${measured.stepId}:0`;
-  const lengthColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
-  await lengthColumnSearch.fill("label_length");
-  await app
-    .getByRole("option", { name: /^label_length,/u })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await lengthColumnSearch.press("Enter");
-  await waitFor(
-    () => testing.activeSession()?.viewState.selectedColumnId === derivedColumnId,
-    10_000,
-    "selecting the applied native R Text Length output through column search"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Text Length output column");
-  const lengthHeader = app.locator('th[data-column="label_length"]').first();
-  await lengthHeader.waitFor({ state: "visible", timeout: 10_000 });
-  const lengthColumnPosition = await lengthHeader.getAttribute("data-grid-column");
-  assert.notEqual(lengthColumnPosition, null, "The R Text Length output must expose its full-schema grid position.");
-  const firstLengthCell = app.locator(`td[data-grid-row="0"][data-grid-column="${lengthColumnPosition}"]`).first();
-  await firstLengthCell.getByText("8", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal((await firstLengthCell.textContent())?.trim(), "8");
-  await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
-  await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === measured.stepId,
-    30_000,
-    "the applied native R Text Length inspection"
-  );
-  const lengthInspection = testing.activeSession()?.stepInspection;
-  assert.ok(lengthInspection, "Selecting the applied R Text Length step must publish its inspection.");
-  assert.deepEqual(lengthInspection.diff, {
-    addedRows: 0,
-    removedRows: 0,
-    addedColumns: ["label_length"],
-    removedColumns: [],
-    changedCells: 0,
-    cells: [],
-    truncated: false
-  });
-  assert.equal(
-    lengthInspection.inputSchema.some((column) => column.name === "label_length"),
-    false
-  );
-  assert.deepEqual(
-    lengthInspection.outputSchema.at(-1),
-    appliedLength.metadata.schema.at(-1),
-    "The R Text Length inspection must retain the derived column identity and type."
-  );
-  assertReleasedRTextLengthGeneratedCode(lengthInspection.code, "label", "label_length");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Text Length session");
-  await app
-    .getByRole("region", { name: "Selected applied-step inspection" })
-    .getByRole("button", { name: "Show confirmed data", exact: true })
-    .click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R Text Length inspection"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Text Length session before undo");
-  const lengthUndoState = (): Record<string, unknown> => {
-    const active = testing.activeSession();
-    return {
-      revision: active?.metadata.revision,
-      appliedRevision: appliedLength.metadata.revision,
-      stepCount: active?.metadata.steps.length,
-      draft: active?.metadata.draftStep?.kind,
-      derivedColumnPresent: active?.metadata.schema.some((column) => column.id === derivedColumnId),
-      firstColumns: active?.metadata.schema.slice(0, 4).map((column) => column.name),
-      codeEmpty: (active?.code ?? "") === "",
-      scheduler: testing.sessionSchedulerState(sessionId),
-      panel: {
-        hydrated: testing.panelHydrated(sessionId),
-        synchronizable: testing.panelSynchronizable(sessionId),
-        receipt: testing.panelSynchronizationReceipt(sessionId)
-      }
-    };
-  };
-  await waitFor(
-    () => {
-      const scheduler = testing.sessionSchedulerState(sessionId);
-      return (
-        scheduler?.sessionId === sessionId &&
-        scheduler.activeForegroundOperation === false &&
-        scheduler.interactiveQueueLength === 0
-      );
-    },
-    10_000,
-    "the native R foreground lane to settle before Undo",
-    () => JSON.stringify(lengthUndoState())
-  );
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const scheduler = testing.sessionSchedulerState(sessionId);
-      return (
-        active?.sessionId === sessionId &&
-        ((active.metadata.revision ?? appliedLength.metadata.revision) > appliedLength.metadata.revision ||
-          scheduler?.activeForegroundOperation === true ||
-          (scheduler?.interactiveQueueLength ?? 0) > 0)
-      );
-    },
-    5_000,
-    "the native R Text Length Undo click to dispatch once",
-    () => JSON.stringify(lengthUndoState())
-  );
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        !active.metadata.schema.some((column) => column.id === `c:step:${measured.stepId}:0`) &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label" &&
-        (active.code ?? "") === ""
-      );
-    },
-    QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
-    "undoing the native R Text Length step",
-    () => JSON.stringify(lengthUndoState())
-  );
-
-  if (phase === "jupyter-r") {
+  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
+    recordReleasedRValueOperationCheckpoint("find-replace", "start");
     recordAcceptanceProgress(`${phase}:editing:find-replace-picker-preview-apply-undo`);
     const replaced = await previewReleasedRFindReplace(testing, workbench, sessionId, "group", "A", "Alpha");
     app = replaced.app;
@@ -7616,141 +7815,149 @@ async function exerciseReleasedREditingJourney(
       30_000,
       "undoing native R Find and replace"
     );
+    recordReleasedRValueOperationCheckpoint("find-replace", "complete");
   }
 
-  recordAcceptanceProgress(`${phase}:editing:convert-type-preview-apply-undo`);
-  const castBase = testing.activeSession();
-  assert.ok(castBase, "The restored R session must remain available for Convert type.");
-  const scoreColumn = castBase.metadata.schema.find((column) => column.name === "score");
-  assert.ok(scoreColumn, "The packaged R Convert type journey requires the score column.");
-  assert.equal(scoreColumn.type, "float");
-  assert.equal(scoreColumn.rawType, "double");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Convert type");
-  const castColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
-  await castColumnSearch.fill("score");
-  await app
-    .getByRole("option", { name: /^score,/u })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await castColumnSearch.press("Enter");
-  await waitFor(
-    () => testing.activeSession()?.viewState.selectedColumnId === scoreColumn.id,
-    10_000,
-    "selecting score through the R column search"
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R score-column session before Convert type");
-  await app.locator('th[data-column="score"]').first().waitFor({ state: "visible", timeout: 10_000 });
-  const converted = await previewReleasedRCast(testing, workbench, sessionId, "score", "integer");
-  app = converted.app;
-  const castReview = app.getByRole("region", { name: "Draft review" });
-  await castReview.getByText("Convert type", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  await castReview
-    .locator('[aria-label="Data diff summary"]')
-    .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await castReview.getByRole("button", { name: "Apply step", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const step = active?.metadata.steps[0];
-      const output = active?.metadata.schema.find((column) => column.id === scoreColumn.id);
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.steps.length === 1 &&
-        step?.kind === "castColumn" &&
-        step.id === converted.stepId &&
-        step.params.column.id === scoreColumn.id &&
-        step.params.column.name === "score" &&
-        step.params.dtype === "integer" &&
-        output?.name === "score" &&
-        output.position === scoreColumn.position &&
-        output.type === "integer" &&
-        output.rawType === "integer"
-      );
-    },
-    30_000,
-    "applying the native R Convert type step"
-  );
-  const castApplied = testing.activeSession();
-  assert.ok(castApplied, "The applied native R Convert type step must retain its session.");
-  assertReleasedRCastGeneratedCode(castApplied.code ?? "", "score", "integer");
-  const castPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: castApplied.metadata.revision,
-    viewRequestId: `${phase}-editing-cast-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: castApplied.viewState.filterModel,
-    columnOffset: scoreColumn.position,
-    columnLimit: 1
-  });
-  assert.equal(castPage.kind, "page");
-  if (castPage.kind !== "page") throw new Error("The applied R Convert type step did not return its output page.");
-  assert.deepEqual(castPage.page.columnIds, [scoreColumn.id]);
-  assert.deepEqual(castPage.page.rows[0]?.values[0], {
-    kind: "integer",
-    raw: "1",
-    display: "1",
-    isNull: false,
-    isNaN: false
-  });
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Convert type step must be acknowledged before undo."
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Convert type session before undo");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      const restoredScore = active?.metadata.schema.find((column) => column.id === scoreColumn.id);
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        restoredScore?.name === "score" &&
-        restoredScore.position === scoreColumn.position &&
-        restoredScore.type === "float" &&
-        restoredScore.rawType === "double" &&
-        (active.code ?? "") === ""
-      );
-    },
-    30_000,
-    "undoing the native R Convert type step"
-  );
-  const castRestored = testing.activeSession();
-  assert.ok(castRestored, "Undoing the R Convert type step must retain the session.");
-  const restoredCastPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: castRestored.metadata.revision,
-    viewRequestId: `${phase}-editing-cast-restored-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: castRestored.viewState.filterModel,
-    columnOffset: scoreColumn.position,
-    columnLimit: 1
-  });
-  assert.equal(restoredCastPage.kind, "page");
-  if (restoredCastPage.kind !== "page") {
-    throw new Error("The undone R Convert type step did not return its original page.");
+  if (editingCatalog === "core-catalog") {
+    recordAcceptanceProgress(`${phase}:editing:convert-type-preview-apply-undo`);
+    const castBase = testing.activeSession();
+    assert.ok(castBase, "The restored R session must remain available for Convert type.");
+    const scoreColumn = castBase.metadata.schema.find((column) => column.name === "score");
+    assert.ok(scoreColumn, "The packaged R Convert type journey requires the score column.");
+    assert.equal(scoreColumn.type, "float");
+    assert.equal(scoreColumn.rawType, "double");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Convert type");
+    const castColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await castColumnSearch.fill("score");
+    await app
+      .getByRole("option", { name: /^score,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await castColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === scoreColumn.id,
+      10_000,
+      "selecting score through the R column search"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R score-column session before Convert type");
+    await app.locator('th[data-column="score"]').first().waitFor({ state: "visible", timeout: 10_000 });
+    const converted = await previewReleasedRCast(testing, workbench, sessionId, "score", "integer");
+    app = converted.app;
+    const castReview = app.getByRole("region", { name: "Draft review" });
+    await castReview.getByText("Convert type", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await castReview
+      .locator('[aria-label="Data diff summary"]')
+      .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await castReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        const output = active?.metadata.schema.find((column) => column.id === scoreColumn.id);
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "castColumn" &&
+          step.id === converted.stepId &&
+          step.params.column.id === scoreColumn.id &&
+          step.params.column.name === "score" &&
+          step.params.dtype === "integer" &&
+          output?.name === "score" &&
+          output.position === scoreColumn.position &&
+          output.type === "integer" &&
+          output.rawType === "integer"
+        );
+      },
+      30_000,
+      "applying the native R Convert type step"
+    );
+    const castApplied = testing.activeSession();
+    assert.ok(castApplied, "The applied native R Convert type step must retain its session.");
+    assertReleasedRCastGeneratedCode(castApplied.code ?? "", "score", "integer");
+    const castPage = await testing.request({
+      kind: "getPage",
+      sessionId,
+      revision: castApplied.metadata.revision,
+      viewRequestId: `${phase}-editing-cast-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: castApplied.viewState.filterModel,
+      columnOffset: scoreColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(castPage.kind, "page");
+    if (castPage.kind !== "page") throw new Error("The applied R Convert type step did not return its output page.");
+    assert.deepEqual(castPage.page.columnIds, [scoreColumn.id]);
+    assert.deepEqual(castPage.page.rows[0]?.values[0], {
+      kind: "integer",
+      raw: "1",
+      display: "1",
+      isNull: false,
+      isNaN: false
+    });
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Convert type step must be acknowledged before undo."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Convert type session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const restoredScore = active?.metadata.schema.find((column) => column.id === scoreColumn.id);
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          restoredScore?.name === "score" &&
+          restoredScore.position === scoreColumn.position &&
+          restoredScore.type === "float" &&
+          restoredScore.rawType === "double" &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing the native R Convert type step"
+    );
+    const castRestored = testing.activeSession();
+    assert.ok(castRestored, "Undoing the R Convert type step must retain the session.");
+    const restoredCastPage = await testing.request({
+      kind: "getPage",
+      sessionId,
+      revision: castRestored.metadata.revision,
+      viewRequestId: `${phase}-editing-cast-restored-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: castRestored.viewState.filterModel,
+      columnOffset: scoreColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(restoredCastPage.kind, "page");
+    if (restoredCastPage.kind !== "page") {
+      throw new Error("The undone R Convert type step did not return its original page.");
+    }
+    assert.deepEqual(restoredCastPage.page.columnIds, [scoreColumn.id]);
+    assert.deepEqual(restoredCastPage.page.rows[0]?.values[0], {
+      kind: "number",
+      raw: 1,
+      display: "1",
+      isNull: false,
+      isNaN: false
+    });
   }
-  assert.deepEqual(restoredCastPage.page.columnIds, [scoreColumn.id]);
-  assert.deepEqual(restoredCastPage.page.rows[0]?.values[0], {
-    kind: "number",
-    raw: 1,
-    display: "1",
-    isNull: false,
-    isNaN: false
-  });
 
-  if (phase === "jupyter-r") {
+  if (phase === "jupyter-r" && editingCatalog === "core-catalog") {
     await exerciseReleasedRFormulaJourney(testing, workbench, sessionId);
+  }
+  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
+    recordReleasedRValueOperationCheckpoint("format-datetime", "start");
     await exerciseReleasedRFormatDatetimeJourney(testing, workbench, sessionId);
+    recordReleasedRValueOperationCheckpoint("format-datetime", "complete");
 
+    recordReleasedRValueOperationCheckpoint("min-max-scale", "start");
     recordAcceptanceProgress(`${phase}:editing:min-max-scale-preview-apply-undo`);
     const minMaxBase = testing.activeSession();
     assert.ok(minMaxBase, "The restored R session must remain available for Min-max scale.");
@@ -7846,6 +8053,8 @@ async function exerciseReleasedREditingJourney(
       30_000,
       "undoing native R Min-max scale"
     );
+    recordReleasedRValueOperationCheckpoint("min-max-scale", "complete");
+    recordReleasedRValueOperationCheckpoint("round", "start");
     recordAcceptanceProgress(`${phase}:editing:numeric-rounding-preview-apply-undo`);
     const roundingBase = testing.activeSession();
     assert.ok(roundingBase, "The restored R session must remain available for numeric rounding.");
@@ -7916,7 +8125,9 @@ async function exerciseReleasedREditingJourney(
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Round session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Round");
+    recordReleasedRValueOperationCheckpoint("round", "complete");
 
+    recordReleasedRValueOperationCheckpoint("floor", "start");
     recordAcceptanceProgress(`${phase}:editing:floor-picker-preview-discard`);
     const floorPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
     app = floorPicker.app;
@@ -7989,7 +8200,9 @@ async function exerciseReleasedREditingJourney(
       "discarding native R Floor"
     );
     await requireFreshExactSessionPanelHydration(testing, sessionId, "The discarded R Floor draft must settle.");
+    recordReleasedRValueOperationCheckpoint("floor", "complete");
 
+    recordReleasedRValueOperationCheckpoint("ceiling", "start");
     const ceilingBase = testing.activeSession();
     assert.ok(ceilingBase, "The restored R session must remain available for Ceiling.");
     const ceilingPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
@@ -8067,9 +8280,11 @@ async function exerciseReleasedREditingJourney(
       sessionId,
       "The discarded R Floor and Ceiling previews must reach their renderer."
     );
+    recordReleasedRValueOperationCheckpoint("ceiling", "complete");
   }
 
-  if (phase === "jupyter-r") {
+  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
+    recordReleasedRValueOperationCheckpoint("capitalize", "start");
     const capitalizeBase = testing.activeSession();
     assert.ok(capitalizeBase, "The restored R session must remain available for Capitalize.");
     const labelColumn = capitalizeBase.metadata.schema.find((column) => column.name === "label");
@@ -8133,62 +8348,73 @@ async function exerciseReleasedREditingJourney(
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");
+    recordReleasedRValueOperationCheckpoint("capitalize", "complete");
+  }
 
+  if (phase === "jupyter-r" && editingCatalog === "core-catalog") {
     await exerciseReleasedRGroupByJourney(testing, workbench, sessionId);
   }
 
   // Coordinator-only checks intentionally follow the final Open Wrangler
   // renderer mutation so their newer revisions cannot stale a later UI action.
-  recordAcceptanceProgress(`${phase}:editing:lowercase-preview-apply-undo`);
-  const lowercaseBase = testing.activeSession();
-  assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
-  const groupColumn = lowercaseBase.metadata.schema.find((column) => column.name === "group");
-  assert.ok(groupColumn, "The packaged R Lowercase journey requires the group column.");
-  const lowercasePreview = await testing.request({
-    kind: "previewStep",
-    sessionId,
-    revision: lowercaseBase.metadata.revision,
-    step: {
-      id: "released-r-lowercase-group",
-      kind: "lowerText",
-      params: { column: { id: groupColumn.id, name: groupColumn.name } }
-    },
-    offset: 0,
-    limit: 20,
-    columnOffset: 0,
-    columnLimit: 8
-  });
-  assert.equal(lowercasePreview.kind, "stepPreview", "Packaged native R Lowercase must preview in place.");
-  if (lowercasePreview.kind !== "stepPreview") throw new Error("The packaged R Lowercase preview failed.");
-  assert.equal(lowercasePreview.metadata.schema.find((column) => column.id === groupColumn.id)?.rawType, "character");
-  assert.equal(lowercasePreview.page.rows[0]?.values[1]?.display, "a");
-  assert.match(lowercasePreview.code, /tolower/u);
-  assert.ok(lowercasePreview.diff.changedCells > 0);
-  const lowercaseApplied = await testing.request({
-    kind: "applyDraft",
-    sessionId,
-    revision: lowercasePreview.revision,
-    offset: 0,
-    limit: 20,
-    columnOffset: 0,
-    columnLimit: 8
-  });
-  assert.equal(lowercaseApplied.kind, "planUpdated", "Packaged native R Lowercase must apply.");
-  if (lowercaseApplied.kind !== "planUpdated") throw new Error("The packaged R Lowercase apply failed.");
-  assert.equal(lowercaseApplied.page.rows[0]?.values[1]?.display, "a");
-  const lowercaseUndo = await testing.request({
-    kind: "undoStep",
-    sessionId,
-    revision: lowercaseApplied.revision,
-    offset: 0,
-    limit: 20,
-    columnOffset: 0,
-    columnLimit: 8
-  });
-  assert.equal(lowercaseUndo.kind, "planUpdated", "Packaged native R Lowercase must undo.");
-  if (lowercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Lowercase undo failed.");
-  assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
-  if (phase === "jupyter-r") {
+  if (
+    (phase === "jupyter-r-remote" && editingCatalog === "core-catalog") ||
+    (phase === "jupyter-r" && editingCatalog === "value-operations")
+  ) {
+    if (editingCatalog === "value-operations") recordReleasedRValueOperationCheckpoint("lowercase", "start");
+    recordAcceptanceProgress(`${phase}:editing:lowercase-preview-apply-undo`);
+    const lowercaseBase = testing.activeSession();
+    assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
+    const groupColumn = lowercaseBase.metadata.schema.find((column) => column.name === "group");
+    assert.ok(groupColumn, "The packaged R Lowercase journey requires the group column.");
+    const lowercasePreview = await testing.request({
+      kind: "previewStep",
+      sessionId,
+      revision: lowercaseBase.metadata.revision,
+      step: {
+        id: "released-r-lowercase-group",
+        kind: "lowerText",
+        params: { column: { id: groupColumn.id, name: groupColumn.name } }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    assert.equal(lowercasePreview.kind, "stepPreview", "Packaged native R Lowercase must preview in place.");
+    if (lowercasePreview.kind !== "stepPreview") throw new Error("The packaged R Lowercase preview failed.");
+    assert.equal(lowercasePreview.metadata.schema.find((column) => column.id === groupColumn.id)?.rawType, "character");
+    assert.equal(lowercasePreview.page.rows[0]?.values[1]?.display, "a");
+    assert.match(lowercasePreview.code, /tolower/u);
+    assert.ok(lowercasePreview.diff.changedCells > 0);
+    const lowercaseApplied = await testing.request({
+      kind: "applyDraft",
+      sessionId,
+      revision: lowercasePreview.revision,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    assert.equal(lowercaseApplied.kind, "planUpdated", "Packaged native R Lowercase must apply.");
+    if (lowercaseApplied.kind !== "planUpdated") throw new Error("The packaged R Lowercase apply failed.");
+    assert.equal(lowercaseApplied.page.rows[0]?.values[1]?.display, "a");
+    const lowercaseUndo = await testing.request({
+      kind: "undoStep",
+      sessionId,
+      revision: lowercaseApplied.revision,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    assert.equal(lowercaseUndo.kind, "planUpdated", "Packaged native R Lowercase must undo.");
+    if (lowercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Lowercase undo failed.");
+    assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
+    if (editingCatalog === "value-operations") recordReleasedRValueOperationCheckpoint("lowercase", "complete");
+  }
+  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
+    recordReleasedRValueOperationCheckpoint("uppercase", "start");
     recordAcceptanceProgress(`${phase}:editing:uppercase-preview-apply-undo`);
     const uppercaseBase = testing.activeSession();
     assert.ok(uppercaseBase, "The restored R session must remain available for Uppercase.");
@@ -8237,18 +8463,26 @@ async function exerciseReleasedREditingJourney(
     assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
+    recordReleasedRValueOperationCheckpoint("uppercase", "complete");
 
+    recordReleasedRValueOperationCheckpoint("strip", "start");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
+    await assertReleasedRValueOperationsCleanState(testing, sessionId, "strip-discard-restored");
+    recordReleasedRValueOperationCheckpoint("strip", "complete");
+    recordReleasedRValueOperationCheckpoint("split", "start");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
+    await assertReleasedRValueOperationsCleanState(testing, sessionId, "split-discard-restored");
+    recordReleasedRValueOperationCheckpoint("split", "complete");
   }
 
-  if (phase === "jupyter-r" && screenshotOutput) {
+  if (phase === "jupyter-r" && editingCatalog === "core-catalog" && screenshotOutput) {
+    assert.ok(coreScreenshot, "The core R editing catalog must retain its code-insertion screenshot receipt.");
     await captureReleasedJupyterCodeInsertion(
       workbench,
       notebook,
-      insertedRCellIndex,
+      coreScreenshot.insertedRCellIndex,
       "orders_frame",
-      generatedCode,
+      coreScreenshot.generatedCode,
       screenshotOutput,
       {
         languageId: "r",
@@ -8256,6 +8490,10 @@ async function exerciseReleasedREditingJourney(
         progress: "jupyter-r:screenshot:code-insertion"
       }
     );
+  }
+
+  if (editingCatalog === "value-operations") {
+    await assertReleasedRValueOperationsCleanState(testing, sessionId, "exit");
   }
 }
 
@@ -8548,6 +8786,68 @@ async function exerciseReleasedRFormatDatetimeJourney(
   );
 }
 
+async function undoReleasedRCategoricalStep(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  appliedRevision: number,
+  checkpointPrefix: "jupyter-r:editing:one-hot" | "jupyter-r:editing:multi-label",
+  restored: (active: NonNullable<ReturnType<TestApi["activeSession"]>>) => boolean
+): Promise<void> {
+  type RendererReceipt = NonNullable<ReturnType<TestApi["panelSynchronizationReceipt"]>>;
+  type UndoTarget = Readonly<{ element: ElementHandle<unknown>; receipt: RendererReceipt }>;
+  const snapshot = () => {
+    const active = testing.activeSession();
+    return {
+      sessionId: active?.sessionId,
+      revision: active?.metadata.revision,
+      panelReceipt: testing.panelSynchronizationReceipt(sessionId),
+      scheduler: testing.sessionSchedulerState(sessionId),
+      restored: active?.sessionId === sessionId && active !== undefined && restored(active)
+    };
+  };
+  await runFailClosedCategoricalUndo({
+    sessionId,
+    appliedRevision,
+    snapshot,
+    acquire: async (): Promise<UndoTarget> => {
+      const app = await reacquireAcknowledgedSessionApp(
+        workbench,
+        testing,
+        sessionId,
+        "Categorical Undo requires the current acknowledged R renderer."
+      );
+      const receipt = testing.panelSynchronizationReceipt(sessionId);
+      assert.ok(receipt, "Categorical Undo requires one exact current renderer receipt.");
+      const element = await app
+        .getByRole("button", { name: "Undo", exact: true })
+        .elementHandle({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      assert.ok(element, "Categorical Undo requires one exact visible Undo action.");
+      return { element, receipt };
+    },
+    activate: ({ element, receipt }) =>
+      activateExactAcceptanceElementOnce(element, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, () => {
+        const current = testing.panelSynchronizationReceipt(sessionId);
+        if (
+          !sameRendererSynchronizationReceipt(receipt, current) ||
+          current?.revision !== appliedRevision ||
+          current.layoutTransitionPending !== false
+        ) {
+          throw new AcceptanceActionNotDispatchedError(
+            "The categorical Undo renderer changed immediately before its click",
+            new Error("The exact fresh applied-revision renderer receipt changed.")
+          );
+        }
+      }),
+    dispose: ({ element }) => element.dispose(),
+    checkpoint: (stage) => recordAcceptanceProgress(`${checkpointPrefix}:${stage}`),
+    readyTimeoutMs: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    dispatchTimeoutMs: 5_000,
+    confirmationTimeoutMs: QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
+    description: `the exact ${checkpointPrefix.endsWith("one-hot") ? "One-hot" : "Multi-label"} Undo action`
+  });
+}
+
 async function exerciseReleasedROneHotJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
   recordAcceptanceProgress("jupyter-r:editing:one-hot-preview-apply-undo");
   const base = testing.activeSession();
@@ -8696,22 +8996,18 @@ async function exerciseReleasedROneHotJourney(testing: TestApi, workbench: Page,
   assert.ok(applied, "The applied R One-hot encode must retain its session.");
   assertReleasedRCategoricalGeneratedCode(applied.code ?? "", generatedExpectation);
   await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R One-hot step must settle.");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R One-hot session");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema.some((column) => column.id === group.id) &&
-        !active.metadata.schema.some((column) => column.id === outputA.id || column.id === outputB.id) &&
-        (active.code ?? "") === ""
-      );
-    },
-    30_000,
-    "undoing native R One-hot encode"
+  await undoReleasedRCategoricalStep(
+    testing,
+    workbench,
+    sessionId,
+    applied.metadata.revision,
+    "jupyter-r:editing:one-hot",
+    (active) =>
+      active.metadata.steps.length === 0 &&
+      active.metadata.draftStep === undefined &&
+      isDeepStrictEqual(active.metadata.schema, base.metadata.schema) &&
+      isDeepStrictEqual(active.metadata.shape, base.metadata.shape) &&
+      (active.code ?? "") === (base.code ?? "")
   );
 }
 
@@ -8874,22 +9170,18 @@ async function exerciseReleasedRMultiLabelJourney(testing: TestApi, workbench: P
   assert.ok(applied, "The applied R Multi-label binarize must retain its session.");
   assertReleasedRCategoricalGeneratedCode(applied.code ?? "", generatedExpectation);
   await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R Multi-label step must settle.");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Multi-label session");
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema.some((column) => column.id === labels.id) &&
-        !active.metadata.schema.some((column) => column.id === outputA.id || column.id === outputB.id) &&
-        (active.code ?? "") === ""
-      );
-    },
-    30_000,
-    "undoing native R Multi-label binarize"
+  await undoReleasedRCategoricalStep(
+    testing,
+    workbench,
+    sessionId,
+    applied.metadata.revision,
+    "jupyter-r:editing:multi-label",
+    (active) =>
+      active.metadata.steps.length === 0 &&
+      active.metadata.draftStep === undefined &&
+      isDeepStrictEqual(active.metadata.schema, base.metadata.schema) &&
+      isDeepStrictEqual(active.metadata.shape, base.metadata.shape) &&
+      (active.code ?? "") === (base.code ?? "")
   );
 }
 
@@ -9136,22 +9428,42 @@ async function previewReleasedRDropDuplicates(testing: TestApi, workbench: Page,
 }
 
 function assertReleasedRGeneratedSourceBoundary(code: string, variableName = "orders_frame"): void {
-  assert.match(code, /^base::evalq\(\{/u);
-  assert.ok(code.includes(".ow_generated_result <- base::evalq({"));
-  assert.ok(
-    code.includes(`base::get(${JSON.stringify(variableName)}, envir = .ow_source_environment, inherits = FALSE)`),
-    `Generated R code must read ${JSON.stringify(variableName)} from the exact caller environment.`
-  );
-  assert.ok(code.includes("base::list(.ow_caller_environment = base::environment())"));
-  assert.ok(code.includes("base::list(.ow_source_environment = .ow_caller_environment)"));
-  assert.ok(
-    code.includes(
-      "base::assign(.ow_publication_name, .ow_generated_result, envir = .ow_caller_environment, inherits = FALSE)"
-    )
-  );
-  assert.ok(code.includes("parent = base::baseenv()"));
-  assert.doesNotMatch(code, /open_wrangler_result <- base::evalq/u);
-  assert.doesNotMatch(code, /parent\.env\(environment\(\)\)/u);
+  assertCodePreviewDocumentChecks(code, [
+    { stage: "released-r:source-boundary:prefix", passed: /^base::evalq\(\{/u.test(code) },
+    {
+      stage: "released-r:source-boundary:generated-result",
+      passed: code.includes(".ow_generated_result <- base::evalq({")
+    },
+    {
+      stage: "released-r:source-boundary:caller-read",
+      passed: code.includes(
+        `base::get(${JSON.stringify(variableName)}, envir = .ow_source_environment, inherits = FALSE)`
+      )
+    },
+    {
+      stage: "released-r:source-boundary:caller-environment",
+      passed: code.includes("base::list(.ow_caller_environment = base::environment())")
+    },
+    {
+      stage: "released-r:source-boundary:source-environment",
+      passed: code.includes("base::list(.ow_source_environment = .ow_caller_environment)")
+    },
+    {
+      stage: "released-r:source-boundary:publication",
+      passed: code.includes(
+        "base::assign(.ow_publication_name, .ow_generated_result, envir = .ow_caller_environment, inherits = FALSE)"
+      )
+    },
+    { stage: "released-r:source-boundary:base-parent", passed: code.includes("parent = base::baseenv()") },
+    {
+      stage: "released-r:source-boundary:legacy-result-absent",
+      passed: !/open_wrangler_result <- base::evalq/u.test(code)
+    },
+    {
+      stage: "released-r:source-boundary:dynamic-parent-absent",
+      passed: !/parent\.env\(environment\(\)\)/u.test(code)
+    }
+  ]);
 }
 
 function assertReleasedRRowGeneratedCode(code: string, kind: "sortRows" | "filterRows"): void {
@@ -9616,7 +9928,8 @@ async function previewReleasedRDrop(
   workbench: Page,
   sessionId: string,
   sourceName: string,
-  variableName = "orders_frame"
+  variableName = "orders_frame",
+  checkpointPrefix = "jupyter-r:editing:drop-code-preview"
 ): Promise<Readonly<{ app: Locator; stepId: string }>> {
   const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Drop columns/u }).click();
@@ -9645,9 +9958,15 @@ async function previewReleasedRDrop(
   assert.ok(active?.metadata.draftStep?.kind === "dropColumns", "The native R drop preview must retain its draft.");
   const stepId = active.metadata.draftStep.id;
   assertReleasedRDropGeneratedCode(active.code ?? "", sourceName, variableName);
+  recordAcceptanceProgress(`${checkpointPrefix}:locator-start`);
   const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  recordAcceptanceProgress(`${checkpointPrefix}:locator-ready`);
+  recordAcceptanceProgress(`${checkpointPrefix}:size-start`);
   const exactCodePreview = await ensureCodePreviewHeight(workbench, codePreview, 180);
+  recordAcceptanceProgress(`${checkpointPrefix}:size-ready`);
+  recordAcceptanceProgress(`${checkpointPrefix}:reveal-start`);
   assertReleasedRDropGeneratedCode(await revealCodePreviewText(exactCodePreview, sourceName), sourceName, variableName);
+  recordAcceptanceProgress(`${checkpointPrefix}:reveal-complete`);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -9851,9 +10170,11 @@ function assertReleasedRFormatDatetimeGeneratedCode(
 
 function assertReleasedRDropGeneratedCode(code: string, sourceName: string, variableName = "orders_frame"): void {
   assertReleasedRGeneratedSourceBoundary(code, variableName);
-  assert.ok(code.includes(".ow_drop_positions"));
-  assert.ok(code.includes(JSON.stringify(sourceName)));
-  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+  assertCodePreviewDocumentChecks(code, [
+    { stage: "released-r:drop:positions", passed: code.includes(".ow_drop_positions") },
+    { stage: "released-r:drop:source-reference", passed: code.includes(JSON.stringify(sourceName)) },
+    { stage: "released-r:drop:r-only", passed: !/\b(?:pandas|polars|python)\b/iu.test(code) }
+  ]);
 }
 
 function assertReleasedRTextLengthGeneratedCode(
@@ -23230,7 +23551,9 @@ async function waitForCodePreview(
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
   if (expectedCode === undefined) throw new Error(`The generated ${language} code preview did not become visible.`);
-  throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
+  throw new Error(
+    `The generated code preview did not expose expected text ${codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(expectedCode))}.`
+  );
 }
 
 type ExactCodePreviewHandle = ElementHandle<unknown>;
@@ -23239,10 +23562,15 @@ interface ExactCodePreviewTarget {
   readonly preview: ExactCodePreviewHandle;
   readonly scroller: ExactCodePreviewHandle;
   readonly code: string;
+  readonly codeReceipt: ReturnType<typeof codePreviewDocumentReceipt>;
+  readonly workbench?: Page;
+  readonly frame?: Frame;
+  readonly language?: "Python" | "R";
 }
 
 interface ExactCodePreviewIdentity {
-  readonly code: string | undefined;
+  readonly codeReceipt: ReturnType<typeof codePreviewDocumentReceipt> | undefined;
+  readonly contentIsExact: boolean;
   readonly previewBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
   readonly previewConnected: boolean;
   readonly previewOwnsScroller: boolean;
@@ -23250,6 +23578,7 @@ interface ExactCodePreviewIdentity {
   readonly scrollerBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
   readonly scrollerClass: string | null;
   readonly scrollerConnected: boolean;
+  readonly scrollerIsExact: boolean;
   readonly scrollTop: number;
   readonly scrollHeight: number;
   readonly clientHeight: number;
@@ -23259,7 +23588,8 @@ interface ExactCodePreviewIdentity {
 interface ExactCodePreviewExposure {
   readonly lineBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
   readonly lineConnected: boolean;
-  readonly lineText: string;
+  readonly lineContainsExpectedText: boolean;
+  readonly lineTextReceipt: ReturnType<typeof codePreviewDocumentReceipt>;
   readonly sameDocument: boolean;
   readonly scrollerBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
   readonly scrollerContainsLine: boolean;
@@ -23269,20 +23599,39 @@ interface ExactCodePreviewExposure {
   readonly rendererViewport: Readonly<{ width: number; height: number }> | undefined;
 }
 
-async function pinExactCodePreview(codePreview: Locator): Promise<ExactCodePreviewTarget> {
-  const preview = await codePreview.elementHandle({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+class ExactCodePreviewDocumentMismatchError extends Error {
+  override readonly name = "ExactCodePreviewDocumentMismatchError";
+}
+
+async function pinExactCodePreview(
+  codePreview: Locator,
+  context?: Readonly<{ workbench: Page; frame: Frame; language: "Python" | "R" }>,
+  timeoutMs = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
+): Promise<ExactCodePreviewTarget> {
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) && timeoutMs > 0,
+    "Pinning an exact Code Preview generation requires a positive bounded timeout."
+  );
+  const preview = await codePreview.elementHandle({ timeout: timeoutMs });
   assert.ok(preview, "The generated-code preview must expose one exact content element.");
   let scroller: ExactCodePreviewHandle | undefined;
   try {
-    scroller =
-      (await codePreview.locator("xpath=..").elementHandle({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS })) ?? undefined;
+    const parent = await preview.evaluateHandle(
+      (element) => (element as { readonly parentElement: unknown }).parentElement
+    );
+    scroller = (parent.asElement() as ExactCodePreviewHandle | null) ?? undefined;
+    if (!scroller) await parent.dispose();
     assert.ok(scroller, "The generated-code preview must expose one exact parent scroller element.");
     const identity = await readExactCodePreviewIdentity(preview, scroller);
     assertExactCodePreviewIdentity(identity);
-    if (typeof identity.code !== "string") {
-      assert.fail(`The generated-code preview must expose its CodeMirror document: ${JSON.stringify(identity)}.`);
-    }
-    return { preview, scroller, code: identity.code };
+    const code = await preview.evaluate((element) => {
+      const content = element as unknown as { cmTile?: { view?: { state: { doc: { toString(): string } } } } };
+      return content.cmTile?.view?.state.doc.toString();
+    });
+    assert.ok(typeof code === "string", "The generated-code preview must expose its complete CodeMirror document.");
+    const codeReceipt = codePreviewDocumentReceipt(code);
+    assertExactCodePreviewReceipt(identity.codeReceipt, codeReceipt, "The pinned Code Preview document");
+    return { preview, scroller, code, codeReceipt, ...context };
   } catch (error) {
     try {
       await releaseExactCodePreview({ preview, scroller });
@@ -23293,11 +23642,107 @@ async function pinExactCodePreview(codePreview: Locator): Promise<ExactCodePrevi
   }
 }
 
+async function acquireCurrentExactCodePreviewGeneration(
+  workbench: Page,
+  language: "Python" | "R",
+  expectedCodeReceipt: ReturnType<typeof codePreviewDocumentReceipt>,
+  deadline: number
+): Promise<ExactCodePreviewTarget> {
+  while (Date.now() < deadline) {
+    for (const frame of workbench.frames()) {
+      try {
+        const locator = frame.locator(`[aria-label="Editable generated ${language} code preview"]`);
+        if ((await locator.count()) !== 1 || !(await locator.isVisible())) continue;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs < 1) break;
+        const target = await pinExactCodePreview(locator, { workbench, frame, language }, remainingMs);
+        try {
+          assertExactCodePreviewReceipt(
+            target.codeReceipt,
+            expectedCodeReceipt,
+            "The current exact Code Preview generation"
+          );
+          return target;
+        } catch (error) {
+          await releaseExactCodePreview(target);
+          throw error;
+        }
+      } catch (error) {
+        if (error instanceof ExactCodePreviewDocumentMismatchError) throw error;
+        ignoreRetiredRendererProbeFailure(workbench, workbench.context().browser(), frame.page(), frame, error);
+      }
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) await workbench.waitForTimeout(Math.min(50, remainingMs));
+  }
+  throw new Error(
+    `The current exact ${language} Code Preview generation did not appear for document ${codePreviewReceiptDiagnostic(expectedCodeReceipt)}.`
+  );
+}
+
+async function exactCodePreviewGenerationIsRetired(target: ExactCodePreviewTarget, _error: unknown): Promise<boolean> {
+  if (_error instanceof ExactCodePreviewDocumentMismatchError) return false;
+  if (!target.workbench || !target.frame) return false;
+  if (isRetiredRendererTarget(target.workbench, target.frame.page(), target.frame)) return true;
+  try {
+    const lifecycle = await target.preview.evaluate((element, exactScroller) => {
+      const content = element as unknown as {
+        readonly isConnected: boolean;
+        readonly ownerDocument: unknown;
+        readonly parentElement: unknown;
+      };
+      const scroller = exactScroller as unknown as { readonly isConnected: boolean; readonly ownerDocument: unknown };
+      return {
+        previewConnected: content.isConnected,
+        scrollerConnected: scroller.isConnected,
+        previewOwnsScroller: content.parentElement === scroller,
+        sameDocument: content.ownerDocument === scroller.ownerDocument
+      };
+    }, target.scroller);
+    return (
+      !lifecycle.previewConnected ||
+      !lifecycle.scrollerConnected ||
+      !lifecycle.previewOwnsScroller ||
+      !lifecycle.sameDocument
+    );
+  } catch {
+    return isRetiredRendererTarget(target.workbench, target.frame.page(), target.frame);
+  }
+}
+
+async function runExactCodePreviewGenerations<T>(
+  initial: ExactCodePreviewTarget,
+  description: string,
+  operate: (target: ExactCodePreviewTarget, generation: number) => Promise<T>
+): Promise<T> {
+  return runReplaceableCodePreviewGeneration({
+    initial,
+    operate,
+    proveRetired: exactCodePreviewGenerationIsRetired,
+    acquireReplacement: async (_generation, deadline) => {
+      assert.ok(
+        initial.workbench && initial.language,
+        `${description} cannot reacquire a proven retired generation without its workbench provenance.`
+      );
+      return acquireCurrentExactCodePreviewGeneration(
+        initial.workbench,
+        initial.language,
+        initial.codeReceipt,
+        deadline
+      );
+    },
+    dispose: releaseExactCodePreview,
+    maximumGenerations: 4,
+    timeoutMs: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    description
+  });
+}
+
 async function readExactCodePreviewIdentity(
   preview: ExactCodePreviewHandle,
   scroller: ExactCodePreviewHandle
 ): Promise<ExactCodePreviewIdentity> {
-  return preview.evaluate((element, exactScroller) => {
+  const raw = await preview.evaluate((element, exactScroller) => {
     type Rectangle = { left: number; top: number; width: number; height: number };
     type PreviewElement = {
       readonly isConnected: boolean;
@@ -23306,7 +23751,13 @@ async function readExactCodePreviewIdentity(
         readonly defaultView: null | { readonly innerWidth: number; readonly innerHeight: number };
       };
       getBoundingClientRect(): Rectangle;
-      cmTile?: { view?: { state: { doc: { toString(): string } } } };
+      cmTile?: {
+        view?: {
+          readonly contentDOM: unknown;
+          readonly scrollDOM: unknown;
+          state: { doc: { toString(): string } };
+        };
+      };
     };
     type ScrollerElement = {
       readonly isConnected: boolean;
@@ -23322,8 +23773,10 @@ async function readExactCodePreviewIdentity(
     const previewBounds = content.getBoundingClientRect();
     const scrollerBounds = scrollerElement.getBoundingClientRect();
     const rendererWindow = content.ownerDocument.defaultView;
+    const view = content.cmTile?.view;
     return {
-      code: content.cmTile?.view?.state.doc.toString(),
+      code: view?.state.doc.toString(),
+      contentIsExact: view?.contentDOM === content,
       previewBounds: {
         left: previewBounds.left,
         top: previewBounds.top,
@@ -23341,6 +23794,7 @@ async function readExactCodePreviewIdentity(
       },
       scrollerClass: scrollerElement.getAttribute("class"),
       scrollerConnected: scrollerElement.isConnected,
+      scrollerIsExact: view?.scrollDOM === scrollerElement,
       scrollTop: scrollerElement.scrollTop,
       scrollHeight: scrollerElement.scrollHeight,
       clientHeight: scrollerElement.clientHeight,
@@ -23349,9 +23803,34 @@ async function readExactCodePreviewIdentity(
         : undefined
     };
   }, scroller);
+  const { code, ...identity } = raw;
+  return {
+    ...identity,
+    codeReceipt: typeof code === "string" ? codePreviewDocumentReceipt(code) : undefined
+  };
 }
 
-function assertExactCodePreviewIdentity(identity: ExactCodePreviewIdentity, expectedCode?: string): void {
+function assertExactCodePreviewReceipt(
+  actual: ReturnType<typeof codePreviewDocumentReceipt> | undefined,
+  expected: ReturnType<typeof codePreviewDocumentReceipt>,
+  subject: string
+): void {
+  if (!actual) {
+    throw new ExactCodePreviewDocumentMismatchError(
+      `${subject} must expose the expected bounded UTF-8 length/SHA-256 receipt ${codePreviewReceiptDiagnostic(expected)}.`
+    );
+  }
+  if (actual.utf8Length !== expected.utf8Length || actual.sha256 !== expected.sha256) {
+    throw new ExactCodePreviewDocumentMismatchError(
+      `${subject} changed from ${codePreviewReceiptDiagnostic(expected)} to ${codePreviewReceiptDiagnostic(actual)}.`
+    );
+  }
+}
+
+function assertExactCodePreviewIdentity(
+  identity: ExactCodePreviewIdentity,
+  expectedCodeReceipt?: ReturnType<typeof codePreviewDocumentReceipt>
+): void {
   const actual = JSON.stringify(identity);
   assert.equal(identity.previewConnected, true, `The exact Code Preview content must remain connected: ${actual}.`);
   assert.equal(identity.scrollerConnected, true, `The exact Code Preview scroller must remain connected: ${actual}.`);
@@ -23364,6 +23843,11 @@ function assertExactCodePreviewIdentity(identity: ExactCodePreviewIdentity, expe
     identity.sameDocument,
     true,
     `The exact Code Preview content and scroller must retain one renderer document: ${actual}.`
+  );
+  assert.equal(
+    identity.contentIsExact && identity.scrollerIsExact,
+    true,
+    `The exact Code Preview must bind CodeMirror contentDOM and scrollDOM to its proven elements: ${actual}.`
   );
   assert.ok(
     identity.scrollerClass?.split(/\s+/u).includes("cm-scroller"),
@@ -23379,14 +23863,10 @@ function assertExactCodePreviewIdentity(identity: ExactCodePreviewIdentity, expe
       identity.rendererViewport.height > 0,
     `The exact Code Preview must retain a finite positive renderer viewport: ${actual}.`
   );
-  if (expectedCode === undefined) {
-    assert.equal(
-      typeof identity.code,
-      "string",
-      `The exact Code Preview must expose a CodeMirror document: ${actual}.`
-    );
+  if (expectedCodeReceipt === undefined) {
+    assert.ok(identity.codeReceipt, `The exact Code Preview must expose a bounded document receipt: ${actual}.`);
   } else {
-    assert.equal(identity.code, expectedCode, `The exact Code Preview document changed: ${actual}.`);
+    assertExactCodePreviewReceipt(identity.codeReceipt, expectedCodeReceipt, "The exact Code Preview document");
   }
 }
 
@@ -23459,10 +23939,11 @@ async function prepareExactCodePreviewLine(
   occurrence: "first" | "last"
 ): Promise<ExactCodePreviewHandle> {
   const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-  assertExactCodePreviewIdentity(identity, target.code);
+  assertExactCodePreviewIdentity(identity, target.codeReceipt);
   const position = occurrence === "first" ? target.code.indexOf(expectedText) : target.code.lastIndexOf(expectedText);
-  assert.notEqual(position, -1, `The exact Code Preview document must contain ${JSON.stringify(expectedText)}.`);
-  const initialExposure = await target.preview.evaluate(
+  const expectedTextReceipt = codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(expectedText));
+  assert.notEqual(position, -1, `The exact Code Preview document must contain text ${expectedTextReceipt}.`);
+  const rawInitialExposure = await target.preview.evaluate(
     (element, options) => {
       type Rectangle = { left: number; top: number; width: number; height: number };
       const content = element as unknown as {
@@ -23528,11 +24009,16 @@ async function prepareExactCodePreviewLine(
     },
     { exactScroller: target.scroller, position }
   );
+  const { code: initialCode, ...initialGeometry } = rawInitialExposure;
+  const initialExposure = {
+    ...initialGeometry,
+    codeReceipt: codePreviewDocumentReceipt(initialCode)
+  };
   const initialActual = JSON.stringify(initialExposure);
-  assert.equal(
-    initialExposure.code,
-    target.code,
-    `The exact Code Preview document changed before line materialization: ${initialActual}.`
+  assertExactCodePreviewReceipt(
+    initialExposure.codeReceipt,
+    target.codeReceipt,
+    "The exact Code Preview document before line materialization"
   );
   assert.equal(
     initialExposure.contentIsExact && initialExposure.scrollerIsExact && initialExposure.blockContainsPosition,
@@ -23569,7 +24055,7 @@ async function prepareExactCodePreviewLine(
   );
   await waitForExactCodePreviewAnimationFrames(target.scroller);
   const refreshedIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-  assertExactCodePreviewIdentity(refreshedIdentity, target.code);
+  assertExactCodePreviewIdentity(refreshedIdentity, target.codeReceipt);
 
   const rawLine = await target.preview.evaluateHandle(
     (element, options) => {
@@ -23585,64 +24071,73 @@ async function prepareExactCodePreviewLine(
   const line = rawLine.asElement() as ExactCodePreviewHandle | null;
   if (!line) {
     await rawLine.dispose();
-    assert.fail(`The exact Code Preview did not render a line containing ${JSON.stringify(expectedText)}.`);
+    assert.fail(`The exact Code Preview did not render a line containing text ${expectedTextReceipt}.`);
   }
   return line;
 }
 
 async function measureExactCodePreviewExposure(
   target: ExactCodePreviewTarget,
-  line: ExactCodePreviewHandle
+  line: ExactCodePreviewHandle,
+  expectedText: string
 ): Promise<ExactCodePreviewExposure> {
-  return line.evaluate((element, exactScroller) => {
-    type Rectangle = { left: number; top: number; width: number; height: number };
-    type LineElement = {
-      readonly isConnected: boolean;
-      readonly ownerDocument: {
-        readonly defaultView: null | { readonly innerWidth: number; readonly innerHeight: number };
+  const raw = await line.evaluate(
+    (element, options) => {
+      type Rectangle = { left: number; top: number; width: number; height: number };
+      type LineElement = {
+        readonly isConnected: boolean;
+        readonly ownerDocument: {
+          readonly defaultView: null | { readonly innerWidth: number; readonly innerHeight: number };
+        };
+        readonly innerText?: string;
+        readonly textContent: string | null;
+        getBoundingClientRect(): Rectangle;
       };
-      readonly innerText?: string;
-      readonly textContent: string | null;
-      getBoundingClientRect(): Rectangle;
-    };
-    type ScrollerElement = {
-      readonly ownerDocument: unknown;
-      readonly scrollTop: number;
-      readonly scrollHeight: number;
-      readonly clientHeight: number;
-      contains(candidate: unknown): boolean;
-      getBoundingClientRect(): Rectangle;
-    };
-    const lineElement = element as unknown as LineElement;
-    const scrollerElement = exactScroller as unknown as ScrollerElement;
-    const lineBounds = lineElement.getBoundingClientRect();
-    const scrollerBounds = scrollerElement.getBoundingClientRect();
-    const rendererWindow = lineElement.ownerDocument.defaultView;
-    return {
-      lineBounds: {
-        left: lineBounds.left,
-        top: lineBounds.top,
-        width: lineBounds.width,
-        height: lineBounds.height
-      },
-      lineConnected: lineElement.isConnected,
-      lineText: lineElement.innerText ?? lineElement.textContent ?? "",
-      sameDocument: lineElement.ownerDocument === scrollerElement.ownerDocument,
-      scrollerBounds: {
-        left: scrollerBounds.left,
-        top: scrollerBounds.top,
-        width: scrollerBounds.width,
-        height: scrollerBounds.height
-      },
-      scrollerContainsLine: scrollerElement.contains(lineElement),
-      scrollTop: scrollerElement.scrollTop,
-      scrollHeight: scrollerElement.scrollHeight,
-      clientHeight: scrollerElement.clientHeight,
-      rendererViewport: rendererWindow
-        ? { width: rendererWindow.innerWidth, height: rendererWindow.innerHeight }
-        : undefined
-    };
-  }, target.scroller);
+      type ScrollerElement = {
+        readonly ownerDocument: unknown;
+        readonly scrollTop: number;
+        readonly scrollHeight: number;
+        readonly clientHeight: number;
+        contains(candidate: unknown): boolean;
+        getBoundingClientRect(): Rectangle;
+      };
+      const lineElement = element as unknown as LineElement;
+      const scrollerElement = options.exactScroller as unknown as ScrollerElement;
+      const lineBounds = lineElement.getBoundingClientRect();
+      const scrollerBounds = scrollerElement.getBoundingClientRect();
+      const rendererWindow = lineElement.ownerDocument.defaultView;
+      return {
+        lineBounds: {
+          left: lineBounds.left,
+          top: lineBounds.top,
+          width: lineBounds.width,
+          height: lineBounds.height
+        },
+        lineConnected: lineElement.isConnected,
+        lineText: lineElement.innerText ?? lineElement.textContent ?? "",
+        lineContainsExpectedText: (lineElement.innerText ?? lineElement.textContent ?? "").includes(
+          options.expectedText
+        ),
+        sameDocument: lineElement.ownerDocument === scrollerElement.ownerDocument,
+        scrollerBounds: {
+          left: scrollerBounds.left,
+          top: scrollerBounds.top,
+          width: scrollerBounds.width,
+          height: scrollerBounds.height
+        },
+        scrollerContainsLine: scrollerElement.contains(lineElement),
+        scrollTop: scrollerElement.scrollTop,
+        scrollHeight: scrollerElement.scrollHeight,
+        clientHeight: scrollerElement.clientHeight,
+        rendererViewport: rendererWindow
+          ? { width: rendererWindow.innerWidth, height: rendererWindow.innerHeight }
+          : undefined
+      };
+    },
+    { exactScroller: target.scroller, expectedText }
+  );
+  const { lineText, ...exposure } = raw;
+  return { ...exposure, lineTextReceipt: codePreviewDocumentReceipt(lineText) };
 }
 
 async function settleExactCodePreviewLine(
@@ -23660,8 +24155,8 @@ async function settleExactCodePreviewLine(
   try {
     for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
       const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-      assertExactCodePreviewIdentity(identity, target.code);
-      const exposure = await measureExactCodePreviewExposure(target, line);
+      assertExactCodePreviewIdentity(identity, target.codeReceipt);
+      const exposure = await measureExactCodePreviewExposure(target, line, expectedText);
       lastExposure = { attempt, ...exposure };
       assert.equal(
         exposure.lineConnected && exposure.sameDocument && exposure.scrollerContainsLine,
@@ -23669,8 +24164,8 @@ async function settleExactCodePreviewLine(
         `The generated-code line must remain an exact descendant of its scroller: ${JSON.stringify(lastExposure)}.`
       );
       assert.ok(
-        exposure.lineText.includes(expectedText),
-        `The generated-code line must retain ${JSON.stringify(expectedText)}: ${JSON.stringify(lastExposure)}.`
+        exposure.lineContainsExpectedText,
+        `The generated-code line must retain text ${codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(expectedText))}: ${JSON.stringify(lastExposure)}.`
       );
       let plan: ReturnType<typeof computeCodePreviewScrollPlan>;
       try {
@@ -23735,81 +24230,85 @@ async function revealCodePreviewOperationLine(
   operationText: string,
   resultText: string
 ): Promise<void> {
-  const target = await exactCodePreviewTarget(codePreview);
-  let operationLine: ExactCodePreviewHandle | undefined;
-  let resultLine: ExactCodePreviewHandle | undefined;
-  let failure: Readonly<{ error: unknown }> | undefined;
-  try {
-    resultLine = await settleExactCodePreviewLine(target, resultText, "last");
-    operationLine = await prepareExactCodePreviewLine(target, operationText, "last");
-    await waitForExactCodePreviewAnimationFrames(target.scroller);
-    const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-    assertExactCodePreviewIdentity(identity, target.code);
-    const [operationExposure, resultExposure] = await Promise.all([
-      measureExactCodePreviewExposure(target, operationLine),
-      measureExactCodePreviewExposure(target, resultLine)
-    ]);
-    for (const [subject, text, exposure] of [
-      ["operation", operationText, operationExposure],
-      ["result", resultText, resultExposure]
-    ] as const) {
-      const actual = JSON.stringify(exposure);
-      assert.equal(
-        exposure.lineConnected && exposure.sameDocument && exposure.scrollerContainsLine,
-        true,
-        `The generated-code ${subject} line must remain in the exact scroller: ${actual}.`
-      );
-      assert.ok(
-        exposure.lineText.includes(text),
-        `The generated-code ${subject} line must retain ${JSON.stringify(text)}: ${actual}.`
-      );
-      const plan = computeCodePreviewScrollPlan({
-        lineBounds: exposure.lineBounds,
-        scrollerBounds: exposure.scrollerBounds,
-        scrollTop: exposure.scrollTop,
-        scrollHeight: exposure.scrollHeight,
-        clientHeight: exposure.clientHeight,
-        rendererViewport: exposure.rendererViewport,
-        tolerance: 1
-      });
-      assert.equal(
-        plan.currentFullyVisible,
-        true,
-        `The generated-code ${subject} line must be fully visible in the exact Code Preview scroller: ${actual}.`
+  const initial = await exactCodePreviewTarget(codePreview);
+  await runExactCodePreviewGenerations(initial, "Revealing the generated-code operation", async (target) => {
+    let operationLine: ExactCodePreviewHandle | undefined;
+    let resultLine: ExactCodePreviewHandle | undefined;
+    let failure: Readonly<{ error: unknown }> | undefined;
+    try {
+      resultLine = await settleExactCodePreviewLine(target, resultText, "last");
+      operationLine = await prepareExactCodePreviewLine(target, operationText, "last");
+      await waitForExactCodePreviewAnimationFrames(target.scroller);
+      const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+      assertExactCodePreviewIdentity(identity, target.codeReceipt);
+      const [operationExposure, resultExposure] = await Promise.all([
+        measureExactCodePreviewExposure(target, operationLine, operationText),
+        measureExactCodePreviewExposure(target, resultLine, resultText)
+      ]);
+      for (const [subject, text, exposure] of [
+        ["operation", operationText, operationExposure],
+        ["result", resultText, resultExposure]
+      ] as const) {
+        const actual = JSON.stringify(exposure);
+        assert.equal(
+          exposure.lineConnected && exposure.sameDocument && exposure.scrollerContainsLine,
+          true,
+          `The generated-code ${subject} line must remain in the exact scroller: ${actual}.`
+        );
+        assert.ok(
+          exposure.lineContainsExpectedText,
+          `The generated-code ${subject} line must retain text ${codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(text))}: ${actual}.`
+        );
+        const plan = computeCodePreviewScrollPlan({
+          lineBounds: exposure.lineBounds,
+          scrollerBounds: exposure.scrollerBounds,
+          scrollTop: exposure.scrollTop,
+          scrollHeight: exposure.scrollHeight,
+          clientHeight: exposure.clientHeight,
+          rendererViewport: exposure.rendererViewport,
+          tolerance: 1
+        });
+        assert.equal(
+          plan.currentFullyVisible,
+          true,
+          `The generated-code ${subject} line must be fully visible in the exact Code Preview scroller: ${actual}.`
+        );
+      }
+    } catch (error) {
+      failure = { error };
+      throw error;
+    } finally {
+      await releaseExactCodePreviewHandlesAfterFailure(
+        [operationLine, resultLine],
+        failure,
+        "Revealing the generated-code operation and releasing its line handles both failed."
       );
     }
-  } catch (error) {
-    failure = { error };
-    throw error;
-  } finally {
-    await releaseExactCodePreviewHandlesAfterFailure(
-      [operationLine, resultLine, target.preview, target.scroller],
-      failure,
-      "Revealing the generated-code operation and releasing its exact handles both failed."
-    );
-  }
+  });
 }
 
 async function revealCodePreviewText(
   codePreview: Locator | ExactCodePreviewTarget,
   expectedText: string
 ): Promise<string> {
-  const target = await exactCodePreviewTarget(codePreview);
-  let line: ExactCodePreviewHandle | undefined;
-  let failure: Readonly<{ error: unknown }> | undefined;
-  try {
-    line = await settleExactCodePreviewLine(target, expectedText, "first");
-    return target.code;
-  } catch (error) {
-    failure = { error };
-    throw error;
-  } finally {
-    await releaseExactCodePreviewHandlesAfterFailure(
-      [line, target.preview, target.scroller],
-      failure,
-      "Revealing generated-code text and releasing its exact handles both failed."
-    );
-  }
+  const initial = await exactCodePreviewTarget(codePreview);
+  return runExactCodePreviewGenerations(initial, "Revealing generated-code text", async (target) => {
+    let line: ExactCodePreviewHandle | undefined;
+    let failure: Readonly<{ error: unknown }> | undefined;
+    try {
+      line = await settleExactCodePreviewLine(target, expectedText, "first");
+      return target.code;
+    } catch (error) {
+      failure = { error };
+      throw error;
+    } finally {
+      await releaseExactCodePreviewHandlesAfterFailure(
+        [line],
+        failure,
+        "Revealing generated-code text and releasing its line handle both failed."
+      );
+    }
+  });
 }
 
 async function exactCodePreviewTarget(codePreview: Locator | ExactCodePreviewTarget): Promise<ExactCodePreviewTarget> {
@@ -23855,53 +24354,68 @@ async function ensureCodePreviewHeight(
     Number.isFinite(minimumHeight) && minimumHeight >= 120,
     "The generated-code preview minimum height must be a useful finite CSS-pixel value."
   );
-  const target = await pinExactCodePreview(codePreview);
-  let transferred = false;
+  const expectedCode = await codePreview.evaluate((element) => {
+    const content = element as unknown as { cmTile?: { view?: { state: { doc: { toString(): string } } } } };
+    return content.cmTile?.view?.state.doc.toString();
+  });
+  assert.ok(
+    typeof expectedCode === "string",
+    "The generated-code preview must expose its complete document before sizing."
+  );
+  const expectedCodeReceipt = codePreviewDocumentReceipt(expectedCode);
+  const label = await codePreview.getAttribute("aria-label");
+  assert.ok(
+    label === "Editable generated R code preview" || label === "Editable generated Python code preview",
+    "The generated-code preview must retain one exact supported language label before sizing."
+  );
+  const language = label === "Editable generated R code preview" ? "R" : "Python";
   let lastIdentity: ExactCodePreviewIdentity | undefined;
-  let failure: Readonly<{ error: unknown }> | undefined;
-  try {
-    const commands = new Set(await vscode.commands.getCommands(true));
-    assert.ok(
-      commands.has("openWrangler.codePreview.focus") &&
-        commands.has("workbench.action.focusPanel") &&
-        commands.has("workbench.action.increaseViewSize"),
-      "The workbench must expose its exact Code Preview focus and resize commands."
-    );
-    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-    lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-    assertExactCodePreviewIdentity(lastIdentity, target.code);
+  const commands = new Set(await vscode.commands.getCommands(true));
+  assert.ok(
+    commands.has("openWrangler.codePreview.focus") &&
+      commands.has("workbench.action.focusPanel") &&
+      commands.has("workbench.action.increaseViewSize"),
+    "The workbench must expose its exact Code Preview focus and resize commands."
+  );
+  const maximumResizeAttempts = 24;
+  const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+  for (let attempt = 0; attempt <= maximumResizeAttempts; attempt += 1) {
+    // Workbench focus/resize commands may replace the iframe generation. No
+    // exact DOM handle survives either boundary: focus the panel first, focus
+    // Code Preview last, then acquire the current generation from live frames.
     await vscode.commands.executeCommand("workbench.action.focusPanel");
-    lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-    assertExactCodePreviewIdentity(lastIdentity, target.code);
-    const maximumResizeAttempts = 24;
-    for (let attempt = 0; attempt <= maximumResizeAttempts; attempt += 1) {
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    const target = await acquireCurrentExactCodePreviewGeneration(workbench, language, expectedCodeReceipt, deadline);
+    let transferred = false;
+    let failure: Readonly<{ error: unknown }> | undefined;
+    try {
       await waitForExactCodePreviewAnimationFrames(target.scroller);
       lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-      assertExactCodePreviewIdentity(lastIdentity, target.code);
+      assertExactCodePreviewIdentity(lastIdentity, target.codeReceipt);
       const usableHeight = exactCodePreviewUsableScrollerHeight(lastIdentity, 1);
       if (usableHeight >= minimumHeight) {
         transferred = true;
         return target;
       }
-      if (attempt === maximumResizeAttempts) break;
-      await vscode.commands.executeCommand("workbench.action.increaseViewSize");
-      await workbench.waitForTimeout(100);
+    } catch (error) {
+      failure = { error };
+      throw error;
+    } finally {
+      if (!transferred) {
+        await releaseExactCodePreviewHandlesAfterFailure(
+          [target.preview, target.scroller],
+          failure,
+          "Sizing the exact Code Preview and releasing its current generation both failed."
+        );
+      }
     }
-    throw new Error(
-      `The exact Code Preview scroller must be at least ${minimumHeight} CSS pixels high within its renderer viewport: ${JSON.stringify(lastIdentity)}.`
-    );
-  } catch (error) {
-    failure = { error };
-    throw error;
-  } finally {
-    if (!transferred) {
-      await releaseExactCodePreviewHandlesAfterFailure(
-        [target.preview, target.scroller],
-        failure,
-        "Sizing the exact Code Preview and releasing its handles both failed."
-      );
-    }
+    if (attempt === maximumResizeAttempts || Date.now() >= deadline) break;
+    await vscode.commands.executeCommand("workbench.action.increaseViewSize");
+    await workbench.waitForTimeout(100);
   }
+  throw new Error(
+    `The exact Code Preview scroller must be at least ${minimumHeight} CSS pixels high within its renderer viewport: ${JSON.stringify(lastIdentity)}.`
+  );
 }
 
 async function closeVisibleWorkbenchPart(

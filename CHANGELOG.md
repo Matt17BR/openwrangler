@@ -8,11 +8,25 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Native R candidate acceptance now runs One-hot encode and Multi-label binarize in a separately verified focused
-  VS Code/Cursor invocation. The ordinary comprehensive notebook phase keeps the remaining catalog within its
-  unchanged 300-second hard and 180-second inactivity deadlines, and neither phase retries. Ordinary, categorical,
-  active-terminal, and literate failures retain distinct immediate diagnostic uploads before one final local-R
-  failure fan-in, so an earlier editor failure cannot suppress the later local journeys.
+- Preview release run #72 published nothing after the ordinary local-R phase reached its 300-second hard deadline at
+  numeric Round, Cursor lost the bounded Multi-label Undo acceptance wait, and macOS failed the Drop Columns Code Preview
+  generation/diagnostic bound. The follow-up candidate gate now runs fresh exact-candidate/profile core,
+  `value-operations`, `categorical-operations`, `interactive-terminal`, and `literate-documents` invocations in that
+  order. Each owns a distinct immediate sealed failure upload before one exact five-way raw-outcome fan-in; the manual
+  Released Jupyter gate uses the corresponding four-way sequence without the literate phase. All phases retain their
+  300-second hard and 180-second inactivity deadlines and are never retried.
+- Native R local acceptance now gives three editing profiles disjoint targeted-operation ownership. Every local
+  invocation still reaches an exact complete 26-capability assertion. Core's targeted slice owns the five row
+  operations plus structural, type, Formula, Text Length, and Group and aggregate; the focused value slice owns
+  exactly Find and replace, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase,
+  Strip text, and Split text; the focused categorical slice owns exactly One-hot encode and Multi-label binarize. All
+  three invocations also retain the shared representative Rename, native-frame, and kernel-restart/reopen scaffold,
+  with comprehensive core expanding that lifecycle coverage. The remote R journey continues to exercise `lowerText`
+  (Lowercase).
+- Cursor's categorical Undo check now uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation
+  completion bound, with no post-dispatch retry. Drop Columns Code Preview acceptance reacquires only a provably replaced
+  renderer generation, reads one exact bounded code receipt, scrolls only the exact CodeMirror scroller, and requires
+  two stable same-generation visibility measurements with bounded diagnostics.
 - Open Wrangler now recovers a visible editor whose renderer disappears after **Change Import Options** even when
   Cursor reports the final host message as delivered. The confirmed session is replayed into a fresh renderer without
   reopening the source or repeating the import transaction.

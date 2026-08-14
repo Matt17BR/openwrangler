@@ -177,6 +177,40 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_values"
+      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "categorical-operations";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_values"
+      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_values"
+      ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "1";
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      steps.splice(
+        steps.findIndex((step) => step.id === "canonical_r_values"),
+        1
+      );
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      steps.splice(
+        steps.findIndex((step) => step.id === "packaged_editor_r_values"),
+        0,
+        { run: "echo interposed" }
+      );
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.id === "packaged_editor_r_values").run =
+        "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_categorical.outputs.candidate_path }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
         (step) => step.id === "packaged_editor_r_categorical"
       ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
     },
@@ -290,6 +324,14 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
     },
     (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload value R-Jupyter failure diagnostics").with.name =
+        "${{ inputs.channel }}-release-r-jupyter-value-${{ runner.os }}-${{ github.run_attempt }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload value R-Jupyter failure diagnostics").with.path =
+        "${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}";
+    },
+    (workflow) => {
       workflow.jobs.jupyter.steps.find(
         (step) => step.name === "Upload categorical R-Jupyter failure diagnostics"
       ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
@@ -341,7 +383,19 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
-        "${{ steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure' }}";
+        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
+        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure' || steps.packaged_editor_r_remote.outcome == 'failure') }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
+        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
+        "${{ steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure' }}";
     },
     (workflow) => {
       const steps = workflow.jobs.jupyter.steps;
@@ -354,6 +408,20 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
         0,
         failure
       );
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_values");
+      const focused = steps.splice(focusedStart, 3);
+      const categoricalStart = steps.findIndex((step) => step.id === "canonical_r_categorical");
+      steps.splice(categoricalStart + 3, 0, ...focused);
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_values");
+      const focused = steps.slice(focusedStart, focusedStart + 3).map((step) => structuredClone(step));
+      const categoricalStart = steps.findIndex((step) => step.id === "canonical_r_categorical");
+      steps.splice(categoricalStart, 0, ...focused);
     },
     (workflow) => {
       const steps = workflow.jobs.jupyter.steps;
@@ -393,7 +461,7 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
 const syntheticUploadAction = "actions/upload-artifact@frozen";
 
 function syntheticDeferredWorkflow() {
-  const runnerIds = ["ordinary", "categorical", "interactive"];
+  const runnerIds = ["ordinary", "values", "categorical", "interactive", "literate"];
   const steps = runnerIds.flatMap((runnerId) => [
     { id: runnerId, "continue-on-error": true, run: `run ${runnerId}` },
     {
@@ -415,31 +483,45 @@ test("deferred diagnostic fan-in rejects every incomplete or ambiguous aggregate
   const cases = [
     ["missing", (steps) => steps.pop()],
     [
-      "duplicate clauses",
+      "missing member",
       (steps) => {
         steps.at(-1).if =
-          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.categorical.outcome == 'failure') }}";
+          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure') }}";
       }
     ],
     [
-      "reordered clauses",
+      "extra member",
       (steps) => {
         steps.at(-1).if =
-          "${{ always() && (steps.categorical.outcome == 'failure' || steps.ordinary.outcome == 'failure' || steps.interactive.outcome == 'failure') }}";
+          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.outcome == 'failure' || steps.remote.outcome == 'failure') }}";
       }
     ],
     [
-      "malformed clause",
+      "duplicate member",
       (steps) => {
         steps.at(-1).if =
-          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.categorical.result == 'failure' || steps.interactive.outcome == 'failure') }}";
+          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.literate.outcome == 'failure') }}";
+      }
+    ],
+    [
+      "reordered members",
+      (steps) => {
+        steps.at(-1).if =
+          "${{ always() && (steps.values.outcome == 'failure' || steps.ordinary.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.outcome == 'failure') }}";
+      }
+    ],
+    [
+      "malformed member",
+      (steps) => {
+        steps.at(-1).if =
+          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.result == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.outcome == 'failure') }}";
       }
     ],
     [
       "extra malformed aggregate",
       (steps) => {
         steps.push({
-          if: "${{ always() && (steps.ordinary.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.result == 'failure') }}",
+          if: "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.result == 'failure') }}",
           run: "exit 1"
         });
       }
@@ -474,6 +556,32 @@ test("deferred diagnostic fan-in rejects every incomplete or ambiguous aggregate
       `${label} must fail closed`
     );
   }
+});
+
+test("candidate local R diagnostics continue through all five ordered runner triples", () => {
+  const workflow = parseYaml(source);
+  const steps = workflow.jobs.jupyter.steps;
+  const triples = [
+    ["packaged_editor_r", "Upload local R-Jupyter failure diagnostics"],
+    ["packaged_editor_r_values", "Upload value R-Jupyter failure diagnostics"],
+    ["packaged_editor_r_categorical", "Upload categorical R-Jupyter failure diagnostics"],
+    ["packaged_editor_r_interactive", "Upload active R terminal failure diagnostics"],
+    ["packaged_editor_r_literate", "Upload R Markdown and Quarto failure diagnostics"]
+  ];
+  let previousUploadIndex = -1;
+  for (const [runnerId, uploadName] of triples) {
+    const runnerIndex = steps.findIndex((step) => step.id === runnerId);
+    const uploadIndex = steps.findIndex((step) => step.name === uploadName);
+    assert.ok(runnerIndex > previousUploadIndex, `${runnerId} must run after the preceding diagnostic upload.`);
+    assert.equal(steps[runnerIndex]?.["continue-on-error"], true);
+    assert.equal(uploadIndex, runnerIndex + 1);
+    assert.match(steps[uploadIndex]?.if ?? "", /^\$\{\{ always\(\)/u);
+    previousUploadIndex = uploadIndex;
+  }
+  assert.equal(
+    steps.findIndex((step) => step.name === "Fail after local R acceptance diagnostics"),
+    previousUploadIndex + 1
+  );
 });
 
 test("legacy fixed-directory diagnostics remain valid with an immediate failure step", () => {

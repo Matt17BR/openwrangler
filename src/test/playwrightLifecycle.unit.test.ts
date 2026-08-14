@@ -5,6 +5,10 @@ import {
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   activateWithOnePreDispatchReacquisition,
+  assertCodePreviewDocumentChecks,
+  type CategoricalUndoAcceptanceSnapshot,
+  codePreviewDocumentReceipt,
+  codePreviewReceiptDiagnostic,
   computeCodePreviewScrollPlan,
   diagnoseThenReacquireAcceptanceAction,
   IndeterminateAcceptanceActionError,
@@ -17,6 +21,8 @@ import {
   probeAcceptanceBeforeDeadline,
   pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
+  runFailClosedCategoricalUndo,
+  runReplaceableCodePreviewGeneration,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
 
@@ -41,6 +47,33 @@ function page(mainFrame: FakeFrame, closed = false): FakePage {
 }
 
 const connectedBrowser = { isConnected: () => true };
+
+const categoricalUndoSnapshot = (
+  overrides: Partial<CategoricalUndoAcceptanceSnapshot> = {}
+): CategoricalUndoAcceptanceSnapshot => {
+  const revision = overrides.revision ?? 41;
+  return {
+    sessionId: "session-r",
+    revision,
+    panelReceipt: {
+      syncId: `sync-r-${revision}`,
+      sessionId: "session-r",
+      revision,
+      layoutTransitionPending: false
+    },
+    scheduler: {
+      sessionId: "session-r",
+      quiescent: true,
+      activeForegroundOperation: false,
+      activeBackgroundOperation: false,
+      interactiveQueueLength: 0,
+      backgroundQueueLength: 0,
+      terminalOperation: false
+    },
+    restored: false,
+    ...overrides
+  };
+};
 
 const codePreviewGeometry = (
   overrides: Partial<Parameters<typeof computeCodePreviewScrollPlan>[0]> = {}
@@ -83,8 +116,14 @@ function exactAcceptanceTarget(
     readonly disconnected?: boolean;
     readonly disabled?: boolean;
     readonly ariaDisabled?: boolean;
+    readonly geometry?: boolean;
+    readonly readinessReceiptOverride?: unknown;
+    readonly readinessSequence?: readonly (
+      "aria-disabled" | "covered" | "disabled" | "disconnected" | "geometry" | "ready"
+    )[];
     readonly trusted?: boolean;
     readonly clickError?: Error;
+    readonly evaluationError?: Readonly<{ readonly call: number; readonly error: Error }>;
     readonly scrollError?: Error;
     readonly stalledScroll?: boolean;
     readonly stalledEvaluation?: 1 | 2;
@@ -92,20 +131,43 @@ function exactAcceptanceTarget(
 ) {
   let listener: ((event: { readonly isTrusted: boolean }) => void) | undefined;
   let evaluateCalls = 0;
+  let readinessChecks = 0;
+  const initialReadiness = options.disconnected
+    ? "disconnected"
+    : options.disabled
+      ? "disabled"
+      : options.ariaDisabled
+        ? "aria-disabled"
+        : options.geometry
+          ? "geometry"
+          : options.covered
+            ? "covered"
+            : "ready";
+  const readinessSequence = options.readinessSequence ?? [initialReadiness];
+  let currentReadiness = readinessSequence[0] ?? "ready";
   const occluder = {} as FakeExactAcceptanceElement;
   const element: FakeExactAcceptanceElement = {
-    isConnected: !(options.disconnected ?? false),
-    disabled: options.disabled ?? false,
+    get isConnected() {
+      return currentReadiness !== "disconnected";
+    },
+    get disabled() {
+      return currentReadiness === "disabled";
+    },
     ownerDocument: {
-      elementFromPoint: () => (options.covered ? occluder : element)
+      elementFromPoint: () => (currentReadiness === "covered" ? occluder : element)
     },
     dataset: {},
     addEventListener: (_type, nextListener) => {
       listener = nextListener;
     },
     contains: () => false,
-    getAttribute: (name) => (name === "aria-disabled" && options.ariaDisabled ? "true" : null),
-    getBoundingClientRect: () => ({ left: 10, top: 20, width: 80, height: 30 })
+    getAttribute: (name) => (name === "aria-disabled" && currentReadiness === "aria-disabled" ? "true" : null),
+    getBoundingClientRect: () => ({
+      left: 10,
+      top: 20,
+      width: currentReadiness === "geometry" ? 0 : 80,
+      height: 30
+    })
   };
   const target = {
     scrollIntoViewIfNeeded: vi.fn(async (_scrollOptions: { readonly timeout: number }) => {
@@ -119,13 +181,143 @@ function exactAcceptanceTarget(
     async evaluate<Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>): Promise<Result> {
       evaluateCalls += 1;
       if (evaluateCalls === options.stalledEvaluation) return new Promise<Result>(() => undefined);
+      if (evaluateCalls === options.evaluationError?.call) throw options.evaluationError.error;
+      if (evaluateCalls === 1 && "readinessReceiptOverride" in options) {
+        return options.readinessReceiptOverride as Result;
+      }
+      if (element.dataset.openWranglerAcceptanceActivation === undefined) {
+        currentReadiness = readinessSequence[Math.min(readinessChecks, readinessSequence.length - 1)] ?? "ready";
+        readinessChecks += 1;
+      }
       return pageFunction(element);
     }
   };
-  return { element, evaluateCalls: () => evaluateCalls, target };
+  return { element, evaluateCalls: () => evaluateCalls, readinessChecks: () => readinessChecks, target };
 }
 
 describe("extension-host Playwright lifecycle", () => {
+  it("reduces a multi-megabyte Code Preview document to a bounded non-leaking receipt", () => {
+    const sentinel = "DO-NOT-LEAK-CODE-PREVIEW-SENTINEL";
+    const code = `${sentinel}\n${"x".repeat(2 * 1024 * 1024)}`;
+    const diagnostic = codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(code));
+    expect(Buffer.byteLength(diagnostic, "utf8")).toBeLessThan(16 * 1024);
+    expect(diagnostic).not.toContain(sentinel);
+    expect(JSON.parse(diagnostic)).toEqual({
+      utf8Length: Buffer.byteLength(code, "utf8"),
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+  });
+
+  it("fails a multi-megabyte Code Preview document check with only a bounded receipt", () => {
+    const sentinel = "DO-NOT-LEAK-CODE-PREVIEW-ASSERTION-SENTINEL";
+    const code = `${sentinel}\n${"x".repeat(2 * 1024 * 1024)}`;
+    const receipt = codePreviewDocumentReceipt(code);
+    let failure: Error | undefined;
+    try {
+      assertCodePreviewDocumentChecks(code, [{ stage: "released-r:drop:source-boundary", passed: false }]);
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      failure = error as Error;
+    }
+    expect(failure).toBeDefined();
+    if (!failure) throw new Error("The bounded Code Preview assertion must fail closed.");
+    const exactMessage = `Code Preview document assertion failed: ${JSON.stringify({
+      stage: "released-r:drop:source-boundary",
+      ...receipt
+    })}.`;
+    expect(failure.message === exactMessage).toBe(true);
+    expect(failure.cause === undefined).toBe(true);
+    const propertyNames = Object.getOwnPropertyNames(failure).sort();
+    expect(propertyNames).toEqual(["message", "stack"]);
+    const propertyDiagnostics = propertyNames.map((propertyName) => {
+      const value = String((failure as unknown as Record<string, unknown>)[propertyName]);
+      return {
+        propertyName,
+        utf8Length: Buffer.byteLength(value, "utf8"),
+        containsSentinel: value.includes(sentinel),
+        containsFullSource: value.includes(code)
+      };
+    });
+    expect(propertyDiagnostics.every((property) => property.utf8Length < 16 * 1024)).toBe(true);
+    expect(propertyDiagnostics.every((property) => !property.containsSentinel && !property.containsFullSource)).toBe(
+      true
+    );
+    const completeDiagnostic = [failure.name, failure.message, failure.stack, String(failure.cause)].join("\n");
+    expect(Buffer.byteLength(completeDiagnostic, "utf8")).toBeLessThan(16 * 1024);
+    expect(completeDiagnostic.includes(sentinel)).toBe(false);
+    expect(completeDiagnostic.includes(code)).toBe(false);
+  });
+
+  it("restarts stable Code Preview sampling only after a proven retired generation", async () => {
+    const generations = [{ id: 1 }, { id: 2 }];
+    const samples: number[] = [];
+    const disposed: number[] = [];
+    const result = await runReplaceableCodePreviewGeneration({
+      initial: generations[0]!,
+      operate: vi.fn(async (generation, generationNumber) => {
+        samples.push(generation.id);
+        if (generation.id === 1) throw new Error("detached generation");
+        samples.push(generation.id);
+        return { generationNumber, stableSamples: 2 };
+      }),
+      proveRetired: vi.fn(async (generation) => generation.id === 1),
+      acquireReplacement: vi.fn(async () => generations[1]!),
+      dispose: vi.fn(async (generation) => {
+        disposed.push(generation.id);
+      }),
+      maximumGenerations: 3,
+      timeoutMs: 1_000,
+      description: "the generated-code line"
+    });
+    expect(result).toEqual({ generationNumber: 2, stableSamples: 2 });
+    expect(samples).toEqual([1, 2, 2]);
+    expect(disposed).toEqual([1, 2]);
+  });
+
+  it.each(["live geometry failure", "code receipt mismatch"])(
+    "never reacquires a Code Preview generation for %s",
+    async (message) => {
+      const failure = new Error(message);
+      const acquireReplacement = vi.fn();
+      await expect(
+        runReplaceableCodePreviewGeneration({
+          initial: { id: 1 },
+          operate: vi.fn(async () => {
+            throw failure;
+          }),
+          proveRetired: vi.fn(async () => false),
+          acquireReplacement,
+          dispose: vi.fn(async () => undefined),
+          maximumGenerations: 3,
+          timeoutMs: 1_000,
+          description: "the generated-code line"
+        })
+      ).rejects.toBe(failure);
+      expect(acquireReplacement).not.toHaveBeenCalled();
+    }
+  );
+
+  it("retains both a Code Preview failure and exact-generation cleanup fault", async () => {
+    const failure = new Error("live Code Preview failure");
+    const cleanup = new Error("handle cleanup failed");
+    await expect(
+      runReplaceableCodePreviewGeneration({
+        initial: { id: 1 },
+        operate: vi.fn(async () => {
+          throw failure;
+        }),
+        proveRetired: vi.fn(async () => false),
+        acquireReplacement: vi.fn(),
+        dispose: vi.fn(async () => {
+          throw cleanup;
+        }),
+        maximumGenerations: 2,
+        timeoutMs: 1_000,
+        description: "the generated-code line"
+      })
+    ).rejects.toMatchObject({ errors: [failure, cleanup] });
+  });
+
   it.each([
     ["top", { lineBounds: { left: 120, top: 80, width: 280, height: 20 } }, 140],
     ["bottom", { lineBounds: { left: 120, top: 190, width: 280, height: 20 } }, 250]
@@ -463,6 +655,165 @@ describe("extension-host Playwright lifecycle", () => {
     expect(activate).toHaveBeenCalledOnce();
   });
 
+  it("receipts categorical Undo through background-to-interactive-queue-to-commit", async () => {
+    let state = categoricalUndoSnapshot();
+    let now = 0;
+    const checkpoints: string[] = [];
+    const action = { id: "undo" };
+    const activate = vi.fn(async () => {
+      state = categoricalUndoSnapshot({
+        scheduler: {
+          ...state.scheduler!,
+          quiescent: false,
+          activeBackgroundOperation: true,
+          interactiveQueueLength: 1
+        }
+      });
+    });
+    const wait = vi.fn(async (durationMs: number) => {
+      now += durationMs;
+      state = categoricalUndoSnapshot({ revision: 42, restored: true });
+    });
+
+    await runFailClosedCategoricalUndo({
+      sessionId: "session-r",
+      appliedRevision: 41,
+      snapshot: () => state,
+      acquire: vi.fn(async () => action),
+      activate,
+      dispose: vi.fn(async () => undefined),
+      checkpoint: (stage) => checkpoints.push(stage),
+      readyTimeoutMs: 100,
+      dispatchTimeoutMs: 100,
+      confirmationTimeoutMs: 100,
+      intervalMs: 10,
+      now: () => now,
+      wait,
+      description: "the categorical Undo"
+    });
+
+    expect(activate).toHaveBeenCalledOnce();
+    expect(checkpoints).toEqual(["undo-ready", "undo-dispatched", "undo-confirmed"]);
+  });
+
+  it("accepts a revision-first categorical Undo dispatch receipt", async () => {
+    let state = categoricalUndoSnapshot();
+    const checkpoints: string[] = [];
+    await runFailClosedCategoricalUndo({
+      sessionId: "session-r",
+      appliedRevision: 41,
+      snapshot: () => state,
+      acquire: vi.fn(async () => ({ id: "undo" })),
+      activate: vi.fn(async () => {
+        state = categoricalUndoSnapshot({ revision: 42, restored: true });
+      }),
+      dispose: vi.fn(async () => undefined),
+      checkpoint: (stage) => checkpoints.push(stage),
+      readyTimeoutMs: 100,
+      dispatchTimeoutMs: 100,
+      confirmationTimeoutMs: 100,
+      description: "the categorical Undo"
+    });
+    expect(checkpoints).toEqual(["undo-ready", "undo-dispatched", "undo-confirmed"]);
+  });
+
+  it("allows one safe categorical Undo reacquisition before the click boundary", async () => {
+    let state = categoricalUndoSnapshot();
+    const first = { id: "retired" };
+    const second = { id: "current" };
+    const acquire = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const activate = vi.fn(async (action: { id: string }) => {
+      if (action === first) {
+        throw new AcceptanceActionNotDispatchedError("the retired Undo", new Error("disconnected"));
+      }
+      state = categoricalUndoSnapshot({ revision: 42, restored: true });
+    });
+    const dispose = vi.fn(async () => undefined);
+
+    await runFailClosedCategoricalUndo({
+      sessionId: "session-r",
+      appliedRevision: 41,
+      snapshot: () => state,
+      acquire,
+      activate,
+      dispose,
+      checkpoint: vi.fn(),
+      readyTimeoutMs: 100,
+      dispatchTimeoutMs: 100,
+      confirmationTimeoutMs: 100,
+      description: "the categorical Undo"
+    });
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(activate).toHaveBeenCalledTimes(2);
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("never reacquires categorical Undo after its click boundary", async () => {
+    let state = categoricalUndoSnapshot();
+    const clickFailure = new Error("trusted click response was lost");
+    const acquire = vi.fn(async () => ({ id: "undo" }));
+    const activate = vi.fn(async () => {
+      state = categoricalUndoSnapshot({ revision: 42, restored: true });
+      throw clickFailure;
+    });
+
+    await runFailClosedCategoricalUndo({
+      sessionId: "session-r",
+      appliedRevision: 41,
+      snapshot: () => state,
+      acquire,
+      activate,
+      dispose: vi.fn(async () => undefined),
+      checkpoint: vi.fn(),
+      readyTimeoutMs: 100,
+      dispatchTimeoutMs: 100,
+      confirmationTimeoutMs: 100,
+      description: "the categorical Undo"
+    });
+
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(activate).toHaveBeenCalledOnce();
+  });
+
+  it.each(["missing dispatch receipt", "missing confirmation receipt"])(
+    "fails closed on %s after exactly one categorical Undo click",
+    async (failure) => {
+      let state = categoricalUndoSnapshot();
+      let now = 0;
+      const acquire = vi.fn(async () => ({ id: "undo" }));
+      const activate = vi.fn(async () => {
+        if (failure === "missing confirmation receipt") {
+          state = categoricalUndoSnapshot({ revision: 42, restored: false });
+        }
+      });
+      const outcome = runFailClosedCategoricalUndo({
+        sessionId: "session-r",
+        appliedRevision: 41,
+        snapshot: () => state,
+        acquire,
+        activate,
+        dispose: vi.fn(async () => undefined),
+        checkpoint: vi.fn(),
+        readyTimeoutMs: 20,
+        dispatchTimeoutMs: 20,
+        confirmationTimeoutMs: 20,
+        intervalMs: 10,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+        },
+        description: "the categorical Undo"
+      });
+
+      await expect(outcome).rejects.toThrow(
+        failure === "missing dispatch receipt" ? "dispatch receipt" : "confirmation receipt"
+      );
+      expect(acquire).toHaveBeenCalledOnce();
+      expect(activate).toHaveBeenCalledOnce();
+    }
+  );
+
   it("clicks the locator's replacement target exactly once when the prepared DOM node is retired", async () => {
     const originalClick = vi.fn();
     const replacementClick = vi.fn();
@@ -508,21 +859,130 @@ describe("extension-host Playwright lifecycle", () => {
     expect(element.dataset.openWranglerAcceptanceActivation).toBe("seen");
   });
 
-  it.each([
-    ["covered", { covered: true }, "covered"],
-    ["disabled", { disabled: true }, "disabled"],
-    ["aria-disabled", { ariaDisabled: true }, "disabled"]
-  ] as const)("does not click an exact %s element", async (_label, options, reason) => {
-    const { evaluateCalls, target } = exactAcceptanceTarget(options);
+  it("rechecks the overall deadline after the immediate click-boundary callback", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
+      const deadlineStart = Date.now();
+      const { evaluateCalls, target } = exactAcceptanceTarget();
+      const boundary = vi.fn(() => {
+        vi.setSystemTime(deadlineStart + 201);
+      });
 
-    await expect(activateExactAcceptanceElementOnce(target, 10_000)).rejects.toMatchObject({
-      name: "AcceptanceActionNotDispatchedError",
-      cause: expect.objectContaining({
-        message: `The exact acceptance element is not ready for one click (${reason}).`
-      })
-    });
-    expect(evaluateCalls()).toBe(1);
+      await expect(activateExactAcceptanceElementOnce(target, 200, boundary)).rejects.toMatchObject({
+        name: "AcceptanceActionNotDispatchedError",
+        message: "The exact acceptance element failed before its click boundary. Final reason: click-deadline.",
+        cause: expect.objectContaining({
+          message: "Timed out waiting for the exact acceptance element trusted click after 200 ms."
+        })
+      });
+
+      expect(boundary).toHaveBeenCalledOnce();
+      expect(target.click).not.toHaveBeenCalled();
+      expect(evaluateCalls()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["covered", "geometry", "disabled", "aria-disabled"] as const)(
+    "waits for an exact temporarily %s element on the same handle",
+    async (reason) => {
+      vi.useFakeTimers();
+      try {
+        const { evaluateCalls, readinessChecks, target } = exactAcceptanceTarget({
+          readinessSequence: [reason, "ready"]
+        });
+        const boundary = vi.fn();
+        const outcome = activateExactAcceptanceElementOnce(target, 10_000, boundary);
+
+        await vi.advanceTimersByTimeAsync(50);
+        await outcome;
+
+        expect(readinessChecks()).toBe(2);
+        expect(evaluateCalls()).toBe(3);
+        expect(target.scrollIntoViewIfNeeded).toHaveBeenCalledOnce();
+        expect(target.click).toHaveBeenCalledOnce();
+        expect(boundary).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("fails a never-ready exact handle with one bounded allowlisted reason and no click", async () => {
+    vi.useFakeTimers();
+    try {
+      const { evaluateCalls, target } = exactAcceptanceTarget({ covered: true });
+      const outcome = activateExactAcceptanceElementOnce(target, 200);
+      const assertion = expect(outcome).rejects.toMatchObject({
+        name: "AcceptanceActionNotDispatchedError",
+        message: "The exact acceptance element failed before its click boundary. Final reason: covered.",
+        cause: expect.objectContaining({
+          message: "The exact acceptance element remained covered after 200 ms of bounded readiness polling."
+        })
+      });
+
+      await vi.advanceTimersByTimeAsync(200);
+      await assertion;
+      expect(target.click).not.toHaveBeenCalled();
+      expect(evaluateCalls()).toBeGreaterThan(1);
+      expect(evaluateCalls()).toBeLessThanOrEqual(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["covered", "disabled", "geometry"] as const)(
+    "reports probe-error when a same-handle readiness probe rejects after %s",
+    async (transientReason) => {
+      vi.useFakeTimers();
+      try {
+        const evaluationError = new Error("renderer execution context retired");
+        const { evaluateCalls, target } = exactAcceptanceTarget({
+          readinessSequence: [transientReason, "ready"],
+          evaluationError: { call: 2, error: evaluationError }
+        });
+        const outcome = activateExactAcceptanceElementOnce(target, 200);
+        const assertion = expect(outcome).rejects.toMatchObject({
+          name: "AcceptanceActionNotDispatchedError",
+          message: "The exact acceptance element failed before its click boundary. Final reason: probe-error.",
+          cause: evaluationError
+        });
+
+        await vi.advanceTimersByTimeAsync(50);
+        await assertion;
+        expect(target.click).not.toHaveBeenCalled();
+        expect(evaluateCalls()).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("maps an invalid readiness receipt to one bounded allowlisted top-level reason", async () => {
+    const sentinel = `INVALID-READINESS-${"x".repeat(64 * 1024)}`;
+    const { evaluateCalls, target } = exactAcceptanceTarget({ readinessReceiptOverride: sentinel });
+    let failure: (Error & { readonly cause?: unknown }) | undefined;
+    try {
+      await activateExactAcceptanceElementOnce(target, 200);
+    } catch (error) {
+      expect(error).toBeInstanceOf(AcceptanceActionNotDispatchedError);
+      failure = error as Error & { readonly cause?: unknown };
+    }
+    expect(failure).toBeDefined();
+    if (!failure) throw new Error("The invalid readiness receipt must fail before the click boundary.");
+    const diagnostic = [failure.message, failure.stack, String((failure.cause as Error | undefined)?.message)].join(
+      "\n"
+    );
+    expect(
+      failure.message ===
+        "The exact acceptance element failed before its click boundary. Final reason: invalid-receipt."
+    ).toBe(true);
+    expect(Buffer.byteLength(diagnostic, "utf8")).toBeLessThan(16 * 1024);
+    expect(diagnostic.includes(sentinel)).toBe(false);
     expect(target.click).not.toHaveBeenCalled();
+    expect(evaluateCalls()).toBe(1);
   });
 
   it("fails after exactly one click when no trusted event receipt is recorded", async () => {
@@ -658,28 +1118,36 @@ describe("extension-host Playwright lifecycle", () => {
   });
 
   it("does not make a third acquisition when the replacement also fails readiness", async () => {
-    const first = exactAcceptanceTarget({ disconnected: true });
-    const second = exactAcceptanceTarget({ covered: true });
-    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
-    const dispose = vi.fn().mockResolvedValue(undefined);
-
-    await expect(
-      activateWithOnePreDispatchReacquisition({
+    vi.useFakeTimers();
+    try {
+      const first = exactAcceptanceTarget({ disconnected: true });
+      const second = exactAcceptanceTarget({ covered: true });
+      const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
+      const dispose = vi.fn().mockResolvedValue(undefined);
+      const outcome = activateWithOnePreDispatchReacquisition({
         acquire,
-        activate: (target) => activateExactAcceptanceElementOnce(target, 10_000),
+        activate: (target) => activateExactAcceptanceElementOnce(target, 200),
         dispose
-      })
-    ).rejects.toBeInstanceOf(AcceptanceActionNotDispatchedError);
+      });
+      const assertion = expect(outcome).rejects.toMatchObject({
+        name: "AcceptanceActionNotDispatchedError",
+        message: "The exact acceptance element failed before its click boundary. Final reason: covered."
+      });
 
-    expect(acquire).toHaveBeenCalledTimes(2);
-    expect(first.target.click).not.toHaveBeenCalled();
-    expect(second.target.click).not.toHaveBeenCalled();
-    expect(dispose).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(200);
+      await assertion;
+      expect(acquire).toHaveBeenCalledTimes(2);
+      expect(first.target.click).not.toHaveBeenCalled();
+      expect(second.target.click).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps replacement cleanup failures classified before the click boundary", async () => {
     const first = exactAcceptanceTarget({ disconnected: true });
-    const second = exactAcceptanceTarget({ covered: true });
+    const second = exactAcceptanceTarget({ disconnected: true });
     const cleanupFailure = new Error("replacement handle did not dispose");
     const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
     const dispose = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(cleanupFailure);
@@ -753,6 +1221,7 @@ describe("extension-host Playwright lifecycle", () => {
       const outcome = activateExactAcceptanceElementOnce(target, 10_000);
       const assertion = expect(outcome).rejects.toMatchObject({
         name: "AcceptanceActionNotDispatchedError",
+        message: "The exact acceptance element failed before its click boundary. Final reason: probe-timeout.",
         cause: expect.objectContaining({
           message: "Timed out waiting for the exact acceptance element readiness after 10000 ms."
         })

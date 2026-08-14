@@ -1093,6 +1093,24 @@ test("long generated R programs reveal operation text through the complete CodeM
     preview >= 0 && resize > preview && reveal > resize,
     "Drop Columns must pin the exact Code Preview, establish a useful panel height, and only then reveal its code."
   );
+  const dropGeneratedCodeStart = source.indexOf("function assertReleasedRDropGeneratedCode(");
+  const dropGeneratedCodeEnd = source.indexOf(
+    "\nfunction assertReleasedRTextLengthGeneratedCode(",
+    dropGeneratedCodeStart
+  );
+  assert.ok(dropGeneratedCodeStart >= 0 && dropGeneratedCodeEnd > dropGeneratedCodeStart);
+  const dropGeneratedCode = source.slice(dropGeneratedCodeStart, dropGeneratedCodeEnd);
+  const generatedSourceBoundaryStart = source.indexOf("function assertReleasedRGeneratedSourceBoundary(");
+  const generatedSourceBoundaryEnd = source.indexOf(
+    "\nfunction assertReleasedRRowGeneratedCode(",
+    generatedSourceBoundaryStart
+  );
+  assert.ok(generatedSourceBoundaryStart >= 0 && generatedSourceBoundaryEnd > generatedSourceBoundaryStart);
+  const generatedSourceBoundary = source.slice(generatedSourceBoundaryStart, generatedSourceBoundaryEnd);
+  assert.match(dropGeneratedCode, /assertCodePreviewDocumentChecks\(code, \[/u);
+  assert.match(generatedSourceBoundary, /assertCodePreviewDocumentChecks\(code, \[/u);
+  assert.doesNotMatch(dropGeneratedCode, /assert\.(?:match|doesNotMatch)\(code,/u);
+  assert.doesNotMatch(generatedSourceBoundary, /assert\.(?:match|doesNotMatch)\(code,/u);
 });
 
 test("generated-code reveal settles a centered line inside the exact CodeMirror scroller", async () => {
@@ -1102,11 +1120,18 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.ok(start >= 0 && end > start);
   const reveal = source.slice(start, end);
 
-  assert.match(reveal, /codePreview\.elementHandle\(\{ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS \}\)/u);
-  assert.match(reveal, /codePreview\.locator\("xpath=\.\."\)\.elementHandle/u);
+  assert.match(
+    reveal,
+    /timeoutMs = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS[\s\S]*codePreview\.elementHandle\(\{ timeout: timeoutMs \}\)/u
+  );
+  assert.match(reveal, /preview\.evaluateHandle\([\s\S]*parentElement/u);
   assert.match(reveal, /content\.parentElement === scrollerElement/u);
   assert.match(reveal, /scrollerClass\?\.split\(\/\\s\+\/u\)\.includes\("cm-scroller"\)/u);
-  assert.match(reveal, /assertExactCodePreviewIdentity\(lastIdentity, target\.code\)/u);
+  assert.match(reveal, /contentIsExact: view\?\.contentDOM === content/u);
+  assert.match(reveal, /scrollerIsExact: view\?\.scrollDOM === scrollerElement/u);
+  assert.match(reveal, /assertExactCodePreviewIdentity\(lastIdentity, target\.codeReceipt\)/u);
+  assert.match(reveal, /codePreviewDocumentReceipt\(code\)/u);
+  assert.match(reveal, /codePreviewReceiptDiagnostic\(expectedCodeReceipt\)/u);
   assert.match(reveal, /computeCodePreviewScrollPlan\(\{/u);
   assert.match(
     reveal,
@@ -1131,11 +1156,33 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   );
   assert.match(
     reveal,
-    /ensureCodePreviewHeight\([\s\S]*codePreview: Locator[\s\S]*pinExactCodePreview\(codePreview\)[\s\S]*const maximumResizeAttempts = 24;[\s\S]*for \(let attempt = 0; attempt <= maximumResizeAttempts; attempt \+= 1\)[\s\S]*exactCodePreviewUsableScrollerHeight\(lastIdentity, 1\)[\s\S]*if \(attempt === maximumResizeAttempts\) break;/u
+    /ensureCodePreviewHeight\([\s\S]*codePreview: Locator[\s\S]*const maximumResizeAttempts = 24;[\s\S]*for \(let attempt = 0; attempt <= maximumResizeAttempts; attempt \+= 1\)[\s\S]*acquireCurrentExactCodePreviewGeneration\(workbench, language, expectedCodeReceipt, deadline\)[\s\S]*exactCodePreviewUsableScrollerHeight\(lastIdentity, 1\)/u
   );
   assert.match(
     reveal,
-    /executeCommand\("openWrangler\.codePreview\.focus"\)[\s\S]*readExactCodePreviewIdentity\(target\.preview, target\.scroller\)[\s\S]*executeCommand\("workbench\.action\.focusPanel"\)[\s\S]*readExactCodePreviewIdentity\(target\.preview, target\.scroller\)/u
+    /executeCommand\("workbench\.action\.focusPanel"\)[\s\S]*executeCommand\("openWrangler\.codePreview\.focus"\)[\s\S]*acquireCurrentExactCodePreviewGeneration/u
+  );
+  assert.match(
+    reveal,
+    /runReplaceableCodePreviewGeneration\([\s\S]*proveRetired: exactCodePreviewGenerationIsRetired[\s\S]*maximumGenerations: 4[\s\S]*timeoutMs: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS/u
+  );
+  assert.match(
+    reveal,
+    /const remainingMs = deadline - Date\.now\(\);[\s\S]*pinExactCodePreview\(locator, \{ workbench, frame, language \}, remainingMs\)[\s\S]*waitForTimeout\(Math\.min\(50, remainingMs\)\)/u
+  );
+  assert.match(
+    reveal,
+    /!lifecycle\.previewConnected \|\|[\s\S]*!lifecycle\.scrollerConnected \|\|[\s\S]*!lifecycle\.previewOwnsScroller \|\|[\s\S]*!lifecycle\.sameDocument/u
+  );
+  assert.match(reveal, /class ExactCodePreviewDocumentMismatchError extends Error/u);
+  assert.match(
+    reveal,
+    /if \(_error instanceof ExactCodePreviewDocumentMismatchError\) return false;/u,
+    "An exact code-receipt mismatch must never authorize generation reacquisition."
+  );
+  assert.match(
+    reveal,
+    /catch \(error\) \{[\s\S]*if \(error instanceof ExactCodePreviewDocumentMismatchError\) throw error;[\s\S]*ignoreRetiredRendererProbeFailure/u
   );
   assert.match(
     reveal,
@@ -1149,6 +1196,7 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
     reveal,
     /\.part\.panel:visible|scrollIntoView\s*:\s*true|scrollIntoViewIfNeeded|\.scrollIntoView\(/u
   );
+  assert.doesNotMatch(reveal, /JSON\.stringify\(expectedText\)|JSON\.stringify\(target\.code\)/u);
 });
 
 test("packaged R categorical journeys prove exact generated calls and boundary values", async () => {
@@ -1268,7 +1316,8 @@ test("packaged R categorical journeys prove exact generated calls and boundary v
   assert.match(oneHot, /data-grid-row="0"\]\[data-grid-column="\$\{outputA\.position\}"[\s\S]*?=== "1"/u);
   assert.match(oneHot, /data-grid-row="0"\]\[data-grid-column="\$\{outputB\.position\}"[\s\S]*?=== "0"/u);
   assert.match(oneHot, /name: "Apply step", exact: true/u);
-  assert.match(oneHot, /name: "Undo", exact: true/u);
+  assert.match(oneHot, /undoReleasedRCategoricalStep\([\s\S]*"jupyter-r:editing:one-hot"/u);
+  assert.doesNotMatch(oneHot, /getByRole\("button", \{ name: "Undo"/u);
 
   const multiLabel = section(
     "async function exerciseReleasedRMultiLabelJourney(",
@@ -1287,7 +1336,21 @@ test("packaged R categorical journeys prove exact generated calls and boundary v
     /\[0, outputB\.position, "1"\],[\s\S]*?\[1, outputA\.position, "0"\],[\s\S]*?\[1, outputB\.position, "1"\]/u
   );
   assert.match(multiLabel, /name: "Apply step", exact: true/u);
-  assert.match(multiLabel, /name: "Undo", exact: true/u);
+  assert.match(multiLabel, /undoReleasedRCategoricalStep\([\s\S]*"jupyter-r:editing:multi-label"/u);
+  assert.doesNotMatch(multiLabel, /getByRole\("button", \{ name: "Undo"/u);
+
+  const categoricalUndo = section(
+    "async function undoReleasedRCategoricalStep(",
+    "async function exerciseReleasedROneHotJourney("
+  );
+  assert.match(categoricalUndo, /runFailClosedCategoricalUndo\(\{/u);
+  assert.match(categoricalUndo, /appliedRevision/u);
+  assert.match(categoricalUndo, /layoutTransitionPending !== false/u);
+  assert.match(categoricalUndo, /activateExactAcceptanceElementOnce\(/u);
+  assert.match(categoricalUndo, /AcceptanceActionNotDispatchedError/u);
+  assert.match(categoricalUndo, /checkpoint: \(stage\) => recordAcceptanceProgress/u);
+  assert.match(categoricalUndo, /dispatchTimeoutMs: 5_000/u);
+  assert.match(categoricalUndo, /confirmationTimeoutMs: QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS/u);
 
   const editingRoute = section(
     'recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");',
@@ -1295,7 +1358,7 @@ test("packaged R categorical journeys prove exact generated calls and boundary v
   );
   assert.match(
     editingRoute,
-    /else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\([\s\S]*if \(phase === "jupyter-r" && coverage\.focusedCategoricalEditing\)[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\)[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\)/u
+    /else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\([\s\S]*coverage\.focusedEditing === "categorical-operations"[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\)[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\)[\s\S]*coverage\.focusedEditing === "value-operations"[\s\S]*exerciseReleasedRValueOperationsJourney\(/u
   );
 });
 
@@ -4264,7 +4327,7 @@ test("editor phases validate and forward the focused R acceptance selector", asy
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "categorical-operations", "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
@@ -4287,6 +4350,22 @@ test("editor phases validate and forward the focused R acceptance selector", asy
       }
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "categorical-operations");
+
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "value-operations" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "value-operations");
 
     await runEditorAcceptancePhase(
       { ...input, testSelector: "interactive-terminal" },

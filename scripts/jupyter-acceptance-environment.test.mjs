@@ -1430,7 +1430,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles stay plain-only while a focused selector owns categorical coverage", async () => {
+test("default R profiles keep a truthful core catalog while focused selectors own value and categorical coverage", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const runStart = source.indexOf("export async function run(): Promise<void> {");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
@@ -1443,29 +1443,36 @@ test("default R profiles stay plain-only while a focused selector owns categoric
 
   assert.match(
     preflight,
-    /testSelector === undefined \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
+    /testSelector === undefined \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
   );
   assert.match(
     preflight,
-    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "interactive-terminal", or "literate-documents"/u
-  );
-  assert.match(profiles, /name: "categorical-operations" \| "comprehensive" \| "representative"/u);
-  assert.match(
-    profiles,
-    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "catalog-without-categorical"[\s\S]*focusedCategoricalEditing: false[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*focusedCategoricalEditing: false[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+    /name: "categorical-operations" \| "value-operations" \| "comprehensive" \| "representative"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*focusedCategoricalEditing: true/u
+    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "core-catalog"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+  );
+  assert.match(
+    profiles,
+    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+  );
+  assert.match(
+    profiles,
+    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*focusedEditing: "categorical-operations"/u
+  );
+  assert.match(
+    profiles,
+    /RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "value-operations"[\s\S]*focusedEditing: "value-operations"/u
   );
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\) return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
+    /if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "value-operations"\) \{[\s\S]*return RELEASED_R_VALUE_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\) return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
   );
   assert.doesNotMatch(
     journey,
@@ -1475,11 +1482,11 @@ test("default R profiles stay plain-only while a focused selector owns categoric
   assert.match(journey, /exerciseReleasedRGridJourney\(testing, workbench, base\.sessionId, coverage\.gridPaging\)/u);
   assert.match(
     journey,
-    /if \(coverage\.editing === "catalog-without-categorical"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
+    /if \(coverage\.editing === "core-catalog"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
   );
   assert.match(
     journey,
-    /exerciseReleasedRRepresentativeEditingJourney\(testing, workbench, base\.sessionId, phase\);[\s\S]*if \(phase === "jupyter-r" && coverage\.focusedCategoricalEditing\) \{[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\);[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\);/u
+    /exerciseReleasedRRepresentativeEditingJourney\(testing, workbench, base\.sessionId, phase\);[\s\S]*coverage\.focusedEditing === "categorical-operations"[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\);[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\);[\s\S]*coverage\.focusedEditing === "value-operations"[\s\S]*exerciseReleasedRValueOperationsJourney\(/u
   );
   assert.equal((journey.match(/await exerciseReleasedROneHotJourney\(/gu) ?? []).length, 1);
   assert.equal((journey.match(/await exerciseReleasedRMultiLabelJourney\(/gu) ?? []).length, 1);
@@ -1532,12 +1539,83 @@ test("default R profiles stay plain-only while a focused selector owns categoric
   assert.match(
     comprehensive,
     /supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS/u,
-    "The non-categorical acceptance route must still assert the complete advertised R capability catalog."
+    "Every editing profile must still assert the complete advertised R capability catalog."
   );
+  assert.match(
+    comprehensive,
+    /editingCatalog: "core-catalog" \| "value-operations" = "core-catalog"/u,
+    "The comprehensive journey must discriminate the core and focused value catalogs."
+  );
+  assert.match(
+    comprehensive,
+    /phase === "jupyter-r-remote" && editingCatalog === "core-catalog"[\s\S]*phase === "jupyter-r" && editingCatalog === "value-operations"/u,
+    "Remote comprehensive coverage must retain only its explicit coordinator Lowercase operation."
+  );
+  const valueCheckpointStart = source.indexOf("function recordReleasedRValueOperationCheckpoint(");
+  const valueCheckpointEnd = source.indexOf(
+    "\nasync function exerciseReleasedRValueOperationsJourney(",
+    valueCheckpointStart
+  );
+  const valueCheckpoints = source.slice(valueCheckpointStart, valueCheckpointEnd);
+  const focusedValueOperations = [
+    "find-replace",
+    "format-datetime",
+    "min-max-scale",
+    "round",
+    "floor",
+    "ceiling",
+    "capitalize",
+    "lowercase",
+    "uppercase",
+    "strip",
+    "split"
+  ];
+  assert.deepEqual(
+    [...valueCheckpoints.slice(0, valueCheckpoints.indexOf('boundary: "start"')).matchAll(/\| "([a-z-]+)"/gu)].map(
+      (match) => match[1]
+    ),
+    focusedValueOperations,
+    "The focused value catalog must own exactly its eleven noncategorical value operations."
+  );
+  for (const checkpoint of ["entry", "strip-discard-restored", "split-discard-restored", "exit"]) {
+    assert.ok(source.includes(`assertReleasedRValueOperationsCleanState(testing, sessionId, "${checkpoint}")`));
+  }
+  for (const operation of ["ceiling", "capitalize", "strip", "split"]) {
+    assert.ok(source.includes(`recordReleasedRValueOperationCheckpoint("${operation}", "start")`));
+    assert.ok(source.includes(`recordReleasedRValueOperationCheckpoint("${operation}", "complete")`));
+  }
   assert.match(
     grid,
     /if \(paging === "all-blocks"\)[\s\S]*else \{[\s\S]*"the representative second R block"[\s\S]*"the representative restored R block"/u
   );
+  const scoreColumnCapture = grid.indexOf('const scoreColumn = columnReference(active.metadata, "score");');
+  const scoreSelection = grid.indexOf('await columnSearch.press("Enter");', scoreColumnCapture);
+  const scoreSelectionReceipt = grid.indexOf(
+    "current?.sessionId === sessionId && current.viewState.selectedColumnId === scoreColumn.id",
+    scoreSelection
+  );
+  const scoreRendererReacquisition = grid.indexOf(
+    'app = await releasedRSessionApp(workbench, testing, sessionId, "the selected native R score profile");',
+    scoreSelectionReceipt
+  );
+  const scoreProfileToggle = grid.indexOf("const profileToggle = app.getByRole", scoreRendererReacquisition);
+  const scoreProfileClick = grid.indexOf("await profileToggle.click();", scoreProfileToggle);
+  const scoreProfileHeading = grid.indexOf('getByRole("heading", { name: "score", exact: true })', scoreProfileClick);
+  assert.ok(
+    scoreColumnCapture >= 0 &&
+      scoreSelection > scoreColumnCapture &&
+      scoreSelectionReceipt > scoreSelection &&
+      scoreRendererReacquisition > scoreSelectionReceipt &&
+      scoreProfileToggle > scoreRendererReacquisition &&
+      scoreProfileClick > scoreProfileToggle &&
+      scoreProfileHeading > scoreProfileClick,
+    "The R grid must confirm its exact score selection and reacquire its synchronized renderer before one profile click."
+  );
+  assert.match(
+    grid.slice(scoreSelection, scoreRendererReacquisition),
+    /10_000,[\s\S]*"the native R grid to select its exact score column before profiling"/u
+  );
+  assert.equal((grid.match(/await profileToggle\.click\(\);/gu) ?? []).length, 1);
   assert.match(grid, /"Clear all"/u);
   assert.match(grid, /applyReleasedRQuickSort\(workbench, testing, "group", "ascending", \["group"\]\)/u);
   assert.match(grid, /applyReleasedRQuickSort\(workbench, testing, "score", "descending", \["score", "group"\]\)/u);

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 interface BrowserLifecycle {
   isConnected(): boolean;
 }
@@ -60,6 +62,48 @@ interface PreDispatchReacquisitionOptions<T> {
   readonly dispose: (action: T) => Promise<void>;
 }
 
+export interface CategoricalUndoAcceptanceSnapshot {
+  readonly sessionId: string | undefined;
+  readonly revision: number | undefined;
+  readonly panelReceipt:
+    | Readonly<{
+        readonly syncId: string;
+        readonly sessionId: string;
+        readonly revision: number;
+        readonly layoutTransitionPending: boolean;
+      }>
+    | undefined;
+  readonly scheduler:
+    | Readonly<{
+        readonly sessionId: string;
+        readonly quiescent: boolean;
+        readonly activeForegroundOperation: boolean;
+        readonly activeBackgroundOperation: boolean;
+        readonly interactiveQueueLength: number;
+        readonly backgroundQueueLength: number;
+        readonly terminalOperation: boolean;
+      }>
+    | undefined;
+  readonly restored: boolean;
+}
+
+interface FailClosedCategoricalUndoOptions<T> {
+  readonly sessionId: string;
+  readonly appliedRevision: number;
+  readonly snapshot: () => CategoricalUndoAcceptanceSnapshot;
+  readonly acquire: () => Promise<T>;
+  readonly activate: (action: T) => Promise<void>;
+  readonly dispose: (action: T) => Promise<void>;
+  readonly checkpoint: (stage: "undo-ready" | "undo-dispatched" | "undo-confirmed") => void;
+  readonly readyTimeoutMs: number;
+  readonly dispatchTimeoutMs: number;
+  readonly confirmationTimeoutMs: number;
+  readonly intervalMs?: number;
+  readonly now?: () => number;
+  readonly wait?: (durationMs: number) => Promise<void>;
+  readonly description: string;
+}
+
 interface ReplaceableAcceptanceLocator {
   click(options: { readonly timeout: number }): Promise<void>;
 }
@@ -91,6 +135,133 @@ export interface CodePreviewScrollPlan {
   readonly currentFullyVisible: boolean;
   readonly maximumScrollTop: number;
   readonly targetScrollTop: number;
+}
+
+export interface CodePreviewDocumentReceipt {
+  readonly utf8Length: number;
+  readonly sha256: string;
+}
+
+export interface CodePreviewDocumentCheck {
+  readonly stage: string;
+  readonly passed: boolean;
+}
+
+interface ReplaceableCodePreviewGenerationOptions<T, R> {
+  readonly initial: T;
+  readonly operate: (generation: T, generationNumber: number) => Promise<R>;
+  readonly proveRetired: (generation: T, error: unknown) => Promise<boolean>;
+  readonly acquireReplacement: (generationNumber: number, deadline: number) => Promise<T>;
+  readonly dispose: (generation: T) => Promise<void>;
+  readonly maximumGenerations: number;
+  readonly timeoutMs: number;
+  readonly now?: () => number;
+  readonly description: string;
+}
+
+export function codePreviewDocumentReceipt(code: string): CodePreviewDocumentReceipt {
+  if (typeof code !== "string") throw new TypeError("A Code Preview document receipt requires a string.");
+  return {
+    utf8Length: Buffer.byteLength(code, "utf8"),
+    sha256: createHash("sha256").update(code, "utf8").digest("hex")
+  };
+}
+
+export function codePreviewReceiptDiagnostic(receipt: CodePreviewDocumentReceipt): string {
+  if (!Number.isSafeInteger(receipt.utf8Length) || receipt.utf8Length < 0 || !/^[0-9a-f]{64}$/u.test(receipt.sha256)) {
+    throw new Error("A Code Preview diagnostic requires one valid bounded document receipt.");
+  }
+  return JSON.stringify(receipt);
+}
+
+export function assertCodePreviewDocumentChecks(code: string, checks: readonly CodePreviewDocumentCheck[]): void {
+  if (!Array.isArray(checks) || checks.length < 1 || checks.length > 32) {
+    throw new Error("A Code Preview document assertion requires between one and 32 bounded checks.");
+  }
+  const receipt = codePreviewDocumentReceipt(code);
+  for (const check of checks) {
+    if (
+      typeof check !== "object" ||
+      check === null ||
+      typeof check.stage !== "string" ||
+      !/^[a-z0-9](?:[a-z0-9:-]{0,94}[a-z0-9])?$/u.test(check.stage) ||
+      typeof check.passed !== "boolean"
+    ) {
+      throw new Error("A Code Preview document assertion requires one fixed ASCII stage and a boolean result.");
+    }
+    if (!check.passed) {
+      throw new Error(`Code Preview document assertion failed: ${JSON.stringify({ stage: check.stage, ...receipt })}.`);
+    }
+  }
+}
+
+export async function runReplaceableCodePreviewGeneration<T, R>({
+  initial,
+  operate,
+  proveRetired,
+  acquireReplacement,
+  dispose,
+  maximumGenerations,
+  timeoutMs,
+  now = Date.now,
+  description
+}: ReplaceableCodePreviewGenerationOptions<T, R>): Promise<R> {
+  if (!Number.isSafeInteger(maximumGenerations) || maximumGenerations < 1) {
+    throw new Error("Code Preview replacement requires a positive safe-integer generation bound.");
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Code Preview replacement requires a positive safe-integer deadline.");
+  }
+  const deadline = now() + timeoutMs;
+  let current = initial;
+  for (let generationNumber = 1; generationNumber <= maximumGenerations; generationNumber += 1) {
+    let result: R | undefined;
+    let operationError: unknown;
+    try {
+      result = await operate(current, generationNumber);
+    } catch (error) {
+      operationError = error;
+    }
+
+    let retired = false;
+    let retirementError: unknown;
+    if (operationError !== undefined) {
+      try {
+        retired = await proveRetired(current, operationError);
+      } catch (error) {
+        retirementError = error;
+      }
+    }
+
+    let cleanupError: unknown;
+    try {
+      await dispose(current);
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleanupError !== undefined) {
+      const failures = [operationError, retirementError, cleanupError].filter((error) => error !== undefined);
+      throw failures.length === 1
+        ? cleanupError
+        : new AggregateError(failures, `${description} failed and its exact generation cleanup also failed.`);
+    }
+    if (operationError === undefined) return result as R;
+    if (retirementError !== undefined) {
+      throw new AggregateError(
+        [operationError, retirementError],
+        `${description} failed and the generation could not be proven retired.`
+      );
+    }
+    if (!retired) throw operationError;
+    if (generationNumber === maximumGenerations || now() >= deadline) {
+      throw new Error(
+        `${description} exhausted ${generationNumber} proven retired Code Preview generation${generationNumber === 1 ? "" : "s"}.`,
+        { cause: operationError }
+      );
+    }
+    current = await acquireReplacement(generationNumber + 1, deadline);
+  }
+  throw new Error(`${description} exhausted its bounded Code Preview generations.`);
 }
 
 export function computeCodePreviewScrollPlan(geometry: CodePreviewScrollGeometry): CodePreviewScrollPlan {
@@ -182,9 +353,31 @@ export class IndeterminateAcceptanceActionError extends Error {
   }
 }
 
+const ACCEPTANCE_ACTION_SAFE_FINAL_REASONS = [
+  "covered",
+  "click-deadline",
+  "disabled",
+  "disconnected",
+  "geometry",
+  "invalid-receipt",
+  "probe-error",
+  "probe-timeout",
+  "unavailable"
+] as const;
+
+type AcceptanceActionSafeFinalReason = (typeof ACCEPTANCE_ACTION_SAFE_FINAL_REASONS)[number];
+
+function acceptanceActionSafeFinalReason(value: unknown): AcceptanceActionSafeFinalReason {
+  return ACCEPTANCE_ACTION_SAFE_FINAL_REASONS.includes(value as AcceptanceActionSafeFinalReason)
+    ? (value as AcceptanceActionSafeFinalReason)
+    : "unavailable";
+}
+
 export class AcceptanceActionNotDispatchedError extends Error {
-  constructor(description: string, cause: unknown) {
-    super(`${description} failed before its click boundary.`, { cause });
+  constructor(description: string, cause: unknown, finalReason?: unknown) {
+    const reasonSuffix =
+      finalReason === undefined ? "" : ` Final reason: ${acceptanceActionSafeFinalReason(finalReason)}.`;
+    super(`${description} failed before its click boundary.${reasonSuffix}`, { cause });
     this.name = "AcceptanceActionNotDispatchedError";
   }
 }
@@ -281,6 +474,102 @@ export async function activateWithOnePreDispatchReacquisition<T>({
   }
 }
 
+export async function runFailClosedCategoricalUndo<T>({
+  sessionId,
+  appliedRevision,
+  snapshot,
+  acquire,
+  activate,
+  dispose,
+  checkpoint,
+  readyTimeoutMs,
+  dispatchTimeoutMs,
+  confirmationTimeoutMs,
+  intervalMs = 50,
+  now = Date.now,
+  wait = waitForPollInterval,
+  description
+}: FailClosedCategoricalUndoOptions<T>): Promise<void> {
+  if (!sessionId) throw new Error("Categorical Undo requires one non-empty exact session ID.");
+  if (!Number.isSafeInteger(appliedRevision) || appliedRevision < 0) {
+    throw new Error("Categorical Undo requires one non-negative applied revision.");
+  }
+  const waitForSnapshot = async (
+    predicate: (value: CategoricalUndoAcceptanceSnapshot) => boolean,
+    timeoutMs: number,
+    stage: "ready" | "dispatch" | "confirmation"
+  ): Promise<CategoricalUndoAcceptanceSnapshot> => {
+    let latest = snapshot();
+    const accepted = await pollAcceptanceCondition(
+      async () => {
+        latest = snapshot();
+        return predicate(latest);
+      },
+      { timeoutMs, intervalMs, now, wait }
+    );
+    if (!accepted) {
+      throw new Error(
+        `${description} did not publish its ${stage} receipt within ${timeoutMs} ms: ${JSON.stringify(latest)}.`
+      );
+    }
+    return latest;
+  };
+  const exactSession = (value: CategoricalUndoAcceptanceSnapshot): boolean =>
+    value.sessionId === sessionId && value.scheduler?.sessionId === sessionId;
+  const exactIdleScheduler = (value: CategoricalUndoAcceptanceSnapshot): boolean =>
+    exactSession(value) &&
+    value.scheduler?.quiescent === true &&
+    value.scheduler.activeForegroundOperation === false &&
+    value.scheduler.activeBackgroundOperation === false &&
+    value.scheduler.interactiveQueueLength === 0 &&
+    value.scheduler.backgroundQueueLength === 0 &&
+    value.scheduler.terminalOperation === false;
+  const waitForDispatch = () =>
+    waitForSnapshot(
+      (value) =>
+        exactSession(value) &&
+        ((value.revision ?? appliedRevision) > appliedRevision ||
+          value.scheduler?.activeForegroundOperation === true ||
+          (value.scheduler?.interactiveQueueLength ?? 0) > 0),
+      dispatchTimeoutMs,
+      "dispatch"
+    );
+
+  await waitForSnapshot(
+    (value) =>
+      exactIdleScheduler(value) &&
+      value.revision === appliedRevision &&
+      value.panelReceipt?.sessionId === sessionId &&
+      value.panelReceipt.revision === appliedRevision &&
+      value.panelReceipt.layoutTransitionPending === false,
+    readyTimeoutMs,
+    "ready"
+  );
+  checkpoint("undo-ready");
+
+  await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+    description,
+    activate: () => activateWithOnePreDispatchReacquisition({ acquire, activate, dispose }),
+    receipt: waitForDispatch,
+    authoritativeReceiptAfterActivationFailure: waitForDispatch
+  });
+  checkpoint("undo-dispatched");
+
+  await waitForSnapshot(
+    (value) =>
+      exactIdleScheduler(value) &&
+      value.restored &&
+      value.revision !== undefined &&
+      value.revision > appliedRevision &&
+      value.panelReceipt?.sessionId === sessionId &&
+      value.panelReceipt.revision === value.revision &&
+      value.panelReceipt.layoutTransitionPending === false,
+    confirmationTimeoutMs,
+    "confirmation"
+  );
+  checkpoint("undo-confirmed");
+}
+
 export function activateReplaceableAcceptanceLocator(
   locator: ReplaceableAcceptanceLocator,
   timeoutMs: number
@@ -321,60 +610,94 @@ export async function activateExactAcceptanceElementOnce(
   }
 
   const readinessDescription = "the exact acceptance element readiness";
-  let readiness: string;
+  const readinessPollIntervalMs = 50;
+  let finalReadinessReason: AcceptanceActionSafeFinalReason = "probe-error";
   try {
-    readiness = await withAcceptanceOperationDeadline(
-      target.evaluate((candidate) => {
-        type ClickableElement = {
-          readonly disabled?: boolean;
-          readonly isConnected: boolean;
-          readonly ownerDocument: {
-            elementFromPoint(x: number, y: number): ClickableElement | null;
-          };
-          dataset: Record<string, string | undefined>;
-          addEventListener(
-            type: "click",
-            listener: (event: { readonly isTrusted: boolean }) => void,
-            options: { once: boolean }
-          ): void;
-          contains(node: ClickableElement | null): boolean;
-          getAttribute(name: string): string | null;
-          getBoundingClientRect(): {
-            readonly left: number;
-            readonly top: number;
-            readonly width: number;
-            readonly height: number;
-          };
-        };
-        const element = candidate as ClickableElement;
-        if (!element.isConnected) return "disconnected";
-        if (element.disabled === true || element.getAttribute("aria-disabled") === "true") return "disabled";
-        const rect = element.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return "geometry";
-        const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        if (hit !== element && !element.contains(hit)) return "covered";
-        element.dataset.openWranglerAcceptanceActivation = "pending";
-        element.addEventListener(
-          "click",
-          (event) => {
-            if (event.isTrusted) element.dataset.openWranglerAcceptanceActivation = "seen";
-          },
-          { once: true }
+    for (;;) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `The exact acceptance element remained ${finalReadinessReason} after ${timeoutMs} ms of bounded readiness polling.`
         );
-        return "ready";
-      }),
-      remaining(readinessDescription),
-      readinessDescription
-    );
-    if (readiness !== "ready") {
-      throw new Error(`The exact acceptance element is not ready for one click (${readiness}).`);
+      }
+      finalReadinessReason = "probe-error";
+      const readinessReceipt = await probeAcceptanceBeforeDeadline(
+        () =>
+          target.evaluate((candidate) => {
+            type ClickableElement = {
+              readonly disabled?: boolean;
+              readonly isConnected: boolean;
+              readonly ownerDocument: {
+                elementFromPoint(x: number, y: number): ClickableElement | null;
+              };
+              dataset: Record<string, string | undefined>;
+              addEventListener(
+                type: "click",
+                listener: (event: { readonly isTrusted: boolean }) => void,
+                options: { once: boolean }
+              ): void;
+              contains(node: ClickableElement | null): boolean;
+              getAttribute(name: string): string | null;
+              getBoundingClientRect(): {
+                readonly left: number;
+                readonly top: number;
+                readonly width: number;
+                readonly height: number;
+              };
+            };
+            const element = candidate as ClickableElement;
+            if (!element.isConnected) return "disconnected";
+            if (element.disabled === true || element.getAttribute("aria-disabled") === "true") return "disabled";
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return "geometry";
+            const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            if (hit !== element && !element.contains(hit)) return "covered";
+            element.dataset.openWranglerAcceptanceActivation = "pending";
+            element.addEventListener(
+              "click",
+              (event) => {
+                if (event.isTrusted) element.dataset.openWranglerAcceptanceActivation = "seen";
+              },
+              { once: true }
+            );
+            return "ready";
+          }),
+        deadline
+      );
+      if (readinessReceipt === undefined) {
+        finalReadinessReason = "probe-timeout";
+        throw new Error(`Timed out waiting for ${readinessDescription} after ${timeoutMs} ms.`);
+      }
+      if (
+        readinessReceipt !== "ready" &&
+        readinessReceipt !== "covered" &&
+        readinessReceipt !== "disabled" &&
+        readinessReceipt !== "disconnected" &&
+        readinessReceipt !== "geometry"
+      ) {
+        finalReadinessReason = "invalid-receipt";
+        throw new Error("The exact acceptance element returned an invalid bounded readiness receipt.");
+      }
+      if (readinessReceipt === "ready") break;
+      finalReadinessReason = readinessReceipt;
+      if (readinessReceipt === "disconnected") {
+        throw new Error("The exact acceptance element disconnected before its click boundary.");
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs < 1) continue;
+      await waitForPollInterval(Math.min(readinessPollIntervalMs, remainingMs));
     }
   } catch (error) {
-    throw new AcceptanceActionNotDispatchedError("The exact acceptance element", error);
+    throw new AcceptanceActionNotDispatchedError("The exact acceptance element", error, finalReadinessReason);
   }
 
   immediatelyBeforeClick?.();
-  await target.click({ force: true, timeout: remaining("the exact acceptance element trusted click") });
+  let clickTimeoutMs: number;
+  try {
+    clickTimeoutMs = remaining("the exact acceptance element trusted click");
+  } catch (error) {
+    throw new AcceptanceActionNotDispatchedError("The exact acceptance element", error, "click-deadline");
+  }
+  await target.click({ force: true, timeout: clickTimeoutMs });
   const receiptDescription = "the exact acceptance element trusted-click receipt";
   const activation = await withAcceptanceOperationDeadline(
     target.evaluate(
