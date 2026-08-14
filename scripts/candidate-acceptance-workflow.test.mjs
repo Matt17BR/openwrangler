@@ -176,6 +176,16 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_interactive"
+      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "literate-documents";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_interactive"
+      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
         (step) => step.id === "packaged_editor_r_literate"
       ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
     },
@@ -248,6 +258,11 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
+        (step) => step.name === "Upload active R terminal failure diagnostics"
+      ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
         (step) => step.name === "Upload R Markdown and Quarto failure diagnostics"
       ).with.name = "preview-release-r-jupyter";
     },
@@ -278,6 +293,13 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
         steps.findIndex((step) => step.name === "Fail after remote R-Jupyter diagnostics"),
         1
       );
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_interactive");
+      const focused = steps.splice(focusedStart, 4);
+      const ordinaryStart = steps.findIndex((step) => step.id === "canonical_r_jupyter");
+      steps.splice(ordinaryStart, 0, ...focused);
     },
     (workflow) => {
       const steps = workflow.jobs.jupyter.steps;

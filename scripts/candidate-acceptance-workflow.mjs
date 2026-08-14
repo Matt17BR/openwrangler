@@ -34,7 +34,7 @@ const R_CONTRACT_EXTRA_PACKAGES = [
   "any::nanoparquet"
 ].join("\n");
 const PREPARE_XVFB_COMMAND_SHA256 = "96528481625ac66c09687cf7e47bcfc6a3cb657828919be1ca8a1bfa4f4b29b3";
-const JUPYTER_STEPS_SHA256 = "e308fc847dd4b171ac705698e9e5f62fd315da913ab13100f25208295526aeb9";
+const JUPYTER_STEPS_SHA256 = "62eba55857af2dd2dd926ed9e0d551015c84e3f557f850eb914f26067c53b718";
 
 function record(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -287,6 +287,10 @@ const JUPYTER_STEP_TOPOLOGY = [
   ["id", "packaged_editor_r"],
   ["name", "Upload local R-Jupyter failure diagnostics"],
   ["name", "Fail after local R-Jupyter diagnostics"],
+  ["id", "canonical_r_interactive"],
+  ["id", "packaged_editor_r_interactive"],
+  ["name", "Upload active R terminal failure diagnostics"],
+  ["name", "Fail after active R terminal diagnostics"],
   ["id", "canonical_r_literate"],
   ["id", "packaged_editor_r_literate"],
   ["name", "Upload R Markdown and Quarto failure diagnostics"],
@@ -668,6 +672,28 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     "jupyter",
     workflow.jobs.jupyter,
     {
+      id: "packaged_editor_r_interactive",
+      verifierId: "canonical_r_interactive",
+      condition: "${{ matrix.phase == 'r-local' }}",
+      run: "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_interactive.outputs.candidate_path }}",
+      env: {
+        OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+        OPEN_WRANGLER_PACKAGED_R_JOURNEY: "interactive-terminal",
+        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+        OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+        OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+        OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+        OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+        OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+        VSCODE_TEST_VERSION: "stable"
+      }
+    },
+    problems
+  );
+  inspectPackagedRunner(
+    "jupyter",
+    workflow.jobs.jupyter,
+    {
       id: "packaged_editor_r_literate",
       verifierId: "canonical_r_literate",
       condition: "${{ matrix.phase == 'r-local' }}",
@@ -709,6 +735,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   );
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r", problems);
+  inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_interactive", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_literate", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_remote", problems);
   inspectFailureDiagnosticUpload(
@@ -719,6 +746,17 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       failureName: "Fail after local R-Jupyter diagnostics",
       runnerId: "packaged_editor_r",
       artifactName: "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}"
+    },
+    problems
+  );
+  inspectFailureDiagnosticUpload(
+    "jupyter",
+    workflow.jobs.jupyter,
+    {
+      name: "Upload active R terminal failure diagnostics",
+      failureName: "Fail after active R terminal diagnostics",
+      runnerId: "packaged_editor_r_interactive",
+      artifactName: "${{ inputs.channel }}-release-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}"
     },
     problems
   );
@@ -746,9 +784,20 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   );
   const jupyterStepList = steps(workflow.jobs.jupyter);
   const ordinaryRFailure = jupyterStepList.findIndex((step) => step?.name === "Fail after local R-Jupyter diagnostics");
+  const interactiveVerifier = jupyterStepList.findIndex((step) => step?.id === "canonical_r_interactive");
+  const interactiveFailure = jupyterStepList.findIndex(
+    (step) => step?.name === "Fail after active R terminal diagnostics"
+  );
   const literateVerifier = jupyterStepList.findIndex((step) => step?.id === "canonical_r_literate");
-  if (ordinaryRFailure < 0 || literateVerifier <= ordinaryRFailure) {
-    problems.push("jupyter must finish ordinary R acceptance before starting the focused literate phase.");
+  if (
+    ordinaryRFailure < 0 ||
+    interactiveVerifier <= ordinaryRFailure ||
+    interactiveFailure <= interactiveVerifier ||
+    literateVerifier <= interactiveFailure
+  ) {
+    problems.push(
+      "jupyter must finish ordinary R acceptance, then focused interactive acceptance, before the focused literate phase."
+    );
   }
 
   for (const [jobName, job] of Object.entries(workflow.jobs)) {

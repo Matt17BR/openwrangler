@@ -35,14 +35,16 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     remote: false,
     remoteOnly: false,
     requiresHostR: true,
-    literateDocuments: false
+    literateDocuments: false,
+    nativeEditorTooling: false
   });
   assert.deepEqual(resolve({ remoteJupyterEnabled: true }), {
     local: true,
     remote: true,
     remoteOnly: false,
     requiresHostR: true,
-    literateDocuments: false
+    literateDocuments: false,
+    nativeEditorTooling: false
   });
   for (const [selector, literateDocuments] of [
     ["interactive-terminal", false],
@@ -53,7 +55,8 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
       remote: false,
       remoteOnly: false,
       requiresHostR: true,
-      literateDocuments
+      literateDocuments,
+      nativeEditorTooling: true
     });
   }
   assert.deepEqual(
@@ -62,7 +65,14 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
       requestedEditors: ["vscode"],
       remoteJupyterEnabled: true
     }),
-    { local: false, remote: true, remoteOnly: true, requiresHostR: false, literateDocuments: false }
+    {
+      local: false,
+      remote: true,
+      remoteOnly: true,
+      requiresHostR: false,
+      literateDocuments: false,
+      nativeEditorTooling: false
+    }
   );
   assert.deepEqual(
     resolvePackagedRJourneySelection({
@@ -72,7 +82,14 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
       remoteJupyterEnabled: false,
       platform: "linux"
     }),
-    { local: false, remote: false, remoteOnly: false, requiresHostR: false, literateDocuments: false }
+    {
+      local: false,
+      remote: false,
+      remoteOnly: false,
+      requiresHostR: false,
+      literateDocuments: false,
+      nativeEditorTooling: false
+    }
   );
 
   for (const [overrides, message] of [

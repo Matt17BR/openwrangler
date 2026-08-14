@@ -1046,6 +1046,31 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     ),
     true
   );
+  const interactiveR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_interactive");
+  assert.equal(interactiveR?.if, "${{ matrix.phase == 'r-local' }}");
+  assert.equal(
+    interactiveR?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_interactive.outputs.candidate_path }}"
+  );
+  assert.deepEqual(interactiveR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "interactive-terminal",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const interactiveRDiagnostics = releasedJupyter?.steps?.find(
+    (step) => step?.name === "Upload active R terminal failure diagnostics"
+  );
+  assert.equal(
+    interactiveRDiagnostics?.with?.name,
+    "${{ inputs.channel }}-release-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(interactiveRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}");
   const literateR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_literate");
   assert.equal(literateR?.if, "${{ matrix.phase == 'r-local' }}");
   assert.equal(
@@ -2423,10 +2448,53 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     "released-jupyter-r-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(rDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
+  const packagedRIndex = job?.steps?.indexOf(packagedR) ?? -1;
+  const interactiveRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_interactive");
+  const interactiveRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_interactive");
+  const interactiveRVerifierIndex = job?.steps?.indexOf(interactiveRVerifier) ?? -1;
+  const interactiveRRunnerIndex = job?.steps?.indexOf(interactiveRRunner) ?? -1;
+  assert.ok(interactiveRVerifierIndex > packagedRIndex, "Focused active-R acceptance must follow ordinary R.");
+  assert.equal(
+    interactiveRVerifier?.run,
+    "npm run verify:vsix -- openwrangler.vsix",
+    "Focused active-R acceptance must freshly reverify the packaged VSIX."
+  );
+  assert.equal(
+    interactiveRRunnerIndex,
+    interactiveRVerifierIndex + 1,
+    "Focused active-R acceptance must immediately follow its exact VSIX reverification."
+  );
+  assert.equal(
+    interactiveRRunner?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
+  );
+  assert.deepEqual(interactiveRRunner?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "interactive-terminal",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const interactiveDiagnostics = job?.steps?.find(
+    (step) => step?.name === "Upload active R terminal failure diagnostics"
+  );
+  assert.equal(
+    interactiveDiagnostics?.if,
+    "${{ always() && steps.packaged_editor_r_interactive.outcome == 'failure' && steps.packaged_editor_r_interactive.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(
+    interactiveDiagnostics?.with?.name,
+    "released-jupyter-r-interactive-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(interactiveDiagnostics?.with?.path, "${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}");
   assert.equal(
     job?.steps?.filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
       .length,
-    2
+    3
   );
 
   const macosR = workflow?.jobs?.["macos-r"];

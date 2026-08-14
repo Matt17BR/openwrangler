@@ -466,7 +466,10 @@ try {
                 "setup:quarto-python-kernel-ready"
               );
             }
-            if (process.platform === "linux" && process.arch === "x64") {
+            if (rJupyterSelection.nativeEditorTooling) {
+              if (process.platform !== "linux" || process.arch !== "x64") {
+                throw new Error("Focused native R editor tooling acceptance requires Linux x64.");
+              }
               writeCorrelatedProgress(
                 orchestrationProgressPath,
                 orchestrationRunId,
@@ -842,7 +845,7 @@ try {
                       "extensions.ignoreRecommendations": true,
                       "notebook.globalToolbar": true,
                       "jupyter.askForKernelRestart": false,
-                      ...(jupyterUserDataDirectory === jupyterRUserData && rEditorTooling
+                      ...(jupyterUserDataDirectory === jupyterRUserData && rJupyterSelection.nativeEditorTooling
                         ? {
                             "files.associations": {
                               "*.R": "r",
@@ -1013,7 +1016,7 @@ try {
                     },
                     { timeoutMs: 180_000 }
                   );
-                  if (acceptanceMode === "r-jupyter" && rEditorTooling) {
+                  if (acceptanceMode === "r-jupyter" && rJupyterSelection.nativeEditorTooling) {
                     writeCorrelatedProgress(
                       progressPaths.setup,
                       runIds.setup,
@@ -1185,7 +1188,7 @@ try {
                     expectedExtension,
                     EXPECTED_ACCEPTANCE_HARNESS,
                     PINNED_JUPYTER_EXTENSION_ID,
-                    ...(acceptanceMode === "r-jupyter" && rEditorTooling
+                    ...(acceptanceMode === "r-jupyter" && rJupyterSelection.nativeEditorTooling
                       ? [
                           R_EDITOR_ACCEPTANCE_TOOLING.rSyntax.id,
                           R_EDITOR_ACCEPTANCE_TOOLING.r.id,
