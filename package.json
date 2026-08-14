@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python (Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)",
-  "version": "1.99.5",
+  "version": "1.99.6",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": true,
