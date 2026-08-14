@@ -1897,6 +1897,91 @@ describe("native R kernel protocol", () => {
     );
   });
 
+  it("strictly validates native R categorical payloads and permits duplicate removed labels", () => {
+    const oneHot = {
+      id: "one-hot",
+      kind: "oneHotEncode",
+      params: {
+        columns: [
+          { id: "r:c:0", name: "duplicate" },
+          { id: "r:c:1", name: "duplicate" }
+        ],
+        prefixSeparator: "",
+        dropOriginal: true
+      }
+    } as const;
+    const multiLabel = {
+      id: "multi-label",
+      kind: "multiLabelBinarize",
+      params: {
+        column: { id: "r:c:2", name: "labels" },
+        delimiter: "::",
+        prefix: "",
+        dropOriginal: false
+      }
+    } as const;
+    for (const step of [oneHot, multiLabel]) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const expectRejected = (step: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "previewStep",
+          payload: { sessionId, revision: 0, step, page: pageWindow() }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected({ ...oneHot, params: { ...oneHot.params, columns: [] } }, "bounded non-empty array");
+    expectRejected(
+      { ...oneHot, params: { ...oneHot.params, columns: [oneHot.params.columns[0], oneHot.params.columns[0]] } },
+      "repeated identity"
+    );
+    expectRejected({ ...oneHot, params: { ...oneHot.params, columns: ["duplicate"] } }, "must be an object");
+    expectRejected({ ...oneHot, params: { ...oneHot.params, dropOriginal: "yes" } }, "drop-original flag");
+    expectRejected(
+      { ...oneHot, params: { ...oneHot.params, prefixSeparator: "x".repeat(R_FRAME_CONTRACT_LIMITS.textBytes + 1) } },
+      "prefixSeparator"
+    );
+    expectRejected({ ...multiLabel, params: { ...multiLabel.params, delimiter: "" } }, "delimiter");
+    expectRejected({ ...multiLabel, params: { ...multiLabel.params, prefix: 1 } }, "prefix");
+    expectRejected({ ...multiLabel, params: { ...multiLabel.params, dropOriginal: 1 } }, "drop-original flag");
+    expectRejected({ ...multiLabel, params: { ...multiLabel.params, extra: true } }, "invalid fields");
+
+    const duplicateInputSchema = [
+      { ...minimalFramePage().schema[0]!, id: "r:c:0", name: "duplicate", position: 0 },
+      { ...minimalFramePage().schema[0]!, id: "r:c:1", name: "duplicate", position: 1 }
+    ];
+    const response = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: { ...minimalRenameDiff(), removedColumns: ["duplicate", "duplicate"] },
+      code: "open_wrangler_result <- frame\n"
+    };
+    expect(
+      decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, { inputSchema: duplicateInputSchema })
+    ).toMatchObject({ kind: "stepPreview", diff: { removedColumns: ["duplicate", "duplicate"] } });
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({ ...response, diff: { ...response.diff, addedColumns: ["encoded", "encoded"] } }),
+        previewRequestId,
+        { inputSchema: duplicateInputSchema }
+      )
+    ).toThrow("added-column diff names must be unique");
+  });
+
   it("strictly validates native R Cast requests and type-changing cell diffs", () => {
     const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

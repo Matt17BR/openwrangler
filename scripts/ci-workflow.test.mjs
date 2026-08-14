@@ -2305,6 +2305,25 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
   }
 });
 
+test("native R contract child budgets separate exact R from Vitest", () => {
+  const runnerSource = readFileSync(new URL("./run-r-contract-tests.mjs", import.meta.url), "utf8");
+
+  assert.match(runnerSource, /const DIRECT_R_CONTRACT_TIMEOUT_MS = 300_000;/u);
+  assert.match(runnerSource, /const VITEST_CONTRACT_TIMEOUT_MS = 120_000;/u);
+  assert.equal(
+    runnerSource.match(/timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS/gu)?.length,
+    2,
+    "both direct R contract subprocesses must use the named 300-second bound"
+  );
+  assert.equal(
+    runnerSource.match(/timeoutMs: VITEST_CONTRACT_TIMEOUT_MS/gu)?.length,
+    1,
+    "the Vitest subprocess must retain its explicit 120-second bound"
+  );
+  assert.match(runnerSource, /timeout: timeoutMs,/u);
+  assert.doesNotMatch(runnerSource, /timeout:\s*(?:120_000|300_000),/u);
+});
+
 test("coverage provisions the exact PySpark runtime before enforcing the unchanged floor", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));

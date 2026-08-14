@@ -2320,6 +2320,244 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("round-trips dynamic R categorical schemas with duplicate names and generated code", () => {
+    const editingSessionId = "72000000-0000-4000-8000-000000000001";
+    const oneHotStepId = "one-hot-duplicates";
+    const multiLabelStepId = "multi-label-unicode";
+    const ids = {
+      open: "72000000-0000-4000-8000-000000000002",
+      oneHotPreview: "72000000-0000-4000-8000-000000000003",
+      oneHotApply: "72000000-0000-4000-8000-000000000004",
+      multiLabelPreview: "72000000-0000-4000-8000-000000000005",
+      multiLabelApply: "72000000-0000-4000-8000-000000000006",
+      close: "72000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const oneHotPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.oneHotPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: oneHotStepId,
+          kind: "oneHotEncode",
+          params: {
+            columns: [
+              { id: "r:c:0", name: "category" },
+              { id: "r:c:1", name: "category" }
+            ],
+            prefixSeparator: ":",
+            dropOriginal: true
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const oneHotApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.oneHotApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const multiLabelPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.multiLabelPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: multiLabelStepId,
+          kind: "multiLabelBinarize",
+          params: {
+            column: { id: "r:c:2", name: "tags" },
+            delimiter: "|",
+            prefix: "",
+            dropOriginal: false
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const multiLabelApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.multiLabelApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const source = `
+beta <- rawToChar(as.raw(c(0xce, 0xb2)))
+Encoding(beta) <- "UTF-8"
+frame <- structure(
+  list(
+    factor(c("b", "", NA_character_), levels = c("unused", "b", "")),
+    factor(c("a", NA_character_, ""), levels = c("unused", "a", "")),
+    tags = c("red|blue", paste0("blue||", beta), NA_character_),
+    keep = c(10L, 20L, 30L)
+  ),
+  names = c("category", "category", "tags", "keep"),
+  class = "data.frame",
+  row.names = c("first", "second", "third")
+)`;
+    const result = runR(`
+${source}
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${oneHotPreview.code}
+${oneHotApply.code}
+${multiLabelPreview.code}
+${multiLabelApply.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R categorical session.");
+    expect(opened.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:0", name: "category" },
+      { id: "r:c:1", name: "category" },
+      { id: "r:c:2", name: "tags" },
+      { id: "r:c:3", name: "keep" }
+    ]);
+
+    const oneHotPreviewed = decodeRKernelResponseJson(marked(result.stdout, oneHotPreview.marker), ids.oneHotPreview, {
+      inputSchema: opened.page.schema
+    });
+    if (oneHotPreviewed.kind !== "stepPreview") throw new Error("Expected a native R one-hot preview.");
+    expect(oneHotPreviewed).toMatchObject({
+      revision: 1,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: ["category:a", "category:b"],
+        removedColumns: ["category", "category"],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    expect(
+      oneHotPreviewed.page.schema.map(({ id, name, rawType, type, nullable, position }) => ({
+        id,
+        name,
+        rawType,
+        type,
+        nullable,
+        position
+      }))
+    ).toEqual([
+      { id: "r:c:2", name: "tags", rawType: "character", type: "string", nullable: true, position: 0 },
+      { id: "r:c:3", name: "keep", rawType: "integer", type: "integer", nullable: true, position: 1 },
+      {
+        id: `c:step:${oneHotStepId}:0`,
+        name: "category:a",
+        rawType: "integer",
+        type: "integer",
+        nullable: false,
+        position: 2
+      },
+      {
+        id: `c:step:${oneHotStepId}:1`,
+        name: "category:b",
+        rawType: "integer",
+        type: "integer",
+        nullable: false,
+        position: 3
+      }
+    ]);
+    expect(oneHotPreviewed.page.page.rows.map((row) => row.values.slice(2).map((value) => value.raw))).toEqual([
+      ["1", "1"],
+      ["0", "0"],
+      ["0", "0"]
+    ]);
+
+    const oneHotApplied = decodeRKernelResponseJson(marked(result.stdout, oneHotApply.marker), ids.oneHotApply);
+    expect(oneHotApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (oneHotApplied.kind !== "planUpdated") throw new Error("Expected an applied native R one-hot step.");
+
+    const multiLabelPreviewed = decodeRKernelResponseJson(
+      marked(result.stdout, multiLabelPreview.marker),
+      ids.multiLabelPreview,
+      { inputSchema: oneHotApplied.page.schema }
+    );
+    if (multiLabelPreviewed.kind !== "stepPreview") {
+      throw new Error("Expected a native R multi-label preview.");
+    }
+    expect(multiLabelPreviewed).toMatchObject({
+      revision: 3,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: ["blue", "red", "β"],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    expect(multiLabelPreviewed.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:2", name: "tags" },
+      { id: "r:c:3", name: "keep" },
+      { id: `c:step:${oneHotStepId}:0`, name: "category:a" },
+      { id: `c:step:${oneHotStepId}:1`, name: "category:b" },
+      { id: `c:step:${multiLabelStepId}:0`, name: "blue" },
+      { id: `c:step:${multiLabelStepId}:1`, name: "red" },
+      { id: `c:step:${multiLabelStepId}:2`, name: "β" }
+    ]);
+    expect(multiLabelPreviewed.page.page.rows.map((row) => row.values.slice(4).map((value) => value.raw))).toEqual([
+      ["1", "1", "0"],
+      ["1", "0", "1"],
+      ["0", "0", "0"]
+    ]);
+
+    const multiLabelApplied = decodeRKernelResponseJson(
+      marked(result.stdout, multiLabelApply.marker),
+      ids.multiLabelApply
+    );
+    expect(multiLabelApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (multiLabelApplied.kind !== "planUpdated") {
+      throw new Error("Expected an applied native R multi-label step.");
+    }
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    expect(multiLabelApplied.code).toContain(".ow_categorical_encode");
+    expect(multiLabelApplied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    const generated = runR(`
+${source}
+frame_before <- serialize(frame, NULL, version = 3L)
+${multiLabelApplied.code}
+stopifnot(identical(names(open_wrangler_result), c("tags", "keep", "category:a", "category:b", "blue", "red", beta)))
+stopifnot(identical(open_wrangler_result[[3L]], c(1L, 0L, 0L)))
+stopifnot(identical(open_wrangler_result[[4L]], c(1L, 0L, 0L)))
+stopifnot(identical(open_wrangler_result[[5L]], c(1L, 1L, 0L)))
+stopifnot(identical(open_wrangler_result[[6L]], c(1L, 0L, 0L)))
+stopifnot(identical(open_wrangler_result[[7L]], c(0L, 1L, 0L)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("runs native R type conversion through preview, history, undo, and generated code", () => {
     const editingSessionId = "52000000-0000-4000-8000-000000000001";
     const stepId = "cast-text-to-integer";

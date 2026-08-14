@@ -103,6 +103,17 @@ formula_datetime_collapse_tibble_session_id <- "89898989-8989-4989-8989-89898989
 formula_datetime_collapse_table_session_id <- "90909090-9090-4090-8090-909090909090"
 formula_datetime_named_session_id <- "94949494-9494-4494-8494-949494949494"
 formula_datetime_readr_session_id <- "95959595-9595-4595-8595-959595959595"
+one_hot_session_id <- "abababab-abab-4bab-8bab-abababababab"
+multi_label_session_id <- "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd"
+categorical_table_session_id <- "dededede-dede-4ede-8ede-dededededede"
+categorical_scalar_session_id <- "bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc"
+categorical_error_session_id <- "efefefef-efef-4fef-8fef-efefefefefef"
+categorical_empty_session_id <- "acacacac-acac-4cac-8cac-acacacacacac"
+categorical_family_session_ids <- c(
+  "a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1",
+  "a2a2a2a2-a2a2-42a2-82a2-a2a2a2a2a2a2",
+  "a3a3a3a3-a3a3-43a3-83a3-a3a3a3a3a3a3"
+)
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -162,7 +173,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 11L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 12L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -748,9 +759,1655 @@ unsupported_step <- dispatch(
     page = page_window()
   )
 )
-assert_identical(unsupported_step$kind, "error", "an unsupported native R operation was accepted")
-assert_identical(unsupported_step$code, "unsupported_operation", "the unsupported-operation diagnostic changed")
+assert_identical(unsupported_step$kind, "error", "malformed R one-hot parameters were accepted")
+assert_identical(unsupported_step$code, "invalid_request", "the malformed one-hot diagnostic changed")
 assert_identical(source_environment$rename_frame, rename_source_before, "the R editing lifecycle mutated its source")
+
+source_environment$categorical_frame <- data.frame(
+  zeta = factor(c("b", "a", NA, ""), levels = c("a", "b", "", "unused")),
+  alpha = c("y", "x", NA_character_, ""),
+  value = 1:4,
+  check.names = FALSE,
+  row.names = paste0("categorical-", 1:4)
+)
+categorical_source_before <- unserialize(serialize(source_environment$categorical_frame, NULL, version = 3L))
+one_hot_step <- list(
+  id = "one-hot-step",
+  kind = "oneHotEncode",
+  params = list(columns = I(list(
+    list(id = "r:c:0", name = "zeta"),
+    list(id = "r:c:1", name = "alpha")
+  )))
+)
+one_hot_open <- dispatch(
+  "openSession",
+  list(sessionId = one_hot_session_id, variableName = "categorical_frame", page = page_window())
+)
+assert_identical(one_hot_open$kind, "page", "the R one-hot session did not open")
+one_hot_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = one_hot_session_id,
+    revision = 0L,
+    step = one_hot_step,
+    page = page_window()
+  )
+)
+assert_identical(one_hot_preview$kind, "stepPreview", "R one-hot encoding did not preview")
+assert_identical(
+  vapply(one_hot_preview$page$schema, `[[`, character(1L), "name"),
+  c("value", "alpha_x", "alpha_y", "zeta_a", "zeta_b"),
+  "R one-hot encoding did not globally order generated UTF-8 names"
+)
+assert_identical(
+  vapply(one_hot_preview$page$schema, `[[`, character(1L), "id"),
+  c("r:c:2", paste0("c:step:one-hot-step:", 0:3)),
+  "R one-hot encoding assigned unstable generated identities"
+)
+assert_identical(one_hot_preview$diff$addedColumns, as.list(c("alpha_x", "alpha_y", "zeta_a", "zeta_b")), "R one-hot encoding lost added-column diff names")
+assert_identical(one_hot_preview$diff$removedColumns, as.list(c("zeta", "alpha")), "R one-hot encoding lost selected input-order removals")
+assert_identical(
+  vapply(one_hot_preview$page$schema[-1L], `[[`, logical(1L), "nullable"),
+  rep(FALSE, 4L),
+  "R one-hot indicators were nullable"
+)
+one_hot_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = one_hot_session_id, revision = 1L, page = page_window())
+)
+assert_identical(one_hot_discard$action, "discard", "the R one-hot draft did not discard")
+one_hot_preview <- dispatch(
+  "previewStep",
+  list(sessionId = one_hot_session_id, revision = 2L, step = one_hot_step, page = page_window())
+)
+one_hot_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = one_hot_session_id, revision = 3L, page = page_window())
+)
+assert_identical(one_hot_apply$action, "apply", "the R one-hot draft did not apply")
+one_hot_inspection <- inspect_step(one_hot_session_id, 4L, "one-hot-step", page_window())
+assert_identical(one_hot_inspection$kind, "stepInspection", "the applied R one-hot step was not inspectable")
+assert_schema_less_inspection(one_hot_inspection, "R one-hot inspection")
+assign("categorical_frame", source_environment$categorical_frame, envir = .GlobalEnv)
+eval(parse(text = one_hot_apply$code), envir = .GlobalEnv)
+one_hot_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  names(one_hot_generated),
+  c("value", "alpha_x", "alpha_y", "zeta_a", "zeta_b"),
+  "generated R one-hot code returned the wrong schema"
+)
+assert_identical(one_hot_generated$alpha_x, c(0L, 1L, 0L, 0L), "generated R one-hot code encoded the wrong rows")
+assert_identical(one_hot_generated$zeta_b, c(1L, 0L, 0L, 0L), "generated R one-hot code encoded factor levels instead of observed values")
+assert_identical(get("categorical_frame", envir = .GlobalEnv), categorical_source_before, "generated R one-hot code mutated its source")
+rm("categorical_frame", "open_wrangler_result", envir = .GlobalEnv)
+one_hot_undo <- dispatch(
+  "undoStep",
+  list(sessionId = one_hot_session_id, revision = 4L, page = page_window())
+)
+assert_identical(one_hot_undo$action, "undo", "the applied R one-hot step did not undo")
+assert_identical(one_hot_undo$page$shape$columns, 3L, "undo retained R one-hot outputs")
+assert_identical(dispatch("closeSession", list(sessionId = one_hot_session_id))$kind, "closed", "the R one-hot session did not close")
+
+source_environment$categorical_reversed_frame <- data.frame(
+  first = c("a", "b"),
+  duplicate = c("x", "x"),
+  duplicate = c("y", "y"),
+  value = 1:2,
+  check.names = FALSE
+)
+categorical_reversed_session_id <- "adadadad-adad-4dad-8dad-adadadadadad"
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_reversed_session_id, variableName = "categorical_reversed_frame", page = page_window()))$kind,
+  "page",
+  "the reversed categorical-reference session did not open"
+)
+categorical_reversed_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_reversed_session_id,
+    revision = 0L,
+    step = list(
+      id = "categorical-reversed-step",
+      kind = "oneHotEncode",
+      params = list(columns = I(list(
+        list(id = "r:c:2", name = "duplicate"),
+        list(id = "r:c:0", name = "first"),
+        list(id = "r:c:1", name = "duplicate")
+      )))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(categorical_reversed_preview$kind, "stepPreview", "reversed R one-hot references did not preview")
+assert_identical(
+  categorical_reversed_preview$diff$removedColumns,
+  as.list(c("first", "duplicate", "duplicate")),
+  "R one-hot removed-column diffs did not follow source-schema order with duplicate names"
+)
+assert_identical(
+  dispatch("closeSession", list(sessionId = categorical_reversed_session_id))$kind,
+  "closed",
+  "the reversed categorical-reference session did not close"
+)
+
+source_environment$multi_label_frame <- data.frame(
+  tags = factor(c(NA, "", "red|β", "red||blue|red"), levels = c("", "red|β", "red||blue|red", "unused")),
+  value = 1:4,
+  check.names = FALSE
+)
+multi_label_source_before <- unserialize(serialize(source_environment$multi_label_frame, NULL, version = 3L))
+multi_label_step <- list(
+  id = "multi-label-step",
+  kind = "multiLabelBinarize",
+  params = list(
+    column = list(id = "r:c:0", name = "tags"),
+    delimiter = "|",
+    prefix = ""
+  )
+)
+assert_identical(
+  dispatch("openSession", list(sessionId = multi_label_session_id, variableName = "multi_label_frame", page = page_window()))$kind,
+  "page",
+  "the R multi-label session did not open"
+)
+multi_label_preview <- dispatch(
+  "previewStep",
+  list(sessionId = multi_label_session_id, revision = 0L, step = multi_label_step, page = page_window())
+)
+assert_identical(multi_label_preview$kind, "stepPreview", "R multi-label binarization did not preview")
+assert_identical(
+  vapply(multi_label_preview$page$schema, `[[`, character(1L), "name"),
+  c("tags", "value", "blue", "red", "β"),
+  "R multi-label binarization trimmed, dropped, or misordered literal tokens"
+)
+assert_identical(multi_label_preview$diff$removedColumns, list(), "R multi-label default unexpectedly dropped its source")
+assert_identical(multi_label_preview$diff$addedColumns, as.list(c("blue", "red", "β")), "R multi-label diff lost generated names")
+multi_label_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = multi_label_session_id, revision = 1L, page = page_window())
+)
+multi_label_inspection <- inspect_step(multi_label_session_id, 2L, "multi-label-step", page_window())
+assert_identical(multi_label_inspection$kind, "stepInspection", "the applied R multi-label step was not inspectable")
+assign("multi_label_frame", source_environment$multi_label_frame, envir = .GlobalEnv)
+eval(parse(text = multi_label_apply$code), envir = .GlobalEnv)
+multi_label_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(names(multi_label_generated), c("tags", "value", "blue", "red", "β"), "generated R multi-label code returned the wrong schema")
+assert_identical(multi_label_generated$blue, c(0L, 0L, 0L, 1L), "generated R multi-label code changed literal split semantics")
+assert_identical(multi_label_generated$red, c(0L, 0L, 1L, 1L), "generated R multi-label code lost repeated tokens")
+assert_identical(get("multi_label_frame", envir = .GlobalEnv), multi_label_source_before, "generated R multi-label code mutated its source")
+rm("multi_label_frame", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(dispatch("undoStep", list(sessionId = multi_label_session_id, revision = 2L, page = page_window()))$action, "undo", "the applied R multi-label step did not undo")
+assert_identical(dispatch("closeSession", list(sessionId = multi_label_session_id))$kind, "closed", "the R multi-label session did not close")
+
+categorical_indicator_code_position <- regexpr(
+  ".ow_generated[[.ow_generated_index]]$values <- as.integer(vapply",
+  multi_label_apply$code,
+  fixed = TRUE
+)[[1L]]
+categorical_budget_code_position <- regexpr(
+  ".ow_total_output_bytes > .ow_maximum_output_bytes",
+  multi_label_apply$code,
+  fixed = TRUE
+)[[1L]]
+assert_identical(
+  categorical_budget_code_position > 0L &&
+    categorical_indicator_code_position > categorical_budget_code_position,
+  TRUE,
+  "generated R categorical code did not guard output budgets before indicator construction"
+)
+
+categorical_oversized_text <- paste0(rep.int("a|", 4097L), collapse = "")
+categorical_oversized_text_frame <- data.frame(
+  tags = factor(categorical_oversized_text),
+  value = 1L,
+  check.names = FALSE
+)
+categorical_oversized_text_environment <- new.env(parent = baseenv())
+assign("multi_label_frame", categorical_oversized_text_frame, envir = categorical_oversized_text_environment)
+categorical_oversized_text_error <- tryCatch(
+  {
+    eval(parse(text = multi_label_apply$code), envir = categorical_oversized_text_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_oversized_text_error, "error"),
+  TRUE,
+  "generated R multi-label code split an oversized source value"
+)
+categorical_generated_helper <- get(
+  "generated_categorical_encode",
+  envir = environment(openwrangler_r_kernel_agent$new_agent),
+  inherits = FALSE
+)
+categorical_generated_helper_environment <- new.env(parent = environment(categorical_generated_helper))
+categorical_generated_helper_environment$.ow_storage_length <- base::length
+environment(categorical_generated_helper) <- categorical_generated_helper_environment
+categorical_helper_oversized_error <- tryCatch(
+  {
+    categorical_generated_helper(
+      categorical_oversized_text_frame,
+      "multiLabelBinarize",
+      list(list(id = "r:c:0", position = 1L, name = "tags", kind = "factor", storageMode = "integer", classes = "factor", timezone = NULL, units = NULL)),
+      NULL,
+      "|",
+      "",
+      FALSE,
+      2048L,
+      512L,
+      8192L,
+      16 * 1024 * 1024,
+      64 * 1024 * 1024,
+      8L,
+      1024L,
+      512L,
+      c("r:c:0", "r:c:1"),
+      "test"
+    )
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_helper_oversized_error, "error") && grepl("bounded valid UTF-8 text", conditionMessage(categorical_helper_oversized_error), fixed = TRUE),
+  TRUE,
+  "the generated categorical helper did not reject oversized UTF-8 before token expansion"
+)
+
+categorical_metadata_level_lengths <- rep.int(8191L, 2047L)
+categorical_metadata_level_lengths[seq_len(1500L)] <- 8192L
+categorical_metadata_levels <- vapply(seq_len(2047L), function(index) {
+  paste0(sprintf("%04d", index), strrep("x", categorical_metadata_level_lengths[[index]] - 4L))
+}, character(1L), USE.NAMES = FALSE)
+categorical_metadata_frame <- data.frame(
+  retained = factor(NA_integer_, levels = categorical_metadata_levels),
+  category = factor("a"),
+  check.names = FALSE
+)
+categorical_metadata_error <- tryCatch(
+  {
+    categorical_generated_helper(
+      categorical_metadata_frame,
+      "oneHotEncode",
+      list(list(id = "r:c:1", position = 2L, name = "category", kind = "factor", storageMode = "integer", classes = "factor", timezone = NULL, units = NULL)),
+      "_",
+      NULL,
+      NULL,
+      FALSE,
+      2048L,
+      512L,
+      8192L,
+      16 * 1024 * 1024,
+      64 * 1024 * 1024,
+      8L,
+      1024L,
+      512L,
+      c("r:c:0", "r:c:1"),
+      "metadata"
+    )
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_metadata_error, "error") && grepl("metadata is too large", conditionMessage(categorical_metadata_error), fixed = TRUE),
+  TRUE,
+  "generated R one-hot code ignored full resulting-frame metadata"
+)
+categorical_identity_levels <- categorical_metadata_levels
+categorical_identity_levels[1461:1500] <- substring(
+  categorical_identity_levels[1461:1500],
+  1L,
+  8191L
+)
+categorical_identity_frame <- data.frame(
+  retained = factor(NA_integer_, levels = categorical_identity_levels),
+  category = factor("a"),
+  check.names = FALSE
+)
+categorical_identity_error <- tryCatch(
+  {
+    categorical_generated_helper(
+      categorical_identity_frame,
+      "oneHotEncode",
+      list(list(id = "r:c:1", position = 2L, name = "category", kind = "factor", storageMode = "integer", classes = "factor", timezone = NULL, units = NULL)),
+      "_",
+      NULL,
+      NULL,
+      FALSE,
+      2048L,
+      512L,
+      8192L,
+      16 * 1024 * 1024,
+      64 * 1024 * 1024,
+      8L,
+      1024L,
+      512L,
+      c("r:c:0", "r:c:1"),
+      "metadata"
+    )
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_identity_error, "error") && grepl("metadata is too large", conditionMessage(categorical_identity_error), fixed = TRUE),
+  TRUE,
+  "generated R one-hot code ignored the global derived-identity metadata delta"
+)
+categorical_metadata_drop_frame <- categorical_metadata_frame
+categorical_metadata_drop_frame$retained <- factor(
+  "a",
+  levels = c("a", categorical_metadata_levels[-1L])
+)
+categorical_metadata_drop_generated <- categorical_generated_helper(
+  categorical_metadata_drop_frame,
+  "oneHotEncode",
+  list(list(id = "r:c:0", position = 1L, name = "retained", kind = "factor", storageMode = "integer", classes = "factor", timezone = NULL, units = NULL)),
+  "_",
+  NULL,
+  NULL,
+  TRUE,
+  2048L,
+  512L,
+  8192L,
+  16 * 1024 * 1024,
+  64 * 1024 * 1024,
+  8L,
+  1024L,
+  512L,
+  c("r:c:0", "r:c:1"),
+  "metadata-drop"
+)
+categorical_metadata_drop_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_metadata_drop_frame,
+  1L,
+  "retained",
+  "_",
+  TRUE
+)$value
+assert_identical(
+  categorical_metadata_drop_generated$value,
+  categorical_metadata_drop_expected,
+  "generated R one-hot metadata accounting did not subtract a dropped near-cap factor"
+)
+categorical_semantic_metadata_timezone <- strrep("z", 1024L)
+categorical_semantic_metadata_frame <- data.frame(
+  retained = structure(
+    0,
+    class = c("POSIXct", "POSIXt"),
+    tzone = structure(
+      categorical_semantic_metadata_timezone,
+      names = "zone",
+      class = "AsIs"
+    )
+  ),
+  category = factor("a"),
+  check.names = FALSE
+)
+categorical_semantic_metadata_retain_error <- tryCatch(
+  {
+    categorical_generated_helper(
+      categorical_semantic_metadata_frame,
+      "oneHotEncode",
+      list(list(
+        id = "r:c:1",
+        position = 2L,
+        name = "category",
+        kind = "factor",
+        storageMode = "integer",
+        classes = "factor",
+        timezone = NULL,
+        units = NULL
+      )),
+      "_",
+      NULL,
+      NULL,
+      FALSE,
+      2048L,
+      1024L,
+      8192L,
+      3600L,
+      64 * 1024 * 1024,
+      8L,
+      1024L,
+      512L,
+      c("r:c:0", "r:c:1"),
+      "semantic-metadata-retain"
+    )
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_semantic_metadata_retain_error, "error") &&
+    grepl("metadata is too large", conditionMessage(categorical_semantic_metadata_retain_error), fixed = TRUE),
+  TRUE,
+  "generated categorical result metadata ignored a retained timezone"
+)
+categorical_semantic_metadata_drop <- categorical_generated_helper(
+  categorical_semantic_metadata_frame,
+  "oneHotEncode",
+  list(list(
+    id = "r:c:0",
+    position = 1L,
+    name = "retained",
+    kind = "datetime",
+    storageMode = "double",
+    classes = c("POSIXct", "POSIXt"),
+    timezone = categorical_semantic_metadata_timezone,
+    units = NULL
+  )),
+  "_",
+  NULL,
+  NULL,
+  TRUE,
+  2048L,
+  1024L,
+  8192L,
+  3600L,
+  64 * 1024 * 1024,
+  8L,
+  1024L,
+  512L,
+  c("r:c:0", "r:c:1"),
+  "semantic-metadata-drop"
+)
+categorical_semantic_metadata_drop_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_semantic_metadata_frame,
+  1L,
+  "retained",
+  "_",
+  TRUE
+)$value
+assert_identical(
+  categorical_semantic_metadata_drop$value,
+  categorical_semantic_metadata_drop_expected,
+  "generated categorical result metadata failed to subtract a dropped timezone"
+)
+categorical_source_metadata_name <- strrep("n", 600L)
+source_environment$categorical_source_metadata_frame <- data.frame(
+  selected = factor("", levels = ""),
+  keep = 1L,
+  check.names = FALSE
+)
+names(source_environment$categorical_source_metadata_frame)[[1L]] <- categorical_source_metadata_name
+categorical_source_metadata_session_id <- "afafafaf-afaf-4faf-8faf-afafafafafaf"
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_source_metadata_session_id, variableName = "categorical_source_metadata_frame", page = page_window()))$kind,
+  "page",
+  "the source-metadata categorical session did not open"
+)
+categorical_source_metadata_step <- list(
+  id = "categorical-source-metadata",
+  kind = "oneHotEncode",
+  params = list(
+    columns = I(list(list(id = "r:c:0", name = categorical_source_metadata_name))),
+    prefixSeparator = "",
+    dropOriginal = TRUE
+  )
+)
+categorical_source_metadata_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_source_metadata_session_id,
+    revision = 0L,
+    step = categorical_source_metadata_step,
+    page = page_window()
+  )
+)
+categorical_source_metadata_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_source_metadata_session_id,
+    revision = categorical_source_metadata_preview$revision,
+    page = page_window()
+  )
+)
+categorical_oversized_source <- data.frame(
+  selected = factor("", levels = c(categorical_metadata_levels, "")),
+  keep = 1L,
+  check.names = FALSE
+)
+names(categorical_oversized_source)[[1L]] <- categorical_source_metadata_name
+categorical_oversized_source_before <- serialize(categorical_oversized_source, NULL, version = 3L)
+categorical_oversized_live_error <- tryCatch(
+  {
+    openwrangler_r_frame_contract$capture_frame(categorical_oversized_source)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_oversized_live_error, "error"),
+  TRUE,
+  "the source-metadata regression fixture did not exceed the live payload budget"
+)
+categorical_source_metadata_environment <- new.env(parent = baseenv())
+assign("categorical_source_metadata_frame", categorical_oversized_source, envir = categorical_source_metadata_environment)
+categorical_oversized_generated_error <- tryCatch(
+  {
+    eval(parse(text = categorical_source_metadata_apply$code), envir = categorical_source_metadata_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_oversized_generated_error, "error"),
+  TRUE,
+  "generated categorical code erased oversized source metadata before validation"
+)
+assert_identical(
+  serialize(get("categorical_source_metadata_frame", envir = categorical_source_metadata_environment), NULL, version = 3L),
+  categorical_oversized_source_before,
+  "generated categorical source-metadata validation mutated its source"
+)
+assert_identical(
+  dispatch("closeSession", list(sessionId = categorical_source_metadata_session_id))$kind,
+  "closed",
+  "the source-metadata categorical session did not close"
+)
+
+categorical_timezone_metadata_value <- strrep("z", 1024L)
+categorical_timezone_metadata_columns <- setNames(
+  lapply(seq_len(2047L), function(index) {
+    structure(
+      0,
+      class = c("POSIXct", "POSIXt"),
+      tzone = categorical_timezone_metadata_value
+    )
+  }),
+  sprintf("t%04d", seq_len(2047L))
+)
+source_environment$categorical_timezone_metadata_frame <- structure(
+  c(list(f = factor("a")), categorical_timezone_metadata_columns),
+  class = "data.frame",
+  row.names = .set_row_names(1L)
+)
+categorical_timezone_metadata_session_id <- "a5a5a5a5-a5a5-45a5-85a5-a5a5a5a5a5a5"
+assert_identical(
+  dispatch(
+    "openSession",
+    list(
+      sessionId = categorical_timezone_metadata_session_id,
+      variableName = "categorical_timezone_metadata_frame",
+      page = page_window(column_limit = 1L)
+    )
+  )$kind,
+  "page",
+  "the timezone-metadata categorical session did not open"
+)
+categorical_timezone_metadata_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_timezone_metadata_session_id,
+    revision = 0L,
+    step = list(
+      id = "categorical-timezone-metadata",
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(list(id = "r:c:1", name = "t0001"))),
+        prefixSeparator = "_",
+        dropOriginal = TRUE
+      )
+    ),
+    page = page_window(column_limit = 1L)
+  )
+)
+categorical_timezone_metadata_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_timezone_metadata_session_id,
+    revision = categorical_timezone_metadata_preview$revision,
+    page = page_window(column_limit = 1L)
+  )
+)
+assert_identical(
+  categorical_timezone_metadata_apply$kind,
+  "planUpdated",
+  "the timezone-metadata categorical plan did not compile"
+)
+categorical_timezone_metadata_levels <- vapply(seq_len(1657L), function(index) {
+  paste0(sprintf("%04d", index), strrep("x", 8186L))
+}, character(1L), USE.NAMES = FALSE)
+categorical_timezone_metadata_near <- source_environment$categorical_timezone_metadata_frame
+categorical_timezone_metadata_near[[1L]] <- factor(
+  categorical_timezone_metadata_levels[[1L]],
+  levels = categorical_timezone_metadata_levels[seq_len(1656L)]
+)
+categorical_timezone_metadata_near_before <- serialize(
+  categorical_timezone_metadata_near,
+  NULL,
+  version = 3L
+)
+categorical_timezone_metadata_near_capture <- openwrangler_r_frame_contract$capture_frame(
+  categorical_timezone_metadata_near
+)
+assert_identical(
+  categorical_timezone_metadata_near_capture$metadataBytes,
+  16770677,
+  "the timezone-metadata boundary fixture no longer sits 6539 bytes below the payload cap"
+)
+categorical_timezone_metadata_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_timezone_metadata_near,
+  2L,
+  "t0001",
+  "_",
+  TRUE
+)$value
+categorical_timezone_metadata_environment <- new.env(parent = baseenv())
+assign(
+  "categorical_timezone_metadata_frame",
+  categorical_timezone_metadata_near,
+  envir = categorical_timezone_metadata_environment
+)
+eval(
+  parse(text = categorical_timezone_metadata_apply$code),
+  envir = categorical_timezone_metadata_environment
+)
+categorical_timezone_metadata_generated <- get(
+  "open_wrangler_result",
+  envir = categorical_timezone_metadata_environment,
+  inherits = FALSE
+)
+assert_identical(
+  categorical_timezone_metadata_generated,
+  categorical_timezone_metadata_expected,
+  "generated categorical code rejected or changed an in-budget timezone-metadata boundary"
+)
+assert_identical(
+  serialize(
+    get(
+      "categorical_timezone_metadata_frame",
+      envir = categorical_timezone_metadata_environment,
+      inherits = FALSE
+    ),
+    NULL,
+    version = 3L
+  ),
+  categorical_timezone_metadata_near_before,
+  "generated in-budget timezone-metadata replay mutated its source"
+)
+categorical_timezone_metadata_oversize <- source_environment$categorical_timezone_metadata_frame
+categorical_timezone_metadata_oversize[[1L]] <- factor(
+  categorical_timezone_metadata_levels[[1L]],
+  levels = categorical_timezone_metadata_levels
+)
+categorical_timezone_metadata_oversize_before <- serialize(
+  categorical_timezone_metadata_oversize,
+  NULL,
+  version = 3L
+)
+categorical_timezone_metadata_live_error <- tryCatch(
+  {
+    openwrangler_r_frame_contract$capture_frame(categorical_timezone_metadata_oversize)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_timezone_metadata_live_error, "error"),
+  TRUE,
+  "the timezone-metadata oversize fixture remained live-capturable"
+)
+assign(
+  "categorical_timezone_metadata_frame",
+  categorical_timezone_metadata_oversize,
+  envir = categorical_timezone_metadata_environment
+)
+categorical_timezone_metadata_generated_error <- tryCatch(
+  {
+    eval(
+      parse(text = categorical_timezone_metadata_apply$code),
+      envir = categorical_timezone_metadata_environment
+    )
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_timezone_metadata_generated_error, "error"),
+  TRUE,
+  "generated categorical code ignored oversized timezone metadata"
+)
+assert_identical(
+  serialize(
+    get(
+      "categorical_timezone_metadata_frame",
+      envir = categorical_timezone_metadata_environment,
+      inherits = FALSE
+    ),
+    NULL,
+    version = 3L
+  ),
+  categorical_timezone_metadata_oversize_before,
+  "failed generated timezone-metadata validation mutated its source"
+)
+assert_identical(
+  dispatch("closeSession", list(sessionId = categorical_timezone_metadata_session_id))$kind,
+  "closed",
+  "the timezone-metadata categorical session did not close"
+)
+rm(list = "categorical_timezone_metadata_frame", envir = source_environment)
+rm(
+  categorical_metadata_levels,
+  categorical_metadata_frame,
+  categorical_metadata_drop_frame,
+  categorical_identity_levels,
+  categorical_identity_frame,
+  categorical_oversized_source,
+  categorical_oversized_source_before,
+  categorical_timezone_metadata_columns,
+  categorical_timezone_metadata_environment,
+  categorical_timezone_metadata_expected,
+  categorical_timezone_metadata_generated,
+  categorical_timezone_metadata_levels,
+  categorical_timezone_metadata_near,
+  categorical_timezone_metadata_near_capture,
+  categorical_timezone_metadata_oversize,
+  categorical_timezone_metadata_value,
+  categorical_semantic_metadata_drop,
+  categorical_semantic_metadata_drop_expected,
+  categorical_semantic_metadata_frame,
+  categorical_semantic_metadata_retain_error,
+  categorical_semantic_metadata_timezone,
+  categorical_metadata_drop_generated,
+  categorical_metadata_drop_expected
+)
+
+source_environment$categorical_dynamic_frame <- data.frame(
+  cat1 = factor(c("a", "b")),
+  cat2 = factor(c("x", "y")),
+  keep = 1:2,
+  check.names = FALSE
+)
+categorical_dynamic_session_id <- "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae"
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_dynamic_session_id, variableName = "categorical_dynamic_frame", page = page_window()))$kind,
+  "page",
+  "the dynamic multi-step categorical session did not open"
+)
+categorical_dynamic_first_step <- list(
+  id = "categorical-dynamic-first",
+  kind = "oneHotEncode",
+  params = list(
+    columns = I(list(list(id = "r:c:0", name = "cat1"))),
+    dropOriginal = FALSE
+  )
+)
+categorical_dynamic_first_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_dynamic_session_id,
+    revision = 0L,
+    step = categorical_dynamic_first_step,
+    page = page_window()
+  )
+)
+categorical_dynamic_first_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_dynamic_session_id,
+    revision = categorical_dynamic_first_preview$revision,
+    page = page_window()
+  )
+)
+categorical_dynamic_second_step <- list(
+  id = "categorical-dynamic-second",
+  kind = "oneHotEncode",
+  params = list(
+    columns = I(list(list(id = "r:c:1", name = "cat2"))),
+    dropOriginal = FALSE
+  )
+)
+categorical_dynamic_second_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_dynamic_session_id,
+    revision = categorical_dynamic_first_apply$revision,
+    step = categorical_dynamic_second_step,
+    page = page_window()
+  )
+)
+categorical_dynamic_second_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_dynamic_session_id,
+    revision = categorical_dynamic_second_preview$revision,
+    page = page_window()
+  )
+)
+categorical_dynamic_changed <- data.frame(
+  cat1 = factor(c("a", "b", "c")),
+  cat2 = factor(c("x", "y", "z")),
+  keep = 1:3,
+  check.names = FALSE
+)
+categorical_dynamic_source_before <- serialize(categorical_dynamic_changed, NULL, version = 3L)
+categorical_dynamic_live_first <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_dynamic_changed,
+  1L,
+  "cat1",
+  "_",
+  FALSE
+)$value
+categorical_dynamic_live_second <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_dynamic_live_first,
+  2L,
+  "cat2",
+  "_",
+  FALSE
+)$value
+categorical_dynamic_environment <- new.env(parent = baseenv())
+assign("categorical_dynamic_frame", categorical_dynamic_changed, envir = categorical_dynamic_environment)
+eval(parse(text = categorical_dynamic_second_apply$code), envir = categorical_dynamic_environment)
+categorical_dynamic_generated <- get("open_wrangler_result", envir = categorical_dynamic_environment, inherits = FALSE)
+assert_identical(
+  categorical_dynamic_generated,
+  categorical_dynamic_live_second,
+  "generated multi-step categorical replay did not follow changed dynamic cardinality"
+)
+assert_identical(
+  serialize(get("categorical_dynamic_frame", envir = categorical_dynamic_environment), NULL, version = 3L),
+  categorical_dynamic_source_before,
+  "generated multi-step categorical replay mutated its changed source"
+)
+categorical_dynamic_bundle_first <- categorical_generated_helper(
+  categorical_dynamic_changed,
+  "oneHotEncode",
+  list(list(id = "r:c:0", position = 1L, name = "cat1", kind = "factor", storageMode = "integer", classes = "factor", timezone = NULL, units = NULL)),
+  "_",
+  NULL,
+  NULL,
+  FALSE,
+  2048L,
+  512L,
+  8192L,
+  16 * 1024 * 1024,
+  64 * 1024 * 1024,
+  8L,
+  1024L,
+  512L,
+  c("r:c:0", "r:c:1", "r:c:2"),
+  "categorical-dynamic-first"
+)
+categorical_dynamic_bundle_second <- categorical_generated_helper(
+  categorical_dynamic_bundle_first$value,
+  "oneHotEncode",
+  list(list(id = "r:c:1", position = 2L, name = "cat2", kind = "factor", storageMode = "integer", classes = "factor", timezone = NULL, units = NULL)),
+  "_",
+  NULL,
+  NULL,
+  FALSE,
+  2048L,
+  512L,
+  8192L,
+  16 * 1024 * 1024,
+  64 * 1024 * 1024,
+  8L,
+  1024L,
+  512L,
+  categorical_dynamic_bundle_first$outputIds,
+  "categorical-dynamic-second"
+)
+categorical_dynamic_expected_ids <- c(
+  "r:c:0",
+  "r:c:1",
+  "r:c:2",
+  paste0("c:step:categorical-dynamic-first:", 0:2),
+  paste0("c:step:categorical-dynamic-second:", 0:2)
+)
+assert_identical(
+  categorical_dynamic_bundle_second$outputIds,
+  categorical_dynamic_expected_ids,
+  "generated multi-step categorical replay lost dynamically flowing output identities"
+)
+assert_identical(
+  categorical_dynamic_bundle_second$value,
+  categorical_dynamic_live_second,
+  "generated multi-step categorical helper values diverged from live replay"
+)
+assert_identical(
+  dispatch("closeSession", list(sessionId = categorical_dynamic_session_id))$kind,
+  "closed",
+  "the dynamic multi-step categorical session did not close"
+)
+
+source_environment$categorical_lineage_frame <- data.frame(
+  cat = c("a", "b"),
+  number = c(10, 20),
+  check.names = FALSE
+)
+categorical_lineage_source_before <- serialize(
+  source_environment$categorical_lineage_frame,
+  NULL,
+  version = 3L
+)
+categorical_lineage_session_id <- "a4a4a4a4-a4a4-44a4-84a4-a4a4a4a4a4a4"
+assert_identical(
+  dispatch(
+    "openSession",
+    list(
+      sessionId = categorical_lineage_session_id,
+      variableName = "categorical_lineage_frame",
+      page = page_window()
+    )
+  )$kind,
+  "page",
+  "the derived-lineage categorical session did not open"
+)
+categorical_lineage_first_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_lineage_session_id,
+    revision = 0L,
+    step = list(
+      id = "lineage-category-first",
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(list(id = "r:c:0", name = "cat"))),
+        prefixSeparator = "_",
+        dropOriginal = FALSE
+      )
+    ),
+    page = page_window()
+  )
+)
+categorical_lineage_first_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_lineage_session_id,
+    revision = categorical_lineage_first_preview$revision,
+    page = page_window()
+  )
+)
+categorical_lineage_formula_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_lineage_session_id,
+    revision = categorical_lineage_first_apply$revision,
+    step = list(
+      id = "make-calc",
+      kind = "formula",
+      params = list(
+        leftColumn = list(id = "r:c:1", name = "number"),
+        operator = "add",
+        value = 1,
+        newColumn = "calc"
+      )
+    ),
+    page = page_window()
+  )
+)
+categorical_lineage_formula_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_lineage_session_id,
+    revision = categorical_lineage_formula_preview$revision,
+    page = page_window()
+  )
+)
+categorical_lineage_final_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_lineage_session_id,
+    revision = categorical_lineage_formula_apply$revision,
+    step = list(
+      id = "lineage-category-final",
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(list(id = "c:step:make-calc:0", name = "calc"))),
+        prefixSeparator = "_",
+        dropOriginal = FALSE
+      )
+    ),
+    page = page_window()
+  )
+)
+categorical_lineage_final_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = categorical_lineage_session_id,
+    revision = categorical_lineage_final_preview$revision,
+    page = page_window()
+  )
+)
+assert_identical(
+  categorical_lineage_final_apply$kind,
+  "planUpdated",
+  "the derived-lineage categorical plan did not apply"
+)
+categorical_lineage_changed <- data.frame(
+  cat = c("a", "b", "c"),
+  number = c(10, 20, 30),
+  check.names = FALSE
+)
+categorical_lineage_changed_before <- serialize(
+  categorical_lineage_changed,
+  NULL,
+  version = 3L
+)
+categorical_lineage_live_first <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_lineage_changed,
+  1L,
+  "cat",
+  "_",
+  FALSE
+)$value
+categorical_lineage_live_formula <- openwrangler_r_frame_contract$formula_column_at(
+  categorical_lineage_live_first,
+  2L,
+  "number",
+  "add",
+  "calc",
+  right_value = 1
+)
+categorical_lineage_live_final <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_lineage_live_formula,
+  length(unclass(categorical_lineage_live_formula)),
+  "calc",
+  "_",
+  FALSE
+)$value
+categorical_lineage_environment <- new.env(parent = baseenv())
+assign(
+  "categorical_lineage_frame",
+  categorical_lineage_changed,
+  envir = categorical_lineage_environment
+)
+eval(
+  parse(text = categorical_lineage_final_apply$code),
+  envir = categorical_lineage_environment
+)
+categorical_lineage_generated <- get(
+  "open_wrangler_result",
+  envir = categorical_lineage_environment,
+  inherits = FALSE
+)
+assert_identical(
+  categorical_lineage_generated,
+  categorical_lineage_live_final,
+  "generated categorical code lost a shifted noncategorical derived-column identity"
+)
+assert_identical(
+  names(categorical_lineage_generated),
+  c("cat", "number", "cat_a", "cat_b", "cat_c", "calc", "calc_11", "calc_21", "calc_31"),
+  "generated categorical code returned the wrong shifted derived-column schema"
+)
+assert_identical(
+  serialize(
+    get("categorical_lineage_frame", envir = categorical_lineage_environment, inherits = FALSE),
+    NULL,
+    version = 3L
+  ),
+  categorical_lineage_changed_before,
+  "generated shifted-lineage categorical code mutated its source"
+)
+assert_identical(
+  serialize(source_environment$categorical_lineage_frame, NULL, version = 3L),
+  categorical_lineage_source_before,
+  "the live derived-lineage categorical plan mutated its source"
+)
+assert_identical(
+  dispatch("closeSession", list(sessionId = categorical_lineage_session_id))$kind,
+  "closed",
+  "the derived-lineage categorical session did not close"
+)
+
+categorical_budget_tokens <- sprintf(
+  "token-%03d-%s",
+  seq_len(100L),
+  strrep("x", 55L)
+)
+categorical_budget_cell <- paste(categorical_budget_tokens, collapse = "|")
+categorical_budget_per_row <- 8 +
+  sum(nchar(categorical_budget_tokens, type = "bytes") + 8) +
+  length(categorical_budget_tokens) * 4
+categorical_budget_rows <- floor((64 * 1024 * 1024) / categorical_budget_per_row)
+categorical_budget_frame <- data.frame(
+  tags = factor(rep.int(categorical_budget_cell, categorical_budget_rows), levels = categorical_budget_cell),
+  value = seq_len(categorical_budget_rows),
+  check.names = FALSE
+)
+categorical_budget_environment <- new.env(parent = baseenv())
+assign("multi_label_frame", categorical_budget_frame, envir = categorical_budget_environment)
+eval(parse(text = multi_label_apply$code), envir = categorical_budget_environment)
+categorical_budget_generated <- get("open_wrangler_result", envir = categorical_budget_environment, inherits = FALSE)
+assert_identical(
+  dim(categorical_budget_generated),
+  c(as.integer(categorical_budget_rows), 102L),
+  "generated R multi-label code rejected the exact in-budget token boundary"
+)
+rm("open_wrangler_result", envir = categorical_budget_environment)
+categorical_budget_oversize <- categorical_budget_frame[
+  rep(seq_len(categorical_budget_rows), length.out = categorical_budget_rows + 1L),
+  ,
+  drop = FALSE
+]
+assign("multi_label_frame", categorical_budget_oversize, envir = categorical_budget_environment)
+categorical_budget_error <- tryCatch(
+  {
+    eval(parse(text = multi_label_apply$code), envir = categorical_budget_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_budget_error, "error") && grepl("output is too large", conditionMessage(categorical_budget_error), fixed = TRUE),
+  TRUE,
+  "generated R multi-label code ignored the combined token/indicator budget"
+)
+
+categorical_many_tokens <- vapply(0:2048, function(offset) intToUtf8(256L + offset), character(1L))
+categorical_high_cardinality_frame <- data.frame(
+  tags = factor(paste(categorical_many_tokens, collapse = "|")),
+  value = 1L,
+  check.names = FALSE
+)
+assign("multi_label_frame", categorical_high_cardinality_frame, envir = categorical_budget_environment)
+categorical_high_cardinality_error <- tryCatch(
+  {
+    eval(parse(text = multi_label_apply$code), envir = categorical_budget_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_high_cardinality_error, "error") && grepl("output is too large", conditionMessage(categorical_high_cardinality_error), fixed = TRUE),
+  TRUE,
+  "generated R multi-label code materialized a changed-schema high-cardinality replay"
+)
+rm(list = "multi_label_frame", envir = categorical_budget_environment)
+
+source_environment$categorical_table <- data.table::data.table(
+  primary_key = c("b", "a", "b"),
+  tags = c("x|y", "x", NA_character_),
+  value = 1:3
+)
+data.table::setkey(source_environment$categorical_table, primary_key)
+categorical_table_before <- data.table::copy(source_environment$categorical_table)
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_table_session_id, variableName = "categorical_table", page = page_window()))$kind,
+  "page",
+  "the R categorical data.table session did not open"
+)
+categorical_table_step <- list(
+  id = "categorical-table-step",
+  kind = "multiLabelBinarize",
+  params = list(column = list(id = "r:c:1", name = "tags"), delimiter = "|", prefix = "")
+)
+categorical_table_preview <- dispatch(
+  "previewStep",
+  list(sessionId = categorical_table_session_id, revision = 0L, step = categorical_table_step, page = page_window())
+)
+assert_identical(categorical_table_preview$page$frameSemantics$keyColumnIds, list("r:c:0"), "R multi-label preview changed a retained data.table key")
+categorical_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = categorical_table_session_id, revision = 1L, page = page_window())
+)
+assign("categorical_table", source_environment$categorical_table, envir = .GlobalEnv)
+eval(parse(text = categorical_table_apply$code), envir = .GlobalEnv)
+categorical_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(class(categorical_table_generated), c("data.table", "data.frame"), "generated R categorical code changed data.table class")
+assert_identical(data.table::key(categorical_table_generated), "primary_key", "generated R categorical code changed a retained data.table key")
+assert_identical(source_environment$categorical_table, categorical_table_before, "R categorical data.table execution mutated its source")
+assert_identical(get("categorical_table", envir = .GlobalEnv), categorical_table_before, "generated R categorical data.table code mutated its source")
+rm("categorical_table", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(dispatch("closeSession", list(sessionId = categorical_table_session_id))$kind, "closed", "the R categorical data.table session did not close")
+
+categorical_family_values <- list(
+  tibble::as_tibble(data.frame(category = c("b", "a"), value = 1:2), .name_repair = "minimal"),
+  collapse::qDF(data.frame(category = c("b", "a"), value = 1:2)),
+  collapse::qTBL(data.frame(category = c("b", "a"), value = 1:2))
+)
+categorical_family_classes <- lapply(categorical_family_values, class)
+for (family_index in seq_along(categorical_family_values)) {
+  variable_name <- paste0("categorical_family_", family_index)
+  source_environment[[variable_name]] <- categorical_family_values[[family_index]]
+  session <- categorical_family_session_ids[[family_index]]
+  assert_identical(dispatch("openSession", list(sessionId = session, variableName = variable_name, page = page_window()))$kind, "page", "an R categorical family session did not open")
+  family_step <- list(
+    id = paste0("categorical-family-step-", family_index),
+    kind = "oneHotEncode",
+    params = list(columns = I(list(list(id = "r:c:0", name = "category"))), dropOriginal = FALSE)
+  )
+  family_preview <- dispatch("previewStep", list(sessionId = session, revision = 0L, step = family_step, page = page_window()))
+  family_apply <- dispatch("applyDraft", list(sessionId = session, revision = 1L, page = page_window()))
+  assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
+  eval(parse(text = family_apply$code), envir = .GlobalEnv)
+  family_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(class(family_generated), categorical_family_classes[[family_index]], "generated R categorical code changed dataframe family")
+  assert_identical(names(family_generated), c("category", "value", "category_a", "category_b"), "generated R categorical code changed a family schema")
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+  assert_identical(dispatch("closeSession", list(sessionId = session))$kind, "closed", "an R categorical family session did not close")
+}
+
+source_environment$categorical_scalar_frame <- data.frame(
+  flag = c(TRUE, FALSE, NA, TRUE, FALSE),
+  whole = c(2L, 1L, NA_integer_, -3L, 2L),
+  number = c(1.5, NaN, NA_real_, Inf, -Inf),
+  text = c("β", "", NA_character_, "alpha", "β"),
+  category = factor(c("used", "", NA, "used", "other"), levels = c("unused", "used", "", "other")),
+  day = as.Date(c("2024-01-02", "2024-01-03", NA, "2024-01-02", "2024-01-03")),
+  instant = as.POSIXct(
+    c("2024-01-02 03:04:05", "2024-01-03 04:05:06", NA, "2024-01-02 03:04:05", NA),
+    tz = "UTC"
+  ),
+  elapsed = as.difftime(c(1, NA, 2, 1, 2), units = "hours"),
+  wide = bit64::as.integer64(c("9007199254740993", "-2", NA, "9007199254740993", "-2")),
+  check.names = FALSE,
+  row.names = paste0("categorical-scalar-", 1:5)
+)
+attr(source_environment$categorical_scalar_frame$instant, "tzone") <- structure(
+  "UTC",
+  names = "named-tzone",
+  comment = "incidental timezone metadata",
+  class = "AsIs"
+)
+attr(source_environment$categorical_scalar_frame$elapsed, "units") <- structure(
+  "hours",
+  names = "named-units",
+  comment = "incidental units metadata",
+  class = "AsIs"
+)
+categorical_scalar_before <- unserialize(serialize(source_environment$categorical_scalar_frame, NULL, version = 3L))
+categorical_scalar_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  source_environment$categorical_scalar_frame,
+  seq_len(ncol(source_environment$categorical_scalar_frame)),
+  names(source_environment$categorical_scalar_frame),
+  prefix_separator = "_",
+  drop_original = FALSE
+)$value
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_scalar_session_id, variableName = "categorical_scalar_frame", page = page_window()))$kind,
+  "page",
+  "the scalar R one-hot session did not open"
+)
+categorical_scalar_step <- list(
+  id = "categorical-scalar-step",
+  kind = "oneHotEncode",
+  params = list(
+    columns = I(lapply(seq_len(ncol(source_environment$categorical_scalar_frame)), function(index) {
+      list(id = paste0("r:c:", index - 1L), name = names(source_environment$categorical_scalar_frame)[[index]])
+    })),
+    prefixSeparator = "_",
+    dropOriginal = FALSE
+  )
+)
+categorical_scalar_preview <- dispatch(
+  "previewStep",
+  list(sessionId = categorical_scalar_session_id, revision = 0L, step = categorical_scalar_step, page = page_window())
+)
+assert_identical(categorical_scalar_preview$kind, "stepPreview", "scalar R one-hot encoding did not preview")
+assert_identical(
+  vapply(categorical_scalar_preview$page$schema, `[[`, character(1L), "name"),
+  names(categorical_scalar_expected),
+  "scalar R one-hot preview diverged from the frame contract"
+)
+categorical_scalar_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = categorical_scalar_session_id, revision = 1L, page = page_window())
+)
+assign("categorical_scalar_frame", source_environment$categorical_scalar_frame, envir = .GlobalEnv)
+eval(parse(text = categorical_scalar_apply$code), envir = .GlobalEnv)
+categorical_scalar_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(categorical_scalar_generated, categorical_scalar_expected, "generated R one-hot code diverged across supported scalar kinds")
+assert_identical(get("categorical_scalar_frame", envir = .GlobalEnv), categorical_scalar_before, "generated scalar R one-hot code mutated its source")
+assert_generated_categorical_type_drift <- function(changed, label) {
+  changed_bytes <- serialize(changed, NULL, version = 3L)
+  assign("categorical_scalar_frame", changed, envir = .GlobalEnv)
+  if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("open_wrangler_result", envir = .GlobalEnv)
+  }
+  generated_error <- tryCatch(
+    {
+      eval(parse(text = categorical_scalar_apply$code), envir = .GlobalEnv)
+      NULL
+    },
+    error = identity
+  )
+  assert_identical(
+    inherits(generated_error, "error") &&
+      grepl("type or semantics is stale", conditionMessage(generated_error), fixed = TRUE),
+    TRUE,
+    sprintf("generated R categorical code accepted %s", label)
+  )
+  assert_identical(
+    serialize(get("categorical_scalar_frame", envir = .GlobalEnv), NULL, version = 3L),
+    changed_bytes,
+    sprintf("failed generated R categorical %s validation mutated its source", label)
+  )
+}
+categorical_date_to_double <- source_environment$categorical_scalar_frame
+categorical_date_to_double$day <- as.double(categorical_date_to_double$day)
+assert_generated_categorical_type_drift(categorical_date_to_double, "Date-to-double type drift")
+categorical_character_to_factor <- source_environment$categorical_scalar_frame
+categorical_character_to_factor$text <- factor(categorical_character_to_factor$text)
+assert_generated_categorical_type_drift(categorical_character_to_factor, "character-to-factor type drift")
+categorical_factor_to_ordered <- source_environment$categorical_scalar_frame
+categorical_factor_to_ordered$category <- ordered(
+  categorical_factor_to_ordered$category,
+  levels = levels(categorical_factor_to_ordered$category)
+)
+assert_generated_categorical_type_drift(categorical_factor_to_ordered, "factor-class drift")
+categorical_datetime_to_double <- source_environment$categorical_scalar_frame
+categorical_datetime_to_double$instant <- as.double(categorical_datetime_to_double$instant)
+assert_generated_categorical_type_drift(categorical_datetime_to_double, "POSIXct-to-double type drift")
+categorical_timezone_drift <- source_environment$categorical_scalar_frame
+attr(categorical_timezone_drift$instant, "tzone") <- "Europe/Berlin"
+assert_generated_categorical_type_drift(categorical_timezone_drift, "POSIXct timezone drift")
+categorical_units_drift <- source_environment$categorical_scalar_frame
+attr(categorical_units_drift$elapsed, "units") <- "mins"
+assert_generated_categorical_type_drift(categorical_units_drift, "difftime units drift")
+categorical_invalid_date_frame <- source_environment$categorical_scalar_frame
+categorical_invalid_date_frame$day <- structure(c(1e15, rep.int(NA_real_, 4L)), class = "Date")
+assign("categorical_scalar_frame", categorical_invalid_date_frame, envir = .GlobalEnv)
+if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
+  rm("open_wrangler_result", envir = .GlobalEnv)
+}
+categorical_invalid_date_error <- tryCatch(
+  {
+    eval(parse(text = categorical_scalar_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_invalid_date_error, "error") && grepl("supported ISO range", conditionMessage(categorical_invalid_date_error), fixed = TRUE),
+  TRUE,
+  "generated R one-hot code accepted an out-of-range Date display"
+)
+categorical_invalid_datetime_frame <- source_environment$categorical_scalar_frame
+categorical_invalid_datetime_frame$instant <- structure(
+  c(1e20, rep.int(NA_real_, 4L)),
+  class = c("POSIXct", "POSIXt"),
+  tzone = "UTC"
+)
+assign("categorical_scalar_frame", categorical_invalid_datetime_frame, envir = .GlobalEnv)
+categorical_invalid_datetime_error <- tryCatch(
+  {
+    eval(parse(text = categorical_scalar_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_invalid_datetime_error, "error") && grepl("supported range", conditionMessage(categorical_invalid_datetime_error), fixed = TRUE),
+  TRUE,
+  "generated R one-hot code accepted an out-of-range POSIXct display"
+)
+categorical_oversized_character_frame <- source_environment$categorical_scalar_frame
+categorical_oversized_character_frame$text[[1L]] <- strrep("a", 8193L)
+assign("categorical_scalar_frame", categorical_oversized_character_frame, envir = .GlobalEnv)
+categorical_oversized_character_error <- tryCatch(
+  {
+    eval(parse(text = categorical_scalar_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(categorical_oversized_character_error, "error"),
+  TRUE,
+  "generated R one-hot code accepted an oversized character category"
+)
+rm("categorical_scalar_frame", envir = .GlobalEnv)
+assert_identical(dispatch("closeSession", list(sessionId = categorical_scalar_session_id))$kind, "closed", "the scalar R one-hot session did not close")
+
+source_environment$categorical_error_frame <- data.frame(
+  group = "a",
+  group_a = 7L,
+  check.names = FALSE
+)
+categorical_error_before <- source_environment$categorical_error_frame
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_error_session_id, variableName = "categorical_error_frame", page = page_window()))$kind,
+  "page",
+  "the categorical error-guard session did not open"
+)
+categorical_collision <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_error_session_id,
+    revision = 0L,
+    step = list(
+      id = "categorical-collision",
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(list(id = "r:c:0", name = "group"))),
+        dropOriginal = FALSE
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(categorical_collision$kind, "error", "R one-hot encoding accepted a generated-name collision")
+assert_identical(categorical_collision$code, "invalid_request", "R one-hot collision returned the wrong diagnostic")
+categorical_stale <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_error_session_id,
+    revision = 0L,
+    step = list(
+      id = "categorical-stale",
+      kind = "multiLabelBinarize",
+      params = list(column = list(id = "r:c:9", name = "group"), delimiter = "|")
+    ),
+    page = page_window()
+  )
+)
+assert_identical(categorical_stale$kind, "error", "R multi-label binarization accepted a stale column identity")
+assert_identical(categorical_stale$code, "stale_column", "R multi-label stale reference returned the wrong diagnostic")
+assert_identical(source_environment$categorical_error_frame, categorical_error_before, "failed R categorical previews mutated their source")
+assert_identical(dispatch("closeSession", list(sessionId = categorical_error_session_id))$kind, "closed", "the categorical error-guard session did not close")
+
+source_environment$categorical_empty_frame <- data.frame(tags = character(), check.names = FALSE)
+assert_identical(
+  dispatch("openSession", list(sessionId = categorical_empty_session_id, variableName = "categorical_empty_frame", page = page_window()))$kind,
+  "page",
+  "the empty categorical guard session did not open"
+)
+categorical_empty <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_empty_session_id,
+    revision = 0L,
+    step = list(
+      id = "categorical-empty",
+      kind = "multiLabelBinarize",
+      params = list(
+        column = list(id = "r:c:0", name = "tags"),
+        delimiter = "|",
+        dropOriginal = TRUE
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(categorical_empty$kind, "error", "R multi-label binarization accepted a dynamically empty output schema")
+assert_identical(categorical_empty$code, "invalid_request", "the dynamically empty categorical diagnostic changed")
+assert_identical(dispatch("closeSession", list(sessionId = categorical_empty_session_id))$kind, "closed", "the empty categorical guard session did not close")
+
+categorical_retained_empty_cases <- list(
+  list(
+    label = "one-hot positive rows retained originals",
+    sessionId = "d1d1d1d1-d1d1-41d1-81d1-d1d1d1d1d1d1",
+    kind = "oneHotEncode",
+    dropOriginal = FALSE,
+    source = data.frame(input = c(NA_character_, ""), keep = 1:2, check.names = FALSE)
+  ),
+  list(
+    label = "one-hot positive rows dropped original",
+    sessionId = "d2d2d2d2-d2d2-42d2-82d2-d2d2d2d2d2d2",
+    kind = "oneHotEncode",
+    dropOriginal = TRUE,
+    source = data.frame(input = c(NA_character_, ""), keep = 1:2, check.names = FALSE)
+  ),
+  list(
+    label = "one-hot zero rows retained originals",
+    sessionId = "d3d3d3d3-d3d3-43d3-83d3-d3d3d3d3d3d3",
+    kind = "oneHotEncode",
+    dropOriginal = FALSE,
+    source = data.frame(input = character(), keep = integer(), check.names = FALSE)
+  ),
+  list(
+    label = "one-hot zero rows dropped original",
+    sessionId = "d4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4",
+    kind = "oneHotEncode",
+    dropOriginal = TRUE,
+    source = data.frame(input = character(), keep = integer(), check.names = FALSE)
+  ),
+  list(
+    label = "multi-label positive rows retained originals",
+    sessionId = "d5d5d5d5-d5d5-45d5-85d5-d5d5d5d5d5d5",
+    kind = "multiLabelBinarize",
+    dropOriginal = FALSE,
+    source = data.frame(input = c(NA_character_, ""), keep = 1:2, check.names = FALSE)
+  ),
+  list(
+    label = "multi-label positive rows dropped original",
+    sessionId = "d6d6d6d6-d6d6-46d6-86d6-d6d6d6d6d6d6",
+    kind = "multiLabelBinarize",
+    dropOriginal = TRUE,
+    source = data.frame(input = c(NA_character_, ""), keep = 1:2, check.names = FALSE)
+  ),
+  list(
+    label = "multi-label zero rows retained originals",
+    sessionId = "d7d7d7d7-d7d7-47d7-87d7-d7d7d7d7d7d7",
+    kind = "multiLabelBinarize",
+    dropOriginal = FALSE,
+    source = data.frame(input = character(), keep = integer(), check.names = FALSE)
+  ),
+  list(
+    label = "multi-label zero rows dropped original",
+    sessionId = "d8d8d8d8-d8d8-48d8-88d8-d8d8d8d8d8d8",
+    kind = "multiLabelBinarize",
+    dropOriginal = TRUE,
+    source = data.frame(input = character(), keep = integer(), check.names = FALSE)
+  )
+)
+categorical_empty_step <- function(kind, id, drop_original) {
+  if (identical(kind, "oneHotEncode")) {
+    list(
+      id = id,
+      kind = kind,
+      params = list(
+        columns = I(list(list(id = "r:c:0", name = "input"))),
+        dropOriginal = drop_original
+      )
+    )
+  } else {
+    list(
+      id = id,
+      kind = kind,
+      params = list(
+        column = list(id = "r:c:0", name = "input"),
+        delimiter = "|",
+        prefix = "tag_",
+        dropOriginal = drop_original
+      )
+    )
+  }
+}
+for (case_index in seq_along(categorical_retained_empty_cases)) {
+  case <- categorical_retained_empty_cases[[case_index]]
+  variable_name <- sprintf("categorical_retained_empty_%d", case_index)
+  source_environment[[variable_name]] <- case$source
+  source_bytes <- serialize(case$source, NULL, version = 3L)
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = case$sessionId, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("the %s session did not open", case$label))
+  previewed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case$sessionId,
+      revision = 0L,
+      step = categorical_empty_step(case$kind, sprintf("categorical-empty-live-%d", case_index), case$dropOriginal),
+      page = page_window()
+    )
+  )
+  assert_identical(previewed$kind, "error", sprintf("%s accepted zero generated columns", case$label))
+  assert_identical(previewed$code, "invalid_request", sprintf("%s returned the wrong error", case$label))
+  assert_identical(
+    serialize(source_environment[[variable_name]], NULL, version = 3L),
+    source_bytes,
+    sprintf("%s mutated its source", case$label)
+  )
+  assert_identical(
+    dispatch("closeSession", list(sessionId = case$sessionId))$kind,
+    "closed",
+    sprintf("the %s session did not close", case$label)
+  )
+  rm(list = variable_name, envir = source_environment)
+}
+
+categorical_generated_empty_cases <- list(
+  list(kind = "oneHotEncode", dropOriginal = FALSE, sessionId = "e1e1e1e1-e1e1-41e1-81e1-e1e1e1e1e1e1"),
+  list(kind = "oneHotEncode", dropOriginal = TRUE, sessionId = "e2e2e2e2-e2e2-42e2-82e2-e2e2e2e2e2e2"),
+  list(kind = "multiLabelBinarize", dropOriginal = FALSE, sessionId = "e3e3e3e3-e3e3-43e3-83e3-e3e3e3e3e3e3"),
+  list(kind = "multiLabelBinarize", dropOriginal = TRUE, sessionId = "e4e4e4e4-e4e4-44e4-84e4-e4e4e4e4e4e4")
+)
+for (case_index in seq_along(categorical_generated_empty_cases)) {
+  case <- categorical_generated_empty_cases[[case_index]]
+  variable_name <- sprintf("categorical_generated_empty_%d", case_index)
+  original <- data.frame(input = c("a", "b"), keep = 1:2, check.names = FALSE)
+  source_environment[[variable_name]] <- original
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = case$sessionId, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", "a generated-empty categorical source did not open")
+  previewed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case$sessionId,
+      revision = 0L,
+      step = categorical_empty_step(case$kind, sprintf("categorical-empty-generated-%d", case_index), case$dropOriginal),
+      page = page_window()
+    )
+  )
+  assert_identical(previewed$kind, "stepPreview", "a generated-empty categorical source did not preview")
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case$sessionId, revision = previewed$revision, page = page_window())
+  )
+  assert_identical(applied$kind, "planUpdated", "a generated-empty categorical source did not compile")
+  for (changed in list(
+    data.frame(input = c(NA_character_, ""), keep = 1:2, check.names = FALSE),
+    data.frame(input = character(), keep = integer(), check.names = FALSE)
+  )) {
+    changed_bytes <- serialize(changed, NULL, version = 3L)
+    evaluation_environment <- new.env(parent = baseenv())
+    assign(variable_name, changed, envir = evaluation_environment)
+    generated_error <- tryCatch(
+      {
+        eval(parse(text = applied$code), envir = evaluation_environment)
+        NULL
+      },
+      error = identity
+    )
+    assert_identical(
+      inherits(generated_error, "error") &&
+        grepl("generate at least one column", conditionMessage(generated_error), fixed = TRUE),
+      TRUE,
+      "generated categorical code accepted zero generated columns"
+    )
+    assert_identical(
+      serialize(get(variable_name, envir = evaluation_environment, inherits = FALSE), NULL, version = 3L),
+      changed_bytes,
+      "failed generated categorical code mutated its source"
+    )
+  }
+  assert_identical(
+    dispatch("closeSession", list(sessionId = case$sessionId))$kind,
+    "closed",
+    "a generated-empty categorical session did not close"
+  )
+  rm(list = variable_name, envir = source_environment)
+}
 
 cleanup_preview <- dispatch(
   "previewStep",
@@ -9107,14 +10764,80 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
   )
   source_environment$formula_table <- data.table::data.table(x = c(1, 2))
   source_environment$datetime_table <- data.table::data.table(day = as.Date(c("2026-01-01", NA)))
+  source_environment$categorical_table <- data.table::data.table(
+    primary_key = c("a", "b", "c"),
+    tags = c("x", "x|y", NA_character_)
+  )
+  source_environment$categorical_numeric <- data.frame(
+    number = c(1.5, 2),
+    category = factor(c("b", "a")),
+    instant = as.POSIXct(c("2026-01-01 00:00:00", "2026-01-01 01:00:00"), tz = "UTC"),
+    elapsed = as.difftime(c(1, 2), units = "hours"),
+    retained = 1:2,
+    check.names = FALSE
+  )
+  source_environment$categorical_dynamic <- data.frame(
+    cat1 = factor(c("a", "b")),
+    cat2 = factor(c("x", "y")),
+    keep = 1:2,
+    check.names = FALSE
+  )
+  source_environment$categorical_drop <- data.frame(
+    drop = 1:2,
+    category = c("a", "b"),
+    keep = 3:4,
+    check.names = FALSE
+  )
+  data.table::setkey(source_environment$categorical_table, primary_key)
   source_bytes <- lapply(
-    c("formula_base", "datetime_base", "formula_table", "datetime_table"),
+    c("formula_base", "datetime_base", "formula_table", "datetime_table", "categorical_table", "categorical_numeric", "categorical_dynamic", "categorical_drop"),
     function(variable_name) serialize(source_environment[[variable_name]], NULL, version = 3L)
   )
-  names(source_bytes) <- c("formula_base", "datetime_base", "formula_table", "datetime_table")
+  names(source_bytes) <- c("formula_base", "datetime_base", "formula_table", "datetime_table", "categorical_table", "categorical_numeric", "categorical_dynamic", "categorical_drop")
 
   agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
   on.exit(agent$dispose(), add = TRUE)
+  any_duplicated_method_keys <- c("anyDuplicated.character", "anyDuplicated.integer")
+  any_duplicated_calls <- new.env(parent = emptyenv())
+  for (method_key in any_duplicated_method_keys) any_duplicated_calls[[method_key]] <- 0L
+  poison_any_duplicated <- function(method_key) {
+    force(method_key)
+    function(...) {
+      any_duplicated_calls[[method_key]] <- any_duplicated_calls[[method_key]] + 1L
+      stop(sprintf("caller S3 poison dispatched through %s", method_key), call. = FALSE)
+    }
+  }
+  registerS3method(
+    "anyDuplicated",
+    "character",
+    poison_any_duplicated("anyDuplicated.character"),
+    envir = .GlobalEnv
+  )
+  registerS3method(
+    "anyDuplicated",
+    "integer",
+    poison_any_duplicated("anyDuplicated.integer"),
+    envir = .GlobalEnv
+  )
+  assert_no_any_duplicated_calls <- function(label) {
+    observed <- vapply(
+      any_duplicated_method_keys,
+      function(method_key) any_duplicated_calls[[method_key]],
+      integer(1L),
+      USE.NAMES = TRUE
+    )
+    if (any(observed != 0L)) {
+      dispatched <- observed[observed != 0L]
+      stop(
+        sprintf(
+          "%s dispatched caller anyDuplicated S3 methods: %s",
+          label,
+          paste(sprintf("%s=%d", names(dispatched), dispatched), collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+  }
   request_number <- 0L
   page <- list(
     rowOffset = 0L,
@@ -9127,7 +10850,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
     request_number <<- request_number + 1L
     encoded <- jsonlite::toJSON(
       list(
-        transportVersion = 11L,
+        transportVersion = 12L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9158,6 +10881,42 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
         column = list(id = "r:c:0", name = "day"),
         format = "%d/%m/%Y",
         newColumn = "formatted"
+      )
+    )
+  }
+  categorical_step <- function(id) {
+    list(
+      id = id,
+      kind = "multiLabelBinarize",
+      params = list(
+        column = list(id = "r:c:1", name = "tags"),
+        delimiter = "|",
+        prefix = "tag_"
+      )
+    )
+  }
+  categorical_numeric_step <- function(id) {
+    list(
+      id = id,
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(
+          list(id = "r:c:0", name = "number"),
+          list(id = "r:c:1", name = "category"),
+          list(id = "r:c:2", name = "instant"),
+          list(id = "r:c:3", name = "elapsed")
+        )),
+        dropOriginal = FALSE
+      )
+    )
+  }
+  categorical_dynamic_step <- function(id, column_id, column_name) {
+    list(
+      id = id,
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(list(id = column_id, name = column_name))),
+        dropOriginal = FALSE
       )
     )
   }
@@ -9194,7 +10953,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
       revision = undone$revision,
       step = step,
       code = applied$code,
-      outputName = if (identical(step$kind, "formula")) "y" else "formatted"
+      outputName = switch(step$kind, formula = "y", formatDatetime = "formatted", multiLabelBinarize = "tag_x")
     )
   }
   cases <- list(
@@ -9217,14 +10976,265 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
       "datetime_table",
       "44444444-4444-4444-8444-444444444444",
       datetime_step("datetime-table")
+    ),
+    categorical_table = prepare_case(
+      "categorical_table",
+      "55555555-5555-4555-8555-555555555555",
+      categorical_step("categorical-table")
     )
   )
+  categorical_numeric_case <- prepare_case(
+    "categorical_numeric",
+    "66666666-6666-4666-8666-666666666666",
+    categorical_numeric_step("categorical-numeric")
+  )
+  categorical_dynamic_session_id <- "77777777-7777-4777-8777-777777777777"
+  categorical_dynamic_opened <- dispatch(
+    "openSession",
+    list(
+      sessionId = categorical_dynamic_session_id,
+      variableName = "categorical_dynamic",
+      page = page
+    )
+  )
+  assert_child(
+    identical(categorical_dynamic_opened$kind, "page"),
+    "could not open the dynamic categorical S3-isolation case"
+  )
+  categorical_dynamic_first_step <- categorical_dynamic_step(
+    "categorical-dynamic-first",
+    "r:c:0",
+    "cat1"
+  )
+  categorical_dynamic_first_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = categorical_dynamic_session_id,
+      revision = 0L,
+      step = categorical_dynamic_first_step,
+      page = page
+    )
+  )
+  categorical_dynamic_first_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = categorical_dynamic_session_id,
+      revision = categorical_dynamic_first_preview$revision,
+      page = page
+    )
+  )
+  assert_child(
+    identical(categorical_dynamic_first_apply$kind, "planUpdated"),
+    "could not apply the first dynamic categorical S3-isolation step"
+  )
+  categorical_dynamic_second_step <- categorical_dynamic_step(
+    "categorical-dynamic-second",
+    "r:c:1",
+    "cat2"
+  )
+  categorical_dynamic_second_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = categorical_dynamic_session_id,
+      revision = categorical_dynamic_first_apply$revision,
+      step = categorical_dynamic_second_step,
+      page = page
+    )
+  )
+  categorical_dynamic_second_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = categorical_dynamic_session_id,
+      revision = categorical_dynamic_second_preview$revision,
+      page = page
+    )
+  )
+  assert_child(
+    identical(categorical_dynamic_second_apply$kind, "planUpdated"),
+    "could not apply the second dynamic categorical S3-isolation step"
+  )
+  categorical_dynamic_code <- categorical_dynamic_second_apply$code
+  assert_no_any_duplicated_calls("live categorical preparation")
+  categorical_dynamic_changed <- data.frame(
+    cat1 = factor(c("a", "b", "c")),
+    cat2 = factor(c("x", "y", "z")),
+    keep = 1:3,
+    check.names = FALSE
+  )
+  categorical_dynamic_changed_bytes <- serialize(
+    categorical_dynamic_changed,
+    NULL,
+    version = 3L
+  )
+  categorical_dynamic_expected_first <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    categorical_dynamic_changed,
+    1L,
+    "cat1",
+    "_",
+    FALSE
+  )$value
+  categorical_dynamic_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    categorical_dynamic_expected_first,
+    2L,
+    "cat2",
+    "_",
+    FALSE
+  )$value
+  assert_no_any_duplicated_calls("live changed-cardinality categorical replay")
+  categorical_drop_session_id <- "88888888-8888-4888-8888-888888888888"
+  categorical_drop_opened <- dispatch(
+    "openSession",
+    list(
+      sessionId = categorical_drop_session_id,
+      variableName = "categorical_drop",
+      page = page
+    )
+  )
+  assert_child(
+    identical(categorical_drop_opened$kind, "page"),
+    "could not open the drop-before-categorical S3-isolation case"
+  )
+  categorical_drop_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = categorical_drop_session_id,
+      revision = 0L,
+      step = list(
+        id = "categorical-drop-first",
+        kind = "dropColumns",
+        params = list(columns = I(list(list(id = "r:c:0", name = "drop"))))
+      ),
+      page = page
+    )
+  )
+  categorical_drop_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = categorical_drop_session_id,
+      revision = categorical_drop_preview$revision,
+      page = page
+    )
+  )
+  categorical_drop_one_hot_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = categorical_drop_session_id,
+      revision = categorical_drop_apply$revision,
+      step = categorical_dynamic_step(
+        "categorical-after-drop",
+        "r:c:1",
+        "category"
+      ),
+      page = page
+    )
+  )
+  categorical_drop_one_hot_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = categorical_drop_session_id,
+      revision = categorical_drop_one_hot_preview$revision,
+      page = page
+    )
+  )
+  assert_child(
+    identical(categorical_drop_one_hot_apply$kind, "planUpdated"),
+    "could not compile the drop-before-categorical S3-isolation plan"
+  )
+  categorical_drop_code <- categorical_drop_one_hot_apply$code
+  categorical_drop_expected_first <- openwrangler_r_frame_contract$drop_columns_at(
+    source_environment$categorical_drop,
+    1L,
+    "drop"
+  )
+  categorical_drop_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    categorical_drop_expected_first,
+    1L,
+    "category",
+    "_",
+    FALSE
+  )$value
+  assert_no_any_duplicated_calls("live drop-before-categorical replay")
+  categorical_numeric_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    source_environment$categorical_numeric,
+    c(1L, 2L, 3L, 4L),
+    c("number", "category", "instant", "elapsed"),
+    "_",
+    FALSE
+  )$value
   for (variable_name in names(source_bytes)) {
     assert_child(
       identical(serialize(source_environment[[variable_name]], NULL, version = 3L), source_bytes[[variable_name]]),
       sprintf("preparing %s mutated its source", variable_name)
     )
   }
+
+  predecessor_calls <- new.env(parent = emptyenv())
+  predecessor_calls$unique.integer <- 0L
+  predecessor_calls$sort.integer <- 0L
+  poison_predecessor <- function(method_key) {
+    force(method_key)
+    function(...) {
+      predecessor_calls[[method_key]] <- predecessor_calls[[method_key]] + 1L
+      stop(sprintf("caller S3 poison dispatched through %s", method_key), call. = FALSE)
+    }
+  }
+  registerS3method(
+    "unique",
+    "integer",
+    poison_predecessor("unique.integer"),
+    envir = .GlobalEnv
+  )
+  registerS3method(
+    "sort",
+    "integer",
+    poison_predecessor("sort.integer"),
+    envir = .GlobalEnv
+  )
+  categorical_drop_environment <- new.env(parent = baseenv())
+  assign(
+    "categorical_drop",
+    unserialize(source_bytes$categorical_drop),
+    envir = categorical_drop_environment
+  )
+  eval(parse(text = categorical_drop_code), envir = categorical_drop_environment)
+  categorical_drop_generated <- get(
+    "open_wrangler_result",
+    envir = categorical_drop_environment,
+    inherits = FALSE
+  )
+  assert_child(
+    identical(categorical_drop_generated, categorical_drop_expected),
+    "generated drop-before-categorical code changed values under caller S3 poisoning"
+  )
+  assert_child(
+    identical(
+      serialize(
+        get("categorical_drop", envir = categorical_drop_environment, inherits = FALSE),
+        NULL,
+        version = 3L
+      ),
+      source_bytes$categorical_drop
+    ),
+    "generated drop-before-categorical code mutated its source"
+  )
+  assert_child(
+    identical(predecessor_calls$unique.integer, 0L) &&
+      identical(predecessor_calls$sort.integer, 0L),
+    "generated drop-before-categorical code dispatched unique.integer or sort.integer"
+  )
+  assert_no_any_duplicated_calls("generated drop-before-categorical")
+  registerS3method(
+    "unique",
+    "integer",
+    function(x, ...) base::unique.default(x, ...),
+    envir = .GlobalEnv
+  )
+  registerS3method(
+    "sort",
+    "integer",
+    function(x, decreasing = FALSE, ...) base::sort.int(x, decreasing = decreasing, ...),
+    envir = .GlobalEnv
+  )
 
   method_keys <- c(
     "names.data.frame",
@@ -9233,6 +11243,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
     "length.Date",
     "is.na.Date",
     "names.data.table",
+    "sort.character",
     "names.CallRoutine",
     "[[.CallRoutine",
     "[[.DLLInfo",
@@ -9288,17 +11299,22 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
       )
     }
   }
-  live_values <- function(response, output_name, formula) {
+  live_values <- function(response, output_name, output_kind) {
     position <- match(
       output_name,
       vapply(response$page$schema, function(column) base::.subset2(column, "name"), character(1L))
     )
     assert_child(!is.na(position), sprintf("live S3-isolation page omitted %s", output_name))
-    if (formula) {
+    if (identical(output_kind, "formula")) {
       vapply(response$page$page$rows, function(row) {
         cell <- base::.subset2(base::.subset2(row, "values"), position)
         if (identical(base::.subset2(cell, "kind"), "null")) NA_real_ else as.double(base::.subset2(cell, "raw"))
       }, double(1L), USE.NAMES = FALSE)
+    } else if (identical(output_kind, "categorical")) {
+      vapply(response$page$page$rows, function(row) {
+        cell <- base::.subset2(base::.subset2(row, "values"), position)
+        if (identical(base::.subset2(cell, "kind"), "null")) NA_integer_ else as.integer(base::.subset2(cell, "raw"))
+      }, integer(1L), USE.NAMES = FALSE)
     } else {
       vapply(response$page$page$rows, function(row) {
         cell <- base::.subset2(base::.subset2(row, "values"), position)
@@ -9311,7 +11327,17 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
   for (case_name in names(cases)) {
     case <- cases[[case_name]]
     is_formula <- identical(case$step$kind, "formula")
-    expected <- if (is_formula) c(3, 4) else c("01/01/2026", NA_character_)
+    is_categorical <- identical(case$step$kind, "multiLabelBinarize")
+    output_kind <- if (is_formula) "formula" else if (is_categorical) "categorical" else "datetime"
+    expected <- if (is_formula) c(3, 4) else if (is_categorical) c(1L, 1L, 0L) else c("01/01/2026", NA_character_)
+    if (is_categorical) {
+      registerS3method(
+        "sort",
+        "character",
+        poison_method("sort.character"),
+        envir = .GlobalEnv
+      )
+    }
     reset_calls()
     previewed <- dispatch(
       "previewStep",
@@ -9327,7 +11353,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
       sprintf("live %s failed under caller S3 poisoning", case_name)
     )
     assert_child(
-      identical(live_values(previewed, case$outputName, is_formula), expected),
+      identical(live_values(previewed, case$outputName, output_kind), expected),
       sprintf("live %s changed values under caller S3 poisoning", case_name)
     )
     assert_child(
@@ -9371,6 +11397,86 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
     }
     assert_no_calls(sprintf("generated %s", case_name))
   }
+
+  categorical_generic_registrations <- list(
+    c("format", "numeric"),
+    c("unique", "numeric"),
+    c("unique", "integer"),
+    c("unique", "character"),
+    c("duplicated", "character"),
+    c("sort", "integer"),
+    c("[[", "data.frame"),
+    c("[[<-", "data.frame")
+  )
+  for (registration in categorical_generic_registrations) {
+    method_key <- paste(registration, collapse = ".")
+    registerS3method(
+      registration[[1L]],
+      registration[[2L]],
+      poison_method(method_key),
+      envir = .GlobalEnv
+    )
+  }
+  reset_calls()
+  categorical_dynamic_environment <- new.env(parent = baseenv())
+  assign(
+    "categorical_dynamic",
+    unserialize(categorical_dynamic_changed_bytes),
+    envir = categorical_dynamic_environment
+  )
+  eval(parse(text = categorical_dynamic_code), envir = categorical_dynamic_environment)
+  categorical_dynamic_generated <- get(
+    "open_wrangler_result",
+    envir = categorical_dynamic_environment,
+    inherits = FALSE
+  )
+  assert_child(
+    identical(categorical_dynamic_generated, categorical_dynamic_expected),
+    "generated multi-step categorical code changed values under caller S3 poisoning"
+  )
+  assert_child(
+    identical(
+      serialize(
+        get("categorical_dynamic", envir = categorical_dynamic_environment, inherits = FALSE),
+        NULL,
+        version = 3L
+      ),
+      categorical_dynamic_changed_bytes
+    ),
+    "generated multi-step categorical code mutated its changed-cardinality source"
+  )
+  assert_no_calls("generated multi-step categorical")
+  assert_no_any_duplicated_calls("generated multi-step categorical")
+  reset_calls()
+  categorical_numeric_environment <- new.env(parent = baseenv())
+  assign(
+    "categorical_numeric",
+    unserialize(source_bytes$categorical_numeric),
+    envir = categorical_numeric_environment
+  )
+  eval(parse(text = categorical_numeric_case$code), envir = categorical_numeric_environment)
+  categorical_numeric_generated <- get(
+    "open_wrangler_result",
+    envir = categorical_numeric_environment,
+    inherits = FALSE
+  )
+  assert_child(
+    identical(categorical_numeric_generated, categorical_numeric_expected),
+    "generated categorical code used caller format/unique/duplicated/sort S3 methods"
+  )
+  assert_child(
+    identical(
+      serialize(
+        get("categorical_numeric", envir = categorical_numeric_environment, inherits = FALSE),
+        NULL,
+        version = 3L
+      ),
+      source_bytes$categorical_numeric
+    ),
+    "generated categorical attributed-level replay mutated its source"
+  )
+  assert_no_calls("generated categorical attributed factor levels")
+  assert_no_any_duplicated_calls("isolated categorical lifecycle")
 }
 
 formula_datetime_s3_isolation_script <- tempfile(fileext = ".R")
@@ -9417,6 +11523,540 @@ if (!is.null(formula_datetime_s3_isolation_status) && formula_datetime_s3_isolat
 }
 unlink(formula_datetime_s3_isolation_script)
 
+categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel_agent_path) {
+  sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
+  if (!requireNamespace("data.table", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("the categorical attributed-metadata child requires data.table and jsonlite", call. = FALSE)
+  }
+
+  assert_child <- function(condition, message) {
+    if (!isTRUE(condition)) stop(message, call. = FALSE)
+  }
+  source_environment <- new.env(parent = emptyenv())
+  source_environment$categorical_metadata <- data.frame(
+    category = factor(c("b", "a")),
+    instant = as.POSIXct(c("2026-01-01 00:00:00", "2026-01-01 01:00:00"), tz = "UTC"),
+    elapsed = as.difftime(c(1, 2), units = "hours"),
+    retained = 1:2,
+    check.names = FALSE
+  )
+  attr(source_environment$categorical_metadata$category, "levels") <- structure(
+    attr(source_environment$categorical_metadata$category, "levels", exact = TRUE),
+    class = "AsIs"
+  )
+  attr(source_environment$categorical_metadata$instant, "tzone") <- structure(
+    "UTC",
+    names = "zone",
+    comment = "accepted metadata",
+    class = "AsIs"
+  )
+  attr(source_environment$categorical_metadata$elapsed, "units") <- structure(
+    "hours",
+    names = "units",
+    comment = "accepted metadata",
+    class = "AsIs"
+  )
+  source_environment$categorical_key <- data.table::data.table(
+    primary_key = c("a", "b", "c"),
+    tags = c("x", "x|y", NA_character_)
+  )
+  data.table::setkey(source_environment$categorical_key, primary_key)
+  categorical_key_attr <- attr(source_environment$categorical_key, "sorted", exact = TRUE)
+  data.table::setattr(categorical_key_attr, "class", "AsIs")
+  metadata_source_bytes <- serialize(
+    source_environment$categorical_metadata,
+    NULL,
+    version = 3L
+  )
+  key_source_bytes <- serialize(
+    source_environment$categorical_key,
+    NULL,
+    version = 3L
+  )
+  metadata_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    source_environment$categorical_metadata,
+    c(1L, 2L, 3L),
+    c("category", "instant", "elapsed"),
+    "_",
+    FALSE
+  )$value
+  key_expected <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    source_environment$categorical_key,
+    2L,
+    "tags",
+    "|",
+    "tag_",
+    FALSE
+  )$value
+
+  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
+  on.exit(agent$dispose(), add = TRUE)
+  request_number <- 0L
+  page <- list(
+    rowOffset = 0L,
+    rowLimit = 10L,
+    columnOffset = 0L,
+    columnLimit = 20L,
+    view = list(filters = I(list()), sorts = I(list()))
+  )
+  dispatch <- function(kind, payload) {
+    request_number <<- request_number + 1L
+    request <- jsonlite::toJSON(
+      list(
+        transportVersion = 12L,
+        requestId = sprintf("99999999-9999-4999-8999-%012d", request_number),
+        kind = kind,
+        payload = payload
+      ),
+      auto_unbox = TRUE,
+      null = "null",
+      na = "null"
+    )
+    jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE)
+  }
+  compile_case <- function(variable_name, session_id, step) {
+    opened <- dispatch(
+      "openSession",
+      list(sessionId = session_id, variableName = variable_name, page = page)
+    )
+    assert_child(identical(opened$kind, "page"), sprintf("could not open %s", variable_name))
+    previewed <- dispatch(
+      "previewStep",
+      list(sessionId = session_id, revision = 0L, step = step, page = page)
+    )
+    assert_child(
+      identical(previewed$kind, "stepPreview"),
+      sprintf("could not preview %s", variable_name)
+    )
+    applied <- dispatch(
+      "applyDraft",
+      list(sessionId = session_id, revision = previewed$revision, page = page)
+    )
+    assert_child(
+      identical(applied$kind, "planUpdated"),
+      sprintf("could not compile %s", variable_name)
+    )
+    applied$code
+  }
+  metadata_code <- compile_case(
+    "categorical_metadata",
+    "99999999-9999-4999-8999-999999999991",
+    list(
+      id = "attributed-metadata",
+      kind = "oneHotEncode",
+      params = list(
+        columns = I(list(
+          list(id = "r:c:0", name = "category"),
+          list(id = "r:c:1", name = "instant"),
+          list(id = "r:c:2", name = "elapsed")
+        )),
+        dropOriginal = FALSE
+      )
+    )
+  )
+  key_code <- compile_case(
+    "categorical_key",
+    "99999999-9999-4999-8999-999999999992",
+    list(
+      id = "attributed-key",
+      kind = "multiLabelBinarize",
+      params = list(
+        column = list(id = "r:c:1", name = "tags"),
+        delimiter = "|",
+        prefix = "tag_"
+      )
+    )
+  )
+  assert_child(
+    identical(
+      serialize(source_environment$categorical_metadata, NULL, version = 3L),
+      metadata_source_bytes
+    ) && identical(
+      serialize(source_environment$categorical_key, NULL, version = 3L),
+      key_source_bytes
+    ),
+    "preparing attributed categorical cases mutated a source"
+  )
+
+  method_keys <- c("[[.AsIs", "anyNA.AsIs", "is.na.AsIs", "length.AsIs", "Ops.AsIs")
+  calls <- new.env(parent = emptyenv())
+  for (method_key in method_keys) calls[[method_key]] <- 0L
+  poison_method <- function(method_key) {
+    force(method_key)
+    function(...) {
+      calls[[method_key]] <- calls[[method_key]] + 1L
+      stop(sprintf("caller S3 poison dispatched through %s", method_key), call. = FALSE)
+    }
+  }
+  registrations <- list(
+    c("[[", "AsIs", "[[.AsIs"),
+    c("anyNA", "AsIs", "anyNA.AsIs"),
+    c("is.na", "AsIs", "is.na.AsIs"),
+    c("length", "AsIs", "length.AsIs"),
+    c("Ops", "AsIs", "Ops.AsIs")
+  )
+  for (registration in registrations) {
+    registerS3method(
+      base::.subset2(registration, 1L),
+      base::.subset2(registration, 2L),
+      poison_method(base::.subset2(registration, 3L)),
+      envir = .GlobalEnv
+    )
+  }
+  assert_no_calls <- function(label) {
+    observed <- vapply(
+      method_keys,
+      function(method_key) calls[[method_key]],
+      integer(1L),
+      USE.NAMES = TRUE
+    )
+    if (any(observed != 0L)) {
+      dispatched <- observed[observed != 0L]
+      stop(
+        sprintf(
+          "%s dispatched caller S3 methods: %s",
+          label,
+          paste(sprintf("%s=%d", names(dispatched), dispatched), collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+  }
+  assert_frame_columns <- function(actual, expected, label) {
+    actual_count <- base::length(base::unclass(actual))
+    expected_count <- base::length(base::unclass(expected))
+    assert_child(
+      identical(attr(actual, "names", exact = TRUE), attr(expected, "names", exact = TRUE)) &&
+        identical(actual_count, expected_count) &&
+        all(vapply(seq_len(actual_count), function(column_index) {
+          identical(base::.subset2(actual, column_index), base::.subset2(expected, column_index))
+        }, logical(1L), USE.NAMES = FALSE)),
+      label
+    )
+  }
+
+  encode_response <- get(
+    "encode_response",
+    envir = environment(openwrangler_r_kernel_agent$new_agent),
+    inherits = FALSE
+  )
+  beta <- intToUtf8(946L)
+  encoded_response <- encode_response(list(
+    listPayload = I(list(list(name = beta))),
+    characterPayload = I(beta)
+  ))
+  decoded_response <- jsonlite::fromJSON(encoded_response, simplifyVector = FALSE)
+  assert_child(
+    identical(base::.subset2(base::.subset2(decoded_response$listPayload, 1L), "name"), beta) &&
+      identical(base::.subset2(decoded_response$characterPayload, 1L), beta),
+    "ASCII response encoding changed AsIs list or character arrays"
+  )
+  assert_no_calls("ASCII AsIs response encoding")
+
+  metadata_environment <- new.env(parent = baseenv())
+  assign(
+    "categorical_metadata",
+    unserialize(metadata_source_bytes),
+    envir = metadata_environment
+  )
+  eval(parse(text = metadata_code), envir = metadata_environment)
+  metadata_generated <- get("open_wrangler_result", envir = metadata_environment, inherits = FALSE)
+  assert_frame_columns(
+    metadata_generated,
+    metadata_expected,
+    "generated categorical code changed attributed semantic metadata values or schema"
+  )
+  assert_child(
+    identical(
+      serialize(
+        get("categorical_metadata", envir = metadata_environment, inherits = FALSE),
+        NULL,
+        version = 3L
+      ),
+      metadata_source_bytes
+    ),
+    "generated categorical attributed-metadata replay mutated its source"
+  )
+  assert_no_calls("generated categorical attributed semantic metadata")
+
+  key_environment <- new.env(parent = baseenv())
+  assign("categorical_key", unserialize(key_source_bytes), envir = key_environment)
+  eval(parse(text = key_code), envir = key_environment)
+  key_generated <- get("open_wrangler_result", envir = key_environment, inherits = FALSE)
+  assert_frame_columns(
+    key_generated,
+    key_expected,
+    "generated categorical code changed attributed-key values or schema"
+  )
+  assert_child(
+    identical(attr(key_generated, "sorted", exact = TRUE), "primary_key"),
+    "generated categorical code did not canonicalize its retained key"
+  )
+  assert_child(
+    identical(data.table:::selfrefok(key_generated), 1L),
+    "generated attributed-key categorical replay retained an invalid self-reference"
+  )
+  assert_child(
+    identical(
+      serialize(
+        get("categorical_key", envir = key_environment, inherits = FALSE),
+        NULL,
+        version = 3L
+      ),
+      key_source_bytes
+    ),
+    "generated attributed-key categorical replay mutated its source"
+  )
+  assert_no_calls("generated categorical attributed data.table key")
+}
+
+categorical_attributed_metadata_s3_script <- tempfile(fileext = ".R")
+writeLines(
+  c(
+    "categorical_attributed_metadata_s3_child <-",
+    deparse(categorical_attributed_metadata_s3_child, width.cutoff = 500L),
+    paste0(
+      "categorical_attributed_metadata_s3_child(",
+      "commandArgs(trailingOnly = TRUE)[[1L]], ",
+      "commandArgs(trailingOnly = TRUE)[[2L]])"
+    )
+  ),
+  categorical_attributed_metadata_s3_script,
+  useBytes = TRUE
+)
+categorical_attributed_metadata_s3_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c(
+    "--vanilla",
+    categorical_attributed_metadata_s3_script,
+    normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_agent.R")
+  ),
+  stdout = TRUE,
+  stderr = TRUE
+)
+categorical_attributed_metadata_s3_status <- attr(
+  categorical_attributed_metadata_s3_output,
+  "status",
+  exact = TRUE
+)
+if (!is.null(categorical_attributed_metadata_s3_status) && categorical_attributed_metadata_s3_status != 0L) {
+  stop(
+    paste(
+      c(
+        "categorical attributed-metadata S3-isolation child failed",
+        categorical_attributed_metadata_s3_output
+      ),
+      collapse = "\n"
+    ),
+    call. = FALSE
+  )
+}
+unlink(categorical_attributed_metadata_s3_script)
+
+categorical_ascii_locale_child <- function(frame_contract_path, kernel_agent_path) {
+  sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
+  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("the categorical ASCII transport child requires jsonlite", call. = FALSE)
+  }
+  assert_child <- function(condition, message) {
+    if (!isTRUE(condition)) stop(message, call. = FALSE)
+  }
+  beta <- intToUtf8(946L)
+  astral <- intToUtf8(128578L)
+  Encoding(beta) <- "UTF-8"
+  Encoding(astral) <- "UTF-8"
+  literal <- "<U+03B2>"
+  control <- paste0("line\nquote\"slash\\", beta, astral)
+  Encoding(control) <- "UTF-8"
+  text_name <- paste0("text", beta)
+  tags_name <- paste0("tags", beta)
+  source_environment <- new.env(parent = emptyenv())
+  source_environment$locale_frame <- data.frame(
+    text = c(beta, literal, control, astral),
+    tags = c(beta, literal, control, astral),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  names(source_environment$locale_frame) <- c(text_name, tags_name)
+  source_before <- serialize(source_environment$locale_frame, NULL, version = 3L)
+  expected <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    source_environment$locale_frame,
+    2L,
+    tags_name,
+    "|",
+    "out_",
+    FALSE
+  )
+  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
+  on.exit(agent$dispose(), add = TRUE)
+  request_number <- 0L
+  unicode_name_marker <- "OPEN_WRANGLER_UNICODE_COLUMN_NAME"
+  page <- list(
+    rowOffset = 0L,
+    rowLimit = 10L,
+    columnOffset = 0L,
+    columnLimit = 20L,
+    view = list(filters = I(list()), sorts = I(list()))
+  )
+  dispatch <- function(kind, payload) {
+    request_number <<- request_number + 1L
+    encoded <- as.character(jsonlite::toJSON(
+      list(
+        transportVersion = 12L,
+        requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
+        kind = kind,
+        payload = payload
+      ),
+      auto_unbox = TRUE,
+      null = "null",
+      na = "null"
+    ))
+    encoded <- gsub(unicode_name_marker, "tags\\u03B2", encoded, fixed = TRUE)
+    wire <- agent$dispatch_json(encoded)
+    assert_child(
+      all(as.integer(charToRaw(wire)) <= 127L),
+      sprintf("%s emitted non-ASCII JSON under the C locale", kind)
+    )
+    jsonlite::fromJSON(wire, simplifyVector = FALSE)
+  }
+  session_id <- "11111111-1111-4111-8111-111111111111"
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = session_id, variableName = "locale_frame", page = page)
+  )
+  assert_child(identical(opened$kind, "page"), "the C-locale categorical session did not open")
+  assert_child(
+    identical(vapply(opened$page$schema, `[[`, character(1L), "name"), c(text_name, tags_name)),
+    "the C-locale response changed a Unicode schema name"
+  )
+  text_values <- vapply(opened$page$page$rows, function(row) {
+    base::.subset2(base::.subset2(row, "values")[[1L]], "raw")
+  }, character(1L), USE.NAMES = FALSE)
+  assert_child(
+    identical(text_values, c(beta, literal, control, astral)),
+    "the C-locale response changed scalar, literal, control, or astral text"
+  )
+  step <- list(
+    id = "locale-categorical-step",
+    kind = "multiLabelBinarize",
+    params = list(
+      column = list(id = "r:c:1", name = unicode_name_marker),
+      delimiter = "|",
+      prefix = "out_"
+    )
+  )
+  previewed <- dispatch(
+    "previewStep",
+    list(sessionId = session_id, revision = 0L, step = step, page = page)
+  )
+  assert_child(identical(previewed$kind, "stepPreview"), "C-locale categorical preview failed")
+  assert_child(
+    identical(previewed$diff$addedColumns, as.list(expected$generatedNames)),
+    "the C-locale categorical diff changed Unicode generated names or array shape"
+  )
+  assert_child(
+    paste0("out_", literal) %in% previewed$diff$addedColumns,
+    "literal <U+03B2> text was reinterpreted as a Unicode code point"
+  )
+  assert_child(
+    all(expected$generatedNames %in% vapply(previewed$page$schema, `[[`, character(1L), "name")),
+    "the C-locale categorical schema omitted generated Unicode names"
+  )
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = session_id, revision = previewed$revision, page = page)
+  )
+  assert_child(identical(applied$kind, "planUpdated"), "C-locale categorical apply failed")
+  evaluation_environment <- new.env(parent = baseenv())
+  assign("locale_frame", unserialize(source_before), envir = evaluation_environment)
+  eval(parse(text = applied$code), envir = evaluation_environment)
+  generated <- get("open_wrangler_result", envir = evaluation_environment, inherits = FALSE)
+  assert_child(
+    identical(generated, expected$value),
+    "C-locale live and generated categorical results diverged"
+  )
+  assert_child(
+    identical(serialize(source_environment$locale_frame, NULL, version = 3L), source_before),
+    "C-locale categorical lifecycle mutated its live source"
+  )
+  assert_child(
+    identical(serialize(get("locale_frame", envir = evaluation_environment), NULL, version = 3L), source_before),
+    "C-locale generated categorical code mutated its source"
+  )
+
+  malformed <- rawToChar(as.raw(c(195L, 40L)))
+  Encoding(malformed) <- "bytes"
+  malformed_contract <- openwrangler_r_frame_contract
+  real_materialize <- malformed_contract$materialize_view_page
+  malformed_contract$materialize_view_page <- function(...) {
+    result <- real_materialize(...)
+    result$schema[[1L]]$name <- malformed
+    result
+  }
+  malformed_agent <- openwrangler_r_kernel_agent$new_agent(malformed_contract, source_environment)
+  on.exit(malformed_agent$dispose(), add = TRUE)
+  malformed_request <- jsonlite::toJSON(
+    list(
+      transportVersion = 12L,
+      requestId = "22222222-2222-4222-8222-222222222222",
+      kind = "openSession",
+      payload = list(
+        sessionId = "22222222-2222-4222-8222-222222222222",
+        variableName = "locale_frame",
+        page = page
+      )
+    ),
+    auto_unbox = TRUE,
+    null = "null",
+    na = "null"
+  )
+  malformed_wire <- malformed_agent$dispatch_json(as.character(malformed_request))
+  assert_child(all(as.integer(charToRaw(malformed_wire)) <= 127L), "malformed response text escaped the ASCII transport")
+  malformed_response <- jsonlite::fromJSON(malformed_wire, simplifyVector = FALSE)
+  assert_child(
+    identical(malformed_response$kind, "error") && identical(malformed_response$code, "runtime_error"),
+    "malformed response bytes did not fail closed"
+  )
+}
+
+categorical_ascii_locale_script <- tempfile(fileext = ".R")
+writeLines(
+  c(
+    "categorical_ascii_locale_child <-",
+    deparse(categorical_ascii_locale_child, width.cutoff = 500L),
+    paste0(
+      "categorical_ascii_locale_child(",
+      "commandArgs(trailingOnly = TRUE)[[1L]], ",
+      "commandArgs(trailingOnly = TRUE)[[2L]])"
+    )
+  ),
+  categorical_ascii_locale_script,
+  useBytes = TRUE
+)
+categorical_ascii_locale_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c(
+    "--vanilla",
+    categorical_ascii_locale_script,
+    normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_agent.R")
+  ),
+  stdout = TRUE,
+  stderr = TRUE,
+  env = c("LC_ALL=C", "LANG=C", "LANGUAGE=C")
+)
+categorical_ascii_locale_status <- attr(categorical_ascii_locale_output, "status", exact = TRUE)
+if (!is.null(categorical_ascii_locale_status) && categorical_ascii_locale_status != 0L) {
+  stop(
+    paste(c("categorical ASCII C-locale transport child failed", categorical_ascii_locale_output), collapse = "\n"),
+    call. = FALSE
+  )
+}
+unlink(categorical_ascii_locale_script)
+
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
   optional = TRUE
@@ -9435,6 +12075,7 @@ assert_identical(oversized$recoverable, TRUE, "an oversized page was not marked 
 
 missing_package_contract <- list(
   capture_frame = function(...) stop("unexpected isolated capture", call. = FALSE),
+  capture_categorical_result = function(...) stop("unexpected categorical capture", call. = FALSE),
   capture_group_result = function(...) stop("unexpected grouped capture", call. = FALSE),
   capture_live_frame = function(source_reader) {
     stop(structure(
@@ -9448,6 +12089,8 @@ missing_package_contract <- list(
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
   formula_column_at = function(...) stop("unexpected formula", call. = FALSE),
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
+  one_hot_encode_columns_at = function(...) stop("unexpected one-hot encoding", call. = FALSE),
+  multi_label_binarize_column_at = function(...) stop("unexpected multi-label binarization", call. = FALSE),
   lower_text_column_at = function(...) stop("unexpected lowercase", call. = FALSE),
   upper_text_column_at = function(...) stop("unexpected uppercase", call. = FALSE),
   capitalize_text_column_at = function(...) stop("unexpected capitalize", call. = FALSE),
@@ -9495,6 +12138,27 @@ for (required_group_tool in c("capture_group_result", "group_by_at")) {
       !identical(conditionMessage(incomplete_group_error), "Open Wrangler received an invalid R frame contract.")
   ) {
     stop(sprintf("the R agent accepted a frame contract without %s", required_group_tool), call. = FALSE)
+  }
+}
+for (required_categorical_tool in c(
+  "capture_categorical_result",
+  "one_hot_encode_columns_at",
+  "multi_label_binarize_column_at"
+)) {
+  incomplete_categorical_contract <- missing_package_contract
+  incomplete_categorical_contract[[required_categorical_tool]] <- NULL
+  incomplete_categorical_error <- tryCatch(
+    {
+      openwrangler_r_kernel_agent$new_agent(incomplete_categorical_contract, source_environment)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (
+    is.null(incomplete_categorical_error) ||
+      !identical(conditionMessage(incomplete_categorical_error), "Open Wrangler received an invalid R frame contract.")
+  ) {
+    stop(sprintf("the R agent accepted a frame contract without %s", required_categorical_tool), call. = FALSE)
   }
 }
 for (required_export_tool in c("export_formats", "write_csv", "write_parquet")) {

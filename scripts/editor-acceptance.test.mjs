@@ -1077,6 +1077,154 @@ test("long generated R programs reveal operation text through the complete CodeM
   }
 });
 
+test("packaged R categorical journeys prove exact generated calls and boundary values", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const kernel = await readFile(resolve("r/openwrangler_runtime/kernel_agent.R"), "utf8");
+  const frameContract = await readFile(resolve("r/openwrangler_runtime/frame_contract.R"), "utf8");
+  const section = (startMarker, endMarker) => {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start + startMarker.length);
+    assert.notEqual(start, -1, `Missing ${startMarker}.`);
+    assert.notEqual(end, -1, `Missing boundary ${endMarker}.`);
+    return source.slice(start, end);
+  };
+
+  const notebookFixture = section("function writeReleasedRNotebook(", "function releasedRNotebookCleanedCsvHeader(");
+  assert.match(notebookFixture, /group = c\(rep\('A', 602L\), rep\('B', row_count - 602L\)\)/u);
+  assert.match(notebookFixture, /orders_frame\$extra_18 <- ifelse\(seq_len\(row_count\) %% 2L == 1L, 'A\|B', 'B'\)/u);
+  const expectedCsv = section(
+    "function releasedRNotebookCleanedCsvRow(",
+    "function writeReleasedRLiterateDocumentFixture("
+  );
+  assert.match(expectedCsv, /if \(column === 18\) return row % 2 === 1 \? '"A\|B"' : '"B"';/u);
+
+  const exactCall = section(
+    "type ReleasedRCategoricalGeneratedExpectation =",
+    "function assertReleasedRFormulaGeneratedCode("
+  );
+  assert.match(
+    exactCall,
+    /` {2}\.ow_categorical_result <- \.ow_categorical_encode\(\.ow_result, \$\{JSON\.stringify\(expected\.kind\)\}, `/u
+  );
+  assert.match(
+    exactCall,
+    /id = \$\{JSON\.stringify\(expected\.sourceId\)\}[\s\S]*name = \$\{JSON\.stringify\(expected\.sourceName\)\}[\s\S]*position = \$\{expected\.sourcePosition\}L[\s\S]*kind = \$\{JSON\.stringify\(expected\.sourceKind\)\}[\s\S]*storageMode = \$\{JSON\.stringify\(expected\.sourceStorageMode\)\}[\s\S]*classes = \$\{sourceClasses\}[\s\S]*timezone = \$\{sourceTimezone\}, units = \$\{sourceUnits\}/u
+  );
+  assert.match(exactCall, /2048L, 1024L, 8192L, 16777216L, 67108864L, 8L, 1024L, 512L, \.ow_result_ids/u);
+  assert.match(exactCall, /line\.startsWith\(" {2}\.ow_categorical_result <- \.ow_categorical_encode\("\)/u);
+  assert.match(exactCall, /assert\.deepEqual\(calls, \[expectedCall\]/u);
+  assert.match(exactCall, /\.ow_result_ids <- base::\.subset2\(\.ow_categorical_result, "outputIds"\)/u);
+  assert.doesNotMatch(exactCall, /code\.includes\([^\n]*categorical_encode/u);
+
+  const categoricalSpec = kernel.slice(
+    kernel.indexOf("r_categorical_spec <- function(specification)"),
+    kernel.indexOf("compile_plan <- function(", kernel.indexOf("r_categorical_spec <- function(specification)"))
+  );
+  assert.match(categoricalSpec, /sprintf\("id = %s", r_string\(specification\$id\)\)/u);
+  assert.match(categoricalSpec, /sprintf\("name = %s", r_string\(specification\$name\)\)/u);
+  assert.match(categoricalSpec, /sprintf\("position = %dL", specification\$position\)/u);
+  assert.match(categoricalSpec, /sprintf\("kind = %s", r_string\(specification\$semanticsKind\)\)/u);
+  assert.match(categoricalSpec, /sprintf\("storageMode = %s", r_string\(specification\$storageMode\)\)/u);
+  assert.match(categoricalSpec, /sprintf\("classes = %s", r_character_vector\(specification\$classes\)\)/u);
+  for (const field of ["timezone", "units"]) {
+    assert.match(categoricalSpec, new RegExp(`sprintf\\("${field} = %s"`, "u"));
+    assert.match(categoricalSpec, new RegExp(`"${field} = NULL"`, "u"));
+  }
+
+  const generator = kernel.slice(
+    kernel.indexOf('} else if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {'),
+    kernel.indexOf(
+      "} else if (step$kind %in% c(",
+      kernel.indexOf('} else if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {') + 1
+    )
+  );
+  assert.match(
+    generator,
+    /" {2}\.ow_categorical_result <- \.ow_categorical_encode\(\.ow_result, %s, list\(%s\), %s, %s, %s, %s, %dL, %dL, %dL, %dL, %s, %dL, %dL, %dL, \.ow_result_ids, %s\)"/u
+  );
+  let priorArgument = -1;
+  for (const orderedArgument of [
+    "r_string(step$kind)",
+    "specifications",
+    'if (identical(step$kind, "oneHotEncode")) r_string(step$prefixSeparator) else "NULL"',
+    'if (identical(step$kind, "multiLabelBinarize")) r_string(step$delimiter) else "NULL"',
+    'if (identical(step$kind, "multiLabelBinarize")) r_string(step$prefix) else "NULL"',
+    'if (isTRUE(step$dropOriginal)) "TRUE" else "FALSE"',
+    "maximum_columns",
+    "maximum_name_bytes",
+    "maximum_text_bytes",
+    "maximum_payload_bytes",
+    "r_number(maximum_operation_output_bytes)",
+    "character_vector_slot_bytes",
+    "metadata_base_bytes",
+    "column_fixed_bytes",
+    "r_string(step$id)"
+  ]) {
+    const argumentPosition = generator.indexOf(orderedArgument, priorArgument + 1);
+    assert.ok(argumentPosition > priorArgument, `Missing or out-of-order generated-call argument ${orderedArgument}.`);
+    priorArgument = argumentPosition;
+  }
+  assert.match(generator, /\.ow_result <- base::\.subset2\(\.ow_categorical_result, \\"value\\"\)/u);
+  assert.match(generator, /\.ow_result_ids <- base::\.subset2\(\.ow_categorical_result, \\"outputIds\\"\)/u);
+  assert.match(kernel, /maximum_operation_output_bytes <- 64L \* 1024L \* 1024L/u);
+  assert.match(kernel, /character_vector_slot_bytes <- 8L/u);
+  assert.match(kernel, /metadata_base_bytes <- 1024L/u);
+  assert.match(kernel, /column_fixed_bytes <- 512L/u);
+  assert.match(frameContract, /maximum_columns <- 2048L/u);
+  assert.match(frameContract, /maximum_name_bytes <- 1024L/u);
+  assert.match(frameContract, /maximum_text_bytes <- 8192L/u);
+  assert.match(frameContract, /maximum_payload_bytes <- 16L \* 1024L \* 1024L/u);
+  const codePreviewWait = section(
+    "async function waitForCodePreview(",
+    "async function revealCodePreviewOperationLine("
+  );
+  assert.match(codePreviewWait, /cmTile\?\.view\?\.state\.doc\.toString\(\)/u);
+  assert.match(codePreviewWait, /completeCode\.includes\(expectedCode\)/u);
+
+  const oneHot = section(
+    "async function exerciseReleasedROneHotJourney(",
+    "async function exerciseReleasedRMultiLabelJourney("
+  );
+  assert.equal(oneHot.match(/assertReleasedRCategoricalGeneratedCode\(/gu)?.length, 3);
+  assert.match(oneHot, /const generatedCall = releasedRCategoricalGeneratedCall\(generatedExpectation\)/u);
+  assert.match(oneHot, /waitForCodePreview\(workbench, generatedCall, "R"\)/u);
+  assert.match(oneHot, /revealCodePreviewText\(codePreview, generatedCall\)/u);
+  assert.doesNotMatch(oneHot, /revealCodePreviewText\(codePreview, "\.ow_categorical_encode"\)/u);
+  assert.match(oneHot, /offset: 601,[\s\S]*?\[\s*\["1", "0"\],\s*\["0", "1"\]\s*\]/u);
+  assert.match(oneHot, /data-grid-row="0"\]\[data-grid-column="\$\{outputA\.position\}"[\s\S]*?=== "1"/u);
+  assert.match(oneHot, /data-grid-row="0"\]\[data-grid-column="\$\{outputB\.position\}"[\s\S]*?=== "0"/u);
+  assert.match(oneHot, /name: "Apply step", exact: true/u);
+  assert.match(oneHot, /name: "Undo", exact: true/u);
+
+  const multiLabel = section(
+    "async function exerciseReleasedRMultiLabelJourney(",
+    "async function exerciseReleasedRGroupByJourney("
+  );
+  assert.equal(multiLabel.match(/assertReleasedRCategoricalGeneratedCode\(/gu)?.length, 3);
+  assert.match(multiLabel, /const labels = base\.metadata\.schema\.find\(\(column\) => column\.name === "extra_18"\)/u);
+  assert.match(multiLabel, /\.getByLabel\("Delimiter", \{ exact: true \}\)\.fill\("\|"\)/u);
+  assert.match(multiLabel, /const generatedCall = releasedRCategoricalGeneratedCall\(generatedExpectation\)/u);
+  assert.match(multiLabel, /waitForCodePreview\(workbench, generatedCall, "R"\)/u);
+  assert.match(multiLabel, /revealCodePreviewText\(codePreview, generatedCall\)/u);
+  assert.doesNotMatch(multiLabel, /revealCodePreviewText\(codePreview, "\.ow_categorical_encode"\)/u);
+  assert.match(multiLabel, /offset: 0,[\s\S]*?\[\s*\["1", "1"\],\s*\["0", "1"\]\s*\]/u);
+  assert.match(
+    multiLabel,
+    /\[0, outputB\.position, "1"\],[\s\S]*?\[1, outputA\.position, "0"\],[\s\S]*?\[1, outputB\.position, "1"\]/u
+  );
+  assert.match(multiLabel, /name: "Apply step", exact: true/u);
+  assert.match(multiLabel, /name: "Undo", exact: true/u);
+
+  const editingRoute = section(
+    'recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");',
+    'recordReleasedRAcceptanceSection(phase, coverage, "editing", "complete");'
+  );
+  assert.match(
+    editingRoute,
+    /else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\([\s\S]*if \(phase === "jupyter-r" && coverage\.focusedCategoricalEditing\)[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\)[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\)/u
+  );
+});
+
 test("focused literate acceptance owns and probes its exact private Python kernel", async () => {
   const source = await readFile(resolve("scripts/run-packaged-editor-tests.mjs"), "utf8");
   const rSetup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");

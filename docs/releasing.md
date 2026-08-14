@@ -80,10 +80,12 @@ The preview workflow uses the separate preview form below; neither channel inven
 Every Open Wrangler 2 release candidate runs the R 4.5.2 contract tests. The preview and stable workflows then
 install their canonical VSIX in VS Code and Cursor and run the R notebook journey. Linux and macOS VS Code run the
 comprehensive notebook profile; Windows and Cursor run the representative notebook profile within the same hard
-deadline. macOS retains plain `.R` in that ordinary invocation, and Windows skips direct R documents. After the
-ordinary Linux R invocation passes, the candidate is verified again for fresh packaged VS Code and Cursor phases that
-cover the active R terminal. It is then verified a third time before fresh phases cover plain `.R`, `.Rmd`, `.qmd`,
-native Quarto preview, and Python Quarto.
+deadline. Cursor's representative profile additionally runs the exact
+One-hot encode and Multi-label binarize visible-form, boundary-value, generated-call, preview, apply, and undo journeys
+without expanding to the full catalog. macOS retains plain `.R` in the ordinary invocation, and Windows skips direct R
+documents. After the ordinary Linux R invocation passes, the candidate is verified again for fresh packaged VS Code
+and Cursor phases that cover the active R terminal. It is then verified a third time before fresh phases cover plain
+`.R`, `.Rmd`, `.qmd`, native Quarto preview, and Python Quarto.
 Direct R/runtime/webview suites retain the complete R operation and document matrix. The candidate workflow runs
 Python, local R, and remote R Jupyter acceptance as separate non-cancelling matrix jobs, and all three download and
 verify the same candidate VSIX. The local ordinary, focused interactive, focused literate, and remote R invocations
@@ -121,7 +123,7 @@ the packaged extension-host, candidate-workflow, and testing-record references. 
 document, insertion, and export journeys; a release-candidate R performance record; and first-class VS Code/Cursor
 acceptance. The active R-terminal transport and export rows claim Linux only, matching the platform where the
 candidate installs and exercises the native R editor tooling. The Cursor literate row likewise claims Linux and
-distinguishes the R Markdown document command from the Quarto R/Python title actions. The existing 24-operation R
+distinguishes the R Markdown document command from the Quarto R/Python title actions. The existing 26-operation R
 suites cannot satisfy either all-28 catalog row: dedicated complete-catalog runtime/generated-code and code-export
 tests must be tracked before those rows can become Done. `GRP_df`, `indexed_frame`, Windows direct-document execution,
 and remote R documents remain outside that table. Successful candidate jobs do not change a documentation row to Done by themselves: the exact tracked record

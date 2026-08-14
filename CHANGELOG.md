@@ -15,6 +15,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   code. Formula accepts exact numeric columns or a finite scalar. Format Datetime accepts `Date` and `POSIXct`
   columns, formatting POSIXct values in their declared time zone or UTC when none is declared. Generated scripts also
   preserve a source already named `open_wrangler_result` by publishing the cleaned frame as `open_wrangler_result_2`.
+- Native R editing now also supports One-hot encode and Multi-label binarize. Missing, `NaN`, blank, and unused-factor
+  categories do not create indicators; generated integer columns use deterministic names and executable R while the
+  selected source columns can be retained or dropped.
 - Native R candidate acceptance now runs the focused R Markdown and Quarto journey in both packaged VS Code and
   Cursor. The active R-terminal journey also exports CSV and Parquet results through the public picker and Save
   dialog in packaged Linux VS Code and Cursor, backed by the production terminal transport and a direct atomic-export

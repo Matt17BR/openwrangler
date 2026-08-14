@@ -6,6 +6,8 @@ const root = resolve(import.meta.dirname, "..");
 const rscript = resolveExecutable(process.env.RSCRIPT ?? "Rscript");
 const r = resolveExecutable(process.env.R ?? "R");
 const rEnvironment = { ...process.env, R: r, RSCRIPT: rscript };
+const DIRECT_R_CONTRACT_TIMEOUT_MS = 300_000;
+const VITEST_CONTRACT_TIMEOUT_MS = 120_000;
 
 function resolveExecutable(command) {
   const candidates = isAbsolute(command)
@@ -31,12 +33,12 @@ function resolveExecutable(command) {
   throw new Error(`Could not find the requested Rscript executable: ${command}`);
 }
 
-function run(command, args, environment = process.env) {
+function run(command, args, { environment = process.env, timeoutMs }) {
   const result = spawnSync(command, args, {
     cwd: root,
     encoding: "utf8",
     stdio: "inherit",
-    timeout: 120_000,
+    timeout: timeoutMs,
     env: environment
   });
   if (result.error) throw result.error;
@@ -45,8 +47,14 @@ function run(command, args, environment = process.env) {
   }
 }
 
-run(rscript, ["--vanilla", "r/tests/frame_contract.R"], rEnvironment);
-run(rscript, ["--vanilla", "r/tests/kernel_agent.R"], rEnvironment);
+run(rscript, ["--vanilla", "r/tests/frame_contract.R"], {
+  environment: rEnvironment,
+  timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS
+});
+run(rscript, ["--vanilla", "r/tests/kernel_agent.R"], {
+  environment: rEnvironment,
+  timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS
+});
 run(
   process.execPath,
   [
@@ -60,5 +68,8 @@ run(
     "src/test/rInteractiveSessionTransport.cross.test.ts",
     "--maxWorkers=1"
   ],
-  { ...rEnvironment, OPEN_WRANGLER_R_CONTRACT_TESTS: "1" }
+  {
+    environment: { ...rEnvironment, OPEN_WRANGLER_R_CONTRACT_TESTS: "1" },
+    timeoutMs: VITEST_CONTRACT_TIMEOUT_MS
+  }
 );

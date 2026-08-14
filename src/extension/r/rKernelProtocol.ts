@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 11 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 12 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -148,6 +148,27 @@ export interface RKernelTextLengthStep {
   readonly params: Readonly<{
     column: RKernelColumnReference;
     newColumn: string;
+  }>;
+}
+
+export interface RKernelOneHotEncodeStep {
+  readonly id: string;
+  readonly kind: "oneHotEncode";
+  readonly params: Readonly<{
+    columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    readonly prefixSeparator?: string;
+    readonly dropOriginal?: boolean;
+  }>;
+}
+
+export interface RKernelMultiLabelBinarizeStep {
+  readonly id: string;
+  readonly kind: "multiLabelBinarize";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    delimiter: string;
+    readonly prefix?: string;
+    readonly dropOriginal?: boolean;
   }>;
 }
 
@@ -380,6 +401,8 @@ export type RKernelTransformStep =
   | RKernelCastColumnStep
   | RKernelFormulaStep
   | RKernelTextLengthStep
+  | RKernelOneHotEncodeStep
+  | RKernelMultiLabelBinarizeStep
   | RKernelLowerTextStep
   | RKernelUpperTextStep
   | RKernelCapitalizeTextStep
@@ -1264,6 +1287,44 @@ function validateTransformStep(value: unknown): void {
     boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
+  if (step.kind === "oneHotEncode") {
+    const params = exactRecord(
+      step.params,
+      ["columns"],
+      ["prefixSeparator", "dropOriginal"],
+      "R kernel one-hot parameters"
+    );
+    validateRowReductionColumnReferences(params.columns, "one-hot", false);
+    if (params.prefixSeparator !== undefined) {
+      boundedText(
+        params.prefixSeparator,
+        "request.payload.step.params.prefixSeparator",
+        R_FRAME_CONTRACT_LIMITS.textBytes,
+        true
+      );
+    }
+    if (params.dropOriginal !== undefined && typeof params.dropOriginal !== "boolean") {
+      fail("R kernel one-hot parameters contain an invalid drop-original flag.");
+    }
+    return;
+  }
+  if (step.kind === "multiLabelBinarize") {
+    const params = exactRecord(
+      step.params,
+      ["column", "delimiter"],
+      ["prefix", "dropOriginal"],
+      "R kernel multi-label parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.delimiter, "request.payload.step.params.delimiter", R_FRAME_CONTRACT_LIMITS.textBytes, false);
+    if (params.prefix !== undefined) {
+      boundedText(params.prefix, "request.payload.step.params.prefix", R_FRAME_CONTRACT_LIMITS.textBytes, true);
+    }
+    if (params.dropOriginal !== undefined && typeof params.dropOriginal !== "boolean") {
+      fail("R kernel multi-label parameters contain an invalid drop-original flag.");
+    }
+    return;
+  }
   if (
     step.kind === "minMaxScale" ||
     step.kind === "roundNumber" ||
@@ -1729,8 +1790,8 @@ function validateMutationDiff(
   const removedColumns = diff.removedColumns.map((column, index) =>
     boundedText(column, `response.diff.removedColumns[${index}]`, maximumVariableNameBytes, true)
   );
-  if (new Set(addedColumns).size !== addedColumns.length || new Set(removedColumns).size !== removedColumns.length) {
-    fail("R kernel diff column names must be unique.");
+  if (new Set(addedColumns).size !== addedColumns.length) {
+    fail("R kernel added-column diff names must be unique.");
   }
   const outputById = new Map(outputPage.schema.map((column) => [column.id, column]));
   const inputById = new Map(inputSchema.map((column) => [column.id, column]));

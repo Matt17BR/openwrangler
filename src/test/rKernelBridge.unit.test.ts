@@ -14,6 +14,8 @@ import type {
   FloorNumberTransformStep,
   GroupByTransformStep,
   MinMaxScaleTransformStep,
+  MultiLabelBinarizeTransformStep,
+  OneHotEncodeTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest,
   RoundNumberTransformStep,
@@ -2463,6 +2465,8 @@ describe("canonical R kernel bridge", () => {
             "castColumn",
             "formula",
             "textLength",
+            "oneHotEncode",
+            "multiLabelBinarize",
             "findReplace",
             "stripText",
             "splitText",
@@ -5594,12 +5598,6 @@ describe("canonical R kernel bridge", () => {
     await bridge.request(openRequest("editing"));
     const column = { id: "r:c:0", name: "value" } as const;
     const steps = [
-      { id: "r-one-hot", kind: "oneHotEncode", params: { columns: [column] } },
-      {
-        id: "r-multi-label",
-        kind: "multiLabelBinarize",
-        params: { column, delimiter: ",", dropOriginal: false }
-      },
       {
         id: "r-by-example",
         kind: "byExample",
@@ -5634,6 +5632,532 @@ describe("canonical R kernel bridge", () => {
       });
     }
     expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("publishes dynamic native R one-hot schemas with duplicate removed labels atomically", async () => {
+    const source = frameContract({ duplicateFirstName: true });
+    const step: OneHotEncodeTransformStep = {
+      id: "r-one-hot-dynamic",
+      kind: "oneHotEncode",
+      params: {
+        columns: [
+          { id: "r:c:0", name: "value" },
+          { id: "r:c:1", name: "value" }
+        ],
+        prefixSeparator: "_",
+        dropOriginal: true
+      }
+    };
+    const encoded = categoricalContract(source, step.id, ["r:c:0", "r:c:1"], true, ["value_false", "value_true"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: encoded,
+      diff: categoricalDiff(["value_false", "value_true"], ["value", "value"]),
+      code: "open_wrangler_result <- open_wrangler_one_hot_encode_columns(orders)"
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { shape: { rows: 1, columns: 8 } },
+      diff: { addedColumns: ["value_false", "value_true"], removedColumns: ["value", "value"] }
+    });
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      0,
+      {
+        id: step.id,
+        kind: "oneHotEncode",
+        params: {
+          columns: [
+            { id: "r:c:0", name: "value" },
+            { id: "r:c:1", name: "value" }
+          ],
+          prefixSeparator: "_",
+          dropOriginal: true
+        }
+      },
+      expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      source.schema,
+      undefined,
+      expect.any(Object)
+    );
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: encoded,
+      code: "open_wrangler_result <- open_wrangler_one_hot_encode_columns(orders)"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: { steps: [step] }
+    });
+    transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 3, page: source, code: "" });
+    await expect(bridge.request(planRequest("undoStep", 2))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 3,
+      metadata: { steps: [] }
+    });
+  });
+
+  it("rejects a retained-only native R categorical schema before publishing a draft", async () => {
+    const source = frameContract();
+    const step: MultiLabelBinarizeTransformStep = {
+      id: "r-multi-label-requires-output",
+      kind: "multiLabelBinarize",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        delimiter: ",",
+        prefix: "tag_",
+        dropOriginal: false
+      }
+    };
+    const request = {
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    } as const;
+
+    const encoded = categoricalContract(source, step.id, [step.params.column.id], false, ["tag_alpha"]);
+    const validTransport = fakeTransport(source);
+    const validBridge = createBridge(validTransport);
+    await validBridge.request(openRequest("editing"));
+    validTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: encoded,
+      diff: categoricalDiff(["tag_alpha"], []),
+      code: "open_wrangler_result <- open_wrangler_multi_label_binarize_column(orders)"
+    });
+    await expect(validBridge.request(request)).resolves.toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: {
+        shape: { rows: 1, columns: source.schema.length + 1 },
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:0", position: 0 }),
+          expect.objectContaining({ id: `c:step:${step.id}:0`, name: "tag_alpha", position: source.schema.length })
+        ])
+      },
+      diff: { addedColumns: ["tag_alpha"], removedColumns: [] }
+    });
+
+    const maliciousTransport = fakeTransport(source);
+    const maliciousBridge = createBridge(maliciousTransport);
+    await maliciousBridge.request(openRequest("editing"));
+    maliciousTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: categoricalDiff([], []),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(maliciousBridge.request(request)).rejects.toThrow("without a generated output");
+    await expect(maliciousBridge.request(planRequest("applyDraft", 0))).resolves.toMatchObject({
+      kind: "error",
+      code: "r_kernel_changed"
+    });
+    expect(maliciousTransport.applyDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a generated categorical view while editing the latest step", async () => {
+    const source = frameContract();
+    const step: OneHotEncodeTransformStep = {
+      id: "r-one-hot-edit-view",
+      kind: "oneHotEncode",
+      params: {
+        columns: [{ id: "r:c:0", name: "value" }],
+        prefixSeparator: "_",
+        dropOriginal: false
+      }
+    };
+    const encoded = categoricalContract(source, step.id, ["r:c:0"], false, ["value_false", "value_true"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: encoded,
+      diff: categoricalDiff(["value_false", "value_true"], []),
+      code: "open_wrangler_result <- open_wrangler_one_hot_encode_columns(orders)"
+    });
+    await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: encoded,
+      code: "open_wrangler_result <- open_wrangler_one_hot_encode_columns(orders)"
+    });
+    await bridge.request(planRequest("applyDraft", 1));
+
+    transport.getPage.mockResolvedValueOnce(encoded);
+    await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 2,
+      viewRequestId: "categorical-generated-view",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [
+          {
+            column: "value_false",
+            type: "integer",
+            predicates: [{ kind: "predicate", operator: "gte", value: 1 }]
+          }
+        ],
+        sort: [{ column: "value_false", direction: "desc", nulls: "last" }]
+      }
+    });
+
+    transport.queuePreview({
+      sessionId,
+      revision: 3,
+      page: encoded,
+      diff: categoricalDiff(["value_false", "value_true"], []),
+      code: "open_wrangler_result <- open_wrangler_one_hot_encode_columns(orders)"
+    });
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 2,
+        replaceStepId: step.id,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: { filterModel: { filters: [], sort: [] } }
+    });
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      2,
+      expect.objectContaining({ id: step.id }),
+      expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      source.schema,
+      step.id,
+      expect.any(Object)
+    );
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 4,
+      page: encoded,
+      code: "open_wrangler_result <- open_wrangler_one_hot_encode_columns(orders)"
+    });
+    await expect(bridge.request(planRequest("discardDraft", 3))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 4,
+      metadata: {
+        filterModel: {
+          filters: [expect.objectContaining({ column: "value_false" })],
+          sort: [expect.objectContaining({ column: "value_false" })]
+        }
+      }
+    });
+    expect(transport.discardDraft).toHaveBeenCalledWith(
+      sessionId,
+      3,
+      expect.objectContaining({
+        view: {
+          filters: [expect.objectContaining({ column: { id: `c:step:${step.id}:0`, name: "value_false" } })],
+          sorts: [expect.objectContaining({ column: { id: `c:step:${step.id}:0`, name: "value_false" } })]
+        }
+      }),
+      expect.any(Object)
+    );
+  });
+
+  it("reconciles dropped native R multi-label filters and restores them on discard", async () => {
+    const source = frameContract();
+    const step: MultiLabelBinarizeTransformStep = {
+      id: "r-multi-label-dynamic",
+      kind: "multiLabelBinarize",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        delimiter: "::",
+        prefix: "tag_",
+        dropOriginal: true
+      }
+    };
+    const encoded = categoricalContract(source, step.id, ["r:c:6"], true, ["tag_alpha", "tag_beta"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.getPage.mockResolvedValueOnce(source);
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: "multi-label-filter",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: {
+          filters: [
+            {
+              column: "missing",
+              type: "string",
+              predicates: [{ kind: "predicate", operator: "contains", value: "alpha" }]
+            }
+          ],
+          sort: []
+        }
+      })
+    ).resolves.toMatchObject({ kind: "page" });
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: encoded,
+      diff: categoricalDiff(["tag_alpha", "tag_beta"], ["missing"]),
+      code: "open_wrangler_result <- open_wrangler_multi_label_binarize_column(orders)"
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: { filterModel: { filters: [], sort: [] }, shape: { rows: 1, columns: 9 } },
+      diff: { addedColumns: ["tag_alpha", "tag_beta"], removedColumns: ["missing"] }
+    });
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      0,
+      expect.objectContaining({ kind: "multiLabelBinarize" }),
+      expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      source.schema,
+      undefined,
+      expect.any(Object)
+    );
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    await expect(bridge.request(planRequest("discardDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      metadata: {
+        filterModel: {
+          filters: [expect.objectContaining({ column: "missing" })],
+          sort: []
+        }
+      }
+    });
+  });
+
+  it("rejects malformed dynamic native R categorical schemas before publication", async () => {
+    const source = frameContract();
+    const step: MultiLabelBinarizeTransformStep = {
+      id: "r-multi-label-invalid-schema",
+      kind: "multiLabelBinarize",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        delimiter: ",",
+        prefix: "tag_",
+        dropOriginal: false
+      }
+    };
+    const valid = categoricalContract(source, step.id, ["r:c:6"], false, ["tag_alpha", "tag_beta"]);
+    const invalidContracts: ReadonlyArray<readonly [string, RFramePageContract]> = [
+      [
+        "generated identity",
+        {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === source.schema.length ? { ...column, id: "c:step:wrong:0" } : { ...column }
+          )
+        }
+      ],
+      [
+        "generated nullability",
+        {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === source.schema.length ? { ...column, nullable: true } : { ...column }
+          )
+        }
+      ],
+      [
+        "generated type",
+        {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === source.schema.length
+              ? {
+                  ...column,
+                  rawType: "character",
+                  type: "string",
+                  semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+                }
+              : { ...column }
+          ) as RColumnSchema[]
+        }
+      ],
+      [
+        "generated prefix",
+        {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === source.schema.length ? { ...column, name: "wrong_alpha" } : { ...column }
+          )
+        }
+      ],
+      [
+        "generated order",
+        {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === source.schema.length
+              ? { ...column, name: "tag_beta" }
+              : index === source.schema.length + 1
+                ? { ...column, name: "tag_alpha" }
+                : { ...column }
+          )
+        }
+      ],
+      [
+        "retained column",
+        {
+          ...valid,
+          schema: valid.schema.map((column, index) => (index === 0 ? { ...column, name: "changed" } : { ...column }))
+        }
+      ]
+    ];
+
+    for (const [label, page] of invalidContracts) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page,
+        diff: categoricalDiff(["tag_alpha", "tag_beta"], []),
+        code: "open_wrangler_result <- orders"
+      });
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        }),
+        label
+      ).rejects.toThrow(/categorical|retained column/u);
+    }
+  });
+
+  it("rejects invalid native R categorical inputs before transport", async () => {
+    const source = frameContract();
+    const invalidSteps: TransformStep[] = [
+      {
+        id: "r-one-hot-stale",
+        kind: "oneHotEncode",
+        params: { columns: [{ id: "r:c:0", name: "stale" }] }
+      },
+      {
+        id: "r-one-hot-duplicate",
+        kind: "oneHotEncode",
+        params: {
+          columns: [
+            { id: "r:c:0", name: "value" },
+            { id: "r:c:0", name: "value" }
+          ]
+        }
+      },
+      {
+        id: "r-multi-label-numeric",
+        kind: "multiLabelBinarize",
+        params: { column: { id: "r:c:0", name: "value" }, delimiter: "," }
+      },
+      {
+        id: "r-multi-label-empty-delimiter",
+        kind: "multiLabelBinarize",
+        params: { column: { id: "r:c:6", name: "missing" }, delimiter: "" }
+      }
+    ];
+    for (const step of invalidSteps) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
   });
 
   it("rejects invalid native R numeric rounding inputs before transport", async () => {
@@ -7609,6 +8133,56 @@ function textLengthContract(
   };
 }
 
+function categoricalContract(
+  source: RFramePageContract,
+  stepId: string,
+  selectedColumnIds: readonly string[],
+  dropOriginal: boolean,
+  generatedNames: readonly string[]
+): RFramePageContract {
+  const selectedIds = new Set(selectedColumnIds);
+  const retained = source.schema
+    .filter((column) => !dropOriginal || !selectedIds.has(column.id))
+    .map((column, position) => ({ ...column, position }));
+  const generated: RColumnSchema[] = generatedNames.map((name, ordinal) => ({
+    id: `c:step:${stepId}:${ordinal}`,
+    name,
+    position: retained.length + ordinal,
+    rawType: "integer",
+    type: "integer",
+    nullable: false,
+    semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+  }));
+  const schema = [...retained, ...generated];
+  const keyColumnIds: string[] = [];
+  const retainedIds = new Set(retained.map((column) => column.id));
+  for (const id of source.frameSemantics.keyColumnIds) {
+    if (!retainedIds.has(id)) break;
+    keyColumnIds.push(id);
+  }
+  const projected = schema.slice(source.page.columnOffset, source.page.columnOffset + source.page.columnLimit);
+  const sourcePagePosition = new Map(source.page.columnIds.map((id, position) => [id, position]));
+  return {
+    ...source,
+    shape: { ...source.shape, columns: schema.length },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds },
+    schema,
+    page: {
+      ...source.page,
+      columnIds: projected.map((column) => column.id),
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: projected.map((column) => {
+          const position = sourcePagePosition.get(column.id);
+          return position === undefined
+            ? ({ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false } as const)
+            : { ...(row.values[position] as RFrameCell) };
+        })
+      }))
+    }
+  };
+}
+
 function replaceContractCell(source: RFramePageContract, columnId: string, value: RFrameCell): RFramePageContract {
   const pagePosition = source.page.columnIds.indexOf(columnId);
   if (pagePosition < 0) throw new Error(`Fake R page does not contain ${columnId}.`);
@@ -7886,6 +8460,10 @@ function cloneDiff(newName: string): DataDiff {
   return { ...renameDiff(), addedColumns: [newName] };
 }
 
+function categoricalDiff(addedColumns: readonly string[], removedColumns: readonly string[]): DataDiff {
+  return { ...renameDiff(), addedColumns: [...addedColumns], removedColumns: [...removedColumns] };
+}
+
 function lowerDiff(columnId: string, column: string, before: string, after: string): DataDiff {
   return {
     ...renameDiff(),
@@ -8093,6 +8671,8 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "castColumn",
       "formula",
       "textLength",
+      "oneHotEncode",
+      "multiLabelBinarize",
       "findReplace",
       "stripText",
       "splitText",

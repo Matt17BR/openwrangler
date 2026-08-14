@@ -32,6 +32,8 @@ import {
   type InspectStepRequest,
   type LowerTextTransformStep,
   type MinMaxScaleTransformStep,
+  type MultiLabelBinarizeTransformStep,
+  type OneHotEncodeTransformStep,
   type OpenSessionRequest,
   type OperationKind,
   type OpenWranglerRequest,
@@ -110,6 +112,8 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "castColumn",
   "formula",
   "textLength",
+  "oneHotEncode",
+  "multiLabelBinarize",
   "findReplace",
   "stripText",
   "splitText",
@@ -146,6 +150,8 @@ type RTransformStep =
   | FloorNumberTransformStep
   | CeilNumberTransformStep
   | FormatDatetimeTransformStep
+  | OneHotEncodeTransformStep
+  | MultiLabelBinarizeTransformStep
   | GroupByTransformStep
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
@@ -720,6 +726,8 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "castColumn" &&
       request.step.kind !== "formula" &&
       request.step.kind !== "textLength" &&
+      request.step.kind !== "oneHotEncode" &&
+      request.step.kind !== "multiLabelBinarize" &&
       request.step.kind !== "findReplace" &&
       request.step.kind !== "stripText" &&
       request.step.kind !== "splitText" &&
@@ -784,7 +792,9 @@ export class RKernelBridge implements OpenWranglerBridge {
     let rStep: RKernelTransformStep;
     let targetRowNames: RFramePageContract["frameSemantics"]["rowNames"];
     try {
-      targetSchema = schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
+      targetSchema = isRCategoricalTransformStep(request.step)
+        ? categoricalRetainedSchema(inputSchema, request.step)
+        : schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
       targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
       rStep = rTransformStep(request.step, inputSchema);
       targetRowNames = rowNamesAfterRStep(inputRowNames, request.step);
@@ -821,6 +831,14 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
         confirmed.invalidated = true;
         return staleResponseError(request.sessionId);
+      }
+      if (isRCategoricalTransformStep(request.step)) {
+        targetSchema = dynamicCategoricalSchema(inputSchema, inputRSchema, request.step, result.page);
+        targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
+        const resolvedView = resolveViewQuery(nextFilterModel, targetSchema);
+        if (!isDeepStrictEqual(resolvedView, view)) {
+          throw new Error("The R categorical schema changed the pre-dispatch viewing query.");
+        }
       }
       const targetRows = rowCountAfterRStep(request.step, inputRows, result.diff);
       const targetIdentityRows = rowIdentityDomainAfterRStep(request.step, inputIdentityRows, targetRows);
@@ -2238,6 +2256,9 @@ function schemaAfterRStep(
   if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
+  if (isRCategoricalTransformStep(step)) {
+    throw new TypeError("Categorical R operations require a runtime-derived output schema.");
+  }
   if (
     step.kind === "findReplace" ||
     step.kind === "stripText" ||
@@ -2264,6 +2285,154 @@ function schemaAfterRStep(
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+type RCategoricalTransformStep = OneHotEncodeTransformStep | MultiLabelBinarizeTransformStep;
+
+function isRCategoricalTransformStep(step: RTransformStep): step is RCategoricalTransformStep {
+  return step.kind === "oneHotEncode" || step.kind === "multiLabelBinarize";
+}
+
+function categoricalRetainedSchema(
+  inputSchema: readonly ColumnSchema[],
+  step: RCategoricalTransformStep
+): readonly ColumnSchema[] {
+  const references = step.kind === "oneHotEncode" ? step.params.columns : [step.params.column];
+  if (references.length === 0 || references.length > inputSchema.length) {
+    throw new TypeError("Categorical encoding requires a bounded non-empty R column selection.");
+  }
+  const inputById = new Map(inputSchema.map((column) => [column.id, column]));
+  const selectedIds = new Set<string>();
+  for (const reference of references) {
+    const column = inputById.get(reference.id);
+    if (!column || column.name !== reference.name) {
+      throw new TypeError("A categorical column reference no longer matches the active R dataframe.");
+    }
+    if (selectedIds.has(column.id)) {
+      throw new TypeError("Categorical encoding cannot target the same R column more than once.");
+    }
+    if (column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+      throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+    }
+    selectedIds.add(column.id);
+  }
+  if (step.kind === "oneHotEncode") {
+    if (
+      step.params.prefixSeparator !== undefined &&
+      Buffer.byteLength(step.params.prefixSeparator, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes
+    ) {
+      throw new TypeError("The one-hot prefix separator exceeds the R frame contract text limit.");
+    }
+    if (step.params.dropOriginal !== undefined && typeof step.params.dropOriginal !== "boolean") {
+      throw new TypeError("The one-hot drop-original option must be boolean.");
+    }
+  } else {
+    const source = inputById.get(step.params.column.id) as ColumnSchema;
+    if (source.rawType !== "character" && source.rawType !== "factor" && source.rawType !== "ordered factor") {
+      throw new TypeError("Multi-label binarization requires an R character or factor column.");
+    }
+    if (
+      step.params.delimiter.length === 0 ||
+      Buffer.byteLength(step.params.delimiter, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes
+    ) {
+      throw new TypeError("Multi-label binarization requires a bounded non-empty delimiter.");
+    }
+    if (
+      step.params.prefix !== undefined &&
+      Buffer.byteLength(step.params.prefix, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes
+    ) {
+      throw new TypeError("The multi-label prefix exceeds the R frame contract text limit.");
+    }
+    if (step.params.dropOriginal !== undefined && typeof step.params.dropOriginal !== "boolean") {
+      throw new TypeError("The multi-label drop-original option must be boolean.");
+    }
+  }
+  const dropOriginal =
+    step.kind === "oneHotEncode" ? step.params.dropOriginal !== false : step.params.dropOriginal === true;
+  return Object.freeze(
+    inputSchema
+      .filter((column) => !dropOriginal || !selectedIds.has(column.id))
+      .map((column, position) => Object.freeze({ ...column, position }))
+  );
+}
+
+function dynamicCategoricalSchema(
+  inputSchema: readonly ColumnSchema[],
+  inputRSchema: readonly RColumnSchema[],
+  step: RCategoricalTransformStep,
+  contract: RFramePageContract
+): readonly ColumnSchema[] {
+  const retained = categoricalRetainedSchema(inputSchema, step);
+  const actual = schemaFromContract(contract);
+  const inputRById = new Map(inputRSchema.map((column) => [column.id, column]));
+  if (actual.length <= retained.length) {
+    throw new Error("The R kernel returned a categorical schema without a generated output.");
+  }
+  for (const [index, expected] of retained.entries()) {
+    const candidate = actual[index];
+    const actualRColumn = contract.schema[index];
+    const expectedRColumn = inputRById.get(expected.id);
+    if (
+      !candidate ||
+      !actualRColumn ||
+      !expectedRColumn ||
+      candidate.id !== expected.id ||
+      candidate.name !== expected.name ||
+      candidate.position !== expected.position ||
+      candidate.rawType !== expected.rawType ||
+      candidate.type !== expected.type ||
+      candidate.nullable !== expected.nullable ||
+      !isDeepStrictEqual(actualRColumn.semantics, expectedRColumn.semantics)
+    ) {
+      throw new Error("The R kernel changed a retained column while encoding categories.");
+    }
+  }
+  const retainedNames = new Set(retained.map((column) => column.name));
+  const generatedNames = new Set<string>();
+  const requiredPrefixes =
+    step.kind === "oneHotEncode"
+      ? step.params.columns.map((column) => `${column.name}${step.params.prefixSeparator ?? "_"}`)
+      : [step.params.prefix ?? `${step.params.column.name}_`];
+  let previousGeneratedName: string | undefined;
+  for (let index = retained.length; index < actual.length; index += 1) {
+    const column = actual[index] as ColumnSchema;
+    const rColumn = contract.schema[index];
+    const ordinal = index - retained.length;
+    if (
+      column.id !== `c:step:${step.id}:${ordinal}` ||
+      column.position !== index ||
+      column.rawType !== "integer" ||
+      column.type !== "integer" ||
+      column.nullable ||
+      !rColumn ||
+      !isDeepStrictEqual(rColumn.semantics, {
+        kind: "integer",
+        storageMode: "integer",
+        classes: ["integer"]
+      })
+    ) {
+      throw new Error("The R kernel returned invalid categorical output metadata.");
+    }
+    if (
+      column.name.length === 0 ||
+      Buffer.byteLength(column.name, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes ||
+      column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX) ||
+      retainedNames.has(column.name) ||
+      generatedNames.has(column.name) ||
+      !requiredPrefixes.some((prefix) => column.name.startsWith(prefix) && column.name.length > prefix.length)
+    ) {
+      throw new Error("The R kernel returned a colliding or reserved categorical output name.");
+    }
+    if (
+      previousGeneratedName !== undefined &&
+      Buffer.compare(Buffer.from(previousGeneratedName, "utf8"), Buffer.from(column.name, "utf8")) >= 0
+    ) {
+      throw new Error("The R kernel returned categorical outputs outside their canonical global order.");
+    }
+    previousGeneratedName = column.name;
+    generatedNames.add(column.name);
+  }
+  return actual;
 }
 
 function schemaAfterFormula(inputSchema: readonly ColumnSchema[], step: FormulaTransformStep): readonly ColumnSchema[] {
@@ -3494,6 +3663,31 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newColumn: step.params.newColumn })
     });
   }
+  if (step.kind === "oneHotEncode") {
+    const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
+    if (!columns[0]) throw new TypeError("One-hot encoding requires at least one R column.");
+    return Object.freeze({
+      id: step.id,
+      kind: "oneHotEncode" as const,
+      params: Object.freeze({
+        columns: Object.freeze(columns) as readonly [RKernelColumnReference, ...RKernelColumnReference[]],
+        ...(step.params.prefixSeparator === undefined ? {} : { prefixSeparator: step.params.prefixSeparator }),
+        ...(step.params.dropOriginal === undefined ? {} : { dropOriginal: step.params.dropOriginal })
+      })
+    });
+  }
+  if (step.kind === "multiLabelBinarize") {
+    return Object.freeze({
+      id: step.id,
+      kind: "multiLabelBinarize" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        delimiter: step.params.delimiter,
+        ...(step.params.prefix === undefined ? {} : { prefix: step.params.prefix }),
+        ...(step.params.dropOriginal === undefined ? {} : { dropOriginal: step.params.dropOriginal })
+      })
+    });
+  }
   if (step.kind === "capitalizeText") {
     return Object.freeze({
       id: step.id,
@@ -3753,6 +3947,31 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, newColumn: step.params.newColumn }
     };
   }
+  if (step.kind === "oneHotEncode") {
+    const columns = step.params.columns.map((column) => ({ ...column }));
+    if (!columns[0]) throw new TypeError("One-hot encoding requires at least one R column.");
+    return {
+      id: step.id,
+      kind: "oneHotEncode",
+      params: {
+        columns: columns as OneHotEncodeTransformStep["params"]["columns"],
+        ...(step.params.prefixSeparator === undefined ? {} : { prefixSeparator: step.params.prefixSeparator }),
+        ...(step.params.dropOriginal === undefined ? {} : { dropOriginal: step.params.dropOriginal })
+      }
+    };
+  }
+  if (step.kind === "multiLabelBinarize") {
+    return {
+      id: step.id,
+      kind: "multiLabelBinarize",
+      params: {
+        column: { ...step.params.column },
+        delimiter: step.params.delimiter,
+        ...(step.params.prefix === undefined ? {} : { prefix: step.params.prefix }),
+        ...(step.params.dropOriginal === undefined ? {} : { dropOriginal: step.params.dropOriginal })
+      }
+    };
+  }
   if (step.kind === "capitalizeText") {
     return {
       id: step.id,
@@ -3894,6 +4113,8 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "castColumn" &&
     step.kind !== "formula" &&
     step.kind !== "textLength" &&
+    step.kind !== "oneHotEncode" &&
+    step.kind !== "multiLabelBinarize" &&
     step.kind !== "findReplace" &&
     step.kind !== "stripText" &&
     step.kind !== "splitText" &&
@@ -4116,6 +4337,33 @@ function assertMutationDiff(
       diff.cells.length === 0 &&
       (fullyRepresented || diff.truncated);
     if (!valid) throw new Error("The R kernel returned an invalid row-operation diff.");
+    return;
+  }
+  if (isRCategoricalTransformStep(step)) {
+    const retainedSchema = categoricalRetainedSchema(inputSchema, step);
+    const retainedIds = new Set(retainedSchema.map((column) => column.id));
+    const generatedSchema = outputSchema.slice(retainedSchema.length);
+    const expectedOutputIds = [
+      ...retainedSchema.map((column) => column.id),
+      ...generatedSchema.map((_column, ordinal) => `c:step:${step.id}:${ordinal}`)
+    ];
+    const expectedRemoved = inputSchema.filter((column) => !retainedIds.has(column.id)).map((column) => column.name);
+    const valid =
+      isDeepStrictEqual(
+        outputSchema.map((column) => column.id),
+        expectedOutputIds
+      ) &&
+      diff.addedRows === 0 &&
+      diff.removedRows === 0 &&
+      isDeepStrictEqual(
+        diff.addedColumns,
+        generatedSchema.map((column) => column.name)
+      ) &&
+      isDeepStrictEqual(diff.removedColumns, expectedRemoved) &&
+      diff.changedCells === 0 &&
+      diff.cells.length === 0 &&
+      diff.truncated === false;
+    if (!valid) throw new Error("The R kernel returned an invalid categorical-encoding diff.");
     return;
   }
   const outputIds = outputSchema.map((column) => column.id);

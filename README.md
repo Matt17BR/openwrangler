@@ -271,7 +271,9 @@ mode, a fallback column, ordered forward or backward fill, grouped statistics, o
 column type supports it. Numeric columns can also be scaled to 0–1 or transformed with Round, Floor, and Ceiling.
 Formula creates a numeric column from another column and either a second column or a finite scalar. Date and datetime
 columns can be formatted in place or into a new text column. POSIXct values use their declared time zone, or UTC
-when none is declared.
+when none is declared. One-hot encoding accepts one or more supported scalar columns, while multi-label binarization
+splits a text or factor column on an exact delimiter. Both produce deterministic integer indicator columns, ignore
+missing or blank categories, and can keep or drop their selected inputs.
 Every draft shows the changed data and generated R before it is applied. Applied steps can be inspected, edited, or
 undone. A generated script publishes `open_wrangler_result`; if the source already uses that name, it preserves the
 source and publishes `open_wrangler_result_2`. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)

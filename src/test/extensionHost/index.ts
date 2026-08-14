@@ -310,6 +310,8 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "castColumn",
   "formula",
   "textLength",
+  "oneHotEncode",
+  "multiLabelBinarize",
   "findReplace",
   "stripText",
   "splitText",
@@ -1693,6 +1695,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "for (column_index in seq_len(20L)) {",
     "  orders_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
     "}",
+    "orders_frame$extra_18 <- ifelse(seq_len(row_count) %% 2L == 1L, 'A|B', 'B')",
     "orders_frame$extra_19 <- as.Date('2026-01-01') + (seq_len(row_count) - 1L)",
     "orders_frame$extra_20[1L] <- NA_character_",
     "orders_frame$fractional_score[603L] <- NA_real_",
@@ -1960,6 +1963,7 @@ function releasedRNotebookCleanedCsvRow(row: number): string {
       if (column === 19) {
         return new Date(Date.UTC(2026, 0, row)).toISOString().slice(0, 10);
       }
+      if (column === 18) return row % 2 === 1 ? '"A|B"' : '"B"';
       if (row === 1 && column === 20) return "";
       return `"value-${String(column).padStart(2, "0")}-${String(row).padStart(4, "0")}"`;
     })
@@ -2216,6 +2220,7 @@ type ReleasedRAcceptanceCoverageProfile = Readonly<{
   name: "comprehensive" | "representative";
   gridPaging: "all-blocks" | "single-round-trip";
   editing: "all-operations" | "rename-lifecycle";
+  focusedCategoricalEditing: boolean;
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
   nativeFrameEditing: "rename-and-drop" | "one-operation-per-flavor";
@@ -2225,6 +2230,7 @@ const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Ob
   name: "comprehensive",
   gridPaging: "all-blocks",
   editing: "all-operations",
+  focusedCategoricalEditing: false,
   openCollapseSessions: true,
   openNativeFramesInViewingMode: true,
   nativeFrameEditing: "rename-and-drop"
@@ -2234,15 +2240,20 @@ const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = O
   name: "representative",
   gridPaging: "single-round-trip",
   editing: "rename-lifecycle",
+  focusedCategoricalEditing: false,
   openCollapseSessions: false,
   openNativeFramesInViewingMode: false,
   nativeFrameEditing: "one-operation-per-flavor"
 });
 
+const RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
+  focusedCategoricalEditing: true
+});
+
 function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
-  return process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor" || process.platform === "win32"
-    ? RELEASED_R_REPRESENTATIVE_COVERAGE
-    : RELEASED_R_COMPREHENSIVE_COVERAGE;
+  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE;
+  return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 
 function recordReleasedRAcceptanceSection(
@@ -2578,6 +2589,10 @@ async function exerciseReleasedRJupyterExtension(
       );
     } else {
       await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, phase);
+      if (phase === "jupyter-r" && coverage.focusedCategoricalEditing) {
+        await exerciseReleasedROneHotJourney(testing, workbench, base.sessionId);
+        await exerciseReleasedRMultiLabelJourney(testing, workbench, base.sessionId);
+      }
     }
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "complete");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
@@ -7727,6 +7742,8 @@ async function exerciseReleasedREditingJourney(
   if (phase === "jupyter-r") {
     await exerciseReleasedRFormulaJourney(testing, workbench, sessionId);
     await exerciseReleasedRFormatDatetimeJourney(testing, workbench, sessionId);
+    await exerciseReleasedROneHotJourney(testing, workbench, sessionId);
+    await exerciseReleasedRMultiLabelJourney(testing, workbench, sessionId);
 
     recordAcceptanceProgress(`${phase}:editing:min-max-scale-preview-apply-undo`);
     const minMaxBase = testing.activeSession();
@@ -8254,15 +8271,15 @@ async function exerciseReleasedRFormulaJourney(testing: TestApi, workbench: Page
     RELEASED_R_SUPPORTED_OPERATIONS.length,
     "The packaged R picker must expose exactly its advertised operation catalog."
   );
-  for (const expected of [/^Formula column\b/u, /^Format datetime\b/u]) {
+  for (const expected of [
+    /^Formula column\b/u,
+    /^Format datetime\b/u,
+    /^One-hot encode\b/u,
+    /^Multi-label binarize\b/u
+  ]) {
     assert.equal(await catalog.getByRole("button", { name: expected }).count(), 1);
   }
-  for (const unsupported of [
-    /^One-hot encode\b/u,
-    /^Multi-label binarize\b/u,
-    /^Transform by example\b/u,
-    /^Custom code\b/u
-  ]) {
+  for (const unsupported of [/^Transform by example\b/u, /^Custom code\b/u]) {
     assert.equal(await catalog.getByRole("button", { name: unsupported }).count(), 0);
   }
   await dialog.getByPlaceholder("Search operations").fill("formula");
@@ -8522,6 +8539,351 @@ async function exerciseReleasedRFormatDatetimeJourney(
     },
     30_000,
     "undoing native R Format datetime"
+  );
+}
+
+async function exerciseReleasedROneHotJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:editing:one-hot-preview-apply-undo");
+  const base = testing.activeSession();
+  assert.ok(base, "The restored R session must remain available for One-hot encode.");
+  assert.equal(base.metadata.steps.length, 0);
+  assert.equal(base.metadata.draftStep, undefined);
+  const group = base.metadata.schema.find((column) => column.name === "group");
+  assert.ok(group, "The packaged R One-hot encode journey requires the group column.");
+
+  const picker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  const dialog = picker.dialog;
+  await dialog.getByPlaceholder("Search operations").fill("one-hot");
+  await dialog.getByRole("button", { name: /^One-hot encode\b/u }).click();
+  await dialog
+    .getByRole("group", { name: "Categorical columns", exact: true })
+    .locator(`input[type="checkbox"][value="${group.id}"]`)
+    .check();
+  await dialog.getByLabel("Prefix separator", { exact: true }).fill("_");
+  assert.equal(await dialog.getByLabel("Drop original columns", { exact: true }).isChecked(), true);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      const outputs = active?.metadata.schema.slice(-2).map((column) => column.name);
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "oneHotEncode" &&
+        draft.params.columns.length === 1 &&
+        draft.params.columns[0]?.id === group.id &&
+        draft.params.prefixSeparator === "_" &&
+        draft.params.dropOriginal === true &&
+        !active.metadata.schema.some((column) => column.id === group.id) &&
+        outputs?.join(",") === "group_A,group_B"
+      );
+    },
+    30_000,
+    "previewing native R One-hot encode through its visible form"
+  );
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "oneHotEncode");
+  const outputA = preview.metadata.schema.at(-2);
+  const outputB = preview.metadata.schema.at(-1);
+  assert.ok(outputA && outputB, "The R One-hot encode preview must append its indicator columns.");
+  for (const [ordinal, output, name] of [
+    [0, outputA, "group_A"],
+    [1, outputB, "group_B"]
+  ] as const) {
+    assert.equal(output.id, `c:step:${preview.metadata.draftStep.id}:${ordinal}`);
+    assert.equal(output.name, name);
+    assert.equal(output.type, "integer");
+    assert.equal(output.rawType, "integer");
+    assert.equal(output.nullable, false);
+  }
+  const generatedExpectation = {
+    kind: "oneHotEncode",
+    sourceId: group.id,
+    sourceName: group.name,
+    sourcePosition: group.position + 1,
+    sourceKind: "character",
+    sourceStorageMode: "character",
+    sourceClasses: ["character"],
+    sourceTimezone: null,
+    sourceUnits: null,
+    prefixSeparator: "_",
+    dropOriginal: true,
+    stepId: preview.metadata.draftStep.id
+  } as const;
+  const generatedCall = releasedRCategoricalGeneratedCall(generatedExpectation);
+  assertReleasedRCategoricalGeneratedCode(preview.code ?? "", generatedExpectation);
+  const codePreview = await waitForCodePreview(workbench, generatedCall, "R");
+  const visibleCode = await revealCodePreviewText(codePreview, generatedCall);
+  assertReleasedRCategoricalGeneratedCode(visibleCode, generatedExpectation);
+  const previewPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "jupyter-r-one-hot-preview-page",
+    offset: 601,
+    limit: 2,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: outputA.position,
+    columnLimit: 2
+  });
+  assert.equal(previewPage.kind, "page");
+  if (previewPage.kind !== "page") throw new Error("The packaged R One-hot encode preview did not return its page.");
+  assert.deepEqual(previewPage.page.columnIds, [outputA.id, outputB.id]);
+  assert.deepEqual(
+    previewPage.page.rows.map((row) => row.values.map((value) => value.raw)),
+    [
+      ["1", "0"],
+      ["0", "1"]
+    ]
+  );
+  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R One-hot preview must reach its renderer.");
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R One-hot preview");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByText("One-hot encode", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const outputSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await outputSearch.fill(outputA.name);
+  await app
+    .getByRole("option", { name: /^group_A,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await outputSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === outputA.id,
+    10_000,
+    "revealing the visible R One-hot output"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R One-hot preview");
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="0"][data-grid-column="${outputA.position}"]`),
+    (text) => text.trim() === "1",
+    10_000,
+    "the visible R One-hot value"
+  );
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="0"][data-grid-column="${outputB.position}"]`),
+    (text) => text.trim() === "0",
+    10_000,
+    "the visible R One-hot complementary value"
+  );
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.steps[0]?.kind === "oneHotEncode" &&
+        active.metadata.schema.at(-2)?.id === outputA.id &&
+        active.metadata.schema.at(-1)?.id === outputB.id
+      );
+    },
+    30_000,
+    "applying native R One-hot encode"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied R One-hot encode must retain its session.");
+  assertReleasedRCategoricalGeneratedCode(applied.code ?? "", generatedExpectation);
+  await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R One-hot step must settle.");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R One-hot session");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.id === group.id) &&
+        !active.metadata.schema.some((column) => column.id === outputA.id || column.id === outputB.id) &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R One-hot encode"
+  );
+}
+
+async function exerciseReleasedRMultiLabelJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:editing:multi-label-preview-apply-undo");
+  const base = testing.activeSession();
+  assert.ok(base, "The restored R session must remain available for Multi-label binarize.");
+  assert.equal(base.metadata.steps.length, 0);
+  assert.equal(base.metadata.draftStep, undefined);
+  const labels = base.metadata.schema.find((column) => column.name === "extra_18");
+  assert.ok(labels, "The packaged R Multi-label journey requires its delimiter-bearing labels column.");
+
+  const picker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  const dialog = picker.dialog;
+  await dialog.getByPlaceholder("Search operations").fill("multi-label");
+  await dialog.getByRole("button", { name: /^Multi-label binarize\b/u }).click();
+  await dialog.getByLabel("Labels column", { exact: true }).selectOption(labels.id);
+  await dialog.getByLabel("Delimiter", { exact: true }).fill("|");
+  assert.equal(await dialog.getByLabel("Drop original column", { exact: true }).isChecked(), false);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "multiLabelBinarize" &&
+        draft.params.column.id === labels.id &&
+        draft.params.delimiter === "|" &&
+        draft.params.prefix === undefined &&
+        draft.params.dropOriginal === false &&
+        active.metadata.schema
+          .slice(-2)
+          .map((column) => column.name)
+          .join(",") === "extra_18_A,extra_18_B"
+      );
+    },
+    30_000,
+    "previewing native R Multi-label binarize through its visible form"
+  );
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "multiLabelBinarize");
+  const outputA = preview.metadata.schema.at(-2);
+  const outputB = preview.metadata.schema.at(-1);
+  assert.ok(outputA && outputB, "The R Multi-label preview must append its indicator columns.");
+  for (const [ordinal, output, name] of [
+    [0, outputA, "extra_18_A"],
+    [1, outputB, "extra_18_B"]
+  ] as const) {
+    assert.equal(output.id, `c:step:${preview.metadata.draftStep.id}:${ordinal}`);
+    assert.equal(output.name, name);
+    assert.equal(output.type, "integer");
+    assert.equal(output.rawType, "integer");
+    assert.equal(output.nullable, false);
+  }
+  const generatedExpectation = {
+    kind: "multiLabelBinarize",
+    sourceId: labels.id,
+    sourceName: labels.name,
+    sourcePosition: labels.position + 1,
+    sourceKind: "character",
+    sourceStorageMode: "character",
+    sourceClasses: ["character"],
+    sourceTimezone: null,
+    sourceUnits: null,
+    delimiter: "|",
+    prefix: `${labels.name}_`,
+    dropOriginal: false,
+    stepId: preview.metadata.draftStep.id
+  } as const;
+  const generatedCall = releasedRCategoricalGeneratedCall(generatedExpectation);
+  assertReleasedRCategoricalGeneratedCode(preview.code ?? "", generatedExpectation);
+  const codePreview = await waitForCodePreview(workbench, generatedCall, "R");
+  const visibleCode = await revealCodePreviewText(codePreview, generatedCall);
+  assertReleasedRCategoricalGeneratedCode(visibleCode, generatedExpectation);
+  const previewPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "jupyter-r-multi-label-preview-page",
+    offset: 0,
+    limit: 2,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: outputA.position,
+    columnLimit: 2
+  });
+  assert.equal(previewPage.kind, "page");
+  if (previewPage.kind !== "page") {
+    throw new Error("The packaged R Multi-label binarize preview did not return its page.");
+  }
+  assert.deepEqual(previewPage.page.columnIds, [outputA.id, outputB.id]);
+  assert.deepEqual(
+    previewPage.page.rows.map((row) => row.values.map((value) => value.raw)),
+    [
+      ["1", "1"],
+      ["0", "1"]
+    ]
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The R Multi-label preview must reach its renderer."
+  );
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Multi-label preview");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByText("Multi-label binarize", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const outputSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await outputSearch.fill(outputA.name);
+  await app
+    .getByRole("option", { name: /^extra_18_A,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await outputSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === outputA.id,
+    10_000,
+    "revealing the visible R Multi-label output"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Multi-label preview");
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="0"][data-grid-column="${outputA.position}"]`),
+    (text) => text.trim() === "1",
+    10_000,
+    "the visible R Multi-label value"
+  );
+  for (const [row, column, expectedValue] of [
+    [0, outputB.position, "1"],
+    [1, outputA.position, "0"],
+    [1, outputB.position, "1"]
+  ] as const) {
+    await waitForLocatorText(
+      app.locator(`td[data-grid-row="${row}"][data-grid-column="${column}"]`),
+      (text) => text.trim() === expectedValue,
+      10_000,
+      `the visible R Multi-label row ${row} column ${column} value`
+    );
+  }
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.steps[0]?.kind === "multiLabelBinarize" &&
+        active.metadata.schema.at(-2)?.id === outputA.id &&
+        active.metadata.schema.at(-1)?.id === outputB.id
+      );
+    },
+    30_000,
+    "applying native R Multi-label binarize"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied R Multi-label binarize must retain its session.");
+  assertReleasedRCategoricalGeneratedCode(applied.code ?? "", generatedExpectation);
+  await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R Multi-label step must settle.");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Multi-label session");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.id === labels.id) &&
+        !active.metadata.schema.some((column) => column.id === outputA.id || column.id === outputB.id) &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Multi-label binarize"
   );
 }
 
@@ -9364,6 +9726,83 @@ async function previewReleasedRRename(
 function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
   assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+type ReleasedRCategoricalGeneratedExpectation =
+  | Readonly<{
+      kind: "oneHotEncode";
+      sourceId: string;
+      sourceName: string;
+      sourcePosition: number;
+      sourceKind: string;
+      sourceStorageMode: string;
+      sourceClasses: readonly string[];
+      sourceTimezone: string | null;
+      sourceUnits: string | null;
+      prefixSeparator: string;
+      dropOriginal: boolean;
+      stepId: string;
+    }>
+  | Readonly<{
+      kind: "multiLabelBinarize";
+      sourceId: string;
+      sourceName: string;
+      sourcePosition: number;
+      sourceKind: string;
+      sourceStorageMode: string;
+      sourceClasses: readonly string[];
+      sourceTimezone: string | null;
+      sourceUnits: string | null;
+      delimiter: string;
+      prefix: string;
+      dropOriginal: boolean;
+      stepId: string;
+    }>;
+
+function releasedRCategoricalGeneratedCall(expected: ReleasedRCategoricalGeneratedExpectation): string {
+  const operationArguments =
+    expected.kind === "oneHotEncode"
+      ? `${JSON.stringify(expected.prefixSeparator)}, NULL, NULL`
+      : `NULL, ${JSON.stringify(expected.delimiter)}, ${JSON.stringify(expected.prefix)}`;
+  const sourceClasses =
+    expected.sourceClasses.length === 0
+      ? "character()"
+      : `c(${expected.sourceClasses.map((value) => JSON.stringify(value)).join(", ")})`;
+  const sourceTimezone = expected.sourceTimezone === null ? "NULL" : JSON.stringify(expected.sourceTimezone);
+  const sourceUnits = expected.sourceUnits === null ? "NULL" : JSON.stringify(expected.sourceUnits);
+  return (
+    `  .ow_categorical_result <- .ow_categorical_encode(.ow_result, ${JSON.stringify(expected.kind)}, ` +
+    `list(list(id = ${JSON.stringify(expected.sourceId)}, name = ${JSON.stringify(expected.sourceName)}, ` +
+    `position = ${expected.sourcePosition}L, kind = ${JSON.stringify(expected.sourceKind)}, ` +
+    `storageMode = ${JSON.stringify(expected.sourceStorageMode)}, classes = ${sourceClasses}, ` +
+    `timezone = ${sourceTimezone}, units = ${sourceUnits})), ${operationArguments}, ` +
+    `${expected.dropOriginal ? "TRUE" : "FALSE"}, ` +
+    `2048L, 1024L, 8192L, 16777216L, 67108864L, 8L, 1024L, 512L, .ow_result_ids, ` +
+    `${JSON.stringify(expected.stepId)})`
+  );
+}
+
+function assertReleasedRCategoricalGeneratedCode(
+  code: string,
+  expected: ReleasedRCategoricalGeneratedExpectation
+): void {
+  assertReleasedRGeneratedSourceBoundary(code);
+  const expectedCall = releasedRCategoricalGeneratedCall(expected);
+  const lines = code.split(/\r?\n/u);
+  const calls = lines.filter((line) => line.startsWith("  .ow_categorical_result <- .ow_categorical_encode("));
+  assert.deepEqual(calls, [expectedCall], "Generated R must contain one exact categorical operation call.");
+  const callIndex = lines.indexOf(expectedCall);
+  assert.deepEqual(
+    lines.slice(callIndex, callIndex + 4),
+    [
+      expectedCall,
+      '  .ow_result <- base::.subset2(.ow_categorical_result, "value")',
+      '  .ow_result_ids <- base::.subset2(.ow_categorical_result, "outputIds")',
+      "  base::rm(.ow_categorical_result)"
+    ],
+    "Generated R must publish the categorical value and lineage from the exact result wrapper."
+  );
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
@@ -22765,7 +23204,15 @@ async function waitForCodePreview(
       try {
         const content = frame.locator(`[aria-label="Editable generated ${language} code preview"]`);
         if ((await content.count()) === 0 || !(await content.isVisible())) continue;
-        if (expectedCode === undefined || (await content.innerText()).includes(expectedCode)) return content;
+        if (expectedCode === undefined) return content;
+        const completeCode = await content.evaluate((element) => {
+          const target = element as unknown as {
+            cmTile?: { view?: { state: { doc: { toString(): string } } } };
+            innerText?: string;
+          };
+          return target.cmTile?.view?.state.doc.toString() ?? target.innerText ?? "";
+        });
+        if (completeCode.includes(expectedCode)) return content;
       } catch (error) {
         // Code Preview is a workbench webview whose iframe can be replaced
         // while its provider refreshes. Ignore only a proven retired child
