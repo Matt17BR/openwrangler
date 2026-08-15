@@ -6963,6 +6963,8 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_by_example_name <- %s", r_string(step$newName)),
           "  .ow_by_example_frame_names <- .ow_by_example_normalize_frame_names(.ow_result)",
           "  if (base::any(.ow_by_example_positions > .ow_storage_length(.ow_result)) || !base::identical(.ow_by_example_frame_names[.ow_by_example_positions], .ow_by_example_names)) base::stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  .ow_by_example_row_count <- base::as.double(.ow_storage_length(base::.subset2(.ow_result, base::.subset2(.ow_by_example_positions, 1L))))",
+          "  if (!base::is.finite(.ow_by_example_row_count) || .ow_by_example_row_count != base::floor(.ow_by_example_row_count) || .ow_by_example_row_count > .Machine$integer.max) base::stop(\"Open Wrangler by-example received an invalid current row count\", call. = FALSE)",
           "  if (.ow_by_example_name == \"\" || base::any(.ow_by_example_frame_names == .ow_by_example_name)) base::stop(\"Open Wrangler column name already exists\", call. = FALSE)",
           "  if (base::startsWith(base::chartr(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\", .ow_by_example_name), \"__open_wrangler_internal_row_id_\")) base::stop(\"Open Wrangler's private row-identity prefix is reserved\", call. = FALSE)",
           sprintf(
@@ -6974,10 +6976,10 @@ openwrangler_r_kernel_agent <- local({
             r_by_example_value(step$program)
           ),
           sprintf(
-            "  if (.ow_storage_length(.ow_by_example_values) != .ow_source_row_count || !(%s)) base::stop(\"Open Wrangler by-example returned an invalid result type or row count\", call. = FALSE)",
+            "  if (.ow_storage_length(.ow_by_example_values) != .ow_by_example_row_count || !(%s)) base::stop(\"Open Wrangler by-example returned an invalid result type or row count\", call. = FALSE)",
             type_guard
           ),
-          "  .ow_by_example_output_bytes <- base::as.double(.ow_source_row_count) * if (base::is.logical(.ow_by_example_values) || base::is.integer(.ow_by_example_values)) 4 else 8",
+          "  .ow_by_example_output_bytes <- .ow_by_example_row_count * if (base::is.logical(.ow_by_example_values) || base::is.integer(.ow_by_example_values)) 4 else 8",
           if (identical(step$resultKind, "character")) {
             sprintf(
               paste0(
@@ -7051,8 +7053,8 @@ openwrangler_r_kernel_agent <- local({
           "  }",
           "  .ow_by_example_value_names <- base::attr(.ow_by_example_values, \"names\", exact = TRUE)",
           "  if (!base::is.null(.ow_by_example_value_names)) {",
-          "    if (!base::is.character(.ow_by_example_value_names) || base::is.object(.ow_by_example_value_names) || !base::is.null(base::attributes(.ow_by_example_value_names)) || base::length(.ow_by_example_value_names) != .ow_source_row_count) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
-          "    .ow_by_example_value_names <- base::vapply(base::seq_len(.ow_source_row_count), function(.ow_name_index) {",
+          "    if (!base::is.character(.ow_by_example_value_names) || base::is.object(.ow_by_example_value_names) || !base::is.null(base::attributes(.ow_by_example_value_names)) || base::length(.ow_by_example_value_names) != .ow_by_example_row_count) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
+          "    .ow_by_example_value_names <- base::vapply(base::seq_len(.ow_by_example_row_count), function(.ow_name_index) {",
           "      .ow_name <- base::.subset2(.ow_by_example_value_names, .ow_name_index)",
           "      if (base::is.na(.ow_name)) return(NA_character_)",
           "      if (base::identical(base::Encoding(.ow_name), \"bytes\")) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
@@ -7064,7 +7066,7 @@ openwrangler_r_kernel_agent <- local({
           ),
           "      .ow_name_utf8",
           "    }, base::character(1L), USE.NAMES = FALSE)",
-          "    .ow_by_example_output_bytes <- .ow_by_example_output_bytes + base::as.double(.ow_source_row_count) * 8 + base::sum(base::as.double(base::nchar(.ow_by_example_value_names[!base::is.na(.ow_by_example_value_names)], type = \"bytes\")))",
+          "    .ow_by_example_output_bytes <- .ow_by_example_output_bytes + .ow_by_example_row_count * 8 + base::sum(base::as.double(base::nchar(.ow_by_example_value_names[!base::is.na(.ow_by_example_value_names)], type = \"bytes\")))",
           "    base::attr(.ow_by_example_values, \"names\") <- NULL",
           "    base::attr(.ow_by_example_values, \"names\") <- .ow_by_example_value_names",
           "  }",
@@ -7191,7 +7193,7 @@ openwrangler_r_kernel_agent <- local({
           "  if (any(.ow_formula_input_missing)) {",
           "    if (inherits(.ow_formula_values, \"integer64\")) .ow_formula_values <- .ow_integer64_force_missing(.ow_formula_values, .ow_formula_input_missing) else if (is.integer(.ow_formula_values)) .ow_formula_values[.ow_formula_input_missing] <- NA_integer_ else .ow_formula_values[.ow_formula_input_missing] <- NA_real_",
           "  }",
-          "  if (.ow_storage_length(.ow_formula_values) != .ow_source_row_count || !(is.integer(.ow_formula_values) || is.double(.ow_formula_values) || inherits(.ow_formula_values, \"integer64\"))) stop(\"Open Wrangler Formula returned an invalid numeric result\", call. = FALSE)",
+          "  if (.ow_storage_length(.ow_formula_values) != .ow_storage_length(.ow_formula_left) || !(is.integer(.ow_formula_values) || is.double(.ow_formula_values) || inherits(.ow_formula_values, \"integer64\"))) stop(\"Open Wrangler Formula returned an invalid numeric result\", call. = FALSE)",
           "  .ow_formula_nan <- if (inherits(.ow_formula_values, \"integer64\")) rep.int(FALSE, .ow_storage_length(.ow_formula_values)) else is.nan(.ow_formula_values)",
           "  .ow_formula_infinite <- if (inherits(.ow_formula_values, \"integer64\")) rep.int(FALSE, .ow_storage_length(.ow_formula_values)) else is.infinite(.ow_formula_values)",
           if (has_integer64 && !force_double) {
