@@ -3903,11 +3903,13 @@ openwrangler_r_kernel_agent <- local({
       result
     }
     factor_character <- function(value) {
-      levels <- base::attr(value, "levels", exact = TRUE)
+      levels <- base::unclass(base::attr(value, "levels", exact = TRUE))
       codes <- base::unclass(value)
       result <- base::rep.int(NA_character_, storage_length(value))
       present <- !base::is.na(codes)
-      if (base::any(present)) result[present] <- levels[codes[present]]
+      if (base::any(present)) {
+        result[present] <- base::.subset(levels, base::.subset(codes, present))
+      }
       result
     }
     normalize_text <- function(value) {
@@ -3994,6 +3996,23 @@ openwrangler_r_kernel_agent <- local({
       base::list(value = value, bytes = total)
     }
 
+    source_chunk <- function(source, indexes) {
+      source_attributes <- base::attributes(source)
+      source_names <- if (base::is.null(source_attributes)) {
+        NULL
+      } else {
+        base::.subset2(source_attributes, "names")
+      }
+      chunk <- base::.subset(base::unclass(source), indexes)
+      if (!base::is.null(source_attributes)) {
+        if (!base::is.null(source_names)) {
+          source_attributes$names <- base::.subset(source_names, indexes)
+        }
+        base::attributes(chunk) <- source_attributes
+      }
+      chunk
+    }
+
     if (row_count > 1024L && !base::identical(program$kind, "column")) {
       starts <- base::seq.int(1L, row_count, by = 1024L)
       chunks <- base::vector("list", base::length(starts))
@@ -4002,7 +4021,7 @@ openwrangler_r_kernel_agent <- local({
         start <- starts[[chunk_index]]
         stop <- base::min(row_count, start + 1023L)
         indexes <- base::seq.int(start, stop)
-        chunk_columns <- base::lapply(columns, function(column) base::.subset(column, indexes))
+        chunk_columns <- base::lapply(columns, source_chunk, indexes = indexes)
         chunk <- base::Recall(program, chunk_columns)
         if (base::identical(result_kind, "character")) {
           validated_chunk <- validate_text_result(chunk)

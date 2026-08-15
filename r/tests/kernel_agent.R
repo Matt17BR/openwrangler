@@ -14325,6 +14325,8 @@ if (!is.null(by_example_utf8_locale_status) && by_example_utf8_locale_status != 
 }
 unlink(by_example_utf8_locale_script)
 
+# Cross every generated-evaluator chunk boundary while caller S3 methods are
+# poisoned, then compare standalone attributes and source bytes with live work.
 by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path) {
   sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
   sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
@@ -14339,20 +14341,73 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path
   }
   safe_integer64_character <- get("as.character.integer64", envir = asNamespace("bit64"), inherits = FALSE)
   source_environment <- new.env(parent = emptyenv())
-  source_environment$by_example_s3 <- data.frame(
-    category = ordered(c("aLPHA", "bETA"), levels = c("unused", "aLPHA", "bETA")),
-    wide = bit64::as.integer64(c("9007199254740993", "-2")),
-    check.names = FALSE,
-    row.names = c("s3-a", "s3-b")
+  row_count <- 2051L
+  element_names <- sprintf("s3-%04d", seq_len(row_count))
+  element_names[c(1024L, 1025L, 2048L, 2049L)] <- c(
+    "chunk-one-last",
+    NA_character_,
+    "chunk-two-last",
+    "chunk-three-first"
   )
-  source_before <- unserialize(serialize(source_environment$by_example_s3, NULL, version = 3L))
-  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
+  category <- ordered(
+    rep(c("aLPHA", "bETA"), length.out = row_count),
+    levels = c("unused", "aLPHA", "bETA")
+  )
+  attr(category, "levels") <- I(attr(category, "levels", exact = TRUE))
+  names(category) <- element_names
+  wide <- bit64::as.integer64(rep(c("9007199254740993", "-2"), length.out = row_count))
+  names(wide) <- element_names
+  day <- as.Date("2024-01-01") + ((seq_len(row_count) - 1L) %% 731L)
+  names(day) <- element_names
+  instant <- as.POSIXct("2024-01-01", tz = "UTC") + seq_len(row_count) - 1L
+  names(instant) <- element_names
+  elapsed <- as.difftime(seq_len(row_count), units = "mins")
+  names(elapsed) <- element_names
+  source_environment$by_example_s3 <- structure(
+    list(category = category, wide = wide, day = day, instant = instant, elapsed = elapsed),
+    names = c("category", "wide", "day", "instant", "elapsed"),
+    class = "data.frame",
+    row.names = c(NA_integer_, -row_count)
+  )
+  source_before_bytes <- serialize(source_environment$by_example_s3, NULL, version = 3L)
+  source_before <- unserialize(source_before_bytes)
+  integer64_input_name_chunks <- list()
+  integer64_output_name_chunks <- list()
+  instrumented_contract <- openwrangler_r_frame_contract
+  real_chunked_by_example <- instrumented_contract$by_example_column_at
+  instrumented_contract$by_example_column_at <- function(
+    value,
+    positions,
+    expected_names,
+    new_name,
+    result_kind,
+    evaluator
+  ) {
+    real_chunked_by_example(
+      value,
+      positions,
+      expected_names,
+      new_name,
+      result_kind,
+      function(columns) {
+        output <- evaluator(columns)
+        if (identical(new_name, "wide plus two")) {
+          integer64_input_name_chunks[[length(integer64_input_name_chunks) + 1L]] <<-
+            attr(base::.subset2(columns, 1L), "names", exact = TRUE)
+          integer64_output_name_chunks[length(integer64_output_name_chunks) + 1L] <<-
+            list(attr(output, "names", exact = TRUE))
+        }
+        output
+      }
+    )
+  }
+  agent <- openwrangler_r_kernel_agent$new_agent(instrumented_contract, source_environment)
   on.exit(agent$dispose(), add = TRUE)
   page <- list(
     rowOffset = 0L,
     rowLimit = 100L,
     columnOffset = 0L,
-    columnLimit = 100L,
+    columnLimit = 1L,
     view = list(filters = I(list()), sorts = I(list()))
   )
   dispatch <- function(kind, payload) {
@@ -14391,6 +14446,7 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path
   registerS3method("as.character", "integer64", poison, envir = .GlobalEnv)
   registerS3method("as.double", "integer64", poison, envir = .GlobalEnv)
   registerS3method("as.integer64", "character", poison, envir = .GlobalEnv)
+  registerS3method("[", "AsIs", poison, envir = .GlobalEnv)
 
   factor_preview <- dispatch(
     "previewStep",
@@ -14464,7 +14520,12 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path
       }
     )
   )
-  applied <- dispatch(
+  assert_same(
+    integer_preview$retainedStep$params$program$kind,
+    "arithmetic",
+    "the chunked integer64 examples selected the wrong program"
+  )
+  integer_apply <- dispatch(
     "applyDraft",
     list(
       sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
@@ -14472,25 +14533,227 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path
       page = page
     )
   )
+  date_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      revision = integer_apply$revision,
+      step = list(
+        id = "by-example-s3-date",
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(list(id = "r:c:2", name = "day"))),
+          newColumn = "formatted day",
+          examples = I(list(
+            list(inputs = I(list("2024-01-02")), output = "02/01/2024"),
+            list(inputs = I(list("2025-12-31")), output = "31/12/2025")
+          ))
+        )
+      ),
+      page = page
+    )
+  )
+  assert_same(
+    date_preview$kind,
+    "stepPreview",
+    paste0(
+      "poisoned Date by-example did not preview",
+      if (identical(date_preview$kind, "error")) {
+        sprintf(": %s: %s", date_preview$code, date_preview$message)
+      } else {
+        ""
+      }
+    )
+  )
+  assert_same(
+    date_preview$retainedStep$params$program$kind,
+    "datetimeFormat",
+    "the chunked Date examples selected the wrong program"
+  )
+  date_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      revision = date_preview$revision,
+      page = page
+    )
+  )
+  direct_specs <- list(
+    list(position = 1L, name = "category", kind = "factor", inputs = list("aLPHA", "bETA")),
+    list(position = 3L, name = "day", kind = "date", inputs = list("2024-01-01", "2024-01-02")),
+    list(
+      position = 4L,
+      name = "instant",
+      kind = "datetime",
+      inputs = list("2024-01-01T00:00:00Z", "2024-01-01T00:00:01Z")
+    ),
+    list(position = 5L, name = "elapsed", kind = "difftime", inputs = list(1L, 2L))
+  )
+  direct_revision <- date_apply$revision
+  applied <- NULL
+  for (direct_index in seq_along(direct_specs)) {
+    specification <- direct_specs[[direct_index]]
+    direct_step <- list(
+      id = sprintf("by-example-s3-direct-%d", direct_index),
+      kind = "byExample",
+      params = list(
+        sourceColumns = I(list(list(
+          id = sprintf("r:c:%d", specification$position - 1L),
+          name = specification$name
+        ))),
+        newColumn = paste0(specification$name, " copy"),
+        examples = I(lapply(specification$inputs, function(input) {
+          list(inputs = I(list(input)), output = input)
+        }))
+      )
+    )
+    direct_preview <- dispatch(
+      "previewStep",
+      list(
+        sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+        revision = direct_revision,
+        step = direct_step,
+        page = page
+      )
+    )
+    assert_same(
+      direct_preview$kind,
+      "stepPreview",
+      sprintf("poisoned direct %s by-example did not preview", specification$kind)
+    )
+    assert_same(
+      direct_preview$retainedStep$params$program$kind,
+      "column",
+      sprintf("the direct %s examples selected the wrong program", specification$kind)
+    )
+    applied <- dispatch(
+      "applyDraft",
+      list(
+        sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+        revision = direct_preview$revision,
+        page = page
+      )
+    )
+    direct_revision <- applied$revision
+  }
+  assert_child(!is.null(applied), "the chunked by-example plan did not apply")
+  expected_name_chunks <- list(
+    base::.subset(element_names, seq.int(1L, 1024L)),
+    base::.subset(element_names, seq.int(1025L, 2048L)),
+    base::.subset(element_names, seq.int(2049L, row_count))
+  )
+  assert_child(
+    length(integer64_input_name_chunks) >= 3L && length(integer64_input_name_chunks) %% 3L == 0L,
+    "live chunked integer64 arithmetic did not evaluate complete source windows"
+  )
+  assert_same(
+    tail(integer64_input_name_chunks, 3L),
+    expected_name_chunks,
+    "live chunked integer64 arithmetic lost source names"
+  )
+  assert_child(
+    length(integer64_output_name_chunks) == length(integer64_input_name_chunks),
+    "live chunked integer64 arithmetic did not capture every output-name decision"
+  )
+  assert_child(
+    all(vapply(tail(integer64_output_name_chunks, 3L), is.null, logical(1L), USE.NAMES = FALSE)),
+    "live chunked integer64 arithmetic unexpectedly retained input names"
+  )
   assert_child(
     !grepl("by_example_shortest_double_components|jsonlite::fromJSON", applied$code, perl = TRUE),
     "generated by-example code retained an unused runtime-only double helper"
   )
+  assert_child(
+    grepl("source_chunk <- function(source, indexes)", applied$code, fixed = TRUE) &&
+      grepl("chunk <- base::.subset(base::unclass(source), indexes)", applied$code, fixed = TRUE) &&
+      grepl("source_attributes$names <- base::.subset(source_names, indexes)", applied$code, fixed = TRUE) &&
+      grepl(
+        "result[present] <- base::.subset(levels, base::.subset(codes, present))",
+        applied$code,
+        fixed = TRUE
+      ) &&
+      !grepl("base::.subset(column, indexes)", applied$code, fixed = TRUE),
+    "generated by-example code lost its dispatch-free attributed source slicing"
+  )
+  live_direct_expected <- source_before
+  for (specification in direct_specs) {
+    live_direct_expected <- openwrangler_r_frame_contract$by_example_column_at(
+      live_direct_expected,
+      specification$position,
+      specification$name,
+      paste0(specification$name, " copy"),
+      specification$kind,
+      function(columns) columns[[1L]]
+    )
+  }
   generated_environment <- new.env(parent = baseenv())
-  assign("by_example_s3", source_before, envir = generated_environment)
+  assign("by_example_s3", unserialize(source_before_bytes), envir = generated_environment)
   eval(parse(text = applied$code), envir = generated_environment)
   generated <- get("open_wrangler_result", envir = generated_environment, inherits = FALSE)
-  assert_same(generated[["capitalized"]], c("Alpha", "Beta"), "poisoned generated factor text diverged")
   assert_same(
-    safe_integer64_character(generated[["wide plus two"]]),
-    c("9007199254740995", "0"),
-    "poisoned generated exact integer64 arithmetic diverged"
+    generated[["capitalized"]],
+    rep(c("Alpha", "Beta"), length.out = row_count),
+    "poisoned chunked generated factor text diverged"
   )
-  assert_same(source_environment$by_example_s3, source_before, "poisoned live by-example mutated its source")
   assert_same(
-    get("by_example_s3", envir = generated_environment, inherits = FALSE),
-    source_before,
-    "poisoned generated by-example mutated its source"
+    generated[["formatted day"]],
+    unname(base::format.Date(day, format = "%d/%m/%Y")),
+    "chunked generated Date formatting diverged"
+  )
+  assert_same(
+    unname(safe_integer64_character(generated[["wide plus two"]])),
+    rep(c("9007199254740995", "0"), length.out = row_count),
+    "poisoned chunked generated exact integer64 arithmetic diverged"
+  )
+  assert_same(
+    attr(generated[["wide plus two"]], "names", exact = TRUE),
+    NULL,
+    "generated chunked integer64 arithmetic diverged from live output-name behavior"
+  )
+  boundary_positions <- c(1024L, 1025L, 2048L, 2049L, 2051L)
+  for (specification in direct_specs) {
+    output_name <- paste0(specification$name, " copy")
+    assert_same(
+      serialize(generated[[output_name]], NULL, version = 3L),
+      serialize(live_direct_expected[[output_name]], NULL, version = 3L),
+      sprintf("chunked generated direct %s attributes diverged from live", specification$kind)
+    )
+    assert_same(
+      base::.subset(base::attr(generated[[output_name]], "names", exact = TRUE), boundary_positions),
+      base::.subset(element_names, boundary_positions),
+      sprintf("chunked generated direct %s lost boundary names", specification$kind)
+    )
+  }
+  assert_same(
+    base::class(generated[["category copy"]]),
+    c("ordered", "factor"),
+    "chunked generated direct factor lost its ordered class"
+  )
+  assert_same(
+    base::class(base::attr(generated[["category copy"]], "levels", exact = TRUE)),
+    "AsIs",
+    "chunked generated direct factor lost its safe nested level metadata"
+  )
+  assert_same(base::class(generated[["day copy"]]), "Date", "chunked generated direct Date lost its class")
+  assert_same(
+    base::attr(generated[["instant copy"]], "tzone", exact = TRUE),
+    base::attr(instant, "tzone", exact = TRUE),
+    "chunked generated direct POSIXct lost its timezone"
+  )
+  assert_same(
+    base::attr(generated[["elapsed copy"]], "units", exact = TRUE),
+    base::attr(elapsed, "units", exact = TRUE),
+    "chunked generated direct difftime lost its units"
+  )
+  assert_same(
+    serialize(source_environment$by_example_s3, NULL, version = 3L),
+    source_before_bytes,
+    "poisoned live chunked by-example mutated its source bytes"
+  )
+  assert_same(
+    serialize(get("by_example_s3", envir = generated_environment, inherits = FALSE), NULL, version = 3L),
+    source_before_bytes,
+    "poisoned generated chunked by-example mutated its source bytes"
   )
   assert_same(poison_calls, 0L, "by-example evaluation dispatched through caller S3 methods")
   invisible(dispatch("closeSession", list(sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2")))
