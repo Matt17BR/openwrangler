@@ -148,6 +148,17 @@ collapse, viewing, Rename, and Drop owner, while `kernel-restart` owns restart/r
 Value and categorical ownership is unchanged, and Cursor, macOS, and Windows retain their representative
 core/editor/platform and native-frame seams.
 
+The Native R performance runner's unit contracts and report validators are portable script contracts owned by the
+existing `npm run test:scripts:portable` command in the ordinary `contract-tests` job. Those tests exercise
+exact-candidate/source/executable binding, the 250,000×20 fixture and fixed 5/20 workload schedules, response
+accounting, bounded path-free reporting, atomic output, resource proofs, and cleanup failures without running the
+Linux-only benchmark against a mutable CI workspace. The hosted R 4.4/4.5 frame-contract process parses the tracked R
+harness without adding a process. This infrastructure adds no workflow job, classifier category, candidate selector,
+phase, editor deadline, upload, retry, or publication edge. The harness's 300-second process bound is lifecycle safety,
+not a numeric performance gate. In particular, the v1 report has no accepted threshold profile and cannot claim a
+release pass. A fresh exact-candidate performance run and the later stable record authoring/consumption change remain
+separate release work.
+
 The remote R sibling runs only the packaged VS Code Docker journey and retains its embedded restart/reopen journey and
 `lowerText` (Lowercase) operation check; it does not install hosted R, local R packages, local kernel environments, or
 native R/Quarto tooling. Internal
