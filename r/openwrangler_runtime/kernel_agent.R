@@ -1460,7 +1460,12 @@ openwrangler_r_kernel_agent <- local({
   }
 
   by_example_regex_extract_scalar <- function(value, pattern, group) {
-    matched <- regexec(paste0("(*UCP)", pattern), value, perl = TRUE)[[1L]]
+    resolved_pattern <- if (identical(pattern, "(\\d+)")) {
+      paste0("(*UTF)(*UCP)(", by_example_decimal_digit_pattern(), "+)")
+    } else {
+      paste0("(*UCP)", pattern)
+    }
+    matched <- regexec(resolved_pattern, value, perl = TRUE)[[1L]]
     if (length(matched) == 1L && identical(as.integer(matched[[1L]]), -1L)) return(NULL)
     target <- group + 1L
     match_lengths <- attr(matched, "match.length", exact = TRUE)
@@ -1716,7 +1721,7 @@ openwrangler_r_kernel_agent <- local({
 
   by_example_canonicalize_candidate_literals <- function(program) {
     if (identical(program$kind, "literal")) {
-      program$value <- by_example_canonical_json_scalar(program$value)
+      program["value"] <- list(by_example_canonical_json_scalar(program$value))
       return(program)
     }
     for (key in c("input", "left", "right")) {

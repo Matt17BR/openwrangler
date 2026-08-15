@@ -12110,6 +12110,11 @@ by_example_format_datetime_parts <- get(
   envir = by_example_agent_environment,
   inherits = FALSE
 )
+by_example_regex_extract_scalar <- get(
+  "by_example_regex_extract_scalar",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
 by_example_evaluator <- get(
   "generated_by_example_evaluate",
   envir = by_example_agent_environment,
@@ -12261,16 +12266,50 @@ decimal_digit_codepoints <- unlist(lapply(
   by_example_decimal_digit_zeroes(),
   function(zero) zero + 0:9
 ), use.names = FALSE)
+assert_identical(
+  length(by_example_decimal_digit_zeroes()),
+  76L,
+  "R by-example's explicit decimal-digit range count changed"
+)
+assert_identical(
+  c(length(decimal_digit_codepoints), length(unique(decimal_digit_codepoints))),
+  c(760L, 760L),
+  "R by-example's explicit decimal-digit code points are incomplete or repeated"
+)
 by_example_assert(
   all(vapply(decimal_digit_codepoints, function(codepoint) {
     grepl(paste0("(*UTF)^", decimal_digit_pattern, "\\z"), intToUtf8(codepoint), perl = TRUE)
   }, logical(1L), USE.NAMES = FALSE)),
   "R by-example datetime's explicit decimal-digit class is incomplete"
 )
+decimal_digit_scalars <- vapply(decimal_digit_codepoints, intToUtf8, character(1L), USE.NAMES = FALSE)
+assert_identical(
+  vapply(decimal_digit_scalars, function(digit) {
+    by_example_regex_extract_scalar(paste0("prefix", digit, "suffix"), "(\\d+)", 1L)
+  }, character(1L), USE.NAMES = FALSE),
+  decimal_digit_scalars,
+  "R by-example canonical regex extraction does not cover all 760 Unicode decimal digits"
+)
 newest_decimal_year <- paste0(intToUtf8(0x1e5f1L + c(2L, 0L, 2L, 6L)), collapse = "")
 by_example_assert(
   grepl(paste0("(*UTF)^", decimal_digit_pattern, "{4}\\z"), newest_decimal_year, perl = TRUE),
   "R by-example datetime delegated the newest supported digit block to host PCRE"
+)
+newest_decimal_run <- paste0(intToUtf8(0x1e5f1L + c(1L, 2L)), collapse = "")
+assert_identical(
+  by_example_regex_extract_scalar(paste0("prefix", newest_decimal_run, "suffix"), "(\\d+)", 1L),
+  newest_decimal_run,
+  "R by-example canonical regex extraction delegated Unicode decimal digits to host PCRE"
+)
+assert_identical(
+  by_example_regex_extract_scalar("alpha-123", "([A-Za-z]+)", 1L),
+  "alpha",
+  "R by-example changed canonical ASCII alpha extraction semantics"
+)
+assert_identical(
+  by_example_regex_extract_scalar("alpha123-omega", "([A-Za-z0-9]+)", 1L),
+  "alpha123",
+  "R by-example changed canonical ASCII alphanumeric extraction semantics"
 )
 
 datetime_parity_cases <- list(
@@ -12324,7 +12363,7 @@ source_environment$by_example_ast <- data.frame(
   split = c("a--bb", "long--dd"),
   first = c("Ann", "Bo"),
   last = c("Lee", "Li"),
-  regex = c("x١٢y", "long٣٤z"),
+  regex = c("x١٢y", paste0("long", newest_decimal_run, "z")),
   replace = c("aa-old-zz", "bbbb-old-y"),
   case = c("AbC", "DeF"),
   capitalize = c("aLPHA", "bETA"),
@@ -12364,7 +12403,14 @@ by_example_ast_cases <- list(
   list("slice", "slice out", "slice", c("slice"), list(list("aβc"), list("d😀f")), list("β", "😀")),
   list("split", "split out", "split", c("split"), list(list("a--bb"), list("long--dd")), list("bb", "dd")),
   list("concat", "concat out", "concat", c("first", "last"), list(list("Ann", "Lee"), list("Bo", "Li")), list("Ann Lee", "Bo Li")),
-  list("regex-extract", "regex out", "regexExtract", c("regex"), list(list("x١٢y"), list("long٣٤z")), list("١٢", "٣٤")),
+  list(
+    "regex-extract",
+    "regex out",
+    "regexExtract",
+    c("regex"),
+    list(list("x١٢y"), list(paste0("long", newest_decimal_run, "z"))),
+    list("١٢", newest_decimal_run)
+  ),
   list("regex-replace", "replace out", "regexReplace", c("replace"), list(list("aa-old-zz"), list("bbbb-old-y")), list("aa-new-zz", "bbbb-new-y")),
   list("case", "case out", "case", c("case"), list(list("AbC"), list("DeF")), list("abc", "def")),
   list("capitalize", "capitalize out", "case", c("capitalize"), list(list("aLPHA"), list("bETA")), list("Alpha", "Beta")),
@@ -12426,6 +12472,17 @@ for (case in by_example_ast_cases) {
     !grepl("outputId|_owSource|_owResult|_owLeft|_owRight|position", retained_wire, perl = TRUE),
     "R by-example retainedStep leaked private binding metadata"
   )
+  if (identical(case[[1L]], "null")) {
+    assert_identical(
+      names(preview$retainedStep$params$program),
+      c("kind", "value"),
+      "R by-example null literal lost its explicit public value field"
+    )
+    by_example_assert(
+      grepl('"program":\\{"kind":"literal","value":null\\}', retained_wire, perl = TRUE),
+      "R by-example null literal was not explicit in retained-step JSON"
+    )
+  }
   by_example_assert(
     is.list(preview$retainedStep$params$warnings) &&
       preview$retainedStep$params$candidateCount >= 1L,
@@ -12469,7 +12526,11 @@ assert_identical(by_example_generated$`column out`, c("one", "two"), "generated 
 assert_identical(by_example_generated$`slice out`, c("β", "😀"), "generated R Unicode slice AST diverged")
 assert_identical(by_example_generated$`split out`, c("bb", "dd"), "generated R split AST diverged")
 assert_identical(by_example_generated$`concat out`, c("Ann Lee", "Bo Li"), "generated R concat AST diverged")
-assert_identical(by_example_generated$`regex out`, c("١٢", "٣٤"), "generated R Unicode regex AST diverged")
+assert_identical(
+  by_example_generated$`regex out`,
+  c("١٢", newest_decimal_run),
+  "generated R Unicode regex AST diverged"
+)
 assert_identical(by_example_generated$`replace out`, c("aa-new-zz", "bbbb-new-y"), "generated R regex replacement AST diverged")
 assert_identical(by_example_generated$`case out`, c("abc", "def"), "generated R ASCII case AST diverged")
 assert_identical(by_example_generated$`capitalize out`, c("Alpha", "Beta"), "generated R capitalize AST diverged")

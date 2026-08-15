@@ -625,13 +625,18 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
-  it("round-trips a normalized native R by-example preview through apply and executable generated code", () => {
+  it("round-trips native R by-example null literals through saved replay and generated code", () => {
     const editingSessionId = "1b000000-0000-4000-8000-000000000001";
     const ids = {
       open: "1b000000-0000-4000-8000-000000000002",
       preview: "1b000000-0000-4000-8000-000000000003",
       apply: "1b000000-0000-4000-8000-000000000004",
-      close: "1b000000-0000-4000-8000-000000000005"
+      nullPreview: "1b000000-0000-4000-8000-000000000005",
+      nullDiscard: "1b000000-0000-4000-8000-000000000006",
+      nullReplay: "1b000000-0000-4000-8000-000000000007",
+      nullApply: "1b000000-0000-4000-8000-000000000008",
+      inspect: "1b000000-0000-4000-8000-000000000009",
+      close: "1b000000-0000-4000-8000-00000000000a"
     } as const;
     const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
     const open = requestCode({
@@ -669,6 +674,63 @@ cat("generated-ok\\n")
       kind: "applyDraft",
       payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
     });
+    const nullStep = {
+      id: "by-example-null-cross-step",
+      kind: "byExample" as const,
+      params: {
+        sourceColumns: [{ id: "r:c:0", name: "label" }],
+        newColumn: "missing",
+        examples: [
+          { inputs: ["a"], output: null },
+          { inputs: ["b"], output: null }
+        ]
+      }
+    };
+    const nullPreviewRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.nullPreview,
+      kind: "previewStep",
+      payload: { sessionId: editingSessionId, revision: 2, step: nullStep, page: pageWindow() }
+    };
+    const nullPreview = requestCode(nullPreviewRequest);
+    const nullDiscard = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.nullDiscard,
+      kind: "discardDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const nullReplayRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.nullReplay,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 4,
+        step: {
+          ...nullStep,
+          params: {
+            ...nullStep.params,
+            program: { kind: "literal", value: null },
+            warnings: ["23 programs match; Open Wrangler selected the simplest deterministic program."],
+            candidateCount: 23
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    const nullReplay = requestCode(nullReplayRequest);
+    const nullApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.nullApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 5, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 6,
+      stepId: "by-example-null-cross-step",
+      page: pageWindow()
+    });
     const close = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.close,
@@ -682,6 +744,13 @@ ${bootstrap}
 ${open.code}
 ${preview.code}
 ${apply.code}
+${nullPreview.code}
+${nullDiscard.code}
+${nullReplay.code}
+${nullApply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
 stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
@@ -736,6 +805,80 @@ ${close.code}
       rawType: "character",
       nullable: false
     });
+
+    const nullPreviewJson = marked(result.stdout, nullPreview.marker);
+    expect(nullPreviewJson).toContain('"program":{"kind":"literal","value":null}');
+    const nullPreviewed = decodeRKernelResponseJson(nullPreviewJson, ids.nullPreview, {
+      inputSchema: applied.page.schema,
+      previewStep: nullPreviewRequest.payload.step
+    });
+    expect(nullPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      retainedStep: {
+        id: "by-example-null-cross-step",
+        params: { program: { kind: "literal", value: null }, candidateCount: 23 }
+      }
+    });
+    if (nullPreviewed.kind !== "stepPreview") throw new Error("Expected a native R null-literal preview.");
+    expect(nullPreviewed.page.page.rows.map((row) => row.values.at(-1))).toMatchObject([
+      { kind: "null", raw: null, isNull: true },
+      { kind: "null", raw: null, isNull: true }
+    ]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, nullDiscard.marker), ids.nullDiscard)).toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 4
+    });
+
+    const nullReplayJson = marked(result.stdout, nullReplay.marker);
+    expect(nullReplayJson).toContain('"program":{"kind":"literal","value":null}');
+    expect(encodeRKernelRequest(nullReplayRequest)).toContain('"program":{"kind":"literal","value":null}');
+    const nullReplayed = decodeRKernelResponseJson(nullReplayJson, ids.nullReplay, {
+      inputSchema: applied.page.schema,
+      previewStep: nullReplayRequest.payload.step
+    });
+    expect(nullReplayed).toMatchObject({
+      kind: "stepPreview",
+      revision: 5,
+      retainedStep: { params: { program: { kind: "literal", value: null }, candidateCount: 23 } }
+    });
+    if (nullReplayed.kind !== "stepPreview") throw new Error("Expected a saved native R null-literal replay.");
+
+    const nullApplied = decodeRKernelResponseJson(marked(result.stdout, nullApply.marker), ids.nullApply);
+    expect(nullApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 6 });
+    if (nullApplied.kind !== "planUpdated") throw new Error("Expected an applied native R null-literal step.");
+
+    expect(decodeRKernelResponseJson(marked(result.stdout, inspect.info.marker), inspect.infoRequestId)).toMatchObject({
+      kind: "stepInspectionInfo",
+      revision: 6,
+      stepIndex: 1
+    });
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: nullApplied.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      revision: 6,
+      stepId: "by-example-null-cross-step",
+      stepIndex: 1
+    });
+    if (inspectedOutput.kind !== "stepInspectionPage") {
+      throw new Error("Expected a replayed native R null-literal inspection page.");
+    }
+    expect(inspectedOutput.page.page.rows.map((row) => row.values.at(-1))).toMatchObject([
+      { kind: "null", raw: null, isNull: true },
+      { kind: "null", raw: null, isNull: true }
+    ]);
+    expect(
+      decodeRKernelResponseJson(marked(result.stdout, inspect.input.marker), inspect.inputRequestId, {
+        inputSchema: applied.page.schema,
+        inspectionSide: "input"
+      })
+    ).toMatchObject({ kind: "stepInspectionPage", side: "input", revision: 6, stepIndex: 1 });
     expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
       kind: "closed",
       sessionId: editingSessionId
@@ -744,8 +887,9 @@ ${close.code}
     const generated = runR(`
 frame <- data.frame(label = c("a", "b"), check.names = FALSE)
 frame_before <- serialize(frame, NULL, version = 3L)
-${applied.code}
+${nullApplied.code}
 stopifnot(identical(open_wrangler_result[["clean label"]], c("A", "B")))
+stopifnot(identical(open_wrangler_result[["missing"]], c(NA, NA)))
 stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 cat("generated-ok\\n")
 `);
