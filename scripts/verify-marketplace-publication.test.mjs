@@ -9,6 +9,7 @@ import { ZipFile } from "yazl";
 import {
   MARKETPLACE_VSIX_SHA256_PROPERTY,
   MarketplacePublicationPendingError,
+  probeMarketplacePublication,
   verifyMarketplacePublication
 } from "./verify-marketplace-publication.mjs";
 
@@ -241,6 +242,54 @@ test("verifies upload SHA metadata and exact public VSIX semantics across ZIP re
     extensionId: "Matt17BR.openwrangler",
     version
   });
+});
+
+test("existing-public probe accepts exact bytes without polling", async (context) => {
+  const candidate = await fixture(context);
+  const publicVsix = await createVsix(releaseEntries(), true);
+  let sleeps = 0;
+  const result = await probeMarketplacePublication({
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: fetchFixture(gallery(candidate.candidateSha256), publicVsix),
+    prerelease: false,
+    sleep: async () => {
+      sleeps += 1;
+    },
+    version
+  });
+  assert.equal(sleeps, 0);
+  assert.deepEqual(result, {
+    alreadyPublic: true,
+    receipt: {
+      candidateSha256: candidate.candidateSha256,
+      extensionId: "Matt17BR.openwrangler",
+      version
+    }
+  });
+});
+
+test("existing-public probe classifies only pending publication as absent", async (context) => {
+  const candidate = await fixture(context);
+  const missing = await probeMarketplacePublication({
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: fetchFixture({ results: [{ extensions: [] }] }, candidate.candidate),
+    prerelease: false,
+    version
+  });
+  assert.deepEqual(missing, { alreadyPublic: false });
+
+  await assert.rejects(
+    probeMarketplacePublication({
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(gallery("f".repeat(64)), candidate.candidate),
+      prerelease: false,
+      version
+    }),
+    /already bound to different VSIX bytes/u
+  );
 });
 
 test("verifies an exact Marketplace pre-release flag in package, VSIX, and gallery metadata", async (context) => {

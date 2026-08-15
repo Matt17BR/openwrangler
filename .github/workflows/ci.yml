@@ -58,12 +58,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
-      - name: Formatting
-        run: npm run format:check
-      - name: ESLint
-        run: npm run lint
-      - name: Strict TypeScript
-        run: npm run typecheck
+      - name: Formatting, ESLint, and strict TypeScript
+        run: npm run check:fast-feedback
       - name: Protocol freshness
         run: npm run protocol:check
       - name: Reference freshness
@@ -458,10 +454,10 @@ jobs:
 
   native-r-contract:
     name: Native R contract (R ${{ matrix.r }})
-    needs: [classify, fast-feedback, contract-tests]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

@@ -1188,14 +1188,17 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     }
   });
   assert.equal(platform["runs-on"], "${{ matrix.os }}");
-  for (const runnerId of ["packaged_editor", "cursor_smoke"]) {
-    const runner = platform.steps.find((step) => step.id === runnerId);
-    assert.equal(
-      runner.env.OPEN_WRANGLER_PACKAGED_MODE,
-      "platform-smoke",
-      `${runnerId} must stay on the unique cross-platform integration seam.`
-    );
-  }
+  const platformRunner = platform.steps.find((step) => step.id === "packaged_editor");
+  assert.equal(
+    platformRunner.env.OPEN_WRANGLER_PACKAGED_MODE,
+    "platform-smoke",
+    "VS Code must stay on the unique cross-platform integration seam."
+  );
+  assert.equal(
+    platform.steps.some((step) => step.env?.OPEN_WRANGLER_PACKAGED_EDITORS?.includes("cursor")),
+    false,
+    "The single Linux Cursor smoke owns generic fork compatibility."
+  );
   assert.equal(
     platform.steps.some(
       (step) =>
@@ -1266,7 +1269,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   ].filter(({ step }) =>
     step.run?.includes("node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix")
   );
-  assert.equal(genericEditorRunners.length, 4);
+  assert.equal(genericEditorRunners.length, 3);
   assert.deepEqual(
     genericEditorRunners
       .filter(({ step }) => step.env?.OPEN_WRANGLER_PACKAGED_MODE === undefined)
@@ -1429,9 +1432,7 @@ test("PR CI gates expensive work behind bounded preflight lanes without removing
         with: { "python-version": "3.12" }
       },
       { run: "npm ci" },
-      { name: "Formatting", run: "npm run format:check" },
-      { name: "ESLint", run: "npm run lint" },
-      { name: "Strict TypeScript", run: "npm run typecheck" },
+      { name: "Formatting, ESLint, and strict TypeScript", run: "npm run check:fast-feedback" },
       { name: "Protocol freshness", run: "npm run protocol:check" },
       {
         name: "Reference freshness",
@@ -1736,7 +1737,7 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
     const needs = Array.isArray(job?.needs) ? job.needs : [job?.needs];
     assert.equal(needs.includes("classify"), true, `${jobId} must consume the exact classifier result.`);
     assert.equal(needs.includes("fast-feedback"), true, `${jobId} must wait for static preflight.`);
-    if (jobId === "contract-tests") {
+    if (jobId === "contract-tests" || jobId === "native-r-contract") {
       assert.equal(job?.if, CONTRACT_CI_IF, `${jobId} must start after static preflight.`);
     } else {
       assert.equal(needs.includes("contract-tests"), true, `${jobId} must wait for contract preflight.`);
@@ -1782,7 +1783,7 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
         },
         "dependency-guard-windows": {
           name: "Dependency guard (Windows, Python ${{ matrix.python }})",
-          matrix: { python: ["3.10", "3.12", "3.14"] }
+          matrix: { python: ["3.10", "3.12"] }
         }
       }
     ],
@@ -2578,10 +2579,10 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
   const job = workflow?.jobs?.["native-r-contract"];
 
   assert.equal(job?.name, "Native R contract (R ${{ matrix.r }})");
-  assert.deepEqual(job?.needs, ["classify", "fast-feedback", "contract-tests"]);
-  assert.equal(job?.if, FULL_CI_IF);
+  assert.deepEqual(job?.needs, ["classify", "fast-feedback"]);
+  assert.equal(job?.if, CONTRACT_CI_IF);
   assert.equal(job?.["runs-on"], "ubuntu-latest");
-  assert.equal(job?.["timeout-minutes"], 15);
+  assert.equal(job?.["timeout-minutes"], 20);
   assert.deepEqual(job?.strategy, { "fail-fast": false, matrix: { r: ["4.4", "4.5"] } });
 
   const setup = job?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
@@ -2627,23 +2628,14 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
   }
 });
 
-test("native R contract child budgets separate exact R from Vitest", () => {
+test("native R contract child budgets use named phases instead of aggregate timeout cliffs", () => {
   const runnerSource = readFileSync(new URL("./run-r-contract-tests.mjs", import.meta.url), "utf8");
 
-  assert.match(runnerSource, /const DIRECT_R_CONTRACT_TIMEOUT_MS = 300_000;/u);
-  assert.match(runnerSource, /const VITEST_CONTRACT_TIMEOUT_MS = 120_000;/u);
-  assert.equal(
-    runnerSource.match(/timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS/gu)?.length,
-    3,
-    "all three direct R contract subprocesses must use the named 300-second bound"
-  );
-  assert.equal(
-    runnerSource.match(/timeoutMs: VITEST_CONTRACT_TIMEOUT_MS/gu)?.length,
-    1,
-    "the Vitest subprocess must retain its explicit 120-second bound"
-  );
-  assert.match(runnerSource, /timeout: timeoutMs,/u);
-  assert.doesNotMatch(runnerSource, /timeout:\s*(?:120_000|300_000),/u);
+  assert.match(runnerSource, /export function createRContractPhases/u);
+  assert.match(runnerSource, /export function runRContractPhase/u);
+  assert.match(runnerSource, /\[r-contract\] TIMEOUT \$\{phase\.label\}/u);
+  assert.doesNotMatch(runnerSource, /DIRECT_R_CONTRACT_TIMEOUT_MS|VITEST_CONTRACT_TIMEOUT_MS/u);
+  assert.doesNotMatch(runnerSource, /timeout:\s*(?:60_000|90_000|120_000|360_000),/u);
 });
 
 test("coverage provisions the exact PySpark runtime before enforcing the unchanged floor", () => {

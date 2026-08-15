@@ -6,6 +6,19 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Pull-request CI now runs formatting, ESLint, and TypeScript concurrently and starts the latency-critical R 4.4/4.5
+  matrix after static preflight so it overlaps portable contracts while the protected fan-in still requires both.
+  Native-R contract execution is split into named, independently timed frame, kernel-agent, catalog, and real-R
+  transport phases. This removes the aggregate 120-second Vitest cliff that sat within eight seconds of ordinary
+  hosted runs, keeps serial test ownership and zero retries, and reports the exact failing or timed-out subsystem.
+  Release candidates now prove macOS/Windows packaged portability once in VS Code and keep one pinned Linux Cursor
+  compatibility smoke, removing two identical cross-product fork runs without dropping the Cursor seam that caught
+  the release-run #78 renderer lifecycle defect. Windows/Python 3.14 dependency-guard coverage is likewise owned by
+  the existing complete runtime cell instead of a second cell that executed the same test; focused guard cells remain
+  on Python 3.10 and 3.12.
+  Azure existing-release recovery now performs one anonymous complete Marketplace byte/metadata/icon probe before
+  authentication. An already-exact public version skips workload identity and duplicate publication entirely;
+  pending publication follows the existing WIF and bounded verifier, while conflicting public bytes still fail closed.
 - Product packaging now turns VSCE's private raw output into a deterministic files-only VSIX: bytewise UTF-8 entry
   order, STORE compression, fixed 1980 ZIP timestamps, exact `100644` ZIP modes, and no comments or extra fields.
   Package sources are identity/digest-pinned around raw creation and canonicalization, archive parity is required, and

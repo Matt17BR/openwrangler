@@ -19,13 +19,17 @@ Ready code changes run:
 | Security         | production dependency audits and CodeQL                                                       |
 | Optional         | Remote SSH when the pull request has the `acceptance:remote-ssh` label                        |
 
-The heavier jobs start only after two short preflight jobs pass. `Fast feedback` checks the source and generated
-files, then `Contract tests` checks the Python, package, and workflow contracts. UI, coverage, engine, package, and
-editor jobs keep the same checks, but they are skipped when either preflight already makes the pull request
-unmergeable.
+`Fast feedback` checks formatting, ESLint, and TypeScript concurrently before it checks generated files, licenses,
+and workflow contracts. The latency-critical R 4.4/4.5 matrix starts after that static preflight and overlaps
+`Contract tests`; the protected `validate` fan-in still requires both. The remaining UI, coverage, engine, package,
+and editor jobs start only after `Fast feedback` and `Contract tests` pass, so an early preflight failure still avoids
+their cost without removing any check from a green pull request.
 
 The R 4.4 and 4.5 jobs run the same native contract. Their explicit package set is resolved into a lockfile and
 restored from a versioned cache, so an unchanged dependency set does not compile from scratch on every pull request.
+The runner reports and bounds the frame, kernel-agent, catalog, and real-R transport phases independently. A slow or
+hung subsystem therefore identifies itself directly instead of failing at one aggregate deadline after earlier
+subsystems already passed.
 
 Documentation-only changes run just the source checks. Changes limited to shipped documents such as the README also build the VSIX so the Marketplace package can be checked.
 
@@ -91,8 +95,8 @@ provenance contract, or publication topology changes with this foundation.
 
 The release tier adds the expensive product checks that no longer run on every pull request:
 
-- focused packaged VS Code and Cursor `platform-smoke` compatibility on macOS and Windows, without native-R setup or
-  execution;
+- focused packaged VS Code `platform-smoke` OS compatibility on macOS and Windows, without native-R setup or
+  execution, while one pinned Linux Cursor smoke owns generic fork compatibility;
 - native-R platform acceptance in a separate macOS/Windows matrix, with fresh VS Code-only core, native-frame, and
   kernel-restart phases;
 - released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs: VS Code owns complete local and
@@ -132,11 +136,15 @@ publish.
 Python, remote R, the generic platform matrix, the native-R `r_platform` matrix, and the two Linux local-R shard cells
 are independent siblings. Every candidate job proves the exact artifact or a live external release invariant; the
 direct R 4.4/4.5 source contract remains solely in protected pull-request CI. Generic macOS/Windows platform cells own
-only the packaged VS Code/Cursor `platform-smoke` compatibility seam without rerunning the pull request's extension-host
-suite or preparing R. Linux VS Code is the sole full generic packaged owner; Linux Cursor runs the same focused smoke
-rather than repeating that proof. Each `r_platform` cell prepares R once, then runs freshly
+only the packaged VS Code `platform-smoke` OS seam without rerunning the pull request's extension-host suite or
+preparing R. Linux VS Code is the sole full generic packaged owner; one pinned Linux Cursor run owns the focused fork-
+compatibility smoke rather than multiplying it across operating systems. Each `r_platform` cell prepares R once, then runs freshly
 verified VS Code-only `core-operations`, `native-frames`, and `kernel-restart` invocations in that order. Its deferred
 raw-outcome guard requires literal success from all three phases after their distinct immediate diagnostic uploads.
+
+The Windows/Python 3.14 runtime cell runs the complete Python suite, including `test_dependency_guard.py`. The focused
+Windows dependency-guard matrix therefore covers only Python 3.10 and 3.12; adding a separate 3.14 cell would execute
+the identical test under the identical interpreter and operating system without adding a compatibility boundary.
 
 Linux lifecycle runs `core-operations`, then `kernel-restart`, then `interactive-terminal`, then
 `literate-documents`; Linux editing runs `native-frames`, then `value-operations`, then `categorical-operations`.
