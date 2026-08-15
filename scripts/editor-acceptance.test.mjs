@@ -225,15 +225,13 @@ test("Quarto acceptance pins and closes one exact preview lifecycle before ordin
     source.indexOf("async function openReleasedNativeQuartoPreview("),
     source.indexOf("function releasedRenderedHtmlSnapshot(")
   );
-  assert.match(
-    journey,
-    /ownership\.tabActive && ownership\.terminalReady && renderedHtmlReady && visiblePreviewReady/u
-  );
+  assert.match(journey, /ownership\.tabOwned && ownership\.terminalReady && renderedHtmlReady && visiblePreviewReady/u);
   assert.match(journey, /if \(requireVisiblePreview\) \{/u);
   assert.match(journey, /releasedQuartoPreviewTabs\(\)/u);
   assert.match(journey, /input\?\.viewType === "quarto\.previewView"/u);
   assert.doesNotMatch(journey, /tab\.label === "Quarto Preview"/u);
-  assert.match(journey, /previewTabGroup\?\.activeTab === previewTab/u);
+  assert.match(journey, /tabOwned: previewTab !== undefined && previewTabGroup !== undefined/u);
+  assert.doesNotMatch(journey, /\b(?:activeTab|activeTabGroup|tabActive)\b/u);
   assert.match(journey, /Quarto Preview must retain its first exact internal preview tab/u);
   assert.match(journey, /assert\.equal\(tabs\[0\], previewTab,/u);
   assert.match(journey, /Quarto Preview must retain its first exact owned terminal/u);

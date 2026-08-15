@@ -5061,7 +5061,7 @@ async function openReleasedNativeQuartoPreview(
       }
     }
     return {
-      tabActive: previewTab !== undefined && previewTabGroup?.activeTab === previewTab,
+      tabOwned: previewTab !== undefined && previewTabGroup !== undefined,
       terminalReady: previewTerminal !== undefined
     };
   };
@@ -5168,11 +5168,11 @@ async function openReleasedNativeQuartoPreview(
         renderedHtmlReady = stableHtmlObservations >= 2;
       }
       const visiblePreviewReady = !requireVisiblePreview || previewLocator !== undefined;
-      if (ownership.tabActive && ownership.terminalReady && renderedHtmlReady && visiblePreviewReady) break;
+      if (ownership.tabOwned && ownership.terminalReady && renderedHtmlReady && visiblePreviewReady) break;
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
     const ownership = captureOwnedUi();
-    assert.equal(ownership.tabActive, true, "The exact Quarto preview tab must be active in its exact tab group.");
+    assert.equal(ownership.tabOwned, true, "The exact Quarto preview tab must belong to its exact tab group.");
     assert.equal(ownership.terminalReady, true, "Quarto Preview must own one exact disposable terminal.");
     assert.equal(renderedHtmlReady, true, "Quarto Preview must finish the expected HTML render.");
     if (requireVisiblePreview) {

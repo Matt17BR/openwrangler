@@ -994,8 +994,9 @@ change its 300-second hard deadline, 180-second inactivity deadline, or no-autom
 The packaged journey activates all three extensions, checks their exact versions and public current-cell/selection commands, and confirms
 that `.Rmd` and `.qmd` have the expected editor language modes. It dispatches `quarto.preview` exactly once, retains
 that one promise, and settles it inside the existing render bound before accepting any preview state. The harness pins
-the first semantic `quarto.previewView` tab, its exact active tab group, and the first newly owned `Quarto Preview`
-terminal while requiring two identical rendered-HTML observations. Ordinary acceptance then closes the exact preview
+the first semantic `quarto.previewView` tab, its exact owning tab group, and the first newly owned `Quarto Preview`
+terminal while requiring two identical rendered-HTML observations. It does not require that preserve-focus preview
+tab to become active. Ordinary acceptance then closes the exact preview
 owners, waits through the asynchronous reveal window, and proves zero preview tabs and terminals before invoking
 **Open in Open Wrangler** with the exact cursor in its R chunk. Only Linux screenshot mode retains those owners through
 the preview capture, then performs the same cleanup. It never focuses, resizes, reloads, retries, or dispatches a second
@@ -1129,6 +1130,15 @@ is a harness-settlement failure, not evidence that Rename generated incorrect co
 skipped, and no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open VSX package was created. The process-RSS,
 Quarto-ownership, and post-draft layout remediations documented above have focused local evidence only; a fresh hosted
 candidate must pass them under the unchanged 300-second/180-second/no-retry policy.
+
+Preview release [run #77](https://github.com/Matt17BR/openwrangler/actions/runs/31852540354) exercised those
+remediations from exact protected `main` commit `fdebcc96`. Installed performance, Cursor literate acceptance, and
+every other raw lane passed. Linux VS Code literate acceptance retained the exact semantic Quarto preview tab in its
+owning group, but the final harness assertion required that preserve-focus tab to be active. That focus assertion was
+not a product or release invariant and contradicted the unfocused packaged-editor journey. The correction removes only
+that active-tab gate; exact tab identity, exact group ownership, the newly owned terminal, stable HTML, optional
+media-only visible-content probing, and cleanup before the ordinary title action remain required. This correction has
+focused local evidence only and requires a fresh hosted candidate under the unchanged deadlines and no-retry policy.
 
 ```bash
 npm run build:test-extension &&
