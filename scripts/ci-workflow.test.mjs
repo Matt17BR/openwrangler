@@ -831,6 +831,8 @@ test("release-infrastructure classification is an exact fail-closed allowlist wi
   );
   assert.deepEqual(RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS, [
     "scripts/data-wrangler-comparison-report.mjs",
+    "scripts/package-source-manifest.mjs",
+    "scripts/reproducible-vsix.mjs",
     "scripts/run-installed-performance.mjs",
     "scripts/strict-json.mjs",
     "scripts/vsix-archive.mjs",

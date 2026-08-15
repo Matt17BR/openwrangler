@@ -39,6 +39,7 @@ import {
   readReleaseSourceSnapshot,
   readStableVsixPayload
 } from "./release-readiness.mjs";
+import { assertReproducibleVsixArchive } from "./reproducible-vsix.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import { readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
@@ -635,6 +636,7 @@ export function createCanonicalReleaseDependencies({ packageSourceOptions } = {}
   }
   return Object.freeze({
     assertPackageInventory: assertInstalledPerformancePackageInventory,
+    assertReproducibleVsixArchive,
     assertSamePackageSources: assertSameInstalledPerformancePackageSources,
     pinPackageSources: () => assertNoPackageableUntrackedFiles(packageSourceOptions)
   });
@@ -658,6 +660,7 @@ export async function createCanonicalReleaseArtifact({
     typeof dependencies !== "object" ||
     typeof dependencies.pinPackageSources !== "function" ||
     typeof dependencies.assertPackageInventory !== "function" ||
+    typeof dependencies.assertReproducibleVsixArchive !== "function" ||
     typeof dependencies.assertSamePackageSources !== "function" ||
     hooks === null ||
     typeof hooks !== "object"
@@ -678,6 +681,7 @@ export async function createCanonicalReleaseArtifact({
   const sourceBefore = contract.readSourceBinding({ expectedCommit, releaseTag, root });
   const packageSources = await dependencies.pinPackageSources();
   const snapshot = readOwnedVsixSnapshot(resolvedCandidate);
+  await dependencies.assertReproducibleVsixArchive(snapshot.bytes);
   await hooks.afterCandidateRead?.({ candidatePath: resolvedCandidate, snapshot });
   const packaged = await readStableVsixPayload(snapshot.bytes);
   dependencies.assertPackageInventory(packageSources, packaged.archiveEntries, packaged.entryDigests);

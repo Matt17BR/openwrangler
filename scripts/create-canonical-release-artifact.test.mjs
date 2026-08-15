@@ -42,7 +42,13 @@ import {
   R_STABLE_PARITY_SCOPE,
   STABLE_README_RELEASE_SECTION
 } from "./release-readiness.mjs";
+import {
+  assertReproducibleVsixArchive as assertReproducibleArchive,
+  canonicalizeVsixArchive
+} from "./reproducible-vsix.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
+import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
+import { inspectVsixArchive } from "./vsix-archive.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
@@ -192,10 +198,10 @@ function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest 
   ]);
 }
 
-function createVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
+function createLegacyVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
   const zip = new ZipFile();
   for (const [name, value] of releaseEntries(readmeSection, manifest)) {
-    zip.addBuffer(Buffer.from(value), name);
+    zip.addBuffer(Buffer.from(value), name, { compress: true });
   }
   return new Promise((resolveBytes, rejectBytes) => {
     const chunks = [];
@@ -208,6 +214,11 @@ function createVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifes
     zip.outputStream.once("end", () => resolveBytes(Buffer.concat(chunks, length)));
     zip.end();
   });
+}
+
+async function createVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
+  const legacyBytes = await createLegacyVsixBuffer(readmeSection, manifest);
+  return (await canonicalizeVsixArchive(legacyBytes)).bytes;
 }
 
 function writeSourceFile(root, path, contents) {
@@ -224,7 +235,8 @@ async function createFixture(
     featureParity = parityMatrix(parityStatuses),
     readmeSection = STABLE_README_RELEASE_SECTION,
     sourceFiles = () => new Map(),
-    tag = true
+    tag = true,
+    useLegacyVsix = false
   } = {}
 ) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-canonical-artifact-")));
@@ -242,7 +254,9 @@ async function createFixture(
   );
   writeSourceFile(root, "README.md", `# Open Wrangler\n\n${readmeSection}\n`);
   writeSourceFile(root, "scripts/evidence.test.mjs", "export {};\n");
-  const candidateBytes = await createVsixBuffer(readmeSection, manifest);
+  const candidateBytes = useLegacyVsix
+    ? await createLegacyVsixBuffer(readmeSection, manifest)
+    : await createVsixBuffer(readmeSection, manifest);
   for (const [path, contents] of sourceFiles({ candidateBytes, manifest })) {
     writeSourceFile(root, path, contents);
   }
@@ -266,25 +280,35 @@ async function createFixture(
 
 function packageDependencies() {
   const state = {
+    callOrder: [],
     inventoryChecks: 0,
     pins: 0,
+    reproducibleChecks: 0,
     sourceComparisons: 0
   };
   const receipt = Object.freeze({ protocol: "test-package-source-v1" });
   return {
     dependencies: {
       assertPackageInventory(_source, entries, digests) {
+        state.callOrder.push("assertPackageInventory");
         assert.equal(_source, receipt);
         assert.ok(entries.includes("extension/package.json"));
         assert.ok(digests.some(([name]) => name === "extension/package.json"));
         state.inventoryChecks += 1;
       },
+      async assertReproducibleVsixArchive(bytes) {
+        state.callOrder.push("assertReproducibleVsixArchive");
+        state.reproducibleChecks += 1;
+        return await assertReproducibleArchive(bytes);
+      },
       assertSamePackageSources(expected, actual) {
+        state.callOrder.push("assertSamePackageSources");
         assert.equal(expected, receipt);
         assert.equal(actual, receipt);
         state.sourceComparisons += 1;
       },
       async pinPackageSources() {
+        state.callOrder.push("pinPackageSources");
         state.pins += 1;
         return receipt;
       }
@@ -422,7 +446,15 @@ test("atomically publishes exactly one source-bound stable artifact triple", asy
   });
   assert.equal(state.inventoryChecks, 1);
   assert.equal(state.pins, 2);
+  assert.equal(state.reproducibleChecks, 1);
   assert.equal(state.sourceComparisons, 1);
+  assert.deepEqual(state.callOrder, [
+    "pinPackageSources",
+    "assertReproducibleVsixArchive",
+    "assertPackageInventory",
+    "pinPackageSources",
+    "assertSamePackageSources"
+  ]);
   assert.deepEqual(readFileSync(fixture.candidatePath), fixture.candidateBytes);
   assert.equal(
     readdirSync(fixture.root).some((name) => name.startsWith(".canonical-release.tmp-")),
@@ -495,7 +527,57 @@ test("atomically publishes a provenance-bound preview triple before its tag exis
   });
   assert.equal(state.inventoryChecks, 1);
   assert.equal(state.pins, 2);
+  assert.equal(state.reproducibleChecks, 1);
   assert.equal(state.sourceComparisons, 1);
+  assert.deepEqual(state.callOrder, [
+    "pinPackageSources",
+    "assertReproducibleVsixArchive",
+    "assertPackageInventory",
+    "pinPackageSources",
+    "assertSamePackageSources"
+  ]);
+});
+
+test("new canonical authoring rejects a valid legacy-deflated VSIX without weakening legacy verification", async (context) => {
+  const fixture = await createFixture(context, { useLegacyVsix: true });
+  const inspected = await inspectVsixArchive(fixture.candidateBytes);
+  assert.equal(parseStrictJson(inspected.packagedPackageJson).version, stablePackage.version);
+
+  const legacyDirectory = join(fixture.root, "legacy-canonical-artifact");
+  mkdirSync(legacyDirectory);
+  const digest = createHash("sha256").update(fixture.candidateBytes).digest("hex");
+  writeFileSync(join(legacyDirectory, "openwrangler.vsix"), fixture.candidateBytes);
+  writeFileSync(join(legacyDirectory, "openwrangler.vsix.sha256"), `${digest}  openwrangler.vsix\n`);
+  writeFileSync(
+    join(legacyDirectory, "openwrangler.vsix.provenance.json"),
+    `${JSON.stringify({
+      protocol: CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: stablePackage.version,
+      preview: false,
+      releaseTag: fixture.releaseTag,
+      sourceCommit: fixture.expectedCommit,
+      vsixSha256: digest,
+      vsixBytes: fixture.candidateBytes.length
+    })}\n`
+  );
+  const legacyReceipt = await verifyCanonicalReleaseArtifact({
+    directory: legacyDirectory,
+    expectedCommit: fixture.expectedCommit,
+    releaseTag: fixture.releaseTag,
+    sourceCommit: fixture.expectedCommit,
+    sourcePackageJson: JSON.stringify(stablePackage)
+  });
+  assert.equal(legacyReceipt.candidateSha256, digest);
+
+  await assert.rejects(
+    createCanonicalReleaseArtifact({
+      ...fixture,
+      dependencies: realPackageDependencies()
+    }),
+    /not in exact reproducible canonical form/u
+  );
+  assert.equal(existsSync(fixture.outputDirectory), false);
 });
 
 test("preview and stable artifact authors reject the opposite release channel", async (context) => {
@@ -522,7 +604,7 @@ test("publishes a distinctly non-promotable artifact when only performance evide
     parityStatuses,
     readmeSection: PERFORMANCE_EVIDENCE_README_RELEASE_SECTION
   });
-  const { options } = artifactOptions(fixture, {
+  const { options, state } = artifactOptions(fixture, {
     publicationMode: PERFORMANCE_EVIDENCE_PUBLICATION_MODE
   });
   const receipt = await createCanonicalReleaseArtifact(options);
@@ -545,6 +627,14 @@ test("publishes a distinctly non-promotable artifact when only performance evide
     vsixBytes: fixture.candidateBytes.length
   });
   assert.throws(() => validateCanonicalReleaseProvenance(rawProvenance), /exactly the canonical artifact fields/u);
+  assert.equal(state.reproducibleChecks, 1);
+  assert.deepEqual(state.callOrder, [
+    "pinPackageSources",
+    "assertReproducibleVsixArchive",
+    "assertPackageInventory",
+    "pinPackageSources",
+    "assertSamePackageSources"
+  ]);
 });
 
 test("performance-evidence publication rejects every other incomplete row and stable publication rejects its exception", async (context) => {
