@@ -289,8 +289,16 @@ already occurred before those pages can be inspected. A failure marks the promot
 new release, but it cannot undo or roll back already-public immutable release or registry bytes. It never makes a
 deterministic pull-request lane depend on registry pages.
 
-Each propagation attempt opens a fresh browser context. If a page replaces an image while Playwright is inspecting
-it, that detached-locator error is retried; timeouts and rendering-contract failures are not.
+GitHub exact-source rendering owns one context and one non-retryable observation. Each image is scrolled and measured
+inside one bounded same-page `page.evaluate` stability wait. If the page replaces candidate A with B, the same
+evaluation re-queries the image and resets its candidate; B must then remain identical for two consecutive
+post-scroll animation frames. The source observation, a navigation with no HTTP response, and escaped browser, DOM,
+evaluation, scroll, or animation-frame errors are terminal. Exhaustion after any candidate disappears, keeps
+changing, remains CSS-hidden, has invalid geometry, or produces a complete positive proof that fails to stabilize is
+also terminal. On Marketplace and Open VSX, retries are limited to an explicitly observed stale version, README
+content, or immutable image source; an initially missing or incomplete exact-alt image; or an actual non-OK HTTP
+response. Those observations may use up to forty fresh registry contexts at thirty-second intervals. The one source
+check and registry attempts share the existing thirty-minute global deadline.
 
 The installed-performance job runs on GitHub-hosted `ubuntu-24.04`, downloads the stable workflow's run-scoped artifact by exact artifact ID, and acquires the official pinned VS Code 1.130.0 and Cursor 3.13.10 Linux x64 packages into its per-run private root. Downloaded byte counts and SHA-256 digests must match the receipts above before extraction or launch. Cursor executes under an isolated `dbus-run-session`; VS Code remains on zero-window headless Ozone and Cursor on the private-display path. Neither editor may use a preinstalled or moving channel, a normal profile, the current desktop, or an implicit local-display fallback. The temporary editor packages and extracted installations are test inputs only and never enter the candidate, report, release artifact, cache, or registry.
 
@@ -415,6 +423,26 @@ though VS Code exposes the WebviewPanel tab as `mainThreadWebview-quarto.preview
 the later `ERR_CONNECTION_REFUSED` followed missed preview ownership and cleanup rather than proving a product defect.
 The fan-in failed and publication was skipped, so no `v1.99.6` tag, GitHub prerelease, Open VSX package, or Azure
 Marketplace package exists. Run #78 remains failed hosted evidence.
+
+Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
+`main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the complete candidate and Remote SSH graph and
+published `v1.99.6` to GitHub, Open VSX, and Azure Marketplace. Canonical artifact `9240263388` retained the
+109-entry VSIX with SHA-256 `5a9c6eb7531ccd521c20a08ab2fd3a7d99776ea10d5e48a5eb5756d03b553404`;
+installed-performance artifact `9240376365` passed. The workflow completed successfully, but its public-media gate
+recorded 24 retry observations before passing: five genuine Marketplace stale-version observations and 19 GitHub
+exact-source Playwright DOM detachments incorrectly classified as registry propagation. Publication is valid; the
+green public-media result is not evidence that the detached-locator classifier was valid.
+
+The correction checks the GitHub exact-source page once. One bounded same-page evaluation may absorb an A-to-B image
+replacement, but B must then remain identical for two consecutive post-scroll frames; no whole attempt or context is
+retried. Source or escaped browser, DOM, evaluation, scroll, or animation-frame failures and exhaustion after a
+present candidate disappears, keeps changing, remains CSS-hidden, has invalid geometry, or produces a complete
+positive proof that fails to stabilize are terminal. Only a stale registry version, README content, or immutable
+image source; initial exact-alt absence or incompleteness; or an actual non-OK HTTP response may use up to forty fresh
+contexts. A navigation with no HTTP response is terminal. The source check and registry attempts share the unchanged
+30-minute deadline. It adds no timeout, retry count, workflow job, phase, matrix cell, or topology. Stable v2 remains
+blocked on this verifier gate until the correction lands on protected `main` and a fresh preview proves the corrected
+policy.
 
 The locally frozen follow-up keeps the exact core/native/restart graph measured by #78. Installed performance removes only the
 auxiliary whole-editor-process-tree and Open Wrangler runtime RSS sampler and advances its release/evidence/smoke
@@ -567,14 +595,19 @@ from the reviewed lockfile and runs the media verifier against the exact release
 release tied to its own screenshot inventory when `main` has moved on. All declared
 PNGs must retain their reviewed natural dimensions, standard sRGB declaration, file and aggregate budgets, valid
 chunk/decode structure, and immutable remote bytes. Every one of the 20 README images must then render from its exact
-reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio Marketplace, and
-Open VSX; representative images are rechecked near 760px and 1400px viewport widths. Registry observations receive at most
-forty fresh browser contexts at thirty-second intervals inside one thirty-minute propagation deadline; network fetches
-are bounded to sixty seconds, one browser attempt to three minutes, per-page and per-image operations to their
-configured Playwright deadlines, and context cleanup to ten seconds. Exact-source, inventory, malformed-image,
-dimension, DPR, and other deterministic contract failures stop immediately. Only explicitly classified stale or
-unavailable Marketplace/Open VSX observations retry. The media step receives only the source commit and version,
-never `OVSX_PAT`.
+reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio
+Marketplace, and Open VSX; representative images are rechecked near 760px and 1400px viewport widths. GitHub exact
+source owns one context and one render observation. Inside the bounded same-page `page.evaluate` measurement, a
+replacement from candidate A to B resets the candidate; B must then remain identical for two consecutive post-scroll
+animation frames without starting a new attempt or context. The source observation, a navigation with no HTTP
+response, and escaped browser, DOM, evaluation, scroll, or animation-frame errors are terminal. Exhaustion after any
+candidate disappears, keeps changing, remains CSS-hidden, has invalid geometry, or produces a complete positive proof
+that fails to stabilize is also terminal. On Marketplace and Open VSX, only an explicitly stale version, README
+content, or immutable image source; an initially missing or incomplete exact-alt image; or an actual non-OK HTTP
+response receives up to forty fresh browser contexts at thirty-second intervals. The source check and registry
+attempts share one thirty-minute global deadline; network fetches are bounded to sixty seconds, one browser attempt
+to three minutes, per-page and per-image operations to their configured Playwright deadlines, and context cleanup to
+ten seconds. The media step receives only the source commit and version, never `OVSX_PAT`.
 
 Before any new preview or stable tag/release write, the package path runs the browser-free `--prepublish` verifier
 against its exact protected source. For `1.99.4` and later, Open VSX recovery restores the exact release checkout's

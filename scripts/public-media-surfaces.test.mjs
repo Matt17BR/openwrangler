@@ -56,8 +56,9 @@ import {
 import {
   assertBoundedRelativeMediaPath,
   assertPngContract,
+  assertPublicMediaNavigationResponse,
   inspectLocalPublicMediaInventory,
-  isTransientPublicSurfaceDomReplacement,
+  observeRenderedImageInPage,
   observeRegistryPropagation,
   resolveVerifiedSourceRoot,
   RetryablePublicMediaObservationError,
@@ -77,6 +78,93 @@ const reviewedMediaSha = "9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22";
 const staleMediaSha = "5acf731e8b44e9ff82c4ac48fdc151210636da95";
 const productPrefix = `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/docs/images/readme/v1.2/`;
 const root = resolve(import.meta.dirname, "..");
+
+const visibleStyle = { contentVisibility: "visible", display: "block", opacity: "1", visibility: "visible" };
+
+function createFakeRenderedContainer({ isConnected = true, rectangle, style } = {}) {
+  return {
+    isConnected,
+    parentElement: null,
+    style: { ...visibleStyle, ...style },
+    getBoundingClientRect: () => ({ ...(rectangle ?? { width: 960, height: 800, left: 0, right: 960 }) })
+  };
+}
+
+function createFakeRenderedImage(overrides = {}) {
+  const {
+    container = createFakeRenderedContainer(),
+    onScroll,
+    rectangle = { width: 480, height: 270, left: 20, right: 500 },
+    sourceUrl = `${productPrefix}image.png`,
+    style,
+    ...properties
+  } = overrides;
+  const scrollCalls = [];
+  return {
+    alt: "Exact public image",
+    complete: true,
+    currentSrc: sourceUrl,
+    isConnected: true,
+    naturalHeight: 540,
+    naturalWidth: 960,
+    ...properties,
+    parentElement: container,
+    scrollCalls,
+    style: { ...visibleStyle, ...style },
+    closest: () => container,
+    getAttribute: () => sourceUrl,
+    getBoundingClientRect: () => ({ ...(typeof rectangle === "function" ? rectangle() : rectangle) }),
+    scrollIntoView: (options) => {
+      scrollCalls.push(options);
+      onScroll?.();
+    }
+  };
+}
+
+function createFakeRenderedImageEnvironment(imagesForFrame, { body, timeoutAfterFrames = 8 } = {}) {
+  const documentBody = body ?? createFakeRenderedContainer();
+  let activeImages = [];
+  let timerCallback;
+  let nextHandle = 1;
+  const pendingFrames = new Set();
+  const state = { frameCount: 0, timerClearCalls: 0 };
+  const environment = {
+    devicePixelRatio: 2,
+    innerWidth: 1_400,
+    document: {
+      body: documentBody,
+      querySelectorAll: () => activeImages
+    },
+    getComputedStyle: (element) => element.style,
+    requestAnimationFrame: (callback) => {
+      const handle = nextHandle++;
+      pendingFrames.add(handle);
+      queueMicrotask(() => {
+        if (!pendingFrames.delete(handle)) return;
+        if (state.frameCount >= timeoutAfterFrames) {
+          const timeout = timerCallback;
+          timerCallback = undefined;
+          timeout?.();
+          return;
+        }
+        activeImages = imagesForFrame(state.frameCount);
+        state.frameCount += 1;
+        callback(state.frameCount * 16);
+      });
+      return handle;
+    },
+    cancelAnimationFrame: (handle) => pendingFrames.delete(handle),
+    setTimeout: (callback) => {
+      timerCallback = callback;
+      return 1;
+    },
+    clearTimeout: () => {
+      timerCallback = undefined;
+      state.timerClearCalls += 1;
+    }
+  };
+  return { environment, state };
+}
 
 test("public media inventory declares one exact bounded series", () => {
   assert.equal(PUBLIC_MEDIA_SERIES_PATH, "docs/images/readme/v1.2/");
@@ -583,13 +671,14 @@ test("prepublication recovery uses the exact release-source contract starting wi
 });
 
 test("the injected propagation controller retries only typed registry observations", async () => {
+  const terminalError = new Error("locator.scrollIntoViewIfNeeded: Element is not attached to the DOM");
   let terminalAttempts = 0;
   const terminalDelays = [];
   await assert.rejects(
     runPublicMediaPropagation({
       attempt: async () => {
         terminalAttempts += 1;
-        throw new Error("deterministic contract failure");
+        throw terminalError;
       },
       attempts: 3,
       delayMilliseconds: 10,
@@ -598,7 +687,7 @@ test("the injected propagation controller retries only typed registry observatio
       sleep: async (milliseconds) => terminalDelays.push(milliseconds),
       report: () => {}
     }),
-    /deterministic contract failure/u
+    (error) => error === terminalError
   );
   assert.equal(terminalAttempts, 1);
   assert.deepEqual(terminalDelays, []);
@@ -629,19 +718,23 @@ test("the injected propagation controller retries only typed registry observatio
   assert.deepEqual(retryDelays, [10, 10]);
 });
 
-test("each propagation retry owns and closes one fresh injected browser context", async () => {
-  const contexts = [];
+test("the exact source runs once before registry-only retries under one global deadline", async () => {
   let clock = 0;
+  let sourceCalls = 0;
+  const contexts = [];
   const result = await runPublicMediaPropagation({
     attempts: 3,
     delayMilliseconds: 5,
-    timeoutMilliseconds: 1_000,
+    timeoutMilliseconds: 100,
     attemptTimeoutMilliseconds: 100,
     now: () => clock,
-    sleep: async (milliseconds) => {
-      clock += milliseconds;
-    },
+    sleep: async (milliseconds) => (clock += milliseconds),
     report: () => {},
+    verifySourceOnce: async ({ attemptTimeoutMilliseconds }) => {
+      sourceCalls += 1;
+      assert.equal(attemptTimeoutMilliseconds, 100);
+      clock += 73;
+    },
     attempt: ({ attemptNumber, attemptTimeoutMilliseconds }) =>
       runFreshPublicMediaContextAttempt({
         attemptTimeoutMilliseconds,
@@ -649,6 +742,7 @@ test("each propagation retry owns and closes one fresh injected browser context"
         createContext: async () => {
           const context = {
             attemptNumber,
+            attemptTimeoutMilliseconds,
             closeCalls: 0,
             async close() {
               this.closeCalls += 1;
@@ -658,65 +752,226 @@ test("each propagation retry owns and closes one fresh injected browser context"
           return context;
         },
         verifyContext: async (context) => {
-          if (context.attemptNumber < 3) {
-            throw new RetryablePublicMediaObservationError(`stale attempt ${context.attemptNumber}`);
-          }
+          if (context.attemptNumber < 3) throw new RetryablePublicMediaObservationError("registry stale");
           return "propagated";
         }
       })
   });
   assert.equal(result, "propagated");
-  assert.equal(contexts.length, 3);
+  assert.equal(sourceCalls, 1);
+  assert.deepEqual(
+    contexts.map(({ closeCalls }) => closeCalls),
+    [1, 1, 1]
+  );
   assert.equal(new Set(contexts).size, 3);
   assert.deepEqual(
-    contexts.map((context) => context.closeCalls),
-    [1, 1, 1]
+    contexts.map(({ attemptTimeoutMilliseconds }) => attemptTimeoutMilliseconds),
+    [27, 22, 17]
+  );
+  assert.equal(clock, 83);
+});
+
+test("a typed source failure is authoritative and never enters registry propagation", async () => {
+  const sourceFailure = new RetryablePublicMediaObservationError("source is not a registry observation");
+  await assert.rejects(
+    runPublicMediaPropagation({
+      verifySourceOnce: async () => Promise.reject(sourceFailure),
+      attempt: async () => assert.fail("a source failure must bypass registry attempts")
+    }),
+    (error) => error === sourceFailure
   );
 });
 
-test("surface observation retries a transient detached locator without hiding source failures", async () => {
+test("only explicit stale or unavailable registry observations become retryable", () => {
   const sourceSurface = { name: "GitHub", versionKind: "source" };
-  const detached = new Error(
-    "locator.scrollIntoViewIfNeeded: Element is not attached to the DOM\nCall log:\n  - attempting scroll into view action"
-  );
-  assert.equal(isTransientPublicSurfaceDomReplacement(detached), true);
-  let attempts = 0;
-  let clock = 0;
-  const delays = [];
-  const result = await runPublicMediaPropagation({
-    attempts: 2,
-    delayMilliseconds: 5,
-    timeoutMilliseconds: 100,
-    attemptTimeoutMilliseconds: 50,
-    now: () => clock,
-    sleep: async (milliseconds) => {
-      delays.push(milliseconds);
-      clock += milliseconds;
-    },
-    report: () => {},
-    attempt: () =>
-      observeRegistryPropagation(sourceSurface, "has not rendered the complete README image set", async () => {
-        attempts += 1;
-        if (attempts === 1) throw detached;
-        return "stable render";
-      })
-  });
-  assert.equal(result, "stable render");
-  assert.equal(attempts, 2);
-  assert.deepEqual(delays, [5]);
-
-  for (const error of [
-    new Error("locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded"),
-    new Error("README image is wider than its container"),
-    "Element is not attached to the DOM"
-  ]) {
-    assert.equal(isTransientPublicSurfaceDomReplacement(error), false);
-    await assert.rejects(
-      observeRegistryPropagation(sourceSurface, "failed its render contract", async () => {
-        throw error;
+  const registrySurface = { name: "Visual Studio Marketplace", versionKind: "marketplace" };
+  const stale = new Error("renders version 1.99.5 instead of 1.99.6");
+  assert.equal(observeRegistryPropagation(registrySurface, "is current", { ready: true, value: "current" }), "current");
+  assert.throws(
+    () =>
+      observeRegistryPropagation(registrySurface, "still exposes stale version metadata", {
+        ready: false,
+        kind: "registry-stale",
+        reason: stale.message,
+        cause: stale
       }),
-      (observed) => observed === error
+    (error) =>
+      error instanceof RetryablePublicMediaObservationError &&
+      error.cause === stale &&
+      /Visual Studio Marketplace still exposes stale version metadata/u.test(error.message)
+  );
+  assert.throws(
+    () =>
+      observeRegistryPropagation(sourceSurface, "failed its render contract", {
+        ready: false,
+        kind: "registry-stale",
+        reason: stale.message,
+        cause: stale
+      }),
+    (error) => error === stale
+  );
+  assert.throws(
+    () =>
+      observeRegistryPropagation(registrySurface, "failed", {
+        ready: false,
+        kind: "terminal",
+        reason: "DOM harness failure"
+      }),
+    (error) => error instanceof Error && !(error instanceof RetryablePublicMediaObservationError)
+  );
+  assert.throws(
+    () => assertPublicMediaNavigationResponse(registrySurface, null),
+    (error) => error instanceof Error && !(error instanceof RetryablePublicMediaObservationError)
+  );
+  const unavailableResponse = { ok: () => false, status: () => 503 };
+  assert.throws(
+    () => assertPublicMediaNavigationResponse(registrySurface, unavailableResponse),
+    (error) => error instanceof RetryablePublicMediaObservationError && /HTTP 503/u.test(error.message)
+  );
+  assert.throws(
+    () => assertPublicMediaNavigationResponse(sourceSurface, unavailableResponse),
+    (error) =>
+      error instanceof Error &&
+      !(error instanceof RetryablePublicMediaObservationError) &&
+      /HTTP 503/u.test(error.message)
+  );
+});
+
+test("returning to an earlier image identity scrolls its new candidacy again", async () => {
+  const container = createFakeRenderedContainer();
+  const first = createFakeRenderedImage({ container, sourceUrl: `${productPrefix}first.png` });
+  const second = createFakeRenderedImage({ container, sourceUrl: `${productPrefix}second.png` });
+  const harness = createFakeRenderedImageEnvironment(
+    (frame) => {
+      if (frame === 0 || frame >= 2) return [first];
+      return [second];
+    },
+    { body: container, timeoutAfterFrames: 8 }
+  );
+  const observation = await observeRenderedImageInPage(
+    { alt: first.alt, timeoutMilliseconds: 30_000 },
+    harness.environment
+  );
+  assert.equal(observation.ready, true);
+  assert.deepEqual(
+    [observation.value.sourceUrl, observation.value.clientWidth, observation.value.containerWidth],
+    [`${productPrefix}first.png`, 480, 960]
+  );
+  const scroll = { behavior: "instant", block: "center", inline: "nearest" };
+  assert.deepEqual(first.scrollCalls, [scroll, scroll]);
+  assert.deepEqual(second.scrollCalls, [scroll]);
+  assert.equal(harness.state.frameCount, 5);
+  assert.equal(harness.state.timerClearCalls, 1);
+});
+
+test("in-page observation classifies only initial absence or incompleteness as propagation", async () => {
+  const scene = (imagesForFrame) => () => {
+    const body = createFakeRenderedContainer();
+    return { body, imagesForFrame: (frame) => imagesForFrame(frame, body) };
+  };
+  const one =
+    (imageOptions = {}, frames = (_frame, image) => [image]) =>
+    () => {
+      const body = createFakeRenderedContainer();
+      const image = createFakeRenderedImage({ container: body, ...imageOptions });
+      return { body, imagesForFrame: (frame) => frames(frame, image) };
+    };
+  let movingLeft = 0;
+  const cases = [
+    ["missing", scene(() => []), "registry-stale", /observed 0/u],
+    ["incomplete", one({ complete: false, naturalHeight: 0, naturalWidth: 0 }), "registry-stale", /incomplete/u],
+    [
+      "duplicate",
+      scene((_frame, body) => [
+        createFakeRenderedImage({ container: body }),
+        createFakeRenderedImage({ container: body })
+      ]),
+      "terminal",
+      /exactly one/u
+    ],
+    ["hidden", one({ style: { display: "none" } }), "terminal", /CSS-hidden/u],
+    ["invalid", one({ rectangle: { width: 0, height: 0, left: 20, right: 20 } }), "terminal", /invalid geometry/u],
+    ["disconnected", one({ isConnected: false }), "terminal", /disconnected/u],
+    ["vanished", one({}, (frame, image) => (frame === 0 ? [image] : [])), "terminal", /observed 0/u],
+    [
+      "regressed",
+      one({}, (frame, image) => {
+        if (frame >= 2) image.complete = false;
+        return [image];
+      }),
+      "terminal",
+      /incomplete/u
+    ],
+    [
+      "unstable",
+      one({ rectangle: () => ({ width: 480, height: 270, left: movingLeft++, right: movingLeft + 480 }) }),
+      "terminal",
+      /did not stabilize/u
+    ],
+    ["churn", scene((_frame, body) => [createFakeRenderedImage({ container: body })]), "terminal", /replaced/u]
+  ];
+  const registry = { name: "Visual Studio Marketplace", versionKind: "marketplace" };
+  for (const [label, createScene, expectedKind, expectedReason] of cases) {
+    const { body, imagesForFrame } = createScene();
+    const harness = createFakeRenderedImageEnvironment(imagesForFrame, { body, timeoutAfterFrames: 5 });
+    const observation = await observeRenderedImageInPage(
+      { alt: "Exact public image", timeoutMilliseconds: 30_000 },
+      harness.environment
     );
+    assert.equal(observation.kind, expectedKind, label);
+    assert.match(observation.reason, expectedReason, label);
+    assert.equal(harness.state.timerClearCalls, 1, label);
+    assert.throws(
+      () => observeRegistryPropagation(registry, "failed render", observation),
+      (error) => error instanceof RetryablePublicMediaObservationError === (expectedKind !== "terminal"),
+      label
+    );
+  }
+});
+
+test("scroll and initial animation-frame exceptions clean up and never retry", async () => {
+  for (const mode of ["scroll", "initial-frame"]) {
+    const failure = new Error(`${mode} failed`);
+    const body = createFakeRenderedContainer();
+    const image = createFakeRenderedImage({
+      container: body,
+      onScroll:
+        mode === "scroll"
+          ? () => {
+              throw failure;
+            }
+          : undefined
+    });
+    const harness = createFakeRenderedImageEnvironment(() => [image], { body, timeoutAfterFrames: 4 });
+    if (mode === "initial-frame")
+      harness.environment.requestAnimationFrame = () => {
+        throw failure;
+      };
+    let attempts = 0;
+    const delays = [];
+    await assert.rejects(
+      runPublicMediaPropagation({
+        attempts: 3,
+        delayMilliseconds: 5,
+        timeoutMilliseconds: 100,
+        attemptTimeoutMilliseconds: 50,
+        now: () => 0,
+        sleep: async (milliseconds) => delays.push(milliseconds),
+        report: () => {},
+        attempt: async () => {
+          attempts += 1;
+          return observeRenderedImageInPage(
+            { alt: "Exact public image", timeoutMilliseconds: 30_000 },
+            harness.environment
+          );
+        }
+      }),
+      (error) => error === failure,
+      mode
+    );
+    assert.equal(attempts, 1, mode);
+    assert.deepEqual(delays, [], mode);
+    assert.equal(harness.state.timerClearCalls, 1, mode);
   }
 });
 

@@ -636,14 +636,20 @@ verification. Browser-free recovery prepublication begins independently with `1.
 browser through the restored release-local Playwright, while earlier exact releases retain their historical
 current-automation browser pairing. For protected versions, the workflow runs the verifier from the exact release checkout with
 `--wait-for-propagation`, so each release uses its own reviewed media inventory.
-The retry controller is injected and directly tested: a deterministic error stops after one attempt, typed stale or
-unavailable registry observations exhaust the exact attempt/delay count, and every retry owns and closes a distinct
-context. At most forty attempts are separated by thirty seconds inside a thirty-minute total deadline. Each fetch is
-bounded to sixty seconds, each render attempt to three minutes, per-page/image work to explicit Playwright defaults,
-and context cleanup to ten seconds. Local, exact-source, inventory, immutable-byte, GitHub-source, malformed-image,
-dimension, and harness validation run once or fail immediately. Explicitly classified Marketplace/Open VSX
-propagation observations retry. A Playwright locator detached by a page replacing its DOM may also retry in a fresh
-context; timeouts, layout failures, and other source-page errors remain terminal.
+The registry retry controller is injected and directly tested: a deterministic error stops after one attempt, each
+eligible typed registry observation exhausts the exact attempt/delay count, and every retry owns and closes a distinct
+context. GitHub exact-source rendering owns one context and runs once outside that retry loop. Each image is scrolled
+and measured inside one bounded same-page `page.evaluate` stability wait. Replacing candidate A with B must cause a
+fresh query and candidate reset; B succeeds only after two identical post-scroll animation frames, without another
+attempt or context. The source observation, a navigation with no HTTP response, and escaped browser, DOM, evaluation,
+scroll, or animation-frame errors are terminal. Exhaustion after any candidate disappears, keeps changing, remains
+CSS-hidden, has invalid geometry, or produces a complete positive proof that fails to stabilize must also produce no
+retry context. Marketplace and Open VSX retries are limited to an explicitly stale version, README content, or
+immutable image source; an initially missing or incomplete exact-alt image; or an actual non-OK HTTP response. The one
+source check and up to forty fresh registry contexts at thirty-second intervals share the existing thirty-minute total
+deadline. Each fetch remains bounded to sixty seconds, each render attempt to three minutes, per-page/image work to
+explicit Playwright defaults, and context cleanup to ten seconds. Local, inventory, immutable-byte, malformed-image,
+and dimension validation likewise run once or fail immediately.
 
 Stable and preview callers both load the reusable promotion workflow from `main`. Registry rendering is
 post-publication evidence: it can fail the promotion workflow but cannot undo already-public GitHub or registry
@@ -1160,6 +1166,25 @@ explicit candidate core's accumulated catalog with the full Clone lifecycle, and
 from ordinary `.qmd` acceptance while retaining it only for Linux media capture. They add no selector, job, phase,
 deadline, retry, heartbeat, or runtime reopen. A fresh exact candidate is required to turn those corrections into
 release evidence.
+
+Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
+`main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the complete candidate and Remote SSH graph and
+published `v1.99.6` successfully. Canonical artifact `9240263388` contained the 109-entry VSIX with SHA-256
+`5a9c6eb7531ccd521c20a08ab2fd3a7d99776ea10d5e48a5eb5756d03b553404`, and installed-performance artifact
+`9240376365` passed. The public-media gate then emitted 24 retry observations before success: five genuine Marketplace
+stale-version observations and 19 GitHub exact-source Playwright DOM detachments misclassified as propagation. This
+is a verifier-classification defect, not a product or publication failure.
+
+Regression coverage must prove that GitHub exact source is rendered once and a same-evaluation A-to-B image
+replacement resets the bounded stability candidate before requiring two identical post-scroll frames. Source or
+escaped browser, DOM, evaluation, scroll, or animation-frame failures, navigation without an HTTP response, and
+exhaustion after disappearance, continuing churn, CSS-hidden state, invalid geometry, or a complete positive proof
+that fails to stabilize must stop without invoking the retry controller. No GitHub whole-attempt or context retry is
+allowed. Marketplace and Open VSX may consume up to forty fresh registry contexts only for stale version, README
+content, or immutable image source; initial exact-alt absence or incompleteness; or an actual non-OK HTTP response.
+The source check and registry attempts share the unchanged 30-minute deadline. The correction adds no timeout, retry
+count, job, phase, or topology. Stable v2 remains blocked on this verifier gate until it lands on protected `main` and
+a fresh preview supplies corrected public evidence.
 
 ```bash
 npm run build:test-extension &&

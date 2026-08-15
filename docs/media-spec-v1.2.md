@@ -168,11 +168,27 @@ presentation may not exceed 960 CSS pixels, its container, or the viewport, must
 at least two natural pixels per rendered CSS pixel. Four representative images repeat those checks near 760px and
 1400px viewport widths. Before publication, `npm run verify:readme-responsive-render` renders the actual local README
 and gallery at both widths, checks every screenshot and full-size link, and rejects document-level horizontal
-overflow. A promotion with the contract on protected `main` runs the public check after registry
-verification, with forty fresh-context attempts at thirty-second intervals inside a thirty-minute public-propagation
-window. Only typed stale/unavailable registry observations retry; deterministic contract failures stop immediately.
+overflow. A promotion with the contract on protected `main` runs the public check after registry verification.
+GitHub exact source is rendered in one context exactly once, outside the registry retry loop. Each image is scrolled
+and measured inside one bounded same-page `page.evaluate` stability wait. If the page replaces candidate A with B,
+the same evaluation re-queries the image and resets its candidate; B must then remain identical for two consecutive
+post-scroll animation frames. The source observation, a navigation with no HTTP response, and escaped browser, DOM,
+evaluation, scroll, or animation-frame errors are terminal. Exhaustion after any candidate disappears, keeps
+changing, remains CSS-hidden, has invalid geometry, or produces a complete positive proof that fails to stabilize is
+also terminal. On Marketplace and Open VSX, retries are limited to an explicitly observed stale version, README
+content, or immutable image source; an initially missing or incomplete exact-alt image; or an actual non-OK HTTP
+response. Those observations may use up to forty fresh registry contexts at thirty-second intervals. The one source
+check and registry attempts share the existing thirty-minute global deadline.
 Starting with `1.99.4`, recovery publishers independently restore the exact release source's lockfile and run that
 source's browser-free `--prepublish` inventory, ancestry, exact-source, and immutable-byte checks before their
 authentication boundary. Earlier releases predate this capability and retain their existing exact-tag recovery path.
 The check can fail workflow success but cannot undo the public writes it observes. The same reviewed `main` contract
 covers stable and preview releases.
+
+Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) successfully published
+`v1.99.6` from exact protected `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8`. Its media gate passed
+only after 24 retry observations: five genuine Marketplace stale-version observations and 19 GitHub exact-source
+Playwright DOM detachments misclassified as registry propagation. The latter are verifier harness faults, not
+eventual-consistency evidence. Correcting that classifier and making the same-page image measurement atomic adds no
+timeout, retry count, workflow job, phase, or topology. Stable v2 remains blocked on this verifier gate until the
+correction lands on protected `main` and a fresh preview verifies this contract.

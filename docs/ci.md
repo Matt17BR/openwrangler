@@ -230,6 +230,26 @@ no heartbeat, timeout, retry, selector, job, or phase was added. The candidate-c
 above are likewise local and unhosted. Run #78 remains failed evidence, and only a fresh exact candidate can prove the
 corrections.
 
+Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
+`main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed every candidate and Remote SSH owner and published
+`v1.99.6` successfully. Canonical artifact `9240263388` contained the 109-entry VSIX with SHA-256
+`5a9c6eb7531ccd521c20a08ab2fd3a7d99776ea10d5e48a5eb5756d03b553404`; installed-performance artifact
+`9240376365` passed. The post-public media gate nevertheless needed 24 classified retries: five were genuine
+Marketplace stale-version propagation, while 19 were GitHub exact-source Playwright DOM detachments incorrectly
+treated as propagation. The release and registry publication remain successful, but those 19 observations are
+`harness/runner` faults and must never make a green result by retrying.
+
+The corrected CI contract checks GitHub exact source once, outside registry retries. One bounded same-page evaluation
+may absorb an A-to-B image replacement, but B must then remain identical for two consecutive post-scroll frames. The
+source observation, a navigation with no HTTP response, and escaped browser, DOM, evaluation, scroll, or
+animation-frame errors are terminal. Exhaustion after a candidate disappears, keeps changing, remains CSS-hidden,
+has invalid geometry, or produces a complete positive proof that fails to stabilize is also terminal. Only explicitly
+classified Marketplace or Open VSX observations may use up to 40 fresh registry contexts: a stale version, README
+content, or immutable image source; an initially missing or incomplete exact-alt image; or an actual non-OK HTTP
+response. The one source check and registry attempts share the unchanged 30-minute deadline. This adds no timeout,
+retry count, workflow job, phase, matrix cell, or topology. Stable v2 remains blocked on this verifier gate until the
+correction lands on protected `main` and a fresh preview proves that public-media path.
+
 Each release local-R shard and `r_platform` cell uses the same commit-pinned dependency action, explicit package set, and
 resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their
 merge refs, so a release dispatch cannot restore them. Later candidate dispatches may reuse a compatible cache created
