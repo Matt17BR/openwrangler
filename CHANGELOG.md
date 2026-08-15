@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.7] - 2026-08-16
+
 ### Changed
 
 - Pull-request CI now runs formatting, ESLint, and TypeScript concurrently and starts the latency-critical R 4.4/4.5
@@ -27,7 +29,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   atomic no-clobber hard-link transition from a private sibling (POSIX mode `0700`, with Windows' coarser
   identity-pinned writable host contract), followed by link-count-one canonical, inventory, source, and manifest
   revalidation. Failure removes the exact produced public inode only while it remains attributable; a substituted or
-  unknown path is retained and reported as cleanup uncertainty. Preview 1.99.7 is the first planned release exercise.
+  unknown path is retained and reported as cleanup uncertainty. Preview 1.99.7 is the first release exercise for this
+  path.
   Candidate workflow topology, readiness, provenance, and registry publication contracts are unchanged.
 - Native R now exposes all 28 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
   accepts at most 64 KiB of exact UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures before
@@ -41,9 +44,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   transaction. The public protocol remains v2 while the private R transport advances to v14. Dedicated local-source
   contracts now enumerate the exact ordered 28-operation catalog, execute production-generated R for every operation,
   and separately prove byte-exact clipboard and atomic `.R` saves with distinct executable operation-labelled buffers
-  across that catalog. Native R remains **Partial** because this source is unhosted and still lacks a fresh candidate
-  plus all-28 installed/performance evidence; no candidate selector, job, phase, 300-second/180-second deadline, or
-  retry changes.
+  across that catalog. Candidate acceptance requires all 28 advertised capabilities and exercises Custom Code through
+  representative installed R paths, but exhaustive installed execution of every operation and a reviewed performance
+  record remain outstanding, so Native R stays **Partial**. No candidate selector, job, phase,
+  300-second/180-second deadline, or retry changes.
 - The complete native-R catalog owner exposed and fixes two generated/live correctness gaps. **Strip Text** now emits
   parse-safe generated R for both the default whitespace set and explicit sets that mix control and Unicode
   characters. **Clone Column** now preserves element names across supported frame flavors and treats classed
