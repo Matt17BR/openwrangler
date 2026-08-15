@@ -460,7 +460,9 @@ removes the alias before the root on setup, launch, assertion, and teardown fail
 The three summary-bearing by-example preview scenes additionally wait within the unchanged 30-second capture timeout
 for exactly their expected completed header profiles. They reject profiling placeholders or harness errors before the
 screenshot. Their page clock is paused before navigation, the virtual-time jump releases initial hydration once, and
-the semantic wait resumes the clock for the resulting profile response and render. This path shares the capture's
+the semantic wait resumes the clock for the resulting profile response and render. The pause handshake fixes wall time
+at zero before suspension and then restores ordinary paused system-time behavior, so real time elapsed between clock
+installation and suspension cannot request a backwards clock move. This path shares the capture's
 remaining monotonic deadline. Scenes without that explicit readiness rule, including loading and error baselines, use
 the same deadline accounting without semantic clock or readiness work.
 

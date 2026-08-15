@@ -266,7 +266,11 @@ export async function captureWebviewScreenshot({
     });
     const page = context.pages()[0] ?? (await context.newPage());
     await page.clock.install(readiness === undefined ? undefined : { time: 0 });
-    if (readiness !== undefined) await page.clock.pauseAt(0);
+    if (readiness !== undefined) {
+      await page.clock.setFixedTime(0);
+      await page.clock.pauseAt(0);
+      await page.clock.setSystemTime(0);
+    }
     await page.goto(url, { waitUntil: "load", timeout: remainingTimeout("navigation") });
     await page.waitForTimeout(50);
     await page.clock.fastForward(virtualTime);

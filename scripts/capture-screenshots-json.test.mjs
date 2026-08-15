@@ -64,22 +64,37 @@ function readinessScope({
   };
 }
 
-function mockScreenshotCapture({ parent, onWaitForFunction, onReadinessConfirmation }) {
+function mockScreenshotCapture({ parent, onWaitForFunction, onReadinessConfirmation, clockAdvanceAfterInstall = 0 }) {
   const order = [];
   const timeouts = {};
   let clockInstallOptions;
   const outputPath = join(parent, "capture.png");
   let closeCalls = 0;
   let monotonicTime = 0;
+  let clockTime = 0;
   const page = {
     clock: {
       async install(options) {
         clockInstallOptions = options;
+        clockTime = options?.time ?? 0;
+        clockTime += clockAdvanceAfterInstall;
         order.push("clock-install");
+      },
+      async setFixedTime(time) {
+        assert.equal(time, 0);
+        clockTime = time;
+        order.push("clock-fix-time");
       },
       async pauseAt(time) {
         assert.equal(time, 0);
+        assert.ok(time >= clockTime);
+        clockTime = time;
         order.push("clock-pause");
+      },
+      async setSystemTime(time) {
+        assert.equal(time, 0);
+        clockTime = time;
+        order.push("clock-reset-time");
       },
       async fastForward() {
         order.push("clock-fast-forward");
@@ -358,7 +373,9 @@ test("screenshot capture waits for semantic readiness and confirms it before wri
     assert.ok(capture.timeouts.navigation > capture.timeouts.readiness);
     assert.ok(capture.timeouts.readiness > capture.timeouts.screenshot);
     assert.deepEqual(capture.clockInstallOptions(), { time: 0 });
+    assert.ok(capture.order.indexOf("clock-fix-time") < capture.order.indexOf("clock-pause"));
     assert.ok(capture.order.indexOf("clock-pause") < capture.order.indexOf("goto"));
+    assert.ok(capture.order.indexOf("clock-reset-time") < capture.order.indexOf("goto"));
     assert.ok(capture.order.indexOf("clock-resume") < capture.order.indexOf("readiness-wait"));
     assert.ok(capture.order.indexOf("readiness-wait") < capture.order.indexOf("readiness-confirm"));
     assert.ok(capture.order.indexOf("readiness-confirm") < capture.order.indexOf("screenshot"));
@@ -367,6 +384,30 @@ test("screenshot capture waits for semantic readiness and confirms it before wri
       readdirSync(parent).filter((entry) => entry.startsWith("readiness-capture-")),
       []
     );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("readiness clock pauses safely after post-install real-time advancement", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "ow-readiness-clock-race-test-"));
+  const readiness = completedHeaderReadiness();
+  const capture = mockScreenshotCapture({
+    parent,
+    clockAdvanceAfterInstall: 250,
+    onWaitForFunction() {},
+    onReadinessConfirmation(predicate, argument) {
+      return predicate(argument, readinessScope());
+    }
+  });
+  try {
+    await captureWebviewScreenshot({ ...capture.options, readiness });
+    assert.ok(capture.order.indexOf("clock-install") < capture.order.indexOf("clock-fix-time"));
+    assert.ok(capture.order.indexOf("clock-fix-time") < capture.order.indexOf("clock-pause"));
+    assert.ok(capture.order.indexOf("clock-pause") < capture.order.indexOf("clock-reset-time"));
+    assert.ok(capture.order.indexOf("clock-reset-time") < capture.order.indexOf("goto"));
+    assert.equal(capture.order.includes("screenshot"), true);
+    assert.equal(capture.closeCalls(), 1);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
@@ -431,7 +472,9 @@ test("screenshot capture does not add readiness work when the option is omitted"
     await captureWebviewScreenshot(capture.options);
     assert.equal(capture.order.includes("readiness-wait"), false);
     assert.equal(capture.order.includes("readiness-confirm"), false);
+    assert.equal(capture.order.includes("clock-fix-time"), false);
     assert.equal(capture.order.includes("clock-pause"), false);
+    assert.equal(capture.order.includes("clock-reset-time"), false);
     assert.equal(capture.order.includes("clock-resume"), false);
     assert.equal(capture.clockInstallOptions(), undefined);
     assert.equal(capture.order.includes("screenshot"), true);
