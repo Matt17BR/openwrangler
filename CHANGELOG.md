@@ -12,7 +12,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   checks fail before publication; direct contracts cover preview, apply, latest-step edit, replay, inspection, and
   undo across base, tibble, `data.table`, and ordinary `collapse` frames. **Custom Code** remains the only unsupported
   R catalog operation, the Native R matrix remains **Partial**, and this unhosted source slice changes no candidate
-  selector, job, phase, deadline, or retry.
+  selector, job, phase, deadline, or retry. To retain margin inside the existing native-R contract and kernel-startup
+  bounds after this larger runtime, the host gzip-compresses the trusted R sources before base64 embedding; base R
+  decompresses them without changing raw-source bundle identity or evaluation semantics.
 - Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
   `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the candidate and Remote SSH owners, published
   `v1.99.6` to GitHub and both registries, and completed successfully. Canonical artifact `9240263388` contained the

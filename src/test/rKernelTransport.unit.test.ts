@@ -54,6 +54,9 @@ describe("native R kernel runtime bundle", () => {
 
     expect(code).toContain(R_KERNEL_RUNTIME_BINDING);
     expect(code).toContain("jsonlite::base64_dec");
+    expect(code).toContain("base::memDecompress");
+    expect(code).toContain('type = "gzip"');
+    expect(code).not.toContain(Buffer.from(files["frame_contract.R"]!, "utf8").toString("base64"));
     expect(code).not.toContain("openwrangler_r_frame_contract <- list()");
     expect(code).not.toContain("extensionPath");
     expect(teardown).toContain(R_KERNEL_RUNTIME_BINDING);

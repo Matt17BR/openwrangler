@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
+import { gzipSync } from "node:zlib";
 
 export const R_KERNEL_RUNTIME_BINDING = ".openwrangler_r_kernel_runtime_872e5b61";
 const runtimeOwnerToken = "openwrangler-native-r-runtime-v1";
@@ -27,7 +28,10 @@ export function buildRKernelBootstrapCode(
   const evaluations = ordered
     .map(
       ([name, source]) => `
-    .__ow_source <- rawToChar(jsonlite::base64_dec("${Buffer.from(source, "utf8").toString("base64")}"))
+    .__ow_source <- base::rawToChar(base::memDecompress(
+      jsonlite::base64_dec("${gzipSync(Buffer.from(source, "utf8"), { level: 9 }).toString("base64")}"),
+      type = "gzip"
+    ))
     tryCatch(
       eval(parse(text = .__ow_source, srcfile = NULL, keep.source = FALSE), envir = .__ow_runtime),
       error = function(.__ow_error) stop(sprintf("Open Wrangler could not load ${name}: %s", conditionMessage(.__ow_error)), call. = FALSE)
