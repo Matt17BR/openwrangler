@@ -292,28 +292,49 @@ async function verifyRenderedSurfaces(sourceSha, version, readme, references, wa
     }
     return displayed;
   });
+  const surfaces = publicSurfaceDefinitions(sourceSha);
+  const sourceSurfaces = surfaces.filter((surface) => surface.versionKind === "source");
+  const registrySurfaces = surfaces.filter((surface) => surface.versionKind !== "source");
+  if (sourceSurfaces.length !== 1 || registrySurfaces.length !== surfaces.length - 1) {
+    throw new Error("Public-media rendering requires one exact source surface followed by registry surfaces.");
+  }
   const { chromium } = await import("playwright-core");
   const browser = await chromium.launch({ headless: true });
-  const attempts = waitForPropagation ? PUBLIC_MEDIA_PROPAGATION_ATTEMPTS : 1;
-  try {
-    await runPublicMediaPropagation({
-      attempts,
-      attempt: ({ attemptTimeoutMilliseconds }) =>
-        runFreshPublicMediaContextAttempt({
-          attemptTimeoutMilliseconds,
-          createContext: async () => {
-            const context = await browser.newContext({
-              viewport: { width: Math.max(...PUBLIC_MEDIA_RESPONSIVE_WIDTHS), height: 1_000 },
-              deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO
-            });
-            context.setDefaultTimeout(30_000);
-            context.setDefaultNavigationTimeout(60_000);
-            return context;
-          },
-          verifyContext: (context) =>
-            verifyRenderedSurfacesInContext(context, sourceSha, version, references.displayed, representatives)
-        })
+  const verifySurfaces = (selectedSurfaces, attemptTimeoutMilliseconds) =>
+    runFreshPublicMediaContextAttempt({
+      attemptTimeoutMilliseconds,
+      createContext: async () => {
+        const context = await browser.newContext({
+          viewport: { width: Math.max(...PUBLIC_MEDIA_RESPONSIVE_WIDTHS), height: 1_000 },
+          deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO
+        });
+        context.setDefaultTimeout(30_000);
+        context.setDefaultNavigationTimeout(60_000);
+        return context;
+      },
+      verifyContext: (context) =>
+        verifyRenderedSurfacesInContext(
+          context,
+          sourceSha,
+          version,
+          references.displayed,
+          representatives,
+          selectedSurfaces
+        )
     });
+  try {
+    if (waitForPropagation) {
+      await runPublicMediaPropagation({
+        verifySourceOnce: ({ attemptTimeoutMilliseconds }) =>
+          verifySurfaces(sourceSurfaces, attemptTimeoutMilliseconds),
+        attempt: ({ attemptTimeoutMilliseconds }) => verifySurfaces(registrySurfaces, attemptTimeoutMilliseconds)
+      });
+    } else {
+      await runPublicMediaPropagation({
+        attempts: 1,
+        attempt: ({ attemptTimeoutMilliseconds }) => verifySurfaces(surfaces, attemptTimeoutMilliseconds)
+      });
+    }
   } finally {
     await browser.close();
   }
@@ -321,6 +342,7 @@ async function verifyRenderedSurfaces(sourceSha, version, readme, references, wa
 
 export async function runPublicMediaPropagation({
   attempt,
+  verifySourceOnce,
   attempts = PUBLIC_MEDIA_PROPAGATION_ATTEMPTS,
   delayMilliseconds = PUBLIC_MEDIA_PROPAGATION_DELAY_MS,
   timeoutMilliseconds = PUBLIC_MEDIA_PROPAGATION_TIMEOUT_MS,
@@ -331,6 +353,7 @@ export async function runPublicMediaPropagation({
 }) {
   if (
     typeof attempt !== "function" ||
+    (verifySourceOnce !== undefined && typeof verifySourceOnce !== "function") ||
     typeof now !== "function" ||
     typeof sleep !== "function" ||
     typeof report !== "function"
@@ -342,7 +365,16 @@ export async function runPublicMediaPropagation({
       throw new TypeError("Public-media propagation bounds must be positive safe integers.");
     }
   }
-  const deadline = now() + timeoutMilliseconds;
+  const startedAt = now();
+  const deadline = startedAt + timeoutMilliseconds;
+  if (!Number.isSafeInteger(startedAt) || !Number.isSafeInteger(deadline)) {
+    throw new TypeError("The public-media propagation clock must return a bounded integer timestamp.");
+  }
+  if (verifySourceOnce !== undefined) {
+    const remaining = deadline - now();
+    if (remaining <= 0) throw new Error("Public README media exceeded its bounded propagation deadline.");
+    await verifySourceOnce({ attemptTimeoutMilliseconds: Math.min(remaining, attemptTimeoutMilliseconds) });
+  }
   for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber += 1) {
     const remaining = deadline - now();
     if (remaining <= 0) throw new Error("Public README media exceeded its bounded propagation deadline.");
@@ -407,44 +439,44 @@ export async function runFreshPublicMediaContextAttempt({
   }
 }
 
-async function verifyRenderedSurfacesInContext(context, sourceSha, version, displayedImages, representativeImages) {
+async function verifyRenderedSurfacesInContext(
+  context,
+  sourceSha,
+  version,
+  displayedImages,
+  representativeImages,
+  surfaces
+) {
   const page = await context.newPage();
-  for (const surface of publicSurfaceDefinitions(sourceSha)) {
+  for (const surface of surfaces) {
     await page.setViewportSize({ width: Math.max(...PUBLIC_MEDIA_RESPONSIVE_WIDTHS), height: 1_000 });
-    await observeRegistryPropagation(surface, "is unavailable", () =>
-      page.goto(surface.url, { waitUntil: "domcontentloaded", timeout: 60_000 })
-    );
+    const navigationResponse = await page.goto(surface.url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    assertPublicMediaNavigationResponse(surface, navigationResponse);
     if (surface.versionKind === "source") {
       assertExactSourceReadmeUrl(page.url(), sourceSha);
     } else if (surface.versionKind === "marketplace") {
       const renderedVersion = page.locator('td[role="definition"][aria-labelledby="version"]');
-      const renderedVersionText = await observeRegistryPropagation(surface, "has not exposed its version", async () => {
-        await renderedVersion.waitFor({ state: "attached", timeout: 30_000 });
-        return (await renderedVersion.innerText()).trim();
-      });
-      await observeRegistryPropagation(surface, "still exposes stale version metadata", () =>
+      await renderedVersion.waitFor({ state: "attached", timeout: 30_000 });
+      const renderedVersionText = (await renderedVersion.innerText()).trim();
+      assertObservedRegistryState(surface, "still exposes stale version metadata", () =>
         assertExpectedSurfaceVersion(surface.name, renderedVersionText, version)
       );
     } else {
       const renderedVersion = page.locator('select[aria-label="Version"]');
-      const renderedVersionText = await observeRegistryPropagation(surface, "has not exposed its version", async () => {
-        await renderedVersion.waitFor({ state: "attached", timeout: 30_000 });
-        return renderedVersion.inputValue();
-      });
-      await observeRegistryPropagation(surface, "still exposes stale version metadata", () =>
+      await renderedVersion.waitFor({ state: "attached", timeout: 30_000 });
+      const renderedVersionText = await renderedVersion.inputValue();
+      assertObservedRegistryState(surface, "still exposes stale version metadata", () =>
         assertExpectedSurfaceVersion(surface.name, renderedVersionText, version)
       );
     }
-    const bodyText = await observeRegistryPropagation(surface, "has not exposed its README", () =>
-      page.locator("body").innerText()
-    );
-    await observeRegistryPropagation(surface, "still exposes stale README content", () =>
+    const bodyText = await page.locator("body").innerText();
+    assertObservedRegistryState(surface, "still exposes stale README content", () =>
       assertExpectedSurfaceContent(surface.name, bodyText)
     );
 
     for (const expected of displayedImages) {
       const dimensions = await measureRenderedImage(page, surface, expected);
-      await observeRegistryPropagation(surface, "still exposes stale README image sources", () =>
+      assertObservedRegistryState(surface, "still exposes stale README image sources", () =>
         assertRepresentativeImageSource(surface.name, dimensions, expected.url)
       );
       assertRenderedProductImage(surface.name, dimensions, expected);
@@ -463,54 +495,209 @@ async function verifyRenderedSurfacesInContext(context, sourceSha, version, disp
   }
 }
 
-async function measureRenderedImage(page, surface, expected) {
-  const image = page.locator(`img[alt=${JSON.stringify(expected.alt)}]`);
-  return observeRegistryPropagation(surface, "has not rendered the complete README image set", async () => {
-    if ((await image.count()) !== 1) {
-      throw new Error(`${surface.name} must render exactly one README image with alt ${JSON.stringify(expected.alt)}.`);
-    }
-    await image.waitFor({ state: "attached", timeout: 30_000 });
-    await image.scrollIntoViewIfNeeded();
-    await image.waitFor({ state: "visible", timeout: 30_000 });
-    await page.waitForFunction(
-      (expectedAlt) => {
-        const matches = [...document.querySelectorAll("img")].filter((element) => element.alt === expectedAlt);
-        return matches.length === 1 && matches[0].complete && matches[0].naturalWidth > 0;
-      },
-      expected.alt,
-      { timeout: 30_000 }
-    );
-    return image.evaluate((element) => {
-      let container = element.closest("td");
-      for (
-        let candidate = element.parentElement;
-        container === null && candidate !== null;
-        candidate = candidate.parentElement
-      ) {
-        const display = globalThis.getComputedStyle(candidate).display;
-        if (["block", "flex", "grid", "table-cell"].includes(display)) container = candidate;
+export function observeRenderedImageInPage(options, environment = globalThis) {
+  const { alt, timeoutMilliseconds } = options ?? {};
+  if (
+    typeof alt !== "string" ||
+    alt.length === 0 ||
+    !Number.isSafeInteger(timeoutMilliseconds) ||
+    timeoutMilliseconds < 1
+  ) {
+    throw new TypeError("Rendered-image observation requires exact alt text and one positive timeout.");
+  }
+  const document_ = environment.document;
+  return new Promise((resolve, reject) => {
+    let frame;
+    let timer;
+    let done = false;
+    let candidate;
+    let scrolled;
+    let priorContainer;
+    let priorProof;
+    let failure = { kind: "terminal", reason: "the exact-alt image did not reach a stable rendered state" };
+    let terminalReason;
+    let sawCandidate = false;
+    let sawProof = false;
+
+    const cleanup = () => {
+      if (frame !== undefined) environment.cancelAnimationFrame(frame);
+      if (timer !== undefined) environment.clearTimeout(timer);
+      frame = timer = undefined;
+    };
+    const settle = (callback, value) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      callback(value);
+    };
+    const invalidate = (reason, kind, nextCandidate) => {
+      if (candidate !== nextCandidate) scrolled = undefined;
+      candidate = nextCandidate;
+      priorContainer = priorProof = undefined;
+      if (kind === "terminal") terminalReason ??= reason;
+      failure = { kind: terminalReason === undefined ? kind : "terminal", reason: terminalReason ?? reason };
+    };
+    const visible = (element) => {
+      const style = environment.getComputedStyle(element);
+      const opacity = Number.parseFloat(style.opacity);
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse" &&
+        style.contentVisibility !== "hidden" &&
+        (!Number.isFinite(opacity) || opacity > 0)
+      );
+    };
+    const schedule = () => {
+      frame = environment.requestAnimationFrame(sample);
+    };
+    const sample = () => {
+      frame = undefined;
+      try {
+        const matches = [...document_.querySelectorAll("img")].filter((element) => element.alt === alt);
+        if (matches.length !== 1) {
+          invalidate(
+            `expected exactly one exact-alt image but observed ${matches.length}`,
+            matches.length === 0 && !sawCandidate ? "registry-stale" : "terminal",
+            undefined
+          );
+          schedule();
+          return;
+        }
+        const image = matches[0];
+        if (image !== candidate) {
+          if (sawCandidate) {
+            invalidate("the exact-alt image was replaced before two stable post-scroll frames", "terminal", image);
+          } else {
+            candidate = image;
+            scrolled = priorContainer = priorProof = undefined;
+            failure = { kind: "terminal", reason: "the exact-alt image did not reach a stable rendered state" };
+          }
+        }
+        sawCandidate = true;
+        if (!image.isConnected) {
+          invalidate("the exact-alt image was disconnected", "terminal", undefined);
+          schedule();
+          return;
+        }
+        if (scrolled !== image) {
+          image.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+          scrolled = image;
+          priorContainer = priorProof = undefined;
+          schedule();
+          return;
+        }
+
+        let container = image.closest("td");
+        for (
+          let ancestor = image.parentElement;
+          container === null && ancestor !== null;
+          ancestor = ancestor.parentElement
+        ) {
+          const display = environment.getComputedStyle(ancestor).display;
+          if (["block", "flex", "grid", "table-cell"].includes(display)) container = ancestor;
+        }
+        container ??= document_.body;
+        if (!container.isConnected) {
+          invalidate("the rendered image container was disconnected", "terminal", image);
+          schedule();
+          return;
+        }
+        if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+          invalidate("the exact-alt image remained incomplete", sawProof ? "terminal" : "registry-stale", image);
+          schedule();
+          return;
+        }
+        if (!visible(image) || !visible(container)) {
+          invalidate("the exact-alt image or its container remained CSS-hidden", "terminal", image);
+          schedule();
+          return;
+        }
+        const bounds = image.getBoundingClientRect();
+        const containerBounds = container.getBoundingClientRect();
+        if (
+          [bounds, containerBounds].some(({ width, height, left, right }) =>
+            [width, height, left, right].some((value) => !Number.isFinite(value))
+          ) ||
+          [
+            bounds.width,
+            bounds.height,
+            containerBounds.width,
+            containerBounds.height,
+            image.naturalWidth,
+            image.naturalHeight,
+            environment.innerWidth,
+            environment.devicePixelRatio
+          ].some((value) => !Number.isFinite(value) || value <= 0)
+        ) {
+          invalidate("the exact-alt image or its container retained invalid geometry", "terminal", image);
+          schedule();
+          return;
+        }
+        const proof = {
+          alt: image.alt,
+          sourceUrl: image.getAttribute("src"),
+          currentUrl: image.currentSrc,
+          clientWidth: bounds.width,
+          clientHeight: bounds.height,
+          clientLeft: bounds.left,
+          clientRight: bounds.right,
+          viewportWidth: environment.innerWidth,
+          containerWidth: containerBounds.width,
+          containerLeft: containerBounds.left,
+          containerRight: containerBounds.right,
+          naturalWidth: image.naturalWidth,
+          naturalHeight: image.naturalHeight,
+          devicePixelRatio: environment.devicePixelRatio
+        };
+        sawProof = true;
+        if (
+          priorContainer === container &&
+          Object.keys(proof).every((key) => Object.is(priorProof?.[key], proof[key]))
+        ) {
+          settle(resolve, { ready: true, value: proof });
+          return;
+        }
+        priorContainer = container;
+        priorProof = proof;
+        failure = {
+          kind: "terminal",
+          reason: "the exact-alt image geometry did not stabilize across two post-scroll frames"
+        };
+        schedule();
+      } catch (error) {
+        settle(reject, error);
       }
-      container ??= document.body;
-      const bounds = element.getBoundingClientRect();
-      const containerBounds = container.getBoundingClientRect();
-      return {
-        alt: element.alt,
-        sourceUrl: element.getAttribute("src"),
-        currentUrl: element.currentSrc,
-        clientWidth: bounds.width,
-        clientHeight: bounds.height,
-        clientLeft: bounds.left,
-        clientRight: bounds.right,
-        viewportWidth: globalThis.innerWidth,
-        containerWidth: containerBounds.width,
-        containerLeft: containerBounds.left,
-        containerRight: containerBounds.right,
-        naturalWidth: element.naturalWidth,
-        naturalHeight: element.naturalHeight,
-        devicePixelRatio: globalThis.devicePixelRatio
-      };
-    });
+    };
+
+    timer = environment.setTimeout(() => settle(resolve, { ready: false, ...failure }), timeoutMilliseconds);
+    try {
+      schedule();
+    } catch (error) {
+      settle(reject, error);
+    }
   });
+}
+
+export function assertPublicMediaNavigationResponse(surface, navigationResponse) {
+  if (navigationResponse === null) {
+    throw new Error(`${surface.name} navigation completed without an HTTP response.`);
+  }
+  if (!navigationResponse.ok()) {
+    observeRegistryPropagation(surface, "is unavailable", {
+      ready: false,
+      kind: "registry-unavailable",
+      reason: `navigation returned HTTP ${navigationResponse.status()}`
+    });
+  }
+}
+
+async function measureRenderedImage(page, surface, expected) {
+  const observation = await page.evaluate(observeRenderedImageInPage, {
+    alt: expected.alt,
+    timeoutMilliseconds: 30_000
+  });
+  return observeRegistryPropagation(surface, "has not rendered one stable complete README image", observation);
 }
 
 export function assertPngContract(bytes, asset) {
@@ -710,24 +897,47 @@ function readPreflightedFile(file) {
   }
 }
 
-export async function observeRegistryPropagation(surface, description, operation) {
+export function observeRegistryPropagation(surface, description, observation) {
+  if (
+    typeof surface?.name !== "string" ||
+    !["source", "marketplace", "open-vsx"].includes(surface?.versionKind) ||
+    typeof description !== "string" ||
+    description.length === 0
+  ) {
+    throw new TypeError("Registry propagation requires one surface, description, and semantic observation.");
+  }
+  if (observation?.ready === true) return observation.value;
+  if (
+    observation?.ready !== false ||
+    !["registry-stale", "registry-unavailable", "terminal"].includes(observation?.kind) ||
+    typeof observation?.reason !== "string" ||
+    observation.reason.length === 0
+  ) {
+    throw new TypeError(
+      "A semantic propagation observation must be explicitly ready or carry one classified failure reason."
+    );
+  }
+  const cause = Object.hasOwn(observation, "cause")
+    ? observation.cause
+    : new Error(`${surface.name} ${description}: ${boundedError(observation.reason)}`);
+  if (surface.versionKind === "source" || observation.kind === "terminal") throw cause;
+  throw new RetryablePublicMediaObservationError(
+    `${surface.name} ${description}: ${boundedError(observation.cause ?? observation.reason)}`,
+    { cause }
+  );
+}
+
+function assertObservedRegistryState(surface, description, assertion) {
   try {
-    return await operation();
+    return assertion();
   } catch (error) {
-    if (error instanceof RetryablePublicMediaObservationError) throw error;
-    if (surface.versionKind === "source" && !isTransientPublicSurfaceDomReplacement(error)) throw error;
-    throw new RetryablePublicMediaObservationError(`${surface.name} ${description}: ${boundedError(error)}`, {
+    return observeRegistryPropagation(surface, description, {
+      ready: false,
+      kind: "registry-stale",
+      reason: boundedError(error),
       cause: error
     });
   }
-}
-
-export function isTransientPublicSurfaceDomReplacement(error) {
-  if (!(error instanceof Error)) return false;
-  return (
-    /^locator\.(?:evaluate|scrollIntoViewIfNeeded|waitFor):/u.test(error.message) &&
-    /Element is not attached to the DOM/u.test(error.message)
-  );
 }
 
 async function closeContextBounded(context, timeoutMilliseconds) {

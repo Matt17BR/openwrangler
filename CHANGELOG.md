@@ -4,6 +4,25 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
+  `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the candidate and Remote SSH owners, published
+  `v1.99.6` to GitHub and both registries, and completed successfully. Canonical artifact `9240263388` contained the
+  109-entry VSIX with SHA-256 `5a9c6eb7531ccd521c20a08ab2fd3a7d99776ea10d5e48a5eb5756d03b553404`;
+  installed-performance artifact `9240376365` also passed. Its public-media step reached success only after 24
+  retry observations: five were genuine Marketplace stale-version propagation, while 19 were GitHub exact-source
+  Playwright DOM detachments misclassified as propagation. The corrected contract checks GitHub exact source once.
+  One bounded same-page evaluation may absorb an A-to-B image replacement, but B must then remain identical for two
+  consecutive post-scroll frames. The source observation, a navigation with no HTTP response, and escaped browser,
+  DOM, evaluation, scroll, or animation-frame errors are terminal. Exhaustion after a candidate disappears, keeps
+  changing, remains CSS-hidden, has invalid geometry, or produces a complete positive proof that fails to stabilize
+  is also terminal. Only explicitly classified Marketplace or Open VSX observations may use up to 40 fresh registry
+  contexts: a stale version, README content, or immutable image source; an initially missing or incomplete exact-alt
+  image; or an actual non-OK HTTP response. The source check and registry attempts share the unchanged 30-minute
+  deadline. No timeout, retry count, workflow job, phase, or topology is added. Stable v2 remains blocked on this
+  verifier gate until the correction lands on protected `main` and a fresh preview proves that policy.
+
 ## [1.99.6] - 2026-08-14
 
 ### Changed
