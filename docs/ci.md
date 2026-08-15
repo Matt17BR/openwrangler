@@ -136,11 +136,13 @@ Dependency and editor setup happens once per shard, but every phase immediately 
 starts a fresh runner for its explicit editor set with new private runtime, profile, result, progress, and log roots. Each runner
 is followed immediately by its own sealed failure-evidence upload. A deferred shard-local raw-outcome check runs only
 after every phase assigned to that shard, so an early failure cannot suppress later evidence or be overwritten by it.
-Core and value own 12 targeted operations each and categorical owns two. Candidate core, value, and categorical no
-longer duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive collapse, viewing, Rename,
-and Drop owner, while `kernel-restart` owns restart/reopen under a fresh phase budget. Cursor, macOS, and Windows retain
-representative native-frame seams as well as representative core/editor/platform
-seams, and the value/categorical phase runners therefore request only VS Code.
+Explicit candidate core keeps its existing job, phase, and selector but owns one full installed Clone Column lifecycle:
+preview, apply, applied-step inspection, edit and reapply with the same step/output identities, then undo. Direct
+native-R, runtime, generated-code, and catalog tests own exhaustive semantics for all 26 operations. Candidate core,
+value, and categorical do not duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive
+collapse, viewing, Rename, and Drop owner, while `kernel-restart` owns restart/reopen under a fresh phase budget.
+Value and categorical ownership is unchanged, and Cursor, macOS, and Windows retain their representative
+core/editor/platform and native-frame seams.
 
 The remote R sibling runs only the packaged VS Code Docker journey and retains its embedded restart/reopen journey and
 `lowerText` (Lowercase) operation check; it does not install hosted R, local R packages, local kernel environments, or
@@ -151,10 +153,10 @@ and 180-second inactivity deadline without automatic retry. Explicit candidate c
 restart work on Linux, macOS, and Windows because the dedicated selectors own both. Linux executes those selectors in
 VS Code and Cursor; macOS and Windows execute them in VS Code, preserving the candidate coverage previously embedded in
 their platform core. Focused value and categorical selectors also omit native-frame work and remain restart-free.
-Default/unset core retains its embedded behavior, so the manually dispatched Released Jupyter workflow remains an
+Default/unset manual core retains its full catalog and embedded behavior, so the manually dispatched Released Jupyter workflow remains an
 intentionally separate, backward-compatible, non-authoritative diagnostic: its existing local-R core, value,
 categorical, and terminal phases are serial and use their existing exact four-way fan-in. Remote R likewise retains
-its embedded behavior. The manual workflow does not model or substitute for candidate acceptance.
+its representative embedded behavior. The manual workflow does not model or substitute for candidate acceptance.
 
 Preview release run #72 reached the ordinary local-R 300-second deadline at numeric Round, lost Cursor's bounded
 Multi-label Undo wait, and failed macOS Drop Columns Code Preview generation/diagnostics. Publication was skipped. Those
@@ -165,9 +167,10 @@ Preview release [run #73](https://github.com/Matt17BR/openwrangler/actions/runs/
 macOS selected a generic wrapped `.ow_label` helper instead of the complete Drop Columns source-binding line. Linux
 core reported correlated completion at about 299.5 seconds but missed outer 300-second process settlement before
 Cursor core could start; the independent value invocation passed both editors in 6m34s total. The follow-up uses
-unique exact logical-line selection and a balanced 12/12/2 core/value/categorical targeted split. The candidate
-topology is redesigned into the two parallel local-R shards above; the 300-second hard deadline, 180-second inactivity
-deadline, coverage, and no-retry rule remain unchanged. Run #73 is not release evidence.
+unique exact logical-line selection and moved Formula into the independent value slice. The candidate topology was
+redesigned into the two parallel local-R shards above; its later core journey is now the bounded Clone lifecycle rather
+than an accumulated catalog. The 300-second hard deadline, 180-second inactivity deadline, and no-retry rule remain
+unchanged. Run #73 is not release evidence.
 
 Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) measured the redesigned
 graph at 21m57s from release start versus run #73's 33m15s, a 34% reduction. The slower local-R shard took 15m19s
@@ -196,12 +199,36 @@ failed, so publication was skipped and no `v1.99.6` tag, prerelease, or registry
 
 The frozen remediation removes whole-editor-tree and runtime RSS sampling from installed performance while retaining
 every timing, page-cache, responsiveness, cancellation, runtime/session cleanup, editor-ownership, and provenance
-gate. The literate harness dispatches and boundedly settles one Quarto command, pins its exact tab/group/terminal,
-proves ordinary preview cleanup and absence before the title action, and retains that preview only through media
-capture. Post-draft generated-R acceptance requires exact hydration plus the matching host receipt, then waits for one
+gate. Ordinary `.qmd` candidate acceptance now invokes the Open Wrangler title action directly and owns only exact
+session/source/code/cleanup product invariants; it neither dispatches nor observes third-party preview/render/tab/server
+state. Linux media capture alone dispatches and boundedly settles one Quarto command, identifies the exact
+`mainThreadWebview-quarto.previewView` `TabInputWebview`, proves stable HTML and visible preview, and performs bounded
+cleanup. Post-draft generated-R acceptance requires exact hydration plus the matching host receipt, then waits for one
 same-generation full geometry to remain stable across two animation-frame observations. No editor action is retried,
 and the 300-second hard and 180-second inactivity deadlines are unchanged. These fixes have local contract evidence but
 no hosted proof; only a fresh exact candidate can make them release evidence.
+
+Preview release [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected
+`main` commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` authored canonical artifact `9238748514`, whose exact
+1,132,638-byte VSIX has SHA-256 `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`;
+checksum and provenance verification passed, as did installed-performance artifact `9238855519`. Three raw reds
+blocked the fan-in. Cursor `platform-smoke` artifact `9238818316` is a product renderer-liveness failure: an attached
+Open Wrangler webview contained no root, app, or grid while the host retained the exact hydrated receipt. The artifact
+does not identify the physical retirement event that produced the mismatch. Native-R core artifact `9238867261` is indeterminate
+`harness/runner` evidence: edited Clone apply followed a long accumulated catalog journey without decisive
+dispatch/scheduler/final-state receipts. Literate artifact `9238988590` is a deterministic `harness/runner` failure:
+the finder required external `quarto.previewView`, although VS Code exposes the tab as prefixed
+`mainThreadWebview-quarto.previewView`; its later `ERR_CONNECTION_REFUSED` followed missed preview ownership and
+cleanup rather than proving a product defect. Publication was skipped, so no `v1.99.6` tag, GitHub prerelease, Open
+VSX package, or Azure Marketplace package exists.
+
+The locally frozen product correction flushes presentation state and sends one exact receipt-bound retirement on a
+non-persisted `pagehide`; the host accepts only its current hydrated session/revision, invalidates renderer state, and
+uses the existing bounded HTML reload without reopening the runtime. Persisted, stale, malformed, unhydrated,
+disposed, and host-replacement receipts do nothing. Hard process death without a lifecycle event remains out of scope;
+no heartbeat, timeout, retry, selector, job, or phase was added. The candidate-core and Quarto ownership corrections
+above are likewise local and unhosted. Run #78 remains failed evidence, and only a fresh exact candidate can prove the
+corrections.
 
 Each release local-R shard and `r_platform` cell uses the same commit-pinned dependency action, explicit package set, and
 resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their

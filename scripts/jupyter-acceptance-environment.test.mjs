@@ -1483,7 +1483,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles retain embedded coverage while focused selectors split candidate work", async () => {
+test("default R profiles retain embedded coverage while candidate core keeps one Clone lifecycle", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const runStart = source.indexOf("export async function run(): Promise<void> {");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
@@ -1529,7 +1529,7 @@ test("default R profiles retain embedded coverage while focused selectors split 
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*function releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*process\.platform === "linux" \? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*function releasedRNativeFramesAcceptanceCoverageProfile\(\)[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*name: "native-frames"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: false[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "native-frames"[\s\S]*return releasedRNativeFramesAcceptanceCoverageProfile\(\);[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*kernelLifecycle: false[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "none"[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
+    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*function releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*process\.platform === "linux" \? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*function releasedRNativeFramesAcceptanceCoverageProfile\(\)[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*name: "native-frames"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: false[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "native-frames"[\s\S]*return releasedRNativeFramesAcceptanceCoverageProfile\(\);[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*editing: "clone-lifecycle"[\s\S]*kernelLifecycle: false[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "none"[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
   );
   assert.doesNotMatch(
     journey,
@@ -1544,7 +1544,7 @@ test("default R profiles retain embedded coverage while focused selectors split 
   assert.match(journey, /exerciseReleasedRGridJourney\(testing, workbench, base\.sessionId, coverage\.gridPaging\)/u);
   assert.match(
     journey,
-    /if \(coverage\.editing === "core-catalog"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
+    /if \(coverage\.editing === "core-catalog" \|\| coverage\.editing === "clone-lifecycle"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*coverage\.editing[\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
   );
   assert.match(
     journey,
@@ -1625,18 +1625,29 @@ test("default R profiles retain embedded coverage while focused selectors split 
   const gridStart = source.indexOf("async function exerciseReleasedRGridJourney(");
   const gridEnd = source.indexOf("\nasync function exerciseReleasedRPersistentRowsJourney(", gridStart);
   const representativeStart = source.indexOf("async function exerciseReleasedRRepresentativeEditingJourney(");
-  const representativeEnd = source.indexOf("\nasync function exerciseReleasedREditingJourney(", representativeStart);
-  const comprehensiveStart = representativeEnd + 1;
+  const representativeEnd = source.indexOf("\nfunction releasedRCloneFailureSnapshot(", representativeStart);
+  const cloneFailureStart = representativeEnd + 1;
+  const cloneLifecycleStart = source.indexOf(
+    "async function exerciseReleasedRCloneEditingLifecycle(",
+    cloneFailureStart
+  );
+  const cloneLifecycleEnd = source.indexOf("\nasync function exerciseReleasedREditingJourney(", cloneLifecycleStart);
+  const comprehensiveStart = source.indexOf("async function exerciseReleasedREditingJourney(", representativeEnd);
   const comprehensiveEnd = source.indexOf("\nasync function exerciseReleasedRFormulaJourney(", comprehensiveStart);
   assert.ok(
     gridStart >= 0 &&
       gridEnd > gridStart &&
       representativeStart >= 0 &&
       representativeEnd > representativeStart &&
+      cloneFailureStart > representativeEnd &&
+      cloneLifecycleStart > cloneFailureStart &&
+      cloneLifecycleEnd > cloneLifecycleStart &&
       comprehensiveEnd > comprehensiveStart
   );
   const grid = source.slice(gridStart, gridEnd);
   const representative = source.slice(representativeStart, representativeEnd);
+  const cloneFailure = source.slice(cloneFailureStart, cloneLifecycleStart);
+  const cloneLifecycle = source.slice(cloneLifecycleStart, cloneLifecycleEnd);
   const comprehensive = source.slice(comprehensiveStart, comprehensiveEnd);
   assert.doesNotMatch(
     comprehensive,
@@ -1650,8 +1661,75 @@ test("default R profiles retain embedded coverage while focused selectors split 
   );
   assert.match(
     comprehensive,
-    /editingCatalog: "core-catalog" \| "value-operations" = "core-catalog"/u,
-    "The comprehensive journey must discriminate the core and focused value catalogs."
+    /if \(editingCatalog === "clone-lifecycle"\) \{\s*await exerciseReleasedRCloneEditingLifecycle\(testing, workbench, sessionId, phase\);\s*return;\s*\}/u,
+    "Explicit candidate core must leave the common capability preamble through the Clone-only early return."
+  );
+  assert.match(
+    cloneFailure,
+    /testing\.activeSession\(\)[\s\S]*testing\.diagnostics\(\)[\s\S]*testing\.sessionSchedulerState\(sessionId\)[\s\S]*testing\.panelHydrated\(sessionId\)[\s\S]*testing\.panelSynchronizable\(sessionId\)[\s\S]*testing\.panelSynchronizationReceipt\(sessionId\)/u,
+    "Clone failures must use only the existing bounded host, scheduler, and panel snapshots."
+  );
+  assert.match(cloneFailure, /codeReceipt: codePreviewDocumentReceipt\(active\.code \?\? ""\)/u);
+  assert.doesNotMatch(cloneFailure, /requestTimeoutMs|ConfigurationTarget|sessionMutation|recoveryRequired/u);
+  const cloneWaitStart = cloneFailure.indexOf("async function waitForReleasedRCloneState(");
+  const cloneRevisionStart = cloneFailure.indexOf("function releasedRCloneMutationRevisionAdvanced(", cloneWaitStart);
+  assert.ok(cloneWaitStart >= 0 && cloneRevisionStart > cloneWaitStart);
+  const cloneWait = cloneFailure.slice(cloneWaitStart, cloneRevisionStart);
+  assert.equal(
+    (cloneWait.match(/30_000/gu) ?? []).length,
+    1,
+    "Clone mutation observation must retain one fixed 30s wait."
+  );
+  assert.match(
+    cloneWait,
+    /await waitFor\([\s\S]*30_000,[\s\S]*catch \(error\) \{[\s\S]*await visibleOpenWranglerPanelAlert\(workbench\)/u,
+    "The visible alert may be sampled once only after the unchanged wait has failed."
+  );
+  assert.doesNotMatch(cloneWait, /retry|setTimeout|requestTimeout|Configuration/u);
+  assert.equal((cloneLifecycle.match(/previewReleasedRClone\(/gu) ?? []).length, 2);
+  assert.equal((cloneLifecycle.match(/name: "Apply step"/gu) ?? []).length, 2);
+  assert.equal((cloneLifecycle.match(/name: "Undo"/gu) ?? []).length, 1);
+  assert.match(
+    cloneLifecycle,
+    /replaceStepId: cloned\.stepId,[\s\S]*assert\.equal\(editedClone\.stepId, cloned\.stepId\)/u,
+    "The retained edit must replace the exact Clone step in place."
+  );
+  assert.equal(
+    (
+      cloneLifecycle.match(
+        /releasedRCloneMutationRevisionAdvanced\((?:firstApplyBefore|editedApplyBefore|undoBefore), last\)/gu
+      ) ?? []
+    ).length,
+    3,
+    "Both applies and the undo must advance exactly one metadata revision without replacing the runtime."
+  );
+  assert.doesNotMatch(
+    cloneLifecycle,
+    /exerciseReleasedR(?:PersistentRows|RowReduction|FillMissing|GroupBy)Journey|previewReleasedR(?:SortRows|FilterRows|DropMissingRows|DropDuplicates|TextLength|FindReplace|Cast|Select|Drop|Rename)|name: "Discard"|score_discarded|\bretry\b/u,
+    "Candidate core must bypass every other core operation and the redundant Clone discard."
+  );
+  const firstClonePreview = cloneLifecycle.indexOf('"score", "score_copy"');
+  const firstCloneApply = cloneLifecycle.indexOf('name: "Apply step"', firstClonePreview);
+  const cloneInspection = cloneLifecycle.indexOf(
+    'arrangePackagedProductSidebar(workbench, "inspection")',
+    firstCloneApply
+  );
+  const editedClonePreview = cloneLifecycle.indexOf('"score", "score_duplicate"', cloneInspection);
+  const editedCloneApply = cloneLifecycle.indexOf('name: "Apply step"', editedClonePreview);
+  const cloneUndo = cloneLifecycle.indexOf('name: "Undo"', editedCloneApply);
+  assert.ok(
+    firstClonePreview >= 0 &&
+      firstCloneApply > firstClonePreview &&
+      cloneInspection > firstCloneApply &&
+      editedClonePreview > cloneInspection &&
+      editedCloneApply > editedClonePreview &&
+      cloneUndo > editedCloneApply,
+    "Candidate core must run preview, apply, inspect, edit, reapply, then undo exactly once."
+  );
+  assert.match(
+    comprehensive,
+    /editingCatalog: "clone-lifecycle" \| "core-catalog" \| "value-operations" = "core-catalog"/u,
+    "The comprehensive journey must discriminate the candidate Clone, manual core, and focused value catalogs."
   );
   assert.match(
     comprehensive,

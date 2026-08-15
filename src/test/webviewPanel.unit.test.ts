@@ -1003,6 +1003,124 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
+  it("recovers only from the exact current hydrated renderer retirement receipt", async () => {
+    vi.useFakeTimers();
+    try {
+      const reportDiagnostic = vi.fn();
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "openSession") return openedResponse;
+        if (candidate.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: candidate.sessionId };
+        }
+        throw new Error(`Unexpected renderer-retirement request ${candidate.kind}`);
+      });
+      const harness = createPanelHarness({ request, reportDiagnostic }, { delegateOpen: true });
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      const original = await acknowledgeLatestRendererSynchronization(harness);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: original.syncId,
+        sessionId: original.sessionId,
+        revision: original.revision,
+        forged: true
+      });
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: "X".repeat(32),
+        sessionId: original.sessionId,
+        revision: original.revision
+      });
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: original.syncId,
+        sessionId: original.sessionId,
+        revision: Number(original.revision) + 1
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+      await harness.receive({ kind: "requestSessionSnapshot" });
+      const current = latestRendererSynchronization(harness.posted);
+      expect(current.syncId).not.toBe(original.syncId);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: current.syncId,
+        sessionId: current.sessionId,
+        revision: current.revision
+      });
+      expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(true);
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: current.syncId,
+        sessionId: current.sessionId,
+        revision: current.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+      const initialHtmlAssignments = harness.htmlAssignmentCount;
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: current.syncId,
+        sessionId: current.sessionId,
+        revision: current.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+      expect(
+        OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)
+      ).toBeUndefined();
+      expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(harness.htmlAssignmentCount).toBe(initialHtmlAssignments);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.htmlAssignmentCount).toBe(initialHtmlAssignments + 1);
+      expect(reportDiagnostic).toHaveBeenCalledOnce();
+
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: current.syncId,
+        sessionId: current.sessionId,
+        revision: current.revision
+      });
+      await harness.receive({ kind: "ready" });
+      const replacement = latestRendererSynchronization(harness.posted);
+      expect(replacement.syncId).not.toBe(current.syncId);
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: replacement.syncId,
+        sessionId: replacement.sessionId,
+        revision: replacement.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: current.syncId,
+        sessionId: current.sessionId,
+        revision: current.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+
+      const settledHtmlAssignments = harness.htmlAssignmentCount;
+      harness.dispose();
+      await harness.receive({
+        kind: "rendererRetiring",
+        syncId: replacement.syncId,
+        sessionId: replacement.sessionId,
+        revision: replacement.revision
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(harness.htmlAssignmentCount).toBe(settledHtmlAssignments);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gives an active renderer two bounded recovery reloads when its startup handshake never arrives", async () => {
     vi.useFakeTimers();
     try {

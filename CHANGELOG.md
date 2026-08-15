@@ -8,14 +8,46 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Preview release [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected
+  `main` commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` published nothing. Canonical artifact `9238748514`
+  retained the exact 1,132,638-byte VSIX with SHA-256
+  `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`; its checksum and preview provenance
+  revalidated, and installed-performance artifact `9238855519` was green. Three raw reds still blocked the fan-in.
+  Linux Cursor `platform-smoke` artifact `9238818316` proved a product renderer-liveness defect: an attached Open
+  Wrangler webview contained no root, app, or grid while the host retained the exact hydrated receipt for the new CSV
+  session. The evidence does not prove which physical retirement event produced that mismatch. Linux native-R core
+  artifact `9238867261` stopped while applying an edited native-R Clone Column step, but its accumulated catalog state
+  and missing dispatch/scheduler/final-state receipts made that result indeterminate acceptance-harness evidence,
+  not proof of a product regression. Linux VS Code literate artifact `9238988590` was a deterministic harness failure:
+  it searched for external `quarto.previewView` while VS Code exposes a WebviewPanel tab through `TabInputWebview` as
+  `mainThreadWebview-quarto.previewView`; the later `ERR_CONNECTION_REFUSED` followed the missed preview ownership and
+  cleanup rather than proving an Open Wrangler failure. The fan-in failed, publication was skipped, and no `v1.99.6`
+  tag, GitHub prerelease, Azure Marketplace package, or Open VSX package was created. These hosted failures remain failed evidence;
+  the corrections below are locally frozen and unhosted.
+- A synchronized renderer now publishes one receipt-bound `rendererRetiring` message after flushing presentation
+  state on a non-persisted `pagehide`. The host accepts only the exact current hydrated session/revision receipt,
+  clears renderer readiness and synchronization, and arms the existing bounded HTML reload without reopening or
+  closing the runtime session. Persisted page transitions and stale, malformed, unhydrated, disposed, or
+  host-replacement receipts are ignored. This covers graceful document retirement; abrupt renderer-process death
+  that emits no lifecycle event remains outside the fix because there is no heartbeat or liveness watchdog.
+- Ordinary candidate `.qmd` acceptance now owns only Open Wrangler's product invariants: the exact title action,
+  session and source identity, generated code/insertion, and cleanup. It no longer dispatches, discovers, waits for,
+  or cleans up Quarto's third-party preview tab, render server, terminal, or HTML. Linux media capture alone keeps one
+  bounded `quarto.preview` command and cleanup lifecycle, identifies the exact prefixed `TabInputWebview`, and proves
+  stable rendered HTML plus the visible preview before capture. No selector, job, phase, deadline, or retry was added.
+- Explicit candidate `core-operations` keeps its existing phase and job positions but replaces the accumulated core
+  catalog journey with one complete installed Clone Column lifecycle: preview, apply, applied-step inspection,
+  editing the same step while retaining its step/output identities, reapply, and undo. Direct native-R, runtime,
+  generated-code, and catalog suites own exhaustive semantics for all 26 operations. Value, categorical,
+  native-frame, restart, default/manual full-catalog, and remote representative behavior are unchanged; there is no
+  new selector, job, phase, deadline, or retry.
 - Preview release [run #77](https://github.com/Matt17BR/openwrangler/actions/runs/31852540354) from protected `main`
   commit `fdebcc96` published nothing. Installed performance, Cursor literate acceptance, and every other raw lane
   passed. Linux VS Code literate acceptance retained the exact semantic Quarto preview tab in its owning group, but
-  the final harness assertion required that preserve-focus tab to be active. Native R literate acceptance now treats
-  the frozen exact tab and owning-group identities as readiness without requiring focus. Its single awaited command,
-  newly owned terminal, stable HTML, media-only visible-content probe, exact cleanup, and ordinary title-action order
-  are unchanged. This correction is locally frozen and covered but not yet proved by a hosted candidate; the existing
-  300-second hard deadline, 180-second inactivity deadline, and no-retry policy are unchanged.
+  the final harness assertion required that preserve-focus tab to be active. Run #77 remains failed evidence. Run #78
+  exercised the immediate correction and exposed the separate prefixed-tab identity error recorded above; the
+  post-#78 media-only ownership correction has local coverage but no hosted candidate proof. The existing 300-second
+  hard deadline, 180-second inactivity deadline, and no-retry policy are unchanged.
 - Installed-editor performance no longer samples or gates on whole `/proc` editor-process-tree and Open Wrangler
   runtime RSS. That observation was coupled to hosted Electron helper timing and could turn successful product,
   responsiveness, cache, cancellation, and cleanup evidence red for a harness-only reason. The v10 release, v5
@@ -33,10 +65,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   product gate, and Linux Cursor literate acceptance, whose exact generated-R document was present while its connected
   CodeMirror scroller and renderer viewport transiently reported 0×0 geometry. The fan-in failed, publication was
   skipped, and no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open VSX package was created.
-- Native R literate acceptance now dispatches the Quarto preview command exactly once, settles that one promise within
-  its existing bound, and freezes the exact preview tab, tab group, and owned terminal. Ordinary acceptance closes the
-  preview and proves both tab and terminal absent before invoking the Open Wrangler title action; only screenshot mode
-  retains it through capture. Generated-R Rename acceptance waits for the exact post-draft session/revision hydration,
+- Native R ordinary literate acceptance invokes the Open Wrangler Quarto title action directly and owns no
+  third-party preview, render-server, tab, terminal, or HTML lifecycle. Linux screenshot capture alone dispatches the
+  Quarto preview command exactly once, settles that promise within its existing bound, identifies the exact
+  `mainThreadWebview-quarto.previewView` `TabInputWebview`, freezes its tab group and terminal, proves stable visible
+  HTML, and performs bounded cleanup. Generated-R Rename acceptance waits for exact post-draft session/revision hydration,
   rechecks the bounded host code receipt, and then requires one connected same-generation CodeMirror layout with full
   positive geometry stable across two animation-frame observations. It neither focuses, resizes, reloads, retries, nor
   dispatches another editor action. These fixes are locally frozen and covered, but no hosted candidate has proved
@@ -59,23 +92,26 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   package, candidate, and Remote SSH success. The manual Released Jupyter workflow remains its existing
   non-authoritative serial diagnostic path. All editor phases retain their 300-second hard and 180-second inactivity
   deadlines and are never retried.
-- Native R local acceptance now gives three editing profiles disjoint targeted-operation ownership. Each
-  operation-targeted invocation still reaches an exact complete 26-capability assertion. Core's targeted slice owns the five row
-  operations plus structural, type, Text Length, and Group and aggregate; the focused value slice owns exactly Find
+- Native R local acceptance keeps the existing core, value, and categorical phase topology. Explicit candidate core
+  now owns one complete installed Clone Column preview/apply/inspection/edit-same-step/reapply/undo lifecycle instead
+  of accumulating the exhaustive operation catalog. The focused value slice still owns exactly Find
   and replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip
-  text, and Split text. This is a 12/12/2 targeted split with the focused categorical slice owning exactly One-hot
+  text, and Split text, while the focused categorical slice still owns exactly One-hot
   encode and Multi-label binarize. Explicit candidate `core-operations`, `value-operations`, and
   `categorical-operations` omit the native-frame scaffold; the fresh `native-frames` selector makes Linux VS Code the
   sole comprehensive collapse/viewing/Rename/Drop owner while macOS, Windows, and Cursor keep representative native
   seams. Explicit candidate core also omits embedded restart on
   Linux, macOS, and Windows because a fresh `kernel-restart` phase owns restart/reopen on each platform. Linux runs both
-  dedicated phases in VS Code and Cursor; macOS and Windows run them in VS Code. Default/unset core selection,
-  including the manual Released Jupyter workflow, and the remote R journey retain their embedded behavior. This
-  changes candidate scheduling while preserving a native-frame and restart compatibility seam on every platform. The remote R journey
-  also continues to exercise `lowerText` (Lowercase).
+  dedicated phases in VS Code and Cursor; macOS and Windows run them in VS Code. Default/unset manual core retains its
+  full catalog, and the remote R journey retains representative embedded behavior. This
+  changes no selector or scheduling edge and preserves a native-frame and restart compatibility seam on every
+  platform. Default/unset manual core retains the full catalog, direct R/runtime/generated-code suites own exhaustive
+  26-operation semantics, and the remote R journey continues its representative behavior including `lowerText`
+  (Lowercase).
 - Release acceptance now follows a one-owner failure-signal rule. Linux VS Code is the sole comprehensive native-R
-  core catalog owner; Cursor, macOS, and Windows keep representative editor/platform seams, while focused native and
-  restart phases retain their distinct compatibility coverage. Candidate jobs no longer rerun source, coverage,
+  native-frame owner; the installed candidate core phase owns the Clone lifecycle while Cursor, macOS, and Windows
+  keep representative editor/platform seams and focused native/restart phases retain their distinct compatibility
+  coverage. Direct R/runtime/catalog tests own exhaustive operation semantics. Candidate jobs no longer rerun source, coverage,
   browser-baseline, workflow-contract, or extension-host harness suites that already blocked the protected-main merge.
   Linux VS Code also owns the sole full generic packaged journey; Linux Cursor and both generic macOS/Windows editors
   run the focused `platform-smoke` compatibility seam. The package producer owns the single full VSIX
@@ -91,8 +127,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   before the unchanged 300-second deadline, so Cursor core never ran. The fresh value phase passed both editors in
   6m34s total. The follow-up reveal now selects the one complete `.ow_drop_names` assignment by exact logical-line
   equality with receipt-only failures, and Formula moves from core into the clean-state-checked value slice. The
-  redesigned topology retains the complete 12/12/2 operation coverage while removing unrelated local-R phases from one
-  serial critical path. Neither failed result is reinterpreted or retried.
+  redesigned topology retained the then-current operation slices while removing unrelated local-R phases from one
+  serial critical path. The later candidate core correction above supersedes that accumulated catalog route without
+  reinterpreting or retrying either failed result.
 - Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) from protected `main`
   commit `b521f52` measured the redesign at 21m57s versus run #73's 33m15s, a 34% wall-time reduction. Its slower
   local-R shard finished in 15m19s versus the former 31m15s serial lane, a 51% reduction, while total runner use rose
