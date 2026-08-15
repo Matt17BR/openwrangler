@@ -204,8 +204,9 @@ host protocol; the Python runtime never reads those messages.
 and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
 statistics, and column-value requests read through that binding and reject structural changes. These messages have a
 separate private transport-v13 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
-request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
-IRkernel does not need access to the extension filesystem.
+request IDs, and oversized responses. The trusted runtime sources are gzip-compressed and then base64-embedded in the
+kernel bootstrap; base R decompresses them before evaluation, while the exact uncompressed sources still determine the
+bundle identity. A remote IRkernel therefore does not need access to the extension filesystem.
 
 Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
 the original, committed result, and optional draft separate. Filter Rows and Sort Rows reuse the typed viewing rules
