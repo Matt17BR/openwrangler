@@ -40,6 +40,7 @@ MAX_CONCAT_PARTS = 64
 MAX_WARNINGS = 64
 MAX_BY_EXAMPLE_STRING_UTF8_BYTES = 8 * 1024
 MAX_BY_EXAMPLE_TEXT_UTF8_BYTES = 64 * 1024
+_MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 
 
 def normalize_by_example(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -76,7 +77,7 @@ def normalize_by_example(params: Mapping[str, Any]) -> dict[str, Any]:
             raise SynthesisError(
                 f"byExample.examples[{index}].inputs must contain one value for every selected source column."
             )
-        if any(not _is_json_scalar(value) for value in inputs) or not _is_json_scalar(raw["output"]):
+        if any(not _is_portable_json_scalar(value) for value in inputs) or not _is_portable_json_scalar(raw["output"]):
             raise SynthesisError("By-example inputs and outputs must be JSON scalar values.")
         examples.append({"inputs": list(inputs), "output": raw["output"]})
 
@@ -107,8 +108,9 @@ def normalize_by_example(params: Mapping[str, Any]) -> dict[str, Any]:
         isinstance(params["candidateCount"], bool)
         or not isinstance(params["candidateCount"], int)
         or params["candidateCount"] < 1
+        or params["candidateCount"] > _MAX_SAFE_JSON_INTEGER
     ):
-        raise SynthesisError("byExample.candidateCount must be a positive integer.")
+        raise SynthesisError("byExample.candidateCount must be a positive integer within the JSON-safe range.")
 
     normalized = {
         "sourceColumns": columns,
@@ -154,6 +156,8 @@ def _synthesize_program_ids(
     candidates: dict[str, tuple[int, dict[str, Any]]] = {}
 
     def add(program: dict[str, Any], cost: int) -> None:
+        if not _candidate_literals_are_portable(program):
+            return
         if not _program_matches(program, examples, source_columns):
             return
         key = json.dumps(program, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -271,7 +275,7 @@ def _evaluate_program_ids(program: Mapping[str, Any], inputs: Mapping[str, Any],
         return inputs[column]
     if kind == "literal":
         value = program.get("value")
-        if not _is_json_scalar(value):
+        if not _is_portable_json_scalar(value):
             raise SynthesisError("By-example literal must be a JSON scalar.")
         return value
     if kind == "slice":
@@ -497,6 +501,19 @@ def _program_matches(
         return False
 
 
+def _candidate_literals_are_portable(program: Mapping[str, Any]) -> bool:
+    if program.get("kind") == "literal":
+        return _is_portable_json_scalar(program.get("value"))
+    for key in ("input", "left", "right"):
+        child = program.get(key)
+        if isinstance(child, Mapping) and not _candidate_literals_are_portable(child):
+            return False
+    parts = program.get("parts")
+    return not isinstance(parts, list) or all(
+        isinstance(part, Mapping) and _candidate_literals_are_portable(part) for part in parts
+    )
+
+
 def _public_program_matches(
     program: Mapping[str, Any],
     examples: Sequence[Mapping[str, Any]],
@@ -579,17 +596,17 @@ def _internal_program(
     if kind == "literal":
         exact({"kind", "value"})
         value = program.get("value")
-        if not _is_json_scalar(value):
+        if not _is_portable_json_scalar(value):
             raise SynthesisError("By-example literal must be a JSON scalar.")
         return {"kind": "literal", "value": value}
     if kind == "slice":
         exact({"kind", "input", "start"}, {"stop"})
         start = program.get("start")
         stop = program.get("stop")
-        if isinstance(start, bool) or not isinstance(start, int) or start < 0:
-            raise SynthesisError("By-example slice start must be a non-negative integer.")
-        if stop is not None and (isinstance(stop, bool) or not isinstance(stop, int) or stop < start):
-            raise SynthesisError("By-example slice stop must be null or an integer no smaller than start.")
+        if not _is_non_negative_safe_integer(start):
+            raise SynthesisError("By-example slice start must be a non-negative JSON-safe integer.")
+        if stop is not None and (not _is_non_negative_safe_integer(stop) or stop < start):
+            raise SynthesisError("By-example slice stop must be null or a JSON-safe integer no smaller than start.")
         result: dict[str, Any] = {"kind": "slice", "input": nested("input"), "start": start}
         if "stop" in program:
             result["stop"] = stop
@@ -598,8 +615,10 @@ def _internal_program(
         exact({"kind", "input", "delimiter", "index"})
         delimiter = program.get("delimiter")
         index = program.get("index")
-        if not isinstance(delimiter, str) or isinstance(index, bool) or not isinstance(index, int) or index < 0:
-            raise SynthesisError("By-example split requires a string delimiter and non-negative integer index.")
+        if not isinstance(delimiter, str) or not _is_non_negative_safe_integer(index):
+            raise SynthesisError(
+                "By-example split requires a string delimiter and non-negative JSON-safe integer index."
+            )
         return {"kind": "split", "input": nested("input"), "delimiter": delimiter, "index": index}
     if kind == "concat":
         exact({"kind", "parts"})
@@ -618,8 +637,8 @@ def _internal_program(
         exact({"kind", "input", "pattern", "group"})
         pattern = program.get("pattern")
         group = program.get("group")
-        if not isinstance(pattern, str) or isinstance(group, bool) or not isinstance(group, int):
-            raise SynthesisError("By-example regex extraction requires a string pattern and integer group.")
+        if not isinstance(pattern, str) or not _is_safe_integer(group):
+            raise SynthesisError("By-example regex extraction requires a string pattern and JSON-safe integer group.")
         return {"kind": kind, "input": nested("input"), "pattern": pattern, "group": group}
     if kind == "regexReplace":
         exact({"kind", "input", "pattern", "replacement"})
@@ -730,6 +749,14 @@ def _is_number(value: Any) -> bool:
     )
 
 
+def _is_safe_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and abs(value) <= _MAX_SAFE_JSON_INTEGER
+
+
+def _is_non_negative_safe_integer(value: Any) -> bool:
+    return _is_safe_integer(value) and value >= 0
+
+
 def _numeric_ratio(numerator: int | float, denominator: int | float) -> int | float | None:
     if denominator == 0:
         return None
@@ -743,7 +770,23 @@ def _numeric_ratio(numerator: int | float, denominator: int | float) -> int | fl
 
 
 def _is_json_scalar(value: Any) -> bool:
-    return value is None or isinstance(value, str | bool | int) or (isinstance(value, float) and math.isfinite(value))
+    return (
+        value is None
+        or isinstance(value, str | bool | int)
+        or (
+            isinstance(value, float) and math.isfinite(value) and not (value == 0.0 and math.copysign(1.0, value) < 0.0)
+        )
+    )
+
+
+def _is_portable_json_scalar(value: Any) -> bool:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return True
+    if isinstance(value, int):
+        return abs(value) <= _MAX_SAFE_JSON_INTEGER
+    if isinstance(value, float) and math.isfinite(value) and not (value == 0.0 and math.copysign(1.0, value) < 0.0):
+        return not value.is_integer() or abs(value) <= _MAX_SAFE_JSON_INTEGER
+    return False
 
 
 def _is_string_list(value: Any) -> bool:

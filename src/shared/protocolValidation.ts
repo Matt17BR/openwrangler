@@ -1320,7 +1320,7 @@ function isByExampleParams(value: unknown): boolean {
         warnings.length <= MAX_BY_EXAMPLE_WARNINGS &&
         warnings.every((warning) => isString(warning) && consumeByExampleString(warning, budget))
     ) &&
-    optional(candidate, "candidateCount", isPositiveInteger)
+    optional(candidate, "candidateCount", isPositiveByExampleSafeInteger)
   );
 }
 
@@ -1430,11 +1430,11 @@ function isByExampleProgram(
       const candidate = exactRecord(value, ["kind", "input", "start"], ["stop"]);
       return (
         candidate !== undefined &&
-        isNonNegativeInteger(candidate.start) &&
+        isNonNegativeByExampleSafeInteger(candidate.start) &&
         optional(
           candidate,
           "stop",
-          (stop) => stop === null || (isNonNegativeInteger(stop) && stop >= (candidate.start as number))
+          (stop) => stop === null || (isNonNegativeByExampleSafeInteger(stop) && stop >= (candidate.start as number))
         ) &&
         nested(candidate.input)
       );
@@ -1445,7 +1445,7 @@ function isByExampleProgram(
         candidate !== undefined &&
         isString(candidate.delimiter) &&
         consumeByExampleString(candidate.delimiter, budget) &&
-        isNonNegativeInteger(candidate.index) &&
+        isNonNegativeByExampleSafeInteger(candidate.index) &&
         nested(candidate.input)
       );
     }
@@ -1465,7 +1465,7 @@ function isByExampleProgram(
         candidate !== undefined &&
         isString(candidate.pattern) &&
         consumeByExampleString(candidate.pattern, budget) &&
-        isInteger(candidate.group) &&
+        isByExampleSafeInteger(candidate.group) &&
         nested(candidate.input)
       );
     }
@@ -2008,6 +2008,18 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
+function isByExampleSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && !Object.is(value, -0);
+}
+
+function isNonNegativeByExampleSafeInteger(value: unknown): value is number {
+  return isByExampleSafeInteger(value) && value >= 0;
+}
+
+function isPositiveByExampleSafeInteger(value: unknown): value is number {
+  return isByExampleSafeInteger(value) && value >= 1;
+}
+
 function isPositiveInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 1;
 }
@@ -2056,7 +2068,7 @@ function hasAtMostCodePoints(value: string, maximum: number): boolean {
 }
 
 function isSafeJsonNumber(value: unknown): value is number {
-  return isFiniteNumber(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
+  return isFiniteNumber(value) && !Object.is(value, -0) && (!Number.isInteger(value) || Number.isSafeInteger(value));
 }
 
 function isBoundedByExampleScalar(

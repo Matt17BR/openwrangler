@@ -625,6 +625,133 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("round-trips a normalized native R by-example preview through apply and executable generated code", () => {
+    const editingSessionId = "1b000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "1b000000-0000-4000-8000-000000000002",
+      preview: "1b000000-0000-4000-8000-000000000003",
+      apply: "1b000000-0000-4000-8000-000000000004",
+      close: "1b000000-0000-4000-8000-000000000005"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const previewRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: "by-example-cross-step",
+          kind: "byExample",
+          params: {
+            sourceColumns: [{ id: "r:c:0", name: "label" }],
+            newColumn: "clean label",
+            examples: [
+              { inputs: ["a"], output: "A" },
+              { inputs: ["b"], output: "B" }
+            ]
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    const preview = requestCode(previewRequest);
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(label = c("a", "b"), check.names = FALSE)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R by-example session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema,
+      previewStep: previewRequest.payload.step
+    });
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      retainedStep: {
+        id: "by-example-cross-step",
+        kind: "byExample",
+        params: {
+          program: {
+            kind: "case",
+            style: "capitalize",
+            input: { kind: "column", column: { id: "r:c:0", name: "label" } }
+          },
+          candidateCount: 2,
+          warnings: [expect.stringContaining("2 equally simple programs")]
+        }
+      }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R by-example preview.");
+    expect(previewed.page.schema).toEqual([
+      expect.objectContaining({ id: "r:c:0", name: "label", rawType: "character", type: "string" }),
+      expect.objectContaining({
+        id: "c:step:by-example-cross-step:0",
+        name: "clean label",
+        rawType: "character",
+        type: "string",
+        nullable: false
+      })
+    ]);
+    expect(previewed.page.page.rows.map((row) => row.values[1])).toMatchObject([
+      { kind: "string", raw: "A", display: "A" },
+      { kind: "string", raw: "B", display: "B" }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R by-example step.");
+    expect(applied.page.schema[1]).toMatchObject({
+      id: "c:step:by-example-cross-step:0",
+      name: "clean label",
+      rawType: "character",
+      nullable: false
+    });
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    const generated = runR(`
+frame <- data.frame(label = c("a", "b"), check.names = FALSE)
+frame_before <- serialize(frame, NULL, version = 3L)
+${applied.code}
+stopifnot(identical(open_wrangler_result[["clean label"]], c("A", "B")))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("round-trips native R Min-max scale through preview, apply, and generated code", () => {
     const editingSessionId = "18000000-0000-4000-8000-000000000001";
     const ids = {

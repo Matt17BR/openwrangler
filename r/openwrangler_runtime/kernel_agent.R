@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 12L
+  transport_version <- 13L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -14,6 +14,31 @@ openwrangler_r_kernel_agent <- local({
   metadata_base_bytes <- 1024L
   column_fixed_bytes <- 512L
   maximum_fill_directional_gap <- 1000000L
+  maximum_by_example_sources <- 16L
+  maximum_by_example_examples <- 64L
+  maximum_by_example_program_nodes <- 256L
+  maximum_by_example_program_depth <- 64L
+  maximum_by_example_concat_parts <- 64L
+  maximum_by_example_warnings <- 64L
+  maximum_by_example_string_bytes <- 8L * 1024L
+  maximum_by_example_text_bytes <- 64L * 1024L
+  maximum_by_example_slice_source_characters <- 128L
+  by_example_delimiters <- c(" ", "-", "_", "/", ".", ",", ":")
+  by_example_regex_patterns <- c("(\\d+)", "([A-Za-z]+)", "([A-Za-z0-9]+)")
+  by_example_date_formats <- c(
+    "%Y-%m-%d",
+    "%d/%m/%Y",
+    "%m/%d/%Y",
+    "%Y/%m/%d",
+    "%d-%m-%Y",
+    "%m-%d-%Y",
+    "%Y%m%d",
+    "%d %B %Y",
+    "%B %d, %Y",
+    "%b %d, %Y",
+    "%Y",
+    "%m/%Y"
+  )
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
@@ -694,11 +719,1428 @@ openwrangler_r_kernel_agent <- local({
     list(kind = kind, value = text)
   }
 
+  by_example_json_scalar <- function(value) {
+    if (is.null(value)) return(TRUE)
+    if (!is.null(attributes(value)) || length(value) != 1L || is.object(value)) return(FALSE)
+    if (is.character(value)) {
+      if (is.na(value) || identical(Encoding(value), "bytes")) return(FALSE)
+      return(!is.na(iconv(value, from = "", to = "UTF-8", sub = NA_character_)))
+    }
+    if (is.logical(value)) return(!is.na(value))
+    if (!is.integer(value) && !is.double(value)) return(FALSE)
+    if (is.na(value) || !is.finite(value)) return(FALSE)
+    if (is.double(value) && value == 0 && is.infinite(1 / value) && (1 / value) < 0) return(FALSE)
+    # A JavaScript integer outside Number.MAX_SAFE_INTEGER loses its lexical
+    # and exact integer identity when decoded into an R double. Reject that
+    # non-portable public scalar instead of silently reinterpreting it.
+    !(is.double(value) && value == floor(value) && abs(value) > 9007199254740991)
+  }
+
+  validate_by_example_text_budget <- function(value) {
+    budget <- new.env(parent = emptyenv())
+    budget$bytes <- 0
+    visit <- function(item, depth = 0L) {
+      if (depth > 128L) abort("invalid_request", "By-example parameters are nested too deeply")
+      if (is.character(item)) {
+        values <- unclass(item)
+        for (index in seq_len(length(values))) {
+          text <- values[[index]]
+          if (
+            length(text) != 1L || is.na(text) || identical(Encoding(text), "bytes")
+          ) {
+            abort("invalid_request", "By-example text must contain valid Unicode")
+          }
+          source_encoding <- if (identical(Encoding(text), "latin1")) "latin1" else "UTF-8"
+          converted <- suppressWarnings(iconv(text, from = source_encoding, to = "UTF-8", sub = NA_character_))
+          if (is.na(converted)) abort("invalid_request", "By-example text must contain valid Unicode")
+          bytes <- nchar(converted, type = "bytes")
+          if (bytes > maximum_by_example_string_bytes) {
+            abort(
+              "invalid_request",
+              sprintf(
+                "Each by-example text value must be at most %d UTF-8 bytes",
+                maximum_by_example_string_bytes
+              )
+            )
+          }
+          next_bytes <- budget$bytes + as.double(bytes)
+          if (!is.finite(next_bytes) || next_bytes > maximum_by_example_text_bytes) {
+            abort(
+              "invalid_request",
+              sprintf(
+                "By-example text must total at most %d UTF-8 bytes",
+                maximum_by_example_text_bytes
+              )
+            )
+          }
+          budget$bytes <- next_bytes
+        }
+        return(invisible(NULL))
+      }
+      if (is.list(item)) {
+        for (index in seq_len(length(unclass(item)))) {
+          visit(base::.subset2(item, index), depth + 1L)
+        }
+      }
+      invisible(NULL)
+    }
+    visit(value)
+    invisible(NULL)
+  }
+
+  decode_by_example_program <- function(value, source_columns, limits) {
+    node_budget <- new.env(parent = emptyenv())
+    node_budget$remaining <- maximum_by_example_program_nodes
+    source_ids <- vapply(source_columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    source_names <- vapply(source_columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+
+    by_example_whole_number <- function(value, label, signed = FALSE) {
+      if (
+        is.double(value) && length(value) == 1L && !is.na(value) &&
+          value == 0 && is.infinite(1 / value) && (1 / value) < 0
+      ) {
+        abort("invalid_request", sprintf("%s must not be negative zero", label))
+      }
+      if (isTRUE(signed)) {
+        signed_whole_number(value, label, maximum_revision)
+      } else {
+        whole_number(value, label, maximum_revision)
+      }
+    }
+
+    decode <- function(program, label, depth) {
+      node_budget$remaining <- node_budget$remaining - 1L
+      if (node_budget$remaining < 0L) {
+        abort(
+          "invalid_request",
+          sprintf("By-example programs may contain at most %d nodes", maximum_by_example_program_nodes)
+        )
+      }
+      if (depth > maximum_by_example_program_depth) {
+        abort(
+          "invalid_request",
+          sprintf("By-example programs may be at most %d levels deep", maximum_by_example_program_depth)
+        )
+      }
+      if (!is.list(program) || is.object(program) || is.null(names(program))) {
+        abort("invalid_request", sprintf("%s must be a program object", label))
+      }
+      if (!"kind" %in% names(program)) abort("invalid_request", sprintf("%s has invalid fields", label))
+      kind <- bounded_text(program$kind, paste0(label, ".kind"), 32L)
+      child <- function(key) decode(program[[key]], paste0(label, ".", key), depth + 1L)
+
+      if (identical(kind, "column")) {
+        node <- exact_record(program, c("kind", "column"), label)
+        reference <- decode_column_reference(node$column, paste0(label, ".column"), limits$columnIdBytes)
+        matches <- which(source_ids == reference$id)
+        if (length(matches) != 1L || !identical(source_names[[matches[[1L]]]], reference$name)) {
+          abort("invalid_request", "By-example program references an unavailable or stale source column")
+        }
+        return(list(kind = kind, column = reference))
+      }
+      if (identical(kind, "literal")) {
+        node <- exact_record(program, c("kind", "value"), label)
+        if (!by_example_json_scalar(node$value)) {
+          abort("invalid_request", "By-example literal must be a finite JSON scalar")
+        }
+        return(list(kind = kind, value = by_example_canonical_json_scalar(node$value)))
+      }
+      if (identical(kind, "slice")) {
+        node <- exact_record(program, c("kind", "input", "start"), label, optional_fields = "stop")
+        start <- by_example_whole_number(node$start, paste0(label, ".start"))
+        stop <- if ("stop" %in% names(node)) node$stop else NULL
+        if (!is.null(stop)) {
+          stop <- by_example_whole_number(stop, paste0(label, ".stop"))
+          if (stop < start) abort("invalid_request", "By-example slice stop must not precede start")
+        }
+        result <- list(kind = kind, input = child("input"), start = as.integer(start))
+        if ("stop" %in% names(node)) result["stop"] <- list(if (is.null(stop)) NULL else as.integer(stop))
+        return(result)
+      }
+      if (identical(kind, "split")) {
+        node <- exact_record(program, c("kind", "input", "delimiter", "index"), label)
+        delimiter <- bounded_text(node$delimiter, paste0(label, ".delimiter"), maximum_by_example_string_bytes)
+        index <- by_example_whole_number(node$index, paste0(label, ".index"))
+        return(list(kind = kind, input = child("input"), delimiter = delimiter, index = as.integer(index)))
+      }
+      if (identical(kind, "concat")) {
+        node <- exact_record(program, c("kind", "parts"), label)
+        parts <- node$parts
+        if (
+          !is.list(parts) || is.object(parts) || !is.null(names(parts)) ||
+            length(parts) < 1L || length(parts) > maximum_by_example_concat_parts
+        ) {
+          abort(
+            "invalid_request",
+            sprintf("By-example concat requires between 1 and %d parts", maximum_by_example_concat_parts)
+          )
+        }
+        return(list(
+          kind = kind,
+          parts = lapply(seq_along(parts), function(index) {
+            decode(parts[[index]], sprintf("%s.parts[%d]", label, index), depth + 1L)
+          })
+        ))
+      }
+      if (identical(kind, "regexExtract")) {
+        node <- exact_record(program, c("kind", "input", "pattern", "group"), label)
+        pattern <- bounded_text(node$pattern, paste0(label, ".pattern"), maximum_by_example_string_bytes)
+        group <- by_example_whole_number(node$group, paste0(label, ".group"), signed = TRUE)
+        return(list(
+          kind = kind,
+          input = child("input"),
+          pattern = pattern,
+          group = as.integer(group)
+        ))
+      }
+      if (identical(kind, "regexReplace")) {
+        node <- exact_record(program, c("kind", "input", "pattern", "replacement"), label)
+        return(list(
+          kind = kind,
+          input = child("input"),
+          pattern = bounded_text(node$pattern, paste0(label, ".pattern"), maximum_by_example_string_bytes),
+          replacement = bounded_text(
+            node$replacement,
+            paste0(label, ".replacement"),
+            maximum_by_example_string_bytes
+          )
+        ))
+      }
+      if (identical(kind, "case")) {
+        node <- exact_record(program, c("kind", "style", "input"), label)
+        style <- bounded_text(node$style, paste0(label, ".style"), 16L)
+        if (!style %in% c("lower", "upper", "capitalize")) {
+          abort("invalid_request", "Unsupported by-example case style")
+        }
+        return(list(kind = kind, style = style, input = child("input")))
+      }
+      if (identical(kind, "datetimeFormat")) {
+        node <- exact_record(
+          program,
+          c("kind", "input", "inputFormat", "outputFormat"),
+          label
+        )
+        return(list(
+          kind = kind,
+          input = child("input"),
+          inputFormat = bounded_text(
+            node$inputFormat,
+            paste0(label, ".inputFormat"),
+            maximum_by_example_string_bytes
+          ),
+          outputFormat = bounded_text(
+            node$outputFormat,
+            paste0(label, ".outputFormat"),
+            maximum_by_example_string_bytes
+          )
+        ))
+      }
+      if (identical(kind, "arithmetic")) {
+        node <- exact_record(program, c("kind", "left", "operator", "right"), label)
+        operator <- bounded_text(node$operator, paste0(label, ".operator"), 16L)
+        if (!operator %in% c("add", "subtract", "multiply", "divide")) {
+          abort("invalid_request", "Unsupported by-example arithmetic operator")
+        }
+        return(list(
+          kind = kind,
+          left = child("left"),
+          operator = operator,
+          right = child("right")
+        ))
+      }
+      abort("invalid_request", sprintf("Unsupported by-example program kind: %s", kind))
+    }
+
+    decode(value, "request.payload.step.params.program", 0L)
+  }
+
+  by_example_shortest_double_components <- function(value) {
+    if (!is.double(value) || length(value) != 1L || is.na(value) || !is.finite(value)) {
+      stop("Open Wrangler by-example received an invalid finite double", call. = FALSE)
+    }
+    negative <- value < 0 || (value == 0 && is.infinite(1 / value) && (1 / value) < 0)
+    absolute <- abs(value)
+    if (absolute == 0) return(list(negative = negative, digits = "0", exponent = 0L))
+    shortest <- NULL
+    for (precision in seq_len(17L)) {
+      candidate <- sprintf(paste0("%.", precision, "g"), absolute)
+      candidate <- sub(",", ".", candidate, fixed = TRUE)
+      parsed <- tryCatch(
+        suppressWarnings(jsonlite::fromJSON(candidate, simplifyVector = FALSE)),
+        error = function(error) NULL
+      )
+      if (
+        is.numeric(parsed) && length(parsed) == 1L && !is.na(parsed) &&
+          identical(as.double(parsed), absolute)
+      ) {
+        shortest <- candidate
+        break
+      }
+    }
+    if (is.null(shortest)) {
+      stop("Open Wrangler could not serialize a finite by-example double", call. = FALSE)
+    }
+    matched <- regexec(
+      "^([0-9]+)(?:\\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$",
+      shortest,
+      perl = TRUE
+    )[[1L]]
+    fields <- regmatches(shortest, list(matched))[[1L]]
+    if (length(fields) != 4L) {
+      stop("Open Wrangler could not normalize a finite by-example double", call. = FALSE)
+    }
+    integer_part <- fields[[2L]]
+    fraction_part <- fields[[3L]]
+    explicit_exponent <- if (identical(fields[[4L]], "")) 0L else suppressWarnings(as.integer(fields[[4L]]))
+    combined <- paste0(integer_part, fraction_part)
+    leading_zeroes <- nchar(sub("^([^1-9]*).*", "\\1", combined, perl = TRUE), type = "chars")
+    digits <- substring(combined, leading_zeroes + 1L)
+    if (identical(digits, "")) digits <- "0"
+    list(
+      negative = negative,
+      digits = digits,
+      exponent = as.integer(nchar(integer_part, type = "chars") + explicit_exponent - leading_zeroes - 1L)
+    )
+  }
+
+  by_example_double_text <- function(value, python = FALSE) {
+    parts <- by_example_shortest_double_components(value)
+    if (identical(parts$digits, "0")) {
+      if (python) return(if (parts$negative) "-0.0" else "0.0")
+      return("0")
+    }
+    sign <- if (parts$negative) "-" else ""
+    exponent <- parts$exponent
+    digits <- parts$digits
+    fixed_lower <- if (python) -4L else -6L
+    fixed_upper <- if (python) 16L else 21L
+    if (exponent >= fixed_lower && exponent < fixed_upper) {
+      decimal_position <- exponent + 1L
+      fixed <- if (decimal_position <= 0L) {
+        paste0("0.", paste0(rep.int("0", -decimal_position), collapse = ""), digits)
+      } else if (decimal_position >= nchar(digits, type = "chars")) {
+        paste0(digits, paste0(rep.int("0", decimal_position - nchar(digits, type = "chars")), collapse = ""))
+      } else {
+        paste0(
+          substring(digits, 1L, decimal_position),
+          ".",
+          substring(digits, decimal_position + 1L)
+        )
+      }
+      if (python && !grepl("\\.", fixed, fixed = FALSE)) fixed <- paste0(fixed, ".0")
+      return(paste0(sign, fixed))
+    }
+    mantissa <- if (nchar(digits, type = "chars") == 1L) {
+      digits
+    } else {
+      paste0(substring(digits, 1L, 1L), ".", substring(digits, 2L))
+    }
+    exponent_sign <- if (exponent < 0L) "-" else "+"
+    exponent_digits <- as.character(abs(exponent))
+    if (python && nchar(exponent_digits, type = "chars") < 2L) {
+      exponent_digits <- paste0("0", exponent_digits)
+    }
+    paste0(sign, mantissa, "e", exponent_sign, exponent_digits)
+  }
+
+  by_example_json_integer_text <- function(value) {
+    if (is.integer(value) && length(value) == 1L && !is.na(value)) return(as.character(value))
+    if (
+      !is.double(value) || length(value) != 1L || is.na(value) || !is.finite(value) ||
+        value != floor(value) || abs(value) > 9007199254740991
+    ) return(NULL)
+    sprintf("%.0f", value)
+  }
+
+  by_example_canonical_json_scalar <- function(value) {
+    if (is.double(value) && value == 0 && is.infinite(1 / value) && (1 / value) < 0) return(value)
+    integer_text <- by_example_json_integer_text(value)
+    if (
+      !is.null(integer_text) && as.double(value) >= -.Machine$integer.max &&
+        as.double(value) <= .Machine$integer.max
+    ) {
+      return(as.integer(value))
+    }
+    value
+  }
+
+  by_example_utf8_scalar <- function(value) {
+    if (!base::is.character(value) || base::length(value) != 1L) {
+      base::stop("Open Wrangler by-example received invalid text", call. = FALSE)
+    }
+    if (base::is.na(value)) return(NA_character_)
+    if (base::identical(base::Encoding(value), "bytes")) {
+      base::stop("Open Wrangler by-example received invalid text", call. = FALSE)
+    }
+    from <- if (base::identical(base::Encoding(value), "latin1")) "latin1" else "UTF-8"
+    normalized <- base::iconv(value, from = from, to = "UTF-8", sub = NA_character_)
+    if (base::is.na(normalized)) {
+      base::stop("Open Wrangler by-example received invalid text", call. = FALSE)
+    }
+    normalized
+  }
+
+  by_example_scalar_text <- function(value) {
+    if (is.null(value)) return("None")
+    if (is.logical(value)) return(if (isTRUE(value)) "True" else "False")
+    if (is.character(value)) return(by_example_utf8_scalar(value))
+    integer_text <- by_example_json_integer_text(value)
+    if (!is.null(integer_text)) return(integer_text)
+    if (is.double(value)) {
+      by_example_double_text(value, python = TRUE)
+    } else {
+      as.character(value)
+    }
+  }
+
+  by_example_decimal_digit_text <- function(value) {
+    zeroes <- c(
+      0x0030L, 0x0660L, 0x06f0L, 0x07c0L, 0x0966L, 0x09e6L, 0x0a66L, 0x0ae6L,
+      0x0b66L, 0x0be6L, 0x0c66L, 0x0ce6L, 0x0d66L, 0x0de6L, 0x0e50L, 0x0ed0L,
+      0x0f20L, 0x1040L, 0x1090L, 0x17e0L, 0x1810L, 0x1946L, 0x19d0L, 0x1a80L,
+      0x1a90L, 0x1b50L, 0x1bb0L, 0x1c40L, 0x1c50L, 0xa620L, 0xa8d0L, 0xa900L,
+      0xa9d0L, 0xa9f0L, 0xaa50L, 0xabf0L, 0xff10L, 0x104a0L, 0x10d30L, 0x10d40L,
+      0x11066L,
+      0x110f0L, 0x11136L, 0x111d0L, 0x112f0L, 0x11450L, 0x114d0L, 0x11650L, 0x116c0L,
+      0x116d0L, 0x116daL, 0x11730L, 0x118e0L, 0x11950L, 0x11bf0L, 0x11c50L, 0x11d50L,
+      0x11da0L, 0x11f50L, 0x16130L, 0x16a60L, 0x16ac0L, 0x16b50L, 0x16d70L, 0x1ccf0L,
+      0x1d7ceL, 0x1d7d8L, 0x1d7e2L, 0x1d7ecL, 0x1d7f6L, 0x1e140L, 0x1e2f0L,
+      0x1e4f0L, 0x1e5f1L, 0x1e950L, 0x1fbf0L
+    )
+    codepoints <- utf8ToInt(value)
+    digits <- vapply(codepoints, function(codepoint) {
+      matches <- zeroes[codepoint >= zeroes & codepoint <= zeroes + 9L]
+      if (length(matches) != 1L) {
+        stop("By-example datetime year contains unsupported decimal digits", call. = FALSE)
+      }
+      as.character(codepoint - matches[[1L]])
+    }, character(1L), USE.NAMES = FALSE)
+    paste0(digits, collapse = "")
+  }
+
+  by_example_datetime_parts <- function(value, format) {
+    full_months <- c(
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"
+    )
+    short_months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    captures <- function(pattern) {
+      matched <- regexec(paste0("(*UCP)", pattern), value, perl = TRUE)[[1L]]
+      if (length(matched) == 1L && identical(as.integer(matched[[1L]]), -1L)) return(NULL)
+      regmatches(value, list(matched))[[1L]][-1L]
+    }
+    fields <- switch(
+      format,
+      "%Y-%m-%d" = list(parts = captures("^(\\d{4})-(1[0-2]|0[1-9]|[1-9])-((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))\\z"), order = c(1L, 2L, 3L)),
+      "%d/%m/%Y" = list(parts = captures("^((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))/(1[0-2]|0[1-9]|[1-9])/(\\d{4})\\z"), order = c(3L, 2L, 1L)),
+      "%m/%d/%Y" = list(parts = captures("^(1[0-2]|0[1-9]|[1-9])/((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))/(\\d{4})\\z"), order = c(2L, 3L, 1L)),
+      "%Y/%m/%d" = list(parts = captures("^(\\d{4})/(1[0-2]|0[1-9]|[1-9])/((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))\\z"), order = c(1L, 2L, 3L)),
+      "%d-%m-%Y" = list(parts = captures("^((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))-(1[0-2]|0[1-9]|[1-9])-(\\d{4})\\z"), order = c(3L, 2L, 1L)),
+      "%m-%d-%Y" = list(parts = captures("^(1[0-2]|0[1-9]|[1-9])-((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))-(\\d{4})\\z"), order = c(2L, 3L, 1L)),
+      "%Y%m%d" = list(parts = captures("^(\\d{4})(1[0-2]|0[1-9]|[1-9])((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))\\z"), order = c(1L, 2L, 3L)),
+      "%d %B %Y" = {
+        parts <- captures("^((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))(?:\\s|[\\x{1c}-\\x{1f}])+([A-Za-z]+)(?:\\s|[\\x{1c}-\\x{1f}])+(\\d{4})\\z")
+        if (!is.null(parts)) parts[[2L]] <- as.character(match(
+          chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", parts[[2L]]),
+          chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", full_months)
+        ))
+        list(parts = parts, order = c(3L, 2L, 1L))
+      },
+      "%B %d, %Y" = {
+        parts <- captures("^([A-Za-z]+)(?:\\s|[\\x{1c}-\\x{1f}])+(3[01]|[12]\\d|0[1-9]|[1-9]),(?:\\s|[\\x{1c}-\\x{1f}])+(\\d{4})\\z")
+        if (!is.null(parts)) parts[[1L]] <- as.character(match(
+          chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", parts[[1L]]),
+          chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", full_months)
+        ))
+        list(parts = parts, order = c(2L, 3L, 1L))
+      },
+      "%b %d, %Y" = {
+        parts <- captures("^([A-Za-z]+)(?:\\s|[\\x{1c}-\\x{1f}])+(3[01]|[12]\\d|0[1-9]|[1-9]),(?:\\s|[\\x{1c}-\\x{1f}])+(\\d{4})\\z")
+        if (!is.null(parts)) parts[[1L]] <- as.character(match(
+          chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", parts[[1L]]),
+          chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", short_months)
+        ))
+        list(parts = parts, order = c(2L, 3L, 1L))
+      },
+      "%Y" = list(parts = captures("^(\\d{4})\\z"), order = c(1L, 0L, 0L)),
+      "%m/%Y" = list(parts = captures("^(1[0-2]|0[1-9]|[1-9])/(\\d{4})\\z"), order = c(2L, 1L, 0L)),
+      NULL
+    )
+    if (is.null(fields) || is.null(fields$parts) || anyNA(fields$parts)) {
+      stop("By-example datetime input does not match its format", call. = FALSE)
+    }
+    components <- c(NA_integer_, 1L, 1L)
+    for (index in seq_along(fields$order)) {
+      destination <- fields$order[[index]]
+      if (destination != 0L) {
+        text <- if (destination %in% c(1L, 3L)) {
+          by_example_decimal_digit_text(if (destination == 3L) sub("^ ", "", fields$parts[[index]]) else fields$parts[[index]])
+        } else {
+          fields$parts[[index]]
+        }
+        components[[destination]] <- suppressWarnings(as.integer(text))
+      }
+    }
+    year <- components[[1L]]
+    month <- components[[2L]]
+    day <- components[[3L]]
+    leap <- year %% 4L == 0L && (year %% 100L != 0L || year %% 400L == 0L)
+    month_days <- c(31L, if (leap) 29L else 28L, 31L, 30L, 31L, 30L, 31L, 31L, 30L, 31L, 30L, 31L)
+    if (
+      anyNA(c(year, month, day)) || year < 1L || year > 9999L ||
+        month < 1L || month > 12L || day < 1L || day > month_days[[month]]
+    ) {
+      stop("By-example datetime input is outside the supported calendar", call. = FALSE)
+    }
+    list(year = year, month = month, day = day, fullMonths = full_months, shortMonths = short_months)
+  }
+
+  by_example_format_datetime_parts <- function(parts, format) {
+    switch(
+      format,
+      "%Y-%m-%d" = sprintf("%04d-%02d-%02d", parts$year, parts$month, parts$day),
+      "%d/%m/%Y" = sprintf("%02d/%02d/%04d", parts$day, parts$month, parts$year),
+      "%m/%d/%Y" = sprintf("%02d/%02d/%04d", parts$month, parts$day, parts$year),
+      "%Y/%m/%d" = sprintf("%04d/%02d/%02d", parts$year, parts$month, parts$day),
+      "%d-%m-%Y" = sprintf("%02d-%02d-%04d", parts$day, parts$month, parts$year),
+      "%m-%d-%Y" = sprintf("%02d-%02d-%04d", parts$month, parts$day, parts$year),
+      "%Y%m%d" = sprintf("%04d%02d%02d", parts$year, parts$month, parts$day),
+      "%d %B %Y" = sprintf("%02d %s %04d", parts$day, parts$fullMonths[[parts$month]], parts$year),
+      "%B %d, %Y" = sprintf("%s %02d, %04d", parts$fullMonths[[parts$month]], parts$day, parts$year),
+      "%b %d, %Y" = sprintf("%s %02d, %04d", parts$shortMonths[[parts$month]], parts$day, parts$year),
+      "%Y" = sprintf("%04d", parts$year),
+      "%m/%Y" = sprintf("%02d/%04d", parts$month, parts$year),
+      stop("Unsupported by-example datetime format", call. = FALSE)
+    )
+  }
+
+  by_example_normalize_integer_text <- function(value) {
+    if (!is.character(value) || length(value) != 1L || is.na(value) || !grepl("^-?[0-9]+$", value, perl = TRUE)) {
+      stop("Open Wrangler by-example received invalid exact integer text", call. = FALSE)
+    }
+    negative <- startsWith(value, "-")
+    magnitude <- if (negative) substring(value, 2L) else value
+    magnitude <- sub("^0+", "", magnitude, perl = TRUE)
+    if (identical(magnitude, "")) magnitude <- "0"
+    if (negative && !identical(magnitude, "0")) paste0("-", magnitude) else magnitude
+  }
+
+  by_example_abs_integer_compare <- function(left, right) {
+    if (nchar(left) != nchar(right)) return(if (nchar(left) < nchar(right)) -1L else 1L)
+    if (identical(left, right)) 0L else if (left < right) -1L else 1L
+  }
+
+  by_example_abs_integer_add <- function(left, right) {
+    left_digits <- rev(utf8ToInt(left) - 48L)
+    right_digits <- rev(utf8ToInt(right) - 48L)
+    length_out <- max(length(left_digits), length(right_digits))
+    length(left_digits) <- length_out
+    length(right_digits) <- length_out
+    left_digits[is.na(left_digits)] <- 0L
+    right_digits[is.na(right_digits)] <- 0L
+    output <- integer(length_out + 1L)
+    carry <- 0L
+    for (index in seq_len(length_out)) {
+      total <- left_digits[[index]] + right_digits[[index]] + carry
+      output[[index]] <- total %% 10L
+      carry <- total %/% 10L
+    }
+    output[[length_out + 1L]] <- carry
+    while (length(output) > 1L && output[[length(output)]] == 0L) output <- output[-length(output)]
+    paste0(rev(output), collapse = "")
+  }
+
+  by_example_abs_integer_subtract <- function(left, right) {
+    left_digits <- rev(utf8ToInt(left) - 48L)
+    right_digits <- rev(utf8ToInt(right) - 48L)
+    length(right_digits) <- length(left_digits)
+    right_digits[is.na(right_digits)] <- 0L
+    output <- integer(length(left_digits))
+    borrow <- 0L
+    for (index in seq_along(left_digits)) {
+      digit <- left_digits[[index]] - right_digits[[index]] - borrow
+      if (digit < 0L) {
+        digit <- digit + 10L
+        borrow <- 1L
+      } else {
+        borrow <- 0L
+      }
+      output[[index]] <- digit
+    }
+    while (length(output) > 1L && output[[length(output)]] == 0L) output <- output[-length(output)]
+    paste0(rev(output), collapse = "")
+  }
+
+  by_example_abs_integer_multiply <- function(left, right) {
+    if (identical(left, "0") || identical(right, "0")) return("0")
+    left_digits <- rev(utf8ToInt(left) - 48L)
+    right_digits <- rev(utf8ToInt(right) - 48L)
+    output <- integer(length(left_digits) + length(right_digits) + 1L)
+    for (left_index in seq_along(left_digits)) {
+      carry <- 0L
+      for (right_index in seq_along(right_digits)) {
+        output_index <- left_index + right_index - 1L
+        total <- output[[output_index]] + left_digits[[left_index]] * right_digits[[right_index]] + carry
+        output[[output_index]] <- total %% 10L
+        carry <- total %/% 10L
+      }
+      output_index <- left_index + length(right_digits)
+      while (carry > 0L) {
+        total <- output[[output_index]] + carry
+        output[[output_index]] <- total %% 10L
+        carry <- total %/% 10L
+        output_index <- output_index + 1L
+      }
+    }
+    while (length(output) > 1L && output[[length(output)]] == 0L) output <- output[-length(output)]
+    paste0(rev(output), collapse = "")
+  }
+
+  by_example_signed_integer_binary <- function(left, operator, right) {
+    left <- by_example_normalize_integer_text(left)
+    right <- by_example_normalize_integer_text(right)
+    left_negative <- startsWith(left, "-")
+    right_negative <- startsWith(right, "-")
+    left_abs <- if (left_negative) substring(left, 2L) else left
+    right_abs <- if (right_negative) substring(right, 2L) else right
+    if (identical(operator, "subtract")) right_negative <- !right_negative && !identical(right_abs, "0")
+    if (identical(operator, "multiply")) {
+      magnitude <- by_example_abs_integer_multiply(left_abs, right_abs)
+      negative <- xor(left_negative, startsWith(right, "-"))
+      return(if (negative && !identical(magnitude, "0")) paste0("-", magnitude) else magnitude)
+    }
+    if (!operator %in% c("add", "subtract")) {
+      stop("Open Wrangler exact by-example arithmetic received an invalid operator", call. = FALSE)
+    }
+    if (identical(left_negative, right_negative)) {
+      magnitude <- by_example_abs_integer_add(left_abs, right_abs)
+      return(if (left_negative && !identical(magnitude, "0")) paste0("-", magnitude) else magnitude)
+    }
+    comparison <- by_example_abs_integer_compare(left_abs, right_abs)
+    if (comparison == 0L) return("0")
+    if (comparison > 0L) {
+      magnitude <- by_example_abs_integer_subtract(left_abs, right_abs)
+      if (left_negative) paste0("-", magnitude) else magnitude
+    } else {
+      magnitude <- by_example_abs_integer_subtract(right_abs, left_abs)
+      if (right_negative) paste0("-", magnitude) else magnitude
+    }
+  }
+
+  by_example_checked_integer_text <- function(value) {
+    value <- by_example_normalize_integer_text(value)
+    magnitude <- if (startsWith(value, "-")) substring(value, 2L) else value
+    envelope <- paste0(rep.int("9", 38L), collapse = "")
+    if (
+      nchar(magnitude) > 38L ||
+        (nchar(magnitude) == 38L && magnitude > envelope)
+    ) {
+      stop("Open Wrangler by-example integer arithmetic exceeds the checked 38-digit envelope", call. = FALSE)
+    }
+    value
+  }
+
+  by_example_integer64_text <- function(value) {
+    value <- by_example_checked_integer_text(value)
+    negative <- startsWith(value, "-")
+    magnitude <- if (negative) substring(value, 2L) else value
+    limit <- if (negative) "9223372036854775808" else "9223372036854775807"
+    if (
+      nchar(magnitude) > nchar(limit) ||
+        (nchar(magnitude) == nchar(limit) && magnitude > limit)
+    ) {
+      stop(
+        "Open Wrangler exact by-example arithmetic exceeds R's signed-integer64 representation",
+        call. = FALSE
+      )
+    }
+    value
+  }
+
+  by_example_safe_integer_literal <- function(value) {
+    value <- by_example_normalize_integer_text(value)
+    negative <- startsWith(value, "-")
+    magnitude <- if (negative) substring(value, 2L) else value
+    maximum_safe <- "9007199254740991"
+    if (
+      nchar(magnitude) > nchar(maximum_safe) ||
+        (nchar(magnitude) == nchar(maximum_safe) && magnitude > maximum_safe)
+    ) return(NULL)
+    numeric <- suppressWarnings(as.double(value))
+    if (!is.finite(numeric) || !identical(by_example_json_integer_text(numeric), value)) return(NULL)
+    if (numeric >= -.Machine$integer.max && numeric <= .Machine$integer.max) as.integer(numeric) else numeric
+  }
+
+  by_example_abs_integer_divmod <- function(numerator, denominator) {
+    numerator <- by_example_normalize_integer_text(numerator)
+    denominator <- by_example_normalize_integer_text(denominator)
+    if (startsWith(numerator, "-") || startsWith(denominator, "-") || identical(denominator, "0")) {
+      stop("Open Wrangler exact integer division received invalid magnitudes", call. = FALSE)
+    }
+    quotient <- character()
+    remainder <- "0"
+    digits <- strsplit(numerator, "", fixed = TRUE)[[1L]]
+    for (digit in digits) {
+      remainder <- by_example_normalize_integer_text(paste0(remainder, digit))
+      quotient_digit <- 0L
+      while (by_example_abs_integer_compare(remainder, denominator) >= 0L) {
+        remainder <- by_example_abs_integer_subtract(remainder, denominator)
+        quotient_digit <- quotient_digit + 1L
+      }
+      quotient <- c(quotient, as.character(quotient_digit))
+    }
+    list(
+      quotient = by_example_normalize_integer_text(paste0(quotient, collapse = "")),
+      remainder = by_example_normalize_integer_text(remainder)
+    )
+  }
+
+  by_example_integer_ratio <- function(numerator, denominator) {
+    numerator <- by_example_normalize_integer_text(numerator)
+    denominator <- by_example_normalize_integer_text(denominator)
+    if (identical(denominator, "0")) return(NULL)
+    negative <- xor(startsWith(numerator, "-"), startsWith(denominator, "-"))
+    numerator_abs <- if (startsWith(numerator, "-")) substring(numerator, 2L) else numerator
+    denominator_abs <- if (startsWith(denominator, "-")) substring(denominator, 2L) else denominator
+    divided <- by_example_abs_integer_divmod(numerator_abs, denominator_abs)
+    if (!identical(divided$remainder, "0")) return(NULL)
+    if (negative && !identical(divided$quotient, "0")) paste0("-", divided$quotient) else divided$quotient
+  }
+
+  by_example_slice_scalar <- function(value, start, stop = NULL) {
+    characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+    length_value <- length(characters)
+    stop_value <- if (is.null(stop)) length_value else min(stop, length_value)
+    if (start >= stop_value || start >= length_value) return("")
+    paste0(characters[seq.int(start + 1L, stop_value)], collapse = "")
+  }
+
+  by_example_split_part_scalar <- function(value, delimiter, index) {
+    if (identical(delimiter, "")) stop("By-example split delimiter may not be empty", call. = FALSE)
+    matches <- gregexpr(delimiter, value, fixed = TRUE)[[1L]]
+    if (length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)) {
+      if (index != 0L) return(NULL)
+      if (nchar(value, type = "bytes") > 8192L) {
+        stop("By-example split would produce oversized text", call. = FALSE)
+      }
+      return(value)
+    }
+    delimiter_length <- nchar(delimiter, type = "chars")
+    starts <- as.integer(matches) - 1L
+    if (index > length(starts)) return(NULL)
+    start <- if (index == 0L) 0L else starts[[index]] + delimiter_length
+    end <- if (index < length(starts)) starts[[index + 1L]] else NULL
+    output_characters <- if (is.null(end)) nchar(value, type = "chars") - start else end - start
+    if (!is.finite(output_characters) || output_characters > 8192L) {
+      stop("By-example split would produce oversized text", call. = FALSE)
+    }
+    result <- by_example_slice_scalar(value, start, end)
+    if (nchar(result, type = "bytes") > 8192L) {
+      stop("By-example split would produce oversized text", call. = FALSE)
+    }
+    result
+  }
+
+  by_example_regex_extract_scalar <- function(value, pattern, group) {
+    matched <- regexec(paste0("(*UCP)", pattern), value, perl = TRUE)[[1L]]
+    if (length(matched) == 1L && identical(as.integer(matched[[1L]]), -1L)) return(NULL)
+    target <- group + 1L
+    match_lengths <- attr(matched, "match.length", exact = TRUE)
+    if (target < 1L || target > length(matched) || matched[[target]] < 0L) return(NULL)
+    if (match_lengths[[target]] > 8192L) {
+      stop("By-example regex extraction would produce oversized text", call. = FALSE)
+    }
+    result <- substring(
+      value,
+      matched[[target]],
+      matched[[target]] + match_lengths[[target]] - 1L
+    )
+    if (nchar(result, type = "bytes") > 8192L) {
+      stop("By-example regex extraction would produce oversized text", call. = FALSE)
+    }
+    result
+  }
+
+  by_example_regex_replace_scalar <- function(value, pattern, replacement) {
+    matched <- gregexpr(paste0("(*UCP)", pattern), value, perl = TRUE)[[1L]]
+    if (length(matched) == 1L && identical(as.integer(matched[[1L]]), -1L)) return(value)
+    matched_values <- regmatches(value, list(matched))[[1L]]
+    projected_bytes <-
+      as.double(nchar(value, type = "bytes")) -
+        sum(as.double(nchar(matched_values, type = "bytes"))) +
+        length(matched_values) * as.double(nchar(replacement, type = "bytes"))
+    if (!is.finite(projected_bytes) || projected_bytes > 8192L) {
+      stop("By-example regex replacement would produce oversized text", call. = FALSE)
+    }
+    copy <- value
+    regmatches(copy, list(matched)) <- list(rep.int(replacement, length(matched)))
+    copy
+  }
+
+  by_example_evaluate_scalar <- function(program, inputs, source_columns) {
+    source_ids <- vapply(source_columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    evaluate <- function(node) {
+      kind <- node$kind
+      if (identical(kind, "column")) {
+        position <- match(node$column$id, source_ids)
+        if (is.na(position) || !identical(source_columns[[position]]$name, node$column$name)) {
+          stop("By-example program references an unavailable column", call. = FALSE)
+        }
+        return(inputs[[position]])
+      }
+      if (identical(kind, "literal")) return(node$value)
+      if (identical(kind, "slice")) {
+        value <- evaluate(node$input)
+        if (is.null(value)) return(NULL)
+        return(by_example_slice_scalar(by_example_scalar_text(value), node$start, node$stop))
+      }
+      if (identical(kind, "split")) {
+        value <- evaluate(node$input)
+        if (is.null(value)) return(NULL)
+        return(by_example_split_part_scalar(
+          by_example_scalar_text(value),
+          node$delimiter,
+          node$index
+        ))
+      }
+      if (identical(kind, "concat")) {
+        values <- lapply(node$parts, evaluate)
+        if (any(vapply(values, is.null, logical(1L), USE.NAMES = FALSE))) return(NULL)
+        return(paste0(vapply(values, by_example_scalar_text, character(1L), USE.NAMES = FALSE), collapse = ""))
+      }
+      if (identical(kind, "regexExtract")) {
+        value <- evaluate(node$input)
+        if (is.null(value)) return(NULL)
+        return(by_example_regex_extract_scalar(by_example_scalar_text(value), node$pattern, node$group))
+      }
+      if (identical(kind, "regexReplace")) {
+        value <- evaluate(node$input)
+        if (is.null(value)) return(NULL)
+        return(by_example_regex_replace_scalar(by_example_scalar_text(value), node$pattern, node$replacement))
+      }
+      if (identical(kind, "case")) {
+        value <- evaluate(node$input)
+        if (is.null(value)) return(NULL)
+        value <- by_example_scalar_text(value)
+        if (identical(node$style, "lower")) {
+          return(chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value))
+        }
+        if (identical(node$style, "upper")) {
+          return(chartr("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", value))
+        }
+        characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+        if (length(characters) == 0L) return("")
+        return(paste0(
+          chartr("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", characters[[1L]]),
+          if (length(characters) == 1L) "" else chartr(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "abcdefghijklmnopqrstuvwxyz",
+            paste0(characters[-1L], collapse = "")
+          )
+        ))
+      }
+      if (identical(kind, "datetimeFormat")) {
+        value <- evaluate(node$input)
+        if (is.null(value)) return(NULL)
+        parts <- by_example_datetime_parts(by_example_scalar_text(value), node$inputFormat)
+        return(by_example_format_datetime_parts(parts, node$outputFormat))
+      }
+      if (identical(kind, "arithmetic")) {
+        left <- evaluate(node$left)
+        right <- evaluate(node$right)
+        if (
+          is.null(left) || is.null(right) || is.logical(left) || is.logical(right) ||
+            !is.numeric(left) || !is.numeric(right) || !is.finite(left) || !is.finite(right)
+        ) {
+          stop("By-example arithmetic inputs must be finite numbers", call. = FALSE)
+        }
+        left_integer <- by_example_json_integer_text(left)
+        right_integer <- by_example_json_integer_text(right)
+        if (!is.null(left_integer) && !is.null(right_integer) && !identical(node$operator, "divide")) {
+          exact <- by_example_checked_integer_text(by_example_signed_integer_binary(
+            left_integer,
+            node$operator,
+            right_integer
+          ))
+          return(structure(exact, class = "openwrangler_by_example_integer_text"))
+        }
+        result <- switch(
+          node$operator,
+          add = as.double(left) + as.double(right),
+          subtract = as.double(left) - as.double(right),
+          multiply = as.double(left) * as.double(right),
+          divide = {
+            if (right == 0) stop("By-example arithmetic cannot divide by zero", call. = FALSE)
+            as.double(left) / as.double(right)
+          }
+        )
+        if (!is.numeric(result) || length(result) != 1L || !is.finite(result)) {
+          stop("By-example arithmetic overflowed", call. = FALSE)
+        }
+        return(result)
+      }
+      stop("Unsupported by-example program", call. = FALSE)
+    }
+    evaluate(program)
+  }
+
+  by_example_equal <- function(left, right) {
+    if (inherits(left, "openwrangler_by_example_integer_text")) {
+      if (inherits(right, "openwrangler_by_example_integer_text")) return(identical(unclass(left), unclass(right)))
+      right_integer <- by_example_json_integer_text(right)
+      if (!is.null(right_integer)) return(identical(unclass(left), right_integer))
+      return(FALSE)
+    }
+    if (inherits(right, "openwrangler_by_example_integer_text")) return(by_example_equal(right, left))
+    if (is.null(left) || is.null(right)) return(is.null(left) && is.null(right))
+    if (is.logical(left) || is.logical(right)) {
+      return(is.logical(left) && is.logical(right) && identical(left, right))
+    }
+    if (is.numeric(left) && is.numeric(right)) {
+      if (
+        length(left) != 1L || length(right) != 1L || !is.finite(left) || !is.finite(right)
+      ) return(FALSE)
+      left_integer <- by_example_json_integer_text(left)
+      right_integer <- by_example_json_integer_text(right)
+      if (!is.null(left_integer) && !is.null(right_integer)) {
+        return(identical(left_integer, right_integer))
+      }
+      if (xor(is.null(left_integer), is.null(right_integer))) {
+        integer_value <- if (is.null(left_integer)) as.double(right_integer) else as.double(left_integer)
+        float_value <- if (is.null(left_integer)) as.double(left) else as.double(right)
+        return(identical(integer_value, float_value))
+      }
+      return(abs(as.double(left) - as.double(right)) <= 1e-12)
+    }
+    is.character(left) && is.character(right) && identical(left, right)
+  }
+
+  by_example_json_string <- function(value, ensure_ascii) {
+    codepoints <- utf8ToInt(enc2utf8(value))
+    escaped <- vapply(codepoints, function(codepoint) {
+      if (codepoint == 34L) return("\\\"")
+      if (codepoint == 92L) return("\\\\")
+      if (codepoint == 8L) return("\\b")
+      if (codepoint == 9L) return("\\t")
+      if (codepoint == 10L) return("\\n")
+      if (codepoint == 12L) return("\\f")
+      if (codepoint == 13L) return("\\r")
+      if (codepoint < 32L || (ensure_ascii && codepoint > 126L)) {
+        if (codepoint <= 65535L) return(sprintf("\\u%04x", codepoint))
+        scalar <- codepoint - 65536L
+        return(paste0(
+          sprintf("\\u%04x", 55296L + scalar %/% 1024L),
+          sprintf("\\u%04x", 56320L + scalar %% 1024L)
+        ))
+      }
+      intToUtf8(codepoint)
+    }, character(1L), USE.NAMES = FALSE)
+    paste0("\"", paste0(escaped, collapse = ""), "\"")
+  }
+
+  by_example_program_key <- function(program, ensure_ascii = TRUE, compact = FALSE) {
+    internalize <- function(value) {
+      if (!is.list(value)) return(value)
+      if (!is.null(names(value)) && identical(value$kind, "column")) {
+        return(list(kind = "column", column = value$column$id))
+      }
+      result <- lapply(value, internalize)
+      names(result) <- names(value)
+      result
+    }
+    serialize <- function(value) {
+      if (is.null(value)) return("null")
+      if (is.character(value)) return(by_example_json_string(value, ensure_ascii))
+      if (is.logical(value)) return(if (isTRUE(value)) "true" else "false")
+      if (is.integer(value)) return(as.character(value))
+      if (is.double(value)) {
+        integer_text <- by_example_json_integer_text(value)
+        return(if (is.null(integer_text)) by_example_double_text(value, python = TRUE) else integer_text)
+      }
+      if (!is.list(value)) stop("Invalid by-example candidate key value", call. = FALSE)
+      if (is.null(names(value))) {
+        return(paste0("[", paste0(vapply(value, serialize, character(1L)), collapse = if (compact) "," else ", "), "]"))
+      }
+      ordered <- order(enc2utf8(names(value)), method = "radix")
+      separator <- if (compact) ":" else ": "
+      fields <- vapply(ordered, function(index) {
+        paste0(by_example_json_string(names(value)[[index]], ensure_ascii), separator, serialize(value[[index]]))
+      }, character(1L), USE.NAMES = FALSE)
+      paste0("{", paste0(fields, collapse = if (compact) "," else ", "), "}")
+    }
+    enc2utf8(serialize(internalize(program)))
+  }
+
+  by_example_program_matches <- function(program, examples, source_columns) {
+    tryCatch(
+      all(vapply(examples, function(example) {
+        by_example_equal(
+          by_example_evaluate_scalar(program, example$inputs, source_columns),
+          example$output
+        )
+      }, logical(1L), USE.NAMES = FALSE)),
+      error = function(error) FALSE,
+      warning = function(warning) FALSE
+    )
+  }
+
+  by_example_candidate_literals_are_portable <- function(program) {
+    if (!is.list(program) || is.null(names(program))) return(FALSE)
+    if (identical(program$kind, "literal")) return(by_example_json_scalar(program$value))
+    for (key in c("input", "left", "right")) {
+      if (!is.null(program[[key]]) && !by_example_candidate_literals_are_portable(program[[key]])) return(FALSE)
+    }
+    if (!is.null(program$parts)) {
+      if (!all(vapply(program$parts, by_example_candidate_literals_are_portable, logical(1L)))) return(FALSE)
+    }
+    TRUE
+  }
+
+  by_example_canonicalize_candidate_literals <- function(program) {
+    if (identical(program$kind, "literal")) {
+      program$value <- by_example_canonical_json_scalar(program$value)
+      return(program)
+    }
+    for (key in c("input", "left", "right")) {
+      if (!is.null(program[[key]])) {
+        program[[key]] <- by_example_canonicalize_candidate_literals(program[[key]])
+      }
+    }
+    if (!is.null(program$parts)) {
+      program$parts <- lapply(program$parts, by_example_canonicalize_candidate_literals)
+    }
+    program
+  }
+
+  by_example_python_regex_escape <- function(value) {
+    characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+    if (length(characters) == 0L) return("")
+    specials <- c("\t", "\n", "\v", "\f", "\r", " ", "#", "$", "&", "(", ")", "*", "+", "-", ".", "?", "[", "\\", "]", "^", "{", "|", "}", "~")
+    paste0(vapply(characters, function(character) {
+      if (character %in% specials) paste0("\\", character) else character
+    }, character(1L), USE.NAMES = FALSE), collapse = "")
+  }
+
+  by_example_permutations <- function(values, length_out) {
+    if (length_out == 1L) return(lapply(values, function(value) value))
+    result <- list()
+    for (value in values) {
+      remaining <- values[values != value]
+      tails <- by_example_permutations(remaining, length_out - 1L)
+      for (tail in tails) result[[length(result) + 1L]] <- c(value, tail)
+    }
+    result
+  }
+
+  by_example_concat_literals <- function(column_indexes, example) {
+    if (is.null(example$output) || any(vapply(example$inputs[column_indexes], is.null, logical(1L)))) return(NULL)
+    output <- by_example_scalar_text(example$output)
+    cursor <- 0L
+    literals <- character()
+    for (column_index in column_indexes) {
+      token <- by_example_scalar_text(example$inputs[[column_index]])
+      suffix <- substring(output, cursor + 1L)
+      relative <- regexpr(token, suffix, fixed = TRUE)[[1L]]
+      if (relative < 0L) return(NULL)
+      position <- cursor + relative - 1L
+      literals <- c(literals, by_example_slice_scalar(output, cursor, position))
+      cursor <- position + nchar(token, type = "chars")
+    }
+    c(literals, by_example_slice_scalar(output, cursor, NULL))
+  }
+
+  synthesize_by_example_program <- function(source_columns, examples) {
+    candidates <- list()
+    candidate_indexes <- new.env(hash = TRUE, parent = emptyenv())
+    add_candidate <- function(program, cost) {
+      program <- by_example_canonicalize_candidate_literals(program)
+      if (!by_example_candidate_literals_are_portable(program)) return(invisible(NULL))
+      if (!by_example_program_matches(program, examples, source_columns)) return(invisible(NULL))
+      key <- by_example_program_key(program, ensure_ascii = FALSE, compact = TRUE)
+      rank_key <- by_example_program_key(program, ensure_ascii = TRUE, compact = FALSE)
+      if (exists(key, envir = candidate_indexes, inherits = FALSE)) {
+        index <- get(key, envir = candidate_indexes, inherits = FALSE)
+        if (cost < candidates[[index]]$cost) candidates[[index]]$cost <<- cost
+      } else {
+        index <- length(candidates) + 1L
+        candidates[[index]] <<- list(
+          cost = as.integer(cost),
+          program = program,
+          key = key,
+          rankKey = rank_key
+        )
+        assign(key, index, envir = candidate_indexes)
+      }
+      invisible(NULL)
+    }
+    outputs <- lapply(examples, `[[`, "output")
+    if (all(vapply(outputs[-1L], function(value) by_example_equal(value, outputs[[1L]]), logical(1L)))) {
+      add_candidate(list(kind = "literal", value = outputs[[1L]]), 1L)
+    }
+
+    for (column_index in seq_along(source_columns)) {
+      reference <- source_columns[[column_index]]
+      direct <- list(kind = "column", column = reference)
+      add_candidate(direct, 1L)
+      for (style in c("lower", "upper", "capitalize")) {
+        add_candidate(list(kind = "case", style = style, input = direct), 2L)
+      }
+
+      first_input <- examples[[1L]]$inputs[[column_index]]
+      if (!is.null(first_input)) {
+        value <- by_example_scalar_text(first_input)
+        value <- by_example_slice_scalar(value, 0L, min(nchar(value, type = "chars"), maximum_by_example_slice_source_characters))
+        output <- by_example_scalar_text(examples[[1L]]$output)
+        value_length <- nchar(value, type = "chars")
+        for (start in 0:value_length) {
+          for (stop in start:value_length) {
+            if (identical(by_example_slice_scalar(value, start, stop), output)) {
+              add_candidate(
+                list(kind = "slice", input = direct, start = as.integer(start), stop = as.integer(stop)),
+                2L
+              )
+            }
+          }
+        }
+      }
+
+      for (delimiter in by_example_delimiters) {
+        for (index in 0:3) {
+          add_candidate(
+            list(kind = "split", input = direct, delimiter = delimiter, index = as.integer(index)),
+            2L
+          )
+        }
+      }
+      for (pattern in by_example_regex_patterns) {
+        add_candidate(list(kind = "regexExtract", input = direct, pattern = pattern, group = 1L), 3L)
+      }
+
+      replacements <- lapply(examples, function(example) {
+        before_value <- example$inputs[[column_index]]
+        after_value <- example$output
+        if (is.null(before_value) || is.null(after_value)) return(NULL)
+        before <- strsplit(by_example_scalar_text(before_value), "", fixed = TRUE)[[1L]]
+        after <- strsplit(by_example_scalar_text(after_value), "", fixed = TRUE)[[1L]]
+        prefix <- 0L
+        while (prefix < min(length(before), length(after)) && identical(before[[prefix + 1L]], after[[prefix + 1L]])) {
+          prefix <- prefix + 1L
+        }
+        suffix <- 0L
+        while (
+          suffix < min(length(before) - prefix, length(after) - prefix) &&
+            identical(before[[length(before) - suffix]], after[[length(after) - suffix]])
+        ) {
+          suffix <- suffix + 1L
+        }
+        before_end <- length(before) - suffix
+        after_end <- length(after) - suffix
+        find <- if (prefix >= before_end) "" else paste0(before[seq.int(prefix + 1L, before_end)], collapse = "")
+        replacement <- if (prefix >= after_end) "" else paste0(after[seq.int(prefix + 1L, after_end)], collapse = "")
+        list(find = find, replacement = replacement)
+      })
+      if (
+        length(replacements) > 0L && !any(vapply(replacements, is.null, logical(1L))) &&
+          all(vapply(replacements[-1L], identical, logical(1L), replacements[[1L]])) &&
+          !identical(replacements[[1L]]$find, "")
+      ) {
+        add_candidate(list(
+          kind = "regexReplace",
+          input = direct,
+          pattern = by_example_python_regex_escape(replacements[[1L]]$find),
+          replacement = replacements[[1L]]$replacement
+        ), 3L)
+      }
+
+      for (input_format in by_example_date_formats) {
+        for (output_format in by_example_date_formats[by_example_date_formats != input_format]) {
+          add_candidate(list(
+            kind = "datetimeFormat",
+            input = direct,
+            inputFormat = input_format,
+            outputFormat = output_format
+          ), 3L)
+        }
+      }
+
+      first_output <- examples[[1L]]$output
+      if (
+        !is.null(first_input) && !is.logical(first_input) && is.numeric(first_input) && is.finite(first_input) &&
+          !is.null(first_output) && !is.logical(first_output) && is.numeric(first_output) && is.finite(first_output)
+      ) {
+        literal <- function(value) list(kind = "literal", value = value)
+        arithmetic <- function(operator, right) list(kind = "arithmetic", left = direct, operator = operator, right = right)
+        numeric_delta <- function(left, right) {
+          left_integer <- by_example_json_integer_text(left)
+          right_integer <- by_example_json_integer_text(right)
+          if (!is.null(left_integer) && !is.null(right_integer)) {
+            return(by_example_safe_integer_literal(by_example_signed_integer_binary(
+              left_integer,
+              "subtract",
+              right_integer
+            )))
+          }
+          result <- as.double(left) - as.double(right)
+          if (is.finite(result)) result else NULL
+        }
+        add_delta <- numeric_delta(first_output, first_input)
+        subtract_delta <- numeric_delta(first_input, first_output)
+        if (!is.null(add_delta)) add_candidate(arithmetic("add", literal(add_delta)), 2L)
+        if (!is.null(subtract_delta)) add_candidate(arithmetic("subtract", literal(subtract_delta)), 2L)
+        if (first_input != 0) {
+          output_integer <- by_example_json_integer_text(first_output)
+          input_integer <- by_example_json_integer_text(first_input)
+          exact_ratio <- if (!is.null(output_integer) && !is.null(input_integer)) {
+            by_example_integer_ratio(output_integer, input_integer)
+          } else NULL
+          ratio <- if (!is.null(exact_ratio)) {
+            by_example_safe_integer_literal(exact_ratio)
+          } else {
+            as.double(first_output) / as.double(first_input)
+          }
+          if (!is.null(ratio) && is.numeric(ratio) && is.finite(ratio)) {
+            add_candidate(arithmetic("multiply", literal(ratio)), 2L)
+          }
+        }
+        if (first_output != 0) {
+          input_integer <- by_example_json_integer_text(first_input)
+          output_integer <- by_example_json_integer_text(first_output)
+          exact_ratio <- if (!is.null(input_integer) && !is.null(output_integer)) {
+            by_example_integer_ratio(input_integer, output_integer)
+          } else NULL
+          ratio <- if (!is.null(exact_ratio)) {
+            by_example_safe_integer_literal(exact_ratio)
+          } else {
+            as.double(first_input) / as.double(first_output)
+          }
+          if (!is.null(ratio) && is.numeric(ratio) && is.finite(ratio)) {
+            add_candidate(arithmetic("divide", literal(ratio)), 2L)
+          }
+        }
+      }
+    }
+
+    if (length(source_columns) >= 2L) {
+      for (indexes in by_example_permutations(seq_along(source_columns), 2L)) {
+        left <- list(kind = "column", column = source_columns[[indexes[[1L]]]])
+        right <- list(kind = "column", column = source_columns[[indexes[[2L]]]])
+        for (operator in c("add", "subtract", "multiply", "divide")) {
+          add_candidate(list(kind = "arithmetic", left = left, operator = operator, right = right), 2L)
+        }
+      }
+    }
+
+    for (length_out in c(2L, 3L)) {
+      if (length(source_columns) < length_out) next
+      for (indexes in by_example_permutations(seq_along(source_columns), length_out)) {
+        literal_sets <- lapply(examples, function(example) by_example_concat_literals(indexes, example))
+        if (
+          length(literal_sets) == 0L || is.null(literal_sets[[1L]]) ||
+            any(vapply(literal_sets[-1L], function(value) !identical(value, literal_sets[[1L]]), logical(1L)))
+        ) next
+        literals <- literal_sets[[1L]]
+        parts <- list()
+        for (index in seq_along(indexes)) {
+          if (!identical(literals[[index]], "")) {
+            parts[[length(parts) + 1L]] <- list(kind = "literal", value = literals[[index]])
+          }
+          parts[[length(parts) + 1L]] <- list(kind = "column", column = source_columns[[indexes[[index]]]])
+        }
+        if (!identical(literals[[length(literals)]], "")) {
+          parts[[length(parts) + 1L]] <- list(kind = "literal", value = literals[[length(literals)]])
+        }
+        add_candidate(list(kind = "concat", parts = parts), 1L + length(parts))
+      }
+    }
+
+    if (length(candidates) == 0L) {
+      abort(
+        "invalid_request",
+        paste0(
+          "No deterministic slicing, splitting, concatenation, literal, regex, casing, datetime, ",
+          "or arithmetic program satisfies every example. Add or correct examples."
+        )
+      )
+    }
+    costs <- vapply(candidates, `[[`, integer(1L), "cost", USE.NAMES = FALSE)
+    keys <- vapply(candidates, `[[`, character(1L), "rankKey", USE.NAMES = FALSE)
+    ranked <- order(costs, keys, method = "radix")
+    selected <- candidates[[ranked[[1L]]]]
+    equally_simple <- sum(costs == selected$cost)
+    warnings <- list()
+    if (equally_simple > 1L) {
+      warnings <- list(sprintf(
+        "Ambiguous examples: %d equally simple programs match. Preview the selected result carefully.",
+        equally_simple
+      ))
+    } else if (length(candidates) > 1L) {
+      warnings <- list(sprintf(
+        "%d programs match; Open Wrangler selected the simplest deterministic program.",
+        length(candidates)
+      ))
+    }
+    list(program = selected$program, warnings = warnings, candidateCount = as.integer(length(candidates)))
+  }
+
+  decode_by_example_params <- function(value, step_id, limits) {
+    params <- exact_record(
+      value,
+      c("sourceColumns", "newColumn", "examples"),
+      "request.payload.step.params",
+      optional_fields = c("program", "warnings", "candidateCount")
+    )
+    source_columns <- params$sourceColumns
+    if (
+      !is.list(source_columns) || is.object(source_columns) || !is.null(names(source_columns)) ||
+        length(source_columns) < 1L || length(source_columns) > maximum_by_example_sources
+    ) {
+      abort(
+        "invalid_request",
+        sprintf(
+          "request.payload.step.params.sourceColumns must contain between 1 and %d column references",
+          maximum_by_example_sources
+        )
+      )
+    }
+    source_columns <- lapply(seq_along(source_columns), function(index) {
+      decode_column_reference(
+        source_columns[[index]],
+        sprintf("request.payload.step.params.sourceColumns[%d]", index),
+        limits$columnIdBytes
+      )
+    })
+    source_ids <- vapply(source_columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (anyDuplicated(source_ids)) {
+      abort("invalid_request", "request.payload.step.params.sourceColumns contains a repeated column identity")
+    }
+    new_column <- bounded_text(
+      params$newColumn,
+      "request.payload.step.params.newColumn",
+      maximum_variable_name_bytes
+    )
+    if (identical(new_column, "")) {
+      abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+    }
+
+    raw_examples <- params$examples
+    if (
+      !is.list(raw_examples) || is.object(raw_examples) || !is.null(names(raw_examples)) ||
+        length(raw_examples) < 2L || length(raw_examples) > maximum_by_example_examples
+    ) {
+      abort(
+        "invalid_request",
+        sprintf(
+          "request.payload.step.params.examples must contain between 2 and %d examples",
+          maximum_by_example_examples
+        )
+      )
+    }
+    examples <- lapply(seq_along(raw_examples), function(index) {
+      example <- exact_record(
+        raw_examples[[index]],
+        c("inputs", "output"),
+        sprintf("request.payload.step.params.examples[%d]", index)
+      )
+      inputs <- example$inputs
+      if (
+        !is.list(inputs) || is.object(inputs) || !is.null(names(inputs)) ||
+          length(inputs) != length(source_columns)
+      ) {
+        abort(
+          "invalid_request",
+          sprintf(
+            "request.payload.step.params.examples[%d].inputs must align with every source column",
+            index
+          )
+        )
+      }
+      if (
+        any(!vapply(inputs, by_example_json_scalar, logical(1L), USE.NAMES = FALSE)) ||
+          !by_example_json_scalar(example$output)
+      ) {
+        abort("invalid_request", "By-example inputs and outputs must be finite JSON scalar values")
+      }
+      list(inputs = inputs, output = example$output)
+    })
+
+    if ("warnings" %in% names(params)) {
+      warnings <- params$warnings
+      if (
+        !is.list(warnings) || is.object(warnings) || !is.null(names(warnings)) ||
+          length(warnings) > maximum_by_example_warnings ||
+          any(!vapply(warnings, function(item) {
+            is.character(item) && length(item) == 1L && !is.na(item)
+          }, logical(1L), USE.NAMES = FALSE))
+      ) {
+        abort(
+          "invalid_request",
+          sprintf("request.payload.step.params.warnings must contain at most %d strings", maximum_by_example_warnings)
+        )
+      }
+      warnings <- vapply(seq_along(warnings), function(index) {
+        bounded_text(
+          warnings[[index]],
+          sprintf("request.payload.step.params.warnings[%d]", index),
+          maximum_by_example_string_bytes
+        )
+      }, character(1L), USE.NAMES = FALSE)
+    }
+    if ("candidateCount" %in% names(params)) {
+      candidate_count <- params$candidateCount
+      if (
+        length(candidate_count) != 1L || !is.numeric(candidate_count) || is.na(candidate_count) ||
+          !is.finite(candidate_count) || candidate_count < 1 || candidate_count > 9007199254740991 ||
+          candidate_count != floor(candidate_count)
+      ) {
+        abort("invalid_request", "request.payload.step.params.candidateCount must be positive")
+      }
+    }
+
+    saved_program <- if ("program" %in% names(params)) {
+      decode_by_example_program(params$program, source_columns, limits)
+    } else {
+      NULL
+    }
+    validate_by_example_text_budget(params)
+    synthesized <- synthesize_by_example_program(source_columns, examples)
+    if (!is.null(saved_program) && (
+      !identical(saved_program, synthesized$program) ||
+        !by_example_program_matches(saved_program, examples, source_columns)
+    )) {
+      abort(
+        "invalid_request",
+        "The saved by-example program is not the deterministic program selected for these examples"
+      )
+    }
+    normalized <- list(
+      sourceColumns = source_columns,
+      newColumn = new_column,
+      examples = examples,
+      program = synthesized$program,
+      warnings = synthesized$warnings,
+      candidateCount = synthesized$candidateCount
+    )
+    validate_by_example_text_budget(normalized)
+    list(
+      id = step_id,
+      kind = "byExample",
+      params = normalized,
+      outputId = bounded_text(
+        paste0("c:step:", step_id, ":0"),
+        "the derived R by-example column identity",
+        limits$columnIdBytes
+      )
+    )
+  }
+
   decode_transform_step <- function(value, limits) {
     step <- exact_record(value, c("id", "kind", "params"), "request.payload.step")
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
     if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
     kind <- bounded_text(step$kind, "request.payload.step.kind", 64L)
+    if (identical(kind, "byExample")) {
+      return(decode_by_example_params(step$params, step_id, limits))
+    }
     if (identical(kind, "sortRows")) {
       params <- exact_record(step$params, "rules", "request.payload.step.params")
       rules <- decode_sort_rules(params$rules, limits)
@@ -2047,6 +3489,156 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  bind_by_example_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    source_columns <- lapply(seq_along(step$params$sourceColumns), function(index) {
+      reference <- step$params$sourceColumns[[index]]
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", "A by-example source column no longer matches the active R dataframe", TRUE)
+      }
+      position <- as.integer(matches[[1L]])
+      semantic_kind <- schema[[position]]$semantics$kind
+      if (!semantic_kind %in% c(
+        "character",
+        "factor",
+        "integer",
+        "integer64",
+        "double",
+        "logical",
+        "date",
+        "datetime",
+        "difftime"
+      )) {
+        abort(
+          "invalid_request",
+          sprintf("By-example source column %s is not a portable scalar R column", reference$name),
+          TRUE
+        )
+      }
+      list(
+        id = reference$id,
+        name = reference$name,
+        position = position,
+        semanticKind = semantic_kind,
+        resultKind = semantic_kind
+      )
+    })
+    selected_ids <- vapply(source_columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+
+    bind_expression <- function(program, label) {
+      kind <- program$kind
+      if (identical(kind, "column")) {
+        selected_index <- match(program$column$id, selected_ids)
+        if (
+          is.na(selected_index) ||
+            !identical(source_columns[[selected_index]]$name, program$column$name)
+        ) {
+          abort("stale_column", "By-example program references a stale or unselected R column", TRUE)
+        }
+        source <- source_columns[[selected_index]]
+        return(list(
+          program = list(
+            kind = kind,
+            column = program$column,
+            `_owSourceIndex` = as.integer(selected_index),
+            `_owSourceKind` = source$semanticKind,
+            `_owResultType` = source$resultKind
+          ),
+          type = source$resultKind
+        ))
+      }
+      if (identical(kind, "literal")) {
+        type <- if (is.null(program$value)) {
+          "null"
+        } else if (is.character(program$value)) {
+          "character"
+        } else if (is.logical(program$value)) {
+          "logical"
+        } else {
+          integer_text <- by_example_json_integer_text(program$value)
+          if (is.null(integer_text)) {
+            "double"
+          } else if (
+            program$value >= -.Machine$integer.max && program$value <= .Machine$integer.max
+          ) {
+            "integer"
+          } else {
+            "integer64"
+          }
+        }
+        return(list(
+          program = list(kind = kind, value = program$value, `_owResultType` = type),
+          type = type
+        ))
+      }
+      if (kind %in% c("slice", "split", "regexExtract", "regexReplace", "case", "datetimeFormat")) {
+        child <- bind_expression(program$input, paste0(label, ".input"))
+        if (!child$type %in% c("character", "factor", "integer", "integer64", "date", "null")) {
+          abort(
+            "invalid_request",
+            sprintf("%s cannot apply %s to a non-portable text input", label, kind),
+            TRUE
+          )
+        }
+        result <- program
+        result$input <- child$program
+        result$`_owResultType` <- "character"
+        return(list(program = result, type = "character"))
+      }
+      if (identical(kind, "concat")) {
+        parts <- lapply(seq_along(program$parts), function(index) {
+          bind_expression(program$parts[[index]], sprintf("%s.parts[%d]", label, index))
+        })
+        if (any(!vapply(parts, `[[`, character(1L), "type") %in% c("character", "factor", "integer", "integer64", "date"))) {
+          abort("invalid_request", "By-example concat accepts only portable non-null text inputs", TRUE)
+        }
+        result <- program
+        result$parts <- lapply(parts, `[[`, "program")
+        result$`_owResultType` <- "character"
+        return(list(program = result, type = "character"))
+      }
+      if (identical(kind, "arithmetic")) {
+        left <- bind_expression(program$left, paste0(label, ".left"))
+        right <- bind_expression(program$right, paste0(label, ".right"))
+        if (
+          !left$type %in% c("integer", "integer64", "double") ||
+            !right$type %in% c("integer", "integer64", "double")
+        ) {
+          abort("invalid_request", "By-example arithmetic accepts only integer or floating-point inputs", TRUE)
+        }
+        result_type <- if (
+          identical(program$operator, "divide") || "double" %in% c(left$type, right$type)
+        ) "double" else "integer64"
+        result <- program
+        result$left <- left$program
+        result$right <- right$program
+        result$`_owLeftType` <- left$type
+        result$`_owRightType` <- right$type
+        result$`_owResultType` <- result_type
+        return(list(program = result, type = result_type))
+      }
+      abort("runtime_error", sprintf("Unsupported bound by-example node at %s", label))
+    }
+
+    bound_program <- bind_expression(step$params$program, "byExample.program")
+    result_kind <- if (identical(bound_program$type, "null")) "logical" else bound_program$type
+    existing_names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    if (step$params$newColumn %in% existing_names || step$outputId %in% schema_ids) {
+      abort("invalid_request", "The by-example output column already exists", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      sourceColumns = source_columns,
+      newName = step$params$newColumn,
+      outputId = step$outputId,
+      program = bound_program$program,
+      resultKind = result_kind
+    )
+  }
+
   bind_row_reduction_step <- function(capture, step) {
     schema <- capture$descriptor$schema
     schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
@@ -2137,6 +3729,437 @@ openwrangler_r_kernel_agent <- local({
         sort = rules
       )
     )
+  }
+
+  generated_by_example_evaluate <- function(program, columns) {
+    storage_length <- function(value) base::length(base::unclass(value))
+    if (!base::is.list(columns) || base::length(columns) < 1L || base::length(columns) > 16L) {
+      base::stop("Open Wrangler by-example received invalid source columns", call. = FALSE)
+    }
+    row_count <- storage_length(columns[[1L]])
+    if (base::any(base::vapply(columns, storage_length, integer(1L), USE.NAMES = FALSE) != row_count)) {
+      base::stop("Open Wrangler by-example source columns have different lengths", call. = FALSE)
+    }
+    bound_result_kind <- program$`_owResultType`
+    result_kind <- if (base::identical(bound_result_kind, "null")) "logical" else bound_result_kind
+    if (!base::is.character(result_kind) || base::length(result_kind) != 1L || !result_kind %in% c(
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+    )) {
+      base::stop(base::sprintf(
+        "Open Wrangler by-example has an invalid bound result kind (%s; value %s; length %d; class %s)",
+        base::typeof(result_kind),
+        base::paste(base::encodeString(result_kind, quote = "\""), collapse = ","),
+        base::length(result_kind),
+        base::paste(base::class(result_kind), collapse = ",")
+      ), call. = FALSE)
+    }
+    result_slot_bytes <- if (result_kind %in% c("logical", "integer", "factor")) 4 else 8
+    projected_slot_bytes <- base::as.double(row_count) * result_slot_bytes
+    if (!base::is.finite(projected_slot_bytes) || projected_slot_bytes > 67108864) {
+      base::stop("Open Wrangler by-example exceeds its aggregate output budget", call. = FALSE)
+    }
+
+    validate_source <- function(value, kind) {
+      valid <- switch(
+        kind,
+        character = base::is.character(value) && !base::is.object(value),
+        factor = base::is.factor(value),
+        integer = base::is.integer(value) && !base::is.object(value),
+        integer64 = base::identical(base::class(value), "integer64"),
+        double = base::is.double(value) && !base::is.object(value),
+        logical = base::is.logical(value) && !base::is.object(value),
+        date = base::identical(base::class(value), "Date"),
+        datetime = base::identical(base::class(value), c("POSIXct", "POSIXt")),
+        difftime = base::identical(base::class(value), "difftime"),
+        FALSE
+      )
+      if (!base::isTRUE(valid)) {
+        base::stop("Open Wrangler by-example source type changed after binding", call. = FALSE)
+      }
+      value
+    }
+
+    integer64_tools <- base::local({
+      cached <- NULL
+      function() {
+        if (!base::is.null(cached)) return(cached)
+        if (!base::requireNamespace("bit64", quietly = TRUE)) {
+          base::stop("bit64 is required for integer64 by-example evaluation", call. = FALSE)
+        }
+        namespace <- base::asNamespace("bit64")
+        dlls <- base::getNamespaceInfo(namespace, "DLLs")
+        routines <- base::getNamespaceInfo(namespace, "nativeRoutines")
+        if (!base::is.list(dlls) || base::length(dlls) != 1L || !base::is.list(routines) || base::length(routines) != 1L) {
+          base::stop("bit64 has invalid by-example native registration metadata", call. = FALSE)
+        }
+        dll <- dlls[[1L]]
+        routine_map <- routines[[1L]]
+        dll_fields <- base::unclass(dll)
+        if (
+          !base::inherits(dll, "DLLInfo") ||
+            !base::identical(base::.subset2(dll_fields, "name"), "bit64") ||
+            !base::identical(base::.subset2(dll_fields, "dynamicLookup"), FALSE) ||
+            !base::identical(base::.subset2(dll_fields, "forceSymbols"), TRUE) ||
+            !base::is.character(routine_map) || base::is.null(base::names(routine_map))
+        ) {
+          base::stop("bit64 has invalid by-example native registration metadata", call. = FALSE)
+        }
+        native <- function(binding_name, native_name) {
+          if (
+            !base::exists(binding_name, envir = namespace, inherits = FALSE) ||
+              base::bindingIsActive(binding_name, namespace) ||
+              !base::bindingIsLocked(binding_name, namespace)
+          ) {
+            base::stop("bit64 has unavailable or mutable by-example primitives", call. = FALSE)
+          }
+          registered <- base::get(binding_name, envir = namespace, inherits = FALSE)
+          canonical <- base::tryCatch(
+            base::getNativeSymbolInfo(
+              native_name,
+              PACKAGE = base::.subset2(dll_fields, "info"),
+              withRegistrationInfo = FALSE
+            ),
+            error = function(error) NULL
+          )
+          registered_fields <- base::unclass(registered)
+          canonical_fields <- if (base::is.null(canonical)) NULL else base::unclass(canonical)
+          if (
+            !base::identical(base::.subset2(routine_map, binding_name), native_name) ||
+              !base::identical(base::class(registered), c("CallRoutine", "NativeSymbolInfo")) ||
+              !base::identical(base::.subset2(registered_fields, "name"), native_name) ||
+              !base::identical(base::.subset2(registered_fields, "numParameters"), 2L) ||
+              !base::identical(base::.subset2(registered_fields, "dll"), dll) ||
+              !base::inherits(base::.subset2(registered_fields, "address"), "RegisteredNativeSymbol") ||
+              base::is.null(canonical) ||
+              !base::identical(base::class(canonical), c("CallRoutine", "NativeSymbolInfo")) ||
+              !base::identical(base::.subset2(canonical_fields, "name"), native_name) ||
+              !base::identical(base::.subset2(canonical_fields, "numParameters"), 2L) ||
+              !base::identical(base::.subset2(canonical_fields, "dll"), dll) ||
+              !base::inherits(base::.subset2(canonical_fields, "address"), "NativeSymbol")
+          ) {
+            base::stop("bit64 has invalid by-example primitives", call. = FALSE)
+          }
+          canonical
+        }
+        cached <<- base::list(
+          toCharacter = native("C_as_character_integer64", "as_character_integer64"),
+          toDouble = native("C_as_double_integer64", "as_double_integer64"),
+          fromCharacter = native("C_as_integer64_character", "as_integer64_character"),
+          isMissing = native("C_isna_integer64", "isna_integer64")
+        )
+        cached
+      }
+    })
+    integer64_missing <- function(value) {
+      tools <- integer64_tools()
+      result <- base::.Call(tools$isMissing, value, base::logical(storage_length(value)))
+      if (!base::is.logical(result) || base::length(result) != storage_length(value) || base::anyNA(result)) {
+        base::stop("bit64 returned an invalid by-example missing-value mask", call. = FALSE)
+      }
+      result
+    }
+    integer64_character <- function(value) {
+      tools <- integer64_tools()
+      result <- base::.Call(tools$toCharacter, value, base::character(storage_length(value)))
+      if (!base::is.character(result) || base::length(result) != storage_length(value)) {
+        base::stop("bit64 returned invalid by-example integer text", call. = FALSE)
+      }
+      result
+    }
+    integer64_from_character <- function(value) {
+      tools <- integer64_tools()
+      result <- base::.Call(tools$fromCharacter, value, base::double(base::length(value)))
+      base::attributes(result) <- list(class = "integer64")
+      if (
+        !base::identical(base::class(result), "integer64") ||
+          base::length(result) != base::length(value) ||
+          !base::identical(integer64_missing(result), base::is.na(value))
+      ) {
+        base::stop("bit64 could not represent an exact by-example integer", call. = FALSE)
+      }
+      result
+    }
+    factor_character <- function(value) {
+      levels <- base::attr(value, "levels", exact = TRUE)
+      codes <- base::unclass(value)
+      result <- base::rep.int(NA_character_, storage_length(value))
+      present <- !base::is.na(codes)
+      if (base::any(present)) result[present] <- levels[codes[present]]
+      result
+    }
+    normalize_text <- function(value) {
+      base::vapply(base::seq_len(storage_length(value)), function(index) {
+        by_example_utf8_scalar(base::.subset2(value, index))
+      }, base::character(1L), USE.NAMES = FALSE)
+    }
+    as_text <- function(value, kind) {
+      if (base::identical(kind, "null")) return(base::rep.int(NA_character_, row_count))
+      if (base::identical(kind, "factor")) return(normalize_text(factor_character(value)))
+      if (base::identical(kind, "character")) return(normalize_text(value))
+      if (base::identical(kind, "integer")) return(base::as.character(value))
+      if (base::identical(kind, "integer64")) return(integer64_character(value))
+      if (base::identical(kind, "date")) return(base::format.Date(value, format = "%Y-%m-%d"))
+      base::stop("Open Wrangler by-example received a non-portable text input", call. = FALSE)
+    }
+    expand_literal <- function(value, kind) {
+      if (base::identical(kind, "null")) return(base::rep.int(NA, row_count))
+      if (base::identical(kind, "character")) return(base::rep.int(value, row_count))
+      if (base::identical(kind, "logical")) return(base::rep.int(value, row_count))
+      if (base::identical(kind, "integer")) return(base::rep.int(base::as.integer(value), row_count))
+      if (base::identical(kind, "integer64")) {
+        integer_text <- by_example_json_integer_text(value)
+        if (base::is.null(integer_text)) {
+          base::stop("Open Wrangler by-example integer64 literal is not an exact safe integer", call. = FALSE)
+        }
+        return(integer64_from_character(base::rep.int(integer_text, row_count)))
+      }
+      if (base::identical(kind, "double")) return(base::rep.int(base::as.double(value), row_count))
+      base::stop("Open Wrangler by-example literal has an invalid type", call. = FALSE)
+    }
+    map_text <- function(value, transform) {
+      base::vapply(base::seq_len(row_count), function(index) {
+        item <- value[[index]]
+        if (base::is.na(item)) return(NA_character_)
+        transformed <- transform(item)
+        if (base::is.null(transformed)) NA_character_ else transformed
+      }, character(1L), USE.NAMES = FALSE)
+    }
+    integer64_to_double <- function(value) {
+      tools <- integer64_tools()
+      missing <- integer64_missing(value)
+      result <- base::suppressWarnings(base::.Call(
+        tools$toDouble,
+        value,
+        base::double(storage_length(value))
+      ))
+      if (base::any(!missing & !base::is.finite(result))) {
+        base::stop("Open Wrangler by-example cannot convert integer64 to finite double", call. = FALSE)
+      }
+      result
+    }
+    integer_text_operand <- function(value, kind) {
+      if (base::identical(kind, "integer")) return(base::as.character(value))
+      if (base::identical(kind, "integer64")) return(integer64_character(value))
+      base::stop("Open Wrangler exact by-example arithmetic received a non-integer operand", call. = FALSE)
+    }
+    double_operand <- function(value, kind) {
+      if (base::identical(kind, "integer64")) return(integer64_to_double(value))
+      if (!kind %in% c("integer", "double")) {
+        base::stop("Open Wrangler by-example arithmetic received a non-numeric operand", call. = FALSE)
+      }
+      base::as.double(value)
+    }
+
+    validate_text_result <- function(value) {
+      present <- !base::is.na(value)
+      if (base::any(present)) {
+        converted <- base::vapply(base::which(present), function(index) {
+          by_example_utf8_scalar(base::.subset2(value, index))
+        }, base::character(1L), USE.NAMES = FALSE)
+        value[present] <- converted
+        bytes <- base::nchar(converted, type = "bytes")
+        if (base::anyNA(bytes) || base::any(bytes > 8192L)) {
+          base::stop("Open Wrangler by-example produced oversized or invalid text", call. = FALSE)
+        }
+        total <- base::sum(base::as.double(bytes)) + base::as.double(base::length(value)) * 8
+      } else {
+        total <- base::as.double(base::length(value)) * 8
+      }
+      if (!base::is.finite(total) || total > 67108864) {
+        base::stop("Open Wrangler by-example exceeds its aggregate output budget", call. = FALSE)
+      }
+      base::list(value = value, bytes = total)
+    }
+
+    if (row_count > 1024L && !base::identical(program$kind, "column")) {
+      starts <- base::seq.int(1L, row_count, by = 1024L)
+      chunks <- base::vector("list", base::length(starts))
+      total_text_bytes <- 0
+      for (chunk_index in base::seq_along(starts)) {
+        start <- starts[[chunk_index]]
+        stop <- base::min(row_count, start + 1023L)
+        indexes <- base::seq.int(start, stop)
+        chunk_columns <- base::lapply(columns, function(column) base::.subset(column, indexes))
+        chunk <- base::Recall(program, chunk_columns)
+        if (base::identical(result_kind, "character")) {
+          validated_chunk <- validate_text_result(chunk)
+          chunk <- validated_chunk$value
+          total_text_bytes <- total_text_bytes + validated_chunk$bytes
+          if (!base::is.finite(total_text_bytes) || total_text_bytes > 67108864) {
+            base::stop("Open Wrangler by-example exceeds its aggregate output budget", call. = FALSE)
+          }
+        }
+        chunks[[chunk_index]] <- chunk
+      }
+      chunk_names <- base::lapply(chunks, function(chunk) base::attr(chunk, "names", exact = TRUE))
+      retain_names <- base::all(base::vapply(
+        base::seq_along(chunks),
+        function(index) !base::is.null(chunk_names[[index]]) && base::length(chunk_names[[index]]) == storage_length(chunks[[index]]),
+        logical(1L),
+        USE.NAMES = FALSE
+      ))
+      combined_names <- if (retain_names) base::unlist(chunk_names, recursive = FALSE, use.names = FALSE) else NULL
+      if (base::identical(result_kind, "integer64")) {
+        result <- base::unlist(base::lapply(chunks, base::unclass), recursive = FALSE, use.names = FALSE)
+        base::attributes(result) <- if (base::is.null(combined_names)) {
+          base::list(class = "integer64")
+        } else {
+          base::list(class = "integer64", names = combined_names)
+        }
+      } else {
+        result <- base::unlist(chunks, recursive = FALSE, use.names = FALSE)
+        if (!base::is.null(combined_names)) base::attr(result, "names") <- combined_names
+      }
+      if (storage_length(result) != row_count) {
+        base::stop("Open Wrangler by-example evaluator returned the wrong row count", call. = FALSE)
+      }
+      return(result)
+    }
+
+    evaluate <- function(node) {
+      kind <- node$kind
+      if (base::identical(kind, "column")) {
+        source_index <- node$`_owSourceIndex`
+        if (
+          !base::is.integer(source_index) || base::length(source_index) != 1L ||
+            base::is.na(source_index) || source_index < 1L || source_index > base::length(columns)
+        ) {
+          base::stop("Open Wrangler by-example bound column index is invalid", call. = FALSE)
+        }
+        return(validate_source(columns[[source_index]], node$`_owSourceKind`))
+      }
+      if (base::identical(kind, "literal")) {
+        return(expand_literal(node$value, node$`_owResultType`))
+      }
+      if (base::identical(kind, "slice")) {
+        child <- evaluate(node$input)
+        text <- as_text(child, node$input$`_owResultType`)
+        return(map_text(text, function(value) by_example_slice_scalar(value, node$start, node$stop)))
+      }
+      if (base::identical(kind, "split")) {
+        child <- evaluate(node$input)
+        text <- as_text(child, node$input$`_owResultType`)
+        return(map_text(text, function(value) {
+          by_example_split_part_scalar(value, node$delimiter, node$index)
+        }))
+      }
+      if (base::identical(kind, "concat")) {
+        values <- base::lapply(node$parts, function(part) as_text(evaluate(part), part$`_owResultType`))
+        return(base::vapply(base::seq_len(row_count), function(index) {
+          row <- base::vapply(values, `[[`, character(1L), index, USE.NAMES = FALSE)
+          if (base::anyNA(row)) return(NA_character_)
+          projected <- base::sum(base::as.double(base::nchar(row, type = "bytes")))
+          if (!base::is.finite(projected) || projected > 8192L) {
+            base::stop("Open Wrangler by-example concat would produce oversized text", call. = FALSE)
+          }
+          base::paste0(row, collapse = "")
+        }, character(1L), USE.NAMES = FALSE))
+      }
+      if (base::identical(kind, "regexExtract")) {
+        child <- evaluate(node$input)
+        text <- as_text(child, node$input$`_owResultType`)
+        return(map_text(text, function(value) {
+          by_example_regex_extract_scalar(value, node$pattern, node$group)
+        }))
+      }
+      if (base::identical(kind, "regexReplace")) {
+        child <- evaluate(node$input)
+        text <- as_text(child, node$input$`_owResultType`)
+        return(map_text(text, function(value) {
+          by_example_regex_replace_scalar(value, node$pattern, node$replacement)
+        }))
+      }
+      if (base::identical(kind, "case")) {
+        child <- evaluate(node$input)
+        text <- as_text(child, node$input$`_owResultType`)
+        return(map_text(text, function(value) {
+          if (base::nchar(value, type = "bytes") > 8192L) {
+            base::stop("Open Wrangler by-example case conversion would produce oversized text", call. = FALSE)
+          }
+          if (base::identical(node$style, "lower")) {
+            return(base::chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value))
+          }
+          if (base::identical(node$style, "upper")) {
+            return(base::chartr("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", value))
+          }
+          characters <- base::strsplit(value, "", fixed = TRUE)[[1L]]
+          if (base::length(characters) == 0L) return("")
+          base::paste0(
+            base::chartr("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", characters[[1L]]),
+            if (base::length(characters) == 1L) "" else base::chartr(
+              "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+              "abcdefghijklmnopqrstuvwxyz",
+              base::paste0(characters[-1L], collapse = "")
+            )
+          )
+        }))
+      }
+      if (base::identical(kind, "datetimeFormat")) {
+        child <- evaluate(node$input)
+        text <- as_text(child, node$input$`_owResultType`)
+        return(map_text(text, function(value) {
+          base::tryCatch(
+            {
+              parts <- by_example_datetime_parts(value, node$inputFormat)
+              by_example_format_datetime_parts(parts, node$outputFormat)
+            },
+            error = function(error) NULL
+          )
+        }))
+      }
+      if (base::identical(kind, "arithmetic")) {
+        left <- evaluate(node$left)
+        right <- evaluate(node$right)
+        left_type <- node$`_owLeftType`
+        right_type <- node$`_owRightType`
+        if (base::identical(node$`_owResultType`, "integer64")) {
+          left_text <- integer_text_operand(left, left_type)
+          right_text <- integer_text_operand(right, right_type)
+          input_missing <- base::is.na(left_text) | base::is.na(right_text)
+          result_text <- base::vapply(base::seq_len(row_count), function(index) {
+            if (input_missing[[index]]) return(NA_character_)
+            by_example_integer64_text(by_example_signed_integer_binary(
+              left_text[[index]],
+              node$operator,
+              right_text[[index]]
+            ))
+          }, character(1L), USE.NAMES = FALSE)
+          result <- integer64_from_character(result_text)
+          if (
+            !base::identical(base::class(result), "integer64") || storage_length(result) != row_count ||
+              base::any(integer64_missing(result) & !input_missing)
+          ) {
+            base::stop("Open Wrangler exact by-example arithmetic returned an invalid result", call. = FALSE)
+          }
+          return(result)
+        }
+        left <- double_operand(left, left_type)
+        right <- double_operand(right, right_type)
+        left_missing <- base::is.na(left) & !base::is.nan(left)
+        right_missing <- base::is.na(right) & !base::is.nan(right)
+        result <- base::suppressWarnings(switch(
+          node$operator,
+          add = left + right,
+          subtract = left - right,
+          multiply = left * right,
+          divide = left / right,
+          base::stop("Open Wrangler by-example arithmetic received an invalid operator", call. = FALSE)
+        ))
+        input_missing <- left_missing | right_missing
+        if (!base::is.double(result) || base::length(result) != row_count) {
+          base::stop("Open Wrangler by-example arithmetic returned an invalid result", call. = FALSE)
+        }
+        result[input_missing] <- NA_real_
+        return(result)
+      }
+      base::stop("Open Wrangler generated R received an unsupported by-example program", call. = FALSE)
+    }
+    result <- evaluate(program)
+    if (storage_length(result) != row_count) {
+      base::stop("Open Wrangler by-example evaluator returned the wrong row count", call. = FALSE)
+    }
+    if (base::identical(result_kind, "character")) result <- validate_text_result(result)$value
+    result
   }
 
   apply_step <- function(frame_contract, capture, step) {
@@ -2241,6 +4264,36 @@ openwrangler_r_kernel_agent <- local({
           nullability_source = capture,
           source_positions = source_positions,
           output_ids = output_ids
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "byExample")) {
+      bound <- bind_by_example_step(capture, step)
+      positions <- vapply(bound$sourceColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+      expected_names <- vapply(bound$sourceColumns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+      result <- frame_contract$by_example_column_at(
+        source,
+        positions,
+        expected_names,
+        bound$newName,
+        bound$resultKind,
+        function(columns) generated_by_example_evaluate(bound$program, columns)
+      )
+      source_positions <- c(seq_along(capture$descriptor$schema), positions[[1L]])
+      output_ids <- c(
+        vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        bound$outputId
+      )
+      output_position <- length(output_ids)
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          by_example_positions = output_position,
+          by_example_kinds = bound$resultKind
         ),
         bound = bound
       ))
@@ -4359,6 +6412,74 @@ openwrangler_r_kernel_agent <- local({
     sprintf("list(%s)", paste(fields, collapse = ", "))
   }
 
+  r_by_example_value <- function(value) {
+    if (is.null(value)) return("NULL")
+    if (is.character(value)) return(r_string(value))
+    if (is.logical(value)) return(if (isTRUE(value)) "TRUE" else "FALSE")
+    if (is.integer(value)) return(sprintf("%dL", value))
+    if (is.double(value) && length(value) == 1L && is.finite(value)) return(r_number(value))
+    if (is.list(value)) {
+      values <- vapply(value, r_by_example_value, character(1L), USE.NAMES = FALSE)
+      body <- paste(values, collapse = ", ")
+      if (is.null(names(value))) return(sprintf("base::list(%s)", body))
+      return(sprintf(
+        "base::structure(base::list(%s), names = %s)",
+        body,
+        r_character_vector(names(value))
+      ))
+    }
+    abort("runtime_error", "The bound R by-example program cannot be serialized")
+  }
+
+  by_example_code_helper_lines <- function() {
+    helpers <- list(
+      by_example_json_integer_text = by_example_json_integer_text,
+      by_example_utf8_scalar = by_example_utf8_scalar,
+      by_example_decimal_digit_text = by_example_decimal_digit_text,
+      by_example_datetime_parts = by_example_datetime_parts,
+      by_example_format_datetime_parts = by_example_format_datetime_parts,
+      by_example_slice_scalar = by_example_slice_scalar,
+      by_example_split_part_scalar = by_example_split_part_scalar,
+      by_example_regex_extract_scalar = by_example_regex_extract_scalar,
+      by_example_regex_replace_scalar = by_example_regex_replace_scalar,
+      by_example_normalize_integer_text = by_example_normalize_integer_text,
+      by_example_abs_integer_compare = by_example_abs_integer_compare,
+      by_example_abs_integer_add = by_example_abs_integer_add,
+      by_example_abs_integer_subtract = by_example_abs_integer_subtract,
+      by_example_abs_integer_multiply = by_example_abs_integer_multiply,
+      by_example_signed_integer_binary = by_example_signed_integer_binary,
+      by_example_checked_integer_text = by_example_checked_integer_text,
+      by_example_integer64_text = by_example_integer64_text,
+      .ow_by_example_evaluate = generated_by_example_evaluate
+    )
+    helper_lines <- unlist(lapply(names(helpers), function(name) {
+      c(
+        sprintf("  %s <-", name),
+        paste0("  ", deparse(helpers[[name]], width.cutoff = 500L))
+      )
+    }), use.names = FALSE)
+    c(
+      helper_lines,
+      "  .ow_by_example_normalize_frame_names <- function(.ow_frame) {",
+      "    .ow_raw_names <- base::attr(.ow_frame, \"names\", exact = TRUE)",
+      "    .ow_name_count <- .ow_storage_length(.ow_frame)",
+      "    if (!base::is.character(.ow_raw_names) || base::length(base::unclass(.ow_raw_names)) != .ow_name_count) base::stop(\"Open Wrangler generated R received malformed dataframe names\", call. = FALSE)",
+      "    .ow_plain_names <- base::unclass(.ow_raw_names)",
+      "    base::vapply(base::seq_len(.ow_name_count), function(.ow_name_index) {",
+      "      .ow_name <- base::.subset2(.ow_plain_names, .ow_name_index)",
+      "      if (base::length(.ow_name) != 1L || base::is.na(.ow_name) || base::identical(base::Encoding(.ow_name), \"bytes\")) base::stop(\"Open Wrangler generated R received malformed dataframe names\", call. = FALSE)",
+      "      .ow_name_from <- if (base::identical(base::Encoding(.ow_name), \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "      .ow_name_utf8 <- base::iconv(.ow_name, from = .ow_name_from, to = \"UTF-8\", sub = NA_character_)",
+      sprintf(
+        "      if (base::is.na(.ow_name_utf8) || base::nchar(.ow_name_utf8, type = \"bytes\") > %dL) base::stop(\"Open Wrangler generated R received an invalid or oversized dataframe name\", call. = FALSE)",
+        maximum_name_bytes
+      ),
+      "      .ow_name_utf8",
+      "    }, base::character(1L), USE.NAMES = FALSE)",
+      "  }"
+    )
+  }
+
   compile_plan <- function(
     variable_name,
     bound_plan,
@@ -4562,6 +6683,7 @@ openwrangler_r_kernel_agent <- local({
       "    base::invisible(NULL)",
       "  }",
       "  for (.ow_source_column_index in base::seq_len(.ow_source_column_count)) .ow_validate_source_column(base::.subset2(.ow_source_columns, .ow_source_column_index), .ow_source_column_index)",
+      "  .ow_source_element_names <- base::lapply(base::seq_len(.ow_source_column_count), function(.ow_source_column_index) base::attr(base::.subset2(.ow_source_columns, .ow_source_column_index), \"names\", exact = TRUE))",
       "  .ow_source_metadata_classes <- if (.ow_source_is_readr) c(\"tbl_df\", \"tbl\", \"data.frame\") else .ow_source_classes",
       "  for (.ow_source_frame_class in .ow_source_metadata_classes) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_source_frame_class) + 1L, \"source dataframe-class metadata\")",
       "  if (base::identical(.ow_source_flavor, \"r.data.table\") && base::length(.ow_source_key) != 0L) { for (.ow_source_key_name in .ow_source_key) { .ow_source_key_position <- base::match(.ow_source_key_name, .ow_source_names); .ow_spend_source_metadata(.ow_metadata_json_bytes(base::sprintf(\"r:c:%d\", .ow_source_key_position - 1L)) + 1L, \"source data.table key metadata\") } }",
@@ -4571,6 +6693,7 @@ openwrangler_r_kernel_agent <- local({
       "  } else {",
       "    unserialize(serialize(.ow_source, NULL, version = 3L))",
       "  }",
+      "  if (base::identical(.ow_source_flavor, \"r.data.table\")) { for (.ow_source_column_index in base::seq_len(.ow_source_column_count)) { .ow_source_element_names_value <- base::.subset2(.ow_source_element_names, .ow_source_column_index); if (!base::is.null(.ow_source_element_names_value)) data.table::setattr(base::.subset2(.ow_result, .ow_source_column_index), \"names\", .ow_source_element_names_value) } }",
       "  if (identical(class(.ow_result), c(\"spec_tbl_df\", \"tbl_df\", \"tbl\", \"data.frame\"))) {",
       "    attr(.ow_result, \"spec\") <- NULL",
       "    attr(.ow_result, \"problems\") <- NULL",
@@ -4616,6 +6739,9 @@ openwrangler_r_kernel_agent <- local({
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "groupBy"), logical(1L)))) {
       lines <- c(lines, group_by_code_helper_lines())
+    }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "byExample"), logical(1L)))) {
+      lines <- c(lines, by_example_code_helper_lines())
     }
     if (any(vapply(
       bound_plan,
@@ -4767,6 +6893,151 @@ openwrangler_r_kernel_agent <- local({
           "    .ow_clone_existing_names <- names(.ow_result)",
           "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_result[[.ow_clone_position]]",
           "    names(.ow_result) <- c(.ow_clone_existing_names, .ow_clone_name)",
+          "  }",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
+        )
+      } else if (identical(step$kind, "byExample")) {
+        positions <- vapply(step$sourceColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+        expected_names <- vapply(step$sourceColumns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+        type_guard <- switch(
+          step$resultKind,
+          character = "base::is.character(.ow_by_example_values) && !base::is.object(.ow_by_example_values)",
+          factor = "base::is.factor(.ow_by_example_values)",
+          integer = "base::is.integer(.ow_by_example_values) && !base::is.object(.ow_by_example_values)",
+          integer64 = "base::identical(base::class(.ow_by_example_values), \"integer64\")",
+          double = "base::is.double(.ow_by_example_values) && !base::is.object(.ow_by_example_values)",
+          logical = "base::is.logical(.ow_by_example_values) && !base::is.object(.ow_by_example_values)",
+          date = "base::identical(base::class(.ow_by_example_values), \"Date\")",
+          datetime = "base::identical(base::class(.ow_by_example_values), c(\"POSIXct\", \"POSIXt\"))",
+          difftime = "base::identical(base::class(.ow_by_example_values), \"difftime\")",
+          abort("runtime_error", "The bound R by-example result kind is unsupported")
+        )
+        lines <- c(
+          lines,
+          sprintf("  .ow_by_example_positions <- c(%s)", paste(sprintf("%dL", positions), collapse = ", ")),
+          sprintf("  .ow_by_example_names <- %s", r_character_vector(expected_names)),
+          sprintf("  .ow_by_example_name <- %s", r_string(step$newName)),
+          "  .ow_by_example_frame_names <- .ow_by_example_normalize_frame_names(.ow_result)",
+          "  if (base::any(.ow_by_example_positions > .ow_storage_length(.ow_result)) || !base::identical(.ow_by_example_frame_names[.ow_by_example_positions], .ow_by_example_names)) base::stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (.ow_by_example_name == \"\" || base::any(.ow_by_example_frame_names == .ow_by_example_name)) base::stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+          "  if (base::startsWith(base::chartr(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\", .ow_by_example_name), \"__open_wrangler_internal_row_id_\")) base::stop(\"Open Wrangler's private row-identity prefix is reserved\", call. = FALSE)",
+          sprintf(
+            "  if (.ow_storage_length(.ow_result) >= %dL) base::stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+            maximum_columns
+          ),
+          sprintf(
+            "  .ow_by_example_values <- .ow_by_example_evaluate(%s, base::lapply(.ow_by_example_positions, function(.ow_position) .ow_result[[.ow_position]]))",
+            r_by_example_value(step$program)
+          ),
+          sprintf(
+            "  if (.ow_storage_length(.ow_by_example_values) != .ow_source_row_count || !(%s)) base::stop(\"Open Wrangler by-example returned an invalid result type or row count\", call. = FALSE)",
+            type_guard
+          ),
+          "  .ow_by_example_output_bytes <- base::as.double(.ow_source_row_count) * if (base::is.logical(.ow_by_example_values) || base::is.integer(.ow_by_example_values)) 4 else 8",
+          if (identical(step$resultKind, "character")) {
+            sprintf(
+              paste0(
+                "  if (base::any(!base::is.na(.ow_by_example_values) & base::nchar(.ow_by_example_values, type = \"bytes\") > %dL)) ",
+                "base::stop(\"Open Wrangler by-example produced oversized text\", call. = FALSE)"
+              ),
+              maximum_text_bytes
+            )
+          } else character(),
+          if (identical(step$resultKind, "character")) {
+            "  .ow_by_example_output_bytes <- .ow_by_example_output_bytes + base::sum(base::as.double(base::nchar(.ow_by_example_values[!base::is.na(.ow_by_example_values)], type = \"bytes\")))"
+          } else character(),
+          sprintf("  .ow_by_example_result_kind <- %s", r_string(step$resultKind)),
+          "  .ow_by_example_attribute_names <- base::names(base::attributes(.ow_by_example_values))",
+          "  if (base::is.null(.ow_by_example_attribute_names)) .ow_by_example_attribute_names <- base::character()",
+          "  if (base::anyNA(.ow_by_example_attribute_names) || base::any(.ow_by_example_attribute_names == \"\") || base::anyDuplicated.default(.ow_by_example_attribute_names)) base::stop(\"Open Wrangler by-example returned malformed output attributes\", call. = FALSE)",
+          "  .ow_by_example_semantic_attribute_names <- .ow_by_example_attribute_names[.ow_by_example_attribute_names != \"names\"]",
+          "  .ow_by_example_attributes_valid <- if (.ow_by_example_result_kind == \"factor\") { base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"levels\", \"class\")) } else if (.ow_by_example_result_kind %in% c(\"integer64\", \"date\")) { base::identical(.ow_by_example_semantic_attribute_names, \"class\") } else if (.ow_by_example_result_kind == \"datetime\") { base::identical(.ow_by_example_semantic_attribute_names, \"class\") || (base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"class\", \"tzone\"))) } else if (.ow_by_example_result_kind == \"difftime\") { base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"class\", \"units\")) } else { base::length(.ow_by_example_semantic_attribute_names) == 0L }",
+          "  if (!base::isTRUE(.ow_by_example_attributes_valid)) base::stop(\"Open Wrangler by-example returned unsupported output attributes\", call. = FALSE)",
+          "  .ow_by_example_metadata_text <- function(.ow_metadata, .ow_label, .ow_maximum_bytes, .ow_allow_asis = FALSE) {",
+          "    .ow_metadata_attributes <- base::attributes(.ow_metadata)",
+          "    if (!base::is.null(.ow_metadata_attributes)) {",
+          "      if (!base::isTRUE(.ow_allow_asis) || !base::identical(base::names(.ow_metadata_attributes), \"class\") || !base::identical(base::.subset2(.ow_metadata_attributes, \"class\"), \"AsIs\") || !base::is.null(base::attributes(base::.subset2(.ow_metadata_attributes, \"class\")))) base::stop(base::sprintf(\"Open Wrangler by-example returned unsupported nested attributes on %s\", .ow_label), call. = FALSE)",
+          "      .ow_by_example_output_bytes <<- .ow_by_example_output_bytes + 8 + base::nchar(\"AsIs\", type = \"bytes\")",
+          "    }",
+          "    .ow_plain <- base::unclass(.ow_metadata)",
+          "    if (!base::is.character(.ow_plain) || base::anyNA(.ow_plain)) base::stop(base::sprintf(\"Open Wrangler by-example returned invalid %s\", .ow_label), call. = FALSE)",
+          "    .ow_plain <- base::vapply(base::seq_len(base::length(.ow_plain)), function(.ow_metadata_index) {",
+          "      .ow_item <- base::.subset2(.ow_plain, .ow_metadata_index)",
+          "      if (base::identical(base::Encoding(.ow_item), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler by-example returned invalid %s\", .ow_label), call. = FALSE)",
+          "      .ow_from <- if (base::identical(base::Encoding(.ow_item), \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "      .ow_utf8 <- base::iconv(.ow_item, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          "      if (base::is.na(.ow_utf8) || base::nchar(.ow_utf8, type = \"bytes\") > .ow_maximum_bytes) base::stop(base::sprintf(\"Open Wrangler by-example returned oversized or invalid %s\", .ow_label), call. = FALSE)",
+          "      .ow_utf8",
+          "    }, base::character(1L), USE.NAMES = FALSE)",
+          "    .ow_by_example_output_bytes <<- .ow_by_example_output_bytes + base::as.double(base::length(.ow_plain)) * 8 + base::sum(base::as.double(base::nchar(.ow_plain, type = \"bytes\")))",
+          "    .ow_plain",
+          "  }",
+          "  if (.ow_by_example_result_kind %in% c(\"factor\", \"integer64\", \"date\", \"datetime\", \"difftime\")) {",
+          sprintf(
+            "    .ow_by_example_class <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"class\", exact = TRUE), \"output class\", %dL)",
+            maximum_name_bytes
+          ),
+          "    if (!base::identical(.ow_by_example_class, base::class(.ow_by_example_values))) base::stop(\"Open Wrangler by-example returned invalid output class metadata\", call. = FALSE)",
+          "  }",
+          "  if (.ow_by_example_result_kind == \"factor\") {",
+          sprintf(
+            "    .ow_by_example_levels <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"levels\", exact = TRUE), \"factor levels\", %dL, TRUE)",
+            maximum_text_bytes
+          ),
+          sprintf(
+            "    if (base::length(.ow_by_example_levels) > %dL || base::anyDuplicated.default(.ow_by_example_levels)) base::stop(\"Open Wrangler by-example returned invalid factor levels\", call. = FALSE)",
+            maximum_factor_levels
+          ),
+          "    .ow_by_example_factor_codes <- base::unclass(.ow_by_example_values)",
+          "    if (base::any(!base::is.na(.ow_by_example_factor_codes) & (.ow_by_example_factor_codes < 1L | .ow_by_example_factor_codes > base::length(.ow_by_example_levels)))) base::stop(\"Open Wrangler by-example returned invalid factor codes\", call. = FALSE)",
+          "  }",
+          "  if (.ow_by_example_result_kind == \"datetime\" && \"tzone\" %in% .ow_by_example_semantic_attribute_names) {",
+          sprintf(
+            "    .ow_by_example_timezone <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"tzone\", exact = TRUE), \"datetime timezone\", %dL, TRUE)",
+            maximum_name_bytes
+          ),
+          "    if (base::length(.ow_by_example_timezone) != 1L) base::stop(\"Open Wrangler by-example returned invalid datetime timezone metadata\", call. = FALSE)",
+          "  }",
+          "  if (.ow_by_example_result_kind == \"difftime\") {",
+          sprintf(
+            "    .ow_by_example_units <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"units\", exact = TRUE), \"duration units\", %dL, TRUE)",
+            maximum_name_bytes
+          ),
+          "    if (base::length(.ow_by_example_units) != 1L || !base::.subset2(.ow_by_example_units, 1L) %in% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(\"Open Wrangler by-example returned invalid duration units\", call. = FALSE)",
+          "  }",
+          "  .ow_by_example_value_names <- base::attr(.ow_by_example_values, \"names\", exact = TRUE)",
+          "  if (!base::is.null(.ow_by_example_value_names)) {",
+          "    if (!base::is.character(.ow_by_example_value_names) || base::is.object(.ow_by_example_value_names) || !base::is.null(base::attributes(.ow_by_example_value_names)) || base::length(.ow_by_example_value_names) != .ow_source_row_count) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
+          "    .ow_by_example_value_names <- base::vapply(base::seq_len(.ow_source_row_count), function(.ow_name_index) {",
+          "      .ow_name <- base::.subset2(.ow_by_example_value_names, .ow_name_index)",
+          "      if (base::is.na(.ow_name)) return(NA_character_)",
+          "      if (base::identical(base::Encoding(.ow_name), \"bytes\")) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
+          "      .ow_name_from <- if (base::identical(base::Encoding(.ow_name), \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "      .ow_name_utf8 <- base::iconv(.ow_name, from = .ow_name_from, to = \"UTF-8\", sub = NA_character_)",
+          sprintf(
+            "      if (base::is.na(.ow_name_utf8) || base::nchar(.ow_name_utf8, type = \"bytes\") > %dL) base::stop(\"Open Wrangler by-example returned oversized or invalid output names\", call. = FALSE)",
+            maximum_text_bytes
+          ),
+          "      .ow_name_utf8",
+          "    }, base::character(1L), USE.NAMES = FALSE)",
+          "    .ow_by_example_output_bytes <- .ow_by_example_output_bytes + base::as.double(.ow_source_row_count) * 8 + base::sum(base::as.double(base::nchar(.ow_by_example_value_names[!base::is.na(.ow_by_example_value_names)], type = \"bytes\")))",
+          "    base::attr(.ow_by_example_values, \"names\") <- NULL",
+          "    base::attr(.ow_by_example_values, \"names\") <- .ow_by_example_value_names",
+          "  }",
+          sprintf(
+            "  if (!base::is.finite(.ow_by_example_output_bytes) || .ow_by_example_output_bytes > %dL) base::stop(\"Open Wrangler by-example exceeds its aggregate output budget\", call. = FALSE)",
+            maximum_operation_output_bytes
+          ),
+          "  if (base::inherits(.ow_result, \"data.table\")) {",
+          "    data.table::set(.ow_result, j = .ow_by_example_name, value = .ow_by_example_values)",
+          "    if (!base::is.null(.ow_by_example_value_names)) data.table::setattr(base::.subset2(.ow_result, .ow_storage_length(.ow_result)), \"names\", .ow_by_example_value_names)",
+          "  } else {",
+          "    .ow_by_example_frame_classes <- base::class(.ow_result)",
+          "    base::class(.ow_result) <- NULL",
+          "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_by_example_values",
+          "    base::attr(.ow_result, \"names\") <- c(.ow_by_example_frame_names, .ow_by_example_name)",
+          "    if (!base::is.null(.ow_by_example_value_names)) base::attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_by_example_value_names",
+          "    base::class(.ow_result) <- .ow_by_example_frame_classes",
           "  }",
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
@@ -5630,7 +7901,7 @@ openwrangler_r_kernel_agent <- local({
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$generatedNames
     } else if (
-      bound$kind %in% c("cloneColumn", "formula", "textLength") ||
+      bound$kind %in% c("cloneColumn", "formula", "textLength", "byExample") ||
         (
           bound$kind %in% c(
             "lowerText",
@@ -5843,7 +8114,7 @@ openwrangler_r_kernel_agent <- local({
     encoded <- jsonlite::toJSON(
       ascii_json_response(response),
       auto_unbox = TRUE,
-      digits = NA,
+      digits = 17L,
       na = "null",
       null = "null",
       pretty = FALSE,
@@ -5867,6 +8138,81 @@ openwrangler_r_kernel_agent <- local({
   canonical_base64 <- function(value) {
     encoded <- jsonlite::base64_enc(value)
     gsub("\r", "", gsub("\n", "", encoded, fixed = TRUE), fixed = TRUE)
+  }
+
+  reject_json_nul_escape <- function(payload) {
+    bytes <- as.integer(charToRaw(enc2utf8(payload)))
+    if (length(bytes) < 6L) return(invisible(NULL))
+    candidates <- which(bytes %in% c(85L, 117L))
+    candidates <- candidates[candidates > 1L & candidates + 4L <= length(bytes)]
+    candidates <- candidates[bytes[candidates - 1L] == 92L]
+    for (position in candidates) {
+      if (!all(bytes[seq.int(position + 1L, position + 4L)] == 48L)) next
+      slash_count <- 0L
+      cursor <- position - 1L
+      while (cursor >= 1L && bytes[[cursor]] == 92L) {
+        slash_count <- slash_count + 1L
+        cursor <- cursor - 1L
+      }
+      if (slash_count %% 2L == 1L) {
+        abort("invalid_request", "R by-example requests cannot contain U+0000 text")
+      }
+    }
+    invisible(NULL)
+  }
+
+  json_has_negative_zero_number <- function(payload) {
+    bytes <- as.integer(charToRaw(enc2utf8(payload)))
+    count <- length(bytes)
+    in_string <- FALSE
+    escaped <- FALSE
+    position <- 1L
+    while (position <= count) {
+      byte <- bytes[[position]]
+      if (in_string) {
+        if (escaped) {
+          escaped <- FALSE
+        } else if (byte == 92L) {
+          escaped <- TRUE
+        } else if (byte == 34L) {
+          in_string <- FALSE
+        }
+        position <- position + 1L
+        next
+      }
+      if (byte == 34L) {
+        in_string <- TRUE
+        position <- position + 1L
+        next
+      }
+      if (
+        byte != 45L || position == count || bytes[[position + 1L]] != 48L ||
+          (position > 1L && bytes[[position - 1L]] %in% c(69L, 101L))
+      ) {
+        position <- position + 1L
+        next
+      }
+
+      cursor <- position + 2L
+      all_zero <- TRUE
+      if (cursor <= count && bytes[[cursor]] == 46L) {
+        cursor <- cursor + 1L
+        while (cursor <= count && bytes[[cursor]] >= 48L && bytes[[cursor]] <= 57L) {
+          if (bytes[[cursor]] != 48L) all_zero <- FALSE
+          cursor <- cursor + 1L
+        }
+      }
+      if (cursor <= count && bytes[[cursor]] %in% c(69L, 101L)) {
+        cursor <- cursor + 1L
+        if (cursor <= count && bytes[[cursor]] %in% c(43L, 45L)) cursor <- cursor + 1L
+        while (cursor <= count && bytes[[cursor]] >= 48L && bytes[[cursor]] <= 57L) {
+          cursor <- cursor + 1L
+        }
+      }
+      if (all_zero) return(TRUE)
+      position <- cursor
+    }
+    FALSE
   }
 
   plan_response <- function(request_id, session_id, action, session, page, frame_contract) {
@@ -5900,6 +8246,7 @@ openwrangler_r_kernel_agent <- local({
       "rename_column",
       "rename_column_at",
       "clone_column_at",
+      "by_example_column_at",
       "formula_column_at",
       "text_length_column_at",
       "one_hot_encode_columns_at",
@@ -6299,6 +8646,11 @@ openwrangler_r_kernel_agent <- local({
             applied$bound$oldName
           )
         }
+        if (identical(applied$bound$kind, "byExample")) {
+          retained_step <- list(id = step$id, kind = step$kind, params = step$params)
+          retained_step$params$warnings <- I(step$params$warnings)
+          response$retainedStep <- retained_step
+        }
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
         return(response)
@@ -6656,9 +9008,33 @@ openwrangler_r_kernel_agent <- local({
             abort("missing_package", "The selected R kernel requires the jsonlite package")
           }
           payload <- bounded_text(payload, "request JSON", maximum_response_bytes)
+          raw_request_id <- regexec(
+            "\"requestId\"[[:space:]]*:[[:space:]]*\"([0-9a-f-]{36})\"",
+            payload,
+            perl = TRUE
+          )[[1L]]
+          if (!(length(raw_request_id) == 1L && identical(as.integer(raw_request_id[[1L]]), -1L))) {
+            raw_fields <- regmatches(payload, list(raw_request_id))[[1L]]
+            if (length(raw_fields) == 2L && grepl(identifier_pattern, raw_fields[[2L]], perl = TRUE)) {
+              request_id <- raw_fields[[2L]]
+            }
+          }
           request <- jsonlite::fromJSON(payload, simplifyVector = FALSE)
-          if (is.list(request) && is.character(request$requestId) && length(request$requestId) == 1L) {
+          if (
+            is.list(request) && is.character(request$requestId) &&
+              length(request$requestId) == 1L && !is.na(request$requestId) &&
+              grepl(identifier_pattern, request$requestId, perl = TRUE)
+          ) {
             request_id <- request$requestId
+          }
+          reject_json_nul_escape(payload)
+          if (
+            is.list(request) && identical(request$kind, "previewStep") &&
+              is.list(request$payload) && is.list(request$payload$step) &&
+              identical(request$payload$step$kind, "byExample") &&
+              json_has_negative_zero_number(payload)
+          ) {
+            abort("invalid_request", "R by-example requests cannot contain negative zero")
           }
           dispatch(request)
         },

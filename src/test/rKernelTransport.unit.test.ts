@@ -7,6 +7,7 @@ import {
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
   encodeRKernelRequest,
+  type RKernelByExampleStep,
   type RKernelGroupByStep,
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
@@ -710,6 +711,171 @@ describe("native R kernel protocol", () => {
         )
       ).toThrow("response.diff.removedRows");
     }
+  });
+
+  it("requires an exact runtime-normalized retained step for native R by-example previews", () => {
+    const step = byExampleStep();
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: {
+          ...request.payload,
+          step: { ...step, params: { ...step.params, newColumn: "derived\u0000truncated" } }
+        }
+      })
+    ).toThrow("U+0000");
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: {
+          ...request.payload,
+          step: {
+            ...step,
+            params: {
+              ...step.params,
+              examples: [{ inputs: [-0], output: 0 }, step.params.examples[1]]
+            }
+          }
+        }
+      })
+    ).toThrow("malformed or exceed");
+    const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+    for (const program of [
+      { kind: "slice", input: { kind: "column", column: { id: "r:c:0", name: "value" } }, start: unsafeInteger },
+      {
+        kind: "slice",
+        input: { kind: "column", column: { id: "r:c:0", name: "value" } },
+        start: 0,
+        stop: unsafeInteger
+      },
+      {
+        kind: "split",
+        input: { kind: "column", column: { id: "r:c:0", name: "value" } },
+        delimiter: "-",
+        index: unsafeInteger
+      },
+      {
+        kind: "regexExtract",
+        input: { kind: "column", column: { id: "r:c:0", name: "value" } },
+        pattern: "(.)",
+        group: unsafeInteger
+      }
+    ] as const) {
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: {
+            ...request.payload,
+            step: { ...step, params: { ...step.params, program } }
+          }
+        })
+      ).toThrow("malformed or exceed");
+    }
+
+    const retainedStep = {
+      ...step,
+      params: {
+        ...step.params,
+        program: { kind: "column", column: { id: "r:c:0", name: "value" } },
+        warnings: [],
+        candidateCount: 1
+      }
+    } as const;
+    const response = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalByExampleFramePage(),
+      diff: {
+        ...minimalRenameDiff(),
+        addedColumns: ["derived value"]
+      },
+      code: "frame[['derived value']] <- frame[['value']]\n",
+      retainedStep
+    } as const;
+    const context = { inputSchema: minimalFramePage().schema, previewStep: step } as const;
+    expect(decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, context)).toMatchObject({
+      kind: "stepPreview",
+      retainedStep: {
+        id: "by-example-step",
+        params: { program: { kind: "column" }, warnings: [], candidateCount: 1 }
+      }
+    });
+
+    const { retainedStep: _retainedStep, ...missingRetainedStep } = response;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(missingRetainedStep), previewRequestId, context)).toThrow(
+      "invalid fields"
+    );
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...response,
+          retainedStep: { ...retainedStep, params: { ...retainedStep.params, warnings: undefined } }
+        }),
+        previewRequestId,
+        context
+      )
+    ).toThrow();
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...response,
+          retainedStep: { ...retainedStep, params: { ...retainedStep.params, warnings: ["bad\u0000warning"] } }
+        }),
+        previewRequestId,
+        context
+      )
+    ).toThrow("U+0000");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...response,
+          retainedStep: {
+            ...retainedStep,
+            params: { ...retainedStep.params, candidateCount: unsafeInteger }
+          }
+        }),
+        previewRequestId,
+        context
+      )
+    ).toThrow("valid retained by-example step");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...response,
+          retainedStep: {
+            ...retainedStep,
+            params: { ...retainedStep.params, examples: [{ inputs: [9], output: 9 }, step.params.examples[1]] }
+          }
+        }),
+        previewRequestId,
+        context
+      )
+    ).toThrow("does not match the exact preview request");
+
+    const saved = { ...step, params: { ...step.params, program: retainedStep.params.program } } as const;
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...response,
+          retainedStep: {
+            ...retainedStep,
+            params: { ...retainedStep.params, program: { kind: "literal", value: 1 } }
+          }
+        }),
+        previewRequestId,
+        { inputSchema: minimalFramePage().schema, previewStep: saved }
+      )
+    ).toThrow("changed a saved by-example program");
   });
 
   it("strictly validates native R missing-row and duplicate-row requests", () => {
@@ -3609,6 +3775,21 @@ function renameStep() {
   } as const;
 }
 
+function byExampleStep(): RKernelByExampleStep {
+  return {
+    id: "by-example-step",
+    kind: "byExample",
+    params: {
+      sourceColumns: [{ id: "r:c:0", name: "value" }],
+      newColumn: "derived value",
+      examples: [
+        { inputs: [1], output: 1 },
+        { inputs: [2], output: 2 }
+      ]
+    }
+  };
+}
+
 function minimalRenameDiff() {
   return {
     addedRows: 0,
@@ -3654,6 +3835,24 @@ function minimalFramePage() {
       ]
     }
   } as const;
+}
+
+function minimalByExampleFramePage() {
+  const frame = structuredClone(minimalFramePage()) as unknown as {
+    shape: { rows: number; columns: number };
+    schema: Array<Record<string, unknown>>;
+    page: { columnIds: string[]; rows: Array<{ values: unknown[] }> };
+  };
+  frame.shape.columns = 2;
+  frame.schema.push({
+    ...frame.schema[0],
+    id: "c:step:by-example-step:0",
+    name: "derived value",
+    position: 1
+  });
+  frame.page.columnIds.push("c:step:by-example-step:0");
+  frame.page.rows[0]?.values.push({ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false });
+  return frame;
 }
 
 function inspectionWirePage<T extends Readonly<{ schema: unknown }>>(frame: T): Omit<T, "schema"> {

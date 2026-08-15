@@ -385,6 +385,13 @@ test("binds the checked-in Native R preview table to its exact truthful structur
     R_PREVIEW_PARITY_SCOPE.every((row) => Object.isFrozen(row)),
     true
   );
+  const previewOperationScope = R_PREVIEW_PARITY_SCOPE.filter(([surface]) =>
+    ["R cleaning operations and generated code", "Copy or save generated R"].includes(surface)
+  );
+  assert.deepEqual(previewOperationScope, [
+    ["R cleaning operations and generated code", "27 operations", "Partial"],
+    ["Copy or save generated R", "27 operations", "Partial"]
+  ]);
   assert.throws(() => {
     R_PREVIEW_PARITY_SCOPE[0][2] = "Done";
   }, TypeError);
@@ -469,6 +476,19 @@ test("binds the checked-in Native R preview table to its exact truthful structur
       }),
       []
     );
+  }
+
+  for (const [surface] of previewOperationScope) {
+    for (const invalidAvailability of ["26 operations", "28 operations"]) {
+      const mutatedScope = R_PREVIEW_PARITY_SCOPE.map((row) =>
+        row[0] === surface ? [row[0], invalidAvailability, row[2]] : row
+      );
+      assert.notDeepEqual(
+        inspectPreviewRParitySource({ featureParity: previewRParity({ scope: mutatedScope }) }),
+        [],
+        `${surface} must require exactly 27 preview operations, not ${invalidAvailability}`
+      );
+    }
   }
 
   for (let index = 0; index < R_PREVIEW_PARITY_SCOPE.length; index += 1) {

@@ -9,7 +9,7 @@ matrix for release candidates or changes that cross all of its boundaries.
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
 - `npm run test:r-contract` sources the production R module, runs native R assertions, and then sends real base
-  `data.frame`, tibble, and `data.table` pages through the strict TypeScript decoder. The R assertions cover snapshot
+  `data.frame`, tibble, and `data.table` pages through the strict private transport-v13 TypeScript decoder. The R assertions cover snapshot
   isolation, `data.table` by-reference mutation, duplicate and non-syntactic names, factors, ordered factors, dates,
   time zones, durations, exact `bit64::integer64` values, `NA`/`NaN`/infinity, unsupported semantics, factor-level and
   page bounds, aligned element names on atomic and classed columns across base, tibble, data-table, and `collapse`
@@ -32,7 +32,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   safety, and executable generated R. The shared protocol and webview tests require the count only on fill previews,
   reject impossible values, announce it to assistive technology, restore it with a draft, and clear it after the draft
   ends. Rename, Drop,
-  Select, Clone, Convert type, Text Length, Lowercase, Uppercase, and Find and replace tests resolve duplicate and
+  Select, Clone, Convert type, Text Length, Lowercase, Uppercase, Find and replace, and Transform by example tests resolve duplicate and
   non-syntactic names by stable identity, preserve base, tibble, and keyed `data.table` semantics, and prove that
   drafts and generated R leave the source unchanged.
   Drop tests cover retained IDs after a position shift, data-table key changes, and drop-all rejection. Select tests
@@ -80,8 +80,9 @@ matrix for release candidates or changes that cross all of its boundaries.
   contract in each matrix cell. The contract also runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
-  Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor,
-  Ceiling, and Group and aggregate lifecycles, variable replacement, native CSV export, malformed requests, and close
+  Convert type, Formula, Text Length, One-hot encode, Multi-label binarize, Lowercase, Uppercase, Find and replace,
+  Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, Format Datetime, Group and aggregate, and
+  Transform by example lifecycles, variable replacement, native CSV export, malformed requests, and close
   cases. The export
   checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
   repeated offset reads, explicit close, and session-close cleanup.
@@ -97,8 +98,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   `jsonlite` or `rlang`, malformed output, and notebook/kernel replacement. Host and webview tests cover the native
   picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
-  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and
-  Group and aggregate
+  Formula, Text Length, One-hot encode, Multi-label binarize, Lowercase, Uppercase, Find and replace, Capitalize,
+  Strip text, Split text, Min-max scale, Round, Floor, Ceiling, Format Datetime, Group and aggregate, and Transform by example
   capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
   production-browser accessibility journey covers explicit row labels,
@@ -130,7 +131,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   categorical's exact two visible One-hot encode and Multi-label binarize journeys. Cursor instead retains the
   distinct core, native-frame, restart, terminal, literate, and generic packaged-editor seams. Every applicable local invocation
   continues to validate the advertised installed operation registry, but direct R/runtime/generated-code/catalog tests
-  own exhaustive semantics for all 26 operations. A fresh
+  own exhaustive semantics for all 27 operations. A fresh
   Linux installed-tooling invocation
   separately owns the official R terminal and Operations sidebar. It seeds named-column base, tibble, and data-table
   frames in that exact terminal, waits for them to appear in Operations without Refresh, and opens and profiles the
@@ -141,7 +142,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   seams without repeating that matrix. The profile does not raise either the 300-second hard deadline or the
   180-second inactivity deadline, and it does not retry a failed phase.
 
-- `npm run test:scripts` runs the focused cross-platform contracts for editor environment isolation, private home/config/runtime trees, fresh correlated phase outcomes, progress-aware deadlines, classified failures, sanitized evidence retention, POSIX process-group cleanup, the Windows Job Object supervisor and parent lease, genuine Restricted Mode launches, the explicit visible-debug opt-out, pinned private-Xvfb preparation and lifecycle, Remote SSH child-error latching, exact Xvfb socket/lock identity receipts, candidate provenance, exact staged-file receipts, bounded staged-tree manifests, fail-fast Jupyter VSIX target/native-payload compatibility, the container-isolated remote-Jupyter runner, and structural release readiness. Release-document fixtures include fenced, commented, raw-HTML, duplicate, placeholder, future-action, untracked-reference, empty-changelog, and contradictory-README decoys. The checked-in Native R preview table has an exact 20-row topology while allowing truthful Partial rows. Synthetic stable-major-2-or-newer fixtures require a dedicated top-level section containing only the distinct exact 23-row all-Done Native R scope, the exact completion sentence, explicit ordinary `collapse::qDF()`/`qTBL()`/`qDT()` coverage, the complete 28-operation catalog, the R performance record, exact row-specific tracked evidence, and both source and immutable-candidate enforcement. The active-terminal and Cursor literate rows claim only their Linux candidate coverage, and the two all-28 rows require dedicated complete-catalog tests rather than treating the current 26-operation suites as sufficient. Deleting, duplicating, reordering, hiding, deferring, or weakening any row, availability, status, evidence reference, or release-gate cell must fail; stable 1.x recovery remains outside this content gate. Crafted VSIX fixtures cover omitted legal files, symlink-mode entries, missing manifest-referenced assets, oversized expansion, encrypted flags, and CRC corruption through the same streaming validator used by both package verification and stable readiness. Descriptor-bound VSIX file fixtures reject hard links, symbolic links, empty or sparse oversized inputs, and named-path inode swaps around the read. Pinned Cursor and Remote SSH acquisition additionally read product metadata, package metadata, runtime files, and licenses through bounded no-follow descriptors whose named path, containment, identity, and complete snapshot must remain stable; their adversarial fixtures cover replacement, in-place mutation, and hard links. Cursor network bytes enter only a random mode-`0600` quarantine descriptor and cannot be published until exact status, one unambiguous length, SHA-256, descriptor identity, and named-path identity all agree; a rejected status, header, or body is explicitly disposed. Stable-publication fixtures also require immutable Git-commit source reads and reject content or parent-identity changes in either final output, including a same-size first-output mutation while the second output is read. Parsed-YAML fixtures bind the complete dispatch and job graph through a bounded, cycle-safe canonical digest in addition to semantic validation; they move or duplicate readiness/upload steps, remove the event-commit binding, alter shell/failure/condition controls, add workflow/job execution overrides or permission escalation, insert post-readiness mutations, weaken commands, change runners or action inputs, remove required evidence, add broad uploads, expose publisher credentials, remove the locked CLI guard, add a preview registry flag, or place mutations between canonical verification and a publisher boundary. None may satisfy the canonical stable workflow. Stable-tag fixtures require the exact protected `origin/main` source, require canonical version binding, one non-force atomic single-ref push, a private credential that never enters arguments or child environment, cleanup after success or failure, exact recognition and scrubbing of Git credential-store's atomic approval and rejection rewrites, rejection of any other replacement, and exact lightweight post-push verification; conflicting, annotated, ambiguous, stale, dirty, wildcard, force, and delete forms fail. GitHub publication tests accept absent, exact partial, and exact complete releases while rejecting conflicting tags, metadata, assets, digests, and bytes. Publisher unit tests retain the migration-false compatibility case, while the checked-in stable and preview workflows require exact `immutable: true`; false or missing state blocks registry promotion. Open VSX tests require the exact stable identity, publisher login, public checksum, and downloaded VSIX; retry is bounded to missing or transient post-publish metadata, and the default contract proves all ninety-one attempts in the fifteen-minute window. Marketplace tests separately enforce the pipeline's explicit maximum reviewed forty-attempt public-verification bound. Stable-candidate fixtures additionally require the complete pinned ordered step allowlists, reject every removal plus inserted/replaced/mutable actions, exercise the producer's real package-source composition, accept only the expected post-write directory-link-count transition while every owned file receipt stays fixed, and prove stable consume mode cannot fall back to a moving editor download. Platform-specific cases are skipped only where the host cannot provide the primitive under test.
+- `npm run test:scripts` runs the focused cross-platform contracts for editor environment isolation, private home/config/runtime trees, fresh correlated phase outcomes, progress-aware deadlines, classified failures, sanitized evidence retention, POSIX process-group cleanup, the Windows Job Object supervisor and parent lease, genuine Restricted Mode launches, the explicit visible-debug opt-out, pinned private-Xvfb preparation and lifecycle, Remote SSH child-error latching, exact Xvfb socket/lock identity receipts, candidate provenance, exact staged-file receipts, bounded staged-tree manifests, fail-fast Jupyter VSIX target/native-payload compatibility, the container-isolated remote-Jupyter runner, and structural release readiness. Release-document fixtures include fenced, commented, raw-HTML, duplicate, placeholder, future-action, untracked-reference, empty-changelog, and contradictory-README decoys. The checked-in Native R preview table has an exact 20-row topology while allowing truthful Partial rows. Synthetic stable-major-2-or-newer fixtures require a dedicated top-level section containing only the distinct exact 23-row all-Done Native R scope, the exact completion sentence, explicit ordinary `collapse::qDF()`/`qTBL()`/`qDT()` coverage, the complete 28-operation catalog, the R performance record, exact row-specific tracked evidence, and both source and immutable-candidate enforcement. The active-terminal and Cursor literate rows claim only their Linux candidate coverage, and the two all-28 rows require dedicated complete-catalog tests rather than treating the current 27-operation suites as sufficient. Deleting, duplicating, reordering, hiding, deferring, or weakening any row, availability, status, evidence reference, or release-gate cell must fail; stable 1.x recovery remains outside this content gate. Crafted VSIX fixtures cover omitted legal files, symlink-mode entries, missing manifest-referenced assets, oversized expansion, encrypted flags, and CRC corruption through the same streaming validator used by both package verification and stable readiness. Descriptor-bound VSIX file fixtures reject hard links, symbolic links, empty or sparse oversized inputs, and named-path inode swaps around the read. Pinned Cursor and Remote SSH acquisition additionally read product metadata, package metadata, runtime files, and licenses through bounded no-follow descriptors whose named path, containment, identity, and complete snapshot must remain stable; their adversarial fixtures cover replacement, in-place mutation, and hard links. Cursor network bytes enter only a random mode-`0600` quarantine descriptor and cannot be published until exact status, one unambiguous length, SHA-256, descriptor identity, and named-path identity all agree; a rejected status, header, or body is explicitly disposed. Stable-publication fixtures also require immutable Git-commit source reads and reject content or parent-identity changes in either final output, including a same-size first-output mutation while the second output is read. Parsed-YAML fixtures bind the complete dispatch and job graph through a bounded, cycle-safe canonical digest in addition to semantic validation; they move or duplicate readiness/upload steps, remove the event-commit binding, alter shell/failure/condition controls, add workflow/job execution overrides or permission escalation, insert post-readiness mutations, weaken commands, change runners or action inputs, remove required evidence, add broad uploads, expose publisher credentials, remove the locked CLI guard, add a preview registry flag, or place mutations between canonical verification and a publisher boundary. None may satisfy the canonical stable workflow. Stable-tag fixtures require the exact protected `origin/main` source, require canonical version binding, one non-force atomic single-ref push, a private credential that never enters arguments or child environment, cleanup after success or failure, exact recognition and scrubbing of Git credential-store's atomic approval and rejection rewrites, rejection of any other replacement, and exact lightweight post-push verification; conflicting, annotated, ambiguous, stale, dirty, wildcard, force, and delete forms fail. GitHub publication tests accept absent, exact partial, and exact complete releases while rejecting conflicting tags, metadata, assets, digests, and bytes. Publisher unit tests retain the migration-false compatibility case, while the checked-in stable and preview workflows require exact `immutable: true`; false or missing state blocks registry promotion. Open VSX tests require the exact stable identity, publisher login, public checksum, and downloaded VSIX; retry is bounded to missing or transient post-publish metadata, and the default contract proves all ninety-one attempts in the fifteen-minute window. Marketplace tests separately enforce the pipeline's explicit maximum reviewed forty-attempt public-verification bound. Stable-candidate fixtures additionally require the complete pinned ordered step allowlists, reject every removal plus inserted/replaced/mutable actions, exercise the producer's real package-source composition, accept only the expected post-write directory-link-count transition while every owned file receipt stays fixed, and prove stable consume mode cannot fall back to a moving editor download. Platform-specific cases are skipped only where the host cannot provide the primitive under test.
   Release-document fixtures also require the preview and stable README sections to retain the same editor-support matrix.
   This local command remains the complete superset of the four disjoint CI groups below.
 - `npm run test:scripts:workflow` runs only `scripts/ci-workflow.test.mjs` and is owned only by `Fast feedback`.
@@ -800,7 +801,7 @@ grace. Disabled vscode-R workspace watching uses the explicit fallback instead o
 Automatic listing sends no terminal text. A listed frame is connected only after its explicit
 Open action rechecks the exact process. The explicit Refresh command is the fallback when watcher metadata is absent.
 
-Native transport tests cover `data.frame`, tibble, and `data.table` discovery, request framing, cleanup, and terminal
+Native private transport-v13 tests cover `data.frame`, tibble, and `data.table` discovery, request framing, cleanup, and terminal
 invalidation. One R task callback writes bounded dataframe descriptors to every attached private mailbox. The real-R
 contract attaches two transports to one process, checks that user expressions update both, and checks that Open
 Wrangler requests do not trigger another update. It also verifies `.Last.value`, notification replacement retries,
@@ -818,7 +819,7 @@ generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R`
 The 1.99 preview test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Formula, Text Length, One-hot
 encode, Multi-label binarize, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max
-scale, Round, Floor, Ceiling, Format Datetime, and Group and aggregate in
+scale, Round, Floor, Ceiling, Format Datetime, Group and aggregate, and Transform by example in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
@@ -843,6 +844,15 @@ the 64 MiB aggregate character-output budget with chunked formatting, in-place a
 keyed-data-table replacement guard. Formula, Format Datetime, and categorical generated-plan regressions also prove
 that their shared source preflight and operation helpers cannot be intercepted by caller-defined operators or S3
 methods.
+Transform-by-example cases prove deterministic synthesis and ranking, canonical retained-program publication, and
+equal live/generated evaluation for text, regex, numeric, temporal, duration, factor, and null programs. They cover
+ordered stable source references and aligned arrays, stale/type-mismatched references, strict JSON scalars, signed
+zero, unsafe whole numbers, exact `-(10^38 - 1)` through `10^38 - 1` arithmetic, and the shared 16-source,
+64-example, 256-node, depth-64, 64-concat, 8-KiB-value, and 64-KiB-total UTF-8 limits before synthesis and after
+canonicalization. The frame helper runs in bounded chunks and preserves source bytes, flavor, keys, aligned element
+names, semantic attributes, and stable output identity across base `data.frame`, tibble, `data.table`, and ordinary
+`collapse::qDF()`, `qTBL()`, and `qDT()`. Kernel-agent and real-R cross-language coverage runs preview, apply,
+latest-step edit, replay, inspection, and undo, then executes the emitted generated R against the unchanged source.
 Malformed row names and unequal ordinary column lengths fail in live capture and generated replay, unsupported frame
 subclasses and frames wider than 2,048 columns fail before a step runs, bounded
 factor metadata cannot amplify generated preflight, delayed source promises cannot install an active result setter,
@@ -865,7 +875,8 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites cover all supported operations and own exhaustive 26-operation semantics. Explicit candidate
+suites cover all supported operations and own exhaustive 27-operation semantics; the registry contains Transform by
+example and omits only Custom code. Explicit candidate
 `core-operations` retains its existing phase but runs one full installed Clone Column lifecycle: preview, apply,
 applied-step inspection, edit and reapply with the same step/output identities, and undo. The `value-operations`
 targeted slice remains exactly Find and replace, Formula, Format Datetime, Min-max
@@ -1235,8 +1246,9 @@ The value selector remains exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The categorical selector checks exact One-hot encode and Multi-label binarize preview, apply,
 generated code, and one-shot undo behavior without native R/Quarto editor tooling. Installed selectors validate the
-advertised operation registry, while direct R/runtime/generated-code/catalog suites own exhaustive 26-operation
-semantics. Candidate core, value, and categorical omit the former native-frame scaffold. `native-frames` owns the frame picker,
+advertised operation registry, while direct R/runtime/generated-code/catalog suites own exhaustive 27-operation
+semantics. This addition changes no selector, job, phase, shard, 300-second hard deadline, 180-second inactivity
+deadline, or retry rule. Candidate core, value, and categorical omit the former native-frame scaffold. `native-frames` owns the frame picker,
 collapse/viewing sessions, native tibble Rename, and keyed-data-table Drop at comprehensive Linux VS Code depth and
 representative macOS/Windows VS Code and Linux Cursor depth. macOS, Windows, and Cursor core remain representative.
 Explicit candidate core skips both that work and embedded restart on

@@ -10,6 +10,7 @@ import {
 } from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
 import type {
+  ByExampleProgram,
   CellValue,
   ColumnSummary,
   DataDiff,
@@ -18,9 +19,9 @@ import type {
   PredicateFilter,
   ValueCount
 } from "../../shared/protocol";
-import { isOpenWranglerResponse } from "../../shared/protocolValidation";
+import { isOpenWranglerResponse, isRetainedTransformStep, isTransformStep } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 12 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 13 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -390,6 +391,52 @@ export interface RKernelGroupByStep {
   }>;
 }
 
+export interface RKernelByExampleItem {
+  readonly inputs: readonly (string | number | boolean | null)[];
+  readonly output: string | number | boolean | null;
+}
+
+export interface RKernelByExampleStep {
+  readonly id: string;
+  readonly kind: "byExample";
+  readonly params: Readonly<{
+    sourceColumns: readonly RKernelColumnReference[];
+    newColumn: string;
+    examples: readonly RKernelByExampleItem[];
+    program?: ByExampleProgram;
+    warnings?: readonly string[];
+    candidateCount?: number;
+  }>;
+}
+
+export interface RKernelRetainedByExampleStep extends RKernelByExampleStep {
+  readonly params: RKernelByExampleStep["params"] &
+    Readonly<{
+      program: ByExampleProgram;
+      warnings: readonly string[];
+      candidateCount: number;
+    }>;
+}
+
+/** jsonlite truncates embedded NULs, so native-R requests reject them before dispatch. */
+export function assertRKernelByExampleTransportStrings(step: RKernelByExampleStep): void {
+  const pending: unknown[] = [step];
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (value.includes("\u0000")) {
+        throw new TypeError("Native R Transform by Example strings may not contain U+0000.");
+      }
+      continue;
+    }
+    if (value === null || typeof value !== "object" || visited.has(value)) continue;
+    visited.add(value);
+    if (Array.isArray(value)) pending.push(...value);
+    else pending.push(...Object.values(value));
+  }
+}
+
 export type RKernelTransformStep =
   | RKernelSortRowsStep
   | RKernelFilterRowsStep
@@ -416,7 +463,8 @@ export type RKernelTransformStep =
   | RKernelCeilNumberStep
   | RKernelFormatDatetimeStep
   | RKernelDropColumnsStep
-  | RKernelSelectColumnsStep;
+  | RKernelSelectColumnsStep
+  | RKernelByExampleStep;
 
 export interface RKernelStepPreviewResult {
   readonly sessionId: string;
@@ -425,6 +473,7 @@ export interface RKernelStepPreviewResult {
   readonly diff: DataDiff;
   readonly code: string;
   readonly remainingMissingCells?: number;
+  readonly retainedStep?: RKernelRetainedByExampleStep;
 }
 
 export interface RKernelPlanUpdatedResult {
@@ -632,6 +681,7 @@ export type RKernelResponse =
       diff: DataDiff;
       code: string;
       remainingMissingCells?: number;
+      retainedStep?: RKernelRetainedByExampleStep;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -715,6 +765,8 @@ export interface RKernelResponseDecodeContext {
   readonly outputSchema?: readonly RColumnSchema[];
   /** Exact side requested for one bounded applied-step page. */
   readonly inspectionSide?: "input" | "output";
+  /** Exact preview request used to validate a runtime-normalized retained step. */
+  readonly previewStep?: RKernelTransformStep;
 }
 
 export function encodeRKernelRequest(request: RKernelRequest): string {
@@ -870,14 +922,29 @@ export function decodeRKernelResponseJson(
     });
   }
   if (kind === "stepPreview") {
+    const expectedPreviewStep = context.previewStep;
+    const expectsRetainedStep = expectedPreviewStep?.kind === "byExample";
     const record = exactRecord(
       value,
-      ["transportVersion", "requestId", "kind", "sessionId", "revision", "page", "diff", "code"],
+      [
+        "transportVersion",
+        "requestId",
+        "kind",
+        "sessionId",
+        "revision",
+        "page",
+        "diff",
+        "code",
+        ...(expectsRetainedStep ? (["retainedStep"] as const) : [])
+      ],
       ["remainingMissingCells"]
     );
     validateEnvelope(record, expected);
     const page = decodeRFramePage(record.page);
     const inputSchema = expectedMutationInputSchema(context, "step preview");
+    const retainedStep = expectsRetainedStep
+      ? decodeRetainedByExampleStep(record.retainedStep, expectedPreviewStep)
+      : undefined;
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
@@ -895,7 +962,8 @@ export function decodeRKernelResponseJson(
               "response.remainingMissingCells",
               page.shape.rows
             )
-          })
+          }),
+      ...(retainedStep === undefined ? {} : { retainedStep })
     });
   }
   if (kind === "planUpdated") {
@@ -1230,6 +1298,13 @@ function validateRequest(request: RKernelRequest): void {
 function validateTransformStep(value: unknown): void {
   const step = exactRecord(value, ["id", "kind", "params"], "R kernel transform step");
   boundedText(step.id, "request.payload.step.id", maximumStepIdBytes, false);
+  if (step.kind === "byExample") {
+    if (!isTransformStep(value)) {
+      fail("R kernel by-example parameters are malformed or exceed their bounded public contract.");
+    }
+    assertRKernelByExampleTransportStrings(value as RKernelByExampleStep);
+    return;
+  }
   if (step.kind === "sortRows") {
     const params = exactRecord(step.params, ["rules"], "R kernel sort-rows parameters");
     validateSorts(params.rules, "request.payload.step.params.rules", false);
@@ -1518,6 +1593,41 @@ function validateTransformStep(value: unknown): void {
     return;
   }
   fail("R kernel transform step has an unsupported operation.");
+}
+
+function decodeRetainedByExampleStep(value: unknown, requested: RKernelByExampleStep): RKernelRetainedByExampleStep {
+  if (!isRetainedTransformStep(value) || value.kind !== "byExample") {
+    fail("R kernel by-example preview must return one valid retained by-example step.");
+  }
+  assertRKernelByExampleTransportStrings(value);
+  const params = value.params;
+  if (
+    !Object.prototype.hasOwnProperty.call(params, "warnings") ||
+    !Object.prototype.hasOwnProperty.call(params, "candidateCount")
+  ) {
+    fail("R kernel retained by-example parameters must include warnings and candidateCount.");
+  }
+  const requestedIdentity = {
+    id: requested.id,
+    kind: requested.kind,
+    sourceColumns: requested.params.sourceColumns,
+    newColumn: requested.params.newColumn,
+    examples: requested.params.examples
+  };
+  const returnedIdentity = {
+    id: value.id,
+    kind: value.kind,
+    sourceColumns: params.sourceColumns,
+    newColumn: params.newColumn,
+    examples: params.examples
+  };
+  if (!isDeepStrictEqual(returnedIdentity, requestedIdentity)) {
+    fail("R kernel retained by-example step does not match the exact preview request.");
+  }
+  if (requested.params.program !== undefined && !isDeepStrictEqual(params.program, requested.params.program)) {
+    fail("R kernel changed a saved by-example program instead of revalidating it.");
+  }
+  return value as RKernelRetainedByExampleStep;
 }
 
 function validateFillMissingReplacement(value: unknown, targetColumnId: string): void {

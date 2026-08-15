@@ -865,6 +865,509 @@ assert_error(
 )
 assert_identical(clone_frame, clone_before, "a failed clone mutated its source")
 
+by_example_source <- data.frame(
+  label = c("alpha", NA_character_, "gamma"),
+  value = c(1L, 2L, 3L),
+  check.names = FALSE,
+  row.names = c("example-a", "example-b", "example-c")
+)
+by_example_table <- data.table::as.data.table(by_example_source)
+data.table::setkey(by_example_table, value)
+by_example_qdt <- collapse::qDT(by_example_source)
+data.table::setkey(by_example_qdt, value)
+by_example_cases <- list(
+  list(label = "base data.frame", frame = by_example_source),
+  list(label = "tibble", frame = tibble::as_tibble(by_example_source, .name_repair = "minimal")),
+  list(label = "data.table", frame = by_example_table),
+  list(label = "collapse qDF", frame = collapse::qDF(by_example_source)),
+  list(label = "collapse qTBL", frame = collapse::qTBL(by_example_source)),
+  list(label = "collapse qDT", frame = by_example_qdt)
+)
+for (case in by_example_cases) {
+  source_bytes <- serialize(case$frame, NULL, version = 3L)
+  source_capture <- openwrangler_r_frame_contract$capture_frame(case$frame)
+  result <- openwrangler_r_frame_contract$by_example_column_at(
+    case$frame,
+    c(1L, 2L),
+    c("label", "value"),
+    "example result",
+    "character",
+    function(columns) {
+      columns[[1L]][[1L]] <- "alpha"
+      ifelse(
+        is.na(columns[[1L]]) | is.na(columns[[2L]]),
+        NA_character_,
+        paste0(columns[[1L]], ":", columns[[2L]])
+      )
+    }
+  )
+  output_ids <- c("r:c:0", "r:c:1", "c:step:by-example:0")
+  result_capture <- openwrangler_r_frame_contract$capture_frame(
+    result,
+    nullability_source = source_capture,
+    source_positions = c(1L, 2L, 1L),
+    output_ids = output_ids,
+    by_example_positions = 3L,
+    by_example_kinds = "character"
+  )
+  assert_identical(class(result), class(case$frame), sprintf("byExample changed %s classes", case$label))
+  assert_identical(
+    result_capture$descriptor$dataframeFlavor,
+    source_capture$descriptor$dataframeFlavor,
+    sprintf("byExample changed %s flavor", case$label)
+  )
+  assert_identical(
+    result_capture$descriptor$frameSemantics$rowNames,
+    source_capture$descriptor$frameSemantics$rowNames,
+    sprintf("byExample changed %s row-name semantics", case$label)
+  )
+  assert_identical(
+    result_capture$descriptor$frameSemantics$keyColumnIds,
+    source_capture$descriptor$frameSemantics$keyColumnIds,
+    sprintf("byExample changed %s key identities", case$label)
+  )
+  assert_identical(result[[3L]], c("alpha:1", NA_character_, "gamma:3"), "byExample returned wrong text")
+  assert_identical(
+    vapply(result_capture$descriptor$schema, `[[`, character(1L), "id"),
+    output_ids,
+    sprintf("byExample changed %s stable identities", case$label)
+  )
+  assert_identical(
+    result_capture$descriptor$schema[[3L]]$nullable,
+    TRUE,
+    sprintf("byExample lost %s output nullability", case$label)
+  )
+  assert_identical(
+    serialize(case$frame, NULL, version = 3L),
+    source_bytes,
+    sprintf("byExample mutated its %s source", case$label)
+  )
+}
+
+by_example_duration <- data.frame(elapsed = as.difftime(c(1, NA, 3), units = "hours"))
+by_example_duration_capture <- openwrangler_r_frame_contract$capture_frame(by_example_duration)
+by_example_duration_result <- openwrangler_r_frame_contract$by_example_column_at(
+  by_example_duration,
+  1L,
+  "elapsed",
+  "elapsed copy",
+  "difftime",
+  function(columns) columns[[1L]]
+)
+by_example_duration_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  by_example_duration_result,
+  nullability_source = by_example_duration_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:duration:0"),
+  by_example_positions = 2L,
+  by_example_kinds = "difftime"
+)
+assert_identical(
+  by_example_duration_result_capture$descriptor$schema[[2L]]$semantics$units,
+  "hours",
+  "byExample changed direct duration units"
+)
+
+by_example_factor <- data.frame(
+  category = ordered(c("low", NA, "high"), levels = c("low", "high"))
+)
+by_example_factor_capture <- openwrangler_r_frame_contract$capture_frame(by_example_factor)
+by_example_factor_result <- openwrangler_r_frame_contract$by_example_column_at(
+  by_example_factor,
+  1L,
+  "category",
+  "category copy",
+  "factor",
+  function(columns) columns[[1L]]
+)
+by_example_factor_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  by_example_factor_result,
+  nullability_source = by_example_factor_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:factor:0"),
+  by_example_positions = 2L,
+  by_example_kinds = "factor"
+)
+assert_identical(
+  by_example_factor_result[[2L]],
+  by_example_factor[[1L]],
+  "byExample changed direct factor values or attributes"
+)
+assert_identical(
+  by_example_factor_result_capture$descriptor$schema[[2L]]$semantics,
+  by_example_factor_capture$descriptor$schema[[1L]]$semantics,
+  "byExample changed direct factor semantics"
+)
+
+by_example_nonmissing <- data.frame(value = c(1L, 2L))
+by_example_nonmissing_capture <- openwrangler_r_frame_contract$capture_live_frame(
+  function() by_example_nonmissing
+)
+by_example_nonmissing_result <- openwrangler_r_frame_contract$by_example_column_at(
+  by_example_nonmissing,
+  1L,
+  "value",
+  "value copy",
+  "integer",
+  function(columns) columns[[1L]]
+)
+by_example_nonmissing_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  by_example_nonmissing_result,
+  nullability_source = by_example_nonmissing_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:nonmissing:0"),
+  by_example_positions = 2L,
+  by_example_kinds = "integer"
+)
+assert_identical(
+  by_example_nonmissing_result_capture$descriptor$schema[[1L]]$nullable,
+  TRUE,
+  "a live byExample source lost conservative nullability"
+)
+assert_identical(
+  by_example_nonmissing_result_capture$descriptor$schema[[2L]]$nullable,
+  FALSE,
+  "byExample did not derive exact output nullability"
+)
+
+by_example_chunk_rows <- 2L * 1024L + 3L
+by_example_chunk_source <- data.frame(
+  label = sprintf("row-%04d", seq_len(by_example_chunk_rows)),
+  value = seq_len(by_example_chunk_rows),
+  check.names = FALSE
+)
+by_example_chunk_source_before <- serialize(by_example_chunk_source, NULL, version = 3L)
+by_example_chunk_calls <- integer()
+by_example_chunk_result <- openwrangler_r_frame_contract$by_example_column_at(
+  by_example_chunk_source,
+  c(1L, 2L),
+  c("label", "value"),
+  "chunk result",
+  "character",
+  function(columns) {
+    by_example_chunk_calls <<- c(by_example_chunk_calls, length(columns[[1L]]))
+    paste0(columns[[1L]], ":", columns[[2L]])
+  }
+)
+assert_identical(
+  by_example_chunk_calls,
+  c(1024L, 1024L, 3L),
+  "byExample did not evaluate output in bounded row chunks"
+)
+assert_identical(
+  by_example_chunk_result$`chunk result`[[by_example_chunk_rows]],
+  sprintf("row-%04d:%d", by_example_chunk_rows, by_example_chunk_rows),
+  "byExample changed the final bounded output chunk"
+)
+assert_identical(
+  serialize(by_example_chunk_source, NULL, version = 3L),
+  by_example_chunk_source_before,
+  "chunked byExample evaluation mutated its source"
+)
+
+for (named_table_case in list(
+  list(label = "data.table", value = data.table::data.table(value = 1:3)),
+  list(label = "collapse qDT", value = collapse::qDT(data.frame(value = 1:3)))
+)) {
+  named_table_source <- named_table_case$value
+  data.table::setattr(.subset2(named_table_source, 1L), "names", c("first", NA_character_, "third"))
+  named_table_source_before <- serialize(named_table_source, NULL, version = 3L)
+  named_table_result <- openwrangler_r_frame_contract$by_example_column_at(
+    named_table_source,
+    1L,
+    "value",
+    "value copy",
+    "integer",
+    function(columns) columns[[1L]]
+  )
+  assert_identical(
+    attr(.subset2(named_table_result, 2L), "names", exact = TRUE),
+    c("first", NA_character_, "third"),
+    sprintf("byExample dropped %s output element names", named_table_case$label)
+  )
+  assert_identical(
+    attr(.subset2(named_table_result, 1L), "names", exact = TRUE),
+    c("first", NA_character_, "third"),
+    sprintf("byExample dropped retained %s element names", named_table_case$label)
+  )
+  invisible(openwrangler_r_frame_contract$capture_frame(named_table_result))
+  assert_identical(
+    serialize(named_table_source, NULL, version = 3L),
+    named_table_source_before,
+    sprintf("byExample mutated the %s source with element names", named_table_case$label)
+  )
+}
+
+by_example_preflight_rows <- openwrangler_r_frame_contract$limits$operationOutputBytes %/% 8L + 1L
+by_example_preflight_source <- structure(
+  list(value = seq_len(by_example_preflight_rows)),
+  class = "data.frame",
+  row.names = .set_row_names(by_example_preflight_rows)
+)
+by_example_preflight_called <- FALSE
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_preflight_source,
+    1L,
+    "value",
+    "too large",
+    "character",
+    function(columns) {
+      by_example_preflight_called <<- TRUE
+      as.character(columns[[1L]])
+    }
+  ),
+  "operation output budget"
+)
+assert_identical(
+  by_example_preflight_called,
+  FALSE,
+  "byExample evaluated a program before rejecting its fixed output-slot budget"
+)
+rm(by_example_preflight_source)
+
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_source,
+    c(1L, 1L),
+    c("label", "label"),
+    "result",
+    "character",
+    identity
+  ),
+  "source positions"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_source,
+    1L,
+    "stale",
+    "result",
+    "character",
+    identity
+  ),
+  "source names"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_source,
+    1L,
+    "label",
+    "value",
+    "character",
+    identity
+  ),
+  "column-name-collision"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_source,
+    1L,
+    "label",
+    "result",
+    "character",
+    function(columns) list(columns[[1L]])
+  ),
+  "invalid R column"
+)
+by_example_storage_source <- data.frame(value = c(1L, 2L), check.names = FALSE)
+by_example_storage_source_before <- serialize(by_example_storage_source, NULL, version = 3L)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_storage_source,
+    1L,
+    "value",
+    "forged integer64",
+    "integer64",
+    function(columns) structure(columns[[1L]], class = "integer64")
+  ),
+  "invalid R column"
+)
+assert_identical(
+  serialize(by_example_storage_source, NULL, version = 3L),
+  by_example_storage_source_before,
+  "a malformed integer64 byExample result mutated its source"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_storage_source,
+    1L,
+    "value",
+    "forged factor",
+    "factor",
+    function(columns) structure(c(0L, 2L), levels = "only", class = "factor")
+  ),
+  "invalid factor codes"
+)
+assert_identical(
+  serialize(by_example_storage_source, NULL, version = 3L),
+  by_example_storage_source_before,
+  "a malformed factor byExample result mutated its source"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_storage_source,
+    1L,
+    "value",
+    "nested factor metadata",
+    "factor",
+    function(columns) {
+      levels <- structure("only", class = "AsIs")
+      attr(levels, "payload") <- raw(openwrangler_r_frame_contract$limits$operationOutputBytes + 1L)
+      structure(c(1L, 1L), levels = levels, class = "factor")
+    }
+  ),
+  "unsupported nested attributes"
+)
+assert_identical(
+  serialize(by_example_storage_source, NULL, version = 3L),
+  by_example_storage_source_before,
+  "oversized nested factor metadata mutated its source"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_storage_source,
+    1L,
+    "value",
+    "bad timezone",
+    "datetime",
+    function(columns) structure(
+      as.double(columns[[1L]]),
+      class = c("POSIXct", "POSIXt"),
+      tzone = c("UTC", "GMT")
+    )
+  ),
+  "invalid datetime timezone"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_storage_source,
+    1L,
+    "value",
+    "bad duration",
+    "difftime",
+    function(columns) structure(as.double(columns[[1L]]), class = "difftime", units = "fortnights")
+  ),
+  "invalid difftime units"
+)
+assert_identical(
+  serialize(by_example_storage_source, NULL, version = 3L),
+  by_example_storage_source_before,
+  "malformed temporal byExample attributes mutated their source"
+)
+
+by_example_attribute_budget_rows <- openwrangler_r_frame_contract$limits$operationOutputBytes %/% 8L
+by_example_attribute_budget_source <- structure(
+  list(value = seq_len(by_example_attribute_budget_rows)),
+  class = "data.frame",
+  row.names = .set_row_names(by_example_attribute_budget_rows)
+)
+for (attribute_case in list(
+  list(
+    label = "datetime timezone",
+    kind = "datetime",
+    evaluator = function(columns) structure(
+      as.double(columns[[1L]]),
+      class = c("POSIXct", "POSIXt"),
+      tzone = "UTC"
+    )
+  ),
+  list(
+    label = "difftime units",
+    kind = "difftime",
+    evaluator = function(columns) structure(as.double(columns[[1L]]), class = "difftime", units = "hours")
+  )
+)) {
+  attribute_evaluations <- 0L
+  evaluator <- attribute_case$evaluator
+  assert_error(
+    openwrangler_r_frame_contract$by_example_column_at(
+      by_example_attribute_budget_source,
+      1L,
+      "value",
+      paste0(attribute_case$label, " overflow"),
+      attribute_case$kind,
+      function(columns) {
+        attribute_evaluations <<- attribute_evaluations + 1L
+        evaluator(columns)
+      }
+    ),
+    "operation output budget"
+  )
+  assert_identical(
+    attribute_evaluations,
+    1L,
+    sprintf("byExample did not reject %s at the first bounded chunk", attribute_case$label)
+  )
+}
+assert_identical(
+  by_example_attribute_budget_source$value[[1L]],
+  1L,
+  "temporal attribute budget rejection mutated its source"
+)
+rm(by_example_attribute_budget_source)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_source,
+    1L,
+    "label",
+    "result",
+    "character",
+    function(columns) columns[[1L]][1:2]
+  ),
+  "invalid R column"
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_source,
+    1L,
+    "label",
+    "result",
+    "character",
+    function(columns) {
+      value <- strrep("x", openwrangler_r_frame_contract$limits$textBytes + 1L)
+      rep.int(value, length(columns[[1L]]))
+    }
+  ),
+  "exceeds 8192 UTF-8 bytes"
+)
+by_example_private_source <- data.frame(
+  `__open_wrangler_internal_row_id_hidden` = c("a", "b"),
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$by_example_column_at(
+    by_example_private_source,
+    1L,
+    "__open_wrangler_internal_row_id_hidden",
+    "result",
+    "character",
+    function(columns) columns[[1L]]
+  ),
+  "reserved-column-name"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    by_example_duration_result,
+    nullability_source = by_example_duration_capture,
+    source_positions = c(1L, 1L),
+    output_ids = c("r:c:0", "c:step:duration:0"),
+    by_example_positions = 2L,
+    by_example_kinds = "character"
+  ),
+  "invalid by-example output"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    by_example_duration_result,
+    nullability_source = by_example_duration_capture,
+    source_positions = c(1L, 1L),
+    output_ids = c("r:c:0", "c:step:duration:0"),
+    by_example_positions = 2L
+  ),
+  "positions and semantic kinds"
+)
+
 formula_frame <- data.frame(
   duplicate = c(1L, 2L, 3L),
   duplicate = c(10L, NA_integer_, 4L),
@@ -6694,6 +7197,7 @@ writeLines(c(
   ")",
   "attr(source_frame$group, 'levels') <- structure(attr(source_frame$group, 'levels', exact = TRUE), class = 'AsIs')",
   "attr(source_frame$tags, 'levels') <- structure(attr(source_frame$tags, 'levels', exact = TRUE), class = 'AsIs')",
+  "attr(source_frame$number, 'names') <- c('first', NA_character_, 'third')",
   "attr(source_frame$instant, 'tzone') <- structure(attr(source_frame$instant, 'tzone', exact = TRUE), class = 'AsIs')",
   "attr(source_frame$elapsed, 'units') <- structure(attr(source_frame$elapsed, 'units', exact = TRUE), class = 'AsIs')",
   "source_before <- serialize(source_frame, NULL, version = 3L)",
@@ -6706,6 +7210,7 @@ writeLines(c(
   "registerS3method('is.na', 'AsIs', poison_metadata('is.na'), envir = .GlobalEnv)",
   "registerS3method('Ops', 'AsIs', poison_metadata('Ops'), envir = .GlobalEnv)",
   "`[.factor` <- function(...) stop('caller factor subset dispatch', call. = FALSE)",
+  "length.factor <- function(...) stop('caller factor length dispatch', call. = FALSE)",
   "levels.factor <- function(...) stop('caller factor levels dispatch', call. = FALSE)",
   "as.character.factor <- function(...) stop('caller factor character dispatch', call. = FALSE)",
   "format.Date <- function(...) stop('caller Date format dispatch', call. = FALSE)",
@@ -6719,8 +7224,19 @@ writeLines(c(
   "registerS3method('anyDuplicated', 'integer', function(...) stop('caller anyDuplicated.integer dispatch', call. = FALSE), envir = .GlobalEnv)",
   "registerS3method('sort', 'character', function(...) stop('caller sort.character dispatch', call. = FALSE), envir = .GlobalEnv)",
   "source_capture <- openwrangler_r_frame_contract$capture_frame(source_frame)",
+  "factor_page <- openwrangler_r_frame_contract$materialize_page(source_capture, row_offset = 0L, row_limit = 3L, column_offset = 0L, column_limit = 1L)",
+  "factor_rows <- unclass(factor_page$page$rows)",
+  "attributes(factor_rows) <- NULL",
+  "factor_displays <- vapply(factor_rows, function(row) { values <- unclass(base::.subset2(row, 'values')); attributes(values) <- NULL; base::.subset2(base::.subset2(values, 1L), 'display') }, character(1L))",
+  "if (!identical(factor_displays, c('a', 'NA', 'β'))) stop('unexpected poisoned-factor page', call. = FALSE)",
   "live_capture <- openwrangler_r_frame_contract$capture_live_frame(function() source_frame)",
   "if (!identical(live_capture$descriptor$shape, list(rows = 3L, columns = 6L))) stop('unexpected live capture shape', call. = FALSE)",
+  "by_example <- openwrangler_r_frame_contract$by_example_column_at(source_frame, 1L, 'group', 'group copy', 'factor', function(columns) columns[[1L]])",
+  "if (!identical(base::.subset2(by_example, 7L), base::.subset2(source_frame, 1L))) stop('byExample changed attributed factor output', call. = FALSE)",
+  "by_example_direct_named <- openwrangler_r_frame_contract$by_example_column_at(source_frame, 4L, 'number', 'direct named output', 'double', function(columns) columns[[1L]])",
+  "if (!identical(base::.subset2(by_example_direct_named, 7L), base::.subset2(source_frame, 4L))) stop('byExample changed direct output with missing names', call. = FALSE)",
+  "by_example_named <- openwrangler_r_frame_contract$by_example_column_at(source_frame, 4L, 'number', 'named output', 'character', function(columns) { value <- c('first', 'second', 'third'); attr(value, 'names') <- structure(c('n1', NA_character_, 'n3'), class = 'AsIs'); value })",
+  "if (!identical(base::attr(base::.subset2(by_example_named, 7L), 'names', exact = TRUE), c('n1', NA_character_, 'n3'))) stop('byExample changed attributed output names', call. = FALSE)",
   "hot <- openwrangler_r_frame_contract$one_hot_encode_columns_at(source_frame, c(1L, 3L, 4L), c('group', 'day', 'number'), drop_original = FALSE)",
   "labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(source_frame, 2L, 'tags', '|', prefix = 'tag_')",
   "hot_ids <- c(paste0('r:c:', 0:5), paste0('c:step:s3:', 0:5))",

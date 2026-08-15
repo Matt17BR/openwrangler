@@ -423,7 +423,7 @@ export class RKernelSessionTransport {
       ...(replaceStepId === undefined ? {} : { replaceStepId })
     });
     encodeRKernelRequest(request);
-    const response = await this.executeMappedRequest(sessionId, request, options, { inputSchema });
+    const response = await this.executeMappedRequest(sessionId, request, options, { inputSchema, previewStep: step });
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
     if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
       throw new Error("The R kernel returned a mismatched step preview.");
@@ -434,7 +434,10 @@ export class RKernelSessionTransport {
       page: response.page,
       diff: response.diff,
       code: response.code,
-      ...(response.remainingMissingCells === undefined ? {} : { remainingMissingCells: response.remainingMissingCells })
+      ...(response.remainingMissingCells === undefined
+        ? {}
+        : { remainingMissingCells: response.remainingMissingCells }),
+      ...(response.retainedStep === undefined ? {} : { retainedStep: response.retainedStep })
     });
   }
 

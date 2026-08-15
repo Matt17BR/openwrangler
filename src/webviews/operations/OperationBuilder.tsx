@@ -158,7 +158,10 @@ function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>): void {
 function isSafeByExampleScalar(value: unknown): value is string | number | boolean | null {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
   return (
-    typeof value === "number" && Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value))
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    !Object.is(value, -0) &&
+    (!Number.isInteger(value) || Number.isSafeInteger(value))
   );
 }
 
@@ -2203,7 +2206,7 @@ function buildParams(
       }
       if (!example.inputs.every(isSafeByExampleScalar) || !isSafeByExampleScalar(example.output)) {
         throw new Error(
-          `Example ${index + 1} values must be JSON scalars; integer values must stay within JavaScript's exact safe range.`
+          `Example ${index + 1} values must be portable JSON scalars; negative zero is not supported and integer values must stay within JavaScript's exact safe range.`
         );
       }
     }

@@ -108,6 +108,10 @@ without running a command. Opening a listed frame or choosing Refresh creates th
 Open Wrangler's private callback mailbox. Changing the notebook, kernel, or R terminal invalidates its cached handles
 instead of retargeting another session.
 
+Published preview 1.99.6 contains the first 26 native-R cleaning operations described below. Current `main` adds
+Transform by example as operation 27 of 28; Custom code remains unavailable. This current source slice has direct
+contract evidence but no fresh hosted candidate evidence, so every affected Native R row remains **Partial**.
+
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
 object. R documents follow the file start-mode setting, which defaults to Editing. Generated R can be copied or saved
 from any editing session. Insertion is available only for an exact originating IRkernel notebook or Open
@@ -133,7 +137,7 @@ returns exact matching counts without a separate dataset-size limit; searches ex
 Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Formula, Text Length,
 One-hot encode, Multi-label binarize, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text,
-Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and aggregate. They follow the
+Min-max scale, Round, Floor, Ceiling, Format Datetime, Group and aggregate, and Transform by example. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters keep the typed distinction between `NA` and
 `NaN`; sorts keep their compound priority, and both keep stable source-row identities through history and diffs.
@@ -169,6 +173,15 @@ each group a new row identity. Integer and `integer64` sums are exact and fail i
 range. Their outputs stay ordinary R integer or `bit64::integer64`; base R and `bit64` do not have an exact 38-digit
 integer type, so overflow fails before publication instead of changing the public type. Integer64 mean and median
 perform exact decimal addition before producing their final double values. First and last follow source order.
+
+Transform by example accepts ordered stable source references and aligned example input/output arrays. Native R uses
+the shared deterministic candidate order to synthesize one canonical bounded program, stores that program in the
+retained step, and uses it unchanged for evaluation, executable generated R, edit-latest, replay, inspection, and
+undo. Strict scalar and reference validation rejects stale or incompatible inputs, unsafe whole numbers, and
+structural signed zero. The shared 16-source, 64-example, 256-node, depth-64, 64-concat, 8-KiB-value, and 64-KiB-total
+UTF-8 limits apply before synthesis and after canonicalization. Exact integral arithmetic uses the shared
+`-(10^38 - 1)` through `10^38 - 1` envelope before R's exact publishable integer type is chosen. Direct contracts
+exercise base `data.frame`, tibble, `data.table`, `collapse::qDF()`, `qTBL()`, and `qDT()` without changing the source.
 
 Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. Constant finite
 columns become zero; missing and non-finite values become missing output. The result can replace the source column or
@@ -211,7 +224,7 @@ workbench, Rename Column draft, and generated R inserted into the originating no
 uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Explicit candidate core
 keeps its existing phase but owns one complete installed Clone Column lifecycle: preview, apply, applied-step
 inspection, edit and reapply with the same step/output identities, and undo. Direct native-R, runtime, generated-code,
-and catalog tests own exhaustive semantics for all 26 operations. The focused value targeted
+and catalog tests own exhaustive semantics for all 27 operations. The focused value targeted
 slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
@@ -267,8 +280,8 @@ Windows hides the explicit
 official R terminal. Remote-resource actions and the Command Palette remain reachable because static client keys
 cannot identify the extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
 and is not part of the release matrix. Direct document execution is disabled on a Windows extension host until the
-extension can own the complete spawned process tree. Operations outside the 26-operation native-R catalog remain
-unavailable in R.
+extension can own the complete spawned process tree. Custom code is the only operation outside the current
+27-operation native-R catalog and remains unavailable in R.
 
 Before a 2.0 tag can be published, both release workflows must pass separate `r_platform` cells on hosted macOS and
 Windows. Each prepares R once, then runs freshly verified packaged VS Code-only `core-operations`, `native-frames`, and
@@ -281,7 +294,7 @@ while VS Code alone owns the complete value and categorical catalogs. Candidate 
 verification, fresh requested-editor private roots, and its own immediate sealed failure upload. The installed
 candidate `core-operations` phase owns one complete Clone Column lifecycle: preview, apply, inspect,
 edit the same step while retaining its step/output identity, reapply, and undo. Direct native-R/runtime/catalog tests
-own exhaustive semantics for all 26 operations; the installed value and categorical slices, the complete Linux
+own exhaustive semantics for all 27 operations; the installed value and categorical slices, the complete Linux
 native-frame owner, representative native/restart seams on every hosted platform, and the 300-second hard,
 180-second inactivity, and
 no-retry contracts remain unchanged. Preview release runs #72,
@@ -314,9 +327,12 @@ Native-R core artifact `9238867261` was indeterminate harness evidence at edited
 catalog journey lacked decisive dispatch, scheduler, and final-state receipts. Literate artifact `9238988590` was a
 deterministic harness failure: it expected unprefixed `quarto.previewView`, while VS Code exposed the exact
 `mainThreadWebview-quarto.previewView` `TabInputWebview`; the later `ERR_CONNECTION_REFUSED` followed that missed
-ownership and cleanup. The fan-in failed and publication was skipped, so `v1.99.6` is absent from GitHub, Open VSX,
-and Azure Marketplace. These failed hosted results remain distinct from the locally frozen, unhosted renderer,
-Clone-lifecycle, and Quarto-ownership corrections.
+ownership and cleanup. The fan-in failed, so run #78 created no `v1.99.6` tag, GitHub prerelease, Open VSX package, or
+Azure Marketplace package. Preview [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) later
+passed from exact protected `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` and published `v1.99.6` to all
+three destinations. That successful artifact still contains the historical 26-operation catalog and is not hosted
+evidence for the current unhosted Transform-by-example slice. Run #78 remains failed evidence rather than a source
+for reinterpreting run #79 or the new operation.
 
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                            | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- | --------------- |
@@ -332,8 +348,8 @@ Clone-lifecycle, and Quarto-ownership corrections.
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                   | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real-R contracts, and prior focused VS Code run; candidate gate now also requires Cursor                          | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                     | Preview release |
-| R cleaning operations and generated code      | 26 operations                   | Partial | Direct native-R/runtime/catalog tests cover all 26; the next candidate core is scoped to one complete Clone lifecycle     | Preview release |
-| Copy or save generated R                      | 26 operations                   | Partial | Rename uses packaged save; all 26 generate executable code                                                                | Preview release |
+| R cleaning operations and generated code      | 27 operations                   | Partial | Direct native-R/runtime/catalog tests cover all 27; Transform by example has no fresh hosted candidate evidence           | Preview release |
+| Copy or save generated R                      | 27 operations                   | Partial | All 27 generate executable code; published 1.99.6 and its packaged Rename save cover only the prior 26                    | Preview release |
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged VS Code run                                                                     | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                  | Preview release |
 | Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and prior packaged VS Code run; candidate gate now also requires Cursor                              | Preview release |
