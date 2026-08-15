@@ -283,11 +283,12 @@ test("native R report publication is atomic, parent-bound, and revalidated", () 
   try {
     const destination = join(directory, "report.json");
     const receipt = writeRPerformanceReport(destination, validReport());
-    assert.equal(existsSync(destination), true);
     assert.equal(JSON.parse(readFileSync(destination, "utf8")).protocol, R_PERFORMANCE_REPORT_PROTOCOL);
     assert.equal(revalidateRPerformanceReport(receipt), receipt);
 
-    writeFileSync(destination, "{}\n", "utf8");
+    const displaced = join(directory, "report.displaced.json");
+    renameSync(destination, displaced);
+    writeFileSync(destination, "{}\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
     assert.throws(() => revalidateRPerformanceReport(receipt), /changed|receipt/iu);
   } finally {
     rmSync(directory, { recursive: true, force: true });

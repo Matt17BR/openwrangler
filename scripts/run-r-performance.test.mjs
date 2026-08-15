@@ -311,16 +311,21 @@ test(
 );
 
 test("programmatic runner rechecks protected input and output path separation", async () => {
-  const shared = join(tmpdir(), "openwrangler.vsix");
-  await assert.rejects(
-    runRPerformance({
-      candidateInput: shared,
-      candidateChecksum: join(tmpdir(), "openwrangler.vsix.sha256"),
-      candidateProvenance: join(tmpdir(), "openwrangler.vsix.provenance.json"),
-      output: shared
-    }),
-    /different|separation|alias/iu
-  );
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-performance-separation-test-"));
+  try {
+    const shared = join(directory, "openwrangler.vsix");
+    await assert.rejects(
+      runRPerformance({
+        candidateInput: shared,
+        candidateChecksum: join(directory, "openwrangler.vsix.sha256"),
+        candidateProvenance: join(directory, "openwrangler.vsix.provenance.json"),
+        output: shared
+      }),
+      /different|separation|alias/iu
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("owned Rscript accepts one bounded stdout frame and proves natural group exit", linuxOnly, async () => {
