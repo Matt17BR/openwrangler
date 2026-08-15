@@ -452,6 +452,26 @@ describe("vscode-R workspace metadata adapter", () => {
     roots.push(fixture.root);
     const terminal = officialTerminal(fixture, 810);
     mocks.terminals = [terminal];
+    const listeners = new Set<() => unknown>();
+    const workspace = {
+      data: {
+        globalenv: {}
+      } as unknown,
+      onDidChangeTreeData: (listener: () => unknown) => {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      }
+    };
+    mocks.extension = {
+      extensionPath: fixture.extensionPath,
+      isActive: true,
+      packageJSON: { main: "./dist/extension" },
+      exports: { helpPanel: undefined }
+    };
+    mocks.extensionModuleExports = {
+      rWorkspace: workspace,
+      sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 810\nCommand: R" }
+    };
     const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
       extensionPath: fixture.extensionPath,
       debounceMs: 15,
@@ -461,12 +481,18 @@ describe("vscode-R workspace metadata adapter", () => {
     const updates: unknown[] = [];
     watcher.onDidChangeVariables((value) => updates.push(value));
 
-    await publishWorkspace(fixture, 2, {
-      first: { class: ["data.frame"], type: "list", length: 1, dim: [1, 1] }
-    });
-    await publishWorkspace(fixture, 3, {
-      latest: { class: ["tbl_df", "tbl", "data.frame"], type: "list", length: 1, dim: [4, 1] }
-    });
+    workspace.data = {
+      globalenv: {
+        first: { class: ["data.frame"], type: "list", length: 1, dim: [1, 1] }
+      }
+    };
+    for (const listener of listeners) listener();
+    workspace.data = {
+      globalenv: {
+        latest: { class: ["tbl_df", "tbl", "data.frame"], type: "list", length: 1, dim: [4, 1] }
+      }
+    };
+    for (const listener of listeners) listener();
 
     await vi.waitFor(() =>
       expect(updates.at(-1)).toEqual({
@@ -474,6 +500,7 @@ describe("vscode-R workspace metadata adapter", () => {
         truncated: false
       })
     );
+    expect(updates).toHaveLength(1);
     expect(terminal.sendText).not.toHaveBeenCalled();
     watcher.dispose();
   });
