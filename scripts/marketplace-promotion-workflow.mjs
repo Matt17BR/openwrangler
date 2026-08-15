@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "d0c029d43597b4b5cf147d35a2ae47ac09729269605dff347c8c7c9097c0c6d4";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "84746e95b065eada6e4a4d524f861e24643bb721ae6ea7ee4f5a30e7ec472c4a";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -18,6 +18,8 @@ const PREVIEW_PUBLISH_ATTEMPT = `${PREVIEW_PUBLISH_COMMAND} || publish_status=$?
 const PROFILE_ID_COMMAND = "node scripts/marketplace-identity-profile.mjs";
 const VERIFY_IDENTITY_COMMAND = "npx --no-install vsce verify-pat Matt17BR --azure-credential";
 const VERIFY_ARTIFACT_COMMAND = "node scripts/verify-registry-release-artifact.mjs canonical-release";
+const PROBE_PUBLICATION_COMMAND = "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing";
+const SKIP_EXISTING_PUBLIC_CONDITION = "and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))";
 const VERIFY_PUBLIC_MEDIA_LINES = Object.freeze([
   "set -euo pipefail",
   `required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"`,
@@ -229,6 +231,7 @@ export function inspectMarketplacePromotionPipeline(source) {
   const publicMediaPreflight = promotionSteps.find(
     (step) => step?.displayName === "Preflight immutable public README media"
   );
+  const publicProbe = promotionSteps.find((step) => step?.script === PROBE_PUBLICATION_COMMAND);
   const publicVerifier = promotionSteps.find(
     (step) => step?.script === "node scripts/verify-marketplace-publication.mjs canonical-release"
   );
@@ -267,6 +270,8 @@ export function inspectMarketplacePromotionPipeline(source) {
         RELEASE_SOURCE_SHA: "$(releaseCommit)",
         RELEASE_VERSION: "$(releaseVersion)"
       }) ||
+    publicProbe?.displayName !== "Reuse an exact existing public Marketplace payload" ||
+    JSON.stringify(publicProbe?.env) !== JSON.stringify(verifierEnvironment) ||
     JSON.stringify(publicVerifier?.env) !== JSON.stringify(publicVerifierEnvironment)
   ) {
     problems.push(
@@ -282,6 +287,7 @@ export function inspectMarketplacePromotionPipeline(source) {
     azure?.inputs?.addSpnToEnvironment !== false ||
     azure?.inputs?.visibleAzLogin !== false ||
     azure?.inputs?.failOnStandardError !== false ||
+    azure?.condition !== SKIP_EXISTING_PUBLIC_CONDITION ||
     azure?.env?.AUTOMATION_SHA !== "$(Build.SourceVersion)" ||
     azure?.env?.EXPECTED_SHA !== "$(releaseCommit)" ||
     azure?.env?.RELEASE_PRERELEASE !== "$(releasePrerelease)" ||
@@ -318,6 +324,7 @@ export function inspectMarketplacePromotionPipeline(source) {
     commands.filter((command) => command === PROFILE_ID_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_IDENTITY_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_ARTIFACT_COMMAND).length !== 2 ||
+    commands.filter((command) => command === PROBE_PUBLICATION_COMMAND).length !== 1 ||
     promotionSteps.filter((step) => step?.displayName === "Preflight immutable public README media").length !== 1 ||
     commands.filter((command) => command === "node scripts/download-canonical-github-release.mjs canonical-release")
       .length !== 1 ||
@@ -341,7 +348,11 @@ export function inspectMarketplacePromotionPipeline(source) {
     (step) => step?.script === "node scripts/verify-marketplace-publication.mjs canonical-release"
   );
   const azureIndex = promotionSteps.indexOf(azure);
-  if (azureIndex < 0 || publicVerifierIndex !== azureIndex + 1) {
+  if (
+    azureIndex < 0 ||
+    publicVerifierIndex !== azureIndex + 1 ||
+    publicVerifier?.condition !== SKIP_EXISTING_PUBLIC_CONDITION
+  ) {
     problems.push("Public Marketplace verification must immediately follow the authenticated publication task.");
   }
   const canonicalVerifierIndex = promotionSteps.findIndex((step) => step?.script === VERIFY_ARTIFACT_COMMAND);
@@ -351,17 +362,19 @@ export function inspectMarketplacePromotionPipeline(source) {
   const npmIndex = promotionSteps.findIndex((step) => step?.script === "npm ci --ignore-scripts");
   const releaseSourceIndex = promotionSteps.indexOf(releaseSource);
   const publicMediaPreflightIndex = promotionSteps.indexOf(publicMediaPreflight);
+  const publicProbeIndex = promotionSteps.indexOf(publicProbe);
   if (
-    promotionSteps.length !== 9 ||
+    promotionSteps.length !== 10 ||
     npmIndex < 0 ||
     downloadIndex !== npmIndex + 1 ||
     canonicalVerifierIndex !== downloadIndex + 1 ||
     releaseSourceIndex !== canonicalVerifierIndex + 1 ||
     publicMediaPreflightIndex !== releaseSourceIndex + 1 ||
-    azureIndex !== publicMediaPreflightIndex + 1
+    publicProbeIndex !== publicMediaPreflightIndex + 1 ||
+    azureIndex !== publicProbeIndex + 1
   ) {
     problems.push(
-      "Canonical verification, exact-source materialization, media preflight, and authenticated promotion must retain their reviewed order."
+      "Canonical verification, exact-source materialization, media preflight, existing-public probe, and authenticated promotion must retain their reviewed order."
     );
   }
   if (createHash("sha256").update(source, "utf8").digest("hex") !== AUDITED_MARKETPLACE_PIPELINE_SHA256) {

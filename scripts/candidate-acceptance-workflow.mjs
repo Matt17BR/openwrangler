@@ -460,22 +460,9 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     },
     problems
   );
-  inspectImmediateRunner(
-    "platform",
-    platform,
-    {
-      id: "cursor_smoke",
-      verifierId: "canonical_cursor",
-      run: "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
-      env: { OPEN_WRANGLER_PACKAGED_EDITORS: "cursor", OPEN_WRANGLER_PACKAGED_MODE: "platform-smoke" },
-      uploadName: "Upload Cursor failure diagnostics",
-      uploadIf:
-        "${{ always() && steps.cursor_smoke.outcome == 'failure' && steps.cursor_smoke.outputs.evidence_ready == 'true' }}",
-      artifactName: "${{ inputs.channel }}-release-cursor-${{ runner.os }}-${{ github.run_attempt }}",
-      failureName: "Fail after Cursor diagnostics"
-    },
-    problems
-  );
+  if (steps(platform).some((step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS?.includes("cursor"))) {
+    problems.push("platform must leave fork compatibility to the single pinned Linux Cursor smoke seam.");
+  }
 
   inspectJobEnvelope("r_platform", rPlatform, { runner: "${{ matrix.os }}", timeout: 90 }, problems);
   const platformRscript = steps(rPlatform).find((step) => step?.id === "rscript");
@@ -660,7 +647,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     ({ step }) => step?.env?.OPEN_WRANGLER_PACKAGED_MODE === undefined
   );
   if (
-    genericEditorRunners.length !== 4 ||
+    genericEditorRunners.length !== 3 ||
     fullGenericOwners.length !== 1 ||
     fullGenericOwners[0]?.jobName !== "linux" ||
     fullGenericOwners[0]?.step?.id !== "packaged_vscode" ||

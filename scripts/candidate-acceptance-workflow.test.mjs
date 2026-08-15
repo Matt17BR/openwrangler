@@ -87,20 +87,28 @@ test("platform owns the exact two-cell macOS and Windows matrix", () => {
   }, /fixed runner|macOS and Windows/u);
 });
 
-test("generic platform editors run only their exact platform smoke seam", () => {
+test("generic platform cells use one VS Code smoke and leave fork compatibility to Linux", () => {
   const value = workflow();
-  for (const runnerId of ["packaged_editor", "cursor_smoke"]) {
-    assert.equal(
-      step(value.jobs.platform, (entry) => entry.id === runnerId).env.OPEN_WRANGLER_PACKAGED_MODE,
-      "platform-smoke"
-    );
-    expectRejected((mutated) => {
-      delete step(mutated.jobs.platform, (entry) => entry.id === runnerId).env.OPEN_WRANGLER_PACKAGED_MODE;
-    }, /verifier.*packaged phase.*upload/u);
-    expectRejected((mutated) => {
-      step(mutated.jobs.platform, (entry) => entry.id === runnerId).env.OPEN_WRANGLER_PACKAGED_MODE = "full";
-    }, /verifier.*packaged phase.*upload/u);
-  }
+  assert.equal(
+    step(value.jobs.platform, (entry) => entry.id === "packaged_editor").env.OPEN_WRANGLER_PACKAGED_MODE,
+    "platform-smoke"
+  );
+  assert.equal(
+    value.jobs.platform.steps.some((entry) => entry?.env?.OPEN_WRANGLER_PACKAGED_EDITORS?.includes("cursor")),
+    false
+  );
+  expectRejected((mutated) => {
+    delete step(mutated.jobs.platform, (entry) => entry.id === "packaged_editor").env.OPEN_WRANGLER_PACKAGED_MODE;
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.platform, (entry) => entry.id === "packaged_editor").env.OPEN_WRANGLER_PACKAGED_MODE = "full";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((mutated) => {
+    mutated.jobs.platform.steps.push({
+      run: "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
+      env: { OPEN_WRANGLER_PACKAGED_EDITORS: "cursor", OPEN_WRANGLER_PACKAGED_MODE: "platform-smoke" }
+    });
+  }, /single pinned Linux Cursor smoke seam/u);
 });
 
 test("generic platform acceptance contains no hosted-R setup or R-Jupyter tail", () => {

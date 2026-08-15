@@ -133,8 +133,16 @@ stages:
                   env:
                     RELEASE_SOURCE_SHA: $(releaseCommit)
                     RELEASE_VERSION: $(releaseVersion)
+                - script: node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing
+                  displayName: Reuse an exact existing public Marketplace payload
+                  env:
+                    AUTOMATION_SHA: $(Build.SourceVersion)
+                    EXPECTED_SHA: $(releaseCommit)
+                    RELEASE_PRERELEASE: $(releasePrerelease)
+                    RELEASE_TAG: $(releaseTag)
                 - task: AzureCLI@2
                   displayName: Publish with the federated Marketplace identity
+                  condition: and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))
                   inputs:
                     azureSubscription: ${{ parameters.marketplaceServiceConnection }}
                     scriptType: bash
@@ -165,6 +173,7 @@ stages:
                     RELEASE_TAG: $(releaseTag)
                 - script: node scripts/verify-marketplace-publication.mjs canonical-release
                   displayName: Verify the public Marketplace payload
+                  condition: and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))
                   env:
                     AUTOMATION_SHA: $(Build.SourceVersion)
                     EXPECTED_SHA: $(releaseCommit)

@@ -525,9 +525,22 @@ export async function verifyMarketplacePublication({
   throw new Error("Marketplace publication verification exhausted without a result.");
 }
 
+export async function probeMarketplacePublication(options) {
+  try {
+    const receipt = await verifyMarketplacePublication({ ...options, attempts: 1, delayMs: 0 });
+    return Object.freeze({ alreadyPublic: true, receipt });
+  } catch (error) {
+    if (error instanceof MarketplacePublicationPendingError) {
+      return Object.freeze({ alreadyPublic: false });
+    }
+    throw error;
+  }
+}
+
 async function runCli() {
-  if (process.argv.length !== 3) {
-    throw new Error("Pass exactly one downloaded canonical artifact directory.");
+  const probeExisting = process.argv[3] === "--probe-existing";
+  if (process.argv.length !== (probeExisting ? 4 : 3)) {
+    throw new Error("Pass one downloaded canonical artifact directory and optional --probe-existing.");
   }
   const root = realpathSync.native(resolve(import.meta.dirname, ".."));
   const prerelease =
@@ -540,7 +553,7 @@ async function runCli() {
     releaseTag: process.env.RELEASE_TAG,
     root
   });
-  const receipt = await verifyMarketplacePublication({
+  const verification = {
     attempts: process.env.OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS
       ? Number(process.env.OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS)
       : undefined,
@@ -550,7 +563,22 @@ async function runCli() {
     requireRFrameContract: canonical.requireRFrameContract,
     requireVendoredJsYaml: canonical.requireVendoredJsYaml,
     version: canonical.version
-  });
+  };
+  if (probeExisting) {
+    const probe = await probeMarketplacePublication(verification);
+    console.log(
+      `##vso[task.setvariable variable=marketplaceAlreadyPublic;isReadOnly=true]${String(probe.alreadyPublic)}`
+    );
+    if (!probe.alreadyPublic) {
+      console.log(`Marketplace ${MARKETPLACE_EXTENSION_ID} ${canonical.version} is not yet exactly public.`);
+      return;
+    }
+    console.log(
+      `Verified existing public Marketplace publication ${probe.receipt.extensionId} ${probe.receipt.version} from ${probe.receipt.candidateSha256}.`
+    );
+    return;
+  }
+  const receipt = await verifyMarketplacePublication(verification);
   console.log(
     `Verified public Marketplace publication ${receipt.extensionId} ${receipt.version} from ${receipt.candidateSha256}.`
   );

@@ -135,6 +135,14 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
     source.replace("Prepublication public-media verification starts with v1.99.4", "starts whenever"),
     source.replace("RELEASE_VERSION: $(releaseVersion)", "RELEASE_VERSION: $(releaseTag)"),
     source.replace(
+      "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing",
+      "echo assume-existing-public"
+    ),
+    source.replace(
+      "condition: and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))",
+      "condition: succeeded()"
+    ),
+    source.replace(
       `${canonicalStep}${materializeStep}${publicMediaStep}`,
       `${publicMediaStep}${canonicalStep}${materializeStep}`
     ),

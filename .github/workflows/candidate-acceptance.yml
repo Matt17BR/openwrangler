@@ -111,33 +111,6 @@ jobs:
       - name: Fail after VS Code diagnostics
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}
         run: exit 1
-      - id: canonical_cursor
-        name: Reverify the candidate for cross-platform Cursor
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: cursor_smoke
-        name: Test pinned Cursor platform smoke
-        continue-on-error: true
-        run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
-        env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: cursor
-          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
-      - name: Upload Cursor failure diagnostics
-        if: ${{ always() && steps.cursor_smoke.outcome == 'failure' && steps.cursor_smoke.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-cursor-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.cursor_smoke.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - name: Fail after Cursor diagnostics
-        if: ${{ always() && steps.cursor_smoke.outcome == 'failure' }}
-        run: exit 1
 
   r_platform:
     name: Native R platform acceptance (${{ matrix.os }})
