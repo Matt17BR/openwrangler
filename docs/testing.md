@@ -457,6 +457,13 @@ mode-0700 workspace profile/root, child-only HOME/XDG/TMP values, and the existi
 environment never changes, each capture remains sequential and uses 2,500ms of virtual settling, and nested cleanup
 removes the alias before the root on setup, launch, assertion, and teardown failure.
 
+The three summary-bearing by-example preview scenes additionally wait within the unchanged 30-second capture timeout
+for exactly their expected completed header profiles. They reject profiling placeholders or harness errors before the
+screenshot. Their page clock is paused before navigation, the virtual-time jump releases initial hydration once, and
+the semantic wait resumes the clock for the resulting profile response and render. This path shares the capture's
+remaining monotonic deadline. Scenes without that explicit readiness rule, including loading and error baselines, use
+the same deadline accounting without semantic clock or readiness work.
+
 Compact draft-review acceptance uses real Polars preview responses rather than hand-authored UI state.
 `draft-preview.html` / `draft-preview-dark-1280.png` and
 `draft-preview-dark-800.html` / `draft-preview-dark-800.png` require one **Draft review** region with the human
