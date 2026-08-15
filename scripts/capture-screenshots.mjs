@@ -8,7 +8,11 @@ import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
-import { captureWebviewScreenshot, preflightWebviewBrowser } from "./webview-browser.mjs";
+import {
+  captureWebviewScreenshot,
+  createWebviewSelectorReadiness,
+  preflightWebviewBrowser
+} from "./webview-browser.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
@@ -559,6 +563,23 @@ terminalRangePayload.page.rows = terminalRangePayload.page.rows.map((row, index)
   id: `r:${99_999_800 + index}`,
   rowNumber: 99_999_800 + index
 }));
+const byExampleHeaderCount = payloads.exampleDraft.page.columnIds.length;
+if (byExampleHeaderCount !== 2) {
+  throw new Error("The by-example preview fixture must expose exactly two projected columns.");
+}
+const byExamplePreviewReadiness = createWebviewSelectorReadiness({
+  description: "by-example preview header profiles",
+  selectors: [
+    { selector: "th[data-grid-column]", count: byExampleHeaderCount },
+    {
+      selector: "th[data-grid-column] > .columnInsight:not(.emptyInsight)",
+      count: byExampleHeaderCount
+    },
+    { selector: "th[data-grid-column] .emptyInsight", count: 0 }
+  ],
+  absentText: [{ selector: "th[data-grid-column] > .columnInsight", text: "Profiling…" }],
+  emptyArrayGlobals: ["openWranglerHarnessErrors"]
+});
 
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
 writeWebviewHarness(
@@ -612,7 +633,9 @@ writeWebviewHarness(
   "by-example-preview.html",
   payloads.exampleDraft,
   {},
-  "acceptance/by-example-preview-dark-1280.png"
+  "acceptance/by-example-preview-dark-1280.png",
+  {},
+  { readiness: byExamplePreviewReadiness }
 );
 writeWebviewHarness(
   "public-by-example-dialog.html",
@@ -632,7 +655,10 @@ writeWebviewHarness(
   {},
   "public-media-source/v1.2/browser/by-example-preview.png",
   {},
-  { pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO }
+  {
+    pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO,
+    readiness: byExamplePreviewReadiness
+  }
 );
 writeWebviewHarness(
   "by-example-preview-dark-zoom-200.html",
@@ -640,7 +666,7 @@ writeWebviewHarness(
   {},
   "acceptance/by-example-preview-dark-zoom-200.png",
   {},
-  { zoom: 2 }
+  { zoom: 2, readiness: byExamplePreviewReadiness }
 );
 writeCodePreviewHarness("code-preview.html", payloads.draft.code, "acceptance/code-preview-dark-1280.png");
 writeWebviewHarness(
@@ -1081,7 +1107,9 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  if (appearance.capture !== false) screenshot(htmlPath, outputPath, width, height, pixelRatio);
+  if (appearance.capture !== false) {
+    screenshot(htmlPath, outputPath, width, height, pixelRatio, { readiness: appearance.readiness });
+  }
 }
 
 function writeNotebookHarness(fileName, payload, outputName) {
@@ -1183,7 +1211,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
   screenshot(htmlPath, outputPath, 1280, 420);
 }
 
-function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio = 1) {
+function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio = 1, { readiness } = {}) {
   if (!Number.isSafeInteger(pixelRatio) || (pixelRatio !== 1 && pixelRatio !== PUBLIC_MEDIA_PIXEL_RATIO)) {
     throw new TypeError("A browser screenshot pixel ratio must be ordinary 1x or the shared public-media ratio.");
   }
@@ -1200,7 +1228,8 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio
         width,
         height,
         pixelRatio,
-        virtualTime: 2500
+        virtualTime: 2500,
+        readiness
       });
     } catch (error) {
       throw new Error(`Chrome screenshot failed for ${htmlPath}.`, { cause: error });
