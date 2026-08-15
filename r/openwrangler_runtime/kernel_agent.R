@@ -3008,7 +3008,8 @@ openwrangler_r_kernel_agent <- local({
   }
 
   bind_clone_step <- function(capture, step) {
-    schema <- capture$descriptor$schema
+    schema <- unclass(capture$descriptor$schema)
+    attributes(schema) <- NULL
     matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
     if (
       length(matches) != 1L ||
@@ -4470,9 +4471,11 @@ openwrangler_r_kernel_agent <- local({
     if (identical(step$kind, "cloneColumn")) {
       bound <- bind_clone_step(capture, step)
       result <- frame_contract$clone_column_at(source, bound$position, bound$oldName, bound$newName)
-      source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
+      capture_schema <- unclass(capture$descriptor$schema)
+      attributes(capture_schema) <- NULL
+      source_positions <- c(seq_along(capture_schema), bound$position)
       output_ids <- c(
-        vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        vapply(capture_schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
         bound$outputId
       )
       return(list(
@@ -4480,7 +4483,8 @@ openwrangler_r_kernel_agent <- local({
           result,
           nullability_source = capture,
           source_positions = source_positions,
-          output_ids = output_ids
+          output_ids = output_ids,
+          preserve_data_table_element_names = TRUE
         ),
         bound = bound
       ))
@@ -6922,7 +6926,7 @@ openwrangler_r_kernel_agent <- local({
       "  .ow_unsupported_source_attributes <- .ow_source_attribute_names[base::is.na(base::match(.ow_source_attribute_names, .ow_allowed_source_attributes))]",
       "  if (base::length(.ow_unsupported_source_attributes) != 0L) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported dataframe attributes: %s\", base::paste(.ow_unsupported_source_attributes, collapse = \", \")), call. = FALSE)",
       "  .ow_source_names <- base::attr(.ow_source, \"names\", exact = TRUE)",
-      "  if (!base::is.character(.ow_source_names) || base::length(.ow_source_names) != .ow_source_column_count) base::stop(\"Open Wrangler generated R requires one name per source column\", call. = FALSE)",
+      "  if (!base::is.character(.ow_source_names) || .ow_storage_length(.ow_source_names) != .ow_source_column_count) base::stop(\"Open Wrangler generated R requires one name per source column\", call. = FALSE)",
       "  .ow_source_names <- base::vapply(base::seq_len(base::length(base::unclass(.ow_source_names))), function(.ow_name_index) base::.subset2(.ow_source_names, .ow_name_index), character(1L), USE.NAMES = FALSE)",
       "  for (.ow_source_name_index in base::seq_along(.ow_source_names)) {",
       "    .ow_source_name <- base::.subset2(.ow_source_names, .ow_source_name_index)",
@@ -7294,18 +7298,25 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_clone_position <- %dL", step$position),
           sprintf("  .ow_clone_source_name <- %s", r_string(step$oldName)),
           sprintf("  .ow_clone_name <- %s", r_string(step$newName)),
-          "  if (ncol(.ow_result) < .ow_clone_position || !identical(names(.ow_result)[[.ow_clone_position]], .ow_clone_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          "  if (.ow_clone_name == \"\" || any(names(.ow_result) == .ow_clone_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+          "  .ow_clone_frame_names <- base::unclass(base::attr(.ow_result, \"names\", exact = TRUE)); base::attributes(.ow_clone_frame_names) <- NULL",
+          "  if (ncol(.ow_result) < .ow_clone_position || !base::identical(base::.subset2(.ow_clone_frame_names, .ow_clone_position), .ow_clone_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (.ow_clone_name == \"\" || base::any(.ow_clone_frame_names == .ow_clone_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
           sprintf(
             "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
             maximum_columns
           ),
+          "  .ow_clone_element_names <- base::attr(base::.subset2(.ow_result, .ow_clone_position), \"names\", exact = TRUE)",
           "  if (inherits(.ow_result, \"data.table\")) {",
-          "    data.table::set(.ow_result, j = .ow_clone_name, value = .ow_result[[.ow_clone_position]])",
+          "    data.table::setattr(.ow_result, \"names\", .ow_clone_frame_names)",
+          "    data.table::set(.ow_result, j = .ow_clone_name, value = base::.subset2(.ow_result, .ow_clone_position))",
+          "    if (!base::is.null(.ow_clone_element_names)) data.table::setattr(base::.subset2(.ow_result, ncol(.ow_result)), \"names\", .ow_clone_element_names)",
           "  } else {",
-          "    .ow_clone_existing_names <- names(.ow_result)",
-          "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_result[[.ow_clone_position]]",
-          "    names(.ow_result) <- c(.ow_clone_existing_names, .ow_clone_name)",
+          "    .ow_clone_frame_attributes <- base::attributes(.ow_result)",
+          "    .ow_clone_columns <- base::unclass(.ow_result)",
+          "    .ow_clone_columns[[base::length(.ow_clone_columns) + 1L]] <- base::.subset2(.ow_clone_columns, .ow_clone_position)",
+          "    .ow_clone_frame_attributes[[\"names\"]] <- c(.ow_clone_frame_names, .ow_clone_name)",
+          "    base::attributes(.ow_clone_columns) <- .ow_clone_frame_attributes",
+          "    .ow_result <- .ow_clone_columns",
           "  }",
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
@@ -7746,9 +7757,13 @@ openwrangler_r_kernel_agent <- local({
           }
         } else if (identical(step$kind, "stripText")) {
           strip_characters <- if (is.null(step$characters)) default_strip_characters else step$characters
+          strip_expression <- sprintf(
+            "base::intToUtf8(c(%s), multiple = FALSE)",
+            paste0(utf8ToInt(strip_characters), "L", collapse = ", ")
+          )
           lines <- c(
             lines,
-            sprintf("  .ow_text_strip_characters <- strsplit(%s, \"\", fixed = TRUE)[[1L]]", r_string(strip_characters))
+            sprintf("  .ow_text_strip_characters <- strsplit(%s, \"\", fixed = TRUE)[[1L]]", strip_expression)
           )
         } else if (identical(step$kind, "splitText")) {
           lines <- c(

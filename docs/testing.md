@@ -130,8 +130,10 @@ matrix for release candidates or changes that cross all of its boundaries.
   grid and Rename lifecycle but omit native frames; VS Code owns value's unchanged targeted operations and
   categorical's exact two visible One-hot encode and Multi-label binarize journeys. Cursor instead retains the
   distinct core, native-frame, restart, terminal, literate, and generic packaged-editor seams. Every applicable local invocation
-  continues to validate the advertised installed operation registry. Direct suites own the prior 27 operations, and
-  focused Custom Code contracts cover operation 28; the dedicated all-28 release owner remains outstanding. A fresh
+  continues to validate the advertised installed operation registry. The dedicated direct R catalog contract executes
+  the exact ordered 28-operation live/generated catalog, and the dedicated TypeScript export contract binds the same
+  bridge/public order to byte-exact clipboard and atomic `.R` saves for distinct executable operation-labelled
+  buffers. Fresh installed all-28 candidate/performance evidence remains outstanding. A fresh
   Linux installed-tooling invocation
   separately owns the official R terminal and Operations sidebar. It seeds named-column base, tibble, and data-table
   frames in that exact terminal, waits for them to appear in Operations without Refresh, and opens and profiles the
@@ -881,9 +883,12 @@ Convert type covers all six target types, failed parses, factors, temporal value
 generated R, and exact typed diffs. Drop Missing Rows covers the Any and All modes and treats both `NA` and `NaN` as
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
-regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites own the prior 27 operations, focused contracts cover Custom Code as operation 28, and the registry contains the
-complete source catalog; dedicated all-28 release evidence is still outstanding. Explicit candidate
+regression checks two pages that are valid separately but exceed the kernel response limit when combined. The
+dedicated complete-catalog contract uses a fresh session per exact ordered operation and executes the resulting
+production-generated R, including saved-step replay. The dedicated TypeScript export contract independently requires
+the bridge and public catalog to retain that exact order, then verifies each distinct executable operation-labelled
+buffer is copied and atomically saved byte for byte. Fresh hosted candidate and all-28 performance evidence are still outstanding.
+Explicit candidate
 `core-operations` retains its existing phase but runs one full installed Clone Column lifecycle: preview, apply,
 applied-step inspection, edit and reapply with the same step/output identities, and undo. The `value-operations`
 targeted slice remains exactly Find and replace, Formula, Format Datetime, Min-max
@@ -1253,8 +1258,10 @@ The value selector remains exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The categorical selector checks exact One-hot encode and Multi-label binarize preview, apply,
 generated code, and one-shot undo behavior without native R/Quarto editor tooling. Installed selectors validate the
-advertised operation registry. Direct suites own the prior 27 operations and focused contracts cover Custom Code as
-operation 28; dedicated all-28 release evidence remains required. This addition changes no selector, job, phase,
+advertised operation registry. Dedicated local-source contracts now cover the strict ordered 28-operation
+live/generated catalog and exact clipboard/atomic script export of distinct executable operation-labelled buffers;
+fresh installed all-28 candidate and performance evidence remain required. This addition changes no selector, job,
+phase,
 shard, 300-second hard deadline, 180-second inactivity
 deadline, or retry rule. Candidate core, value, and categorical omit the former native-frame scaffold. `native-frames` owns the frame picker,
 collapse/viewing sessions, native tibble Rename, and keyed-data-table Drop at comprehensive Linux VS Code depth and

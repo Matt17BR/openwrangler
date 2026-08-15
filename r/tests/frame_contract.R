@@ -915,6 +915,13 @@ clone_frame <- data.frame(
   check.names = FALSE,
   row.names = c("row-a", "row-b")
 )
+clone_element_names <- c("clone-row-a", "clone-row-b")
+data.table::setattr(.subset2(clone_frame, 2L), "names", clone_element_names)
+assert_identical(
+  attr(.subset2(clone_frame, 2L), "names", exact = TRUE),
+  clone_element_names,
+  "the base clone fixture lost element names before execution"
+)
 clone_before <- unserialize(serialize(clone_frame, NULL, version = 3L))
 clone_capture <- openwrangler_r_frame_contract$capture_frame(clone_frame)
 cloned_frame <- openwrangler_r_frame_contract$clone_column(
@@ -974,6 +981,41 @@ assert_identical(clone_frame, clone_before, "cloning mutated the source data.fra
 cloned_frame[[4L]][1L] <- 99L
 assert_identical(clone_frame, clone_before, "the cloned data.frame shared storage with its source")
 
+poison_clone_frame <- data.frame(left = c(1L, 2L), right = c(3L, 4L), check.names = FALSE)
+attr(poison_clone_frame, "names") <- I(c("left", "right"))
+assert_identical(
+  attr(poison_clone_frame, "names", exact = TRUE),
+  I(c("left", "right")),
+  "the caller-S3 clone fixture lost classed frame names before execution"
+)
+poison_clone_before <- serialize(poison_clone_frame, NULL, version = 3L)
+poison_cloned_frame <- local({
+  method_names <- c("[[.AsIs", "Ops.AsIs", "c.AsIs")
+  for (method_name in method_names) {
+    assign(method_name, local({
+      label <- method_name
+      function(...) stop(sprintf("caller S3 poison dispatched through %s while cloning", label), call. = FALSE)
+    }), envir = .GlobalEnv)
+  }
+  on.exit(rm(list = method_names, envir = .GlobalEnv), add = TRUE)
+  openwrangler_r_frame_contract$clone_column(
+    poison_clone_frame,
+    list(id = "r:c:1", name = "right"),
+    "right copy"
+  )
+})
+assert_identical(
+  attr(poison_cloned_frame, "names", exact = TRUE),
+  c("left", "right", "right copy"),
+  "cloning did not canonicalize classed frame names"
+)
+assert_identical(.subset2(poison_cloned_frame, 3L), c(3L, 4L), "caller-S3 clone copied the wrong column")
+assert_identical(
+  serialize(poison_clone_frame, NULL, version = 3L),
+  poison_clone_before,
+  "caller-S3 clone mutated its source"
+)
+
 clone_tibble <- tibble::as_tibble(clone_frame, .name_repair = "minimal")
 clone_tibble_before <- unserialize(serialize(clone_tibble, NULL, version = 3L))
 cloned_tibble <- openwrangler_r_frame_contract$clone_column(
@@ -992,7 +1034,15 @@ assert_identical(clone_tibble, clone_tibble_before, "cloning mutated the source 
 
 clone_table <- data.table::data.table(primary_key = c(2L, 1L), value = c("b", "a"))
 data.table::setkey(clone_table, primary_key)
+clone_table_element_names <- c("table-row-one", "table-row-two")
+data.table::setattr(.subset2(clone_table, 2L), "names", clone_table_element_names)
+assert_identical(
+  attr(.subset2(clone_table, 2L), "names", exact = TRUE),
+  clone_table_element_names,
+  "the data.table clone fixture lost element names before execution"
+)
 clone_table_before <- data.table::copy(clone_table)
+data.table::setattr(.subset2(clone_table_before, 2L), "names", clone_table_element_names)
 clone_table_capture <- openwrangler_r_frame_contract$capture_frame(clone_table)
 cloned_table <- openwrangler_r_frame_contract$clone_column(
   clone_table,
@@ -1013,6 +1063,16 @@ assert_identical(
   "cloning changed the stable data.table key identity"
 )
 assert_identical(cloned_table[[3L]], clone_table[[2L]], "data.table cloning copied the wrong column")
+assert_identical(
+  attr(.subset2(cloned_table, 3L), "names", exact = TRUE),
+  clone_table_element_names,
+  "data.table cloning lost copied element names"
+)
+assert_identical(
+  attr(.subset2(cloned_table, 2L), "names", exact = TRUE),
+  clone_table_element_names,
+  "data.table cloning lost source-column element names"
+)
 assert_identical(clone_table, clone_table_before, "cloning mutated the source data.table")
 cloned_table[, `value copy` := "changed"]
 assert_identical(clone_table, clone_table_before, "the cloned data.table shared storage with its source")

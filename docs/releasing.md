@@ -92,8 +92,10 @@ install their canonical VSIX in VS Code and Cursor and run distinct R notebook/p
 `core-operations` keeps its existing phase and job positions but owns one complete installed Clone Column lifecycle:
 preview, apply, applied-step inspection, editing and reapplying the same step with stable step/output identities, then
 undo. Direct suites own the prior 27 operations, and focused Custom Code contracts cover operation 28; the source
-catalog is complete but remains **Partial** until a fresh hosted candidate and dedicated all-28 release/performance
-evidence pass. Custom Code is trusted arbitrary R, not a sandbox: release evidence must prove workspace-trust gating,
+catalog is complete. Dedicated local-source contracts now execute the exact ordered 28-operation generated-code
+catalog and separately prove byte-exact clipboard/atomic script exports with distinct executable operation-labelled
+buffers. Native R remains **Partial** until a fresh hosted candidate plus installed all-28 and performance evidence
+pass. Custom Code is trusted arbitrary R, not a sandbox: release evidence must prove workspace-trust gating,
 source/result publication atomicity, dynamic-frame and generated-code behavior, and must not claim rollback for
 deliberate ambient side effects.
 Every candidate core cell runs that same Clone lifecycle; Linux VS Code retains all-block grid depth, while macOS and
@@ -190,9 +192,11 @@ document, insertion, and export journeys; a release-candidate R performance reco
 acceptance. The active R-terminal transport and export rows claim Linux only, matching the platform where the
 candidate installs and exercises the native R editor tooling. The Cursor literate row likewise claims Linux and
 distinguishes the R Markdown document command from the Quarto R/Python title actions. The current prior-27 suites plus
-focused Custom Code contracts cannot satisfy either all-28 catalog row: dedicated complete-catalog
-runtime/generated-code and code-export
-tests must be tracked before those rows can become Done. `GRP_df`, `indexed_frame`, Windows direct-document execution,
+focused Custom Code contracts cannot satisfy either all-28 catalog row by themselves. The dedicated
+`r/tests/complete_catalog_contract.R` runtime/generated-code contract and
+`src/test/rCompleteCatalogCodeExport.unit.test.ts` code-export contract now provide the required local-source
+owners; the rows still cannot become Done without their tracked candidate record and the remaining stable gates.
+`GRP_df`, `indexed_frame`, Windows direct-document execution,
 and remote R documents remain outside that table. Successful candidate jobs do not change a documentation row to Done by themselves: the exact tracked record
 and row-specific evidence must already substantiate the claim. Historical stable 1.x recovery does not require the
 Native R stable table, while a malformed or preview-channel source version cannot bypass stable source readiness.

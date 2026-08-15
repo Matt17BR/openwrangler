@@ -127,6 +127,7 @@ source_before <- unserialize(serialize(source_environment$frame, NULL, version =
 
 isolated_capture_count <- 0L
 full_capture_count <- 0L
+latest_full_capture <- NULL
 group_by_source_materializations <- 0L
 instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
@@ -136,7 +137,9 @@ real_by_example_column_at <- instrumented_frame_contract$by_example_column_at
 last_by_example_evaluator_error <- NULL
 instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
-  real_capture_frame(value, ...)
+  captured <- real_capture_frame(value, ...)
+  latest_full_capture <<- captured
+  captured
 }
 instrumented_frame_contract$isolate_capture <- function(capture) {
   isolated_capture_count <<- isolated_capture_count + 1L
@@ -2910,6 +2913,13 @@ source_environment$clone_frame <- data.frame(
   check.names = FALSE,
   row.names = c("row-a", "row-b")
 )
+clone_element_names <- c("clone-row-a", "clone-row-b")
+data.table::setattr(.subset2(source_environment$clone_frame, 2L), "names", clone_element_names)
+assert_identical(
+  attr(.subset2(source_environment$clone_frame, 2L), "names", exact = TRUE),
+  clone_element_names,
+  "the kernel clone fixture lost element names before dispatch"
+)
 clone_source_before <- unserialize(serialize(source_environment$clone_frame, NULL, version = 3L))
 clone_step <- function(
   id = "clone-step",
@@ -3041,6 +3051,11 @@ assert_identical(
   "generated R clone/rename code returned the wrong columns"
 )
 assert_identical(clone_generated[[4L]], clone_source_before[[2L]], "generated R clone copied the wrong duplicate")
+assert_identical(
+  attr(.subset2(clone_generated, 4L), "names", exact = TRUE),
+  clone_element_names,
+  "generated R Clone Column lost copied element names"
+)
 assert_identical(row.names(clone_generated), row.names(clone_source_before), "generated R clone changed row names")
 assert_identical(
   get("clone_frame", envir = .GlobalEnv, inherits = FALSE),
@@ -3237,7 +3252,16 @@ source_environment$clone_table <- data.table::data.table(
   value = c("b", "a")
 )
 data.table::setkey(source_environment$clone_table, primary_key)
+clone_table_element_names <- c("table-row-one", "table-row-two")
+data.table::setattr(.subset2(source_environment$clone_table, 2L), "names", clone_table_element_names)
+assert_identical(
+  attr(.subset2(source_environment$clone_table, 2L), "names", exact = TRUE),
+  clone_table_element_names,
+  "the kernel data.table clone fixture lost element names before dispatch"
+)
 clone_table_before <- data.table::copy(source_environment$clone_table)
+data.table::setattr(.subset2(clone_table_before, 2L), "names", clone_table_element_names)
+clone_table_source_bytes <- serialize(source_environment$clone_table, NULL, version = 3L)
 clone_table_open <- dispatch(
   "openSession",
   list(sessionId = clone_table_session_id, variableName = "clone_table", page = page_window())
@@ -3262,6 +3286,17 @@ assert_identical(
   "c:step:clone-table-step:0",
   "the R data.table clone lost its derived identity"
 )
+clone_table_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+assert_identical(
+  attr(.subset2(clone_table_live, 2L), "names", exact = TRUE),
+  clone_table_element_names,
+  "live data.table Clone Column lost original element names"
+)
+assert_identical(
+  attr(.subset2(clone_table_live, 3L), "names", exact = TRUE),
+  clone_table_element_names,
+  "live data.table Clone Column lost copied element names"
+)
 clone_table_apply <- dispatch(
   "applyDraft",
   list(sessionId = clone_table_session_id, revision = 1L, page = page_window())
@@ -3273,12 +3308,32 @@ assert_identical(class(clone_table_generated), c("data.table", "data.frame"), "g
 assert_identical(data.table::key(clone_table_generated), "primary_key", "generated clone lost the data.table key")
 assert_identical(clone_table_generated[[3L]], clone_table_before[[2L]], "generated data.table clone copied the wrong column")
 assert_identical(
+  attr(.subset2(clone_table_generated, 2L), "names", exact = TRUE),
+  clone_table_element_names,
+  "generated data.table Clone Column lost original element names"
+)
+assert_identical(
+  attr(.subset2(clone_table_generated, 3L), "names", exact = TRUE),
+  clone_table_element_names,
+  "generated data.table Clone Column lost copied element names"
+)
+assert_identical(
   get("clone_table", envir = .GlobalEnv, inherits = FALSE),
   clone_table_before,
   "generated R data.table clone mutated its source"
 )
+assert_identical(
+  serialize(get("clone_table", envir = .GlobalEnv, inherits = FALSE), NULL, version = 3L),
+  clone_table_source_bytes,
+  "generated R data.table clone changed source bytes"
+)
 rm("clone_table", "open_wrangler_result", envir = .GlobalEnv)
 assert_identical(source_environment$clone_table, clone_table_before, "the R data.table clone mutated its source")
+assert_identical(
+  serialize(source_environment$clone_table, NULL, version = 3L),
+  clone_table_source_bytes,
+  "the live R data.table clone changed source bytes"
+)
 clone_table_closed <- dispatch("closeSession", list(sessionId = clone_table_session_id))
 assert_identical(clone_table_closed$kind, "closed", "the R data.table clone session did not close")
 
@@ -11592,6 +11647,12 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
   data.table::setkey(source_environment$categorical_key, primary_key)
   categorical_key_attr <- attr(source_environment$categorical_key, "sorted", exact = TRUE)
   data.table::setattr(categorical_key_attr, "class", "AsIs")
+  source_environment$clone_names <- data.frame(left = c(1L, 2L), right = c(3L, 4L), check.names = FALSE)
+  attr(source_environment$clone_names, "names") <- I(c("left", "right"))
+  assert_child(
+    identical(attr(source_environment$clone_names, "names", exact = TRUE), I(c("left", "right"))),
+    "the caller-S3 clone fixture lost classed frame names before dispatch"
+  )
   metadata_source_bytes <- serialize(
     source_environment$categorical_metadata,
     NULL,
@@ -11602,6 +11663,7 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     NULL,
     version = 3L
   )
+  clone_source_bytes <- serialize(source_environment$clone_names, NULL, version = 3L)
   metadata_expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
     source_environment$categorical_metadata,
     c(1L, 2L, 3L),
@@ -11648,14 +11710,25 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
       "openSession",
       list(sessionId = session_id, variableName = variable_name, page = page)
     )
-    assert_child(identical(opened$kind, "page"), sprintf("could not open %s", variable_name))
+    assert_child(
+      identical(opened$kind, "page"),
+      sprintf(
+        "could not open %s: %s",
+        variable_name,
+        if (is.null(opened$message)) "no diagnostic" else opened$message
+      )
+    )
     previewed <- dispatch(
       "previewStep",
       list(sessionId = session_id, revision = 0L, step = step, page = page)
     )
     assert_child(
       identical(previewed$kind, "stepPreview"),
-      sprintf("could not preview %s", variable_name)
+      sprintf(
+        "could not preview %s: %s",
+        variable_name,
+        if (is.null(previewed$message)) "no diagnostic" else previewed$message
+      )
     )
     applied <- dispatch(
       "applyDraft",
@@ -11707,7 +11780,7 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     "preparing attributed categorical cases mutated a source"
   )
 
-  method_keys <- c("[[.AsIs", "anyNA.AsIs", "is.na.AsIs", "length.AsIs", "Ops.AsIs")
+  method_keys <- c("[[.AsIs", "anyNA.AsIs", "is.na.AsIs", "length.AsIs", "Ops.AsIs", "c.AsIs")
   calls <- new.env(parent = emptyenv())
   for (method_key in method_keys) calls[[method_key]] <- 0L
   poison_method <- function(method_key) {
@@ -11722,7 +11795,8 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     c("anyNA", "AsIs", "anyNA.AsIs"),
     c("is.na", "AsIs", "is.na.AsIs"),
     c("length", "AsIs", "length.AsIs"),
-    c("Ops", "AsIs", "Ops.AsIs")
+    c("Ops", "AsIs", "Ops.AsIs"),
+    c("c", "AsIs", "c.AsIs")
   )
   for (registration in registrations) {
     registerS3method(
@@ -11751,6 +11825,34 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
       )
     }
   }
+
+  clone_code <- compile_case(
+    "clone_names",
+    "99999999-9999-4999-8999-999999999993",
+    list(
+      id = "classed-frame-name-clone",
+      kind = "cloneColumn",
+      params = list(column = list(id = "r:c:1", name = "right"), newName = "right copy")
+    )
+  )
+  assert_no_calls("live Clone Column with classed frame names")
+  clone_environment <- new.env(parent = .GlobalEnv)
+  assign("clone_names", unserialize(clone_source_bytes), envir = clone_environment)
+  eval(parse(text = clone_code), envir = clone_environment)
+  clone_generated <- get("open_wrangler_result", envir = clone_environment, inherits = FALSE)
+  assert_child(
+    identical(attr(clone_generated, "names", exact = TRUE), c("left", "right", "right copy")) &&
+      identical(base::.subset2(clone_generated, 3L), c(3L, 4L)),
+    "generated Clone Column did not canonicalize classed frame names"
+  )
+  assert_child(
+    identical(
+      serialize(get("clone_names", envir = clone_environment, inherits = FALSE), NULL, version = 3L),
+      clone_source_bytes
+    ) && identical(serialize(source_environment$clone_names, NULL, version = 3L), clone_source_bytes),
+    "live or generated Clone Column mutated its classed-name source"
+  )
+  assert_no_calls("generated Clone Column with classed frame names")
   assert_frame_columns <- function(actual, expected, label) {
     actual_count <- base::length(base::unclass(actual))
     expected_count <- base::length(base::unclass(expected))

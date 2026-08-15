@@ -137,11 +137,12 @@ starts a fresh runner for its explicit editor set with new private runtime, prof
 is followed immediately by its own sealed failure-evidence upload. A deferred shard-local raw-outcome check runs only
 after every phase assigned to that shard, so an early failure cannot suppress later evidence or be overwritten by it.
 Explicit candidate core keeps its existing job, phase, and selector but owns one full installed Clone Column lifecycle:
-preview, apply, applied-step inspection, edit and reapply with the same step/output identities, then undo. Direct
-tests own the prior 27 operations, while focused Custom Code contracts cover operation 28. Current source therefore
-exposes all 28 operations but remains **Partial** until fresh hosted candidate and dedicated all-28 release/performance
-evidence pass. The private R transport is v14; public protocol v2 and every candidate job, selector, phase, 300-second
-hard deadline, 180-second inactivity deadline, and no-retry boundary remain unchanged. Candidate core,
+preview, apply, applied-step inspection, edit and reapply with the same step/output identities, then undo. Dedicated
+local-source contracts now own the strict ordered 28-operation live/generated catalog and byte-exact clipboard/atomic
+script exports of distinct executable operation-labelled buffers. Current source therefore exposes all 28 operations
+but remains **Partial** until a fresh hosted candidate plus installed all-28 and performance evidence pass. The private
+R transport is v14; public protocol v2 and every candidate job, selector, phase, 300-second hard deadline, 180-second
+inactivity deadline, and no-retry boundary remain unchanged. Candidate core,
 value, and categorical do not duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive
 collapse, viewing, Rename, and Drop owner, while `kernel-restart` owns restart/reopen under a fresh phase budget.
 Value and categorical ownership is unchanged, and Cursor, macOS, and Windows retain their representative
