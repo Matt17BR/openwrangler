@@ -1093,8 +1093,8 @@ openwrangler_r_kernel_agent <- local({
     }
   }
 
-  by_example_decimal_digit_text <- function(value) {
-    zeroes <- c(
+  by_example_decimal_digit_zeroes <- function() {
+    c(
       0x0030L, 0x0660L, 0x06f0L, 0x07c0L, 0x0966L, 0x09e6L, 0x0a66L, 0x0ae6L,
       0x0b66L, 0x0be6L, 0x0c66L, 0x0ce6L, 0x0d66L, 0x0de6L, 0x0e50L, 0x0ed0L,
       0x0f20L, 0x1040L, 0x1090L, 0x17e0L, 0x1810L, 0x1946L, 0x19d0L, 0x1a80L,
@@ -1107,6 +1107,19 @@ openwrangler_r_kernel_agent <- local({
       0x1d7ceL, 0x1d7d8L, 0x1d7e2L, 0x1d7ecL, 0x1d7f6L, 0x1e140L, 0x1e2f0L,
       0x1e4f0L, 0x1e5f1L, 0x1e950L, 0x1fbf0L
     )
+  }
+
+  by_example_decimal_digit_pattern <- function() {
+    zeroes <- by_example_decimal_digit_zeroes()
+    paste0(
+      "[",
+      paste0(sprintf("\\x{%x}-\\x{%x}", zeroes, zeroes + 9L), collapse = ""),
+      "]"
+    )
+  }
+
+  by_example_decimal_digit_text <- function(value) {
+    zeroes <- by_example_decimal_digit_zeroes()
     codepoints <- utf8ToInt(value)
     digits <- vapply(codepoints, function(codepoint) {
       matches <- zeroes[codepoint >= zeroes & codepoint <= zeroes + 9L]
@@ -1125,21 +1138,26 @@ openwrangler_r_kernel_agent <- local({
     )
     short_months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     captures <- function(pattern) {
-      matched <- regexec(paste0("(*UCP)", pattern), value, perl = TRUE)[[1L]]
+      matched <- regexec(paste0("(*UTF)(*UCP)", pattern), value, perl = TRUE)[[1L]]
       if (length(matched) == 1L && identical(as.integer(matched[[1L]]), -1L)) return(NULL)
       regmatches(value, list(matched))[[1L]][-1L]
     }
+    decimal_digit <- by_example_decimal_digit_pattern()
+    year_pattern <- paste0(decimal_digit, "{4}")
+    month_pattern <- "(?:1[0-2]|0[1-9]|[1-9])"
+    day_pattern <- paste0("(?:3[01]|[12]", decimal_digit, "|0[1-9]|[1-9]| [1-9])")
+    whitespace_pattern <- "(?:\\s|[\\x{1c}-\\x{1f}])+"
     fields <- switch(
       format,
-      "%Y-%m-%d" = list(parts = captures("^(\\d{4})-(1[0-2]|0[1-9]|[1-9])-((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))\\z"), order = c(1L, 2L, 3L)),
-      "%d/%m/%Y" = list(parts = captures("^((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))/(1[0-2]|0[1-9]|[1-9])/(\\d{4})\\z"), order = c(3L, 2L, 1L)),
-      "%m/%d/%Y" = list(parts = captures("^(1[0-2]|0[1-9]|[1-9])/((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))/(\\d{4})\\z"), order = c(2L, 3L, 1L)),
-      "%Y/%m/%d" = list(parts = captures("^(\\d{4})/(1[0-2]|0[1-9]|[1-9])/((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))\\z"), order = c(1L, 2L, 3L)),
-      "%d-%m-%Y" = list(parts = captures("^((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))-(1[0-2]|0[1-9]|[1-9])-(\\d{4})\\z"), order = c(3L, 2L, 1L)),
-      "%m-%d-%Y" = list(parts = captures("^(1[0-2]|0[1-9]|[1-9])-((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))-(\\d{4})\\z"), order = c(2L, 3L, 1L)),
-      "%Y%m%d" = list(parts = captures("^(\\d{4})(1[0-2]|0[1-9]|[1-9])((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))\\z"), order = c(1L, 2L, 3L)),
+      "%Y-%m-%d" = list(parts = captures(paste0("^(", year_pattern, ")-(", month_pattern, ")-(", day_pattern, ")\\z")), order = c(1L, 2L, 3L)),
+      "%d/%m/%Y" = list(parts = captures(paste0("^(", day_pattern, ")/(", month_pattern, ")/(", year_pattern, ")\\z")), order = c(3L, 2L, 1L)),
+      "%m/%d/%Y" = list(parts = captures(paste0("^(", month_pattern, ")/(", day_pattern, ")/(", year_pattern, ")\\z")), order = c(2L, 3L, 1L)),
+      "%Y/%m/%d" = list(parts = captures(paste0("^(", year_pattern, ")/(", month_pattern, ")/(", day_pattern, ")\\z")), order = c(1L, 2L, 3L)),
+      "%d-%m-%Y" = list(parts = captures(paste0("^(", day_pattern, ")-(", month_pattern, ")-(", year_pattern, ")\\z")), order = c(3L, 2L, 1L)),
+      "%m-%d-%Y" = list(parts = captures(paste0("^(", month_pattern, ")-(", day_pattern, ")-(", year_pattern, ")\\z")), order = c(2L, 3L, 1L)),
+      "%Y%m%d" = list(parts = captures(paste0("^(", year_pattern, ")(", month_pattern, ")(", day_pattern, ")\\z")), order = c(1L, 2L, 3L)),
       "%d %B %Y" = {
-        parts <- captures("^((?:3[01]|[12]\\d|0[1-9]|[1-9]| [1-9]))(?:\\s|[\\x{1c}-\\x{1f}])+([A-Za-z]+)(?:\\s|[\\x{1c}-\\x{1f}])+(\\d{4})\\z")
+        parts <- captures(paste0("^(", day_pattern, ")", whitespace_pattern, "([A-Za-z]+)", whitespace_pattern, "(", year_pattern, ")\\z"))
         if (!is.null(parts)) parts[[2L]] <- as.character(match(
           chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", parts[[2L]]),
           chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", full_months)
@@ -1147,7 +1165,7 @@ openwrangler_r_kernel_agent <- local({
         list(parts = parts, order = c(3L, 2L, 1L))
       },
       "%B %d, %Y" = {
-        parts <- captures("^([A-Za-z]+)(?:\\s|[\\x{1c}-\\x{1f}])+(3[01]|[12]\\d|0[1-9]|[1-9]),(?:\\s|[\\x{1c}-\\x{1f}])+(\\d{4})\\z")
+        parts <- captures(paste0("^([A-Za-z]+)", whitespace_pattern, "(", day_pattern, "),", whitespace_pattern, "(", year_pattern, ")\\z"))
         if (!is.null(parts)) parts[[1L]] <- as.character(match(
           chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", parts[[1L]]),
           chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", full_months)
@@ -1155,15 +1173,15 @@ openwrangler_r_kernel_agent <- local({
         list(parts = parts, order = c(2L, 3L, 1L))
       },
       "%b %d, %Y" = {
-        parts <- captures("^([A-Za-z]+)(?:\\s|[\\x{1c}-\\x{1f}])+(3[01]|[12]\\d|0[1-9]|[1-9]),(?:\\s|[\\x{1c}-\\x{1f}])+(\\d{4})\\z")
+        parts <- captures(paste0("^([A-Za-z]+)", whitespace_pattern, "(", day_pattern, "),", whitespace_pattern, "(", year_pattern, ")\\z"))
         if (!is.null(parts)) parts[[1L]] <- as.character(match(
           chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", parts[[1L]]),
           chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", short_months)
         ))
         list(parts = parts, order = c(2L, 3L, 1L))
       },
-      "%Y" = list(parts = captures("^(\\d{4})\\z"), order = c(1L, 0L, 0L)),
-      "%m/%Y" = list(parts = captures("^(1[0-2]|0[1-9]|[1-9])/(\\d{4})\\z"), order = c(2L, 1L, 0L)),
+      "%Y" = list(parts = captures(paste0("^(", year_pattern, ")\\z")), order = c(1L, 0L, 0L)),
+      "%m/%Y" = list(parts = captures(paste0("^(", month_pattern, ")/(", year_pattern, ")\\z")), order = c(2L, 1L, 0L)),
       NULL
     )
     if (is.null(fields) || is.null(fields$parts) || anyNA(fields$parts)) {
@@ -6435,6 +6453,8 @@ openwrangler_r_kernel_agent <- local({
     helpers <- list(
       by_example_json_integer_text = by_example_json_integer_text,
       by_example_utf8_scalar = by_example_utf8_scalar,
+      by_example_decimal_digit_zeroes = by_example_decimal_digit_zeroes,
+      by_example_decimal_digit_pattern = by_example_decimal_digit_pattern,
       by_example_decimal_digit_text = by_example_decimal_digit_text,
       by_example_datetime_parts = by_example_datetime_parts,
       by_example_format_datetime_parts = by_example_format_datetime_parts,

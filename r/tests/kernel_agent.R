@@ -12094,6 +12094,16 @@ by_example_agent_environment <- environment(openwrangler_r_kernel_agent$new_agen
 by_example_scalar_text <- get("by_example_scalar_text", envir = by_example_agent_environment, inherits = FALSE)
 by_example_double_text <- get("by_example_double_text", envir = by_example_agent_environment, inherits = FALSE)
 by_example_program_key <- get("by_example_program_key", envir = by_example_agent_environment, inherits = FALSE)
+by_example_decimal_digit_zeroes <- get(
+  "by_example_decimal_digit_zeroes",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+by_example_decimal_digit_pattern <- get(
+  "by_example_decimal_digit_pattern",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
 by_example_datetime_parts <- get("by_example_datetime_parts", envir = by_example_agent_environment, inherits = FALSE)
 by_example_format_datetime_parts <- get(
   "by_example_format_datetime_parts",
@@ -12242,6 +12252,27 @@ by_example_assert(
   "R accepted Number.MAX_SAFE_INTEGER + 1 as a candidate literal"
 )
 
+decimal_digit_pattern <- by_example_decimal_digit_pattern()
+by_example_assert(
+  !grepl("\\d", decimal_digit_pattern, fixed = TRUE),
+  "R by-example datetime still depends on the host PCRE Unicode property table"
+)
+decimal_digit_codepoints <- unlist(lapply(
+  by_example_decimal_digit_zeroes(),
+  function(zero) zero + 0:9
+), use.names = FALSE)
+by_example_assert(
+  all(vapply(decimal_digit_codepoints, function(codepoint) {
+    grepl(paste0("(*UTF)^", decimal_digit_pattern, "\\z"), intToUtf8(codepoint), perl = TRUE)
+  }, logical(1L), USE.NAMES = FALSE)),
+  "R by-example datetime's explicit decimal-digit class is incomplete"
+)
+newest_decimal_year <- paste0(intToUtf8(0x1e5f1L + c(2L, 0L, 2L, 6L)), collapse = "")
+by_example_assert(
+  grepl(paste0("(*UTF)^", decimal_digit_pattern, "{4}\\z"), newest_decimal_year, perl = TRUE),
+  "R by-example datetime delegated the newest supported digit block to host PCRE"
+)
+
 datetime_parity_cases <- list(
   list("2   january   2024", "%d %B %Y", "2024-01-02"),
   list("2\tjanuary\t2024", "%d %B %Y", "2024-01-02"),
@@ -12264,7 +12295,7 @@ datetime_parity_cases <- list(
   list("2024012٢", "%Y%m%d", "2024-01-22"),
   list("٢٠٢٤", "%Y", "2024-01-01"),
   list("２０２５", "%Y", "2025-01-01"),
-  list(paste0(intToUtf8(0x1e5f1L + c(2L, 0L, 2L, 6L))), "%Y", "2026-01-01")
+  list(newest_decimal_year, "%Y", "2026-01-01")
 )
 for (case in datetime_parity_cases) {
   actual <- by_example_format_datetime_parts(by_example_datetime_parts(case[[1L]], case[[2L]]), "%Y-%m-%d")
@@ -12273,7 +12304,9 @@ for (case in datetime_parity_cases) {
 for (case in list(
   list("1/2/2024\n", "%d/%m/%Y"),
   list(" 02/2/2024", "%d/%m/%Y"),
-  list(" 29 January 2024", "%d %B %Y")
+  list(" 29 January 2024", "%d %B %Y"),
+  list(paste0("01/", intToUtf8(0x0662L), "/2024"), "%d/%m/%Y"),
+  list(paste0(intToUtf8(0x1e5fbL), "026"), "%Y")
 )) {
   rejected <- tryCatch(
     {
