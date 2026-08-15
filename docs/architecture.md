@@ -203,7 +203,7 @@ host protocol; the Python runtime never reads those messages.
 `r/openwrangler_runtime/kernel_agent.R` owns native R sessions. The host creates a UUID before an open,
 and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
 statistics, and column-value requests read through that binding and reject structural changes. These messages have a
-separate private transport-v12 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
+separate private transport-v13 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
 request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
 IRkernel does not need access to the extension filesystem.
 
@@ -288,6 +288,23 @@ the input identity domain, so page diffs cannot mistake an aggregate row for a s
 sum outside that native type's range fails before publication instead of being converted to text or another engine.
 Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
 same-sign boundary pairs. First and last use source order.
+Transform by example binds an ordered array of public `{id, name}` source references and aligns every example input
+array to that exact order. A new draft may omit its program; native R then uses the shared deterministic candidate
+ordering to synthesize one canonical bounded AST and returns that AST in the retained step. Preview, apply,
+latest-step edit, persisted replay, applied-step inspection, undo, and executable generated R evaluate that retained
+program rather than synthesizing again. Live and generated evaluators share the same portable text, regex, numeric,
+date, datetime, duration, factor, and null behavior. They preserve R's existing double `NaN` and infinities while
+exact integral addition, subtraction, and multiplication use the shared `-(10^38 - 1)` through `10^38 - 1`
+envelope and publish an integral result only when it fits an exact R integer or `bit64::integer64` value.
+
+The R decoder and synthesizer fail closed on malformed or stale references, misaligned arrays, unsupported source or
+program types, non-strict JSON scalars, non-portable numeric examples, structural signed zero, and unsafe whole
+numbers. They enforce the shared limits of 16 sources, 64 examples, 256 AST nodes, depth 64, 64 concatenated parts,
+64 warning strings, 8 KiB per text value, and 64 KiB total UTF-8 text before synthesis and again on the canonical
+result. Evaluation runs in bounded 1,024-row chunks and uses the frame contract's per-value and aggregate-output
+budgets. The same frame helper isolates the source and preserves the supported family, retained metadata, and stable
+derived output identity for all six concrete flavors: base `data.frame`, tibble, `data.table`, and ordinary
+`collapse::qDF()`, `collapse::qTBL()`, and `collapse::qDT()` output.
 A live session reports nullability conservatively. Schema changes retain existing nullability metadata. Fill Missing
 Values can mark its output non-nullable; Min-max scale always marks its double output nullable. Preview, apply,
 discard, latest-step replacement, undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
@@ -344,7 +361,7 @@ native filters, ordered sorts, value search and selection, and column and datase
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize, Lowercase,
 Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format
-Datetime, and Group and aggregate. Transform by example and Custom code are not supported in R yet.
+Datetime, Group and aggregate, and Transform by example. Custom code is the only catalog operation not supported in R.
 Executable generated R evaluates its implementation in a fresh environment whose parent is `baseenv()`, while an
 explicit private binding identifies only the caller environment from which the exact source variable is copied.
 The shared source preflight and the Formula, Format Datetime, and categorical implementation helpers avoid
@@ -371,7 +388,7 @@ frame, and final session cleanup. Local packaged acceptance keeps fresh core, va
 and moves candidate native-frame and restart work into dedicated selectors. Explicit candidate `core-operations`
 owns one complete installed Clone Column lifecycle: preview, apply, applied-step inspection, editing and reapplying
 the same step while preserving its step and output identities, then undo. Direct native-R, runtime, generated-code,
-and catalog suites own exhaustive semantics for all 26 operations. The `value-operations` targeted slice still owns exactly Find and
+and catalog suites own exhaustive semantics for all 27 operations. The `value-operations` targeted slice still owns exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The
 `categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
@@ -616,7 +633,8 @@ executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
 `literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
 partitions scheduling while keeping the installed Clone lifecycle in the existing core phase, the unchanged complete
 value and categorical slices, one comprehensive Linux native-frame owner, and representative native/restart seams on
-every hosted platform. Exhaustive 26-operation semantics remain direct R/runtime/catalog-test ownership.
+every hosted platform. Exhaustive 27-operation semantics remain direct R/runtime/catalog-test ownership. Adding
+Transform by example changes no candidate selector, job, phase, shard, deadline, or retry policy.
 
 Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
 fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own
@@ -662,10 +680,10 @@ native-R core artifact `9238867261` was indeterminate harness evidence at edited
 journey lacked decisive dispatch/scheduler/final-state receipts; and literate artifact `9238988590` was a
 deterministic harness failure because it looked for unprefixed `quarto.previewView` instead of VS Code's exact
 `mainThreadWebview-quarto.previewView` `TabInputWebview` identity. Its later `ERR_CONNECTION_REFUSED` followed missed
-preview ownership and cleanup rather than proving a product defect. The fan-in failed,
-publication was skipped, and `v1.99.6` is absent from GitHub, Open VSX, and Azure Marketplace. Run #78
-remains failed hosted evidence. The renderer-retirement, candidate-Clone, and media-only Quarto corrections described
-above are locally frozen and unhosted; only a fresh exact candidate can validate them.
+preview ownership and cleanup rather than proving a product defect. The fan-in failed, and run #78 created no
+`v1.99.6` tag, GitHub prerelease, Open VSX package, or Azure Marketplace package. Run #78 remains failed hosted
+evidence. Run #79 later published `v1.99.6` from the corrected protected source; that historical 26-operation artifact
+does not host or validate the current Transform-by-example slice.
 
 ## Persistence and identity
 

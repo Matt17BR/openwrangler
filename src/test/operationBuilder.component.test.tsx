@@ -2253,6 +2253,13 @@ describe("OperationBuilder", () => {
       expect(onPreview).not.toHaveBeenCalled();
     }
 
+    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), {
+      target: { value: '[{"inputs":[-0.0],"output":0},{"inputs":[1],"output":1}]' }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("negative zero is not supported");
+    expect(onPreview).not.toHaveBeenCalled();
+
     const valid = [
       { inputs: ["9007199254740993"], output: "9007199254740993" },
       { inputs: ["-9007199254740992"], output: "-9007199254740992" }

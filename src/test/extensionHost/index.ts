@@ -337,7 +337,8 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "floorNumber",
   "ceilNumber",
   "formatDatetime",
-  "groupBy"
+  "groupBy",
+  "byExample"
 ]);
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
@@ -7023,6 +7024,23 @@ async function exerciseReleasedRRepresentativeEditingJourney(
   assert.equal(opened.metadata.mode, "editing");
   assert.equal(opened.metadata.capabilities.editable, true);
   assert.deepEqual(opened.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+  assert.equal(opened.metadata.capabilities.supportedOperations.length, 27);
+  assert.equal(opened.metadata.capabilities.supportedOperations.includes("byExample"), true);
+  assert.equal(opened.metadata.capabilities.supportedOperations.includes("customCode"), false);
+
+  recordAcceptanceProgress(`${phase}:editing:representative:operation-catalog`);
+  const operationPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  app = operationPicker.app;
+  const operationCatalog = operationPicker.dialog.getByRole("navigation", { name: "Operation catalog" });
+  assert.equal(
+    await operationCatalog.locator("button.operationChoice").count(),
+    RELEASED_R_SUPPORTED_OPERATIONS.length,
+    "The representative R picker must expose exactly its advertised operation catalog."
+  );
+  assert.equal(await operationCatalog.getByRole("button", { name: /^Transform by example\b/u }).count(), 1);
+  assert.equal(await operationCatalog.getByRole("button", { name: /^Custom code\b/u }).count(), 0);
+  await operationPicker.dialog.getByRole("button", { name: "Close operation picker" }).click();
+  await operationPicker.dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
   recordAcceptanceProgress(`${phase}:editing:representative:preview-discard`);
   const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
@@ -9197,11 +9215,12 @@ async function exerciseReleasedRFormulaJourney(testing: TestApi, workbench: Page
     /^Formula column\b/u,
     /^Format datetime\b/u,
     /^One-hot encode\b/u,
-    /^Multi-label binarize\b/u
+    /^Multi-label binarize\b/u,
+    /^Transform by example\b/u
   ]) {
     assert.equal(await catalog.getByRole("button", { name: expected }).count(), 1);
   }
-  for (const unsupported of [/^Transform by example\b/u, /^Custom code\b/u]) {
+  for (const unsupported of [/^Custom code\b/u]) {
     assert.equal(await catalog.getByRole("button", { name: unsupported }).count(), 0);
   }
   await dialog.getByPlaceholder("Search operations").fill("formula");

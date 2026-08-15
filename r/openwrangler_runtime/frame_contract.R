@@ -817,6 +817,16 @@ openwrangler_r_frame_contract <- local({
       } else {
         structure(numeric_value, class = "difftime", units = semantics$units)
       }
+    } else if (kind == "factor") {
+      code <- unclass(column)[[index]]
+      if (is.na(code)) return(cell_missing())
+      factor_levels <- plain_metadata_storage(semantics$levels)
+      if (code < 1L || code > length(factor_levels)) {
+        abort("invalid-factor", sprintf("%s contains an invalid factor code", label))
+      }
+      text <- bounded_utf8(.subset2(factor_levels, code), label)
+      spend_json_string(budget, text, label, copies = 2L)
+      return(ordinary_cell("string", text, text))
     } else {
       value <- unname(column[index])
     }
@@ -845,15 +855,6 @@ openwrangler_r_frame_contract <- local({
     }
     if (kind == "character") {
       text <- bounded_utf8(value, label)
-      spend_json_string(budget, text, label, copies = 2L)
-      return(ordinary_cell("string", text, text))
-    }
-    if (kind == "factor") {
-      code <- unclass(value)
-      if (!is.na(code) && (code < 1L || code > length(semantics$levels))) {
-        abort("invalid-factor", sprintf("%s contains an invalid factor code", label))
-      }
-      text <- bounded_utf8(as.character(value), label)
       spend_json_string(budget, text, label, copies = 2L)
       return(ordinary_cell("string", text, text))
     }
@@ -2527,6 +2528,8 @@ openwrangler_r_frame_contract <- local({
     source_row_positions = NULL,
     output_ids = NULL,
     categorical_positions = NULL,
+    by_example_positions = NULL,
+    by_example_kinds = NULL,
     formula_positions = NULL,
     formula_right_source_positions = NULL,
     text_length_positions = NULL,
@@ -2551,6 +2554,8 @@ openwrangler_r_frame_contract <- local({
             !is.null(source_row_positions) ||
             !is.null(output_ids) ||
             !is.null(categorical_positions) ||
+            !is.null(by_example_positions) ||
+            !is.null(by_example_kinds) ||
             !is.null(formula_positions) ||
             !is.null(formula_right_source_positions) ||
             !is.null(text_length_positions) ||
@@ -2571,6 +2576,12 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(categorical_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R categorical outputs require explicit source mappings and identities")
+    }
+    if (xor(is.null(by_example_positions), is.null(by_example_kinds))) {
+      abort("internal-error", "R by-example outputs require positions and semantic kinds together")
+    }
+    if (!is.null(by_example_positions) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R by-example outputs require explicit source mappings and identities")
     }
     if (!is.null(formula_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R formula outputs require explicit source mappings and identities")
@@ -2702,6 +2713,37 @@ openwrangler_r_frame_contract <- local({
           abort("internal-error", "a derived R frame has invalid categorical output positions")
         }
         categorical_positions <- as.integer(categorical_positions)
+      }
+      if (is.null(by_example_positions)) {
+        by_example_positions <- integer()
+        by_example_kinds <- character()
+      } else {
+        if (
+          !is.numeric(by_example_positions) ||
+            anyNA(by_example_positions) ||
+            any(!is.finite(by_example_positions)) ||
+            any(by_example_positions != floor(by_example_positions)) ||
+            any(by_example_positions < 1L) ||
+            any(by_example_positions > length(output_schema)) ||
+            anyDuplicated(by_example_positions) ||
+            !is.character(by_example_kinds) ||
+            anyNA(by_example_kinds) ||
+            length(by_example_kinds) != length(by_example_positions) ||
+            any(!by_example_kinds %in% c(
+              "character",
+              "factor",
+              "integer",
+              "integer64",
+              "double",
+              "logical",
+              "date",
+              "datetime",
+              "difftime"
+            ))
+        ) {
+          abort("internal-error", "a derived R frame has invalid by-example output metadata")
+        }
+        by_example_positions <- as.integer(by_example_positions)
       }
       if (is.null(formula_positions)) {
         formula_positions <- integer()
@@ -2870,6 +2912,7 @@ openwrangler_r_frame_contract <- local({
       }
       transformed_positions <- c(
         categorical_positions,
+        by_example_positions,
         formula_positions,
         text_length_positions,
         text_transform_positions,
@@ -2948,6 +2991,14 @@ openwrangler_r_frame_contract <- local({
               any(!output_values %in% c(0L, 1L))
           ) {
             abort("internal-error", "a derived R frame has an invalid categorical output")
+          }
+        } else if (index %in% by_example_positions) {
+          by_example_index <- match(index, by_example_positions)
+          if (
+            identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              !identical(output_column$semantics$kind, by_example_kinds[[by_example_index]])
+          ) {
+            abort("internal-error", "a derived R frame has an invalid by-example output")
           }
         } else if (index %in% formula_positions) {
           formula_index <- match(index, formula_positions)
@@ -3126,6 +3177,8 @@ openwrangler_r_frame_contract <- local({
         output_schema[[index]]$id <- output_ids[[index]]
         output_schema[[index]]$nullable <- if (index %in% categorical_positions) {
           FALSE
+        } else if (index %in% by_example_positions) {
+          column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% formula_positions) {
           formula_index <- match(index, formula_positions)
           formula_right_position <- formula_right_source_positions[[formula_index]]
@@ -3454,6 +3507,391 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     clone_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  by_example_column_at <- function(value, positions, expected_names, new_name, result_kind, evaluator) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    row_count <- inspected$descriptor$shape$rows
+    if (
+      !is.numeric(positions) ||
+        anyNA(positions) ||
+        any(!is.finite(positions)) ||
+        any(positions != floor(positions)) ||
+        length(positions) == 0L ||
+        length(positions) > 16L ||
+        any(positions < 1L) ||
+        any(positions > column_count) ||
+        anyDuplicated(positions)
+    ) {
+      abort("stale-column", "the by-example source positions no longer match the R dataframe")
+    }
+    positions <- as.integer(positions)
+    if (
+      !is.character(expected_names) ||
+        anyNA(expected_names) ||
+        length(expected_names) != length(positions)
+    ) {
+      abort("stale-column", "the by-example source names no longer match the R dataframe")
+    }
+    expected_names <- vapply(seq_along(expected_names), function(index) {
+      bounded_utf8(expected_names[[index]], sprintf("expected_names[[%d]]", index), maximum_name_bytes)
+    }, character(1L), USE.NAMES = FALSE)
+    source_schema <- plain_metadata_storage(inspected$descriptor$schema)
+    source_names <- vapply(source_schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    actual_names <- source_names[positions]
+    if (!identical(actual_names, expected_names)) {
+      abort("stale-column", "the by-example source names no longer match the R dataframe")
+    }
+    if (any(vapply(expected_names, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, "")) abort("invalid-column-name", "new_name must not be empty")
+    if (is_private_column_name(new_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (new_name %in% source_names) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (column_count >= maximum_columns) {
+      abort("invalid-view-query", "byExample exceeds the supported R column limit")
+    }
+    if (
+      !is.character(result_kind) || length(result_kind) != 1L || is.na(result_kind) ||
+        !result_kind %in% c(
+          "character", "factor", "integer", "integer64", "double", "logical",
+          "date", "datetime", "difftime"
+        )
+    ) {
+      abort("internal-error", "the by-example result kind is invalid")
+    }
+    if (!is.function(evaluator)) abort("internal-error", "the by-example evaluator must be a function")
+
+    element_bytes <- if (result_kind %in% c("factor", "integer", "logical")) 4 else 8
+    operation_budget <- new_payload_budget()
+    spend_operation_output_budget(
+      operation_budget,
+      as.double(row_count) * element_bytes,
+      "byExample output column"
+    )
+
+    source_element_names <- if (identical(inspected$flavor, "r.data.table")) {
+      lapply(seq_len(column_count), function(position) {
+        attr(.subset2(value, position), "names", exact = TRUE)
+      })
+    } else {
+      NULL
+    }
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (!is.null(source_element_names)) {
+      for (position in seq_len(column_count)) {
+        if (!is.null(source_element_names[[position]])) {
+          data.table::setattr(.subset2(result, position), "names", source_element_names[[position]])
+        }
+      }
+    }
+    source_chunk <- function(position, row_positions) {
+      source <- .subset2(result, position)
+      source_attributes <- attributes(source)
+      source_names <- source_attributes$names
+      chunk <- .subset(unclass(source), row_positions)
+      if (!is.null(source_attributes)) {
+        source_attributes$names <- if (is.null(source_names)) NULL else .subset(source_names, row_positions)
+        attributes(chunk) <- source_attributes
+      }
+      chunk
+    }
+    output_matches_kind <- function(output) {
+      switch(
+        result_kind,
+        character = is.character(output) && !is.object(output),
+        factor = typeof(output) == "integer" &&
+          (identical(class(output), "factor") || identical(class(output), c("ordered", "factor"))),
+        integer = is.integer(output) && !is.object(output),
+        integer64 = typeof(output) == "double" && identical(class(output), "integer64"),
+        double = is.double(output) && !is.object(output),
+        logical = is.logical(output) && !is.object(output),
+        date = typeof(output) == "double" && identical(class(output), "Date"),
+        datetime = typeof(output) == "double" && identical(class(output), c("POSIXct", "POSIXt")),
+        difftime = typeof(output) == "double" && identical(class(output), "difftime"),
+        FALSE
+      )
+    }
+    output_attributes_are_bounded <- function(output_attributes) {
+      fields <- names(output_attributes)
+      switch(
+        result_kind,
+        factor = length(fields) == 2L && all(fields %in% c("levels", "class")),
+        integer64 = identical(fields, "class"),
+        date = identical(fields, "class"),
+        datetime = identical(fields, "class") ||
+          (length(fields) == 2L && all(fields %in% c("class", "tzone"))),
+        difftime = length(fields) == 2L && all(fields %in% c("class", "units")),
+        character = length(fields) == 0L,
+        integer = length(fields) == 0L,
+        double = length(fields) == 0L,
+        logical = length(fields) == 0L,
+        FALSE
+      )
+    }
+    charge_metadata_text <- function(value, label, maximum_bytes, allow_asis = FALSE) {
+      metadata_attributes <- attributes(value)
+      if (!is.null(metadata_attributes)) {
+        if (
+          !isTRUE(allow_asis) ||
+            !identical(names(metadata_attributes), "class") ||
+            !identical(metadata_attributes$class, "AsIs") ||
+            !is.null(attributes(metadata_attributes$class))
+        ) {
+          abort("invalid-view-query", sprintf("%s has unsupported nested attributes", label))
+        }
+        spend_operation_output_budget(
+          operation_budget,
+          character_vector_slot_bytes + nchar("AsIs", type = "bytes"),
+          label
+        )
+      }
+      plain <- plain_metadata_storage(value)
+      if (!is.character(plain) || anyNA(plain)) {
+        abort("invalid-view-query", sprintf("%s must contain non-missing text", label))
+      }
+      spend_operation_output_budget(
+        operation_budget,
+        as.double(storage_length(plain)) * character_vector_slot_bytes,
+        label
+      )
+      for (index in seq_along(plain)) {
+        item <- bounded_utf8(plain[[index]], sprintf("%s %d", label, index), maximum_bytes)
+        spend_operation_output_budget(operation_budget, nchar(item, type = "bytes"), label)
+      }
+      plain
+    }
+    transformed_storage <- switch(
+      result_kind,
+      character = rep.int(NA_character_, row_count),
+      factor = rep.int(NA_integer_, row_count),
+      integer = rep.int(NA_integer_, row_count),
+      logical = rep.int(NA, row_count),
+      rep.int(NA_real_, row_count)
+    )
+    transformed_attributes <- NULL
+    transformed_names <- NULL
+    output_has_names <- NULL
+    ranges <- if (row_count == 0L) {
+      list(integer())
+    } else {
+      starts <- seq.int(1L, row_count, by = maximum_operation_output_chunk_rows)
+      lapply(starts, function(start) {
+        seq.int(start, min(row_count, start + maximum_operation_output_chunk_rows - 1L))
+      })
+    }
+    for (row_positions in ranges) {
+      selected <- lapply(positions, source_chunk, row_positions = row_positions)
+      transformed_chunk <- tryCatch(
+        evaluator(selected),
+        openwrangler_r_frame_error = function(error) stop(error),
+        error = function(error) abort("invalid-view-query", "the by-example program could not be evaluated")
+      )
+      if (
+        is.null(transformed_chunk) ||
+          is.data.frame(transformed_chunk) ||
+          is.list(transformed_chunk) ||
+          is.matrix(transformed_chunk) ||
+          !is.atomic(transformed_chunk) ||
+          storage_length(transformed_chunk) != length(row_positions) ||
+          is.raw(transformed_chunk) ||
+          is.complex(transformed_chunk) ||
+          !output_matches_kind(transformed_chunk)
+      ) {
+        abort("invalid-view-query", "the by-example program returned an invalid R column")
+      }
+      chunk_attributes <- attributes(transformed_chunk)
+      chunk_names <- plain_metadata_storage(chunk_attributes$names)
+      if (!is.null(chunk_attributes)) chunk_attributes$names <- NULL
+      if (!output_attributes_are_bounded(chunk_attributes %||% list())) {
+        abort("invalid-view-query", "the by-example program returned unsupported R column attributes")
+      }
+      if (
+        is.null(transformed_attributes) &&
+          result_kind %in% c("factor", "integer64", "date", "datetime", "difftime")
+      ) {
+        output_class <- charge_metadata_text(
+          attr(transformed_chunk, "class", exact = TRUE),
+          "byExample output class",
+          maximum_name_bytes
+        )
+        if (!identical(output_class, class(transformed_chunk))) {
+          abort("invalid-view-query", "the by-example program returned invalid class metadata")
+        }
+      }
+      if (identical(result_kind, "factor")) {
+        raw_factor_levels <- attr(transformed_chunk, "levels", exact = TRUE)
+        factor_levels <- plain_metadata_storage(raw_factor_levels)
+        factor_codes <- unclass(transformed_chunk)
+        if (
+          !is.integer(factor_codes) ||
+            any(!is.na(factor_codes) & (factor_codes < 1L | factor_codes > length(factor_levels)))
+        ) {
+          abort("invalid-view-query", "the by-example program returned invalid factor codes")
+        }
+        if (is.null(transformed_attributes)) {
+          factor_levels <- charge_metadata_text(
+            raw_factor_levels,
+            "byExample factor levels",
+            maximum_text_bytes,
+            allow_asis = TRUE
+          )
+          if (
+            !is.character(factor_levels) || anyNA(factor_levels) ||
+              anyDuplicated(factor_levels) || length(factor_levels) > maximum_factor_levels
+          ) {
+            abort("invalid-view-query", "the by-example program returned invalid factor levels")
+          }
+        }
+      }
+      if (is.null(transformed_attributes) && identical(result_kind, "datetime")) {
+        raw_timezone <- attr(transformed_chunk, "tzone", exact = TRUE)
+        if (!is.null(raw_timezone)) {
+          timezone <- charge_metadata_text(
+            raw_timezone,
+            "byExample datetime timezone",
+            maximum_name_bytes,
+            allow_asis = TRUE
+          )
+          if (storage_length(timezone) != 1L) {
+            abort("invalid-view-query", "the by-example program returned an invalid datetime timezone")
+          }
+        }
+      }
+      if (is.null(transformed_attributes) && identical(result_kind, "difftime")) {
+        units <- charge_metadata_text(
+          attr(transformed_chunk, "units", exact = TRUE),
+          "byExample difftime units",
+          maximum_name_bytes,
+          allow_asis = TRUE
+        )
+        if (
+          storage_length(units) != 1L ||
+            !units[[1L]] %in% c("secs", "mins", "hours", "days", "weeks")
+        ) {
+          abort("invalid-view-query", "the by-example program returned invalid difftime units")
+        }
+      }
+      if (is.null(transformed_attributes)) {
+        transformed_attributes <- chunk_attributes %||% list()
+        output_has_names <- !is.null(chunk_names)
+        if (isTRUE(output_has_names)) {
+          spend_operation_output_budget(
+            operation_budget,
+            as.double(row_count) * character_vector_slot_bytes,
+            "byExample output names"
+          )
+          transformed_names <- rep.int(NA_character_, row_count)
+        }
+      } else if (
+        !identical(transformed_attributes, chunk_attributes %||% list()) ||
+          !identical(output_has_names, !is.null(chunk_names))
+      ) {
+        abort("invalid-view-query", "the by-example program returned inconsistent chunk attributes")
+      }
+      if (isTRUE(output_has_names)) {
+        if (!is.character(chunk_names) || length(chunk_names) != length(row_positions)) {
+          abort("invalid-view-query", "the by-example program returned invalid output names")
+        }
+        transformed_names[row_positions] <- vapply(seq_along(chunk_names), function(index) {
+          if (is.na(chunk_names[[index]])) return(NA_character_)
+          item <- bounded_utf8(
+            chunk_names[[index]],
+            sprintf("byExample output name row %d", row_positions[[index]]),
+            maximum_text_bytes
+          )
+          spend_operation_output_budget(
+            operation_budget,
+            nchar(item, type = "bytes"),
+            "byExample output names"
+          )
+          item
+        }, character(1L), USE.NAMES = FALSE)
+      }
+      if (identical(result_kind, "character")) {
+        transformed_chunk <- vapply(seq_along(transformed_chunk), function(index) {
+          item <- transformed_chunk[[index]]
+          if (is.na(item)) return(NA_character_)
+          bounded <- bounded_utf8(
+            item,
+            sprintf("byExample output row %d", row_positions[[index]]),
+            maximum_text_bytes
+          )
+          spend_operation_output_budget(
+            operation_budget,
+            nchar(bounded, type = "bytes"),
+            "byExample text output"
+          )
+          bounded
+        }, character(1L), USE.NAMES = FALSE)
+      }
+      transformed_storage[row_positions] <- unclass(transformed_chunk)
+    }
+    transformed <- transformed_storage
+    final_attributes <- transformed_attributes %||% list()
+    if (isTRUE(output_has_names)) final_attributes$names <- transformed_names
+    if (length(final_attributes) > 0L) attributes(transformed) <- final_attributes
+
+    transformed_names <- attr(transformed, "names", exact = TRUE)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = transformed)
+      result <- repair_data_table_self_reference(result)
+      for (position in seq_len(column_count)) {
+        if (!is.null(source_element_names[[position]])) {
+          data.table::setattr(.subset2(result, position), "names", source_element_names[[position]])
+        }
+      }
+      if (!is.null(transformed_names)) {
+        data.table::setattr(.subset2(result, column_count + 1L), "names", transformed_names)
+      }
+    } else {
+      result_classes <- class(result)
+      class(result) <- NULL
+      result[[storage_length(result) + 1L]] <- transformed
+      attr(result, "names") <- c(source_names, new_name)
+      if (!is.null(transformed_names)) attr(result[[storage_length(result)]], "names") <- transformed_names
+      class(result) <- result_classes
+    }
+
+    appended <- inspect_frame(
+      result,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    retained_schema <- plain_metadata_storage(appended$descriptor$schema)[seq_len(column_count)]
+    if (
+      !identical(appended$flavor, inspected$flavor) ||
+        appended$descriptor$shape$rows != row_count ||
+        appended$descriptor$shape$columns != column_count + 1L ||
+        !identical(retained_schema, source_schema) ||
+        !identical(
+          plain_metadata_storage(appended$descriptor$frameSemantics$classes),
+          plain_metadata_storage(inspected$descriptor$frameSemantics$classes)
+        ) ||
+        !identical(
+          appended$descriptor$frameSemantics$rowNames,
+          inspected$descriptor$frameSemantics$rowNames
+        ) ||
+        !identical(
+          plain_metadata_storage(appended$descriptor$frameSemantics$keyColumnIds),
+          plain_metadata_storage(inspected$descriptor$frameSemantics$keyColumnIds)
+        )
+    ) {
+      abort("internal-error", "the by-example transform changed retained R frame semantics")
+    }
+    result
   }
 
   categorical_result_guard <- new.env(parent = emptyenv())
@@ -7531,6 +7969,7 @@ openwrangler_r_frame_contract <- local({
   ) {
     validate_capture(capture)
     descriptor <- capture$descriptor
+    plain_schema <- plain_metadata_storage(descriptor$schema)
     source_rows <- descriptor$shape$rows
     if (length(row_positions) != window$rowCount) {
       abort("internal-error", "the R page row window is inconsistent")
@@ -7540,7 +7979,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       seq.int(as.integer(window$columnOffset) + 1L, length.out = window$columnCount)
     }
-    selected_schema <- descriptor$schema[column_positions]
+    selected_schema <- .subset(plain_schema, column_positions)
     column_ids <- vapply(selected_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     page_integer64_bindings <- if (any(vapply(
       selected_schema,
@@ -7571,8 +8010,8 @@ openwrangler_r_frame_contract <- local({
       values <- lapply(seq_along(column_positions), function(column_index) {
         source_column <- column_positions[[column_index]]
         encode_value(
-          frame[[source_column]],
-          descriptor$schema[[source_column]]$semantics,
+          .subset2(frame, source_column),
+          .subset2(.subset2(plain_schema, source_column), "semantics"),
           source_row,
           sprintf("cell[%d,%d]", source_row, source_column),
           page_budget,
@@ -7922,6 +8361,7 @@ openwrangler_r_frame_contract <- local({
     rename_column_at = rename_column_at,
     clone_column = clone_column,
     clone_column_at = clone_column_at,
+    by_example_column_at = by_example_column_at,
     one_hot_encode_columns = one_hot_encode_columns,
     one_hot_encode_columns_at = one_hot_encode_columns_at,
     multi_label_binarize_column = multi_label_binarize_column,

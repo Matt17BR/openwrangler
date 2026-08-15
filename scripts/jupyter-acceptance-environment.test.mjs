@@ -1490,6 +1490,15 @@ test("default R profiles retain embedded coverage while candidate core keeps one
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
   const journeyEnd = source.indexOf("\nasync function exerciseReleasedRInteractiveTerminalJourney(", journeyStart);
   assert.ok(runStart >= 0 && profileStart > runStart && journeyStart > profileStart && journeyEnd > journeyStart);
+  const operationCatalogStart = source.indexOf("const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([");
+  const operationCatalogEnd = source.indexOf("\n]);", operationCatalogStart);
+  assert.ok(operationCatalogStart >= 0 && operationCatalogEnd > operationCatalogStart);
+  const advertisedOperations = [
+    ...source.slice(operationCatalogStart, operationCatalogEnd).matchAll(/^\s+"([^"]+)",?$/gmu)
+  ].map((match) => match[1]);
+  assert.equal(advertisedOperations.length, 27, "Native R must advertise its exact 27-operation catalog.");
+  assert.equal(advertisedOperations.at(-1), "byExample");
+  assert.equal(advertisedOperations.includes("customCode"), false);
   const preflight = source.slice(runStart, profileStart);
   const profiles = source.slice(profileStart, journeyStart);
   const journey = source.slice(journeyStart, journeyEnd);
@@ -1649,6 +1658,21 @@ test("default R profiles retain embedded coverage while candidate core keeps one
   const cloneFailure = source.slice(cloneFailureStart, cloneLifecycleStart);
   const cloneLifecycle = source.slice(cloneLifecycleStart, cloneLifecycleEnd);
   const comprehensive = source.slice(comprehensiveStart, comprehensiveEnd);
+  assert.match(
+    representative,
+    /supportedOperations\.length, 27[\s\S]*supportedOperations\.includes\("byExample"\), true[\s\S]*supportedOperations\.includes\("customCode"\), false/u,
+    "The representative packaged R journey must assert the exact capability catalog."
+  );
+  assert.match(
+    representative,
+    /getByRole\("button", \{ name: \/\^Transform by example\\b\/u \}\)\.count\(\), 1[\s\S]*getByRole\("button", \{ name: \/\^Custom code\\b\/u \}\)\.count\(\), 0/u,
+    "The representative packaged R picker must expose Transform by example while omitting Custom code."
+  );
+  assert.doesNotMatch(
+    representative,
+    /kind:\s*"byExample"|exerciseReleasedRByExample/u,
+    "The representative catalog assertion must not expand into a Transform by Example mutation journey."
+  );
   assert.doesNotMatch(
     comprehensive,
     /exerciseReleasedR(?:OneHot|MultiLabel)Journey/u,

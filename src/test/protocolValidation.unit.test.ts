@@ -2677,6 +2677,61 @@ describe("protocol-v2 request validation", () => {
     expect(isTransformStep(stepWithValues(Number.MAX_SAFE_INTEGER + 1, 1))).toBe(false);
     expect(isTransformStep(stepWithValues(1, Number.MIN_SAFE_INTEGER - 1))).toBe(false);
     expect(isTransformStep(stepWithValues(1.25, 2.5))).toBe(true);
+    expect(isTransformStep(stepWithValues(-0, 1))).toBe(false);
+    expect(isTransformStep(stepWithValues(1, -0))).toBe(false);
+    expect(
+      isTransformStep({
+        ...stepWithValues(1, 2),
+        params: {
+          ...stepWithValues(1, 2).params,
+          program: { kind: "literal", value: -0 }
+        }
+      })
+    ).toBe(false);
+  });
+
+  it("requires every by-example structural integer to survive the JSON transport exactly", () => {
+    const leaf = { kind: "column", column: valueReference } as const;
+    const stepWithProgram = (program: unknown, candidateCount = 1) => ({
+      id: "structural-integer-example",
+      kind: "byExample",
+      params: {
+        sourceColumns: [valueReference],
+        newColumn: "result",
+        examples: [
+          { inputs: ["a"], output: "a" },
+          { inputs: ["b"], output: "b" }
+        ],
+        program,
+        warnings: [],
+        candidateCount
+      }
+    });
+    const unsafe = Number.MAX_SAFE_INTEGER + 1;
+
+    for (const program of [
+      { kind: "slice", input: leaf, start: unsafe },
+      { kind: "slice", input: leaf, start: 0, stop: unsafe },
+      { kind: "split", input: leaf, delimiter: "-", index: unsafe },
+      { kind: "regexExtract", input: leaf, pattern: "(.)", group: unsafe },
+      { kind: "regexExtract", input: leaf, pattern: "(.)", group: -unsafe },
+      { kind: "slice", input: leaf, start: -0 },
+      { kind: "slice", input: leaf, start: 0, stop: -0 },
+      { kind: "split", input: leaf, delimiter: "-", index: -0 },
+      { kind: "regexExtract", input: leaf, pattern: "(.)", group: -0 }
+    ]) {
+      expect(isTransformStep(stepWithProgram(program))).toBe(false);
+    }
+    expect(isTransformStep(stepWithProgram(leaf, unsafe))).toBe(false);
+
+    expect(
+      isTransformStep(
+        stepWithProgram(
+          { kind: "slice", input: leaf, start: Number.MAX_SAFE_INTEGER, stop: Number.MAX_SAFE_INTEGER },
+          Number.MAX_SAFE_INTEGER
+        )
+      )
+    ).toBe(true);
   });
 
   it("caps the aggregate by-example text envelope at 64 KiB", () => {

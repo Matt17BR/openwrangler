@@ -6,6 +6,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Native R now implements **Transform by Example** as its 27th of 28 cleaning operations. Ordered stable column
+  references and example rows produce one deterministic canonical program that is reused for live evaluation,
+  retained replay, and executable generated R. Strict scalar, UTF-8, program-size, integer-envelope, and signed-zero
+  checks fail before publication; direct contracts cover preview, apply, latest-step edit, replay, inspection, and
+  undo across base, tibble, `data.table`, and ordinary `collapse` frames. **Custom Code** remains the only unsupported
+  R catalog operation, the Native R matrix remains **Partial**, and this unhosted source slice changes no candidate
+  selector, job, phase, deadline, or retry.
 - Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
   `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the candidate and Remote SSH owners, published
   `v1.99.6` to GitHub and both registries, and completed successfully. Canonical artifact `9240263388` contained the

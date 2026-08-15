@@ -268,6 +268,92 @@ def test_integer_constant_offsets_remain_integer_for_unseen_large_values() -> No
     assert evaluate_program(program, [2**53 + 1], [VALUE]) == 2**53 + 3
 
 
+@pytest.mark.parametrize(
+    "samples",
+    [
+        examples([(-9_007_199_254_740_991, 1), (-9_007_199_254_740_990, 2)]),
+        examples([(9_007_199_254_740_991, -1), (9_007_199_254_740_990, -2)]),
+    ],
+)
+def test_normalization_discards_unsafe_inferred_positive_and_negative_deltas(
+    samples: list[dict[str, Any]],
+) -> None:
+    with pytest.raises(SynthesisError, match="No deterministic"):
+        normalize_by_example(
+            {
+                "sourceColumns": [VALUE],
+                "newColumn": "result",
+                "examples": samples,
+            }
+        )
+
+
+def test_synthesis_discards_unsafe_ratio_literal_but_retains_safe_reciprocal() -> None:
+    samples = examples([(1e-16, 1), (2e-16, 2)])
+
+    program, warnings, candidate_count = synthesize_program([VALUE], samples)
+
+    assert program == {
+        "kind": "arithmetic",
+        "left": column_program(),
+        "operator": "divide",
+        "right": {"kind": "literal", "value": 1e-16},
+    }
+    assert warnings == []
+    assert candidate_count == 1
+
+
+def test_synthesis_accepts_an_inferred_literal_at_the_safe_integer_boundary() -> None:
+    samples = examples([(-9_007_199_254_740_990, 1), (-9_007_199_254_740_989, 2)])
+
+    program, _warnings, candidate_count = synthesize_program([VALUE], samples)
+
+    assert program == {
+        "kind": "arithmetic",
+        "left": column_program(),
+        "operator": "add",
+        "right": {"kind": "literal", "value": 9_007_199_254_740_991},
+    }
+    assert candidate_count == 2
+
+
+@pytest.mark.parametrize("location", ["input", "output", "program"])
+def test_normalization_rejects_negative_zero_that_json_transport_cannot_preserve(location: str) -> None:
+    params: dict[str, Any] = {
+        "sourceColumns": [VALUE],
+        "newColumn": "result",
+        "examples": examples([(1.0, 1.0), (2.0, 2.0)]),
+    }
+    if location == "input":
+        params["examples"][0]["inputs"][0] = -0.0
+    elif location == "output":
+        params["examples"][0]["output"] = -0.0
+    else:
+        params["program"] = {"kind": "literal", "value": -0.0}
+
+    with pytest.raises(SynthesisError, match="JSON scalar"):
+        normalize_by_example(params)
+
+
+@pytest.mark.parametrize("location", ["input", "output", "program"])
+def test_normalization_rejects_unsafe_whole_numbers_that_json_transport_cannot_preserve(location: str) -> None:
+    params: dict[str, Any] = {
+        "sourceColumns": [VALUE],
+        "newColumn": "result",
+        "examples": examples([(1, 1), (2, 2)]),
+    }
+    unsafe = 9_007_199_254_740_992
+    if location == "input":
+        params["examples"][0]["inputs"][0] = unsafe
+    elif location == "output":
+        params["examples"][0]["output"] = unsafe
+    else:
+        params["program"] = {"kind": "literal", "value": unsafe}
+
+    with pytest.raises(SynthesisError, match="JSON scalar"):
+        normalize_by_example(params)
+
+
 def test_huge_integer_identity_examples_do_not_overflow_numeric_candidate_checks() -> None:
     huge = 10**4_000
     samples = examples([(huge, huge), (huge + 1, huge + 1)])
@@ -373,6 +459,7 @@ def test_saved_program_metadata_is_recomputed_not_trusted() -> None:
         ("candidateCount", True, "positive integer"),
         ("candidateCount", 0, "positive integer"),
         ("candidateCount", 1.5, "positive integer"),
+        ("candidateCount", 9_007_199_254_740_992, "positive integer"),
     ],
 )
 def test_saved_program_metadata_types_are_validated(field: str, value: object, message: str) -> None:
@@ -406,6 +493,21 @@ def test_zero_slice_and_split_boundaries_are_valid() -> None:
         evaluate_program({"kind": "split", "input": column_program(), "delimiter": "-", "index": 0}, ["a-b"], [VALUE])
         == "a"
     )
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        {"kind": "slice", "input": column_program(), "start": 9_007_199_254_740_992},
+        {"kind": "slice", "input": column_program(), "start": 0, "stop": 9_007_199_254_740_992},
+        {"kind": "split", "input": column_program(), "delimiter": "-", "index": 9_007_199_254_740_992},
+        {"kind": "regexExtract", "input": column_program(), "pattern": "(.)", "group": 9_007_199_254_740_992},
+        {"kind": "regexExtract", "input": column_program(), "pattern": "(.)", "group": -9_007_199_254_740_992},
+    ],
+)
+def test_program_integral_fields_must_be_json_safe(program: dict[str, Any]) -> None:
+    with pytest.raises(SynthesisError, match="JSON-safe"):
+        evaluate_program(program, ["a-b"], [VALUE])
 
 
 def test_by_example_resource_limits_are_pinned() -> None:

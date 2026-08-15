@@ -5,6 +5,8 @@ import * as vscode from "vscode";
 import { supportsViewPredicate } from "../../shared/filterModel";
 import {
   PROTOCOL_VERSION,
+  type ByExampleProgram,
+  type ByExampleTransformStep,
   type CellValue,
   type CastColumnTransformStep,
   type CapitalizeTextTransformStep,
@@ -57,6 +59,7 @@ import {
   type ValueCount,
   type ValuesRequest
 } from "../../shared/protocol";
+import { isRetainedTransformStep, isTransformStep } from "../../shared/protocolValidation";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
 import { beginAtomicFileTransaction, type AtomicFileTransaction } from "../files/safeFileExport";
 import {
@@ -65,22 +68,23 @@ import {
   type RKernelOpenResult,
   type RKernelRequestOptions
 } from "./rKernelTransport";
-import type {
-  RKernelColumnFilter,
-  RKernelColumnReference,
-  RKernelDataExportResult,
-  RKernelDatasetStatsResult,
-  RKernelExportFormat,
-  RKernelGroupByStep,
-  RKernelPageWindow,
-  RKernelPlanUpdatedResult,
-  RKernelFillMissingReplacement,
-  RKernelTransformStep,
-  RKernelSortRule,
-  RKernelStepInspectionResult,
-  RKernelStepPreviewResult,
-  RKernelTransformFilterModel,
-  RKernelViewQuery
+import {
+  assertRKernelByExampleTransportStrings,
+  type RKernelColumnFilter,
+  type RKernelColumnReference,
+  type RKernelDataExportResult,
+  type RKernelDatasetStatsResult,
+  type RKernelExportFormat,
+  type RKernelGroupByStep,
+  type RKernelPageWindow,
+  type RKernelPlanUpdatedResult,
+  type RKernelFillMissingReplacement,
+  type RKernelTransformStep,
+  type RKernelSortRule,
+  type RKernelStepInspectionResult,
+  type RKernelStepPreviewResult,
+  type RKernelTransformFilterModel,
+  type RKernelViewQuery
 } from "./rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
@@ -125,10 +129,11 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "floorNumber",
   "ceilNumber",
   "formatDatetime",
-  "groupBy"
+  "groupBy",
+  "byExample"
 ] as OperationKind[]) as OperationKind[];
 
-type RTransformStep =
+type RTransformStepWithoutByExample =
   | SortRowsTransformStep
   | FilterRowsTransformStep
   | DropMissingRowsTransformStep
@@ -155,6 +160,19 @@ type RTransformStep =
   | GroupByTransformStep
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
+
+type RRetainedByExampleStep = ByExampleTransformStep &
+  Readonly<{
+    params: ByExampleTransformStep["params"] &
+      Readonly<{
+        program: ByExampleProgram;
+        warnings: string[];
+        candidateCount: number;
+      }>;
+  }>;
+
+type RTransformStep = RTransformStepWithoutByExample | RRetainedByExampleStep;
+type RPreviewTransformStep = RTransformStepWithoutByExample | ByExampleTransformStep;
 
 const R_BASE_CAPABILITIES = Object.freeze({
   editable: true,
@@ -740,6 +758,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "ceilNumber" &&
       request.step.kind !== "formatDatetime" &&
       request.step.kind !== "groupBy" &&
+      request.step.kind !== "byExample" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -790,11 +809,15 @@ export class RKernelBridge implements OpenWranglerBridge {
     let nextFilterModel: FilterModel;
     let view: RKernelViewQuery;
     let rStep: RKernelTransformStep;
+    let retainedStep: RTransformStep;
     let targetRowNames: RFramePageContract["frameSemantics"]["rowNames"];
     try {
-      targetSchema = isRCategoricalTransformStep(request.step)
-        ? categoricalRetainedSchema(inputSchema, request.step)
-        : schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
+      targetSchema =
+        request.step.kind === "byExample"
+          ? Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })))
+          : isRCategoricalTransformStep(request.step)
+            ? categoricalRetainedSchema(inputSchema, request.step)
+            : schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
       targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
       rStep = rTransformStep(request.step, inputSchema);
       targetRowNames = rowNamesAfterRStep(inputRowNames, request.step);
@@ -840,6 +863,20 @@ export class RKernelBridge implements OpenWranglerBridge {
           throw new Error("The R categorical schema changed the pre-dispatch viewing query.");
         }
       }
+      if (request.step.kind === "byExample") {
+        retainedStep = acceptRetainedByExampleStep(result.retainedStep, rStep, inputSchema);
+        targetSchema = dynamicByExampleSchema(inputSchema, inputRSchema, retainedStep, result.page);
+        targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, retainedStep);
+        const resolvedView = resolveViewQuery(nextFilterModel, targetSchema);
+        if (!isDeepStrictEqual(resolvedView, view)) {
+          throw new Error("The R by-example schema changed the pre-dispatch viewing query.");
+        }
+      } else {
+        if (result.retainedStep !== undefined) {
+          throw new Error("The R kernel returned a retained step for the wrong draft operation.");
+        }
+        retainedStep = copyRTransformStep(request.step);
+      }
       const targetRows = rowCountAfterRStep(request.step, inputRows, result.diff);
       const targetIdentityRows = rowIdentityDomainAfterRStep(request.step, inputIdentityRows, targetRows);
       assertMutationContract(
@@ -869,7 +906,7 @@ export class RKernelBridge implements OpenWranglerBridge {
                 ? { columnId: request.step.params.column.id, mode: "mayRemove" }
                 : undefined
       );
-      assertMutationDiff(request.step, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
+      assertMutationDiff(retainedStep, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
       if ((request.step.kind === "fillMissingValues") !== (result.remainingMissingCells !== undefined)) {
         throw new Error("The R kernel returned a missing-value count for the wrong draft operation.");
       }
@@ -885,7 +922,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       confirmed.keyColumnIds = Object.freeze([...targetKeyColumnIds]);
       confirmed.rowNames = targetRowNames;
       confirmed.filterModel = nextFilterModel;
-      confirmed.draftStep = copyRTransformStep(request.step);
+      confirmed.draftStep = copyRTransformStep(retainedStep);
       confirmed.draftReplacesStepId = request.replaceStepId;
       confirmed.draftInputSchema = copySchema(inputSchema);
       confirmed.draftInputRSchema = inputRSchema;
@@ -907,10 +944,12 @@ export class RKernelBridge implements OpenWranglerBridge {
         code: result.code,
         ...(result.remainingMissingCells === undefined ? {} : { remainingMissingCells: result.remainingMissingCells }),
         warnings:
-          fallbackFillTargetId !== undefined &&
-          result.page.schema.find((column) => column.id === fallbackFillTargetId)?.nullable === true
-            ? ["Some values are still missing because every selected fallback column is missing in those rows."]
-            : []
+          retainedStep.kind === "byExample"
+            ? [...retainedStep.params.warnings]
+            : fallbackFillTargetId !== undefined &&
+                result.page.schema.find((column) => column.id === fallbackFillTargetId)?.nullable === true
+              ? ["Some values are still missing because every selected fallback column is missing in those rows."]
+              : []
       };
     } catch (error) {
       if (confirmed.invalidated) return kernelChangedError(request.sessionId);
@@ -2183,7 +2222,7 @@ function assertMutationContract(
 
 function rowNamesAfterRStep(
   input: RFramePageContract["frameSemantics"]["rowNames"],
-  step: RTransformStep
+  step: RPreviewTransformStep
 ): RFramePageContract["frameSemantics"]["rowNames"] {
   return step.kind === "groupBy" ? "positional" : input;
 }
@@ -2234,7 +2273,7 @@ function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
 
 function schemaAfterRStep(
   inputSchema: readonly ColumnSchema[],
-  step: RTransformStep,
+  step: RPreviewTransformStep,
   activeKeyColumnIds: readonly string[]
 ): readonly ColumnSchema[] {
   if (
@@ -2258,6 +2297,9 @@ function schemaAfterRStep(
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (isRCategoricalTransformStep(step)) {
     throw new TypeError("Categorical R operations require a runtime-derived output schema.");
+  }
+  if (step.kind === "byExample") {
+    throw new TypeError("Transform by Example requires a runtime-derived output schema.");
   }
   if (
     step.kind === "findReplace" ||
@@ -2289,7 +2331,7 @@ function schemaAfterRStep(
 
 type RCategoricalTransformStep = OneHotEncodeTransformStep | MultiLabelBinarizeTransformStep;
 
-function isRCategoricalTransformStep(step: RTransformStep): step is RCategoricalTransformStep {
+function isRCategoricalTransformStep(step: RPreviewTransformStep): step is RCategoricalTransformStep {
   return step.kind === "oneHotEncode" || step.kind === "multiLabelBinarize";
 }
 
@@ -2431,6 +2473,108 @@ function dynamicCategoricalSchema(
     }
     previousGeneratedName = column.name;
     generatedNames.add(column.name);
+  }
+  return actual;
+}
+
+function acceptRetainedByExampleStep(
+  value: unknown,
+  requested: RKernelTransformStep,
+  inputSchema: readonly ColumnSchema[]
+): RRetainedByExampleStep {
+  if (requested.kind !== "byExample") {
+    throw new Error("The R kernel returned a retained by-example step for the wrong request.");
+  }
+  if (!isRetainedTransformStep(value) || value.kind !== "byExample") {
+    throw new Error("The R kernel did not return a valid retained by-example step.");
+  }
+  if (
+    !Object.prototype.hasOwnProperty.call(value.params, "warnings") ||
+    !Object.prototype.hasOwnProperty.call(value.params, "candidateCount")
+  ) {
+    throw new Error("The R kernel retained by-example step omitted its normalized warnings or candidate count.");
+  }
+  const requestedIdentity = {
+    id: requested.id,
+    sourceColumns: requested.params.sourceColumns,
+    newColumn: requested.params.newColumn,
+    examples: requested.params.examples
+  };
+  const returnedIdentity = {
+    id: value.id,
+    sourceColumns: value.params.sourceColumns,
+    newColumn: value.params.newColumn,
+    examples: value.params.examples
+  };
+  if (!isDeepStrictEqual(returnedIdentity, requestedIdentity)) {
+    throw new Error("The R kernel retained by-example step does not match the exact preview request.");
+  }
+  if (requested.params.program !== undefined && !isDeepStrictEqual(value.params.program, requested.params.program)) {
+    throw new Error("The R kernel changed a saved by-example program instead of revalidating it.");
+  }
+  const bound = bindRByExampleStep(value, inputSchema);
+  if (
+    bound.params.program === undefined ||
+    bound.params.warnings === undefined ||
+    bound.params.candidateCount === undefined
+  ) {
+    throw new Error("The R kernel returned incomplete normalized by-example parameters.");
+  }
+  return bound as RRetainedByExampleStep;
+}
+
+function dynamicByExampleSchema(
+  inputSchema: readonly ColumnSchema[],
+  inputRSchema: readonly RColumnSchema[],
+  step: RRetainedByExampleStep,
+  contract: RFramePageContract
+): readonly ColumnSchema[] {
+  const actual = schemaFromContract(contract);
+  if (actual.length !== inputSchema.length + 1 || contract.schema.length !== inputRSchema.length + 1) {
+    throw new Error("The R kernel returned a by-example schema without exactly one derived output.");
+  }
+  for (const [index, expected] of inputSchema.entries()) {
+    const candidate = actual[index];
+    const expectedRColumn = inputRSchema[index];
+    const actualRColumn = contract.schema[index];
+    if (
+      !candidate ||
+      !expectedRColumn ||
+      !actualRColumn ||
+      !isDeepStrictEqual(candidate, expected) ||
+      !isDeepStrictEqual(actualRColumn.semantics, expectedRColumn.semantics)
+    ) {
+      throw new Error("The R kernel changed an input column while deriving a by-example output.");
+    }
+  }
+  const output = actual.at(-1);
+  const outputRColumn = contract.schema.at(-1);
+  const expectedId = `c:step:${step.id}:0`;
+  const selectedIds = new Set(step.params.sourceColumns.map((column) => column.id));
+  const sourceById = new Map(
+    step.params.sourceColumns.map((reference) => [
+      reference.id,
+      requireTransformColumn(reference, inputSchema, "Transform by Example")
+    ])
+  );
+  const expectedResult = bindRByExampleProgram(step.params.program, sourceById, selectedIds);
+  if (
+    !output ||
+    !outputRColumn ||
+    output.id !== expectedId ||
+    output.name !== step.params.newColumn ||
+    output.position !== inputSchema.length ||
+    output.rawType !== expectedResult.rawType ||
+    output.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)
+  ) {
+    throw new Error("The R kernel returned by-example output metadata that does not match the retained program.");
+  }
+  if (step.params.program.kind === "column") {
+    const source = sourceById.get(step.params.program.column.id);
+    const sourceRColumn = source === undefined ? undefined : inputRSchema[source.position];
+    if (!source || !sourceRColumn || !isDeepStrictEqual(outputRColumn.semantics, sourceRColumn.semantics)) {
+      throw new Error("The R kernel changed the native semantics of a direct by-example column result.");
+    }
   }
   return actual;
 }
@@ -2839,7 +2983,7 @@ function isRFormatDatetimeInPlace(step: FormatDatetimeTransformStep): boolean {
 }
 
 function isRNumericRoundingStep(
-  step: RTransformStep
+  step: RPreviewTransformStep
 ): step is RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep {
   return step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber";
 }
@@ -2861,7 +3005,7 @@ function numericRoundingLabel(
 function keyColumnsAfterRStep(
   inputKeyColumnIds: readonly string[],
   outputSchema: readonly ColumnSchema[],
-  step: RTransformStep
+  step: RPreviewTransformStep
 ): readonly string[] {
   if (step.kind === "groupBy") return Object.freeze([]);
   if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
@@ -2870,7 +3014,7 @@ function keyColumnsAfterRStep(
   return Object.freeze([...retainedKeyPrefix(inputKeyColumnIds, outputSchema)]);
 }
 
-function rowCountAfterRStep(step: RTransformStep, inputRows: number, diff: DataDiff): number {
+function rowCountAfterRStep(step: RPreviewTransformStep, inputRows: number, diff: DataDiff): number {
   if (step.kind === "groupBy") {
     if (diff.removedRows !== inputRows || diff.addedRows > inputRows) {
       throw new Error("The R kernel returned invalid row counts for Group and aggregate.");
@@ -2889,7 +3033,11 @@ function rowCountAfterRStep(step: RTransformStep, inputRows: number, diff: DataD
   return inputRows;
 }
 
-function rowIdentityDomainAfterRStep(step: RTransformStep, inputIdentityRows: number, outputRows: number): number {
+function rowIdentityDomainAfterRStep(
+  step: RPreviewTransformStep,
+  inputIdentityRows: number,
+  outputRows: number
+): number {
   if (step.kind !== "groupBy") return inputIdentityRows;
   const outputIdentityRows = inputIdentityRows + outputRows;
   if (!Number.isSafeInteger(outputIdentityRows) || outputIdentityRows > R_FRAME_CONTRACT_LIMITS.rows) {
@@ -2899,7 +3047,7 @@ function rowIdentityDomainAfterRStep(step: RTransformStep, inputIdentityRows: nu
 }
 
 function isRRowReductionStep(
-  step: RTransformStep
+  step: RPreviewTransformStep
 ): step is FilterRowsTransformStep | DropMissingRowsTransformStep | DropDuplicatesTransformStep {
   return step.kind === "filterRows" || step.kind === "dropMissingRows" || step.kind === "dropDuplicates";
 }
@@ -3531,7 +3679,273 @@ function freezeFillMissingReplacement(
   return Object.freeze(copied);
 }
 
-function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema[]): RKernelTransformStep {
+const R_BY_EXAMPLE_NATIVE_RAW_TYPES = new Set<string>([
+  "character",
+  "factor",
+  "ordered factor",
+  "integer",
+  "integer64",
+  "double",
+  "logical",
+  "Date",
+  "POSIXct",
+  "difftime"
+]);
+const R_NON_MISSING_INTEGER_MINIMUM = -2_147_483_647;
+const R_INTEGER_MAXIMUM = 2_147_483_647;
+const R_BY_EXAMPLE_TEXT_TYPES = new Set<ByExampleSemanticType>(["string", "integer", "date", "null"]);
+const R_BY_EXAMPLE_CONCAT_TYPES = new Set<ByExampleSemanticType>(["string", "integer", "date"]);
+const R_BY_EXAMPLE_ARITHMETIC_TYPES = new Set<ByExampleSemanticType>(["integer", "float"]);
+
+type ByExampleSemanticType = ColumnSchema["type"] | "null";
+
+function bindRByExampleStep(
+  step: ByExampleTransformStep,
+  inputSchema: readonly ColumnSchema[]
+): ByExampleTransformStep {
+  if (!isTransformStep(step) || step.kind !== "byExample") {
+    throw new TypeError("Transform by Example parameters are malformed or exceed their bounded public contract.");
+  }
+  assertRKernelByExampleTransportStrings(step);
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Transform by Example exceeds the R frame contract column limit.");
+  }
+  const selectedIds = new Set<string>();
+  const sourceColumns = step.params.sourceColumns.map((reference) => {
+    const column = requireTransformColumn(reference, inputSchema, "Transform by Example");
+    if (selectedIds.has(column.id)) {
+      throw new TypeError("Transform by Example cannot select the same R source column more than once.");
+    }
+    if (!R_BY_EXAMPLE_NATIVE_RAW_TYPES.has(column.rawType)) {
+      throw new TypeError(
+        `Transform by Example source ${JSON.stringify(column.name)} has unsupported R ${column.rawType} values.`
+      );
+    }
+    selectedIds.add(column.id);
+    return Object.freeze({ id: column.id, name: column.name });
+  });
+  if (sourceColumns.length === 0 || sourceColumns.length > 16) {
+    throw new TypeError("Transform by Example requires between 1 and 16 R source columns.");
+  }
+  const firstSource = sourceColumns[0];
+  if (!firstSource) throw new TypeError("Transform by Example requires at least one R source column.");
+  const newColumn = step.params.newColumn;
+  if (newColumn.length === 0 || Buffer.byteLength(newColumn, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The Transform by Example R output name is empty or exceeds the frame contract limit.");
+  }
+  if (newColumn.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The Transform by Example R output name uses Open Wrangler's reserved private namespace.");
+  }
+  if (inputSchema.some((column) => column.name === newColumn)) {
+    throw new TypeError(`The R column name ${JSON.stringify(newColumn)} already exists.`);
+  }
+  const outputId = `c:step:${step.id}:0`;
+  if (
+    Buffer.byteLength(outputId, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes ||
+    inputSchema.some((column) => column.id === outputId)
+  ) {
+    throw new TypeError("The Transform by Example R output identity is invalid or already exists.");
+  }
+
+  const sourceById = new Map(
+    sourceColumns.map((reference) => [
+      reference.id,
+      requireTransformColumn(reference, inputSchema, "Transform by Example")
+    ])
+  );
+  const examples = step.params.examples.map((example) => {
+    for (const input of example.inputs) assertRByExamplePortableScalar(input);
+    assertRByExamplePortableScalar(example.output);
+    return Object.freeze({ inputs: Object.freeze([...example.inputs]), output: example.output });
+  });
+  const firstExample = examples[0];
+  const secondExample = examples[1];
+  if (!firstExample || !secondExample) throw new TypeError("Transform by Example requires at least two examples.");
+  const program =
+    step.params.program === undefined
+      ? undefined
+      : bindRByExampleProgram(step.params.program, sourceById, selectedIds).program;
+  return Object.freeze({
+    id: step.id,
+    kind: "byExample" as const,
+    params: Object.freeze({
+      sourceColumns: Object.freeze(sourceColumns) as ByExampleTransformStep["params"]["sourceColumns"],
+      newColumn,
+      examples: Object.freeze(examples) as ByExampleTransformStep["params"]["examples"],
+      ...(program === undefined ? {} : { program }),
+      ...(step.params.warnings === undefined ? {} : { warnings: Object.freeze([...step.params.warnings]) as string[] }),
+      ...(step.params.candidateCount === undefined ? {} : { candidateCount: step.params.candidateCount })
+    })
+  });
+}
+
+function bindRByExampleProgram(
+  program: ByExampleProgram,
+  sourceById: ReadonlyMap<string, ColumnSchema>,
+  selectedIds: ReadonlySet<string>
+): Readonly<{ program: ByExampleProgram; type: ByExampleSemanticType; rawType: string }> {
+  if (program.kind === "column") {
+    const column = sourceById.get(program.column.id);
+    if (!column || column.name !== program.column.name || !selectedIds.has(column.id)) {
+      throw new TypeError("The by-example program contains a stale column or one outside sourceColumns.");
+    }
+    return {
+      program: Object.freeze({ kind: "column", column: Object.freeze({ id: column.id, name: column.name }) }),
+      type: column.type,
+      rawType: column.rawType
+    };
+  }
+  if (program.kind === "literal") {
+    const rawType = rByExampleLiteralRawType(program.value);
+    const type: ByExampleSemanticType =
+      program.value === null
+        ? "null"
+        : rawType === "character"
+          ? "string"
+          : rawType === "logical"
+            ? "boolean"
+            : rawType === "double"
+              ? "float"
+              : "integer";
+    return { program: Object.freeze({ kind: "literal", value: program.value }), type, rawType };
+  }
+  if (program.kind === "concat") {
+    const parts = program.parts.map((part) => bindRByExampleProgram(part, sourceById, selectedIds));
+    if (parts.some((part) => !R_BY_EXAMPLE_CONCAT_TYPES.has(part.type))) {
+      throw new TypeError("R by-example concat operands must be string, integer, or date values.");
+    }
+    const firstPart = parts[0];
+    if (!firstPart) throw new TypeError("R by-example concat requires at least one part.");
+    const copiedParts = Object.freeze([
+      firstPart.program,
+      ...parts.slice(1).map((part) => part.program)
+    ]) as unknown as [ByExampleProgram, ...ByExampleProgram[]];
+    return {
+      program: Object.freeze({
+        kind: "concat",
+        parts: copiedParts
+      }),
+      type: "string",
+      rawType: "character"
+    };
+  }
+  if (program.kind === "arithmetic") {
+    const left = bindRByExampleProgram(program.left, sourceById, selectedIds);
+    const right = bindRByExampleProgram(program.right, sourceById, selectedIds);
+    if (!R_BY_EXAMPLE_ARITHMETIC_TYPES.has(left.type) || !R_BY_EXAMPLE_ARITHMETIC_TYPES.has(right.type)) {
+      throw new TypeError("R by-example arithmetic operands must be integer or float values.");
+    }
+    const rawType =
+      program.operator === "divide" || left.rawType === "double" || right.rawType === "double" ? "double" : "integer64";
+    return {
+      program: Object.freeze({
+        kind: "arithmetic",
+        left: left.program,
+        operator: program.operator,
+        right: right.program
+      }),
+      type: rawType === "double" ? "float" : "integer",
+      rawType
+    };
+  }
+
+  const input = bindRByExampleProgram(program.input, sourceById, selectedIds);
+  if (!R_BY_EXAMPLE_TEXT_TYPES.has(input.type)) {
+    throw new TypeError(`R by-example ${program.kind} input must be a portable text-coercible value.`);
+  }
+  if (program.kind === "slice") {
+    return {
+      program: Object.freeze({
+        kind: "slice",
+        input: input.program,
+        start: program.start,
+        ...(program.stop === undefined ? {} : { stop: program.stop })
+      }),
+      type: "string",
+      rawType: "character"
+    };
+  }
+  if (program.kind === "split") {
+    return {
+      program: Object.freeze({
+        kind: "split",
+        input: input.program,
+        delimiter: program.delimiter,
+        index: program.index
+      }),
+      type: "string",
+      rawType: "character"
+    };
+  }
+  if (program.kind === "regexExtract") {
+    return {
+      program: Object.freeze({
+        kind: "regexExtract",
+        input: input.program,
+        pattern: program.pattern,
+        group: program.group
+      }),
+      type: "string",
+      rawType: "character"
+    };
+  }
+  if (program.kind === "regexReplace") {
+    return {
+      program: Object.freeze({
+        kind: "regexReplace",
+        input: input.program,
+        pattern: program.pattern,
+        replacement: program.replacement
+      }),
+      type: "string",
+      rawType: "character"
+    };
+  }
+  if (program.kind === "case") {
+    return {
+      program: Object.freeze({ kind: "case", style: program.style, input: input.program }),
+      type: "string",
+      rawType: "character"
+    };
+  }
+  return {
+    program: Object.freeze({
+      kind: "datetimeFormat",
+      input: input.program,
+      inputFormat: program.inputFormat,
+      outputFormat: program.outputFormat
+    }),
+    type: "string",
+    rawType: "character"
+  };
+}
+
+function rByExampleLiteralRawType(
+  value: string | number | boolean | null
+): "character" | "logical" | "integer" | "integer64" | "double" {
+  if (value === null || typeof value === "boolean") return "logical";
+  if (typeof value === "string") return "character";
+  if (Number.isInteger(value)) {
+    if (!Number.isSafeInteger(value)) {
+      throw new TypeError("Native R by-example rejects whole JSON numbers outside the safe integer range.");
+    }
+    if (value >= R_NON_MISSING_INTEGER_MINIMUM && value <= R_INTEGER_MAXIMUM) return "integer";
+    return "integer64";
+  }
+  return "double";
+}
+
+function assertRByExamplePortableScalar(value: string | number | boolean | null): void {
+  if (typeof value !== "number") return;
+  if (Object.is(value, -0)) {
+    throw new TypeError("Native R by-example rejects negative zero because JSON transport cannot preserve its sign.");
+  }
+  if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new TypeError("Native R by-example examples reject whole JSON numbers outside the safe integer range.");
+  }
+}
+
+function rTransformStep(step: RPreviewTransformStep, inputSchema: readonly ColumnSchema[]): RKernelTransformStep {
   if (step.kind === "sortRows") {
     const rules = resolveTransformSortRules(step.params.rules, inputSchema, "Sort rows");
     const first = rules[0];
@@ -3596,6 +4010,7 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       })
     });
   }
+  if (step.kind === "byExample") return bindRByExampleStep(step, inputSchema);
   if (step.kind === "selectColumns") {
     const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
     if (!columns[0]) throw new TypeError("Select Columns requires at least one R column.");
@@ -3824,7 +4239,89 @@ function resolveRowReductionColumns(
   );
 }
 
+function copyByExampleProgram(program: ByExampleProgram): ByExampleProgram {
+  if (program.kind === "column") return { kind: "column", column: { ...program.column } };
+  if (program.kind === "literal") return { kind: "literal", value: program.value };
+  if (program.kind === "slice") {
+    return {
+      kind: "slice",
+      input: copyByExampleProgram(program.input),
+      start: program.start,
+      ...(program.stop === undefined ? {} : { stop: program.stop })
+    };
+  }
+  if (program.kind === "split") {
+    return {
+      kind: "split",
+      input: copyByExampleProgram(program.input),
+      delimiter: program.delimiter,
+      index: program.index
+    };
+  }
+  if (program.kind === "concat") {
+    const parts = program.parts.map(copyByExampleProgram);
+    const first = parts[0];
+    if (!first) throw new TypeError("A retained by-example concat program requires at least one part.");
+    return { kind: "concat", parts: [first, ...parts.slice(1)] };
+  }
+  if (program.kind === "regexExtract") {
+    return {
+      kind: "regexExtract",
+      input: copyByExampleProgram(program.input),
+      pattern: program.pattern,
+      group: program.group
+    };
+  }
+  if (program.kind === "regexReplace") {
+    return {
+      kind: "regexReplace",
+      input: copyByExampleProgram(program.input),
+      pattern: program.pattern,
+      replacement: program.replacement
+    };
+  }
+  if (program.kind === "case") {
+    return { kind: "case", style: program.style, input: copyByExampleProgram(program.input) };
+  }
+  if (program.kind === "datetimeFormat") {
+    return {
+      kind: "datetimeFormat",
+      input: copyByExampleProgram(program.input),
+      inputFormat: program.inputFormat,
+      outputFormat: program.outputFormat
+    };
+  }
+  return {
+    kind: "arithmetic",
+    left: copyByExampleProgram(program.left),
+    operator: program.operator,
+    right: copyByExampleProgram(program.right)
+  };
+}
+
 function copyRTransformStep(step: RTransformStep): RTransformStep {
+  if (step.kind === "byExample") {
+    const sourceColumns = step.params.sourceColumns.map((column) => ({ ...column }));
+    const firstSource = sourceColumns[0];
+    const examples = step.params.examples.map((example) => ({ inputs: [...example.inputs], output: example.output }));
+    const firstExample = examples[0];
+    const secondExample = examples[1];
+    if (!firstSource || !firstExample || !secondExample) {
+      throw new TypeError("A retained by-example step is missing its bounded sources or examples.");
+    }
+    return {
+      id: step.id,
+      kind: "byExample",
+      params: {
+        sourceColumns: sourceColumns as ByExampleTransformStep["params"]["sourceColumns"],
+        newColumn: step.params.newColumn,
+        examples: examples as ByExampleTransformStep["params"]["examples"],
+        program: copyByExampleProgram(step.params.program),
+        warnings: [...step.params.warnings],
+        candidateCount: step.params.candidateCount
+      }
+    };
+  }
   if (step.kind === "sortRows") {
     const rules = step.params.rules.map((rule) => ({ ...rule, column: { ...rule.column } }));
     const first = rules[0];
@@ -4127,12 +4624,23 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "ceilNumber" &&
     step.kind !== "formatDatetime" &&
     step.kind !== "groupBy" &&
+    step.kind !== "byExample" &&
     step.kind !== "dropColumns" &&
     step.kind !== "selectColumns"
   ) {
     throw new TypeError("The R bridge retained an unsupported cleaning step.");
   }
-  return copyRTransformStep(step);
+  if (step.kind === "byExample") {
+    if (
+      !isRetainedTransformStep(step) ||
+      step.params.warnings === undefined ||
+      step.params.candidateCount === undefined
+    ) {
+      throw new TypeError("The R bridge retained an incomplete by-example step.");
+    }
+    return copyRTransformStep(step as RRetainedByExampleStep);
+  }
+  return copyRTransformStep(step as RTransformStepWithoutByExample);
 }
 
 function retainedKeyPrefix(sourceKeyColumnIds: readonly string[], schema: readonly ColumnSchema[]): readonly string[] {
@@ -4386,17 +4894,19 @@ function assertMutationDiff(
       ? [step.params.newName]
       : step.kind === "formula"
         ? [step.params.newColumn]
-        : step.kind === "textLength"
+        : step.kind === "byExample"
           ? [step.params.newColumn]
-          : isRTextTransformStep(step) && !textTransformInPlace
-            ? [step.params.newColumn as string]
-            : isRNumericRoundingStep(step) && !numericRoundingInPlace
+          : step.kind === "textLength"
+            ? [step.params.newColumn]
+            : isRTextTransformStep(step) && !textTransformInPlace
               ? [step.params.newColumn as string]
-              : step.kind === "minMaxScale" && !minMaxScaleInPlace
+              : isRNumericRoundingStep(step) && !numericRoundingInPlace
                 ? [step.params.newColumn as string]
-                : step.kind === "formatDatetime" && !formatDatetimeInPlace
+                : step.kind === "minMaxScale" && !minMaxScaleInPlace
                   ? [step.params.newColumn as string]
-                  : [];
+                  : step.kind === "formatDatetime" && !formatDatetimeInPlace
+                    ? [step.params.newColumn as string]
+                    : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -4412,18 +4922,21 @@ function assertMutationDiff(
           ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
           : step.kind === "formula"
             ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-            : step.kind === "textLength"
+            : step.kind === "byExample"
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-              : isRTextTransformStep(step) && !textTransformInPlace
+              : step.kind === "textLength"
                 ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-                : isRNumericRoundingStep(step) && !numericRoundingInPlace
+                : isRTextTransformStep(step) && !textTransformInPlace
                   ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-                  : step.kind === "minMaxScale" && !minMaxScaleInPlace
+                  : isRNumericRoundingStep(step) && !numericRoundingInPlace
                     ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-                    : step.kind === "formatDatetime" && !formatDatetimeInPlace
+                    : step.kind === "minMaxScale" && !minMaxScaleInPlace
                       ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) &&
                         expectedRemoved.length === 0
-                      : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+                      : step.kind === "formatDatetime" && !formatDatetimeInPlace
+                        ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) &&
+                          expectedRemoved.length === 0
+                        : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
   const changedInput = changedInPlace
     ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)

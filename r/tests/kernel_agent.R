@@ -132,6 +132,8 @@ instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
 real_isolate_capture <- instrumented_frame_contract$isolate_capture
 real_materialize_view_page <- instrumented_frame_contract$materialize_view_page
+real_by_example_column_at <- instrumented_frame_contract$by_example_column_at
+last_by_example_evaluator_error <- NULL
 instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
   real_capture_frame(value, ...)
@@ -146,6 +148,31 @@ instrumented_frame_contract$materialize_view_page <- function(capture, ...) {
     group_by_source_materializations <<- group_by_source_materializations + 1L
   }
   real_materialize_view_page(capture, ...)
+}
+instrumented_frame_contract$by_example_column_at <- function(
+  value,
+  positions,
+  expected_names,
+  new_name,
+  result_kind,
+  evaluator
+) {
+  real_by_example_column_at(
+    value,
+    positions,
+    expected_names,
+    new_name,
+    result_kind,
+    function(columns) {
+      tryCatch(
+        evaluator(columns),
+        error = function(error) {
+          last_by_example_evaluator_error <<- error
+          stop(error)
+        }
+      )
+    }
+  )
 }
 agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, source_environment)
 
@@ -173,8 +200,9 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 12L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 13L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
+    digits = 17L,
     null = "null",
     na = "null"
   )
@@ -10850,7 +10878,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agen
     request_number <<- request_number + 1L
     encoded <- jsonlite::toJSON(
       list(
-        transportVersion = 12L,
+        transportVersion = 13L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -11604,7 +11632,7 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     request_number <<- request_number + 1L
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 12L,
+        transportVersion = 13L,
         requestId = sprintf("99999999-9999-4999-8999-%012d", request_number),
         kind = kind,
         payload = payload
@@ -11905,7 +11933,7 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_agent_pat
     request_number <<- request_number + 1L
     encoded <- as.character(jsonlite::toJSON(
       list(
-        transportVersion = 12L,
+        transportVersion = 13L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -12000,7 +12028,7 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_agent_pat
   on.exit(malformed_agent$dispose(), add = TRUE)
   malformed_request <- jsonlite::toJSON(
     list(
-      transportVersion = 12L,
+      transportVersion = 13L,
       requestId = "22222222-2222-4222-8222-222222222222",
       kind = "openSession",
       payload = list(
@@ -12057,6 +12085,3075 @@ if (!is.null(categorical_ascii_locale_status) && categorical_ascii_locale_status
 }
 unlink(categorical_ascii_locale_script)
 
+# Native-R Transform by Example: deterministic synthesis, retained public IR,
+# lifecycle replay, and standalone generated-code equivalence.
+by_example_assert <- function(condition, message) {
+  if (!isTRUE(condition)) stop(message, call. = FALSE)
+}
+by_example_agent_environment <- environment(openwrangler_r_kernel_agent$new_agent)
+by_example_scalar_text <- get("by_example_scalar_text", envir = by_example_agent_environment, inherits = FALSE)
+by_example_double_text <- get("by_example_double_text", envir = by_example_agent_environment, inherits = FALSE)
+by_example_program_key <- get("by_example_program_key", envir = by_example_agent_environment, inherits = FALSE)
+by_example_datetime_parts <- get("by_example_datetime_parts", envir = by_example_agent_environment, inherits = FALSE)
+by_example_format_datetime_parts <- get(
+  "by_example_format_datetime_parts",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+by_example_evaluator <- get(
+  "generated_by_example_evaluate",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+by_example_encoder <- get("encode_response", envir = by_example_agent_environment, inherits = FALSE)
+by_example_synthesize <- get(
+  "synthesize_by_example_program",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+by_example_candidate_literals_are_portable <- get(
+  "by_example_candidate_literals_are_portable",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+by_example_json_has_negative_zero <- get(
+  "json_has_negative_zero_number",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+
+for (raw_number in c("-0", "-0.0", "-0.000e+9", "-0E-999")) {
+  by_example_assert(
+    by_example_json_has_negative_zero(sprintf('{"value":%s}', raw_number)),
+    sprintf("the raw JSON scanner missed negative zero %s", raw_number)
+  )
+}
+for (raw_json in c(
+  '{"value":-0.001e+9}',
+  '{"value":1e-0}',
+  '{"value":1e-01}',
+  '{"value":10E-01}',
+  '{"value":"-0"}',
+  '{"value":"escaped \\\"-0\\\" text"}',
+  '{"value":"even \\\\ backslashes -0"}',
+  '{"value":"odd \\\\\\\" quote -0"}'
+)) {
+  by_example_assert(
+    !by_example_json_has_negative_zero(raw_json),
+    sprintf("the raw JSON scanner overreached into %s", raw_json)
+  )
+}
+
+by_example_float_cases <- list(
+  list(value = 1, expected = "1.0"),
+  list(value = -0, expected = "-0.0"),
+  list(value = 1e15, expected = "1000000000000000.0"),
+  list(value = 1e16, expected = "1e+16"),
+  list(value = 1e-4, expected = "0.0001"),
+  list(value = 1e-5, expected = "1e-05"),
+  list(value = 1e-6, expected = "1e-06"),
+  list(value = 1e-7, expected = "1e-07"),
+  list(value = 1.2345678901234567, expected = "1.2345678901234567"),
+  list(
+    value = jsonlite::fromJSON("-3.745100118582918e211", simplifyVector = FALSE),
+    expected = "-3.745100118582918e+211"
+  )
+)
+for (case in by_example_float_cases) {
+  assert_identical(
+    by_example_double_text(as.double(case$value), python = TRUE),
+    case$expected,
+    sprintf("R by-example finite-double text changed for %s", case$expected)
+  )
+}
+assert_identical(by_example_scalar_text(4000000000), "4000000000", "a safe whole JSON double lost integer text semantics")
+assert_identical(by_example_scalar_text(1e-7), "1e-07", "a fractional JSON double lost Python scalar text semantics")
+
+unicode_key_program <- list(kind = "literal", value = paste0(intToUtf8(946L), intToUtf8(0x1f600L)))
+assert_identical(
+  by_example_program_key(unicode_key_program, ensure_ascii = TRUE, compact = FALSE),
+  "{\"kind\": \"literal\", \"value\": \"\\u03b2\\ud83d\\ude00\"}",
+  "R by-example ranking no longer matches Python sorted-key ASCII JSON"
+)
+assert_identical(
+  by_example_program_key(unicode_key_program, ensure_ascii = FALSE, compact = TRUE),
+  paste0("{\"kind\":\"literal\",\"value\":\"", intToUtf8(946L), intToUtf8(0x1f600L), "\"}"),
+  "R by-example candidate de-duplication no longer matches Python compact Unicode JSON"
+)
+
+by_example_numeric_roundtrip <- list(
+  0.1,
+  0.30000000000000004,
+  1.2345678901234567,
+  1.0000000000000002,
+  2147483648,
+  1000000000000001,
+  9007199254740991,
+  .Machine$double.xmin,
+  2^-1074
+)
+for (value in by_example_numeric_roundtrip) {
+  encoded <- by_example_encoder(list(value = value))
+  decoded <- jsonlite::fromJSON(encoded, simplifyVector = FALSE)$value
+  by_example_assert(
+    identical(as.double(decoded), as.double(value)),
+    sprintf("protocol v13 did not round-trip finite double %s", format(value, digits = 17L))
+  )
+}
+for (warning_count in 0:2) {
+  warnings <- I(as.list(sprintf("warning-%d", seq_len(warning_count))))
+  decoded <- jsonlite::fromJSON(by_example_encoder(list(warnings = warnings)), simplifyVector = FALSE)
+  assert_identical(
+    decoded$warnings,
+    as.list(sprintf("warning-%d", seq_len(warning_count))),
+    sprintf("protocol v13 did not retain a %d-element warnings array", warning_count)
+  )
+}
+
+portable_ratio <- by_example_synthesize(
+  list(list(id = "r:c:0", name = "number")),
+  list(
+    list(inputs = list(1e-16), output = 1L),
+    list(inputs = list(2e-16), output = 2L)
+  )
+)
+assert_identical(portable_ratio$program$kind, "arithmetic", "R safe-literal filtering changed the ratio AST")
+assert_identical(portable_ratio$program$operator, "divide", "R retained an unsafe whole multiply literal")
+assert_identical(portable_ratio$candidateCount, 1L, "R counted an unsafe whole candidate literal")
+assert_identical(portable_ratio$warnings, list(), "R warned about a discarded unsafe candidate literal")
+negative_portable_ratio <- by_example_synthesize(
+  list(list(id = "r:c:0", name = "number")),
+  list(
+    list(inputs = list(1e-16), output = -1L),
+    list(inputs = list(2e-16), output = -2L)
+  )
+)
+assert_identical(
+  negative_portable_ratio$candidateCount,
+  1L,
+  "R counted a negative unsafe whole candidate literal"
+)
+by_example_assert(
+  by_example_candidate_literals_are_portable(list(kind = "literal", value = 9007199254740991)),
+  "R rejected Number.MAX_SAFE_INTEGER as a candidate literal"
+)
+by_example_assert(
+  !by_example_candidate_literals_are_portable(list(kind = "literal", value = 9007199254740992)),
+  "R accepted Number.MAX_SAFE_INTEGER + 1 as a candidate literal"
+)
+
+datetime_parity_cases <- list(
+  list("2   january   2024", "%d %B %Y", "2024-01-02"),
+  list("2\tjanuary\t2024", "%d %B %Y", "2024-01-02"),
+  list(
+    paste0("2", intToUtf8(0x1cL), "January", intToUtf8(0x1cL), "2024"),
+    "%d %B %Y",
+    "2024-01-02"
+  ),
+  list("january  2,  2024", "%B %d, %Y", "2024-01-02"),
+  list("january\t2,\t2024", "%B %d, %Y", "2024-01-02"),
+  list(" 1/2/2024", "%d/%m/%Y", "2024-02-01"),
+  list("01/ 2/2024", "%m/%d/%Y", "2024-01-02"),
+  list("2024112", "%Y%m%d", "2024-11-02"),
+  list("20241 2", "%Y%m%d", "2024-01-02"),
+  list("202401 2", "%Y%m%d", "2024-01-02"),
+  list("2024202", "%Y%m%d", "2024-02-02"),
+  list("2024131", "%Y%m%d", "2024-01-31"),
+  list("2024229", "%Y%m%d", "2024-02-29"),
+  list("2٢/01/2024", "%d/%m/%Y", "2024-01-22"),
+  list("2024012٢", "%Y%m%d", "2024-01-22"),
+  list("٢٠٢٤", "%Y", "2024-01-01"),
+  list("２０２５", "%Y", "2025-01-01"),
+  list(paste0(intToUtf8(0x1e5f1L + c(2L, 0L, 2L, 6L))), "%Y", "2026-01-01")
+)
+for (case in datetime_parity_cases) {
+  actual <- by_example_format_datetime_parts(by_example_datetime_parts(case[[1L]], case[[2L]]), "%Y-%m-%d")
+  assert_identical(actual, case[[3L]], sprintf("R by-example datetime parity changed for %s", case[[1L]]))
+}
+for (case in list(
+  list("1/2/2024\n", "%d/%m/%Y"),
+  list(" 02/2/2024", "%d/%m/%Y"),
+  list(" 29 January 2024", "%d %B %Y")
+)) {
+  rejected <- tryCatch(
+    {
+      by_example_datetime_parts(case[[1L]], case[[2L]])
+      FALSE
+    },
+    error = function(error) TRUE
+  )
+  by_example_assert(rejected, sprintf("R by-example datetime overaccepted %s", case[[1L]]))
+}
+
+source_environment$by_example_ast <- data.frame(
+  identity = c("one", "two"),
+  slice = c("aβc", "d😀f"),
+  split = c("a--bb", "long--dd"),
+  first = c("Ann", "Bo"),
+  last = c("Lee", "Li"),
+  regex = c("x١٢y", "long٣٤z"),
+  replace = c("aa-old-zz", "bbbb-old-y"),
+  case = c("AbC", "DeF"),
+  capitalize = c("aLPHA", "bETA"),
+  date = c("1/2/2024", "12/31/2025"),
+  number = c(1L, 5L),
+  decimal = c(1.5, 2.5),
+  check.names = FALSE,
+  row.names = c("example-a", "example-b")
+)
+by_example_ast_before <- serialize(source_environment$by_example_ast, NULL, version = 3L)
+by_example_ast_session <- "bebebebe-bebe-4ebe-8ebe-bebebebebebe"
+by_example_ast_open <- dispatch(
+  "openSession",
+  list(sessionId = by_example_ast_session, variableName = "by_example_ast", page = page_window())
+)
+assert_identical(by_example_ast_open$kind, "page", "the R by-example AST session did not open")
+
+by_example_reference <- function(name) {
+  position <- match(name, names(source_environment$by_example_ast))
+  list(id = sprintf("r:c:%d", position - 1L), name = name)
+}
+by_example_step <- function(id, source_names, new_name, input_rows, outputs, program = NULL) {
+  examples <- lapply(seq_along(outputs), function(index) {
+    list(inputs = I(input_rows[[index]]), output = outputs[[index]])
+  })
+  params <- list(
+    sourceColumns = I(lapply(source_names, by_example_reference)),
+    newColumn = new_name,
+    examples = I(examples)
+  )
+  if (!is.null(program)) params$program <- program
+  list(id = id, kind = "byExample", params = params)
+}
+by_example_ast_cases <- list(
+  list("literal", "literal out", "literal", c("identity"), list(list("one"), list("two")), list("fixed", "fixed")),
+  list("column", "column out", "column", c("identity"), list(list("one"), list("two")), list("one", "two")),
+  list("slice", "slice out", "slice", c("slice"), list(list("aβc"), list("d😀f")), list("β", "😀")),
+  list("split", "split out", "split", c("split"), list(list("a--bb"), list("long--dd")), list("bb", "dd")),
+  list("concat", "concat out", "concat", c("first", "last"), list(list("Ann", "Lee"), list("Bo", "Li")), list("Ann Lee", "Bo Li")),
+  list("regex-extract", "regex out", "regexExtract", c("regex"), list(list("x١٢y"), list("long٣٤z")), list("١٢", "٣٤")),
+  list("regex-replace", "replace out", "regexReplace", c("replace"), list(list("aa-old-zz"), list("bbbb-old-y")), list("aa-new-zz", "bbbb-new-y")),
+  list("case", "case out", "case", c("case"), list(list("AbC"), list("DeF")), list("abc", "def")),
+  list("capitalize", "capitalize out", "case", c("capitalize"), list(list("aLPHA"), list("bETA")), list("Alpha", "Beta")),
+  list("datetime", "date out", "datetimeFormat", c("date"), list(list("1/2/2024"), list("12/31/2025")), list("2024-01-02", "2025-12-31")),
+  list("null", "null out", "literal", c("identity"), list(list("one"), list("two")), list(NULL, NULL)),
+  list("arithmetic", "arithmetic out", "arithmetic", c("number"), list(list(1L), list(5L)), list(3L, 7L))
+)
+by_example_revision <- 0L
+by_example_last_apply <- NULL
+by_example_retained <- list()
+for (case in by_example_ast_cases) {
+  step <- by_example_step(
+    paste0("by-example-", case[[1L]]),
+    case[[4L]],
+    case[[2L]],
+    case[[5L]],
+    case[[6L]]
+  )
+  preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = by_example_ast_session,
+      revision = by_example_revision,
+      step = step,
+      page = page_window()
+    )
+  )
+  if (identical(preview$kind, "error")) {
+    stop(
+      sprintf(
+        "R by-example %s preview failed with %s: %s",
+        case[[3L]],
+        preview$code,
+        paste0(
+          preview$message,
+          if (is.null(last_by_example_evaluator_error)) "" else paste0(
+            " (evaluator: ",
+            conditionMessage(last_by_example_evaluator_error),
+            ")"
+          )
+        )
+      ),
+      call. = FALSE
+    )
+  }
+  assert_identical(preview$kind, "stepPreview", sprintf("R by-example %s did not preview", case[[3L]]))
+  assert_identical(
+    preview$retainedStep$params$program$kind,
+    case[[3L]],
+    sprintf("R by-example synthesis selected the wrong %s AST", case[[3L]])
+  )
+  assert_identical(
+    names(preview$retainedStep),
+    c("id", "kind", "params"),
+    "R by-example retainedStep leaked a private top-level field"
+  )
+  retained_wire <- jsonlite::toJSON(preview$retainedStep, auto_unbox = TRUE, null = "null", na = "null")
+  by_example_assert(
+    !grepl("outputId|_owSource|_owResult|_owLeft|_owRight|position", retained_wire, perl = TRUE),
+    "R by-example retainedStep leaked private binding metadata"
+  )
+  by_example_assert(
+    is.list(preview$retainedStep$params$warnings) &&
+      preview$retainedStep$params$candidateCount >= 1L,
+    "R by-example retainedStep omitted warnings or candidateCount"
+  )
+  if (identical(case[[1L]], "column")) {
+    assert_identical(preview$retainedStep$params$candidateCount, 12L, "R direct-column candidate count drifted from Python")
+    assert_identical(
+      preview$retainedStep$params$warnings,
+      list("12 programs match; Open Wrangler selected the simplest deterministic program."),
+      "R direct-column deterministic warning drifted from Python"
+    )
+  }
+  if (identical(case[[1L]], "arithmetic")) {
+    assert_identical(preview$retainedStep$params$candidateCount, 2L, "R arithmetic candidate count drifted from Python")
+    assert_identical(
+      preview$retainedStep$params$warnings,
+      list("Ambiguous examples: 2 equally simple programs match. Preview the selected result carefully."),
+      "R arithmetic ranking warning drifted from Python"
+    )
+  }
+  by_example_retained[[case[[1L]]]] <- preview$retainedStep
+  by_example_last_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = by_example_ast_session, revision = preview$revision, page = page_window())
+  )
+  assert_identical(by_example_last_apply$action, "apply", sprintf("R by-example %s did not apply", case[[3L]]))
+  by_example_revision <- by_example_last_apply$revision
+}
+
+by_example_generated_environment <- new.env(parent = baseenv())
+assign(
+  "by_example_ast",
+  unserialize(by_example_ast_before),
+  envir = by_example_generated_environment
+)
+eval(parse(text = by_example_last_apply$code), envir = by_example_generated_environment)
+by_example_generated <- get("open_wrangler_result", envir = by_example_generated_environment, inherits = FALSE)
+assert_identical(by_example_generated$`literal out`, c("fixed", "fixed"), "generated R literal AST diverged")
+assert_identical(by_example_generated$`column out`, c("one", "two"), "generated R column AST diverged")
+assert_identical(by_example_generated$`slice out`, c("β", "😀"), "generated R Unicode slice AST diverged")
+assert_identical(by_example_generated$`split out`, c("bb", "dd"), "generated R split AST diverged")
+assert_identical(by_example_generated$`concat out`, c("Ann Lee", "Bo Li"), "generated R concat AST diverged")
+assert_identical(by_example_generated$`regex out`, c("١٢", "٣٤"), "generated R Unicode regex AST diverged")
+assert_identical(by_example_generated$`replace out`, c("aa-new-zz", "bbbb-new-y"), "generated R regex replacement AST diverged")
+assert_identical(by_example_generated$`case out`, c("abc", "def"), "generated R ASCII case AST diverged")
+assert_identical(by_example_generated$`capitalize out`, c("Alpha", "Beta"), "generated R capitalize AST diverged")
+assert_identical(by_example_generated$`date out`, c("2024-01-02", "2025-12-31"), "generated R datetime AST diverged")
+assert_identical(by_example_generated$`null out`, c(NA, NA), "generated R null literal AST changed type")
+assert_identical(
+  get("as.character.integer64", envir = asNamespace("bit64"), inherits = FALSE)(by_example_generated$`arithmetic out`),
+  c("3", "7"),
+  "generated R exact arithmetic AST diverged"
+)
+assert_identical(
+  serialize(get("by_example_ast", envir = by_example_generated_environment), NULL, version = 3L),
+  by_example_ast_before,
+  "generated R by-example AST plan mutated its source"
+)
+assert_identical(
+  serialize(source_environment$by_example_ast, NULL, version = 3L),
+  by_example_ast_before,
+  "live R by-example AST plan mutated its source"
+)
+
+by_example_inspection <- inspect_step(
+  by_example_ast_session,
+  by_example_revision,
+  "by-example-arithmetic",
+  page_window()
+)
+assert_schema_less_inspection(by_example_inspection, "R by-example inspection")
+assert_identical(
+  tail(by_example_inspection$outputPage$page$columnIds, 1L),
+  list("c:step:by-example-arithmetic:0"),
+  "R by-example inspection lost its stable output identity"
+)
+
+edited_arithmetic <- by_example_step(
+  "by-example-arithmetic",
+  "number",
+  "arithmetic edited",
+  list(list(1L), list(5L)),
+  list(4L, 8L)
+)
+edited_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_ast_session,
+    revision = by_example_revision,
+    step = edited_arithmetic,
+    replaceStepId = "by-example-arithmetic",
+    page = page_window()
+  )
+)
+assert_identical(edited_preview$kind, "stepPreview", "the latest R by-example step could not be edited")
+assert_identical(
+  tail(edited_preview$page$schema, 1L)[[1L]]$id,
+  "c:step:by-example-arithmetic:0",
+  "editing R by-example regenerated its stable output identity"
+)
+edited_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = by_example_ast_session, revision = edited_preview$revision, page = page_window())
+)
+assert_identical(edited_apply$action, "apply", "the edited R by-example step did not apply")
+by_example_revision <- edited_apply$revision
+edited_environment <- new.env(parent = baseenv())
+assign("by_example_ast", unserialize(by_example_ast_before), envir = edited_environment)
+eval(parse(text = edited_apply$code), envir = edited_environment)
+assert_identical(
+  get("as.character.integer64", envir = asNamespace("bit64"), inherits = FALSE)(
+    get("open_wrangler_result", envir = edited_environment)$`arithmetic edited`
+  ),
+  c("4", "8"),
+  "generated R edited by-example replay diverged"
+)
+by_example_undo <- dispatch(
+  "undoStep",
+  list(sessionId = by_example_ast_session, revision = by_example_revision, page = page_window())
+)
+assert_identical(by_example_undo$action, "undo", "the edited R by-example step did not undo")
+by_example_assert(
+  !"c:step:by-example-arithmetic:0" %in% unlist(by_example_undo$page$page$columnIds, use.names = FALSE),
+  "undo retained the edited R by-example output"
+)
+by_example_revision <- by_example_undo$revision
+
+float_wire_step <- by_example_step(
+  "by-example-float-wire",
+  "decimal",
+  "float wire out",
+  list(list(1.5), list(2.5)),
+  list(2.5, 3.5)
+)
+float_wire_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_ast_session,
+    revision = by_example_revision,
+    step = float_wire_step,
+    page = page_window()
+  )
+)
+assert_identical(float_wire_preview$kind, "stepPreview", "whole float literal synthesis did not preview")
+assert_identical(
+  float_wire_preview$retainedStep$params$program$right$value,
+  1L,
+  "whole float literal synthesis did not canonicalize its wire representation"
+)
+float_wire_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = by_example_ast_session, revision = float_wire_preview$revision, page = page_window())
+)
+float_wire_replay <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_ast_session,
+    revision = float_wire_discard$revision,
+    step = float_wire_preview$retainedStep,
+    page = page_window()
+  )
+)
+assert_identical(
+  float_wire_replay$kind,
+  "stepPreview",
+  "a retained whole float literal did not survive preview-to-replay JSON"
+)
+float_wire_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = by_example_ast_session, revision = float_wire_replay$revision, page = page_window())
+)
+float_wire_environment <- new.env(parent = baseenv())
+assign("by_example_ast", unserialize(by_example_ast_before), envir = float_wire_environment)
+eval(parse(text = float_wire_apply$code), envir = float_wire_environment)
+assert_identical(
+  get("open_wrangler_result", envir = float_wire_environment)$`float wire out`,
+  c(2.5, 3.5),
+  "generated R whole-float-literal replay diverged"
+)
+invisible(dispatch("closeSession", list(sessionId = by_example_ast_session)))
+
+# Direct leaves preserve portable native attributes across every supported
+# editing dataframe family, both live and in standalone generated code.
+by_example_flavor_base <- data.frame(
+  marker = c("b", "a"),
+  category = ordered(c("alpha", "beta"), levels = c("unused", "alpha", "beta")),
+  elapsed = as.difftime(c(1, 2), units = "mins"),
+  check.names = FALSE,
+  row.names = c("flavor-b", "flavor-a")
+)
+by_example_flavor_table <- data.table::as.data.table(by_example_flavor_base)
+data.table::setkey(by_example_flavor_table, marker)
+by_example_flavor_qdt <- collapse::qDT(by_example_flavor_base)
+data.table::setkey(by_example_flavor_qdt, marker)
+by_example_flavors <- list(
+  by_example_flavor_base,
+  tibble::as_tibble(by_example_flavor_base, .name_repair = "minimal"),
+  by_example_flavor_table,
+  collapse::qDF(by_example_flavor_base),
+  collapse::qTBL(by_example_flavor_base),
+  by_example_flavor_qdt
+)
+by_example_flavor_sessions <- c(
+  "d1d1d1d1-d1d1-41d1-81d1-d1d1d1d1d1d1",
+  "d2d2d2d2-d2d2-42d2-82d2-d2d2d2d2d2d2",
+  "d3d3d3d3-d3d3-43d3-83d3-d3d3d3d3d3d3",
+  "d4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4",
+  "d5d5d5d5-d5d5-45d5-85d5-d5d5d5d5d5d5",
+  "d6d6d6d6-d6d6-46d6-86d6-d6d6d6d6d6d6"
+)
+for (flavor_index in seq_along(by_example_flavors)) {
+  variable_name <- sprintf("by_example_flavor_%d", flavor_index)
+  source <- by_example_flavors[[flavor_index]]
+  source_environment[[variable_name]] <- source
+  source_before <- if (inherits(source, "data.table")) data.table::copy(source) else unserialize(serialize(source, NULL, version = 3L))
+  session <- by_example_flavor_sessions[[flavor_index]]
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = session, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("R by-example flavor %d did not open", flavor_index))
+  revision <- 0L
+  factor_step <- list(
+    id = sprintf("by-example-flavor-factor-%d", flavor_index),
+    kind = "byExample",
+    params = list(
+      sourceColumns = I(list(list(id = "r:c:1", name = "category"))),
+      newColumn = "category copy",
+      examples = I(list(
+        list(inputs = I(list("alpha")), output = "alpha"),
+        list(inputs = I(list("beta")), output = "beta")
+      ))
+    )
+  )
+  factor_preview <- dispatch(
+    "previewStep",
+    list(sessionId = session, revision = revision, step = factor_step, page = page_window())
+  )
+  assert_identical(factor_preview$kind, "stepPreview", sprintf("R factor direct flavor %d did not preview", flavor_index))
+  assert_identical(
+    tail(factor_preview$page$schema, 1L)[[1L]]$rawType,
+    "ordered factor",
+    sprintf("R factor direct flavor %d lost its raw type", flavor_index)
+  )
+  factor_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = session, revision = factor_preview$revision, page = page_window())
+  )
+  revision <- factor_apply$revision
+  difftime_step <- list(
+    id = sprintf("by-example-flavor-difftime-%d", flavor_index),
+    kind = "byExample",
+    params = list(
+      sourceColumns = I(list(list(id = "r:c:2", name = "elapsed"))),
+      newColumn = "elapsed copy",
+      examples = I(list(
+        list(inputs = I(list(1L)), output = 1L),
+        list(inputs = I(list(2L)), output = 2L)
+      ))
+    )
+  )
+  difftime_preview <- dispatch(
+    "previewStep",
+    list(sessionId = session, revision = revision, step = difftime_step, page = page_window())
+  )
+  assert_identical(difftime_preview$kind, "stepPreview", sprintf("R difftime direct flavor %d did not preview", flavor_index))
+  assert_identical(
+    tail(difftime_preview$page$schema, 1L)[[1L]]$rawType,
+    "difftime",
+    sprintf("R difftime direct flavor %d lost its raw type", flavor_index)
+  )
+  flavor_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = session, revision = difftime_preview$revision, page = page_window())
+  )
+  generated_environment <- new.env(parent = baseenv())
+  assign(variable_name, source_before, envir = generated_environment)
+  eval(parse(text = flavor_apply$code), envir = generated_environment)
+  generated <- get("open_wrangler_result", envir = generated_environment, inherits = FALSE)
+  assert_identical(class(generated), class(source_before), sprintf("generated by-example flavor %d changed class", flavor_index))
+  assert_identical(
+    generated[["category copy"]],
+    source_before[["category"]],
+    sprintf("generated by-example flavor %d lost ordered-factor attributes", flavor_index)
+  )
+  assert_identical(
+    generated[["elapsed copy"]],
+    source_before[["elapsed"]],
+    sprintf("generated by-example flavor %d lost difftime units", flavor_index)
+  )
+  assert_identical(
+    attr(generated, "row.names", exact = TRUE),
+    attr(source_before, "row.names", exact = TRUE),
+    sprintf("generated by-example flavor %d changed row names", flavor_index)
+  )
+  if (inherits(source_before, "data.table")) {
+    assert_identical(
+      data.table::key(generated),
+      data.table::key(source_before),
+      sprintf("generated by-example flavor %d changed its data.table key", flavor_index)
+    )
+  }
+  assert_identical(
+    source_environment[[variable_name]],
+    source_before,
+    sprintf("live by-example flavor %d mutated its source", flavor_index)
+  )
+  assert_identical(
+    get(variable_name, envir = generated_environment, inherits = FALSE),
+    source_before,
+    sprintf("generated by-example flavor %d mutated its source", flavor_index)
+  )
+  invisible(dispatch("closeSession", list(sessionId = session)))
+}
+
+# Direct-copy output names are rebuilt after semantic attributes. This order is
+# observable to later custom code and must match the chunked live helper.
+by_example_named_value <- function(storage, semantic_attributes = list()) {
+  attributes(storage) <- c(list(names = c("left", "right")), semantic_attributes)
+  storage
+}
+by_example_attribute_order_source <- structure(
+  list(
+    text = by_example_named_value(c("alpha", "beta")),
+    category = by_example_named_value(
+      c(1L, 2L),
+      list(levels = I(c("first", "second")), class = c("ordered", "factor"))
+    ),
+    wide = by_example_named_value(
+      unclass(bit64::as.integer64(c("1", "2"))),
+      list(class = "integer64")
+    ),
+    day = by_example_named_value(c(19723, 19724), list(class = "Date")),
+    instant = by_example_named_value(
+      c(1, 2),
+      list(class = c("POSIXct", "POSIXt"), tzone = I("UTC"))
+    ),
+    elapsed = by_example_named_value(
+      c(1, 2),
+      list(class = "difftime", units = I("mins"))
+    )
+  ),
+  names = c("text", "category", "wide", "day", "instant", "elapsed"),
+  class = "data.frame",
+  row.names = c(NA_integer_, -2L)
+)
+by_example_attribute_order_before <- serialize(
+  by_example_attribute_order_source,
+  NULL,
+  version = 3L
+)
+source_environment$by_example_attribute_order <- by_example_attribute_order_source
+by_example_attribute_order_session <- "a6b6c6d6-a6b6-46d6-86b6-a6b6c6d6e6f6"
+by_example_attribute_order_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = by_example_attribute_order_session,
+    variableName = "by_example_attribute_order",
+    page = page_window()
+  )
+)
+assert_identical(
+  by_example_attribute_order_open$kind,
+  "page",
+  "the by-example attribute-order source did not open"
+)
+by_example_attribute_order_specs <- list(
+  list(name = "text", kind = "character", inputs = c("alpha", "beta")),
+  list(name = "category", kind = "factor", inputs = c("first", "second")),
+  list(name = "wide", kind = "integer64", inputs = list(1L, 2L)),
+  list(name = "day", kind = "date", inputs = c("2024-01-01", "2024-01-02")),
+  list(
+    name = "instant",
+    kind = "datetime",
+    inputs = c("1970-01-01T00:00:01Z", "1970-01-01T00:00:02Z")
+  ),
+  list(name = "elapsed", kind = "difftime", inputs = list(1L, 2L))
+)
+by_example_attribute_order_revision <- 0L
+by_example_attribute_order_apply <- NULL
+for (attribute_order_index in seq_along(by_example_attribute_order_specs)) {
+  attribute_order_spec <- by_example_attribute_order_specs[[attribute_order_index]]
+  attribute_order_inputs <- attribute_order_spec$inputs
+  attribute_order_step <- list(
+    id = sprintf("by-example-attribute-order-%d", attribute_order_index),
+    kind = "byExample",
+    params = list(
+      sourceColumns = I(list(list(
+        id = sprintf("r:c:%d", attribute_order_index - 1L),
+        name = attribute_order_spec$name
+      ))),
+      newColumn = paste0(attribute_order_spec$name, " copy"),
+      examples = I(lapply(seq_along(attribute_order_inputs), function(row_index) {
+        item <- attribute_order_inputs[[row_index]]
+        list(inputs = I(list(item)), output = item)
+      }))
+    )
+  )
+  attribute_order_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = by_example_attribute_order_session,
+      revision = by_example_attribute_order_revision,
+      step = attribute_order_step,
+      page = page_window()
+    )
+  )
+  assert_identical(
+    attribute_order_preview$kind,
+    "stepPreview",
+    sprintf("live direct %s attribute-order preview failed", attribute_order_spec$kind)
+  )
+  by_example_attribute_order_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = by_example_attribute_order_session,
+      revision = attribute_order_preview$revision,
+      page = page_window()
+    )
+  )
+  by_example_attribute_order_revision <- by_example_attribute_order_apply$revision
+}
+restore_by_example_column_attributes <- function(frame, original) {
+  for (column_index in seq_len(length(base::unclass(original)))) {
+    target <- base::.subset2(frame, column_index)
+    target_attribute_names <- names(attributes(target))
+    if (!is.null(target_attribute_names)) {
+      for (attribute_name in target_attribute_names) {
+        data.table::setattr(target, attribute_name, NULL)
+      }
+    }
+    original_attributes <- attributes(base::.subset2(original, column_index))
+    if (!is.null(original_attributes)) {
+      for (attribute_name in names(original_attributes)) {
+        data.table::setattr(
+          target,
+          attribute_name,
+          base::.subset2(original_attributes, attribute_name)
+        )
+      }
+    }
+  }
+  frame
+}
+by_example_attribute_order_table <- restore_by_example_column_attributes(
+  data.table::as.data.table(unserialize(by_example_attribute_order_before)),
+  unserialize(by_example_attribute_order_before)
+)
+by_example_attribute_order_qdt <- restore_by_example_column_attributes(
+  collapse::qDT(unserialize(by_example_attribute_order_before)),
+  unserialize(by_example_attribute_order_before)
+)
+by_example_attribute_order_sources <- list(
+  unserialize(by_example_attribute_order_before),
+  by_example_attribute_order_table,
+  by_example_attribute_order_qdt
+)
+for (attribute_order_flavor in seq_along(by_example_attribute_order_sources)) {
+  attribute_order_source <- by_example_attribute_order_sources[[attribute_order_flavor]]
+  attribute_order_source_before <- serialize(attribute_order_source, NULL, version = 3L)
+  attribute_order_expected <- attribute_order_source
+  for (attribute_order_index in seq_along(by_example_attribute_order_specs)) {
+    attribute_order_spec <- by_example_attribute_order_specs[[attribute_order_index]]
+    attribute_order_expected <- real_by_example_column_at(
+      attribute_order_expected,
+      attribute_order_index,
+      attribute_order_spec$name,
+      paste0(attribute_order_spec$name, " copy"),
+      attribute_order_spec$kind,
+      function(columns) columns[[1L]]
+    )
+  }
+  attribute_order_environment <- new.env(parent = baseenv())
+  assign(
+    "by_example_attribute_order",
+    attribute_order_source,
+    envir = attribute_order_environment
+  )
+  eval(parse(text = by_example_attribute_order_apply$code), envir = attribute_order_environment)
+  attribute_order_generated <- get(
+    "open_wrangler_result",
+    envir = attribute_order_environment,
+    inherits = FALSE
+  )
+  for (attribute_order_spec in by_example_attribute_order_specs) {
+    output_name <- paste0(attribute_order_spec$name, " copy")
+    assert_identical(
+      names(attributes(attribute_order_generated[[output_name]])),
+      names(attributes(attribute_order_expected[[output_name]])),
+      sprintf(
+        "generated flavor %d changed direct %s attribute order",
+        attribute_order_flavor,
+        attribute_order_spec$kind
+      )
+    )
+    assert_identical(
+      serialize(attribute_order_generated[[output_name]], NULL, version = 3L),
+      serialize(attribute_order_expected[[output_name]], NULL, version = 3L),
+      sprintf(
+        "generated flavor %d diverged from live direct %s serialization",
+        attribute_order_flavor,
+        attribute_order_spec$kind
+      )
+    )
+  }
+  assert_identical(
+    serialize(
+      get("by_example_attribute_order", envir = attribute_order_environment, inherits = FALSE),
+      NULL,
+      version = 3L
+    ),
+    attribute_order_source_before,
+    sprintf("generated flavor %d mutated its attribute-order source", attribute_order_flavor)
+  )
+}
+assert_identical(
+  serialize(source_environment$by_example_attribute_order, NULL, version = 3L),
+  by_example_attribute_order_before,
+  "live by-example mutated its attribute-order source"
+)
+invisible(dispatch("closeSession", list(sessionId = by_example_attribute_order_session)))
+
+# Standalone direct-copy code mirrors the live helper's nested semantic
+# metadata contract: exact AsIs wrappers are retained, arbitrary payloads fail.
+by_example_metadata_source <- collapse::qDT(by_example_flavor_base)
+data.table::setkey(by_example_metadata_source, marker)
+valid_factor_levels <- I(c("unused", "alpha", "beta"))
+valid_duration_units <- I("mins")
+data.table::setattr(base::.subset2(by_example_metadata_source, 2L), "levels", valid_factor_levels)
+data.table::setattr(base::.subset2(by_example_metadata_source, 3L), "units", valid_duration_units)
+by_example_assert(
+  identical(attr(base::.subset2(by_example_metadata_source, 2L), "levels", exact = TRUE), valid_factor_levels) &&
+    identical(attr(base::.subset2(by_example_metadata_source, 3L), "units", exact = TRUE), valid_duration_units),
+  "the generated semantic-metadata fixture lost its AsIs wrappers"
+)
+metadata_source_before <- serialize(by_example_metadata_source, NULL, version = 3L)
+metadata_environment <- new.env(parent = baseenv())
+assign("by_example_flavor_6", by_example_metadata_source, envir = metadata_environment)
+eval(parse(text = flavor_apply$code), envir = metadata_environment)
+metadata_generated <- get("open_wrangler_result", envir = metadata_environment, inherits = FALSE)
+assert_identical(
+  attr(metadata_generated$`category copy`, "levels", exact = TRUE),
+  valid_factor_levels,
+  "generated direct factor copy lost valid AsIs levels"
+)
+assert_identical(
+  attr(metadata_generated$`elapsed copy`, "units", exact = TRUE),
+  valid_duration_units,
+  "generated direct difftime copy lost valid AsIs units"
+)
+assert_identical(
+  serialize(get("by_example_flavor_6", envir = metadata_environment), NULL, version = 3L),
+  metadata_source_before,
+  "generated valid semantic-metadata evaluation mutated its source"
+)
+
+invalid_factor_source <- unserialize(metadata_source_before)
+invalid_factor_levels <- c("unused", "alpha", "beta")
+attr(invalid_factor_levels, "payload") <- as.raw(1L)
+data.table::setattr(base::.subset2(invalid_factor_source, 2L), "levels", invalid_factor_levels)
+invalid_factor_before <- serialize(invalid_factor_source, NULL, version = 3L)
+invalid_factor_environment <- new.env(parent = baseenv())
+assign("by_example_flavor_6", invalid_factor_source, envir = invalid_factor_environment)
+invalid_factor_error <- tryCatch(
+  {
+    eval(parse(text = flavor_apply$code), envir = invalid_factor_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(invalid_factor_error, "error") &&
+    grepl("nested attributes", conditionMessage(invalid_factor_error), fixed = TRUE),
+  "generated direct factor copy accepted nested level payloads"
+)
+assert_identical(
+  serialize(get("by_example_flavor_6", envir = invalid_factor_environment), NULL, version = 3L),
+  invalid_factor_before,
+  "failed generated factor-metadata validation mutated its source"
+)
+
+invalid_duration_source <- unserialize(metadata_source_before)
+invalid_duration_units <- "mins"
+attr(invalid_duration_units, "payload") <- as.raw(1L)
+data.table::setattr(base::.subset2(invalid_duration_source, 3L), "units", invalid_duration_units)
+invalid_duration_before <- serialize(invalid_duration_source, NULL, version = 3L)
+invalid_duration_environment <- new.env(parent = baseenv())
+assign("by_example_flavor_6", invalid_duration_source, envir = invalid_duration_environment)
+invalid_duration_error <- tryCatch(
+  {
+    eval(parse(text = flavor_apply$code), envir = invalid_duration_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(invalid_duration_error, "error") &&
+    grepl("nested attributes", conditionMessage(invalid_duration_error), fixed = TRUE),
+  "generated direct difftime copy accepted nested units payloads"
+)
+assert_identical(
+  serialize(get("by_example_flavor_6", envir = invalid_duration_environment), NULL, version = 3L),
+  invalid_duration_before,
+  "failed generated duration-metadata validation mutated its source"
+)
+
+by_example_posix_lengths <- c(0L, 1L, 2051L)
+by_example_posix_sessions <- c(
+  "e1e1e1e1-e1e1-41e1-81e1-e1e1e1e1e1e1",
+  "e2e2e2e2-e2e2-42e2-82e2-e2e2e2e2e2e2",
+  "e3e3e3e3-e3e3-43e3-83e3-e3e3e3e3e3e3"
+)
+for (posix_index in seq_along(by_example_posix_lengths)) {
+  row_count <- by_example_posix_lengths[[posix_index]]
+  seconds <- if (row_count == 0L) numeric() else as.double(seq_len(row_count))
+  instant <- structure(seconds, class = c("POSIXct", "POSIXt"))
+  by_example_assert(is.null(attr(instant, "tzone", exact = TRUE)), "the class-only POSIXct fixture gained a timezone")
+  variable_name <- sprintf("by_example_posix_%d", posix_index)
+  source_environment[[variable_name]] <- data.frame(instant = instant, check.names = FALSE)
+  source_before <- unserialize(serialize(source_environment[[variable_name]], NULL, version = 3L))
+  session <- by_example_posix_sessions[[posix_index]]
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = session, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("class-only POSIXct size %d did not open", row_count))
+  step <- list(
+    id = sprintf("by-example-posix-%d", posix_index),
+    kind = "byExample",
+    params = list(
+      sourceColumns = I(list(list(id = "r:c:0", name = "instant"))),
+      newColumn = "instant copy",
+      examples = I(list(
+        list(inputs = I(list("2024-01-01T00:00:01Z")), output = "2024-01-01T00:00:01Z"),
+        list(inputs = I(list("2024-01-01T00:00:02Z")), output = "2024-01-01T00:00:02Z")
+      ))
+    )
+  )
+  preview <- dispatch(
+    "previewStep",
+    list(sessionId = session, revision = 0L, step = step, page = page_window())
+  )
+  assert_identical(preview$kind, "stepPreview", sprintf("class-only POSIXct size %d did not preview", row_count))
+  assert_identical(
+    tail(preview$page$schema, 1L)[[1L]]$rawType,
+    "POSIXct",
+    sprintf("class-only POSIXct size %d lost its raw type", row_count)
+  )
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = session, revision = preview$revision, page = page_window())
+  )
+  generated_environment <- new.env(parent = baseenv())
+  assign(variable_name, source_before, envir = generated_environment)
+  eval(parse(text = applied$code), envir = generated_environment)
+  generated <- get("open_wrangler_result", envir = generated_environment, inherits = FALSE)
+  assert_identical(
+    generated[["instant copy"]],
+    source_before$instant,
+    sprintf("generated class-only POSIXct size %d changed values or attributes", row_count)
+  )
+  by_example_assert(
+    is.null(attr(generated[["instant copy"]], "tzone", exact = TRUE)),
+    sprintf("generated class-only POSIXct size %d invented a timezone", row_count)
+  )
+  assert_identical(
+    source_environment[[variable_name]],
+    source_before,
+    sprintf("live class-only POSIXct size %d mutated its source", row_count)
+  )
+  assert_identical(
+    get(variable_name, envir = generated_environment, inherits = FALSE),
+    source_before,
+    sprintf("generated class-only POSIXct size %d mutated its source", row_count)
+  )
+  invisible(dispatch("closeSession", list(sessionId = session)))
+}
+
+valid_datetime_timezone <- I("UTC")
+valid_datetime_source <- structure(
+  list(instant = structure(c(1, 2), class = c("POSIXct", "POSIXt"), tzone = valid_datetime_timezone)),
+  names = "instant",
+  class = "data.frame",
+  row.names = c("datetime-a", "datetime-b")
+)
+valid_datetime_before <- serialize(valid_datetime_source, NULL, version = 3L)
+valid_datetime_environment <- new.env(parent = baseenv())
+assign("by_example_posix_3", valid_datetime_source, envir = valid_datetime_environment)
+eval(parse(text = applied$code), envir = valid_datetime_environment)
+valid_datetime_generated <- get("open_wrangler_result", envir = valid_datetime_environment, inherits = FALSE)
+assert_identical(
+  attr(valid_datetime_generated$`instant copy`, "tzone", exact = TRUE),
+  valid_datetime_timezone,
+  "generated direct datetime copy lost a valid AsIs timezone"
+)
+assert_identical(
+  serialize(get("by_example_posix_3", envir = valid_datetime_environment), NULL, version = 3L),
+  valid_datetime_before,
+  "generated valid datetime metadata evaluation mutated its source"
+)
+
+invalid_datetime_timezone <- "UTC"
+attr(invalid_datetime_timezone, "payload") <- as.raw(1L)
+invalid_datetime_source <- structure(
+  list(instant = structure(c(1, 2), class = c("POSIXct", "POSIXt"), tzone = invalid_datetime_timezone)),
+  names = "instant",
+  class = "data.frame",
+  row.names = c("datetime-a", "datetime-b")
+)
+invalid_datetime_before <- serialize(invalid_datetime_source, NULL, version = 3L)
+invalid_datetime_environment <- new.env(parent = baseenv())
+assign("by_example_posix_3", invalid_datetime_source, envir = invalid_datetime_environment)
+invalid_datetime_error <- tryCatch(
+  {
+    eval(parse(text = applied$code), envir = invalid_datetime_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(invalid_datetime_error, "error") &&
+    grepl("nested attributes", conditionMessage(invalid_datetime_error), fixed = TRUE),
+  "generated direct datetime copy accepted nested timezone payloads"
+)
+assert_identical(
+  serialize(get("by_example_posix_3", envir = invalid_datetime_environment), NULL, version = 3L),
+  invalid_datetime_before,
+  "failed generated datetime-metadata validation mutated its source"
+)
+
+# Unseen rows follow the editing-engine execution contract: invalid datetime
+# text coerces to missing, while double NaN and infinities remain typed values.
+source_environment$by_example_nonfinite <- data.frame(
+  date_text = c("1/2/2024", "not-a-date", NA_character_),
+  numerator = c(1, Inf, NaN),
+  denominator = c(0, 2, 0),
+  check.names = FALSE,
+  row.names = c("finite-a", "finite-b", "finite-c")
+)
+by_example_nonfinite_before <- serialize(
+  source_environment$by_example_nonfinite,
+  NULL,
+  version = 3L
+)
+by_example_nonfinite_session <- "edededed-eded-4ded-8ded-edededededed"
+nonfinite_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = by_example_nonfinite_session,
+    variableName = "by_example_nonfinite",
+    page = page_window()
+  )
+)
+assert_identical(nonfinite_open$kind, "page", "the non-finite by-example session did not open")
+
+nonfinite_date_step <- list(
+  id = "by-example-unseen-date",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(list(id = "r:c:0", name = "date_text"))),
+    newColumn = "parsed date",
+    examples = I(list(
+      list(inputs = I(list("1/2/2024")), output = "2024-01-02"),
+      list(inputs = I(list("12/31/2025")), output = "2025-12-31")
+    ))
+  )
+)
+nonfinite_date_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_nonfinite_session,
+    revision = 0L,
+    step = nonfinite_date_step,
+    page = page_window()
+  )
+)
+assert_identical(nonfinite_date_preview$kind, "stepPreview", "unseen invalid datetime text failed the live preview")
+nonfinite_date_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = by_example_nonfinite_session,
+    revision = nonfinite_date_preview$revision,
+    page = page_window()
+  )
+)
+
+nonfinite_direct_step <- list(
+  id = "by-example-unseen-direct-double",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(list(id = "r:c:1", name = "numerator"))),
+    newColumn = "numerator copy",
+    examples = I(list(
+      list(inputs = I(list(1.25)), output = 1.25),
+      list(inputs = I(list(2.5)), output = 2.5)
+    ))
+  )
+)
+nonfinite_direct_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_nonfinite_session,
+    revision = nonfinite_date_apply$revision,
+    step = nonfinite_direct_step,
+    page = page_window()
+  )
+)
+assert_identical(nonfinite_direct_preview$kind, "stepPreview", "direct double by-example rejected non-finite source rows")
+nonfinite_direct_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = by_example_nonfinite_session,
+    revision = nonfinite_direct_preview$revision,
+    page = page_window()
+  )
+)
+
+nonfinite_divide_step <- list(
+  id = "by-example-unseen-divide",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(
+      list(id = "r:c:1", name = "numerator"),
+      list(id = "r:c:2", name = "denominator")
+    )),
+    newColumn = "quotient",
+    examples = I(list(
+      list(inputs = I(list(4, 2)), output = 2),
+      list(inputs = I(list(9, 2)), output = 4.5)
+    ))
+  )
+)
+nonfinite_divide_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_nonfinite_session,
+    revision = nonfinite_direct_apply$revision,
+    step = nonfinite_divide_step,
+    page = page_window()
+  )
+)
+assert_identical(nonfinite_divide_preview$kind, "stepPreview", "double by-example division rejected zero/non-finite unseen rows")
+nonfinite_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = by_example_nonfinite_session,
+    revision = nonfinite_divide_preview$revision,
+    page = page_window()
+  )
+)
+
+nonfinite_rows <- nonfinite_apply$page$page$rows
+assert_identical(nonfinite_rows[[1L]]$values[[4L]]$raw, "2024-01-02", "live datetime formatting changed a valid row")
+assert_identical(nonfinite_rows[[2L]]$values[[4L]]$isNull, TRUE, "live datetime formatting did not coerce invalid text")
+assert_identical(nonfinite_rows[[3L]]$values[[4L]]$isNull, TRUE, "live datetime formatting did not retain source missingness")
+assert_identical(nonfinite_rows[[2L]]$values[[5L]]$kind, "infinity", "a live direct double lost infinity")
+assert_identical(nonfinite_rows[[3L]]$values[[5L]]$kind, "nan", "a live direct double lost NaN")
+assert_identical(nonfinite_rows[[1L]]$values[[6L]]$kind, "infinity", "live zero-denominator division did not produce infinity")
+assert_identical(nonfinite_rows[[2L]]$values[[6L]]$kind, "infinity", "live division lost an infinite input")
+assert_identical(nonfinite_rows[[3L]]$values[[6L]]$kind, "nan", "live division lost a NaN input")
+
+nonfinite_environment <- new.env(parent = baseenv())
+assign(
+  "by_example_nonfinite",
+  unserialize(by_example_nonfinite_before),
+  envir = nonfinite_environment
+)
+eval(parse(text = nonfinite_apply$code), envir = nonfinite_environment)
+nonfinite_generated <- get("open_wrangler_result", envir = nonfinite_environment, inherits = FALSE)
+assert_identical(
+  nonfinite_generated$`parsed date`,
+  c("2024-01-02", NA_character_, NA_character_),
+  "generated datetime formatting diverged on invalid/unseen rows"
+)
+assert_identical(
+  nonfinite_generated$`numerator copy`,
+  c(1, Inf, NaN),
+  "generated direct double lost NaN or infinity"
+)
+by_example_assert(
+  is.infinite(nonfinite_generated$quotient[[1L]]) &&
+    is.infinite(nonfinite_generated$quotient[[2L]]) &&
+    is.nan(nonfinite_generated$quotient[[3L]]),
+  "generated double division lost zero-denominator or non-finite semantics"
+)
+assert_identical(
+  serialize(source_environment$by_example_nonfinite, NULL, version = 3L),
+  by_example_nonfinite_before,
+  "live non-finite by-example evaluation mutated its source"
+)
+assert_identical(
+  serialize(get("by_example_nonfinite", envir = nonfinite_environment), NULL, version = 3L),
+  by_example_nonfinite_before,
+  "generated non-finite by-example evaluation mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = by_example_nonfinite_session)))
+
+by_example_bound_column <- function(kind, index = 1L) {
+  list(
+    kind = "column",
+    column = list(id = sprintf("r:c:%d", index - 1L), name = sprintf("source-%d", index)),
+    `_owSourceIndex` = as.integer(index),
+    `_owSourceKind` = kind,
+    `_owResultType` = kind
+  )
+}
+by_example_bound_literal <- function(value, kind) {
+  list(kind = "literal", value = value, `_owResultType` = kind)
+}
+by_example_bound_arithmetic <- function(operator, left, right, result_kind) {
+  list(
+    kind = "arithmetic",
+    left = left,
+    operator = operator,
+    right = right,
+    `_owLeftType` = left$`_owResultType`,
+    `_owRightType` = right$`_owResultType`,
+    `_owResultType` = result_kind
+  )
+}
+integer64_character <- get("as.character.integer64", envir = asNamespace("bit64"), inherits = FALSE)
+integer64_double <- get("as.double.integer64", envir = asNamespace("bit64"), inherits = FALSE)
+by_example_checked_integer_text <- get(
+  "by_example_checked_integer_text",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+by_example_integer64_text <- get(
+  "by_example_integer64_text",
+  envir = by_example_agent_environment,
+  inherits = FALSE
+)
+maximum_decimal_integer <- paste0(rep.int("9", 38L), collapse = "")
+assert_identical(
+  by_example_checked_integer_text(maximum_decimal_integer),
+  maximum_decimal_integer,
+  "R by-example changed the shared 38-digit arithmetic envelope"
+)
+decimal_overflow <- tryCatch(
+  {
+    by_example_checked_integer_text(paste0("1", paste0(rep.int("0", 38L), collapse = "")))
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(inherits(decimal_overflow, "error"), "R by-example accepted arithmetic above 10^38 - 1")
+native_representation_error <- tryCatch(
+  {
+    by_example_integer64_text(maximum_decimal_integer)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(native_representation_error, "error"),
+  "R by-example silently coerced an unrepresentable 38-digit integer"
+)
+integer64_boundary <- bit64::as.integer64(c("9223372036854775807", "-9223372036854775807"))
+integer64_column <- by_example_bound_column("integer64")
+integer64_zero <- by_example_bound_literal(0L, "integer")
+integer64_one <- by_example_bound_literal(1L, "integer")
+cancelled <- by_example_evaluator(
+  by_example_bound_arithmetic("subtract", integer64_column, integer64_column, "integer64"),
+  list(integer64_boundary)
+)
+assert_identical(integer64_character(cancelled), c("0", "0"), "exact by-example cancellation lost integer64 precision")
+zeroed <- by_example_evaluator(
+  by_example_bound_arithmetic("multiply", integer64_column, integer64_zero, "integer64"),
+  list(integer64_boundary)
+)
+assert_identical(integer64_character(zeroed), c("0", "0"), "exact by-example zero multiplication overflowed")
+division <- by_example_evaluator(
+  by_example_bound_arithmetic("divide", integer64_column, integer64_one, "double"),
+  list(integer64_boundary)
+)
+assert_identical(
+  division,
+  integer64_double(integer64_boundary),
+  "integer64 by-example division incorrectly required an exact double round trip"
+)
+overflow_error <- tryCatch(
+  {
+    by_example_evaluator(
+      by_example_bound_arithmetic("add", integer64_column, integer64_one, "integer64"),
+      list(integer64_boundary[1L])
+    )
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(inherits(overflow_error, "error"), "exact by-example addition silently overflowed integer64")
+
+slot_preflight_bad_column <- by_example_bound_column("integer", 2L)
+slot_preflight_program <- by_example_bound_arithmetic(
+  "add",
+  slot_preflight_bad_column,
+  by_example_bound_literal(1L, "integer"),
+  "integer64"
+)
+slot_preflight_error <- tryCatch(
+  {
+    by_example_evaluator(slot_preflight_program, list(seq_len(9000000L)))
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(slot_preflight_error, "error") && grepl("aggregate output budget", conditionMessage(slot_preflight_error), fixed = TRUE),
+  "standalone by-example evaluation reached its invalid AST before fixed-slot preflight"
+)
+oversized_case_program <- list(
+  kind = "case",
+  style = "lower",
+  input = by_example_bound_column("character"),
+  `_owResultType` = "character"
+)
+oversized_case_error <- tryCatch(
+  {
+    by_example_evaluator(oversized_case_program, list(paste0(rep.int("A", 8193L), collapse = "")))
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(oversized_case_error, "error") && grepl("oversized text", conditionMessage(oversized_case_error), fixed = TRUE),
+  "by-example case conversion allocated an oversized transformed cell"
+)
+oversized_split_program <- list(
+  kind = "split",
+  input = by_example_bound_column("character"),
+  delimiter = "--",
+  index = 0L,
+  `_owResultType` = "character"
+)
+oversized_split_error <- tryCatch(
+  {
+    by_example_evaluator(
+      oversized_split_program,
+      list(paste0(paste0(rep.int("A", 9000L), collapse = ""), "--tail"))
+    )
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(oversized_split_error, "error") && grepl("oversized text", conditionMessage(oversized_split_error), fixed = TRUE),
+  "by-example split constructed an oversized selected span"
+)
+oversized_regex_program <- list(
+  kind = "regexExtract",
+  input = by_example_bound_column("character"),
+  pattern = "(.*)",
+  group = 1L,
+  `_owResultType` = "character"
+)
+oversized_regex_error <- tryCatch(
+  {
+    by_example_evaluator(
+      oversized_regex_program,
+      list(paste0(rep.int("A", 9000L), collapse = ""))
+    )
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(oversized_regex_error, "error") && grepl("oversized text", conditionMessage(oversized_regex_error), fixed = TRUE),
+  "by-example regex extraction materialized an oversized captured group"
+)
+
+latin1_repeated_text <- function(count) {
+  value <- iconv(strrep("\u00e9", count), from = "UTF-8", to = "latin1")
+  Encoding(value) <- "latin1"
+  value
+}
+latin1_boundary <- latin1_repeated_text(4096L)
+latin1_overflow <- latin1_repeated_text(4097L)
+assert_identical(nchar(latin1_boundary, type = "bytes"), 4096L, "the Latin-1 boundary fixture changed storage")
+assert_identical(nchar(enc2utf8(latin1_boundary), type = "bytes"), 8192L, "the UTF-8 boundary fixture changed size")
+
+latin1_boundary_names <- c(NA_character_, latin1_boundary)
+source_environment$by_example_latin1 <- structure(
+  list(text = setNames(c(latin1_boundary, "ok"), latin1_boundary_names)),
+  names = "text",
+  class = "data.frame",
+  row.names = c("latin1-boundary", "latin1-ascii")
+)
+assert_identical(
+  attr(base::.subset2(source_environment$by_example_latin1, 1L), "names", exact = TRUE),
+  latin1_boundary_names,
+  "the Latin-1 output-name boundary fixture lost its names attribute"
+)
+latin1_source_before <- serialize(source_environment$by_example_latin1, NULL, version = 3L)
+latin1_session <- "a1b1c1d1-a1b1-41d1-81b1-a1b1c1d1e1f1"
+latin1_open <- dispatch(
+  "openSession",
+  list(sessionId = latin1_session, variableName = "by_example_latin1", page = page_window())
+)
+assert_identical(latin1_open$kind, "page", "the Latin-1 boundary source did not open")
+latin1_step <- list(
+  id = "by-example-latin1-boundary",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(list(id = "r:c:0", name = "text"))),
+    newColumn = "text copy",
+    examples = I(list(
+      list(inputs = I(list("alpha")), output = "alpha"),
+      list(inputs = I(list("beta")), output = "beta")
+    ))
+  )
+)
+latin1_preview <- dispatch(
+  "previewStep",
+  list(sessionId = latin1_session, revision = 0L, step = latin1_step, page = page_window())
+)
+assert_identical(latin1_preview$kind, "stepPreview", "the 8192-byte UTF-8 boundary did not preview")
+assert_identical(
+  nchar(latin1_preview$page$page$rows[[1L]]$values[[2L]]$raw, type = "bytes"),
+  8192L,
+  "live by-example counted Latin-1 bytes instead of normalized UTF-8 bytes"
+)
+latin1_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = latin1_session, revision = latin1_preview$revision, page = page_window())
+)
+latin1_base_source <- unserialize(latin1_source_before)
+latin1_data_table_source <- data.table::as.data.table(unserialize(latin1_source_before))
+data.table::setattr(
+  base::.subset2(latin1_data_table_source, 1L),
+  "names",
+  attr(latin1_base_source$text, "names", exact = TRUE)
+)
+latin1_qdt_source <- collapse::qDT(unserialize(latin1_source_before))
+data.table::setattr(
+  base::.subset2(latin1_qdt_source, 1L),
+  "names",
+  attr(latin1_base_source$text, "names", exact = TRUE)
+)
+latin1_generated_sources <- list(latin1_base_source, latin1_data_table_source, latin1_qdt_source)
+for (latin1_flavor_index in seq_along(latin1_generated_sources)) {
+  latin1_generated_source <- latin1_generated_sources[[latin1_flavor_index]]
+  latin1_generated_before <- serialize(latin1_generated_source, NULL, version = 3L)
+  latin1_environment <- new.env(parent = baseenv())
+  assign("by_example_latin1", latin1_generated_source, envir = latin1_environment)
+  eval(parse(text = latin1_apply$code), envir = latin1_environment)
+  latin1_generated_result <- get("open_wrangler_result", envir = latin1_environment, inherits = FALSE)
+  latin1_generated <- latin1_generated_result$`text copy`
+  assert_identical(
+    unname(latin1_generated),
+    c(enc2utf8(latin1_boundary), "ok"),
+    sprintf("generated by-example flavor %d did not normalize Latin-1 output", latin1_flavor_index)
+  )
+  assert_identical(
+    attr(latin1_generated, "names", exact = TRUE),
+    c(NA_character_, enc2utf8(latin1_boundary)),
+    sprintf("generated by-example flavor %d lost or failed to normalize output names", latin1_flavor_index)
+  )
+  assert_identical(
+    Encoding(attr(latin1_generated, "names", exact = TRUE)[[2L]]),
+    "UTF-8",
+    sprintf("generated by-example flavor %d retained a non-UTF-8 output-name mark", latin1_flavor_index)
+  )
+  assert_identical(
+    attr(latin1_generated_result$text, "names", exact = TRUE),
+    attr(latin1_generated_source$text, "names", exact = TRUE),
+    sprintf("generated by-example flavor %d stripped retained source names", latin1_flavor_index)
+  )
+  assert_identical(
+    serialize(get("by_example_latin1", envir = latin1_environment), NULL, version = 3L),
+    latin1_generated_before,
+    sprintf("generated Latin-1 flavor %d mutated its source", latin1_flavor_index)
+  )
+}
+assert_identical(
+  serialize(source_environment$by_example_latin1, NULL, version = 3L),
+  latin1_source_before,
+  "live Latin-1 by-example normalization mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = latin1_session)))
+
+source_environment$by_example_asis_frame_names <- structure(
+  list(v = c("a", "b")),
+  names = I("v"),
+  class = "data.frame",
+  row.names = c(NA_integer_, -2L)
+)
+assert_identical(
+  attr(source_environment$by_example_asis_frame_names, "names", exact = TRUE),
+  I("v"),
+  "the AsIs frame-name fixture lost its class"
+)
+asis_frame_names_before <- serialize(
+  source_environment$by_example_asis_frame_names,
+  NULL,
+  version = 3L
+)
+asis_frame_names_session <- "a4b4c4d4-a4b4-44d4-84b4-a4b4c4d4e4f4"
+asis_frame_names_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = asis_frame_names_session,
+    variableName = "by_example_asis_frame_names",
+    page = page_window()
+  )
+)
+assert_identical(asis_frame_names_open$kind, "page", "the AsIs frame-name source did not open")
+asis_frame_names_step <- list(
+  id = "by-example-asis-frame-names",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(list(id = "r:c:0", name = "v"))),
+    newColumn = "copy",
+    examples = I(list(
+      list(inputs = I(list("a")), output = "a"),
+      list(inputs = I(list("b")), output = "b")
+    ))
+  )
+)
+asis_frame_names_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = asis_frame_names_session,
+    revision = 0L,
+    step = asis_frame_names_step,
+    page = page_window()
+  )
+)
+assert_identical(
+  asis_frame_names_preview$kind,
+  "stepPreview",
+  "live by-example rejected supported AsIs frame names"
+)
+asis_frame_names_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = asis_frame_names_session,
+    revision = asis_frame_names_preview$revision,
+    page = page_window()
+  )
+)
+assert_identical(
+  vapply(asis_frame_names_apply$page$schema, `[[`, character(1L), "name", USE.NAMES = FALSE),
+  c("v", "copy"),
+  "live by-example did not normalize AsIs frame names"
+)
+asis_frame_names_expected <- real_by_example_column_at(
+  unserialize(asis_frame_names_before),
+  1L,
+  "v",
+  "copy",
+  "character",
+  function(columns) columns[[1L]]
+)
+asis_frame_names_environment <- new.env(parent = baseenv())
+assign(
+  "by_example_asis_frame_names",
+  unserialize(asis_frame_names_before),
+  envir = asis_frame_names_environment
+)
+eval(parse(text = asis_frame_names_apply$code), envir = asis_frame_names_environment)
+asis_frame_names_generated <- get(
+  "open_wrangler_result",
+  envir = asis_frame_names_environment,
+  inherits = FALSE
+)
+assert_identical(
+  serialize(asis_frame_names_generated, NULL, version = 3L),
+  serialize(asis_frame_names_expected, NULL, version = 3L),
+  "generated by-example diverged from live handling of AsIs frame names"
+)
+assert_identical(
+  serialize(
+    get("by_example_asis_frame_names", envir = asis_frame_names_environment, inherits = FALSE),
+    NULL,
+    version = 3L
+  ),
+  asis_frame_names_before,
+  "generated by-example mutated a source with AsIs frame names"
+)
+assert_identical(
+  serialize(source_environment$by_example_asis_frame_names, NULL, version = 3L),
+  asis_frame_names_before,
+  "live by-example mutated a source with AsIs frame names"
+)
+invisible(dispatch("closeSession", list(sessionId = asis_frame_names_session)))
+
+latin1_frame_name <- latin1_repeated_text(1L)
+utf8_frame_name <- enc2utf8(latin1_frame_name)
+source_environment$by_example_latin1_frame_name <- structure(
+  list(c("a", "b")),
+  names = latin1_frame_name,
+  class = "data.frame",
+  row.names = c(NA_integer_, -2L)
+)
+assert_identical(
+  Encoding(attr(source_environment$by_example_latin1_frame_name, "names", exact = TRUE)[[1L]]),
+  "latin1",
+  "the Latin-1 frame-name fixture lost its encoding mark"
+)
+latin1_frame_name_before <- serialize(
+  source_environment$by_example_latin1_frame_name,
+  NULL,
+  version = 3L
+)
+latin1_frame_name_session <- "a5b5c5d5-a5b5-45d5-85b5-a5b5c5d5e5f5"
+latin1_frame_name_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = latin1_frame_name_session,
+    variableName = "by_example_latin1_frame_name",
+    page = page_window()
+  )
+)
+assert_identical(latin1_frame_name_open$kind, "page", "the Latin-1 frame-name source did not open")
+assert_identical(
+  latin1_frame_name_open$page$schema[[1L]]$name,
+  utf8_frame_name,
+  "live capture did not normalize a Latin-1 frame name"
+)
+latin1_frame_name_step <- list(
+  id = "by-example-latin1-frame-name",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(list(id = "r:c:0", name = utf8_frame_name))),
+    newColumn = "copy",
+    examples = I(list(
+      list(inputs = I(list("a")), output = "a"),
+      list(inputs = I(list("b")), output = "b")
+    ))
+  )
+)
+latin1_frame_name_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = latin1_frame_name_session,
+    revision = 0L,
+    step = latin1_frame_name_step,
+    page = page_window()
+  )
+)
+assert_identical(
+  latin1_frame_name_preview$kind,
+  "stepPreview",
+  "live by-example rejected a normalized Latin-1 frame reference"
+)
+latin1_frame_name_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = latin1_frame_name_session,
+    revision = latin1_frame_name_preview$revision,
+    page = page_window()
+  )
+)
+latin1_frame_name_base <- unserialize(latin1_frame_name_before)
+latin1_frame_name_table <- data.table::as.data.table(unserialize(latin1_frame_name_before))
+data.table::setnames(latin1_frame_name_table, latin1_frame_name)
+latin1_frame_name_qdt <- collapse::qDT(unserialize(latin1_frame_name_before))
+data.table::setnames(latin1_frame_name_qdt, latin1_frame_name)
+latin1_frame_name_sources <- list(
+  latin1_frame_name_base,
+  latin1_frame_name_table,
+  latin1_frame_name_qdt
+)
+for (latin1_frame_name_flavor in seq_along(latin1_frame_name_sources)) {
+  latin1_frame_name_source <- latin1_frame_name_sources[[latin1_frame_name_flavor]]
+  latin1_frame_name_source_before <- serialize(latin1_frame_name_source, NULL, version = 3L)
+  latin1_frame_name_expected <- real_by_example_column_at(
+    latin1_frame_name_source,
+    1L,
+    utf8_frame_name,
+    "copy",
+    "character",
+    function(columns) columns[[1L]]
+  )
+  latin1_frame_name_environment <- new.env(parent = baseenv())
+  assign(
+    "by_example_latin1_frame_name",
+    latin1_frame_name_source,
+    envir = latin1_frame_name_environment
+  )
+  eval(parse(text = latin1_frame_name_apply$code), envir = latin1_frame_name_environment)
+  latin1_frame_name_generated <- get(
+    "open_wrangler_result",
+    envir = latin1_frame_name_environment,
+    inherits = FALSE
+  )
+  assert_identical(
+    attr(latin1_frame_name_generated, "names", exact = TRUE),
+    attr(latin1_frame_name_expected, "names", exact = TRUE),
+    sprintf("generated flavor %d diverged from live Latin-1 frame-name semantics", latin1_frame_name_flavor)
+  )
+  assert_identical(
+    Encoding(attr(latin1_frame_name_generated, "names", exact = TRUE)[[1L]]),
+    if (latin1_frame_name_flavor == 1L) "UTF-8" else "latin1",
+    sprintf("generated flavor %d used the wrong retained frame-name encoding", latin1_frame_name_flavor)
+  )
+  assert_identical(
+    base::.subset2(latin1_frame_name_generated, 2L),
+    base::.subset2(latin1_frame_name_expected, 2L),
+    sprintf("generated flavor %d changed the Latin-1 frame-name derived values", latin1_frame_name_flavor)
+  )
+  assert_identical(
+    serialize(
+      get("by_example_latin1_frame_name", envir = latin1_frame_name_environment, inherits = FALSE),
+      NULL,
+      version = 3L
+    ),
+    latin1_frame_name_source_before,
+    sprintf("generated flavor %d mutated its Latin-1 frame-name source", latin1_frame_name_flavor)
+  )
+}
+assert_identical(
+  serialize(source_environment$by_example_latin1_frame_name, NULL, version = 3L),
+  latin1_frame_name_before,
+  "live by-example mutated a Latin-1 frame-name source"
+)
+invisible(dispatch("closeSession", list(sessionId = latin1_frame_name_session)))
+
+source_environment$by_example_latin1_overflow <- data.frame(
+  safe = "visible",
+  text = latin1_overflow,
+  check.names = FALSE,
+  row.names = "latin1-overflow"
+)
+latin1_overflow_before <- serialize(source_environment$by_example_latin1_overflow, NULL, version = 3L)
+latin1_overflow_session <- "a2b2c2d2-a2b2-42d2-82b2-a2b2c2d2e2f2"
+latin1_overflow_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = latin1_overflow_session,
+    variableName = "by_example_latin1_overflow",
+    page = page_window(column_limit = 1L)
+  )
+)
+assert_identical(latin1_overflow_open$kind, "page", "the Latin-1 overflow source did not open")
+latin1_overflow_step <- latin1_step
+latin1_overflow_step$id <- "by-example-latin1-overflow"
+latin1_overflow_step$params$sourceColumns <- I(list(list(id = "r:c:1", name = "text")))
+latin1_overflow_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = latin1_overflow_session,
+    revision = 0L,
+    step = latin1_overflow_step,
+    page = page_window(column_limit = 1L)
+  )
+)
+assert_identical(latin1_overflow_preview$kind, "error", "live by-example accepted 8194 UTF-8 output bytes")
+assert_identical(
+  serialize(source_environment$by_example_latin1_overflow, NULL, version = 3L),
+  latin1_overflow_before,
+  "failed live Latin-1 by-example normalization mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = latin1_overflow_session)))
+
+latin1_overflow_environment <- new.env(parent = baseenv())
+latin1_generated_overflow_source <- data.frame(
+  text = latin1_overflow,
+  check.names = FALSE,
+  row.names = "latin1-overflow"
+)
+latin1_generated_overflow_before <- serialize(latin1_generated_overflow_source, NULL, version = 3L)
+assign(
+  "by_example_latin1",
+  latin1_generated_overflow_source,
+  envir = latin1_overflow_environment
+)
+latin1_generated_error <- tryCatch(
+  {
+    eval(parse(text = latin1_apply$code), envir = latin1_overflow_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(latin1_generated_error, "error") &&
+    grepl("oversized", conditionMessage(latin1_generated_error), fixed = TRUE),
+  "generated by-example accepted 8194 UTF-8 output bytes"
+)
+assert_identical(
+  serialize(get("by_example_latin1", envir = latin1_overflow_environment), NULL, version = 3L),
+  latin1_generated_overflow_before,
+  "failed generated Latin-1 by-example normalization mutated its source"
+)
+
+oversized_element_name <- strrep("n", 8193L)
+source_environment$by_example_name_overflow <- structure(
+  list(safe = "visible", text = setNames("ok", oversized_element_name)),
+  names = c("safe", "text"),
+  class = "data.frame",
+  row.names = "name-overflow"
+)
+assert_identical(
+  attr(base::.subset2(source_environment$by_example_name_overflow, 2L), "names", exact = TRUE),
+  oversized_element_name,
+  "the output-name overflow fixture lost its names attribute"
+)
+name_overflow_before <- serialize(source_environment$by_example_name_overflow, NULL, version = 3L)
+name_overflow_session <- "a3b3c3d3-a3b3-43d3-83b3-a3b3c3d3e3f3"
+name_overflow_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = name_overflow_session,
+    variableName = "by_example_name_overflow",
+    page = page_window(column_limit = 1L)
+  )
+)
+assert_identical(name_overflow_open$kind, "page", "the output-name overflow source did not open")
+name_overflow_step <- latin1_step
+name_overflow_step$id <- "by-example-output-name-overflow"
+name_overflow_step$params$sourceColumns <- I(list(list(id = "r:c:1", name = "text")))
+name_overflow_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = name_overflow_session,
+    revision = 0L,
+    step = name_overflow_step,
+    page = page_window(column_limit = 1L)
+  )
+)
+assert_identical(name_overflow_preview$kind, "error", "live by-example accepted an 8193-byte output name")
+assert_identical(
+  serialize(source_environment$by_example_name_overflow, NULL, version = 3L),
+  name_overflow_before,
+  "failed live output-name validation mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = name_overflow_session)))
+
+generated_name_overflow_source <- structure(
+  list(text = setNames("ok", oversized_element_name)),
+  names = "text",
+  class = "data.frame",
+  row.names = "name-overflow"
+)
+assert_identical(
+  attr(base::.subset2(generated_name_overflow_source, 1L), "names", exact = TRUE),
+  oversized_element_name,
+  "the generated output-name overflow fixture lost its names attribute"
+)
+generated_name_overflow_before <- serialize(generated_name_overflow_source, NULL, version = 3L)
+generated_name_overflow_environment <- new.env(parent = baseenv())
+assign(
+  "by_example_latin1",
+  generated_name_overflow_source,
+  envir = generated_name_overflow_environment
+)
+generated_name_overflow_error <- tryCatch(
+  {
+    eval(parse(text = latin1_apply$code), envir = generated_name_overflow_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(generated_name_overflow_error, "error") &&
+    grepl("output names", conditionMessage(generated_name_overflow_error), fixed = TRUE),
+  "generated by-example accepted an 8193-byte output name"
+)
+assert_identical(
+  serialize(
+    get("by_example_latin1", envir = generated_name_overflow_environment),
+    NULL,
+    version = 3L
+  ),
+  generated_name_overflow_before,
+  "failed generated output-name validation mutated its source"
+)
+
+by_example_utf8_locale_child <- function(frame_contract_path, kernel_agent_path) {
+  sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
+  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("the by-example UTF-8 locale child requires jsonlite", call. = FALSE)
+  }
+  assert_child <- function(condition, message) {
+    if (!isTRUE(condition)) stop(message, call. = FALSE)
+  }
+  unmarked_utf8 <- rawToChar(as.raw(c(0xc3L, 0xa9L, 0x78L)))
+  unmarked_regex <- rawToChar(as.raw(c(0x78L, 0xd9L, 0xa1L, 0x79L)))
+  assert_child(identical(Encoding(unmarked_utf8), "unknown"), "the UTF-8 locale fixture gained an encoding mark")
+  expected_utf8 <- unmarked_utf8
+  Encoding(expected_utf8) <- "UTF-8"
+  expected_slice <- rawToChar(as.raw(c(0xc3L, 0xa9L)))
+  Encoding(expected_slice) <- "UTF-8"
+  expected_regex <- rawToChar(as.raw(c(0xd9L, 0xa1L)))
+  Encoding(expected_regex) <- "UTF-8"
+  source_frame <- structure(
+    list(text = setNames(unmarked_utf8, unmarked_utf8), regex = unmarked_regex),
+    names = c("text", "regex"),
+    class = "data.frame",
+    row.names = "utf8-row"
+  )
+  source_before <- serialize(source_frame, NULL, version = 3L)
+
+  evaluator_environment <- environment(openwrangler_r_kernel_agent$new_agent)
+  evaluator <- get("generated_by_example_evaluate", envir = evaluator_environment, inherits = FALSE)
+  bound_program <- list(
+    kind = "column",
+    column = list(id = "r:c:0", name = "text"),
+    `_owSourceIndex` = 1L,
+    `_owSourceKind` = "character",
+    `_owResultType` = "character"
+  )
+  evaluated <- evaluator(bound_program, list(base::.subset2(source_frame, 1L)))
+  assert_child(
+    identical(charToRaw(unname(evaluated)), charToRaw(expected_utf8)) &&
+      identical(Encoding(unname(evaluated)), "UTF-8"),
+    "the C-locale evaluator rejected or changed unmarked UTF-8"
+  )
+  slice_program <- list(
+    kind = "slice",
+    input = bound_program,
+    start = 0L,
+    stop = 1L,
+    `_owResultType` = "character"
+  )
+  sliced <- evaluator(slice_program, list(base::.subset2(source_frame, 1L)))
+  assert_child(
+    identical(charToRaw(sliced), charToRaw(expected_slice)),
+    "the C-locale evaluator sliced unmarked UTF-8 by bytes"
+  )
+  regex_program <- list(
+    kind = "regexExtract",
+    input = list(
+      kind = "column",
+      column = list(id = "r:c:1", name = "regex"),
+      `_owSourceIndex` = 1L,
+      `_owSourceKind` = "character",
+      `_owResultType` = "character"
+    ),
+    pattern = "(\\d+)",
+    group = 1L,
+    `_owResultType` = "character"
+  )
+  extracted <- evaluator(regex_program, list(base::.subset2(source_frame, 2L)))
+  assert_child(
+    identical(charToRaw(extracted), charToRaw(expected_regex)),
+    "the C-locale evaluator regex changed unmarked Unicode text"
+  )
+
+  source_environment <- new.env(parent = emptyenv())
+  source_environment$by_example_utf8 <- source_frame
+  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
+  on.exit(agent$dispose(), add = TRUE)
+  page <- list(
+    rowOffset = 0L,
+    rowLimit = 10L,
+    columnOffset = 0L,
+    columnLimit = 10L,
+    view = list(filters = I(list()), sorts = I(list()))
+  )
+  dispatch <- function(kind, payload) {
+    request <- jsonlite::toJSON(
+      list(
+        transportVersion = 13L,
+        requestId = "acdcacdc-acdc-4cdc-8cdc-acdcacdcacdc",
+        kind = kind,
+        payload = payload
+      ),
+      auto_unbox = TRUE,
+      null = "null",
+      na = "null",
+      digits = 17L
+    )
+    jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE)
+  }
+  opened <- dispatch(
+    "openSession",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      variableName = "by_example_utf8",
+      page = page
+    )
+  )
+  assert_child(identical(opened$kind, "page"), "the C-locale UTF-8 source did not open")
+  preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      revision = 0L,
+      step = list(
+        id = "by-example-unmarked-utf8",
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(list(id = "r:c:0", name = "text"))),
+          newColumn = "text copy",
+          examples = I(list(
+            list(inputs = I(list("alpha")), output = "alpha"),
+            list(inputs = I(list("beta")), output = "beta")
+          ))
+        )
+      ),
+      page = page
+    )
+  )
+  assert_child(identical(preview$kind, "stepPreview"), "the C-locale live UTF-8 copy did not preview")
+  applied <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      revision = preview$revision,
+      page = page
+    )
+  )
+  slice_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      revision = applied$revision,
+      step = list(
+        id = "by-example-unmarked-utf8-slice",
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(list(id = "r:c:0", name = "text"))),
+          newColumn = "slice copy",
+          examples = I(list(
+            list(inputs = I(list("ab")), output = "a"),
+            list(inputs = I(list("cd")), output = "c")
+          ))
+        )
+      ),
+      page = page
+    )
+  )
+  assert_child(identical(slice_preview$kind, "stepPreview"), "the C-locale live UTF-8 slice did not preview")
+  slice_applied <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      revision = slice_preview$revision,
+      page = page
+    )
+  )
+  regex_example_one <- paste0("x", expected_regex, "y")
+  regex_example_two <- paste0("long", rawToChar(as.raw(c(0xd9L, 0xa2L))), "z")
+  Encoding(regex_example_two) <- "UTF-8"
+  regex_output_two <- rawToChar(as.raw(c(0xd9L, 0xa2L)))
+  Encoding(regex_output_two) <- "UTF-8"
+  regex_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      revision = slice_applied$revision,
+      step = list(
+        id = "by-example-unmarked-utf8-regex",
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(list(id = "r:c:1", name = "regex"))),
+          newColumn = "regex copy",
+          examples = I(list(
+            list(inputs = I(list(regex_example_one)), output = expected_regex),
+            list(inputs = I(list(regex_example_two)), output = regex_output_two)
+          ))
+        )
+      ),
+      page = page
+    )
+  )
+  assert_child(identical(regex_preview$kind, "stepPreview"), "the C-locale live UTF-8 regex did not preview")
+  applied <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc",
+      revision = regex_preview$revision,
+      page = page
+    )
+  )
+  generated_environment <- new.env(parent = baseenv())
+  assign("by_example_utf8", unserialize(source_before), envir = generated_environment)
+  eval(parse(text = applied$code), envir = generated_environment)
+  generated <- get("open_wrangler_result", envir = generated_environment, inherits = FALSE)
+  generated_copy <- base::.subset2(generated, 3L)
+  generated_name <- base::.subset2(attr(generated_copy, "names", exact = TRUE), 1L)
+  assert_child(
+    identical(charToRaw(unname(generated_copy)), charToRaw(expected_utf8)) &&
+      identical(Encoding(unname(generated_copy)), "UTF-8"),
+    "the C-locale generated UTF-8 value diverged"
+  )
+  assert_child(
+    identical(charToRaw(generated_name), charToRaw(expected_utf8)) &&
+      identical(Encoding(generated_name), "UTF-8"),
+    "the C-locale generated UTF-8 output name diverged"
+  )
+  assert_child(
+    identical(charToRaw(base::.subset2(generated, 4L)), charToRaw(expected_slice)),
+    "the C-locale generated UTF-8 slice diverged"
+  )
+  assert_child(
+    identical(charToRaw(base::.subset2(generated, 5L)), charToRaw(expected_regex)),
+    "the C-locale generated UTF-8 regex diverged"
+  )
+  assert_child(
+    identical(serialize(source_environment$by_example_utf8, NULL, version = 3L), source_before) &&
+      identical(
+        serialize(get("by_example_utf8", envir = generated_environment), NULL, version = 3L),
+        source_before
+      ),
+    "C-locale UTF-8 evaluation mutated its source"
+  )
+  invisible(dispatch("closeSession", list(sessionId = "abdcabdc-abdc-4bdc-8bdc-abdcabdcabdc")))
+}
+
+by_example_utf8_locale_script <- tempfile(fileext = ".R")
+writeLines(
+  c(
+    "by_example_utf8_locale_child <-",
+    deparse(by_example_utf8_locale_child, width.cutoff = 500L),
+    paste0(
+      "by_example_utf8_locale_child(",
+      "commandArgs(trailingOnly = TRUE)[[1L]], ",
+      "commandArgs(trailingOnly = TRUE)[[2L]])"
+    )
+  ),
+  by_example_utf8_locale_script,
+  useBytes = TRUE
+)
+by_example_utf8_locale_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c(
+    "--vanilla",
+    by_example_utf8_locale_script,
+    normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_agent.R")
+  ),
+  stdout = TRUE,
+  stderr = TRUE,
+  env = c("LC_ALL=C", "LANG=C", "LANGUAGE=C")
+)
+by_example_utf8_locale_status <- attr(by_example_utf8_locale_output, "status", exact = TRUE)
+if (!is.null(by_example_utf8_locale_status) && by_example_utf8_locale_status != 0L) {
+  stop(
+    paste(c("by-example C-locale UTF-8 child failed", by_example_utf8_locale_output), collapse = "\n"),
+    call. = FALSE
+  )
+}
+unlink(by_example_utf8_locale_script)
+
+by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path) {
+  sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
+  if (!requireNamespace("bit64", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("the by-example S3-isolation child requires bit64 and jsonlite", call. = FALSE)
+  }
+  assert_child <- function(condition, message) {
+    if (!isTRUE(condition)) stop(message, call. = FALSE)
+  }
+  assert_same <- function(actual, expected, message) {
+    if (!identical(actual, expected)) stop(message, call. = FALSE)
+  }
+  safe_integer64_character <- get("as.character.integer64", envir = asNamespace("bit64"), inherits = FALSE)
+  source_environment <- new.env(parent = emptyenv())
+  source_environment$by_example_s3 <- data.frame(
+    category = ordered(c("aLPHA", "bETA"), levels = c("unused", "aLPHA", "bETA")),
+    wide = bit64::as.integer64(c("9007199254740993", "-2")),
+    check.names = FALSE,
+    row.names = c("s3-a", "s3-b")
+  )
+  source_before <- unserialize(serialize(source_environment$by_example_s3, NULL, version = 3L))
+  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
+  on.exit(agent$dispose(), add = TRUE)
+  page <- list(
+    rowOffset = 0L,
+    rowLimit = 100L,
+    columnOffset = 0L,
+    columnLimit = 100L,
+    view = list(filters = I(list()), sorts = I(list()))
+  )
+  dispatch <- function(kind, payload) {
+    request <- jsonlite::toJSON(
+      list(
+        transportVersion = 13L,
+        requestId = "f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1",
+        kind = kind,
+        payload = payload
+      ),
+      auto_unbox = TRUE,
+      null = "null",
+      na = "null",
+      digits = 17L
+    )
+    jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE)
+  }
+  opened <- dispatch(
+    "openSession",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      variableName = "by_example_s3",
+      page = page
+    )
+  )
+  assert_same(opened$kind, "page", "the by-example S3-isolation source did not open")
+
+  poison_calls <- 0L
+  poison <- function(...) {
+    poison_calls <<- poison_calls + 1L
+    calls <- tail(vapply(sys.calls(), function(call) paste(deparse(call, width.cutoff = 200L), collapse = " "), character(1L)), 12L)
+    stop(paste(c("caller S3 poison ran", calls), collapse = " <- "), call. = FALSE)
+  }
+  assign("as.integer64", bit64::as.integer64, envir = .GlobalEnv)
+  registerS3method("as.character", "factor", poison, envir = .GlobalEnv)
+  registerS3method("as.character", "integer64", poison, envir = .GlobalEnv)
+  registerS3method("as.double", "integer64", poison, envir = .GlobalEnv)
+  registerS3method("as.integer64", "character", poison, envir = .GlobalEnv)
+
+  factor_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      revision = 0L,
+      step = list(
+        id = "by-example-s3-factor",
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(list(id = "r:c:0", name = "category"))),
+          newColumn = "capitalized",
+          examples = I(list(
+            list(inputs = I(list("aLPHA")), output = "Alpha"),
+            list(inputs = I(list("bETA")), output = "Beta")
+          ))
+        )
+      ),
+      page = page
+    )
+  )
+  assert_same(
+    factor_preview$kind,
+    "stepPreview",
+    paste0(
+      "poisoned factor by-example did not preview",
+      if (identical(factor_preview$kind, "error")) {
+        sprintf(": %s: %s", factor_preview$code, factor_preview$message)
+      } else {
+        ""
+      }
+    )
+  )
+  factor_apply <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      revision = factor_preview$revision,
+      page = page
+    )
+  )
+  integer_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      revision = factor_apply$revision,
+      step = list(
+        id = "by-example-s3-integer64",
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(list(id = "r:c:1", name = "wide"))),
+          newColumn = "wide plus two",
+          examples = I(list(
+            list(inputs = I(list(1L)), output = 3L),
+            list(inputs = I(list(2L)), output = 4L)
+          ))
+        )
+      ),
+      page = page
+    )
+  )
+  assert_same(
+    integer_preview$kind,
+    "stepPreview",
+    paste0(
+      "poisoned integer64 by-example did not preview",
+      if (identical(integer_preview$kind, "error")) {
+        sprintf(": %s: %s", integer_preview$code, integer_preview$message)
+      } else {
+        ""
+      }
+    )
+  )
+  applied <- dispatch(
+    "applyDraft",
+    list(
+      sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2",
+      revision = integer_preview$revision,
+      page = page
+    )
+  )
+  assert_child(
+    !grepl("by_example_shortest_double_components|jsonlite::fromJSON", applied$code, perl = TRUE),
+    "generated by-example code retained an unused runtime-only double helper"
+  )
+  generated_environment <- new.env(parent = baseenv())
+  assign("by_example_s3", source_before, envir = generated_environment)
+  eval(parse(text = applied$code), envir = generated_environment)
+  generated <- get("open_wrangler_result", envir = generated_environment, inherits = FALSE)
+  assert_same(generated[["capitalized"]], c("Alpha", "Beta"), "poisoned generated factor text diverged")
+  assert_same(
+    safe_integer64_character(generated[["wide plus two"]]),
+    c("9007199254740995", "0"),
+    "poisoned generated exact integer64 arithmetic diverged"
+  )
+  assert_same(source_environment$by_example_s3, source_before, "poisoned live by-example mutated its source")
+  assert_same(
+    get("by_example_s3", envir = generated_environment, inherits = FALSE),
+    source_before,
+    "poisoned generated by-example mutated its source"
+  )
+  assert_same(poison_calls, 0L, "by-example evaluation dispatched through caller S3 methods")
+  invisible(dispatch("closeSession", list(sessionId = "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2")))
+}
+
+by_example_s3_script <- tempfile(fileext = ".R")
+writeLines(
+  c(
+    "by_example_s3_isolation_child <-",
+    deparse(by_example_s3_isolation_child, width.cutoff = 500L),
+    paste0(
+      "by_example_s3_isolation_child(",
+      "commandArgs(trailingOnly = TRUE)[[1L]], ",
+      "commandArgs(trailingOnly = TRUE)[[2L]])"
+    )
+  ),
+  by_example_s3_script,
+  useBytes = TRUE
+)
+by_example_s3_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c(
+    "--vanilla",
+    by_example_s3_script,
+    normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_agent.R")
+  ),
+  stdout = TRUE,
+  stderr = TRUE
+)
+by_example_s3_status <- attr(by_example_s3_output, "status", exact = TRUE)
+if (!is.null(by_example_s3_status) && by_example_s3_status != 0L) {
+  stop(paste(c("by-example S3-isolation child failed", by_example_s3_output), collapse = "\n"), call. = FALSE)
+}
+unlink(by_example_s3_script)
+
+# Strict decode/binding failures remain atomic and reject every private,
+# stale, colliding, malformed, or over-budget public shape.
+source_environment$by_example_adversarial <- as.data.frame(
+  setNames(
+    replicate(17L, c("alpha", "beta"), simplify = FALSE),
+    sprintf("source_%02d", seq_len(17L))
+  ),
+  optional = TRUE,
+  stringsAsFactors = FALSE
+)
+by_example_adversarial_before <- unserialize(serialize(
+  source_environment$by_example_adversarial,
+  NULL,
+  version = 3L
+))
+by_example_adversarial_session <- "a7a7a7a7-a7a7-47a7-87a7-a7a7a7a7a7a7"
+adversarial_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = by_example_adversarial_session,
+    variableName = "by_example_adversarial",
+    page = page_window()
+  )
+)
+assert_identical(adversarial_open$kind, "page", "the adversarial by-example session did not open")
+adversarial_reference <- function(position) {
+  list(id = sprintf("r:c:%d", position - 1L), name = sprintf("source_%02d", position))
+}
+adversarial_valid_step <- function(id = "by-example-adversarial-valid", new_column = "valid output") {
+  list(
+    id = id,
+    kind = "byExample",
+    params = list(
+      sourceColumns = I(list(adversarial_reference(1L))),
+      newColumn = new_column,
+      examples = I(list(
+        list(inputs = I(list("alpha")), output = "fixed"),
+        list(inputs = I(list("beta")), output = "fixed")
+      ))
+    )
+  )
+}
+expect_adversarial_failure <- function(step, label, expected_code = "invalid_request", revision = 0L) {
+  response <- dispatch(
+    "previewStep",
+    list(
+      sessionId = by_example_adversarial_session,
+      revision = revision,
+      step = step,
+      page = page_window()
+    )
+  )
+  assert_identical(response$kind, "error", sprintf("R by-example accepted %s", label))
+  assert_identical(response$code, expected_code, sprintf("R by-example normalized %s incorrectly", label))
+  assert_identical(
+    source_environment$by_example_adversarial,
+    by_example_adversarial_before,
+    sprintf("failed R by-example %s mutated its source", label)
+  )
+  invisible(response)
+}
+
+too_many_sources <- adversarial_valid_step("by-example-too-many-sources", "too many sources")
+too_many_sources$params$sourceColumns <- I(lapply(seq_len(17L), adversarial_reference))
+too_many_sources$params$examples <- I(list(
+  list(inputs = I(as.list(rep.int("alpha", 17L))), output = "fixed"),
+  list(inputs = I(as.list(rep.int("beta", 17L))), output = "fixed")
+))
+expect_adversarial_failure(too_many_sources, "17 source columns")
+
+too_many_examples <- adversarial_valid_step("by-example-too-many-examples", "too many examples")
+too_many_examples$params$examples <- I(lapply(seq_len(65L), function(index) {
+  list(inputs = I(list(sprintf("input-%d", index))), output = "fixed")
+}))
+expect_adversarial_failure(too_many_examples, "65 examples")
+
+repeated_source <- adversarial_valid_step("by-example-repeated-source", "repeated source")
+repeated_source$params$sourceColumns <- I(list(adversarial_reference(1L), adversarial_reference(1L)))
+repeated_source$params$examples <- I(list(
+  list(inputs = I(list("alpha", "alpha")), output = "fixed"),
+  list(inputs = I(list("beta", "beta")), output = "fixed")
+))
+expect_adversarial_failure(repeated_source, "a repeated source identity")
+
+named_inputs <- adversarial_valid_step("by-example-named-inputs", "named inputs")
+named_inputs$params$examples[[1L]]$inputs <- list(source_01 = "alpha")
+expect_adversarial_failure(named_inputs, "name-keyed example inputs")
+
+stale_source <- adversarial_valid_step("by-example-stale", "stale output")
+stale_source$params$sourceColumns[[1L]]$name <- "renamed_source"
+expect_adversarial_failure(stale_source, "a stale source name", expected_code = "stale_column")
+
+collision_step <- adversarial_valid_step("by-example-collision", "source_01")
+expect_adversarial_failure(collision_step, "an output-name collision")
+private_name_step <- adversarial_valid_step(
+  "by-example-private-name",
+  "__OPEN_WRANGLER_INTERNAL_ROW_ID_forbidden"
+)
+expect_adversarial_failure(private_name_step, "a private output name")
+
+unsafe_example <- adversarial_valid_step("by-example-unsafe-example", "unsafe example")
+unsafe_example$params$examples[[1L]]$inputs[[1L]] <- 9007199254740992
+expect_adversarial_failure(unsafe_example, "an unsafe whole example input")
+unsafe_output <- adversarial_valid_step("by-example-unsafe-output", "unsafe output")
+unsafe_output$params$examples[[1L]]$output <- 9007199254740992
+expect_adversarial_failure(unsafe_output, "an unsafe whole example output")
+
+private_program <- adversarial_valid_step("by-example-private-program", "private program")
+private_program$params$program <- list(
+  kind = "column",
+  column = adversarial_reference(1L),
+  `_owSourceIndex` = 1L
+)
+expect_adversarial_failure(private_program, "private bound program metadata")
+unsafe_program <- adversarial_valid_step("by-example-unsafe-program", "unsafe program")
+unsafe_program$params$program <- list(kind = "literal", value = 9007199254740992)
+expect_adversarial_failure(unsafe_program, "an unsafe whole program literal")
+
+concat_overflow <- adversarial_valid_step("by-example-concat-overflow", "concat overflow")
+concat_overflow$params$program <- list(
+  kind = "concat",
+  parts = I(replicate(65L, list(kind = "literal", value = "x"), simplify = FALSE))
+)
+expect_adversarial_failure(concat_overflow, "65 concat parts")
+
+deep_program <- list(kind = "column", column = adversarial_reference(1L))
+for (depth in seq_len(65L)) {
+  deep_program <- list(kind = "case", style = "lower", input = deep_program)
+}
+depth_overflow <- adversarial_valid_step("by-example-depth-overflow", "depth overflow")
+depth_overflow$params$program <- deep_program
+expect_adversarial_failure(depth_overflow, "a depth-65 AST")
+
+node_program <- list(kind = "column", column = adversarial_reference(1L))
+for (level in seq_len(8L)) {
+  node_program <- list(kind = "concat", parts = I(list(node_program, node_program)))
+}
+node_overflow <- adversarial_valid_step("by-example-node-overflow", "node overflow")
+node_overflow$params$program <- node_program
+expect_adversarial_failure(node_overflow, "more than 256 AST nodes")
+
+oversized_string <- adversarial_valid_step("by-example-string-overflow", "string overflow")
+oversized_string$params$examples[[1L]]$output <- paste0(rep.int("x", 8193L), collapse = "")
+expect_adversarial_failure(oversized_string, "an 8193-byte string")
+
+total_text_overflow <- adversarial_valid_step("by-example-text-overflow", "text overflow")
+total_text_overflow$params$examples <- I(lapply(seq_len(9L), function(index) {
+  list(
+    inputs = I(list(sprintf("input-%d", index))),
+    output = paste0(rep.int(as.character(index), 8000L), collapse = "")
+  )
+}))
+expect_adversarial_failure(total_text_overflow, "more than 64 KiB of request text")
+
+too_many_warnings <- adversarial_valid_step("by-example-warning-overflow", "warning overflow")
+too_many_warnings$params$warnings <- I(as.list(sprintf("warning-%d", seq_len(65L))))
+too_many_warnings$params$candidateCount <- 1L
+expect_adversarial_failure(too_many_warnings, "65 warnings")
+
+adversarial_revision <- 0L
+valid_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = adversarial_valid_step(),
+    page = page_window()
+  )
+)
+assert_identical(valid_preview$kind, "stepPreview", "the valid adversarial control did not preview")
+valid_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = by_example_adversarial_session, revision = valid_preview$revision, page = page_window())
+)
+adversarial_revision <- valid_discard$revision
+
+large_metadata_step <- valid_preview$retainedStep
+large_metadata_step$id <- "by-example-large-metadata"
+large_metadata_step$params$newColumn <- "large metadata"
+large_metadata_step$params$candidateCount <- 3000000000
+large_metadata_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = large_metadata_step,
+    page = page_window()
+  )
+)
+assert_identical(large_metadata_preview$kind, "stepPreview", "R rejected positive safe candidateCount metadata")
+assert_identical(
+  large_metadata_preview$retainedStep$params$candidateCount,
+  1L,
+  "R did not recompute untrusted candidateCount metadata"
+)
+large_metadata_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = by_example_adversarial_session, revision = large_metadata_preview$revision, page = page_window())
+)
+adversarial_revision <- large_metadata_discard$revision
+
+max_safe_step <- adversarial_valid_step("by-example-max-safe", "max safe")
+max_safe_step$params$examples <- I(list(
+  list(inputs = I(list("alpha")), output = 9007199254740991),
+  list(inputs = I(list("beta")), output = 9007199254740991)
+))
+max_safe_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = max_safe_step,
+    page = page_window()
+  )
+)
+assert_identical(max_safe_preview$kind, "stepPreview", "R rejected Number.MAX_SAFE_INTEGER")
+assert_identical(
+  tail(max_safe_preview$page$schema, 1L)[[1L]]$rawType,
+  "integer64",
+  "R did not bind Number.MAX_SAFE_INTEGER as integer64"
+)
+max_safe_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = by_example_adversarial_session, revision = max_safe_preview$revision, page = page_window())
+)
+adversarial_revision <- max_safe_discard$revision
+
+precise_step <- adversarial_valid_step("by-example-precise-double", "precise double")
+precise_step$params$examples <- I(list(
+  list(inputs = I(list("alpha")), output = 1.2345678901234567),
+  list(inputs = I(list("beta")), output = 1.2345678901234567)
+))
+precise_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = precise_step,
+    page = page_window()
+  )
+)
+assert_identical(precise_preview$kind, "stepPreview", "the precise-double by-example did not preview")
+assert_identical(
+  precise_preview$retainedStep$params$examples[[1L]]$output,
+  1.2345678901234567,
+  "protocol v13 changed a retained by-example double"
+)
+precise_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = by_example_adversarial_session, revision = precise_preview$revision, page = page_window())
+)
+adversarial_revision <- precise_discard$revision
+
+program_null_step <- adversarial_valid_step("by-example-program-null", "program null")
+program_null_step$params["program"] <- list(NULL)
+assert_identical(
+  "program" %in% names(program_null_step$params),
+  TRUE,
+  "the explicit-null program fixture accidentally omitted its field"
+)
+program_null_request_id <- "b6b6b6b6-b6b6-46b6-86b6-b6b6b6b6b6b6"
+program_null_request <- as.character(jsonlite::toJSON(
+  list(
+    transportVersion = 13L,
+    requestId = program_null_request_id,
+    kind = "previewStep",
+    payload = list(
+      sessionId = by_example_adversarial_session,
+      revision = adversarial_revision,
+      step = program_null_step,
+      page = page_window()
+    )
+  ),
+  auto_unbox = TRUE,
+  null = "null",
+  na = "null",
+  digits = 17L
+))
+by_example_assert(
+  grepl('"program":null', program_null_request, fixed = TRUE),
+  "the explicit-null program fixture did not reach the raw R protocol"
+)
+program_null_response <- jsonlite::fromJSON(
+  agent$dispatch_json(program_null_request),
+  simplifyVector = FALSE
+)
+assert_identical(program_null_response$kind, "error", "R accepted params.program: null")
+assert_identical(
+  program_null_response$code,
+  "invalid_request",
+  "R normalized params.program: null incorrectly"
+)
+assert_identical(
+  program_null_response$requestId,
+  program_null_request_id,
+  "R lost request correlation while rejecting params.program: null"
+)
+assert_identical(
+  serialize(source_environment$by_example_adversarial, NULL, version = 3L),
+  serialize(by_example_adversarial_before, NULL, version = 3L),
+  "rejecting params.program: null mutated the source"
+)
+program_null_retry_step <- adversarial_valid_step(
+  "by-example-program-null-retry",
+  "program null retry"
+)
+program_null_retry <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = program_null_retry_step,
+    page = page_window()
+  )
+)
+assert_identical(
+  program_null_retry$kind,
+  "stepPreview",
+  "rejecting params.program: null left a hidden draft"
+)
+program_null_retry_discard <- dispatch(
+  "discardDraft",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = program_null_retry$revision,
+    page = page_window()
+  )
+)
+adversarial_revision <- program_null_retry_discard$revision
+assert_identical(
+  serialize(source_environment$by_example_adversarial, NULL, version = 3L),
+  serialize(by_example_adversarial_before, NULL, version = 3L),
+  "the valid retry after params.program: null mutated the source"
+)
+
+negative_zero_step <- adversarial_valid_step("by-example-negative-zero", "negative zero")
+negative_zero_step$params$examples[[1L]]$output <- 0L
+negative_zero_step$params$examples[[2L]]$output <- 0L
+negative_zero_request <- jsonlite::toJSON(
+  list(
+    transportVersion = 13L,
+    requestId = "b8b8b8b8-b8b8-48b8-88b8-b8b8b8b8b8b8",
+    kind = "previewStep",
+    payload = list(
+      sessionId = by_example_adversarial_session,
+      revision = adversarial_revision,
+      step = negative_zero_step,
+      page = page_window()
+    )
+  ),
+  auto_unbox = TRUE,
+  null = "null",
+  na = "null",
+  digits = 17L
+)
+negative_zero_request <- as.character(negative_zero_request)
+for (negative_zero_token in c("-0", "-0.0", "-0e0", "-0.000e+9")) {
+  raw_negative_zero_request <- sub(
+    '"output":0',
+    paste0('"output":', negative_zero_token),
+    negative_zero_request,
+    fixed = TRUE
+  )
+  negative_zero_response <- jsonlite::fromJSON(
+    agent$dispatch_json(raw_negative_zero_request),
+    simplifyVector = FALSE
+  )
+  assert_identical(
+    negative_zero_response$kind,
+    "error",
+    sprintf("R accepted a non-portable %s example", negative_zero_token)
+  )
+  assert_identical(
+    negative_zero_response$code,
+    "invalid_request",
+    sprintf("R normalized a non-portable %s example incorrectly", negative_zero_token)
+  )
+}
+escaped_negative_zero_request <- sub(
+  '"output":0',
+  '"output":-0',
+  negative_zero_request,
+  fixed = TRUE
+)
+escaped_negative_zero_request <- sub(
+  '"requestId":"b',
+  '"requestId":"\\u0062',
+  escaped_negative_zero_request,
+  fixed = TRUE
+)
+escaped_negative_zero_response <- jsonlite::fromJSON(
+  agent$dispatch_json(escaped_negative_zero_request),
+  simplifyVector = FALSE
+)
+assert_identical(
+  escaped_negative_zero_response$requestId,
+  "b8b8b8b8-b8b8-48b8-88b8-b8b8b8b8b8b8",
+  "R lost an escaped request ID while rejecting raw negative zero"
+)
+
+negative_exponent_request <- gsub(
+  '"output":0',
+  '"output":1e-0',
+  negative_zero_request,
+  fixed = TRUE
+)
+negative_exponent_response <- jsonlite::fromJSON(
+  agent$dispatch_json(negative_exponent_request),
+  simplifyVector = FALSE
+)
+assert_identical(
+  negative_exponent_response$kind,
+  "stepPreview",
+  "the raw negative-zero scanner rejected an exponent minus sign"
+)
+negative_exponent_discard <- dispatch(
+  "discardDraft",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = negative_exponent_response$revision,
+    page = page_window()
+  )
+)
+adversarial_revision <- negative_exponent_discard$revision
+
+negative_zero_string_step <- adversarial_valid_step(
+  "by-example-negative-zero-string",
+  "literal -0 string"
+)
+negative_zero_string_step$params$examples[[1L]]$output <- "escaped \"-0\" text"
+negative_zero_string_step$params$examples[[2L]]$output <- "escaped \"-0\" text"
+negative_zero_string_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = negative_zero_string_step,
+    page = page_window()
+  )
+)
+assert_identical(
+  negative_zero_string_preview$kind,
+  "stepPreview",
+  "the raw negative-zero scanner inspected JSON string contents"
+)
+negative_zero_string_discard <- dispatch(
+  "discardDraft",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = negative_zero_string_preview$revision,
+    page = page_window()
+  )
+)
+adversarial_revision <- negative_zero_string_discard$revision
+
+structural_negative_zero_cases <- list(
+  list(
+    request_id = "c1c1c1c1-c1c1-41c1-81c1-c1c1c1c1c1c1",
+    field = "start",
+    label = "slice start",
+    program = list(
+      kind = "slice",
+      input = list(kind = "column", column = adversarial_reference(1L)),
+      start = 0L,
+      stop = 1L
+    )
+  ),
+  list(
+    request_id = "c2c2c2c2-c2c2-42c2-82c2-c2c2c2c2c2c2",
+    field = "stop",
+    label = "slice stop",
+    program = list(
+      kind = "slice",
+      input = list(kind = "column", column = adversarial_reference(1L)),
+      start = 0L,
+      stop = 0L
+    )
+  ),
+  list(
+    request_id = "c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c3",
+    field = "index",
+    label = "split index",
+    program = list(
+      kind = "split",
+      input = list(kind = "column", column = adversarial_reference(1L)),
+      delimiter = "p",
+      index = 0L
+    )
+  ),
+  list(
+    request_id = "c4c4c4c4-c4c4-44c4-84c4-c4c4c4c4c4c4",
+    field = "group",
+    label = "regex-extract group",
+    program = list(
+      kind = "regexExtract",
+      input = list(kind = "column", column = adversarial_reference(1L)),
+      pattern = "(.*)",
+      group = 0L
+    )
+  )
+)
+for (case in structural_negative_zero_cases) {
+  step <- adversarial_valid_step(
+    paste0("by-example-negative-zero-", case$field),
+    paste0("negative zero ", case$field)
+  )
+  step$params$program <- case$program
+  request <- as.character(jsonlite::toJSON(
+    list(
+      transportVersion = 13L,
+      requestId = case$request_id,
+      kind = "previewStep",
+      payload = list(
+        sessionId = by_example_adversarial_session,
+        revision = adversarial_revision,
+        step = step,
+        page = page_window()
+      )
+    ),
+    auto_unbox = TRUE,
+    null = "null",
+    na = "null",
+    digits = 17L
+  ))
+  marker <- sprintf('"%s":0', case$field)
+  by_example_assert(
+    grepl(marker, request, fixed = TRUE),
+    sprintf("the raw %s negative-zero fixture lost its field", case$label)
+  )
+  request <- sub(marker, sprintf('"%s":-0.0', case$field), request, fixed = TRUE)
+  response <- jsonlite::fromJSON(agent$dispatch_json(request), simplifyVector = FALSE)
+  assert_identical(response$kind, "error", sprintf("R accepted negative zero for %s", case$label))
+  assert_identical(
+    response$code,
+    "invalid_request",
+    sprintf("R normalized negative zero for %s incorrectly", case$label)
+  )
+  assert_identical(
+    source_environment$by_example_adversarial,
+    by_example_adversarial_before,
+    sprintf("negative zero for %s mutated the source", case$label)
+  )
+}
+
+nul_step <- adversarial_valid_step("by-example-nul", "nul-safe")
+nul_request <- jsonlite::toJSON(
+  list(
+    transportVersion = 13L,
+    requestId = "b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7",
+    kind = "previewStep",
+    payload = list(
+      sessionId = by_example_adversarial_session,
+      revision = adversarial_revision,
+      step = nul_step,
+      page = page_window()
+    )
+  ),
+  auto_unbox = TRUE,
+  null = "null",
+  na = "null",
+  digits = 17L
+)
+nul_request <- sub(
+  '"newColumn":"nul-safe"',
+  paste0('"newColumn":"nul', "\\u0000", 'unsafe"'),
+  as.character(nul_request),
+  fixed = TRUE
+)
+nul_request <- sub(
+  '"requestId":"b',
+  '"requestId":"\\u0062',
+  nul_request,
+  fixed = TRUE
+)
+nul_response <- jsonlite::fromJSON(agent$dispatch_json(nul_request), simplifyVector = FALSE)
+assert_identical(nul_response$kind, "error", "R accepted a raw JSON U+0000 escape")
+assert_identical(nul_response$code, "invalid_request", "R normalized a raw JSON U+0000 escape incorrectly")
+assert_identical(
+  nul_response$requestId,
+  "b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7",
+  "R lost request correlation while rejecting raw JSON U+0000"
+)
+nul_retry <- dispatch(
+  "previewStep",
+  list(
+    sessionId = by_example_adversarial_session,
+    revision = adversarial_revision,
+    step = nul_step,
+    page = page_window()
+  )
+)
+assert_identical(nul_retry$kind, "stepPreview", "raw JSON U+0000 rejection left a hidden R draft")
+invisible(dispatch(
+  "discardDraft",
+  list(sessionId = by_example_adversarial_session, revision = nul_retry$revision, page = page_window())
+))
+assert_identical(
+  source_environment$by_example_adversarial,
+  by_example_adversarial_before,
+  "adversarial R by-example validation mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = by_example_adversarial_session)))
+
+source_environment$by_example_overflow_safe <- data.frame(
+  wide = bit64::as.integer64(c("1", "2")),
+  check.names = FALSE
+)
+overflow_safe_before <- unserialize(serialize(source_environment$by_example_overflow_safe, NULL, version = 3L))
+overflow_safe_session <- "c7c7c7c7-c7c7-47c7-87c7-c7c7c7c7c7c7"
+assert_identical(
+  dispatch(
+    "openSession",
+    list(sessionId = overflow_safe_session, variableName = "by_example_overflow_safe", page = page_window())
+  )$kind,
+  "page",
+  "the exact-overflow control session did not open"
+)
+overflow_safe_step <- list(
+  id = "by-example-overflow-step",
+  kind = "byExample",
+  params = list(
+    sourceColumns = I(list(list(id = "r:c:0", name = "wide"))),
+    newColumn = "wide plus one",
+    examples = I(list(
+      list(inputs = I(list(1L)), output = 2L),
+      list(inputs = I(list(2L)), output = 3L)
+    ))
+  )
+)
+overflow_safe_preview <- dispatch(
+  "previewStep",
+  list(sessionId = overflow_safe_session, revision = 0L, step = overflow_safe_step, page = page_window())
+)
+assert_identical(overflow_safe_preview$kind, "stepPreview", "the exact-overflow control did not preview")
+overflow_safe_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = overflow_safe_session, revision = overflow_safe_preview$revision, page = page_window())
+)
+overflow_safe_environment <- new.env(parent = baseenv())
+assign("by_example_overflow_safe", overflow_safe_before, envir = overflow_safe_environment)
+eval(parse(text = overflow_safe_apply$code), envir = overflow_safe_environment)
+assert_identical(
+  integer64_character(get("open_wrangler_result", envir = overflow_safe_environment)$`wide plus one`),
+  c("2", "3"),
+  "generated exact-overflow control arithmetic diverged"
+)
+invisible(dispatch("closeSession", list(sessionId = overflow_safe_session)))
+
+overflow_source <- data.frame(
+  wide = bit64::as.integer64("9223372036854775807"),
+  check.names = FALSE
+)
+source_environment$by_example_overflow_live <- overflow_source
+overflow_source_before <- unserialize(serialize(overflow_source, NULL, version = 3L))
+overflow_live_session <- "c8c8c8c8-c8c8-48c8-88c8-c8c8c8c8c8c8"
+assert_identical(
+  dispatch(
+    "openSession",
+    list(sessionId = overflow_live_session, variableName = "by_example_overflow_live", page = page_window())
+  )$kind,
+  "page",
+  "the live exact-overflow session did not open"
+)
+overflow_live_step <- overflow_safe_preview$retainedStep
+overflow_live_response <- dispatch(
+  "previewStep",
+  list(sessionId = overflow_live_session, revision = 0L, step = overflow_live_step, page = page_window())
+)
+assert_identical(overflow_live_response$kind, "error", "live exact by-example arithmetic silently overflowed")
+assert_identical(
+  source_environment$by_example_overflow_live,
+  overflow_source_before,
+  "failed live exact by-example arithmetic mutated its source"
+)
+overflow_live_retry <- dispatch(
+  "previewStep",
+  list(
+    sessionId = overflow_live_session,
+    revision = 0L,
+    step = list(
+      id = "by-example-overflow-retry",
+      kind = "byExample",
+      params = list(
+        sourceColumns = I(list(list(id = "r:c:0", name = "wide"))),
+        newColumn = "safe literal",
+        examples = I(list(
+          list(inputs = I(list(1L)), output = "ok"),
+          list(inputs = I(list(2L)), output = "ok")
+        ))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(overflow_live_retry$kind, "stepPreview", "live exact overflow left a hidden draft")
+invisible(dispatch(
+  "discardDraft",
+  list(sessionId = overflow_live_session, revision = overflow_live_retry$revision, page = page_window())
+))
+invisible(dispatch("closeSession", list(sessionId = overflow_live_session)))
+
+overflow_generated_environment <- new.env(parent = baseenv())
+assign("by_example_overflow_safe", overflow_source_before, envir = overflow_generated_environment)
+generated_overflow_error <- tryCatch(
+  {
+    eval(parse(text = overflow_safe_apply$code), envir = overflow_generated_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(inherits(generated_overflow_error, "error"), "generated exact by-example arithmetic silently overflowed")
+by_example_assert(
+  !exists("open_wrangler_result", envir = overflow_generated_environment, inherits = FALSE),
+  "generated exact by-example overflow published a partial result"
+)
+assert_identical(
+  get("by_example_overflow_safe", envir = overflow_generated_environment, inherits = FALSE),
+  overflow_source_before,
+  "generated exact by-example overflow mutated its source"
+)
+
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
   optional = TRUE
@@ -12087,6 +15184,7 @@ missing_package_contract <- list(
   rename_column = function(...) stop("unexpected rename", call. = FALSE),
   rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
+  by_example_column_at = function(...) stop("unexpected by-example transform", call. = FALSE),
   formula_column_at = function(...) stop("unexpected formula", call. = FALSE),
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
   one_hot_encode_columns_at = function(...) stop("unexpected one-hot encoding", call. = FALSE),
@@ -12122,6 +15220,19 @@ missing_package_contract <- list(
   write_csv = function(...) stop("unexpected CSV export", call. = FALSE),
   write_parquet = function(...) stop("unexpected Parquet export", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
+)
+missing_by_example_contract <- missing_package_contract
+missing_by_example_contract$by_example_column_at <- NULL
+missing_by_example_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_by_example_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+by_example_assert(
+  inherits(missing_by_example_error, "error"),
+  "the R agent accepted a contract without by_example_column_at"
 )
 for (required_group_tool in c("capture_group_result", "group_by_at")) {
   incomplete_group_contract <- missing_package_contract

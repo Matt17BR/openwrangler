@@ -138,7 +138,8 @@ is followed immediately by its own sealed failure-evidence upload. A deferred sh
 after every phase assigned to that shard, so an early failure cannot suppress later evidence or be overwritten by it.
 Explicit candidate core keeps its existing job, phase, and selector but owns one full installed Clone Column lifecycle:
 preview, apply, applied-step inspection, edit and reapply with the same step/output identities, then undo. Direct
-native-R, runtime, generated-code, and catalog tests own exhaustive semantics for all 26 operations. Candidate core,
+native-R, runtime, generated-code, and catalog tests own exhaustive semantics for all 27 operations, including the
+current unhosted Transform-by-example slice; Custom code remains the only unsupported R operation. Candidate core,
 value, and categorical do not duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive
 collapse, viewing, Rename, and Drop owner, while `kernel-restart` owns restart/reopen under a fresh phase budget.
 Value and categorical ownership is unchanged, and Cursor, macOS, and Windows retain their representative
@@ -157,6 +158,7 @@ Default/unset manual core retains its full catalog and embedded behavior, so the
 intentionally separate, backward-compatible, non-authoritative diagnostic: its existing local-R core, value,
 categorical, and terminal phases are serial and use their existing exact four-way fan-in. Remote R likewise retains
 its representative embedded behavior. The manual workflow does not model or substitute for candidate acceptance.
+The 27th operation changes no candidate selector, job, phase, shard, deadline, inactivity bound, or retry policy.
 
 Preview release run #72 reached the ordinary local-R 300-second deadline at numeric Round, lost Cursor's bounded
 Multi-label Undo wait, and failed macOS Drop Columns Code Preview generation/diagnostics. Publication was skipped. Those
@@ -219,8 +221,8 @@ does not identify the physical retirement event that produced the mismatch. Nati
 dispatch/scheduler/final-state receipts. Literate artifact `9238988590` is a deterministic `harness/runner` failure:
 the finder required external `quarto.previewView`, although VS Code exposes the tab as prefixed
 `mainThreadWebview-quarto.previewView`; its later `ERR_CONNECTION_REFUSED` followed missed preview ownership and
-cleanup rather than proving a product defect. Publication was skipped, so no `v1.99.6` tag, GitHub prerelease, Open
-VSX package, or Azure Marketplace package exists.
+cleanup rather than proving a product defect. Publication was skipped, so that run created no `v1.99.6` tag, GitHub
+prerelease, Open VSX package, or Azure Marketplace package.
 
 The locally frozen product correction flushes presentation state and sends one exact receipt-bound retirement on a
 non-persisted `pagehide`; the host accepts only its current hydrated session/revision, invalidates renderer state, and

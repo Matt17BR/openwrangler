@@ -67,6 +67,10 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
+Published preview 1.99.6 contains 26 native-R cleaning operations. Current `main` advances that catalog to 27 of 28
+with **Transform by Example**; **Custom Code** is the only catalog operation still unavailable in R. This source change
+has not yet passed a fresh hosted preview candidate, so the published preview remains the 26-operation build.
+
 The 1.99 preview has these R and literate-document entry points:
 
 | Workflow                               | How it opens dataframes                                                                 | Available in                                                      |
@@ -274,6 +278,9 @@ columns can be formatted in place or into a new text column. POSIXct values use 
 when none is declared. One-hot encoding accepts one or more supported scalar columns, while multi-label binarization
 splits a text or factor column on an exact delimiter. Both produce deterministic integer indicator columns, ignore
 missing or blank categories, and can keep or drop their selected inputs.
+Transform by Example accepts ordered source columns and example input/output rows, deterministically infers a portable
+program, and shows that canonical program with its generated R before creating a new column. Retained plans replay the
+same program instead of inferring it again.
 Every draft shows the changed data and generated R before it is applied. Applied steps can be inspected, edited, or
 undone. A generated script publishes `open_wrangler_result`; if the source already uses that name, it preserves the
 source and publishes `open_wrangler_result_2`. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)

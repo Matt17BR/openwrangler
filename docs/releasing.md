@@ -91,7 +91,8 @@ Protected pull-request CI solely runs the direct R contract on R 4.4 and 4.5. Pr
 install their canonical VSIX in VS Code and Cursor and run distinct R notebook/platform journeys. Explicit candidate
 `core-operations` keeps its existing phase and job positions but owns one complete installed Clone Column lifecycle:
 preview, apply, applied-step inspection, editing and reapplying the same step with stable step/output identities, then
-undo. Direct native-R, runtime, generated-code, and catalog suites own exhaustive semantics for all 26 operations.
+undo. Direct native-R, runtime, generated-code, and catalog suites own exhaustive semantics for all 27 operations,
+including the current unhosted Transform-by-example slice; Custom code remains the only unsupported R operation.
 Every candidate core cell runs that same Clone lifecycle; Linux VS Code retains all-block grid depth, while macOS and
 Windows VS Code plus Linux Cursor retain representative single-round-trip grid/profile/view seams within the same
 hard deadline. Explicit candidate core disables native-frame and embedded-restart work on every platform. A fresh
@@ -145,7 +146,8 @@ visibility measurements with bounded diagnostics.
 The redesign keeps one complete installed Clone lifecycle in the existing core phase, the unchanged value and
 categorical targeted catalogs, one comprehensive Linux VS Code native-frame owner, and representative macOS, Windows,
 and Cursor seams. Default/unset manual core retains the full catalog and remote R retains its representative embedded
-behavior. No selector, job, phase, deadline, or retry is added. Each editor phase preserves its 300-second
+behavior. Advertising and directly testing the 27th operation does not add or redistribute a candidate selector, job,
+phase, deadline, or retry. Each editor phase preserves its 300-second
 hard deadline, 180-second changed-checkpoint inactivity deadline, and no-retry rule. Preview run #75 measured 21m18s
 overall and 134.07 positive-duration runner-minutes. Its sole raw blocker was Linux core's outer timeout at
 `jupyter-r:orders_table:editing-renderer-ready`; dedicated Linux restart, value/categorical editing, and both native-R
@@ -184,7 +186,7 @@ the packaged extension-host, candidate-workflow, and testing-record references. 
 document, insertion, and export journeys; a release-candidate R performance record; and first-class VS Code/Cursor
 acceptance. The active R-terminal transport and export rows claim Linux only, matching the platform where the
 candidate installs and exercises the native R editor tooling. The Cursor literate row likewise claims Linux and
-distinguishes the R Markdown document command from the Quarto R/Python title actions. The existing 26-operation R
+distinguishes the R Markdown document command from the Quarto R/Python title actions. The current 27-operation R
 suites cannot satisfy either all-28 catalog row: dedicated complete-catalog runtime/generated-code and code-export
 tests must be tracked before those rows can become Done. `GRP_df`, `indexed_frame`, Windows direct-document execution,
 and remote R documents remain outside that table. Successful candidate jobs do not change a documentation row to Done by themselves: the exact tracked record
@@ -421,8 +423,8 @@ decisive dispatch/scheduler/final-state receipts, so it is indeterminate harness
 product failure. Literate artifact `9238988590` deterministically looked for unprefixed `quarto.previewView` even
 though VS Code exposes the WebviewPanel tab as `mainThreadWebview-quarto.previewView`; that is a harness failure, and
 the later `ERR_CONNECTION_REFUSED` followed missed preview ownership and cleanup rather than proving a product defect.
-The fan-in failed and publication was skipped, so no `v1.99.6` tag, GitHub prerelease, Open VSX package, or Azure
-Marketplace package exists. Run #78 remains failed hosted evidence.
+The fan-in failed and publication was skipped, so that run created no `v1.99.6` tag, GitHub prerelease, Open VSX
+package, or Azure Marketplace package. Run #78 remains failed hosted evidence.
 
 Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
 `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the complete candidate and Remote SSH graph and
