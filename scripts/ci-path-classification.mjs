@@ -90,6 +90,8 @@ export const RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS = Object.freeze([
 ]);
 export const RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS = Object.freeze([
   "scripts/data-wrangler-comparison-report.mjs",
+  "scripts/package-source-manifest.mjs",
+  "scripts/reproducible-vsix.mjs",
   "scripts/run-installed-performance.mjs",
   "scripts/strict-json.mjs",
   "scripts/vsix-archive.mjs",

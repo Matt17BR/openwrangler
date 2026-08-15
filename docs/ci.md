@@ -80,6 +80,14 @@ run record and release notes, not a new metrics service.
 ## Release candidates
 
 Preview and stable release workflows build the VSIX once. Every acceptance job downloads and verifies that same artifact.
+The package producer first lets the lockfile-owned VSCE API create a raw archive in a private sibling (mode `0700` on
+POSIX and the identity-pinned writable host contract on Windows), then publishes only its canonical files-only form:
+bytewise UTF-8 order, STORE compression, fixed ZIP timestamps, exact `100644` ZIP modes, and unchanged entry bytes.
+STORE remains compatible with ordinary VSIX readers; the accepted tradeoff is an approximately 5 MB artifact instead
+of the current approximately 1.2 MB compressed package. Complete source and archive receipts plus a portable internal
+manifest are revalidated before and after atomic no-clobber hard-link publication. The manifest is not an artifact or
+provenance field. Preview 1.99.7 is the first planned exercise of the path; no candidate job, readiness rule,
+provenance contract, or publication topology changes with this foundation.
 
 The release tier adds the expensive product checks that no longer run on every pull request:
 

@@ -1473,6 +1473,22 @@ The installed-performance manifest boundary is the complete Python-produced obje
 
 Guarded installed-performance packaging tests require every VSCE source to be tracked or an exact generated output, reject both a packageable untracked runtime module and an ignored `media` extra while leaving excluded user files outside every read, and pin each tracked and generated input's identity, size, and SHA-256 around packaging. The exact generated set includes only the reviewed `dist/extension/vendor/js-yaml.js` extension-host vendor asset in addition to compiled and media outputs. The sealed archive must match the pinned source inventory and every source-byte digest; the shared archive verifier separately requires that vendor path's 122,488-byte `f1499c20ab232a283f6f9f85aeecc99dceab175e8dd4005bd3d764848f3e5965` receipt and rejects its omission, mutation, or any sibling vendor filename. The R-runtime and vendored-js-yaml requirements are independent: current authoring defaults both on, while historical registry tests derive each from an exact regular-file tag-tree marker, allow R-bearing 1.99.0–1.99.2 packages without the later vendor marker, and reject 1.99.3-or-newer and 2.x-or-newer sources that drop it. Marketplace and Open VSX tests require the derived policy to survive every handoff. A historical package that does include the vendor pathname must still match the reviewed receipt. License tests require the upstream js-yaml LICENSE hash and full Vitaly Puzrin MIT notice while keeping the package development-only. Regressions substitute a tracked or generated input and add an otherwise allowlisted runtime entry only to the simulated `createVSIX` result; all fail even when a later pathname scan would look clean. Product packaging disables VSCE's GitHub issue autolinker, ordinary VSIX verification rejects source-to-package README drift, and README links stay absolute so relative-link rewriting cannot create an undocumented transformation. Final-publication tests mutate the candidate while the report receipt is read and require the joint validation to fail.
 
+`package-current-channel`, reproducible-VSIX, and portable package-source-manifest unit tests own the ordinary product
+packaging transaction without running a real package build. They require exact stable/preview VSCE options; files-only
+canonical STORE archives with bytewise UTF-8 order, fixed timestamps, and exact `100644` ZIP modes; source/archive
+digest parity; and an internal manifest covering every package source plus the two VSCE-owned metadata entries.
+Adversarial cases
+cover exact POSIX permissions and Windows' writable-bit host-mode behavior, source mutation and restoration under a
+new identity, raw-file replacement and hard links, existing regular, symbolic-link, and hard-link destinations, a
+package-source destination, aliased or replaced parents, write and link failures, an ambiguous link that completed
+before reporting failure, staging-name retirement failure, public-name substitution, a surviving final hard link, and
+private cleanup failure. Success must reopen the exact public inode, prove canonicalization is idempotent, repeat
+archive/source/manifest binding, and leave one public name with link count one. On failure, cleanup removes the exact
+produced public inode only while it remains attributable. A substituted or otherwise unknown path is retained and
+reported as cleanup uncertainty, and tests prove that it is never mistaken for the produced output. The in-memory
+manifest is neither packaged nor published. These tests add no candidate selector, workflow lane, readiness rule,
+provenance field, or release evidence claim.
+
 ## Data Wrangler comparison
 
 The comparison method is in [`docs/performance-comparison.md`](performance-comparison.md). Its commands are:

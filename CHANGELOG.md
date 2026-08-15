@@ -6,6 +6,16 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Product packaging now turns VSCE's private raw output into a deterministic files-only VSIX: bytewise UTF-8 entry
+  order, STORE compression, fixed 1980 ZIP timestamps, exact `100644` ZIP modes, and no comments or extra fields.
+  Package sources are identity/digest-pinned around raw creation and canonicalization, archive parity is required, and
+  a portable source manifest is validated in memory without packaging or publishing it. The approximately 5 MB output
+  remains compatible with ordinary VSIX readers and trades compression for exact cross-build bytes. Publication is an
+  atomic no-clobber hard-link transition from a private sibling (POSIX mode `0700`, with Windows' coarser
+  identity-pinned writable host contract), followed by link-count-one canonical, inventory, source, and manifest
+  revalidation. Failure removes the exact produced public inode only while it remains attributable; a substituted or
+  unknown path is retained and reported as cleanup uncertainty. Preview 1.99.7 is the first planned release exercise.
+  Candidate workflow topology, readiness, provenance, and registry publication contracts are unchanged.
 - Native R now exposes all 28 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
   accepts at most 64 KiB of exact UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures before
   evaluation, and requires a local non-active `result` with the same canonical dataframe flavor and at least one
