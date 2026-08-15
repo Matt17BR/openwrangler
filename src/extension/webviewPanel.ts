@@ -470,6 +470,25 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "rendererRetiring") {
+      const synchronization = this.rendererSynchronizationIdentity;
+      if (
+        this.disposed ||
+        !this.hasHydratedRenderer() ||
+        !synchronization ||
+        synchronization.syncId !== decoded.syncId ||
+        synchronization.sessionId !== decoded.sessionId ||
+        synchronization.revision !== decoded.revision
+      ) {
+        return;
+      }
+      this.clearRendererStartupRecoveryTimer();
+      this.rendererReady = false;
+      this.invalidateRendererSynchronization();
+      this.scheduleRendererStartupRecovery();
+      return;
+    }
+
     if (decoded.kind === "setViewContext") {
       this.snapshotViewContextId = decoded.viewContextId;
       if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, decoded.viewContextId);
@@ -1800,6 +1819,21 @@ export class OpenWranglerPanel {
           }
         : undefined;
     }
+    if (message.kind === "rendererRetiring") {
+      const hasSessionIdentity =
+        isNonEmptyString(message.sessionId) && Number.isSafeInteger(message.revision) && Number(message.revision) >= 0;
+      const hasNoSessionIdentity = message.sessionId === null && message.revision === null;
+      return hasExactKeys(message, ["kind", "syncId", "sessionId", "revision"]) &&
+        isRendererControlId(message.syncId) &&
+        (hasSessionIdentity || hasNoSessionIdentity)
+        ? {
+            kind: "rendererRetiring",
+            syncId: message.syncId,
+            sessionId: hasSessionIdentity ? String(message.sessionId) : null,
+            revision: hasSessionIdentity ? Number(message.revision) : null
+          }
+        : undefined;
+    }
     if (message.kind === "setViewContext") {
       return hasExactKeys(message, ["kind", "viewContextId"]) && isNonEmptyString(message.viewContextId)
         ? { kind: "setViewContext", viewContextId: message.viewContextId }
@@ -1962,6 +1996,12 @@ type WebviewRequest =
   | { kind: "requestSessionSnapshot" }
   | {
       kind: "rendererSynchronized";
+      syncId: string;
+      sessionId: string | null;
+      revision: number | null;
+    }
+  | {
+      kind: "rendererRetiring";
       syncId: string;
       sessionId: string | null;
       revision: number | null;

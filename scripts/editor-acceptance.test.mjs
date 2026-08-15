@@ -219,17 +219,22 @@ test("released R Markdown fixture includes a real dataframe preview chunk", asyn
   );
 });
 
-test("Quarto acceptance pins and closes one exact preview lifecycle before ordinary title actions", async () => {
+test("Quarto media acceptance pins and closes one exact prefixed WebviewPanel lifecycle", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const journey = source.slice(
     source.indexOf("async function openReleasedNativeQuartoPreview("),
     source.indexOf("function releasedRenderedHtmlSnapshot(")
   );
   assert.match(journey, /ownership\.tabOwned && ownership\.terminalReady && renderedHtmlReady && visiblePreviewReady/u);
-  assert.match(journey, /if \(requireVisiblePreview\) \{/u);
   assert.match(journey, /releasedQuartoPreviewTabs\(\)/u);
-  assert.match(journey, /input\?\.viewType === "quarto\.previewView"/u);
+  assert.match(
+    journey,
+    /input instanceof vscode\.TabInputWebview && input\.viewType === "mainThreadWebview-quarto\.previewView"/u,
+    "Quarto media ownership must use VS Code's exact WebviewPanel tab identity."
+  );
+  assert.doesNotMatch(journey, /input\?\.viewType|viewType === "quarto\.previewView"/u);
   assert.doesNotMatch(journey, /tab\.label === "Quarto Preview"/u);
+  assert.doesNotMatch(journey, /requireVisiblePreview|preview-probe-skipped/u);
   assert.match(journey, /tabOwned: previewTab !== undefined && previewTabGroup !== undefined/u);
   assert.doesNotMatch(journey, /\b(?:activeTab|activeTabGroup|tabActive)\b/u);
   assert.match(journey, /Quarto Preview must retain its first exact internal preview tab/u);
@@ -251,11 +256,6 @@ test("Quarto acceptance pins and closes one exact preview lifecycle before ordin
     'recordAcceptanceProgress("jupyter-r:quarto:preview-command-settled")',
     previewCommandAwaited
   );
-  const previewProbeSkipped = journey.indexOf(
-    'recordAcceptanceProgress("jupyter-r:quarto:preview-probe-skipped")',
-    previewCommandSettled
-  );
-  const previewProbeGuard = journey.indexOf("if (requireVisiblePreview) {", previewProbeSkipped);
   const previewProbe = journey.indexOf("releasedQuartoPreviewLocator(workbench)", previewCommandSettled);
   const previewProbeReturned = journey.indexOf(
     'recordAcceptanceProgress("jupyter-r:quarto:preview-probe-returned")',
@@ -267,11 +267,9 @@ test("Quarto acceptance pins and closes one exact preview lifecycle before ordin
       previewCommandReturned > previewDispatch &&
       previewCommandAwaited > previewCommandReturned &&
       previewCommandSettled > previewCommandAwaited &&
-      previewProbeSkipped > previewCommandSettled &&
-      previewProbeGuard > previewProbeSkipped &&
-      previewProbe > previewProbeGuard &&
+      previewProbe > previewCommandSettled &&
       previewProbeReturned > previewProbe,
-    "The native Quarto preview must settle its sole command before exact ownership and any optional media probe."
+    "The native Quarto media preview must settle its sole command before its mandatory bounded media probe."
   );
   assert.equal(
     (journey.match(/vscode\.commands\.executeCommand\("quarto\.preview"\)/gu) ?? []).length,
@@ -286,6 +284,11 @@ test("Quarto acceptance pins and closes one exact preview lifecycle before ordin
     journey,
     /previewLocator = await probeAcceptanceBeforeDeadline\(\s*\(\) => releasedQuartoPreviewLocator\(workbench\),\s*Math\.min\(deadline, Date\.now\(\) \+ WORKBENCH_DIAGNOSTIC_TIMEOUT_MS\)\s*\)/u,
     "The native Quarto preview probe must share the render deadline and a bounded diagnostic slice."
+  );
+  assert.match(
+    journey,
+    /const visiblePreviewReady = previewLocator !== undefined;[\s\S]*assert\.ok\(previewLocator, "The internal Quarto media preview must show the rendered R table\."\)/u,
+    "Screenshot-only Quarto preview ownership must require its exact visible media target."
   );
   assert.match(
     journey,
@@ -306,28 +309,10 @@ test("Quarto acceptance pins and closes one exact preview lifecycle before ordin
     /workbench\.waitForTimeout/u,
     "Native Quarto preview polling and cleanup must use local timers rather than unbounded Playwright waits."
   );
-  assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
+  assert.doesNotMatch(journey, /priorTabs/u);
   assert.doesNotMatch(
     journey,
     /workbench\.action\.(?:focusPanel|increaseViewSize)|openWrangler\.codePreview\.focus|\.reload\(|\.retry/u
-  );
-
-  const literateJourney = source.slice(
-    source.indexOf("async function exerciseReleasedRLiterateDocumentJourneys("),
-    source.indexOf("async function exerciseReleasedPythonQuartoDocumentJourney(")
-  );
-  const retainDecision = literateJourney.indexOf("const retainPreviewForMedia =");
-  const previewOpen = literateJourney.indexOf("await openReleasedNativeQuartoPreview(", retainDecision);
-  const ordinaryClose = literateJourney.indexOf("if (!retainPreviewForMedia) await closePreview();", previewOpen);
-  const titleAction = literateJourney.indexOf("await invokeReleasedRDocumentTitleAction(", ordinaryClose);
-  const mediaClose = literateJourney.indexOf("await closePreview();", titleAction);
-  assert.ok(
-    retainDecision >= 0 &&
-      previewOpen > retainDecision &&
-      ordinaryClose > previewOpen &&
-      titleAction > ordinaryClose &&
-      mediaClose > titleAction,
-    "Ordinary Quarto acceptance must prove preview absence before Open Wrangler; media may close only after its shot."
   );
 
   const renderedHtmlSnapshot = source.slice(
@@ -357,6 +342,70 @@ test("Quarto acceptance pins and closes one exact preview lifecycle before ordin
     mediaGeometry,
     /withBoundedAcceptancePromise\(\s*Promise\.all\(\[sourceLine\.innerText\(\), sourceLine\.boundingBox\(\), picker\.boundingBox\(\), preview\.boundingBox\(\)\]\),\s*WORKBENCH_OPERATION_TIMEOUT_MS,\s*"Quarto picker media geometry"\s*\)/u,
     "Quarto media capture must bound all geometry reads as one operation."
+  );
+});
+
+test("ordinary Quarto acceptance bypasses third-party preview ownership and runs product checks directly", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const literateJourney = source.slice(
+    source.indexOf("async function exerciseReleasedRLiterateDocumentJourneys("),
+    source.indexOf("async function exerciseReleasedPythonQuartoDocumentJourney(")
+  );
+  assert.match(
+    literateJourney,
+    /const retainPreviewForMedia = screenshotOutput !== undefined && process\.platform === "linux";/u
+  );
+  const retainDecision = literateJourney.indexOf("const retainPreviewForMedia =");
+  const titleFactory = literateJourney.indexOf("const invokeTitleAction = () =>", retainDecision);
+  const ordinaryGuard = literateJourney.indexOf("if (!retainPreviewForMedia) {", titleFactory);
+  const ordinaryTitleAction = literateJourney.indexOf("await invokeTitleAction();", ordinaryGuard);
+  const mediaBranch = literateJourney.indexOf("} else {", ordinaryTitleAction);
+  const mediaToolingGuard = literateJourney.indexOf(
+    '"Quarto media capture requires the exact official editor tooling."',
+    mediaBranch
+  );
+  const previewOpen = literateJourney.indexOf("await openReleasedNativeQuartoPreview(", mediaToolingGuard);
+  const mediaTitleAction = literateJourney.indexOf("await invokeTitleAction();", previewOpen);
+  const mediaClose = literateJourney.indexOf("await closePreview();", mediaTitleAction);
+  const nonQuartoBranch = literateJourney.indexOf(
+    "\n      } else {\n        await invokeReleasedRDocumentVariable(",
+    mediaClose
+  );
+  assert.ok(
+    retainDecision >= 0 &&
+      titleFactory > retainDecision &&
+      ordinaryGuard > titleFactory &&
+      ordinaryTitleAction > ordinaryGuard &&
+      mediaBranch > ordinaryTitleAction &&
+      mediaToolingGuard > mediaBranch &&
+      previewOpen > mediaToolingGuard &&
+      mediaTitleAction > previewOpen &&
+      mediaClose > mediaTitleAction &&
+      nonQuartoBranch > mediaClose,
+    "Ordinary Quarto acceptance must call the product title action before the isolated screenshot-only preview branch."
+  );
+  const titleFactoryBody = literateJourney.slice(titleFactory, ordinaryGuard);
+  assert.match(titleFactoryBody, /invokeReleasedRDocumentTitleAction\(/u);
+  assert.doesNotMatch(
+    titleFactoryBody,
+    /openReleasedNativeQuartoPreview|quarto\.preview|releasedQuartoPreviewTabs|ownedPreviewTerminals|releasedRenderedHtmlSnapshot/u
+  );
+  const ordinaryBranch = literateJourney.slice(ordinaryGuard, mediaBranch);
+  assert.match(ordinaryBranch, /await invokeTitleAction\(\);/u);
+  assert.doesNotMatch(
+    ordinaryBranch,
+    /openReleasedNativeQuartoPreview|quarto\.preview|releasedQuartoPreviewTabs|ownedPreviewTerminals|releasedRenderedHtmlSnapshot|closePreview/u,
+    "Ordinary candidate acceptance must not dispatch, observe, or clean up third-party Quarto preview state."
+  );
+  assert.equal(
+    (literateJourney.match(/openReleasedNativeQuartoPreview\(/gu) ?? []).length,
+    1,
+    "Only the explicit media branch may open the third-party Quarto preview."
+  );
+  assert.doesNotMatch(
+    literateJourney,
+    /vscode\.commands\.executeCommand\("quarto\.preview"\)|releasedQuartoPreviewTabs\(|ownedPreviewTerminals\(|releasedRenderedHtmlSnapshot\(/u,
+    "The literate product journey must not inline any third-party preview orchestration."
   );
 });
 
@@ -642,12 +691,12 @@ test("packaged import reconfiguration proves physical same-session renderer reco
   const oldPhysicalTarget = journey.indexOf("const synchronizedGridTarget =", retainedReceipt);
   const retirement = journey.indexOf("testing.retirePanelRenderer(stableSessionId)", oldPhysicalTarget);
   const detached = journey.indexOf("observeExactRendererRetirement(", retirement);
-  const retainedHostReceipt = journey.indexOf("sameRendererSynchronizationReceipt(", detached);
-  const failedSynchronization = journey.indexOf("await testing.synchronizePanel(stableSessionId)", retainedHostReceipt);
-  const recovered = journey.indexOf(
-    "const recoveredRenderer = await focusAndSynchronizeExactSessionPanel(",
-    failedSynchronization
+  const retirementReceived = journey.indexOf(
+    'recordAcceptanceProgress("verify:file-inputs:reconfigure:renderer-retirement-received")',
+    detached
   );
+  const automaticRecovery = journey.indexOf("await waitFor(", retirementReceived);
+  const recovered = journey.indexOf("const recoveredRendererReceipt =", automaticRecovery);
   const newReceipt = journey.indexOf("recoveredRenderer.receipt.syncId", recovered);
   const sameSnapshot = journey.indexOf("snapshotBeforeRendererRetirement", newReceipt);
   const sameDiagnostics = journey.indexOf("diagnosticsBeforeRendererRetirement", sameSnapshot);
@@ -661,23 +710,33 @@ test("packaged import reconfiguration proves physical same-session renderer reco
       oldPhysicalTarget > retainedReceipt &&
       retirement > oldPhysicalTarget &&
       detached > retirement &&
-      retainedHostReceipt > detached &&
-      failedSynchronization > retainedHostReceipt &&
-      recovered > failedSynchronization &&
+      retirementReceived > detached &&
+      automaticRecovery > retirementReceived &&
+      recovered > automaticRecovery &&
       newReceipt > recovered &&
       sameSnapshot > newReceipt &&
       sameDiagnostics > sameSnapshot &&
       sameSource > sameDiagnostics &&
       recoveredViewport > sameSource,
-    "Packaged recovery must retire an exact acknowledged renderer, observe the missing acknowledgement, then verify the replacement before its physical viewport."
+    "Packaged recovery must retire an exact acknowledged renderer, consume its receipt-bound pagehide, then verify the automatic replacement before its physical viewport."
   );
   assert.match(
-    journey.slice(failedSynchronization, recovered),
-    /false,[\s\S]*inert retired document must accept publication without acknowledging/u
+    journey.slice(detached, retirementReceived),
+    /!testing\.panelHydrated\(stableSessionId\)[\s\S]*!testing\.panelSynchronizable\(stableSessionId\)[\s\S]*panelSynchronizationReceipt\(stableSessionId\) === undefined/u,
+    "The retirement notice must invalidate the stale hydrated receipt before recovery."
+  );
+  assert.doesNotMatch(
+    journey.slice(retirement, recovered),
+    /testing\.synchronizePanel|focusAndSynchronizeExactSessionPanel|workbench\.action\.focus|\.reload\(/u,
+    "Automatic retirement recovery must not depend on a test synchronization, focus action, or reload."
+  );
+  assert.match(
+    journey.slice(automaticRecovery, recovered),
+    /panelHydrated\(stableSessionId\)[\s\S]*receipt\.syncId !== retainedRendererReceipt\.syncId/u
   );
   assert.match(journey.slice(recovered, sameSnapshot), /assert\.notEqual\([\s\S]*\.syncId/u);
   assert.match(journey.slice(recoveredViewport), /scrollTop - 29[\s\S]*scrollLeft - 23/u);
-  const retirementObservation = journey.slice(detached, retainedHostReceipt);
+  const retirementObservation = journey.slice(detached, retirementReceived);
   assert.match(retirementObservation, /synchronizedGridTarget\.target\.page/u);
   assert.match(retirementObservation, /synchronizedGridTarget\.target\.frame/u);
   assert.match(retirementObservation, /synchronizedGridTarget\.action\.waitFor\(\{[\s\S]*state: "detached"/u);

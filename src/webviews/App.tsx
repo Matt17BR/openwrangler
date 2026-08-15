@@ -132,6 +132,7 @@ export function App() {
   >();
   const pendingRendererSynchronizationRef = useRef<RendererSynchronizationMessage | undefined>(undefined);
   const acknowledgedRendererSynchronizationId = useRef<string | undefined>(undefined);
+  const rendererRetirementPublished = useRef(false);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
   const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
@@ -411,12 +412,31 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const flushPendingGridViewState = () => flushGridViewState();
-    window.addEventListener("pagehide", flushPendingGridViewState);
-    window.addEventListener("beforeunload", flushPendingGridViewState);
+    const handlePageHide = (event: PageTransitionEvent) => {
+      flushGridViewState();
+      if (event.persisted || rendererRetirementPublished.current) return;
+      const synchronization = pendingRendererSynchronizationRef.current;
+      if (!synchronization || acknowledgedRendererSynchronizationId.current !== synchronization.syncId) return;
+      const current = metadataRef.current;
+      const matchesCommittedSession =
+        synchronization.sessionId === null && synchronization.revision === null
+          ? current === undefined
+          : current?.sessionId === synchronization.sessionId && current.revision === synchronization.revision;
+      if (!matchesCommittedSession) return;
+      rendererRetirementPublished.current = true;
+      vscode.postMessage({
+        kind: "rendererRetiring",
+        syncId: synchronization.syncId,
+        sessionId: synchronization.sessionId,
+        revision: synchronization.revision
+      });
+    };
+    const handleBeforeUnload = () => flushGridViewState();
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handleBeforeUnload);
     return () => {
-      window.removeEventListener("pagehide", flushPendingGridViewState);
-      window.removeEventListener("beforeunload", flushPendingGridViewState);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
       flushGridViewState();
       if (sessionModeChangeFocusFrame.current !== undefined) {
         window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);

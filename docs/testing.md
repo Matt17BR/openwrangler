@@ -118,25 +118,26 @@ matrix for release candidates or changes that cross all of its boundaries.
   carried a 100,000-row sample receipt. This generated-data result is evidence for the former refusal case, not a
   performance threshold or substitute for the focused R 4.4/4.5 matrix.
 
-  Linux VS Code is the only installed comprehensive R core-catalog owner. macOS, Windows, and Cursor use the
-  representative core profile within the same 300-second phase limit:
-  real IRkernel discovery, one page round trip, profiles, filtering, Clear all,
-  compound-sort priority through the row context menu, Viewing-to-Editing replay, the Rename
-  draft/apply/inspection/undo lifecycle, one native
-  tibble operation, one keyed `data.table` operation, and kernel restart. The focused native-frame selector gives Linux
+  Explicit candidate `core-operations` uses its existing phase and job positions for one full installed Clone Column
+  lifecycle: preview, apply, applied-step inspection, edit and reapply with the same step/output identities, and undo.
+  Every candidate core cell runs that same Clone lifecycle. Linux VS Code retains all-block grid depth; macOS and
+  Windows VS Code plus Linux Cursor retain representative single-round-trip grid, profile, filtering, Clear all,
+  compound-sort, and Viewing-to-Editing seams within the same 300-second phase limit. Explicit candidate core disables
+  native-frame and embedded-restart work on every platform. The focused native-frame selector gives Linux
   VS Code comprehensive collapse/viewing/Rename/Drop ownership; macOS, Windows, and Cursor retain the representative
   tibble-Rename and keyed-data-table-Drop seams. Separate fresh Linux value and categorical profiles retain the base
-  grid and Rename lifecycle but omit native frames; VS Code owns value's exact twelve targeted operations and
+  grid and Rename lifecycle but omit native frames; VS Code owns value's unchanged targeted operations and
   categorical's exact two visible One-hot encode and Multi-label binarize journeys. Cursor instead retains the
   distinct core, native-frame, restart, terminal, literate, and generic packaged-editor seams. Every applicable local invocation
-  continues to reach an exact assertion of all 26 supported operation capabilities through its owned journey. A fresh
+  continues to validate the advertised installed operation registry, but direct R/runtime/generated-code/catalog tests
+  own exhaustive semantics for all 26 operations. A fresh
   Linux installed-tooling invocation
   separately owns the official R terminal and Operations sidebar. It seeds named-column base, tibble, and data-table
   frames in that exact terminal, waits for them to appear in Operations without Refresh, and opens and profiles the
   base frame. Linux plain `.R` moves to the separate literate-document invocation in both editors;
   macOS retains it in the core VS Code invocation, and Windows skips R documents. The initial
   picker still checks base, tibble, `data.table`, and supported `collapse` frames. Focused R runtime and webview tests
-  cover the full R operation catalog and document matrix; the representative installed-editor passes check the integration
+  cover the full R operation catalog and document matrix; the bounded installed-editor passes check the integration
   seams without repeating that matrix. The profile does not raise either the 300-second hard deadline or the
   180-second inactivity deadline, and it does not retry a failed phase.
 
@@ -254,8 +255,8 @@ own sealed failure evidence, and the cell checks every raw result only after all
 finished. Explicit candidate core skips embedded native-frame and restart work on Linux, macOS, and Windows because the
 dedicated selectors own it under the same 300-second hard, 180-second inactivity, and no-retry policy. Linux runs those
 selectors in VS Code and Cursor; macOS and Windows run them in VS Code. Focused value and categorical selectors also
-omit native frames and remain restart-free. Default/unset manual core and the remote R journey retain their embedded
-behavior, so no platform loses coverage. The
+omit native frames and remain restart-free. Default/unset manual core retains the full catalog, while the remote R
+journey retains representative embedded behavior, so no platform loses coverage. The
 remote R job uses only VS Code and the five-phase Docker fixture, retains that restart journey and its independent
 `lowerText` (Lowercase) operation check, and skips hosted R, local kernel preparation, Cursor, and native R/Quarto
 tooling. The source-only R contract remains in protected pull-request CI rather than becoming a release sibling. A
@@ -696,7 +697,8 @@ repeats artifact verification immediately before it starts, uses a fresh private
 only its own sealed failure-evidence upload. Each cell's exact failure check is deferred until every assigned phase has
 run. Explicit candidate core omits native-frame and restart work on Linux, macOS, and Windows because the dedicated
 selectors own it; focused value and categorical selectors also omit native frames and remain restart-free.
-Default/unset manual core and the remote R journey retain their embedded behavior, so no platform loses coverage.
+Default/unset manual core retains the full catalog, while the remote R journey retains representative embedded
+behavior, so no platform loses coverage.
 
 The remote R job retains the common Node and absolute hosted Python setup needed by the packaged harness, but performs
 no hosted pip install or local R setup before the existing VS Code Docker journey; its independent Lowercase check
@@ -857,20 +859,20 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites cover all supported operations. The core, value, and categorical packaged selectors retain exact complete
-26-operation capability assertions while partitioning their targeted operation checks. Core's targeted slice owns
-Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
-Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Group and
-aggregate. The `value-operations` targeted slice owns exactly Find and replace, Formula, Format Datetime, Min-max
+suites cover all supported operations and own exhaustive 26-operation semantics. Explicit candidate
+`core-operations` retains its existing phase but runs one full installed Clone Column lifecycle: preview, apply,
+applied-step inspection, edit and reapply with the same step/output identities, and undo. The `value-operations`
+targeted slice remains exactly Find and replace, Formula, Format Datetime, Min-max
 scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 `categorical-operations` targeted slice owns exactly One-hot encode and Multi-label binarize. Candidate core, value,
 and categorical omit the former shared native-frame scaffold. The `native-frames` selector owns the frame picker,
 collapse/viewing coverage, native tibble Rename, and keyed-data-table Drop at the original comprehensive or
 representative depth. Explicit candidate core omits embedded restart/reopen on Linux, macOS, and Windows because the
 dedicated `kernel-restart` selector owns it. Linux runs both dedicated selectors in VS Code and Cursor; macOS and
-Windows run them in VS Code. Focused native, value, and categorical selectors remain restart-free. Default/unset core
-and the remote R journey retain their embedded behavior, so there is no per-platform reduction. The focused
-targeted journeys assert boundary values, stable output IDs, complete generated-R source specification, preview,
+Windows run them in VS Code. Focused native, value, and categorical selectors remain restart-free. Default/unset
+manual core retains the full catalog and the remote R journey retains its representative embedded behavior, so there
+is no per-platform reduction. The focused value and categorical journeys assert boundary values, stable output IDs,
+complete generated-R source specification, preview,
 apply, and undo in VS Code. Cursor retains representative core plus the native-frame, restart, terminal, literate, and
 generic packaged-editor compatibility seams instead of repeating the complete focused catalogs.
 Categorical Undo keeps one authoritative one-shot dispatch receipt and waits up to 75 seconds for the queued
@@ -991,16 +993,17 @@ aggregate-deadline expiry during fetch and backoff, no-retry response/body/integ
 fixed diagnostics, and timer cleanup. This acquisition retry happens before any native editor starts and does not
 change its 300-second hard deadline, 180-second inactivity deadline, or no-automatic-retry rule.
 
-The packaged journey activates all three extensions, checks their exact versions and public current-cell/selection commands, and confirms
-that `.Rmd` and `.qmd` have the expected editor language modes. It dispatches `quarto.preview` exactly once, retains
-that one promise, and settles it inside the existing render bound before accepting any preview state. The harness pins
-the first semantic `quarto.previewView` tab, its exact owning tab group, and the first newly owned `Quarto Preview`
-terminal while requiring two identical rendered-HTML observations. It does not require that preserve-focus preview
-tab to become active. Ordinary acceptance then closes the exact preview
-owners, waits through the asynchronous reveal window, and proves zero preview tabs and terminals before invoking
-**Open in Open Wrangler** with the exact cursor in its R chunk. Only Linux screenshot mode retains those owners through
-the preview capture, then performs the same cleanup. It never focuses, resizes, reloads, retries, or dispatches a second
-preview action. Open Wrangler asks Quarto to run only that chunk and presents dataframes from the official R session.
+The packaged journey activates all three extensions, checks their exact versions and public current-cell/selection
+commands, and confirms that `.Rmd` and `.qmd` have the expected editor language modes. Ordinary candidate `.qmd`
+acceptance invokes **Open in Open Wrangler** directly with the exact cursor in its R chunk. It owns the resulting
+product title action, session/source identity, generated code/insertion, and cleanup; it does not dispatch, discover,
+wait for, or clean up Quarto's third-party preview, render server, tab, terminal, or HTML. Linux screenshot mode alone
+dispatches `quarto.preview` exactly once, retains and settles that promise inside the existing render bound, and pins
+the first `vscode.TabInputWebview` whose exact `viewType` is
+`mainThreadWebview-quarto.previewView`, along with its tab group and newly owned `Quarto Preview` terminal. Media
+capture requires two identical rendered-HTML observations and the visible preview, then performs bounded exact cleanup.
+It never focuses, resizes, reloads, retries, or dispatches a second preview action. Open Wrangler asks Quarto to run
+only the selected chunk and presents dataframes from the official R session.
 The R Markdown fixture still exercises the explicit owned-process command. A second `.qmd` declares `jupyter: python3`.
 The title action runs only the cursor-owned Python chunk through a private kernelspec, opens its live Pandas
 dataframe, leaves the later sentinel chunk untouched, and keeps the source bytes unchanged. Screenshot mode also
@@ -1135,10 +1138,28 @@ Preview release [run #77](https://github.com/Matt17BR/openwrangler/actions/runs/
 remediations from exact protected `main` commit `fdebcc96`. Installed performance, Cursor literate acceptance, and
 every other raw lane passed. Linux VS Code literate acceptance retained the exact semantic Quarto preview tab in its
 owning group, but the final harness assertion required that preserve-focus tab to be active. That focus assertion was
-not a product or release invariant and contradicted the unfocused packaged-editor journey. The correction removes only
-that active-tab gate; exact tab identity, exact group ownership, the newly owned terminal, stable HTML, optional
-media-only visible-content probing, and cleanup before the ordinary title action remain required. This correction has
-focused local evidence only and requires a fresh hosted candidate under the unchanged deadlines and no-retry policy.
+not a product or release invariant and contradicted the unfocused packaged-editor journey. Run #77 remains failed
+evidence; run #78 below exercised the immediate correction and exposed a separate deterministic tab-identity defect.
+
+Preview release [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected
+`main` commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` authored canonical artifact `9238748514`. Its exact
+1,132,638-byte VSIX has SHA-256 `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`,
+and checksum/provenance verification passed; installed-performance artifact `9238855519` also passed. Three raw reds
+blocked acceptance. Cursor `platform-smoke` artifact `9238818316` proved a product renderer-lifecycle defect: the host
+reported the new CSV session hydrated while exhaustive frame inspection found no physical session grid. Native-R
+core artifact `9238867261` stopped while applying an edited Clone Column step after a long accumulated catalog
+journey, but lacked decisive dispatch, scheduler, and final-state receipts; it is indeterminate harness evidence, not
+proof that the product mutation failed. Linux VS Code literate artifact `9238988590` was a deterministic harness
+failure because it waited for external `quarto.previewView`, while VS Code exposes WebviewPanel tabs through `TabInputWebview` as
+`mainThreadWebview-quarto.previewView`; its later `ERR_CONNECTION_REFUSED` observation followed missed ownership and
+cleanup rather than proving an Open Wrangler failure. The fan-in failed, publication was skipped, and no `v1.99.6`
+tag, GitHub prerelease, Azure Marketplace package, or Open VSX package was created.
+
+Run #78 remains failed hosted evidence. Locally frozen follow-ups add exact graceful renderer retirement, replace only
+explicit candidate core's accumulated catalog with the full Clone lifecycle, and remove third-party preview ownership
+from ordinary `.qmd` acceptance while retaining it only for Linux media capture. They add no selector, job, phase,
+deadline, retry, heartbeat, or runtime reopen. A fresh exact candidate is required to turn those corrections into
+release evidence.
 
 ```bash
 npm run build:test-extension &&
@@ -1182,26 +1203,29 @@ tail. Parallel
 guard, and the final candidate fan-in requires `R_PLATFORM_RESULT=success`.
 
 The manual Released Jupyter gate remains its existing serial default-core, value, categorical,
-interactive-terminal diagnostic path; its default/unset core keeps the embedded restart journey. Core checks exactly
-Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select
-Columns, Clone Column, Convert type, Text Length, and Group and aggregate. The value selector checks exactly Find and
+interactive-terminal diagnostic path; its default/unset core keeps the full catalog and embedded restart journey.
+Explicit candidate `core-operations` instead runs one complete installed Clone Column lifecycle—preview, apply,
+applied-step inspection, edit/reapply with the same step and output identity, and undo—inside the existing core phase.
+The value selector remains exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The categorical selector checks exact One-hot encode and Multi-label binarize preview, apply,
-generated code, and one-shot undo behavior without native R/Quarto editor tooling. This is exact 12 core/12 value/2
-categorical targeted ownership. Core, value, and categorical each require all 26 advertised operation capabilities
-before their targeted work but omit the former native-frame scaffold. `native-frames` owns the frame picker,
+generated code, and one-shot undo behavior without native R/Quarto editor tooling. Installed selectors validate the
+advertised operation registry, while direct R/runtime/generated-code/catalog suites own exhaustive 26-operation
+semantics. Candidate core, value, and categorical omit the former native-frame scaffold. `native-frames` owns the frame picker,
 collapse/viewing sessions, native tibble Rename, and keyed-data-table Drop at comprehensive Linux VS Code depth and
-representative macOS/Windows VS Code and Linux Cursor depth. Linux VS Code alone owns the comprehensive core catalog; macOS,
-Windows, and Cursor core are representative. Explicit candidate core skips both that work and embedded restart on
+representative macOS/Windows VS Code and Linux Cursor depth. macOS, Windows, and Cursor core remain representative.
+Explicit candidate core skips both that work and embedded restart on
 Linux, macOS, and Windows; `kernel-restart` owns restart/reopen under a fresh phase budget. Focused native, value, and
 categorical selectors remain restart-free. The value and categorical candidate catalogs run in VS Code only; Cursor
-retains the distinct core, native, restart, terminal, literate, and generic packaged seams. Default/unset core and the remote R journey retain their embedded behavior,
-so the split does not reduce coverage on any platform. The interactive and literate selectors reach the same exact
-capability assertion through their nested integration journeys. Interactive checks active R terminal discovery,
+retains the distinct core, native, restart, terminal, literate, and generic packaged seams. The remote R journey
+retains its representative embedded behavior, so the split does not reduce coverage on any platform. Interactive
+checks active R terminal discovery,
 replacement, editing, CSV
-and Parquet export through the real Save-dialog flow, and cleanup. Literate checks the packaged R Markdown document action and Quarto
-title actions, native Quarto preview, dataframe opening, editing, code insertion, the Python/Jupyter Quarto path, and
-cleanup in every requested editor; the candidate gate requests both VS Code and Cursor. All six focused selectors
+and Parquet export through the real Save-dialog flow, and cleanup. Literate checks the packaged R Markdown document
+action and Open Wrangler's R/Python Quarto title actions, dataframe opening, editing, code insertion, and cleanup in
+every requested editor; the candidate gate requests both VS Code and Cursor. Ordinary candidate acceptance owns no
+third-party Quarto preview semantics. Linux media capture alone owns the exact prefixed preview tab, bounded render,
+visible capture, and cleanup. All six focused selectors
 still verify the VSIX, editor, and R packages; only the interactive and literate selectors install and verify the
 pinned native R and Quarto extensions. On Linux, the literate selector begins with the plain `.R` journey that formerly
 ran in the core notebook phase. A separate runner-only selector,
@@ -1321,6 +1345,19 @@ mask or reconstruct notebook UI.
 A delivered post-reconfiguration marker that is never acknowledged must trigger the same bounded renderer reload and
 replay the committed session without reopening the runtime or repeating the import transaction.
 
+Component coverage must flush pending presentation state before publishing exactly one `rendererRetiring` receipt on
+a non-persisted `pagehide`, and must publish nothing for a persisted transition, stale marker, or marker that was never
+acknowledged. Panel coverage accepts only the exact current hydrated session/revision receipt, clears readiness and
+synchronization, and proves one existing bounded HTML recovery followed by fresh hydration without another
+`openSession` or an early `closeSession`. Malformed, unhydrated, superseded/host-replacement, and post-disposal
+receipts remain inert. This is graceful page lifecycle coverage, not a heartbeat: a hard renderer-process death that
+emits no `pagehide` remains out of scope.
+
+Packaged **Change Import Options** acceptance exercises the same real path. It retires the synchronized document via
+non-persisted `pagehide`, then only observes automatic receipt invalidation and the existing bounded replacement. The
+same session, runtime generation, and view must survive; the journey may not call `synchronizePanelForSession`, focus
+the panel, request a reload, or reopen the source or runtime.
+
 Explicit **Change Import Options** acceptance publishes checkpoints around every delimiter, encoding, header, and quote interaction, selects QuickPick rows through focus-checked keyboard navigation, and requires sequential prompts to ignore incidental focus loss without weakening Escape or cancellation. A primary CSV/TSV launch fails if any import prompt appears. Pointer and title/tab/Command Palette paths must flush presentation state, enter the busy interlock, and keep the product command pending through the exact renderer-prepared transaction so the custom editor cannot reclaim focus over an open Quick Input. After the final prompt closes, acceptance restores focus once, requires the exact titled session and physical grid, and waits for one fresh synchronization before later interaction. Grid restoration must publish the authoritative widths and selection before assigning either scroll axis; a synchronous browser scroll event may adjust the physical viewport but must never merge that viewport with the previous presentation. No mutation, prompt, or renderer action is retried after an indeterminate dispatch, and terminal cleanup leaves no coordinator session.
 
 Same-group notebook switches may retry discovery only for a proven-retired renderer target and still fail immediately for a closed workbench, disconnected browser, or error from a live target. Grid discovery orders bounded candidates, prioritizes the newest Open Wrangler target, and requires the exact session marker after hydration. Native prompt acceptance never assigns focus with Playwright: after the product reclaims the workbench Quick Input through the standard focus command, acceptance waits for that transfer, sends complete key-down/key-up pairs between chained Quick Inputs, keeps separate Node-owned deadlines for each interaction and diagnostics collection, and records only structural diagnostics without user values. A late renderer-ready event may republish retained state but never reopen a source or retry a failed or denied launch. Panel cleanup uses the exact session identity, accepts the last confirmed revision for terminal close, and never depends on the active editor.
@@ -1342,10 +1379,12 @@ orders `native-frames` before `value-operations` before `categorical-operations`
 then for every phase a fresh exact-candidate verifier, a fresh explicit-editor invocation/private-root owner, an
 immediate sealed diagnostic upload, and a shard-local deferred check of every raw outcome. They require explicit
 candidate core on Linux, macOS, and Windows to omit embedded native-frame and restart work, the dedicated selectors to
-give Linux VS Code comprehensive ownership plus representative native/restart seams to every other candidate platform/editor,
-focused value and categorical selectors to omit native-frame work and remain restart-free, and default/unset manual core
-plus remote R to retain their embedded behavior. They reject losing a named compatibility seam, a phase moved to the
-wrong job or shard, altered 12/12/2 ownership, missing coverage, timeout or
+give Linux VS Code comprehensive native-frame ownership plus representative native/restart seams to every other
+candidate platform/editor, focused value and categorical selectors to omit native-frame work and remain restart-free,
+explicit candidate core to run the exact Clone preview/apply/inspection/edit-same-step/reapply/undo lifecycle, and
+default/unset manual core plus remote R to retain their full-catalog and representative embedded behavior respectively.
+They reject losing a named compatibility seam, expanding candidate core back into exhaustive catalog semantics, a
+phase moved to the wrong job or shard, missing coverage, timeout or
 retry relaxation, unknown shard, or an early failure edge that can suppress later evidence. They also reject
 reintroducing the pull-request-owned direct R contract into candidate acceptance.
 

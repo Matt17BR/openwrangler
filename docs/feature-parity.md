@@ -208,19 +208,21 @@ support and does not cover the editing claims below.
 
 The [product gallery](media-gallery.md#r-notebooks-and-documents-199-preview) shows the packaged IRkernel picker, viewing
 workbench, Rename Column draft, and generated R inserted into the originating notebook. Candidate local acceptance
-uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Core, value, and
-categorical retain their exact supported-operation capability assertions. Core's targeted slice owns the five row
-operations, Rename, Drop, Select, Clone, Convert type, Text Length, and Group and aggregate. The focused value targeted
+uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Explicit candidate core
+keeps its existing phase but owns one complete installed Clone Column lifecycle: preview, apply, applied-step
+inspection, edit and reapply with the same step/output identities, and undo. Direct native-R, runtime, generated-code,
+and catalog tests own exhaustive semantics for all 26 operations. The focused value targeted
 slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
-indicator values, generated calls, previews, apply, and undo in VS Code. Linux VS Code is the sole comprehensive core
-and focused-catalog owner; macOS, Windows, and Cursor retain representative platform/editor seams. Candidate core, value, and
+indicator values, generated calls, previews, apply, and undo in VS Code. macOS, Windows, and Cursor retain
+representative platform/editor seams. Candidate core, value, and
 categorical omit the former shared native-frame scaffold. `native-frames` owns collapse/viewing and native
 tibble/data-table Rename/Drop at the original comprehensive or representative depth; `kernel-restart` owns
 restart/reopen. Explicit candidate core omits both pieces on Linux, macOS, and Windows. Linux executes the dedicated
-selectors in VS Code and Cursor, while macOS and Windows execute them in VS Code. Default/unset core and the remote R
-journey retain their embedded behavior. This routing does not reduce native-frame or restart coverage on any platform.
+selectors in VS Code and Cursor, while macOS and Windows execute them in VS Code. Default/unset manual core retains the
+full catalog and the remote R journey retains its representative embedded behavior. This routing does not reduce
+native-frame or restart coverage on any platform and adds no selector, job, phase, deadline, or retry.
 Categorical Undo uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation completion bound without a
 post-boundary retry. The remote R Docker journey independently retains `lowerText` (Lowercase). Across the local
 slices, base-frame coverage includes preview, apply, inspection, discard, latest-step editing, and undo; Convert type
@@ -253,6 +255,10 @@ explicit R-document command explains that no R code chunk was found. Packaged Li
 types through separate plain and focused literate phases. Cursor already runs the complete plain `.R` document path,
 including cleaned CSV export; the candidate workflow must also pass the focused literate formats in its own fresh
 installed-editor phase.
+Ordinary candidate `.qmd` acceptance owns the Open Wrangler title action, exact session/source identity, generated
+code/insertion, and cleanup; it does not own Quarto's third-party preview tab, render server, terminal, HTML, or
+cleanup. Linux media capture alone dispatches one bounded preview, requires the exact
+`mainThreadWebview-quarto.previewView` `TabInputWebview` and visible stable HTML, and closes its exact preview owners.
 The macOS preview and stable `r_platform` cells retain the same plain `.R` subjourney in packaged VS Code core, while
 the candidate's focused Linux VS Code and Cursor phases are required to own `.Rmd`, `.qmd`, and Python Quarto. The
 Windows `r_platform` phases collectively cover core, native frames, and restart but skip direct documents. Local
@@ -261,7 +267,8 @@ Windows hides the explicit
 official R terminal. Remote-resource actions and the Command Palette remain reachable because static client keys
 cannot identify the extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
 and is not part of the release matrix. Direct document execution is disabled on a Windows extension host until the
-extension can own the complete spawned process tree. Other cleaning operations are not available in R yet.
+extension can own the complete spawned process tree. Operations outside the 26-operation native-R catalog remain
+unavailable in R.
 
 Before a 2.0 tag can be published, both release workflows must pass separate `r_platform` cells on hosted macOS and
 Windows. Each prepares R once, then runs freshly verified packaged VS Code-only `core-operations`, `native-frames`, and
@@ -271,9 +278,12 @@ verified focused native-frame, restart, active-terminal, and literate seams in p
 while VS Code alone owns the complete value and categorical catalogs. Candidate acceptance keeps the Linux evidence in two parallel local-R shards: lifecycle runs
 `core-operations`, `kernel-restart`, `interactive-terminal`, and `literate-documents`, while editing runs
 `native-frames`, `value-operations`, and `categorical-operations`. Every phase gets a fresh exact-candidate
-verification, fresh requested-editor private roots, and its own immediate sealed failure upload; exact 12/12/2
-targeted ownership, one comprehensive Linux native-frame owner, representative native/restart seams on every hosted
-platform, and the 300-second hard, 180-second inactivity, and
+verification, fresh requested-editor private roots, and its own immediate sealed failure upload. The installed
+candidate `core-operations` phase owns one complete Clone Column lifecycle: preview, apply, inspect,
+edit the same step while retaining its step/output identity, reapply, and undo. Direct native-R/runtime/catalog tests
+own exhaustive semantics for all 26 operations; the installed value and categorical slices, the complete Linux
+native-frame owner, representative native/restart seams on every hosted platform, and the 300-second hard,
+180-second inactivity, and
 no-retry contracts remain unchanged. Preview release runs #72,
 [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383), and
 [#74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129), and
@@ -292,6 +302,22 @@ Publication was again skipped, so no `v1.99.6` was created. The explicit candida
 projected to move wall time toward 20 minutes, but it has not passed hosted acceptance and neither failed run is parity
 or release evidence.
 
+Preview [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected `main`
+commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` authored canonical artifact `9238748514`: its exact
+1,132,638-byte VSIX had SHA-256 `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`;
+checksum and provenance revalidated, and installed-performance artifact `9238855519` passed. Three raw failures still
+blocked the fan-in. Cursor `platform-smoke` artifact `9238818316`
+exposed a product renderer-liveness defect: an attached Open Wrangler webview contained no root, app, or grid while
+the host retained its exact hydrated receipt. The artifact does not prove which physical retirement event produced
+that mismatch.
+Native-R core artifact `9238867261` was indeterminate harness evidence at edited Clone apply because its accumulated
+catalog journey lacked decisive dispatch, scheduler, and final-state receipts. Literate artifact `9238988590` was a
+deterministic harness failure: it expected unprefixed `quarto.previewView`, while VS Code exposed the exact
+`mainThreadWebview-quarto.previewView` `TabInputWebview`; the later `ERR_CONNECTION_REFUSED` followed that missed
+ownership and cleanup. The fan-in failed and publication was skipped, so `v1.99.6` is absent from GitHub, Open VSX,
+and Azure Marketplace. These failed hosted results remain distinct from the locally frozen, unhosted renderer,
+Clone-lifecycle, and Quarto-ownership corrections.
+
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                            | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | Native R frame paging and typed cells         | 1.99 preview                    | Partial | Projected pages, row labels, local/remote packaged tests                                                                  | Preview release |
@@ -306,7 +332,7 @@ or release evidence.
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                   | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real-R contracts, and prior focused VS Code run; candidate gate now also requires Cursor                          | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                     | Preview release |
-| R cleaning operations and generated code      | 26 operations                   | Partial | Native/runtime covers all 26; fresh 12/12/2 targeted slices retain a shared lifecycle scaffold                            | Preview release |
+| R cleaning operations and generated code      | 26 operations                   | Partial | Direct native-R/runtime/catalog tests cover all 26; the next candidate core is scoped to one complete Clone lifecycle     | Preview release |
 | Copy or save generated R                      | 26 operations                   | Partial | Rename uses packaged save; all 26 generate executable code                                                                | Preview release |
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged VS Code run                                                                     | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                  | Preview release |

@@ -3689,6 +3689,67 @@ describe("App file import options", () => {
     }
   });
 
+  it("publishes one exact retirement receipt after pending presentation state on a non-persisted page exit", () => {
+    vi.useFakeTimers();
+    try {
+      const dispatchPageHide = (persisted: boolean) => {
+        const event = new Event("pagehide");
+        Object.defineProperty(event, "persisted", { value: persisted });
+        act(() => window.dispatchEvent(event));
+      };
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "U".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision + 1,
+        layoutTransitionPending: false
+      });
+      webviewPostMessage.mockClear();
+      dispatchPageHide(false);
+      expect(webviewPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "rendererRetiring" }));
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "R".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision,
+        layoutTransitionPending: false
+      });
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "R".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+
+      webviewPostMessage.mockClear();
+      dispatchPageHide(true);
+      expect(webviewPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "rendererRetiring" }));
+
+      fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+      dispatchPageHide(false);
+      dispatchPageHide(false);
+
+      const exitMessages = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message?.kind === "updateViewState" || message?.kind === "rendererRetiring");
+      expect(exitMessages).toEqual([
+        expect.objectContaining({ kind: "updateViewState" }),
+        {
+          kind: "rendererRetiring",
+          syncId: "R".repeat(32),
+          sessionId: metadata.sessionId,
+          revision: metadata.revision
+        }
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps bounded recovery pulls alive until the matching final marker commits", () => {
     vi.useFakeTimers();
     try {

@@ -76,6 +76,13 @@ The primary literate action never renders or executes the complete document. Out
 one exact associated Python Interactive Window or the selected R session; when both exist it asks explicitly which
 one to open.
 
+Ordinary candidate `.qmd` acceptance owns that Open Wrangler title-action/session/source/code/cleanup contract and no
+third-party Quarto preview, render-server, tab, terminal, or HTML lifecycle. Linux product-media capture is the sole
+exception: it dispatches one bounded `quarto.preview`, identifies the exact
+`mainThreadWebview-quarto.previewView` `TabInputWebview`, proves its owned terminal, stable rendered HTML, and visible
+preview, then performs bounded cleanup. This separation is an acceptance-ownership boundary, not a change to the
+product title action.
+
 The stable action remains visible on Windows because live R and Python sessions do not require Open Wrangler to own a
 local document process. On macOS and Linux the tab menu keeps the explicit R-document choices, and Explorer keeps the
 document command. Cursor pins the stable action alongside the file and notebook actions. The explicit
@@ -360,23 +367,23 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. Local packaged acceptance assigns disjoint targeted operations to fresh core, value,
-and categorical editing profiles and moves candidate native-frame and restart work into dedicated selectors. Core,
-value, and categorical retain exact complete 26-operation capability assertions, including the nested
-interactive-terminal and literate-document journeys. Core's targeted slice owns Filter Rows,
-Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone
-Column, Convert type, Text Length, and Group and aggregate. The `value-operations` targeted slice owns exactly Find and
+frame, and final session cleanup. Local packaged acceptance keeps fresh core, value, and categorical editing profiles
+and moves candidate native-frame and restart work into dedicated selectors. Explicit candidate `core-operations`
+owns one complete installed Clone Column lifecycle: preview, apply, applied-step inspection, editing and reapplying
+the same step while preserving its step and output identities, then undo. Direct native-R, runtime, generated-code,
+and catalog suites own exhaustive semantics for all 26 operations. The `value-operations` targeted slice still owns exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The
 `categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
-values, generated calls, preview, apply, and undo in VS Code. Linux VS Code is the sole comprehensive core and focused
-catalog owner; macOS, Windows, and Cursor retain representative platform/editor seams. Candidate core, value, and categorical
+values, generated calls, preview, apply, and undo in VS Code. macOS, Windows, and Cursor retain representative
+platform/editor seams. Candidate core, value, and categorical
 omit the former shared native-frame scaffold. `native-frames` makes Linux VS Code the comprehensive collapse/viewing
 and native tibble/data-table Rename/Drop owner; macOS, Windows, and Cursor retain representative Rename/Drop seams.
 `kernel-restart` owns restart/reopen. Explicit
 candidate core omits both on Linux, macOS, and Windows. Linux executes the dedicated selectors in VS Code and Cursor,
-while macOS and Windows execute them in VS Code. Default/unset core and the remote R journey retain their embedded
-behavior. The routing retains one native-frame and restart compatibility seam on every platform without repeating comprehensive proof.
+while macOS and Windows execute them in VS Code. Default/unset manual core retains its full catalog and the remote R
+journey retains its representative embedded behavior. The routing retains one native-frame and restart compatibility
+seam on every platform without repeating comprehensive proof or adding a selector, job, phase, deadline, or retry.
 Categorical Undo uses one
 authoritative one-shot dispatch receipt
 and waits up to 75 seconds for that queued mutation to complete; crossing the dispatch boundary can never trigger a
@@ -535,6 +542,20 @@ import reconfiguration, because message delivery alone cannot prove that the ren
 acknowledgement cancels that watchdog; an unacknowledged visible renderer receives the existing bounded HTML reload and
 authoritative session replay without reopening the runtime or repeating the mutation.
 
+After an exact synchronization is committed, the webview flushes pending presentation state and emits one
+receipt-bound `rendererRetiring` message on a non-persisted `pagehide`. The host accepts only the exact current
+hydrated session/revision receipt, clears renderer readiness and synchronization, and arms that same bounded HTML
+reload; it does not reopen or close the runtime session. Persisted transitions and stale, malformed, unhydrated,
+disposed, or host-replacement receipts are inert. This handles graceful document retirement only. A hard renderer
+process death that emits no lifecycle event remains outside the contract because Open Wrangler has no heartbeat or
+liveness watchdog.
+
+The packaged import-reconfiguration journey exercises that real lifecycle rather than a test-only synchronization
+path: it retires the synchronized document through non-persisted `pagehide`, observes automatic receipt invalidation,
+and waits passively for the existing bounded replacement while proving that the same session, runtime generation, and
+view survive. It does not call `synchronizePanelForSession`, focus the panel, request a reload, or reopen the source or
+runtime.
+
 When the selected-column drawer claims a summary that is still in the background queue, the webview asks the
 coordinator to move that same request into the interactive queue. An active summary is left alone, and the request ID
 does not change. This avoids repeating engine work while keeping the selected statistics ahead of unrelated queued
@@ -593,9 +614,9 @@ the focused `platform-smoke` compatibility seam without rerunning extension-host
 installed-artifact or live external evidence. Linux local R uses exactly two non-cancelling shard cells: lifecycle
 executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
 `literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
-partitions scheduling while keeping targeted ownership at 12 core, 12 value, and two categorical operations, one
-comprehensive Linux native-frame owner, representative native/restart seams on every hosted platform, and complete
-capability assertions intact.
+partitions scheduling while keeping the installed Clone lifecycle in the existing core phase, the unchanged complete
+value and categorical slices, one comprehensive Linux native-frame owner, and representative native/restart seams on
+every hosted platform. Exhaustive 26-operation semantics remain direct R/runtime/catalog-test ownership.
 
 Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
 fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own
@@ -608,8 +629,9 @@ literal result of every internal job and succeeds only when all are `success`. P
 literal success from package production, the single candidate-workflow call, and Remote SSH. Candidate core omits
 embedded native-frame and restart work on all three hosted platforms because the dedicated selectors own it. Linux
 runs both in VS Code and Cursor; macOS and Windows run both in VS Code. Focused value and categorical selectors also
-omit native-frame work and remain restart-free. Default/unset manual core and the remote R journey retain their
-embedded behavior. Every hosted platform retains a native/restart seam, while only Linux repeats the comprehensive depth. The manually dispatched Released Jupyter workflow therefore remains a serial,
+omit native-frame work and remain restart-free. Default/unset manual core retains its full catalog, while the remote R
+journey retains representative embedded behavior. Every hosted platform retains a native/restart seam, while only
+Linux repeats the comprehensive depth. The manually dispatched Released Jupyter workflow therefore remains a serial,
 backward-compatible, non-authoritative diagnostic and is intentionally not part of that release proof.
 
 Preview [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) measured the two-shard redesign at
@@ -630,6 +652,20 @@ proof passed, as did every raw lane except auxiliary installed-performance proce
 literate generated-code 0×0 layout race. Both are harness/runner failures rather than product or release-invariant
 signals, but the fan-in and publication remained correctly blocked. The frozen RSS-boundary and literate-layout fixes
 described above have no hosted candidate proof; a fresh run is required.
+
+Preview [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected `main`
+commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` authored canonical artifact `9238748514`: the exact
+1,132,638-byte VSIX has SHA-256 `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`, and its
+checksum and provenance revalidated. Installed-performance artifact `9238855519` was green. Its three raw blockers
+were distinct: Cursor `platform-smoke` artifact `9238818316` exposed the product's stale hydrated renderer receipt;
+native-R core artifact `9238867261` was indeterminate harness evidence at edited Clone apply because the accumulated
+journey lacked decisive dispatch/scheduler/final-state receipts; and literate artifact `9238988590` was a
+deterministic harness failure because it looked for unprefixed `quarto.previewView` instead of VS Code's exact
+`mainThreadWebview-quarto.previewView` `TabInputWebview` identity. Its later `ERR_CONNECTION_REFUSED` followed missed
+preview ownership and cleanup rather than proving a product defect. The fan-in failed,
+publication was skipped, and `v1.99.6` is absent from GitHub, Open VSX, and Azure Marketplace. Run #78
+remains failed hosted evidence. The renderer-retirement, candidate-Clone, and media-only Quarto corrections described
+above are locally frozen and unhosted; only a fresh exact candidate can validate them.
 
 ## Persistence and identity
 
