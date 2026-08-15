@@ -8,6 +8,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Preview release [run #77](https://github.com/Matt17BR/openwrangler/actions/runs/31852540354) from protected `main`
+  commit `fdebcc96` published nothing. Installed performance, Cursor literate acceptance, and every other raw lane
+  passed. Linux VS Code literate acceptance retained the exact semantic Quarto preview tab in its owning group, but
+  the final harness assertion required that preserve-focus tab to be active. Native R literate acceptance now treats
+  the frozen exact tab and owning-group identities as readiness without requiring focus. Its single awaited command,
+  newly owned terminal, stable HTML, media-only visible-content probe, exact cleanup, and ordinary title-action order
+  are unchanged. This correction is locally frozen and covered but not yet proved by a hosted candidate; the existing
+  300-second hard deadline, 180-second inactivity deadline, and no-retry policy are unchanged.
 - Installed-editor performance no longer samples or gates on whole `/proc` editor-process-tree and Open Wrangler
   runtime RSS. That observation was coupled to hosted Electron helper timing and could turn successful product,
   responsiveness, cache, cancellation, and cleanup evidence red for a harness-only reason. The v10 release, v5
