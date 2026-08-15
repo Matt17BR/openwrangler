@@ -12397,6 +12397,350 @@ by_example_step <- function(id, source_names, new_name, input_rows, outputs, pro
   if (!is.null(program)) params$program <- program
   list(id = id, kind = "byExample", params = params)
 }
+
+# Generated plans must size each by-example step from the frame produced by the
+# immediately preceding step, not from the immutable source frame. Exercise all
+# native operations that can reduce cardinality and retain the exact live frame
+# so generated/live comparison includes dataframe, row-name, and column attrs.
+assert_by_example_after_cardinality_change <- function(case) {
+  case_environment <- new.env(parent = emptyenv())
+  token <- ordered(
+    c("beta", "alpha", NA_character_, "beta", "gamma", "alpha"),
+    levels = c("alpha", "beta", "gamma")
+  )
+  source <- data.frame(
+    token = token,
+    value = c(1L, 2L, NA_integer_, 1L, 3L, 2L),
+    row.names = paste0("source-row-", seq_len(6L)),
+    check.names = FALSE
+  )
+  if (identical(case$flavor, "tibble")) {
+    row.names(source) <- NULL
+    source <- tibble::as_tibble(source, .name_repair = "minimal")
+    attr(source[[1L]], "names") <- paste0("element-", seq_len(6L))
+    assert_identical(
+      attr(source[[1L]], "names", exact = TRUE),
+      paste0("element-", seq_len(6L)),
+      "the named-factor cardinality fixture lost its element names before dispatch"
+    )
+  }
+  case_environment$cardinality_source <- source
+  source_bytes <- serialize(case_environment$cardinality_source, NULL, version = 3L)
+  live_result <- NULL
+  live_formula_result <- NULL
+  case_contract <- openwrangler_r_frame_contract
+  case_by_example_column_at <- case_contract$by_example_column_at
+  case_formula_column_at <- case_contract$formula_column_at
+  case_contract$by_example_column_at <- function(...) {
+    result <- case_by_example_column_at(...)
+    live_result <<- unserialize(serialize(result, NULL, version = 3L))
+    result
+  }
+  case_contract$formula_column_at <- function(...) {
+    result <- case_formula_column_at(...)
+    live_formula_result <<- unserialize(serialize(result, NULL, version = 3L))
+    result
+  }
+  case_agent <- openwrangler_r_kernel_agent$new_agent(case_contract, case_environment)
+  case_dispatch <- function(kind, payload) dispatch_with(case_agent, kind, payload)
+
+  opened <- case_dispatch(
+    "openSession",
+    list(sessionId = case$session_id, variableName = "cardinality_source", page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("the %s composition session did not open", case$label))
+  cardinality_preview <- case_dispatch(
+    "previewStep",
+    list(
+      sessionId = case$session_id,
+      revision = 0L,
+      step = case$step,
+      page = page_window()
+    )
+  )
+  assert_identical(
+    cardinality_preview$kind,
+    "stepPreview",
+    sprintf("the %s cardinality step did not preview", case$label)
+  )
+  cardinality_apply <- case_dispatch(
+    "applyDraft",
+    list(sessionId = case$session_id, revision = cardinality_preview$revision, page = page_window())
+  )
+  assert_identical(
+    cardinality_apply$action,
+    "apply",
+    sprintf("the %s cardinality step did not apply", case$label)
+  )
+
+  by_example_id <- paste0(case$step$id, "-by-example")
+  source_reference <- list(id = "r:c:0", name = "token")
+  by_example_preview <- case_dispatch(
+    "previewStep",
+    list(
+      sessionId = case$session_id,
+      revision = cardinality_apply$revision,
+      step = list(
+        id = by_example_id,
+        kind = "byExample",
+        params = list(
+          sourceColumns = I(list(source_reference)),
+          newColumn = "token copy",
+          examples = I(list(
+            list(inputs = I(list("alpha")), output = "alpha"),
+            list(inputs = I(list("beta")), output = "beta")
+          ))
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    by_example_preview$kind,
+    "stepPreview",
+    sprintf("by-example after %s did not preview", case$label)
+  )
+  assert_identical(
+    by_example_preview$retainedStep$params$program$kind,
+    "column",
+    sprintf("by-example after %s did not synthesize a direct column program", case$label)
+  )
+  assert_identical(
+    by_example_preview$retainedStep$params$sourceColumns[[1L]],
+    source_reference,
+    sprintf("by-example after %s changed its stable source reference", case$label)
+  )
+  assert_identical(
+    unlist(by_example_preview$page$page$columnIds, use.names = FALSE),
+    c(case$result_ids, paste0("c:step:", by_example_id, ":0")),
+    sprintf("by-example after %s returned unstable column identities", case$label)
+  )
+  assert_identical(
+    by_example_preview$page$page$totalRows,
+    case$row_count,
+    sprintf("by-example after %s used the wrong live row count", case$label)
+  )
+  by_example_apply <- case_dispatch(
+    "applyDraft",
+    list(sessionId = case$session_id, revision = by_example_preview$revision, page = page_window())
+  )
+  assert_identical(
+    by_example_apply$action,
+    "apply",
+    sprintf("by-example after %s did not apply", case$label)
+  )
+  if (is.null(live_result)) {
+    stop(sprintf("by-example after %s did not execute against the live frame", case$label), call. = FALSE)
+  }
+  assert_identical(
+    live_result[["token copy"]],
+    live_result[["token"]],
+    sprintf("live by-example after %s lost factor values, attrs, or names", case$label)
+  )
+  assert_identical(
+    base::attr(live_result[["token copy"]], "names", exact = TRUE),
+    case$output_names,
+    sprintf("live by-example after %s did not retain the current element names", case$label)
+  )
+
+  generated_environment <- new.env(parent = baseenv())
+  assign(
+    "cardinality_source",
+    unserialize(source_bytes),
+    envir = generated_environment
+  )
+  eval(parse(text = by_example_apply$code), envir = generated_environment)
+  generated <- get("open_wrangler_result", envir = generated_environment, inherits = FALSE)
+  assert_identical(
+    serialize(generated, NULL, version = 3L),
+    serialize(live_result, NULL, version = 3L),
+    sprintf("generated by-example after %s diverged from the exact live frame", case$label)
+  )
+  assert_identical(
+    generated[["token copy"]],
+    generated[["token"]],
+    sprintf("generated by-example after %s lost factor values, attrs, or names", case$label)
+  )
+  assert_identical(
+    serialize(case_environment$cardinality_source, NULL, version = 3L),
+    source_bytes,
+    sprintf("live %s/by-example composition mutated its source", case$label)
+  )
+  assert_identical(
+    serialize(get("cardinality_source", envir = generated_environment, inherits = FALSE), NULL, version = 3L),
+    source_bytes,
+    sprintf("generated %s/by-example composition mutated its source", case$label)
+  )
+
+  by_example_undo <- case_dispatch(
+    "undoStep",
+    list(sessionId = case$session_id, revision = by_example_apply$revision, page = page_window())
+  )
+  assert_identical(
+    by_example_undo$action,
+    "undo",
+    sprintf("the %s composition could not restore its cardinality-only plan", case$label)
+  )
+  formula_id <- paste0(case$step$id, "-formula")
+  formula_preview <- case_dispatch(
+    "previewStep",
+    list(
+      sessionId = case$session_id,
+      revision = by_example_undo$revision,
+      step = list(
+        id = formula_id,
+        kind = "formula",
+        params = list(
+          leftColumn = case$formula_reference,
+          operator = "add",
+          newColumn = "value plus one",
+          value = 1L
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    formula_preview$kind,
+    "stepPreview",
+    sprintf("Formula after %s did not preview", case$label)
+  )
+  assert_identical(
+    unlist(formula_preview$page$page$columnIds, use.names = FALSE),
+    c(case$result_ids, paste0("c:step:", formula_id, ":0")),
+    sprintf("Formula after %s returned unstable column identities", case$label)
+  )
+  assert_identical(
+    formula_preview$page$page$totalRows,
+    case$row_count,
+    sprintf("Formula after %s used the wrong live row count", case$label)
+  )
+  formula_apply <- case_dispatch(
+    "applyDraft",
+    list(sessionId = case$session_id, revision = formula_preview$revision, page = page_window())
+  )
+  assert_identical(
+    formula_apply$action,
+    "apply",
+    sprintf("Formula after %s did not apply", case$label)
+  )
+  if (is.null(live_formula_result)) {
+    stop(sprintf("Formula after %s did not execute against the live frame", case$label), call. = FALSE)
+  }
+  generated_formula_environment <- new.env(parent = baseenv())
+  assign(
+    "cardinality_source",
+    unserialize(source_bytes),
+    envir = generated_formula_environment
+  )
+  eval(parse(text = formula_apply$code), envir = generated_formula_environment)
+  generated_formula <- get(
+    "open_wrangler_result",
+    envir = generated_formula_environment,
+    inherits = FALSE
+  )
+  assert_identical(
+    serialize(generated_formula, NULL, version = 3L),
+    serialize(live_formula_result, NULL, version = 3L),
+    sprintf("generated Formula after %s diverged from the exact live frame", case$label)
+  )
+  assert_identical(
+    serialize(get("cardinality_source", envir = generated_formula_environment, inherits = FALSE), NULL, version = 3L),
+    source_bytes,
+    sprintf("generated %s/Formula composition mutated its source", case$label)
+  )
+  assert_identical(
+    serialize(case_environment$cardinality_source, NULL, version = 3L),
+    source_bytes,
+    sprintf("live %s/Formula composition mutated its source", case$label)
+  )
+  invisible(case_dispatch("closeSession", list(sessionId = case$session_id)))
+}
+
+cardinality_composition_cases <- list(
+  list(
+    label = "Drop Missing Rows",
+    session_id = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+    flavor = "tibble",
+    row_count = 5L,
+    output_names = paste0("element-", c(1L, 2L, 4L, 5L, 6L)),
+    result_ids = c("r:c:0", "r:c:1"),
+    formula_reference = list(id = "r:c:1", name = "value"),
+    step = row_reduction_step(
+      "dropMissingRows",
+      "cardinality-drop-missing",
+      columns = list(list(id = "r:c:1", name = "value")),
+      mode = "any"
+    )
+  ),
+  list(
+    label = "Drop Duplicates",
+    session_id = "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b",
+    flavor = "data.frame",
+    row_count = 4L,
+    output_names = NULL,
+    result_ids = c("r:c:0", "r:c:1"),
+    formula_reference = list(id = "r:c:1", name = "value"),
+    step = row_reduction_step(
+      "dropDuplicates",
+      "cardinality-drop-duplicates",
+      columns = list(list(id = "r:c:0", name = "token")),
+      mode = "first"
+    )
+  ),
+  list(
+    label = "Filter Rows",
+    session_id = "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
+    flavor = "data.frame",
+    row_count = 2L,
+    output_names = NULL,
+    result_ids = c("r:c:0", "r:c:1"),
+    formula_reference = list(id = "r:c:1", name = "value"),
+    step = list(
+      id = "cardinality-filter-rows",
+      kind = "filterRows",
+      params = list(filterModel = list(
+        logic = "and",
+        filters = I(list(list(
+          column = list(id = "r:c:0", name = "token"),
+          type = "string",
+          predicates = I(list()),
+          valueFilter = list(
+            kind = "values",
+            selectedValues = I(list("beta")),
+            includeNulls = FALSE,
+            includeNaN = FALSE
+          )
+        ))),
+        sort = I(list())
+      ))
+    )
+  ),
+  list(
+    label = "Group By",
+    session_id = "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d",
+    flavor = "data.frame",
+    row_count = 4L,
+    output_names = NULL,
+    result_ids = c("r:c:0", "c:step:cardinality-group-by:0"),
+    formula_reference = list(id = "c:step:cardinality-group-by:0", name = "total"),
+    step = list(
+      id = "cardinality-group-by",
+      kind = "groupBy",
+      params = list(
+        keys = I(list(list(id = "r:c:0", name = "token"))),
+        aggregations = I(list(list(
+          column = list(id = "r:c:1", name = "value"),
+          operation = "sum",
+          alias = "total"
+        )))
+      )
+    )
+  )
+)
+for (cardinality_composition_case in cardinality_composition_cases) {
+  assert_by_example_after_cardinality_change(cardinality_composition_case)
+}
 by_example_ast_cases <- list(
   list("literal", "literal out", "literal", c("identity"), list(list("one"), list("two")), list("fixed", "fixed")),
   list("column", "column out", "column", c("identity"), list(list("one"), list("two")), list("one", "two")),
