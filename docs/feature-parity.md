@@ -114,6 +114,16 @@ own the exact ordered catalog and executable production-generated R; a separate 
 clipboard/atomic script exports with distinct executable operation-labelled buffers. The source is still unhosted and
 lacks a fresh candidate plus all-28 installed/performance evidence, so every affected Native R row remains **Partial**.
 
+Current source also contains a candidate-bound Native R performance harness and its v1 report validator. The harness
+requires the exact clean tracked provenance commit/tag. Its Linux-only 250,000×20 mixed fixture retains five fresh
+samples and twenty each for 200×16 projected, compound-filtered, cached stable-sorted, and eight-column-summary work at
+both direct packaged-frame and real Node-to-owned-`Rscript` stdin/stdout boundaries, with a separate uncached sort and
+untimed dataset-statistics, greater-than-one-million-row summary, keyed-`data.table`, resource, response-accounting,
+session/process, and cleanup proofs. It deliberately defines no reviewed numeric threshold and cannot emit a release
+pass. It is infrastructure rather than recorded evidence: no row advances until a fresh immutable candidate supplies
+the separately reviewed performance record, the installed all-28 matrix passes, and the following stable-authoring
+change resolves that record's source/candidate ordering.
+
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
 object. R documents follow the file start-mode setting, which defaults to Editing. Generated R can be copied or saved
 from any editing session. Insertion is available only for an exact originating IRkernel notebook or Open

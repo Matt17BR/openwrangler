@@ -74,8 +74,10 @@ matrix for release candidates or changes that cross all of its boundaries.
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. Each direct native-R contract subprocess has an
   explicit 300-second bound because the exact kernel lifecycle matrix, including cardinality-changing replay and
   live/generated categorical failure cases, can legitimately exceed the former shared 120-second cap. The subsequent
-  Vitest subprocess retains its explicit 120-second bound. These runner bounds do not change editor phase, editor
-  inactivity, or runtime-operation deadlines. CI owns this command in a focused R 4.4/4.5 matrix.
+  Vitest subprocess retains its explicit 120-second bound. The existing frame-contract process also parses the exact
+  tracked `scripts/r-performance-harness.R` and requires a nonempty expression on both hosted R versions; this adds no
+  fourth R subprocess or deadline. These runner bounds do not change editor phase, editor inactivity, or
+  runtime-operation deadlines. CI owns this command in a focused R 4.4/4.5 matrix.
   It resolves the explicit package set into a lockfile, restores the matching R-version cache, and then runs the same
   contract in each matrix cell. The contract also runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
@@ -1532,6 +1534,89 @@ before collection. Final publication waits for all eight session results and an 
 summaries, median regression decisions, and PSS.
 
 ## Performance fixtures
+
+The non-promotional Native R performance harness runs against one exact packaged candidate:
+
+```bash
+mkdir -p tmp/performance
+EXPECTED_SHA=<exact-40-hex-source-commit> \
+RELEASE_TAG=<exact-provenance-tag> \
+npm run benchmark:r -- \
+  --candidate-in openwrangler.vsix \
+  --candidate-checksum openwrangler.vsix.sha256 \
+  --candidate-provenance openwrangler.vsix.provenance.json \
+  --out tmp/performance/native-r-report.json
+```
+
+All four named arguments and both environment bindings are mandatory. The runner accepts only the canonical candidate
+basenames, rejects repeated, unknown, or implicit options, and accepts exactly one supported preview, stable, or
+evidence-only provenance protocol. The provenance commit and tag must equal `EXPECTED_SHA` and `RELEASE_TAG`;
+the current checkout must be that exact commit with no tracked changes. The runner jointly binds the tracked harness
+blob and bytes, VSIX bytes, lowercase checksum, bounded provenance, packaged manifest version, source commit, release
+tag, and normalized artifact kind before extracting the packaged `frame_contract.R` and `kernel_agent.R` into one
+private mode-0700 root. `RSCRIPT` may choose the executable for the run, but its filesystem value is never written to
+the report.
+
+Before measurement, one separately accounted, bounded `Rscript --vanilla` probe runs with the caller's explicit,
+canonical HOME to resolve the effective R library directories. It pins and revalidates at most 64 canonical directory
+identities, then gives all seven measured children a private HOME plus explicit `R_LIBS`, `R_LIBS_USER`, and
+`R_LIBS_SITE` authority. No library path enters the public report: it retains only the discovery protocol, directory
+count, and explicit-directory verification. The probe's `/proc/<pid>/status` VmRSS is parent-sampled every 5 ms and
+published under `libraryProbeMethod`, `libraryProbeSamplingIntervalMs`, and `libraryProbeMaxObservedRssKiB`, alongside
+its natural-exit and process-group cleanup proof.
+
+The SHA-256-bound fixture is a 250,000-row × 20-column mixed base data frame with integer, floating-point, text,
+logical, factor, ordered-factor, Date, POSIXct, difftime, and exact `integer64` columns plus deterministic missing,
+`NaN`, infinity, Unicode, and duplicate-label cases. Pages are 200 rows × 16 columns; twenty scheduled windows rotate
+through deterministic row offsets, using column offset 0 for samples 1–10 and offset 4 for samples 11–20. At each of
+the direct packaged-frame and real
+Node-to-owned-`Rscript` kernel boundaries, the report retains five fresh capture/open samples, then twenty projected
+pages, twenty compound-filtered pages, one separately named first uncached stable multi-key sort, twenty cached sorted
+pages, and twenty eight-column mixed-type summaries. Untimed semantic controls verify exact dataset statistics, the
+production sampled/chunked summary path on 1,000,001 rows, and a keyed `data.table` whose frame class/key, row and
+column identities, and serialized source bytes stay unchanged. The same proof retains supported S3 column metadata:
+factor and ordered-factor levels/classes, POSIXct timezone, difftime units, and the `integer64` class.
+
+The direct measurements run inside one owned `Rscript`. Each kernel fresh/open sample launches a new
+`Rscript --vanilla`, sources the two extracted candidate assets, creates the real kernel agent, exchanges one
+correlated newline-delimited `openSession` request/response, closes and disposes the session, and exits naturally. A
+sixth child owns the measured page/filter/sort/summary work and the untimed controls. Kernel time uses Node's monotonic
+clock: fresh samples cover process spawn through the correlated open response, while later samples start after the
+stdin write completes and end only after strict parsing plus semantic validation of the correlated stdout response.
+The kernel schedule contains exactly 86 measured and 13 control responses, 99 correlated responses in total, six
+ready frames, and eight closed sessions. Process accounting is separate: the library probe, direct child, five fresh
+kernel children, and workload child make exactly eight naturally settled owned `Rscript` processes. Reported p95 uses
+nearest rank over every retained raw sample. No sample is trimmed, deleted, replaced, or retried.
+
+`benchmark:r` is a Linux reference runner, not a portable benchmark command. The direct child records
+`/proc/self/status` VmHWM after every stage; the Node parent samples each kernel child's `/proc/<pid>/status` VmRSS at
+5 ms intervals and retains all five fresh maxima, the workload maximum, and per-request observations. Only the report
+and runner unit contracts are portable. The per-process 300-second deadline is a lifecycle-safety bound, not a
+performance threshold, and does not change any editor phase or inactivity deadline. These timings cover native-R
+runtime and owned stdin/stdout request boundaries, not IRkernel, VS Code, Cursor, webview, editor first paint,
+filesystem-cold reads, or cross-language comparison.
+
+The `openwrangler-native-r-performance-report-v1` envelope is bounded to 1 MiB and retains candidate identity plus
+path-free Linux, CPU, memory, R, and Node provenance. It records the Node version and the exact Node and `Rscript`
+executable byte sizes and SHA-256 digests, never their paths. Package fields are exactly `jsonlite`, `dataTable` (for
+`data.table`), `rlang`, `bit64`, `tibble`, `nanoparquet`, and `collapse`; the first four must be installed and the last
+three may be null. CPU-model slash and backslash separators are normalized to spaces (so names such as `w/ Radeon`
+remain usable) before the common public-string path scrub. The report contains deterministic synthetic sentinels but
+no source or user cell values, username, hostname, environment dump, candidate/output/temporary path, or arbitrary
+process log.
+
+The output parent must already exist, resolve canonically without a symlink, be owned by the current user, and keep the
+same identity through publication. The output may not replace a candidate input, the commit-bound harness, another
+tracked source, or a file inside the private measurement root. Publication uses an exclusive mode-0600 sibling
+temporary, flush and sync, identity checks, one atomic rename, and post-read receipt validation. All eight sessions
+must close, every owned process group must disappear, and the exact private-root inventory must be removed; cleanup
+removes only still-identified paths, and a failure is never rerun automatically.
+
+The v1 schema can say only whether a measurement is structurally valid: `releaseGate` is fixed false because no
+reviewed Native R threshold profile exists, and its validator rejects any release-success claim. Running this command
+therefore does not supply the still-outstanding exact-candidate performance record or advance Native R beyond
+**Partial**. Stable candidate authoring and readiness consumption, including the stable-source/candidate circularity,
+belong to the next reviewed performance-evidence change.
 
 `npm run benchmark:runtime` is the canonical strict native-Polars release benchmark. It creates deterministic 100k×50 CSV and 1M×20 Parquet fixtures under ignored `tmp/performance`. Before timing, it validates exact dimensions, ordered Int64 schema, and deterministic sentinel values in every column; an invalid or partial fixture is atomically regenerated. Validation reads the source, so the harness then requires Linux to accept a per-file `posix_fadvise(POSIX_FADV_DONTNEED)` eviction before the first direct open and again immediately before the canonical stdio open. The stdio cold-source open is the release-gated first-usable-grid boundary at 3s/5s; missing eviction proof fails strict mode. Every timed open requests the first 16 columns, matching the shipped default; timed cache-miss pages rotate across real horizontal blocks, including nonzero offsets. `projectedGridColumns` records the resolved width, while the report records every sampled column offset and validates the returned stable IDs. `pageCache.maxBytes` is the maximum total retained cache weight observed during the run, not the byte size of one response. The report separately retains the first direct open and the median of later fresh-manager opens against a warm OS source cache (`warmSourceReopenMedianMs`). Direct `SessionManager` cache timing is explicitly named `directRuntimeCachedPageP95Ms` and `directRuntimeCacheMissPageP95Ms`; it is not presented as editor or transport latency. A second measurement spawns the real standalone Python runtime with the selected backend already imported, sends canonical protocol-v2 newline-delimited JSON envelopes over stdin, parses stdout envelopes, and records `stdioTransport.cacheMissPageP95Ms`. Its isolated benchmark bootstrap leaves canonical stdin/stdout behavior unchanged and wraps only the selected engine's production `header_stats` call, emitting entry and exit timestamps on stderr from Python's process-wide monotonic clock. The interactive cache-miss page is sent only after the entry event, and strict mode requires its completed write timestamp to fall inside that measured call interval; the report retains both signed timing margins around the send. A completed-before-send or otherwise unproven interval is an inconclusive release failure rather than a pass.
 

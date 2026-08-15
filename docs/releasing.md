@@ -98,6 +98,30 @@ buffers. Native R remains **Partial** until a fresh hosted candidate plus instal
 pass. Custom Code is trusted arbitrary R, not a sandbox: release evidence must prove workspace-trust gating,
 source/result publication atomicity, dynamic-frame and generated-code behavior, and must not claim rollback for
 deliberate ambient side effects.
+
+The source now includes a diagnostic `benchmark:r` command and the bounded
+`openwrangler-native-r-performance-report-v1` contract. It consumes one exact canonical VSIX/checksum/provenance
+triple only from the exact clean tracked checkout named by its required `EXPECTED_SHA` and `RELEASE_TAG` bindings.
+Those values must equal the strict provenance; the tracked harness blob and bytes are bound into the report as well.
+On the Linux reference platform it binds a deterministic 250,000×20 mixed fixture and retains, at both direct
+packaged-frame and owned-kernel boundaries, five fresh samples plus twenty each for 200×16 projected pages, compound
+filters, cached stable multi-key sorts, and eight-column summaries; the first uncached sort is retained separately.
+Untimed controls prove exact dataset statistics, the greater-than-one-million-row sampled-summary seam, and keyed
+`data.table` frame class/key, stable identities, supported S3 column metadata, and source-byte preservation. All
+raw samples and the exact kernel schedule of 86 measured plus 13 control responses remain in the report with path-free
+machine, Node, R, executable-digest, package, resource, session, child-process, and private-root cleanup provenance. It
+never trims or retries a sample. Its 300-second owned-process deadline is lifecycle safety, not a performance limit.
+One separately owned `Rscript` probe resolves and pins the caller's effective libraries before the seven measured
+children run with private HOME and explicit library authority; only the path-free discovery protocol/count/proof is
+public. Probe, direct, five fresh-kernel, and workload cleanup therefore account for exactly eight owned processes,
+independently of the response and session counts.
+
+This v1 infrastructure is intentionally non-promotional: `releaseGate` is always false, it defines no numeric release
+threshold, and readiness does not consume its output. A subsequent reviewed change must define how an immutable
+release-candidate run authors the required R performance record and resolves the stable-source/candidate circularity
+without reusing, rebuilding, or blessing a diagnostic candidate. Until that record and the installed all-28 evidence
+exist, no 2.x stable source is ready.
+
 Every candidate core cell runs that same Clone lifecycle; Linux VS Code retains all-block grid depth, while macOS and
 Windows VS Code plus Linux Cursor retain representative single-round-trip grid/profile/view seams within the same
 hard deadline. Explicit candidate core disables native-frame and embedded-restart work on every platform. A fresh
