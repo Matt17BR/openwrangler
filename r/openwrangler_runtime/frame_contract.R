@@ -2444,7 +2444,7 @@ openwrangler_r_frame_contract <- local({
     metadata_budget <- new_payload_budget()
     spend_payload_budget(metadata_budget, metadata_base_bytes, "R frame metadata")
     column_names <- attr(value, "names", exact = TRUE)
-    if (!is.character(column_names) || length(column_names) != column_count) {
+    if (!is.character(column_names) || storage_length(column_names) != column_count) {
       abort("invalid-schema", "the dataframe does not have one name per column")
     }
     column_names <- plain_metadata_storage(column_names)
@@ -3530,7 +3530,10 @@ openwrangler_r_frame_contract <- local({
     }
     position <- as.integer(position)
     old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
-    if (!identical(inspected$descriptor$schema[[position]]$name, old_name)) {
+    inspected_schema <- unclass(inspected$descriptor$schema)
+    attributes(inspected_schema) <- NULL
+    inspected_column <- .subset2(inspected_schema, position)
+    if (!identical(.subset2(inspected_column, "name"), old_name)) {
       abort("stale-column", "the clone column name no longer matches the R dataframe")
     }
     new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
@@ -3540,20 +3543,48 @@ openwrangler_r_frame_contract <- local({
     if (is_private_column_name(old_name) || is_private_column_name(new_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
-    if (any(attr(value, "names", exact = TRUE) == new_name)) {
+    frame_names <- unclass(attr(value, "names", exact = TRUE))
+    attributes(frame_names) <- NULL
+    if (any(frame_names == new_name)) {
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
     if (column_count >= maximum_columns) {
       abort("invalid-view-query", "cloneColumn exceeds the supported R column limit")
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
-      data.table::set(result, j = new_name, value = result[[position]])
+    source_element_names <- if (identical(inspected$flavor, "r.data.table")) {
+      lapply(seq_len(column_count), function(source_position) {
+        attr(.subset2(value, source_position), "names", exact = TRUE)
+      })
     } else {
-      original_names <- attr(result, "names", exact = TRUE)
-      result[[storage_length(result) + 1L]] <- result[[position]]
-      attr(result, "names") <- c(original_names, new_name)
+      NULL
+    }
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (!is.null(source_element_names)) {
+      for (source_position in seq_along(source_element_names)) {
+        if (!is.null(source_element_names[[source_position]])) {
+          data.table::setattr(
+            .subset2(result, source_position),
+            "names",
+            source_element_names[[source_position]]
+          )
+        }
+      }
+    }
+    cloned_element_names <- attr(.subset2(result, position), "names", exact = TRUE)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::setattr(result, "names", frame_names)
+      data.table::set(result, j = new_name, value = .subset2(result, position))
+      if (!is.null(cloned_element_names)) {
+        data.table::setattr(.subset2(result, storage_length(result)), "names", cloned_element_names)
+      }
+    } else {
+      frame_attributes <- attributes(result)
+      columns <- unclass(result)
+      columns[[storage_length(columns) + 1L]] <- .subset2(columns, position)
+      frame_attributes[["names"]] <- c(frame_names, new_name)
+      attributes(columns) <- frame_attributes
+      result <- columns
     }
     result
   }
@@ -3565,7 +3596,11 @@ openwrangler_r_frame_contract <- local({
       validate_values = FALSE,
       metrics = new_capture_metrics()
     )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    resolver_descriptor <- inspected$descriptor
+    resolver_schema <- unclass(resolver_descriptor$schema)
+    attributes(resolver_schema) <- NULL
+    resolver_descriptor$schema <- resolver_schema
+    resolved <- resolve_column_reference(column_reference, resolver_descriptor, "column_reference")
     clone_column_at(value, resolved$position, resolved$name, new_name)
   }
 

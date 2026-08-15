@@ -55,6 +55,10 @@ run(rscript, ["--vanilla", "r/tests/kernel_agent.R"], {
   environment: rEnvironment,
   timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS
 });
+run(rscript, ["--vanilla", "r/tests/complete_catalog_contract.R"], {
+  environment: rEnvironment,
+  timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS
+});
 run(
   process.execPath,
   [

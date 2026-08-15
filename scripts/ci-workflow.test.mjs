@@ -2631,8 +2631,8 @@ test("native R contract child budgets separate exact R from Vitest", () => {
   assert.match(runnerSource, /const VITEST_CONTRACT_TIMEOUT_MS = 120_000;/u);
   assert.equal(
     runnerSource.match(/timeoutMs: DIRECT_R_CONTRACT_TIMEOUT_MS/gu)?.length,
-    2,
-    "both direct R contract subprocesses must use the named 300-second bound"
+    3,
+    "all three direct R contract subprocesses must use the named 300-second bound"
   );
   assert.equal(
     runnerSource.match(/timeoutMs: VITEST_CONTRACT_TIMEOUT_MS/gu)?.length,

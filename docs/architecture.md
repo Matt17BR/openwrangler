@@ -411,8 +411,10 @@ The hosted gate also passes against a containerized IRkernel in VS Code, includi
 frame, and final session cleanup. Local packaged acceptance keeps fresh core, value, and categorical editing profiles
 and moves candidate native-frame and restart work into dedicated selectors. Explicit candidate `core-operations`
 owns one complete installed Clone Column lifecycle: preview, apply, applied-step inspection, editing and reapplying
-the same step while preserving its step and output identities, then undo. Direct suites own the prior 27 operations,
-and focused Custom Code contracts cover operation 28; the dedicated all-28 release owner remains outstanding. The
+the same step while preserving its step and output identities, then undo. Dedicated local-source contracts now own
+the strict ordered 28-operation catalog and production generated-code execution/replay. The separate TypeScript host
+contract proves byte-exact clipboard and atomic script export with distinct executable operation-labelled buffers.
+Fresh installed all-28 candidate and performance ownership remains outstanding. The
 `value-operations` targeted slice still owns exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The
@@ -658,9 +660,11 @@ executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
 `literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
 partitions scheduling while keeping the installed Clone lifecycle in the existing core phase, the unchanged complete
 value and categorical slices, one comprehensive Linux native-frame owner, and representative native/restart seams on
-every hosted platform. Exhaustive semantics for the prior 27 operations remain direct R/runtime/catalog-test
-ownership. Focused Custom Code contracts expose operation 28 without satisfying the dedicated all-28 release owner. This
-unhosted addition changes no candidate selector, job, phase, shard, deadline, or retry policy.
+every hosted platform. The dedicated direct R catalog contract now gives every one of the exact ordered 28 operations
+a fresh-session live/generated replay, and the TypeScript export contract binds the same bridge/public catalog order
+to exact clipboard and atomic-save bytes for distinct executable operation-labelled buffers. This local-source
+evidence is not hosted installed/performance evidence. The unhosted addition changes no candidate selector, job,
+phase, shard, deadline, or retry policy.
 
 Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
 fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own

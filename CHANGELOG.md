@@ -15,9 +15,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   executable generated R agree for deterministic code, input, and environment across base, tibble, `data.table`, and
   ordinary `collapse` frames. Source/result publication is atomic, but the feature executes trusted arbitrary R, not
   sandboxed code: deliberate filesystem, network, global-environment, or aliased-object side effects are outside the
-  transaction. The public protocol remains v2 while the private R transport advances to v14. Native R remains
-  **Partial** because this unhosted source has neither fresh hosted candidate proof nor the dedicated all-28 release
-  and performance evidence; no candidate selector, job, phase, 300-second/180-second deadline, or retry changes.
+  transaction. The public protocol remains v2 while the private R transport advances to v14. Dedicated local-source
+  contracts now enumerate the exact ordered 28-operation catalog, execute production-generated R for every operation,
+  and separately prove byte-exact clipboard and atomic `.R` saves with distinct executable operation-labelled buffers
+  across that catalog. Native R remains **Partial** because this source is unhosted and still lacks a fresh candidate
+  plus all-28 installed/performance evidence; no candidate selector, job, phase, 300-second/180-second deadline, or
+  retry changes.
+- The complete native-R catalog owner exposed and fixes two generated/live correctness gaps. **Strip Text** now emits
+  parse-safe generated R for both the default whitespace set and explicit sets that mix control and Unicode
+  characters. **Clone Column** now preserves element names across supported frame flavors and treats classed
+  schema/dataframe-name metadata as plain data, preventing caller-defined S3 name methods from running during binding
+  or generated replay.
 - Native R **Transform by Example** uses ordered stable column references and example rows to produce one
   deterministic canonical program reused for live evaluation, retained replay, and executable generated R. Strict
   scalar, UTF-8, program-size, integer-envelope, and signed-zero checks fail before publication; direct contracts

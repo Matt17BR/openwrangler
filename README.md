@@ -68,10 +68,16 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 <!-- open-wrangler-release-status:end -->
 
 Published preview 1.99.6 contains 26 native-R cleaning operations. Current source exposes all 28 catalog operations,
-including **Transform by Example** and **Custom Code**. This unhosted source has focused direct contracts but has not
-passed a fresh hosted preview candidate or the dedicated all-28 release evidence, so Native R remains **Partial** and
-the published preview remains the historical 26-operation build. R Custom Code runs trusted arbitrary R in the
-selected environment; it is not a sandbox and is unavailable in Restricted Mode.
+including **Transform by Example** and **Custom Code**. Dedicated local-source contracts now exercise the exact ordered
+28-operation catalog and executable production-generated R. A separate host contract proves byte-exact clipboard and
+atomic script saves with one distinct executable operation-labelled buffer per catalog entry. This source remains
+unhosted and has not passed a fresh preview candidate or all-28 installed/performance evidence, so Native R remains
+**Partial** and the published preview remains the historical 26-operation build. R Custom Code runs trusted arbitrary
+R in the selected environment; it is not a sandbox and is unavailable in Restricted Mode.
+
+The same catalog evidence fixes generated **Strip Text** for default or explicit mixed control/Unicode character sets,
+and makes **Clone Column** preserve element names without invoking user-defined methods attached to dataframe-name
+metadata.
 
 The 1.99 preview has these R and literate-document entry points:
 
