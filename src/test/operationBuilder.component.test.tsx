@@ -69,6 +69,65 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("heading", { name: "Choose an operation" })).toBeInTheDocument();
   });
 
+  it("uses native R syntax and labeling for R custom code", () => {
+    const onPreview = vi.fn();
+    const customCode = "result <- df[df$row_id > 1L, , drop = FALSE]";
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="customCode"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const code = screen.getByRole("textbox", { name: /Engine-native R/u });
+    expect(code).toHaveValue("result <- df");
+    expect(screen.getByText(/Assign an R data frame/u)).toBeInTheDocument();
+    fireEvent.change(code, { target: { value: customCode } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "customCode", params: { code: customCode } }),
+      undefined
+    );
+  });
+
+  it.each([
+    ["pandas", "result = df.copy()"],
+    ["polars", "result = df"],
+    ["duckdb", "result = df"]
+  ] as const)("preserves the engine-native Python label and %s default", (backend, defaultCode) => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          backend,
+          capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="customCode"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const code = screen.getByRole("textbox", { name: /Engine-native Python/u });
+    expect(code).toHaveValue(defaultCode);
+    expect(screen.getByText(/Assign an engine-native dataframe or relation/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "customCode", params: { code: defaultCode } }),
+      undefined
+    );
+  });
+
   it("builds a validated rename step for preview", () => {
     const onPreview = vi.fn();
     render(

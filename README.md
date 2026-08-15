@@ -67,9 +67,11 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
-Published preview 1.99.6 contains 26 native-R cleaning operations. Current `main` advances that catalog to 27 of 28
-with **Transform by Example**; **Custom Code** is the only catalog operation still unavailable in R. This source change
-has not yet passed a fresh hosted preview candidate, so the published preview remains the 26-operation build.
+Published preview 1.99.6 contains 26 native-R cleaning operations. Current source exposes all 28 catalog operations,
+including **Transform by Example** and **Custom Code**. This unhosted source has focused direct contracts but has not
+passed a fresh hosted preview candidate or the dedicated all-28 release evidence, so Native R remains **Partial** and
+the published preview remains the historical 26-operation build. R Custom Code runs trusted arbitrary R in the
+selected environment; it is not a sandbox and is unavailable in Restricted Mode.
 
 The 1.99 preview has these R and literate-document entry points:
 
@@ -138,8 +140,9 @@ Hover or right-click a scalar grid cell to keep or exclude its exact value. Null
 
 ## Transformations
 
-Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
-from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
+Choose from 28 operations, including filling missing values, engine-native custom Python or R code, and
+transformations inferred from examples. A draft stays separate until you apply it, and applied steps can be inspected,
+edited, or undone.
 
 Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
 sort key, or fallback column appear only when the dataframe has a compatible column.

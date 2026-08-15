@@ -684,6 +684,7 @@ class SessionManager:
                     column_limit,
                     before_page=before_page,
                     after_page=preview_page,
+                    before_view_has_filters=bool(reconciled_filter_model["filters"]),
                 ),
                 **(
                     {
@@ -1434,6 +1435,7 @@ class SessionManager:
         *,
         before_page: Mapping[str, Any] | None = None,
         after_page: Mapping[str, Any] | None = None,
+        before_view_has_filters: bool = False,
     ) -> dict[str, Any]:
         before_schema = schema_with_lineage(before_raw_schema, before_lineage)
         after_schema = schema_with_lineage(after_raw_schema, after_lineage)
@@ -1495,6 +1497,11 @@ class SessionManager:
         )
         before_row_count = self._exact_shape_rows(before_shape)
         after_row_count = self._exact_shape_rows(after_shape)
+        custom_replacement_incomplete = step["kind"] == "customCode" and (
+            before_view_has_filters
+            or before_page["totalRows"] != before_row_count
+            or after_page["totalRows"] != after_row_count
+        )
         return {
             "addedRows": after_row_count if replaces_rows else max(0, after_row_count - before_row_count),
             "removedRows": before_row_count if replaces_rows else max(0, before_row_count - after_row_count),
@@ -1505,7 +1512,8 @@ class SessionManager:
             "truncated": changed_cells > len(cells)
             or len(compared_ids) < len(common_ids)
             or before_page["totalRows"] > len(before_page["rows"])
-            or after_page["totalRows"] > len(after_page["rows"]),
+            or after_page["totalRows"] > len(after_page["rows"])
+            or custom_replacement_incomplete,
         }
 
     @staticmethod

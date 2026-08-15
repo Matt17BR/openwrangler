@@ -589,15 +589,6 @@ export class OpenWranglerPanel {
     }
 
     const request = decoded.request;
-    if (request.kind === "previewStep" && request.step.kind === "customCode" && !vscode.workspace.isTrusted) {
-      await this.post({
-        kind: "error",
-        code: "workspace_untrusted",
-        message: "Trust this workspace before running custom Python code.",
-        recoverable: true
-      });
-      return;
-    }
     await this.forward(
       request,
       decoded.viewContextId,
@@ -1185,6 +1176,15 @@ export class OpenWranglerPanel {
     requestOptions?: BridgeRequestOptions,
     openAttemptGeneration?: number
   ): Promise<void> {
+    if (request.kind === "previewStep" && request.step.kind === "customCode" && !vscode.workspace.isTrusted) {
+      await this.post({
+        kind: "error",
+        code: "workspace_untrusted",
+        message: "Trust this workspace before running custom code.",
+        recoverable: true
+      });
+      return;
+    }
     if (request.kind === "getPage") this.latestPageViewRequestId = request.viewRequestId;
     try {
       const bridgeOptions: BridgeRequestOptions | undefined =

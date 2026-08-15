@@ -357,6 +357,279 @@ for (case in collapse_cases) {
   )
 }
 
+named_live_table_cases <- list(
+  list(
+    label = "data.table",
+    frame = data.table::data.table(id = 1:2, value = c(10L, 20L))
+  ),
+  list(
+    label = "collapse qDT",
+    frame = collapse::qDT(data.frame(id = 1:2, value = c(10L, 20L)))
+  )
+)
+for (case in named_live_table_cases) {
+  expected_element_names <- c("left", "right")
+  data.table::setattr(.subset2(case$frame, 2L), "names", expected_element_names)
+  source_before <- serialize(case$frame, NULL, version = 3L)
+  source_reader <- local({
+    source <- case$frame
+    function() source
+  })
+  live_capture <- openwrangler_r_frame_contract$capture_live_frame(source_reader)
+  isolated_capture <- openwrangler_r_frame_contract$isolate_capture(live_capture)
+  isolated_frame <- get("snapshot", envir = isolated_capture, inherits = FALSE)
+  assert_identical(
+    attr(.subset2(isolated_frame, 2L), "names", exact = TRUE),
+    expected_element_names,
+    paste(case$label, "editing isolation stripped data.table element names")
+  )
+  custom_input <- openwrangler_r_frame_contract$isolate_custom_code_input(isolated_capture)
+  assert_identical(
+    attr(.subset2(custom_input, 2L), "names", exact = TRUE),
+    expected_element_names,
+    paste(case$label, "Custom Code input isolation stripped data.table element names")
+  )
+  data.table::set(custom_input, j = 2L, value = c(101L, 102L))
+  data.table::setattr(.subset2(custom_input, 2L), "names", c("changed-left", "changed-right"))
+  assert_identical(
+    serialize(case$frame, NULL, version = 3L),
+    source_before,
+    paste(case$label, "isolated Custom Code mutation reached the live source")
+  )
+}
+
+custom_source_base <- data.frame(
+  duplicate = c(10L, 20L, 30L),
+  middle = c(1, 2, 3),
+  duplicate = c("a", "b", "c"),
+  check.names = FALSE,
+  row.names = c("source-a", "source-b", "source-c")
+)
+custom_flavor_cases <- list(
+  list(label = "base data.frame", frame = custom_source_base, flavor = "r.data.frame"),
+  list(
+    label = "tibble",
+    frame = tibble::as_tibble(custom_source_base, .name_repair = "minimal"),
+    flavor = "r.tibble"
+  ),
+  list(label = "data.table", frame = data.table::as.data.table(custom_source_base), flavor = "r.data.table"),
+  list(label = "collapse qDF", frame = collapse::qDF(custom_source_base), flavor = "r.data.frame"),
+  list(label = "collapse qTBL", frame = collapse::qTBL(custom_source_base), flavor = "r.tibble"),
+  list(label = "collapse qDT", frame = collapse::qDT(custom_source_base), flavor = "r.data.table")
+)
+for (case_index in seq_along(custom_flavor_cases)) {
+  case <- custom_flavor_cases[[case_index]]
+  source <- case$frame
+  source_before <- serialize(source, NULL, version = 3L)
+  source_capture <- openwrangler_r_frame_contract$capture_frame(source)
+  isolated <- openwrangler_r_frame_contract$isolate_custom_code_input(source_capture)
+  if (identical(case$flavor, "r.data.table")) {
+    data.table::set(isolated, j = 2L, value = c(101, 102, 103))
+    output <- data.table::copy(source)[, c(3L, 1L, 2L, 2L), with = FALSE]
+  } else {
+    isolated[[2L]] <- c(101, 102, 103)
+    output <- source[c(3L, 1L, 2L, 2L)]
+  }
+  names(output) <- c("duplicate", "duplicate", "fresh", "middle")
+  output <- if (identical(case$flavor, "r.data.table")) {
+    output <- output[2:1]
+    data.table::setkeyv(output, "middle")
+    output
+  } else {
+    output[2:1, , drop = FALSE]
+  }
+  if (!identical(case$flavor, "r.data.table")) {
+    attr(output, "row.names") <- c("output-b", "output-a")
+  }
+  output_names <- c("element-one", "element-two")
+  if (identical(case$flavor, "r.data.table")) {
+    data.table::setattr(.subset2(output, 1L), "names", output_names)
+  } else {
+    output_storage <- unclass(output)
+    attr(output_storage[[1L]], "names") <- output_names
+    attr(output_storage, "class") <- class(output)
+    output <- output_storage
+  }
+  result_capture <- openwrangler_r_frame_contract$capture_custom_code_result(
+    output,
+    source_capture,
+    paste0("custom-lineage-", case_index)
+  )
+  result_page <- openwrangler_r_frame_contract$materialize_page(
+    result_capture,
+    row_limit = 2L,
+    column_limit = 4L
+  )
+  expected_ids <- c(
+    "r:c:0",
+    "r:c:2",
+    paste0("c:step:custom-lineage-", case_index, ":0"),
+    "r:c:1"
+  )
+  assert_identical(result_page$dataframeFlavor, case$flavor, paste(case$label, "custom flavor changed"))
+  assert_identical(
+    vapply(result_page$schema, `[[`, character(1L), "id"),
+    expected_ids,
+    paste(case$label, "did not use FIFO duplicate-name lineage")
+  )
+  assert_identical(
+    result_page$page$columnIds,
+    I(expected_ids),
+    paste(case$label, "custom page identities changed")
+  )
+  assert_identical(
+    vapply(result_page$page$rows, `[[`, character(1L), "id"),
+    c("r:r:3", "r:r:4"),
+    paste(case$label, "did not allocate fresh row identities")
+  )
+  assert_identical(result_page$shape$rows, 5, paste(case$label, "did not advance the row identity domain"))
+  assert_identical(result_page$page$totalRows, 2L, paste(case$label, "reported the wrong physical row count"))
+  result_snapshot <- get("snapshot", envir = result_capture, inherits = FALSE)
+  assert_identical(
+    attr(.subset2(result_snapshot, 1L), "names", exact = TRUE),
+    output_names,
+    paste(case$label, "custom snapshot changed element names")
+  )
+  if (identical(case$flavor, "r.data.table")) {
+    assert_identical(
+      result_page$frameSemantics$keyColumnIds,
+      I("r:c:1"),
+      paste(case$label, "did not dynamically remap its key identity")
+    )
+  } else {
+    assert_identical(
+      attr(result_snapshot, "row.names", exact = TRUE),
+      c("output-b", "output-a"),
+      paste(case$label, "custom snapshot changed explicit row names")
+    )
+  }
+  assert_identical(
+    serialize(source, NULL, version = 3L),
+    source_before,
+    paste(case$label, "custom capture or isolated mutation changed the source")
+  )
+}
+
+custom_validation_source <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(value = 1:2, check.names = FALSE)
+)
+custom_zero_rows <- openwrangler_r_frame_contract$capture_custom_code_result(
+  data.frame(value = integer(), check.names = FALSE),
+  custom_validation_source,
+  "zero-rows"
+)
+assert_identical(
+  openwrangler_r_frame_contract$materialize_page(
+    custom_zero_rows,
+    row_limit = 1L,
+    column_limit = 1L
+  )$page$totalRows,
+  0L,
+  "Custom Code rejected a zero-row dataframe"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(1:2, custom_validation_source, "wrong"),
+  "invalid-view-query"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(
+    data.frame(row.names = 1:2),
+    custom_validation_source,
+    "zero-columns"
+  ),
+  "invalid-view-query"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(
+    tibble::tibble(value = 1:2),
+    custom_validation_source,
+    "cross-flavor"
+  ),
+  "invalid-view-query"
+)
+private_custom_output <- data.frame(value = 1:2, check.names = FALSE)
+names(private_custom_output) <- "__OPEN_WRANGLER_INTERNAL_ROW_ID_FORBIDDEN"
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(
+    private_custom_output,
+    custom_validation_source,
+    "private-name"
+  ),
+  "reserved-column-name"
+)
+
+custom_boundary_rows <- 11116L
+custom_boundary_text <- paste(rep.int("x", 6029L), collapse = "")
+custom_boundary_bytes <-
+  1024 + 512 +
+  (8 + nchar("aa", type = "bytes")) +
+  (8 + nchar("data.frame", type = "bytes")) +
+  8 +
+  as.double(custom_boundary_rows) * (8 + nchar(custom_boundary_text, type = "bytes"))
+assert_identical(
+  custom_boundary_bytes,
+  64 * 1024^2,
+  "the Custom Code operation-budget boundary fixture is not exactly 64 MiB"
+)
+custom_boundary_output <- data.frame(
+  aa = rep.int(custom_boundary_text, custom_boundary_rows),
+  check.names = FALSE
+)
+custom_boundary_capture <- openwrangler_r_frame_contract$capture_custom_code_result(
+  custom_boundary_output,
+  custom_validation_source,
+  "exact-operation-budget"
+)
+assert_identical(
+  custom_boundary_capture$descriptor$shape$rows,
+  custom_boundary_rows,
+  "Custom Code rejected an output at the exact 64 MiB operation budget"
+)
+names(custom_boundary_output) <- "aaa"
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(
+    custom_boundary_output,
+    custom_validation_source,
+    "over-operation-budget"
+  ),
+  "operation-output-too-large"
+)
+rm(custom_boundary_capture, custom_boundary_output, custom_boundary_text)
+
+oversized_custom_output <- data.frame(value = rep.int(0, 8388608L))
+custom_snapshot_calls <- 0L
+trace(
+  "serialize",
+  tracer = quote(custom_snapshot_calls <<- custom_snapshot_calls + 1L),
+  where = baseenv(),
+  print = FALSE
+)
+oversized_custom_error <- tryCatch(
+  {
+    openwrangler_r_frame_contract$capture_custom_code_result(
+      oversized_custom_output,
+      custom_validation_source,
+      "oversized-storage"
+    )
+    NULL
+  },
+  error = identity
+)
+untrace("serialize", where = baseenv())
+assert_true(inherits(oversized_custom_error, "openwrangler_r_frame_error"), "oversized Custom Code output was accepted")
+assert_identical(
+  oversized_custom_error$code,
+  "operation-output-too-large",
+  "oversized Custom Code output used the wrong diagnostic"
+)
+assert_identical(
+  custom_snapshot_calls,
+  0L,
+  "oversized Custom Code output was snapshotted before its fixed-slot preflight"
+)
+rm(oversized_custom_output)
+invisible(gc())
+
 named_row_labels <- c("row-a", "row-b", "row-c")
 named_atomic_column <- structure(c(3L, 1L, 2L), names = named_row_labels)
 named_classed_column <- structure(

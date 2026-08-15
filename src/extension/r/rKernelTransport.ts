@@ -160,6 +160,14 @@ export class RKernelSessionTransport {
       this.assertActive();
       this.assertSessionIdentityAvailable(sessionId);
       await this.waitForKernelSettlement(acquired.kernel, timeoutMs, started, options.cancellation);
+      const settlementPostflight = this.assertKernelStillSelected(acquired);
+      void settlementPostflight.catch(() => undefined);
+      await withKernelTimeout(
+        settlementPostflight,
+        remainingTimeout(timeoutMs, started),
+        () => undefined,
+        options.cancellation
+      );
       assertDispatchAllowed(options.cancellation, remainingTimeout(timeoutMs, started));
 
       this.sessionKernels.set(sessionId, acquired.kernel);
@@ -437,7 +445,8 @@ export class RKernelSessionTransport {
       ...(response.remainingMissingCells === undefined
         ? {}
         : { remainingMissingCells: response.remainingMissingCells }),
-      ...(response.retainedStep === undefined ? {} : { retainedStep: response.retainedStep })
+      ...(response.retainedStep === undefined ? {} : { retainedStep: response.retainedStep }),
+      ...(response.effectiveView === undefined ? {} : { effectiveView: response.effectiveView })
     });
   }
 
@@ -589,6 +598,14 @@ export class RKernelSessionTransport {
     void preflight.catch(() => undefined);
     await withKernelTimeout(preflight, timeoutMs, () => undefined, options.cancellation);
     await this.waitForKernelSettlement(kernel, timeoutMs, started, options.cancellation);
+    const settlementPostflight = this.assertKernelStillSelected(acquired);
+    void settlementPostflight.catch(() => undefined);
+    await withKernelTimeout(
+      settlementPostflight,
+      remainingTimeout(timeoutMs, started),
+      () => undefined,
+      options.cancellation
+    );
     assertDispatchAllowed(options.cancellation, remainingTimeout(timeoutMs, started));
     const completion = this.executeRequest(kernel, request, decodeContext);
     void completion.catch(() => undefined);

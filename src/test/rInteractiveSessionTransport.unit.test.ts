@@ -581,6 +581,84 @@ describe("interactive R session transport", () => {
     }
   });
 
+  it("blocks queued Custom Code after trust revocation while allowing one exact terminal close", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-revoked-close-unit-"));
+    const trustDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted");
+    const sessionId = "14141414-1414-4414-8414-141414141414";
+    let trusted = true;
+    let releasePage!: () => void;
+    let markPageDispatched!: () => void;
+    let disposed = false;
+    const pageDispatched = new Promise<void>((resolveDispatched) => {
+      markPageDispatched = resolveDispatched;
+    });
+    const pageBlocked = new Promise<void>((resolveBlocked) => {
+      releasePage = resolveBlocked;
+    });
+    const requests: KernelRequestRecord[] = [];
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, get: () => trusted });
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8),
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        requests.push(request);
+        if (request.kind === "getPage") {
+          markPageDispatched();
+          await pageBlocked;
+        }
+        const response =
+          request.kind === "openSession"
+            ? openResponse(request.requestId, sessionId)
+            : request.kind === "getPage"
+              ? openResponse(request.requestId, sessionId, false)
+              : request.kind === "previewStep"
+                ? previewResponse(request, sessionId)
+                : interactiveResponse(request);
+        await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+      }
+    });
+    try {
+      const opened = await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      const page = transport.getPage(sessionId, pageWindow());
+      await pageDispatched;
+      const preview = transport.previewStep(
+        sessionId,
+        0,
+        { id: "queued-custom", kind: "customCode", params: { code: "result <- df\n" } },
+        pageWindow(),
+        opened.page.schema
+      );
+      trusted = false;
+      const previewRejection = expect(preview).rejects.toThrow("Trust this workspace");
+      releasePage();
+
+      await expect(page).resolves.toMatchObject({ page: { totalRows: 1 } });
+      await previewRejection;
+      expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "getPage"]);
+      expect(transport.isSessionMapped(sessionId)).toBe(true);
+
+      await expect(transport.close(sessionId, { timeoutMs: 1_000 })).resolves.toBeUndefined();
+      expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "getPage", "closeSession"]);
+      expect(requests.filter(({ kind }) => kind === "closeSession")).toHaveLength(1);
+      expect(transport.isSessionMapped(sessionId)).toBe(false);
+      await expect(transport.close(sessionId, { timeoutMs: 1_000 })).resolves.toBeUndefined();
+      expect(requests.filter(({ kind }) => kind === "closeSession")).toHaveLength(1);
+
+      await expect(transport.dispose()).resolves.toBeUndefined();
+      disposed = true;
+      expect(requests.at(-1)?.kind).toBe("teardownInteractiveRuntime");
+    } finally {
+      releasePage();
+      if (!disposed) await transport.dispose().catch(() => undefined);
+      if (trustDescriptor) Object.defineProperty(vscode.workspace, "isTrusted", trustDescriptor);
+      else Reflect.deleteProperty(vscode.workspace, "isTrusted");
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("detaches after dispatch and waits for the original R response", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-detach-unit-"));
     const token = new vscode.CancellationTokenSource();
@@ -1052,6 +1130,110 @@ describe("interactive R session transport", () => {
       }
     }
   );
+
+  it("forwards custom effective views and retained by-example steps through the interactive transport", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-preview-fields-unit-"));
+    const sessionId = "12121212-1212-4212-8212-121212121212";
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        const response =
+          request.kind === "openSession"
+            ? openResponse(request.requestId, sessionId)
+            : request.kind === "previewStep"
+              ? previewResponse(request, sessionId)
+              : interactiveResponse(request);
+        await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+      }
+    });
+    try {
+      const opened = await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      const customStep = {
+        id: "custom-step",
+        kind: "customCode",
+        params: { code: "result <- df\n" }
+      } as const;
+      await expect(
+        transport.previewStep(sessionId, 0, customStep, pageWindow(), opened.page.schema)
+      ).resolves.toMatchObject({
+        revision: 1,
+        effectiveView: { filters: [], sorts: [] }
+      });
+
+      const byExampleStep = {
+        id: "by-example-step",
+        kind: "byExample",
+        params: {
+          sourceColumns: [{ id: "r:c:0", name: "value" }],
+          newColumn: "derived value",
+          examples: [
+            { inputs: ["A"], output: "A" },
+            { inputs: ["B"], output: "B" }
+          ]
+        }
+      } as const;
+      await expect(
+        transport.previewStep(sessionId, 0, byExampleStep, pageWindow(), opened.page.schema)
+      ).resolves.toMatchObject({
+        revision: 1,
+        retainedStep: {
+          id: byExampleStep.id,
+          kind: "byExample",
+          params: { program: { kind: "column" }, warnings: [], candidateCount: 1 }
+        }
+      });
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing-custom-effective-view", "extra-noncustom-effective-view"] as const)(
+    "rejects %s through the interactive preview decoder",
+    async (failure) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), `ow-r-live-${failure}-unit-`));
+      const sessionId = "13131313-1313-4313-8313-131313131313";
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        runSelection: async (code) => {
+          const { requestPath, responsePath } = mailboxPaths(code);
+          const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+          let response: string;
+          if (request.kind === "openSession") response = openResponse(request.requestId, sessionId);
+          else if (request.kind === "previewStep") {
+            response = previewResponse(
+              request,
+              sessionId,
+              failure === "missing-custom-effective-view" ? "omitEffectiveView" : "forceEffectiveView"
+            );
+          } else response = interactiveResponse(request);
+          await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+        }
+      });
+      try {
+        const opened = await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+        const step =
+          failure === "missing-custom-effective-view"
+            ? ({ id: "custom-step", kind: "customCode", params: { code: "result <- df\n" } } as const)
+            : ({
+                id: "lower-value",
+                kind: "lowerText",
+                params: { column: { id: "r:c:0", name: "value" } }
+              } as const);
+        await expect(transport.previewStep(sessionId, 0, step, pageWindow(), opened.page.schema)).rejects.toThrow(
+          "invalid fields"
+        );
+        expect(transport.isSessionMapped(sessionId)).toBe(false);
+      } finally {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  );
 });
 
 function replaceWindowTerminals(
@@ -1142,6 +1324,7 @@ interface KernelRequestRecord {
     format?: "csv" | "parquet";
     offset?: number;
     limit?: number;
+    step?: Readonly<{ id: string; kind: string; params: Readonly<Record<string, unknown>> }>;
   }>;
 }
 
@@ -1283,4 +1466,70 @@ function openResponse(requestId: string, sessionId: string, includeFormats = tru
       }
     }
   });
+}
+
+function previewResponse(
+  request: KernelRequestRecord,
+  sessionId: string,
+  mode?: "omitEffectiveView" | "forceEffectiveView"
+): string {
+  const step = request.payload?.step;
+  const revision = request.payload?.revision;
+  if (!step || revision === undefined) throw new Error("The fake R preview request is incomplete.");
+  const opened = JSON.parse(openResponse(request.requestId, sessionId)) as {
+    page: {
+      shape: { columns: number };
+      schema: Array<Record<string, unknown>>;
+      page: { columnLimit: number; columnIds: string[]; rows: Array<{ values: unknown[] }> };
+    };
+  };
+  const response: Record<string, unknown> = {
+    transportVersion: R_KERNEL_TRANSPORT_VERSION,
+    requestId: request.requestId,
+    kind: "stepPreview",
+    sessionId,
+    revision: revision + 1,
+    page: opened.page,
+    diff: {
+      addedRows: step.kind === "customCode" ? 1 : 0,
+      removedRows: step.kind === "customCode" ? 1 : 0,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    },
+    code: "open_wrangler_result <- frame\n"
+  };
+  if (step.kind === "customCode" && mode !== "omitEffectiveView") {
+    response.effectiveView = { filters: [], sorts: [] };
+  }
+  if (step.kind !== "customCode" && mode === "forceEffectiveView") {
+    response.effectiveView = { filters: [], sorts: [] };
+  }
+  if (step.kind === "byExample") {
+    const newColumn = step.params.newColumn;
+    if (typeof newColumn !== "string") throw new Error("The fake by-example column is missing.");
+    opened.page.shape.columns = 2;
+    opened.page.schema.push({
+      ...opened.page.schema[0],
+      id: `c:step:${step.id}:0`,
+      name: newColumn,
+      position: 1
+    });
+    opened.page.page.columnLimit = 2;
+    opened.page.page.columnIds.push(`c:step:${step.id}:0`);
+    opened.page.page.rows[0]?.values.push({ kind: "string", raw: "A", display: "A", isNull: false, isNaN: false });
+    (response.diff as { addedColumns: string[] }).addedColumns.push(newColumn);
+    response.retainedStep = {
+      ...step,
+      params: {
+        ...step.params,
+        program: { kind: "column", column: { id: "r:c:0", name: "value" } },
+        warnings: [],
+        candidateCount: 1
+      }
+    };
+  }
+  return JSON.stringify(response);
 }

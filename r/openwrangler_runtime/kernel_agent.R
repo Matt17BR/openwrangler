@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 13L
+  transport_version <- 14L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -22,6 +22,7 @@ openwrangler_r_kernel_agent <- local({
   maximum_by_example_warnings <- 64L
   maximum_by_example_string_bytes <- 8L * 1024L
   maximum_by_example_text_bytes <- 64L * 1024L
+  maximum_custom_code_bytes <- 64L * 1024L
   maximum_by_example_slice_source_characters <- 128L
   by_example_delimiters <- c(" ", "-", "_", "/", ".", ",", ":")
   by_example_regex_patterns <- c("(\\d+)", "([A-Za-z]+)", "([A-Za-z0-9]+)")
@@ -370,11 +371,9 @@ openwrangler_r_kernel_agent <- local({
       }
       filter
     })
-    list(
-      logic = if ("logic" %in% names(view)) view$logic else "and",
-      filters = filters,
-      sorts = decode_sort_rules(view$sorts, limits)
-    )
+    result <- list(filters = filters, sorts = decode_sort_rules(view$sorts, limits))
+    if ("logic" %in% names(view)) result$logic <- view$logic
+    result
   }
 
   decode_page <- function(value, limits) {
@@ -491,6 +490,49 @@ openwrangler_r_kernel_agent <- local({
       column_offset = page$column_offset,
       column_limit = page$column_limit
     )
+  }
+
+  reconcile_custom_code_view <- function(view, before, after) {
+    plain_schema <- function(value) {
+      value <- unclass(value)
+      attributes(value) <- NULL
+      lapply(seq_along(value), function(index) {
+        column <- unclass(.subset2(value, index))
+        column
+      })
+    }
+    before_schema <- plain_schema(before$descriptor$schema)
+    after_schema <- plain_schema(after$descriptor$schema)
+    unique_column <- function(schema, reference) {
+      matches <- which(vapply(
+        schema,
+        function(column) identical(.subset2(column, "name"), reference$name),
+        logical(1L),
+        USE.NAMES = FALSE
+      ))
+      if (length(matches) != 1L) return(NULL)
+      column <- .subset2(schema, .subset2(matches, 1L))
+      if (!identical(.subset2(column, "id"), reference$id)) return(NULL)
+      column
+    }
+    filters <- Filter(function(filter) {
+      prior <- unique_column(before_schema, filter$column)
+      next_column <- unique_column(after_schema, filter$column)
+      !is.null(prior) &&
+        !is.null(next_column) &&
+        identical(.subset2(prior, "type"), filter$type) &&
+        identical(.subset2(next_column, "type"), filter$type)
+    }, view$filters)
+    sorts <- Filter(function(rule) {
+      prior <- unique_column(before_schema, rule$column)
+      next_column <- unique_column(after_schema, rule$column)
+      !is.null(prior) &&
+        !is.null(next_column) &&
+        identical(.subset2(prior, "type"), .subset2(next_column, "type"))
+    }, view$sorts)
+    result <- list(filters = unname(filters), sorts = unname(sorts))
+    if ("logic" %in% names(view)) result$logic <- view$logic
+    result
   }
 
   active_capture <- function(session) {
@@ -2161,6 +2203,52 @@ openwrangler_r_kernel_agent <- local({
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
     if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
     kind <- bounded_text(step$kind, "request.payload.step.kind", 64L)
+    if (identical(kind, "customCode")) {
+      recoverable_decode <- function(expression) tryCatch(
+        expression,
+        openwrangler_r_kernel_error = function(error) {
+          if (!identical(error$code, "invalid_request")) stop(error)
+          abort("invalid_request", conditionMessage(error), TRUE)
+        }
+      )
+      params <- recoverable_decode(
+        exact_record(step$params, "code", "request.payload.step.params")
+      )
+      code <- recoverable_decode(bounded_text(
+        params$code,
+        "request.payload.step.params.code",
+        maximum_custom_code_bytes
+      ))
+      if (any(as.integer(charToRaw(code)) == 0L)) {
+        abort("invalid_request", "Native R Custom Code cannot contain U+0000", TRUE)
+      }
+      parsed <- tryCatch(
+        parse(text = code, keep.source = FALSE),
+        error = function(error) {
+          abort(
+            "invalid_request",
+            paste0(
+              "Native R Custom Code could not be parsed: ",
+              diagnostic_message(error, "invalid R syntax")
+            ),
+            TRUE
+          )
+        }
+      )
+      if (length(parsed) == 0L) {
+        abort(
+          "invalid_request",
+          "Native R Custom Code must contain an executable expression, not only whitespace or comments",
+          TRUE
+        )
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(code = code),
+        parsed = parsed
+      ))
+    }
     if (identical(kind, "byExample")) {
       return(decode_by_example_params(step$params, step_id, limits))
     }
@@ -2191,7 +2279,7 @@ openwrangler_r_kernel_agent <- local({
         id = step_id,
         kind = kind,
         params = list(filterModel = list(
-          logic = decoded$logic,
+          logic = if ("logic" %in% names(decoded)) decoded$logic else "and",
           filters = decoded$filters,
           sort = decoded$sorts
         ))
@@ -4204,8 +4292,95 @@ openwrangler_r_kernel_agent <- local({
     result
   }
 
-  apply_step <- function(frame_contract, capture, step) {
+  evaluate_custom_code <- function(
+    frame_contract,
+    capture,
+    step,
+    source_environment,
+    variable_name
+  ) {
+    input <- frame_contract$isolate_custom_code_input(capture)
+    shield_environment <- new.env(parent = source_environment)
+    assign(variable_name, input, envir = shield_environment, inherits = FALSE)
+    lockBinding(variable_name, shield_environment)
+    if (!identical(variable_name, "result")) {
+      assign("result", NULL, envir = shield_environment, inherits = FALSE)
+      lockBinding("result", shield_environment)
+    }
+    evaluation_environment <- new.env(parent = shield_environment)
+    assign(
+      "df",
+      input,
+      envir = evaluation_environment,
+      inherits = FALSE
+    )
+
+    discard <- file(nullfile(), open = "wt")
+    output_depth <- sink.number(type = "output")
+    message_depth <- sink.number(type = "message")
+    on.exit({
+      while (sink.number(type = "message") > message_depth) sink(type = "message")
+      while (sink.number(type = "output") > output_depth) sink(type = "output")
+      close(discard)
+    }, add = TRUE)
+    sink(discard, type = "output")
+    sink(discard, type = "message")
+    tryCatch(
+      withCallingHandlers(
+        eval(step$parsed, envir = evaluation_environment),
+        warning = function(condition) invokeRestart("muffleWarning"),
+        message = function(condition) invokeRestart("muffleMessage")
+      ),
+      error = function(error) {
+        abort(
+          "invalid_request",
+          paste0(
+            "Native R Custom Code failed: ",
+            diagnostic_message(error, "the R expression could not be evaluated")
+          ),
+          TRUE
+        )
+      }
+    )
+    if (!exists("result", envir = evaluation_environment, inherits = FALSE) ||
+      bindingIsActive("result", evaluation_environment)) {
+      abort(
+        "invalid_request",
+        "Native R Custom Code must assign a non-active local result binding",
+        TRUE
+      )
+    }
+    value <- get("result", envir = evaluation_environment, inherits = FALSE)
+    result <- tryCatch(
+      frame_contract$capture_custom_code_result(value, capture, step$id),
+      openwrangler_r_frame_error = function(error) {
+        if (identical(error$code, "internal-error") || identical(error$code, "missing-package")) {
+          stop(error)
+        }
+        abort(
+          "invalid_request",
+          paste0("Native R Custom Code returned invalid output: ", conditionMessage(error)),
+          TRUE
+        )
+      }
+    )
+    list(
+      capture = result,
+      bound = list(id = step$id, kind = step$kind, params = list(code = step$params$code))
+    )
+  }
+
+  apply_step <- function(frame_contract, capture, step, source_environment, variable_name) {
     source <- get("snapshot", envir = capture, inherits = FALSE)
+    if (identical(step$kind, "customCode")) {
+      return(evaluate_custom_code(
+        frame_contract,
+        capture,
+        step,
+        source_environment,
+        variable_name
+      ))
+    }
     if (step$kind %in% c("sortRows", "filterRows")) {
       view <- if (identical(step$kind, "sortRows")) {
         list(filters = list(), sorts = step$params$rules)
@@ -4724,12 +4899,18 @@ openwrangler_r_kernel_agent <- local({
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", step$kind))
   }
 
-  replay_plan <- function(frame_contract, original, plan) {
+  replay_plan <- function(frame_contract, original, plan, source_environment, variable_name) {
     capture <- original
     bound_plan <- vector("list", length(plan))
     if (length(plan) != 0L) {
       for (index in seq_along(plan)) {
-        applied <- apply_step(frame_contract, capture, plan[[index]])
+        applied <- apply_step(
+          frame_contract,
+          capture,
+          plan[[index]],
+          source_environment,
+          variable_name
+        )
         capture <- applied$capture
         bound_plan[[index]] <- applied$bound
       }
@@ -6524,6 +6705,159 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  custom_code_helper_lines <- function(
+    maximum_columns,
+    maximum_factor_levels,
+    maximum_text_bytes,
+    maximum_payload_bytes,
+    maximum_name_bytes
+  ) {
+    c(
+      "  .ow_custom_flavor <- function(.ow_value) {",
+      "    .ow_classes <- base::class(.ow_value)",
+      "    if (base::identical(.ow_classes, \"data.frame\")) return(\"r.data.frame\")",
+      "    if (base::identical(.ow_classes, c(\"tbl_df\", \"tbl\", \"data.frame\"))) return(\"r.tibble\")",
+      "    if (base::identical(.ow_classes, c(\"data.table\", \"data.frame\"))) return(\"r.data.table\")",
+      "    base::stop(\"Open Wrangler Custom Code supports only a base data.frame, tibble, or data.table without subclasses\", call. = FALSE)",
+      "  }",
+      "  .ow_custom_plain_text <- function(.ow_values, .ow_label, .ow_maximum_bytes, .ow_allow_na = FALSE, .ow_allow_asis = FALSE) {",
+      "    .ow_nested <- base::attributes(.ow_values)",
+      "    if (!base::is.null(.ow_nested)) {",
+      "      if (!base::isTRUE(.ow_allow_asis) || !base::identical(base::names(.ow_nested), \"class\") || !base::identical(base::unclass(base::.subset2(.ow_nested, \"class\")), \"AsIs\") || !base::is.null(base::attributes(base::.subset2(.ow_nested, \"class\")))) base::stop(base::sprintf(\"Open Wrangler Custom Code returned unsupported nested attributes on %s\", .ow_label), call. = FALSE)",
+      "    }",
+      "    .ow_plain <- base::unclass(.ow_values); base::attributes(.ow_plain) <- NULL",
+      "    if (!base::is.character(.ow_plain) || (!base::isTRUE(.ow_allow_na) && base::anyNA(.ow_plain))) base::stop(base::sprintf(\"Open Wrangler Custom Code returned invalid %s\", .ow_label), call. = FALSE)",
+      "    base::vapply(base::seq_len(base::length(.ow_plain)), function(.ow_index) {",
+      "      .ow_item <- base::.subset2(.ow_plain, .ow_index)",
+      "      if (base::is.na(.ow_item) && base::isTRUE(.ow_allow_na)) return(NA_character_)",
+      "      if (base::identical(base::Encoding(.ow_item), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler Custom Code returned invalid %s\", .ow_label), call. = FALSE)",
+      "      .ow_from <- if (base::identical(base::Encoding(.ow_item), \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "      .ow_utf8 <- base::iconv(.ow_item, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+      "      if (base::is.na(.ow_utf8) || base::nchar(.ow_utf8, type = \"bytes\") > .ow_maximum_bytes) base::stop(base::sprintf(\"Open Wrangler Custom Code returned invalid or oversized %s\", .ow_label), call. = FALSE)",
+      "      .ow_utf8",
+      "    }, base::character(1L), USE.NAMES = FALSE)",
+      "  }",
+      "  .ow_custom_normalize <- function(.ow_value) {",
+      "    if (base::identical(base::class(.ow_value), c(\"spec_tbl_df\", \"tbl_df\", \"tbl\", \"data.frame\"))) { .ow_value <- base::unclass(.ow_value); base::attr(.ow_value, \"spec\") <- NULL; base::attr(.ow_value, \"problems\") <- NULL; base::class(.ow_value) <- c(\"tbl_df\", \"tbl\", \"data.frame\") }",
+      "    .ow_value",
+      "  }",
+      "  .ow_custom_snapshot <- function(.ow_value) {",
+      "    .ow_value <- .ow_custom_normalize(.ow_value)",
+      "    .ow_flavor <- .ow_custom_flavor(.ow_value)",
+      "    .ow_count <- base::length(base::unclass(.ow_value))",
+      "    .ow_element_names <- if (base::identical(.ow_flavor, \"r.data.table\")) base::lapply(base::seq_len(.ow_count), function(.ow_position) base::attr(base::.subset2(.ow_value, .ow_position), \"names\", exact = TRUE)) else NULL",
+      "    .ow_copy <- if (base::identical(.ow_flavor, \"r.data.table\")) {",
+      "      if (!base::requireNamespace(\"data.table\", quietly = TRUE)) base::stop(\"data.table is required for Custom Code\", call. = FALSE)",
+      "      data.table::copy(.ow_value)",
+      "    } else base::unserialize(base::serialize(.ow_value, NULL, version = 3L))",
+      "    if (!base::is.null(.ow_element_names)) for (.ow_position in base::seq_along(.ow_element_names)) if (!base::is.null(base::.subset2(.ow_element_names, .ow_position))) data.table::setattr(base::.subset2(.ow_copy, .ow_position), \"names\", base::.subset2(.ow_element_names, .ow_position))",
+      "    .ow_copy",
+      "  }",
+      "  .ow_custom_validate <- function(.ow_value) {",
+      "    .ow_flavor <- .ow_custom_flavor(.ow_value)",
+      "    if (!base::identical(.ow_flavor, .ow_source_flavor)) base::stop(\"Open Wrangler Custom Code must return the same R dataframe flavor as its input\", call. = FALSE)",
+      "    .ow_attribute_names <- base::names(base::attributes(.ow_value)); if (base::is.null(.ow_attribute_names)) .ow_attribute_names <- base::character()",
+      "    if (base::anyNA(.ow_attribute_names) || base::any(.ow_attribute_names == \"\") || base::anyDuplicated.default(.ow_attribute_names)) base::stop(\"Open Wrangler Custom Code returned malformed dataframe attributes\", call. = FALSE)",
+      "    .ow_allowed_attributes <- c(\"names\", \"row.names\", \"class\"); if (base::identical(.ow_flavor, \"r.data.table\")) .ow_allowed_attributes <- c(.ow_allowed_attributes, \".internal.selfref\", \"sorted\")",
+      "    if (base::any(base::is.na(base::match(.ow_attribute_names, .ow_allowed_attributes)))) base::stop(\"Open Wrangler Custom Code returned unsupported dataframe attributes\", call. = FALSE)",
+      "    .ow_column_count <- base::length(base::unclass(.ow_value))",
+      sprintf("    if (.ow_column_count < 1L || .ow_column_count > %dL) base::stop(\"Open Wrangler Custom Code must return a bounded non-empty schema\", call. = FALSE)", maximum_columns),
+      "    .ow_names_raw <- base::attr(.ow_value, \"names\", exact = TRUE)",
+      "    .ow_row_names_raw <- base::attr(.ow_value, \"row.names\", exact = TRUE)",
+      "    if ((!base::is.integer(.ow_row_names_raw) && !base::is.character(.ow_row_names_raw)) || !base::is.null(base::attributes(.ow_row_names_raw))) base::stop(\"Open Wrangler Custom Code returned invalid raw row-name metadata\", call. = FALSE)",
+      "    .ow_row_names <- base::tryCatch(base::.row_names_info(.ow_value, type = 0L), error = function(.ow_error) .ow_error)",
+      "    if (base::inherits(.ow_row_names, \"error\") || (!base::is.integer(.ow_row_names) && !base::is.character(.ow_row_names))) base::stop(\"Open Wrangler Custom Code returned malformed row names\", call. = FALSE)",
+      "    if (!base::is.null(base::attributes(.ow_row_names))) base::stop(\"Open Wrangler Custom Code returned nested row-name attributes\", call. = FALSE)",
+      "    .ow_compact <- base::is.integer(.ow_row_names) && base::length(.ow_row_names) == 2L && base::is.na(base::.subset2(.ow_row_names, 1L))",
+      "    .ow_row_count <- if (.ow_compact) base::abs(base::as.double(base::.subset2(.ow_row_names, 2L))) else base::as.double(base::length(.ow_row_names))",
+      "    if ((.ow_compact && (base::is.na(base::.subset2(.ow_row_names, 2L)) || base::.subset2(.ow_row_names, 2L) == 0L)) || !base::is.finite(.ow_row_count) || .ow_row_count != base::floor(.ow_row_count) || .ow_row_count > .Machine$integer.max) base::stop(\"Open Wrangler Custom Code returned malformed row names\", call. = FALSE)",
+      "    .ow_columns <- base::unclass(.ow_value); if (!base::is.list(.ow_columns) || base::length(.ow_columns) != .ow_column_count) base::stop(\"Open Wrangler Custom Code returned a malformed dataframe payload\", call. = FALSE)",
+      "    .ow_storage_lower_bound <- 1024 + base::as.double(.ow_column_count) * 512",
+      sprintf(
+        "    .ow_storage_check <- function() { if (!base::is.finite(.ow_storage_lower_bound) || .ow_storage_lower_bound > %dL) base::stop(\"Open Wrangler Custom Code exceeds the operation output budget before value inspection\", call. = FALSE); base::invisible(NULL) }",
+        maximum_operation_output_bytes
+      ),
+      "    .ow_storage_slots <- function(.ow_values, .ow_width = 8) { if (base::is.null(.ow_values)) return(base::invisible(NULL)); .ow_storage_lower_bound <<- .ow_storage_lower_bound + base::as.double(base::length(base::unclass(.ow_values))) * .ow_width; if (!base::is.null(base::attributes(.ow_values))) .ow_storage_lower_bound <<- .ow_storage_lower_bound + 12; .ow_storage_check() }",
+      "    .ow_storage_slots(.ow_names_raw); .ow_storage_slots(base::attr(.ow_value, \"class\", exact = TRUE)); .ow_storage_slots(.ow_row_names, if (base::is.character(.ow_row_names)) 8 else 4); .ow_storage_slots(base::attr(.ow_value, \"sorted\", exact = TRUE))",
+      "    for (.ow_position in base::seq_len(.ow_column_count)) { .ow_storage_column <- base::.subset2(.ow_columns, .ow_position); .ow_storage_lower_bound <- .ow_storage_lower_bound + .ow_row_count * if (base::typeof(.ow_storage_column) %in% c(\"logical\", \"integer\")) 4 else 8; .ow_storage_check(); .ow_storage_slots(base::attr(.ow_storage_column, \"names\", exact = TRUE)); .ow_storage_slots(base::attr(.ow_storage_column, \"class\", exact = TRUE)); .ow_storage_slots(base::attr(.ow_storage_column, \"levels\", exact = TRUE)); .ow_storage_slots(base::attr(.ow_storage_column, \"tzone\", exact = TRUE)); .ow_storage_slots(base::attr(.ow_storage_column, \"units\", exact = TRUE)) }",
+      "    if (!.ow_compact && (base::anyNA(.ow_row_names) || base::anyDuplicated.default(.ow_row_names))) base::stop(\"Open Wrangler Custom Code returned malformed row names\", call. = FALSE)",
+      sprintf("    .ow_names <- .ow_custom_plain_text(.ow_names_raw, \"column names\", %dL, FALSE, TRUE)", maximum_name_bytes),
+      "    if (base::length(.ow_names) != .ow_column_count || base::any(.ow_names == \"\") || base::any(base::startsWith(base::chartr(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\", .ow_names), \"__open_wrangler_internal_row_id_\"))) base::stop(\"Open Wrangler Custom Code returned empty or reserved column names\", call. = FALSE)",
+      "    .ow_metadata_bytes <- 1024 + base::as.double(.ow_column_count) * 512",
+      "    .ow_operation_bytes <- 1024 + base::as.double(.ow_column_count) * 512",
+      sprintf("    .ow_spend_metadata <- function(.ow_bytes) { .ow_metadata_bytes <<- .ow_metadata_bytes + base::as.double(.ow_bytes); if (!base::is.finite(.ow_metadata_bytes) || .ow_metadata_bytes > %dL) base::stop(\"Open Wrangler Custom Code exceeds the encoded metadata budget\", call. = FALSE) }", maximum_payload_bytes),
+      sprintf("    .ow_spend_operation <- function(.ow_bytes) { .ow_operation_bytes <<- .ow_operation_bytes + base::as.double(.ow_bytes); if (!base::is.finite(.ow_operation_bytes) || .ow_operation_bytes > %dL) base::stop(\"Open Wrangler Custom Code exceeds the operation output budget\", call. = FALSE) }", maximum_operation_output_bytes),
+      "    .ow_charge_text <- function(.ow_values, .ow_label, .ow_maximum_bytes, .ow_allow_na = FALSE, .ow_allow_asis = FALSE, .ow_slots = TRUE, .ow_metadata_extra = NULL) {",
+      "      .ow_nested <- base::attributes(.ow_values)",
+      "      .ow_plain <- .ow_custom_plain_text(.ow_values, .ow_label, .ow_maximum_bytes, .ow_allow_na, .ow_allow_asis)",
+      "      if (!base::is.null(.ow_nested)) .ow_spend_operation(12)",
+      "      if (.ow_slots) .ow_spend_operation(base::as.double(base::length(.ow_plain)) * 8)",
+      "      for (.ow_item in .ow_plain[!base::is.na(.ow_plain)]) { .ow_bytes <- base::nchar(.ow_item, type = \"bytes\"); .ow_spend_operation(.ow_bytes); if (!base::is.null(.ow_metadata_extra)) .ow_spend_metadata(.ow_metadata_json_bytes(.ow_item) + .ow_metadata_extra) }",
+      "      .ow_plain",
+      "    }",
+      sprintf("    .ow_charge_text(.ow_names_raw, \"column names\", %dL, FALSE, TRUE, TRUE, 0)", maximum_name_bytes),
+      sprintf("    .ow_charge_text(base::class(.ow_value), \"frame classes\", %dL, FALSE, FALSE, TRUE, 1)", maximum_name_bytes),
+      "    if (base::is.character(.ow_row_names)) .ow_charge_text(.ow_row_names, \"row names\", 1024L, FALSE, FALSE, TRUE, NULL) else .ow_spend_operation(base::as.double(base::length(.ow_row_names)) * 4)",
+      "    if (base::identical(.ow_flavor, \"r.data.table\")) {",
+      "      .ow_selfref <- base::attr(.ow_value, \".internal.selfref\", exact = TRUE); if (!base::is.null(.ow_selfref) && !base::identical(base::typeof(.ow_selfref), \"externalptr\")) base::stop(\"Open Wrangler Custom Code returned an invalid data.table self-reference\", call. = FALSE)",
+      "      .ow_key_raw <- base::attr(.ow_value, \"sorted\", exact = TRUE); .ow_key <- if (base::is.null(.ow_key_raw)) base::character() else .ow_charge_text(.ow_key_raw, \"data.table key\", 1024L, FALSE, TRUE, TRUE, NULL)",
+      "      if (base::any(.ow_key == \"\") || base::anyDuplicated.default(.ow_key) || base::any(base::vapply(.ow_key, function(.ow_name) base::sum(.ow_names == .ow_name) != 1L, logical(1L)))) base::stop(\"Open Wrangler Custom Code returned invalid data.table key metadata\", call. = FALSE)",
+      "      for (.ow_key_name in .ow_key) { .ow_key_position <- base::match(.ow_key_name, .ow_names); .ow_spend_metadata(.ow_metadata_json_bytes(base::sprintf(\"r:c:%d\", .ow_key_position - 1L)) + 1) }",
+      "    }",
+      "    for (.ow_position in base::seq_len(.ow_column_count)) {",
+      "      .ow_column <- base::.subset2(.ow_columns, .ow_position); if (base::length(base::unclass(.ow_column)) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned a column with the wrong row count\", call. = FALSE)",
+      "      if (base::is.matrix(.ow_column) || base::is.array(.ow_column) || base::is.list(.ow_column) || base::is.raw(.ow_column) || base::is.complex(.ow_column)) base::stop(\"Open Wrangler Custom Code returned an unsupported column\", call. = FALSE)",
+      "      .ow_column_attributes <- base::attributes(.ow_column); .ow_column_attribute_names <- base::names(.ow_column_attributes); if (base::is.null(.ow_column_attribute_names)) .ow_column_attribute_names <- base::character()",
+      "      if (base::anyNA(.ow_column_attribute_names) || base::any(.ow_column_attribute_names == \"\") || base::anyDuplicated.default(.ow_column_attribute_names)) base::stop(\"Open Wrangler Custom Code returned malformed column attributes\", call. = FALSE)",
+      "      if (\"names\" %in% .ow_column_attribute_names) { .ow_element_names <- base::attr(.ow_column, \"names\", exact = TRUE); if (!base::is.character(.ow_element_names) || base::is.object(.ow_element_names) || !base::is.null(base::attributes(.ow_element_names)) || base::length(.ow_element_names) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned malformed element names\", call. = FALSE); .ow_charge_text(.ow_element_names, \"element names\", 8192L, TRUE, FALSE, TRUE, NULL); .ow_column_attribute_names <- .ow_column_attribute_names[.ow_column_attribute_names != \"names\"] }",
+      "      .ow_type <- base::typeof(.ow_column); .ow_classes <- base::class(.ow_column); .ow_allowed <- base::character(); .ow_kind <- NULL",
+      "      if (base::identical(.ow_type, \"logical\") && base::identical(.ow_classes, \"logical\")) .ow_kind <- \"logical\" else if (base::identical(.ow_type, \"integer\") && base::identical(.ow_classes, \"integer\")) .ow_kind <- \"integer\" else if (base::identical(.ow_type, \"double\") && base::identical(.ow_classes, \"numeric\")) .ow_kind <- \"double\" else if (base::identical(.ow_type, \"character\") && base::identical(.ow_classes, \"character\")) .ow_kind <- \"character\" else if (base::identical(.ow_type, \"double\") && base::identical(.ow_classes, \"integer64\")) { .ow_kind <- \"integer64\"; .ow_allowed <- \"class\"; if (!base::requireNamespace(\"bit64\", quietly = TRUE)) base::stop(\"bit64 is required for integer64 Custom Code output\", call. = FALSE) } else if (base::identical(.ow_type, \"double\") && base::identical(.ow_classes, \"Date\")) { .ow_kind <- \"date\"; .ow_allowed <- \"class\" } else if (base::identical(.ow_type, \"double\") && base::identical(.ow_classes, c(\"POSIXct\", \"POSIXt\"))) { .ow_kind <- \"datetime\"; .ow_allowed <- c(\"class\", \"tzone\") } else if (base::identical(.ow_type, \"double\") && base::identical(.ow_classes, \"difftime\")) { .ow_kind <- \"difftime\"; .ow_allowed <- c(\"class\", \"units\") } else if (base::identical(.ow_type, \"integer\") && (base::identical(.ow_classes, \"factor\") || base::identical(.ow_classes, c(\"ordered\", \"factor\")))) { .ow_kind <- \"factor\"; .ow_allowed <- c(\"class\", \"levels\") } else base::stop(\"Open Wrangler Custom Code returned an unsupported column type or class\", call. = FALSE)",
+      "      if (base::any(base::is.na(base::match(.ow_column_attribute_names, .ow_allowed)))) base::stop(\"Open Wrangler Custom Code returned unsupported column attributes\", call. = FALSE)",
+      sprintf("      if (base::length(.ow_allowed) != 0L) .ow_charge_text(base::attr(.ow_column, \"class\", exact = TRUE), \"column classes\", %dL, FALSE, TRUE, TRUE, 1)", maximum_name_bytes),
+      "      .ow_spend_operation(.ow_row_count * if (.ow_kind %in% c(\"logical\", \"integer\", \"factor\")) 4 else 8)",
+      sprintf("      if (base::identical(.ow_kind, \"character\")) { .ow_plain_values <- base::unclass(.ow_column); base::attributes(.ow_plain_values) <- NULL; .ow_charge_text(.ow_plain_values, \"character values\", %dL, TRUE, FALSE, FALSE, NULL) }", maximum_text_bytes),
+      sprintf("      if (base::identical(.ow_kind, \"factor\")) { .ow_levels <- .ow_charge_text(base::attr(.ow_column, \"levels\", exact = TRUE), \"factor levels\", %dL, FALSE, TRUE, TRUE, 1); if (base::length(.ow_levels) > %dL || base::anyDuplicated.default(.ow_levels)) base::stop(\"Open Wrangler Custom Code returned invalid factor levels\", call. = FALSE); .ow_codes <- base::unclass(.ow_column); if (base::any(!base::is.na(.ow_codes) & (.ow_codes < 1L | .ow_codes > base::length(.ow_levels)))) base::stop(\"Open Wrangler Custom Code returned invalid factor codes\", call. = FALSE) }", maximum_text_bytes, maximum_factor_levels),
+      "      if (.ow_kind %in% c(\"date\", \"datetime\", \"difftime\")) { .ow_storage <- base::unclass(.ow_column); if (base::any(base::is.nan(.ow_storage)) || base::any(!base::is.na(.ow_storage) & !base::is.finite(.ow_storage)) || (base::identical(.ow_kind, \"date\") && base::any(!base::is.na(.ow_storage) & .ow_storage != base::floor(.ow_storage)))) base::stop(\"Open Wrangler Custom Code returned invalid temporal values\", call. = FALSE) }",
+      sprintf("      if (base::identical(.ow_kind, \"datetime\") && \"tzone\" %%in%% .ow_column_attribute_names) { .ow_tzone <- .ow_charge_text(base::attr(.ow_column, \"tzone\", exact = TRUE), \"datetime timezone\", %dL, FALSE, TRUE, TRUE, 0); if (base::length(.ow_tzone) != 1L) base::stop(\"Open Wrangler Custom Code returned invalid timezone metadata\", call. = FALSE) }", maximum_name_bytes),
+      sprintf("      if (base::identical(.ow_kind, \"difftime\")) { .ow_units <- .ow_charge_text(base::attr(.ow_column, \"units\", exact = TRUE), \"duration units\", %dL, FALSE, TRUE, TRUE, 0); if (base::length(.ow_units) != 1L || !base::.subset2(.ow_units, 1L) %%in%% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(\"Open Wrangler Custom Code returned invalid duration metadata\", call. = FALSE) }", maximum_name_bytes),
+      "    }",
+      "    .ow_metadata_bytes",
+      "  }",
+      "  .ow_custom_validate_identity_budget <- function(.ow_metadata_bytes, .ow_value, .ow_ids) {",
+      "    .ow_default_ids <- base::sprintf(\"r:c:%d\", base::seq_along(.ow_ids) - 1L)",
+      "    .ow_old_id_bytes <- base::sum(base::vapply(.ow_default_ids, .ow_metadata_json_bytes, base::double(1L), USE.NAMES = FALSE))",
+      "    .ow_new_id_bytes <- base::sum(base::vapply(.ow_ids, .ow_metadata_json_bytes, base::double(1L), USE.NAMES = FALSE))",
+      "    .ow_additional <- base::max(0, .ow_new_id_bytes - .ow_old_id_bytes)",
+      "    if (base::identical(.ow_custom_flavor(.ow_value), \"r.data.table\")) {",
+      "      .ow_key <- base::attr(.ow_value, \"sorted\", exact = TRUE)",
+      "      if (!base::is.null(.ow_key)) { .ow_key <- base::unclass(.ow_key); base::attributes(.ow_key) <- NULL; .ow_names <- base::attr(.ow_value, \"names\", exact = TRUE); .ow_names <- base::unclass(.ow_names); base::attributes(.ow_names) <- NULL; .ow_key_positions <- base::match(.ow_key, .ow_names); .ow_old_key_ids <- .ow_default_ids[.ow_key_positions]; .ow_new_key_ids <- .ow_ids[.ow_key_positions]; .ow_old_key_bytes <- base::sum(base::vapply(.ow_old_key_ids, .ow_metadata_json_bytes, base::double(1L), USE.NAMES = FALSE)); .ow_new_key_bytes <- base::sum(base::vapply(.ow_new_key_ids, .ow_metadata_json_bytes, base::double(1L), USE.NAMES = FALSE)); .ow_additional <- .ow_additional + base::max(0, .ow_new_key_bytes - .ow_old_key_bytes) }",
+      "    }",
+      sprintf("    if (!base::is.finite(.ow_metadata_bytes + .ow_additional) || .ow_metadata_bytes + .ow_additional > %dL) base::stop(\"Open Wrangler Custom Code exceeds the encoded metadata budget after lineage\", call. = FALSE)", maximum_payload_bytes),
+      "    base::invisible(NULL)",
+      "  }",
+      "  .ow_custom_eval <- function(.ow_expressions, .ow_environment) {",
+      "    .ow_connection <- base::file(base::nullfile(), open = \"wt\")",
+      "    .ow_output_depth <- base::sink.number(type = \"output\"); .ow_message_depth <- base::sink.number(type = \"message\")",
+      "    base::on.exit({ while (base::sink.number(type = \"message\") > .ow_message_depth) base::sink(type = \"message\"); while (base::sink.number(type = \"output\") > .ow_output_depth) base::sink(type = \"output\"); base::close(.ow_connection) }, add = TRUE)",
+      "    base::sink(.ow_connection, type = \"output\"); base::sink(.ow_connection, type = \"message\")",
+      "    base::withCallingHandlers(base::eval(.ow_expressions, envir = .ow_environment), warning = function(.ow_condition) base::invokeRestart(\"muffleWarning\"), message = function(.ow_condition) base::invokeRestart(\"muffleMessage\"))",
+      "  }",
+      "  .ow_custom_run <- function(.ow_expressions, .ow_input, .ow_parent, .ow_source_name, .ow_publication_name) {",
+      "    .ow_local_input <- .ow_custom_snapshot(.ow_input)",
+      "    .ow_shield <- base::new.env(parent = .ow_parent); base::assign(.ow_source_name, .ow_local_input, envir = .ow_shield, inherits = FALSE); base::lockBinding(.ow_source_name, .ow_shield)",
+      "    if (!base::identical(.ow_source_name, \"result\")) { base::assign(\"result\", NULL, envir = .ow_shield, inherits = FALSE); base::lockBinding(\"result\", .ow_shield) }",
+      "    if (!.ow_publication_name %in% c(.ow_source_name, \"result\")) { base::assign(.ow_publication_name, NULL, envir = .ow_shield, inherits = FALSE); base::lockBinding(.ow_publication_name, .ow_shield) }",
+      "    .ow_environment <- base::new.env(parent = .ow_shield); base::assign(\"df\", .ow_local_input, envir = .ow_environment, inherits = FALSE)",
+      "    .ow_custom_eval(.ow_expressions, .ow_environment)",
+      "    if (!base::exists(\"result\", envir = .ow_environment, inherits = FALSE) || base::bindingIsActive(\"result\", .ow_environment)) base::stop(\"Open Wrangler Custom Code must assign a non-active local result binding\", call. = FALSE)",
+      "    .ow_raw_output <- .ow_custom_normalize(base::get(\"result\", envir = .ow_environment, inherits = FALSE)); .ow_metadata_bytes <- .ow_custom_validate(.ow_raw_output)",
+      "    .ow_output <- .ow_custom_snapshot(.ow_raw_output); .ow_snapshot_metadata_bytes <- .ow_custom_validate(.ow_output)",
+      "    if (!base::identical(.ow_snapshot_metadata_bytes, .ow_metadata_bytes)) base::stop(\"Open Wrangler Custom Code output changed while it was captured\", call. = FALSE)",
+      "    base::list(value = .ow_output, metadataBytes = .ow_metadata_bytes)",
+      "  }"
+    )
+  }
+
   compile_plan <- function(
     variable_name,
     bound_plan,
@@ -6787,6 +7121,15 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(bound_plan, function(step) identical(step$kind, "byExample"), logical(1L)))) {
       lines <- c(lines, by_example_code_helper_lines())
     }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))) {
+      lines <- c(lines, custom_code_helper_lines(
+        maximum_columns,
+        maximum_factor_levels,
+        maximum_text_bytes,
+        maximum_payload_bytes,
+        maximum_name_bytes
+      ))
+    }
     if (any(vapply(
       bound_plan,
       function(step) step$kind %in% c("oneHotEncode", "multiLabelBinarize"),
@@ -6869,6 +7212,32 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(lines, row_step_code_lines(step))
       } else if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
         lines <- c(lines, row_reduction_code_lines(step))
+      } else if (identical(step$kind, "customCode")) {
+        lines <- c(
+          lines,
+          "  .ow_custom_input_names <- base::attr(.ow_result, \"names\", exact = TRUE)",
+          "  .ow_custom_input_names <- base::unclass(.ow_custom_input_names); base::attributes(.ow_custom_input_names) <- NULL",
+          "  .ow_custom_input_ids <- .ow_result_ids",
+          sprintf("  .ow_custom_code <- %s", r_string(step$params$code)),
+          "  .ow_custom_expressions <- base::parse(text = .ow_custom_code, keep.source = FALSE)",
+          sprintf(
+            "  .ow_custom_run_result <- .ow_custom_run(.ow_custom_expressions, .ow_result, .ow_custom_parent_environment, %s, %s)",
+            r_string(variable_name),
+            r_string(result_name)
+          ),
+          "  .ow_result <- base::.subset2(.ow_custom_run_result, \"value\"); .ow_custom_metadata_bytes <- base::.subset2(.ow_custom_run_result, \"metadataBytes\")",
+          "  .ow_custom_output_names <- base::attr(.ow_result, \"names\", exact = TRUE)",
+          "  .ow_custom_output_names <- base::unclass(.ow_custom_output_names); base::attributes(.ow_custom_output_names) <- NULL",
+          "  .ow_custom_consumed <- base::logical(base::length(.ow_custom_input_ids)); .ow_custom_created <- 0L",
+          sprintf("  .ow_custom_step_id <- %s", r_string(step$id)),
+          "  .ow_result_ids <- base::vapply(base::seq_along(.ow_custom_output_names), function(.ow_position) {",
+          "    .ow_matches <- base::which(!.ow_custom_consumed & .ow_custom_input_names == base::.subset2(.ow_custom_output_names, .ow_position))",
+          "    if (base::length(.ow_matches) != 0L) { .ow_match <- base::.subset2(.ow_matches, 1L); .ow_custom_consumed[[.ow_match]] <<- TRUE; return(base::.subset2(.ow_custom_input_ids, .ow_match)) }",
+          "    .ow_id <- base::sprintf(\"c:step:%s:%d\", .ow_custom_step_id, .ow_custom_created); .ow_custom_created <<- .ow_custom_created + 1L; .ow_id",
+          "  }, base::character(1L), USE.NAMES = FALSE)",
+          "  if (base::anyDuplicated.default(.ow_result_ids)) base::stop(\"Open Wrangler Custom Code produced conflicting output identities\", call. = FALSE)",
+          "  .ow_custom_validate_identity_budget(.ow_custom_metadata_bytes, .ow_result, .ow_result_ids)"
+        )
       } else if (identical(step$kind, "groupBy")) {
         key_specs <- vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE)
         aggregation_specs <- vapply(
@@ -7914,7 +8283,7 @@ openwrangler_r_kernel_agent <- local({
       lines,
       "  .ow_result",
       "  }, envir = base::list2env(",
-      "    base::list(.ow_source_environment = .ow_caller_environment),",
+      "    base::list(.ow_source_environment = .ow_caller_environment, .ow_custom_parent_environment = .ow_caller_environment),",
       "    parent = base::baseenv()",
       "  ))",
       "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
@@ -7942,7 +8311,43 @@ openwrangler_r_kernel_agent <- local({
     before_page = NULL,
     after_page = NULL
   ) {
-    added_columns <- if (identical(bound$kind, "groupBy")) {
+    custom_schema <- function(value) {
+      schema <- unclass(value$descriptor$schema)
+      attributes(schema) <- NULL
+      lapply(seq_along(schema), function(index) {
+        column <- unclass(.subset2(schema, index))
+        column
+      })
+    }
+    custom_ids <- function(schema) vapply(
+      schema,
+      function(column) .subset2(column, "id"),
+      character(1L),
+      USE.NAMES = FALSE
+    )
+    custom_difference_names <- function(schema, retained_ids) {
+      retained <- vapply(
+        schema,
+        function(column) !.subset2(column, "id") %in% retained_ids,
+        logical(1L),
+        USE.NAMES = FALSE
+      )
+      selected <- schema[retained]
+      vapply(
+        selected,
+        function(column) .subset2(column, "name"),
+        character(1L),
+        USE.NAMES = FALSE
+      )
+    }
+    added_columns <- if (identical(bound$kind, "customCode")) {
+      if (is.null(before) || is.null(after)) {
+        abort("runtime_error", "The R Custom Code diff is missing its schema context")
+      }
+      before_schema <- custom_schema(before)
+      after_schema <- custom_schema(after)
+      custom_difference_names(after_schema, custom_ids(before_schema))
+    } else if (identical(bound$kind, "groupBy")) {
       vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$generatedNames
@@ -7969,7 +8374,14 @@ openwrangler_r_kernel_agent <- local({
     } else {
       character()
     }
-    removed_columns <- if (identical(bound$kind, "groupBy")) {
+    removed_columns <- if (identical(bound$kind, "customCode")) {
+      if (is.null(before) || is.null(after)) {
+        abort("runtime_error", "The R Custom Code diff is missing its schema context")
+      }
+      before_schema <- custom_schema(before)
+      after_schema <- custom_schema(after)
+      custom_difference_names(before_schema, custom_ids(after_schema))
+    } else if (identical(bound$kind, "groupBy")) {
       bound$removedNames
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$removedNames
@@ -7985,7 +8397,25 @@ openwrangler_r_kernel_agent <- local({
     truncated <- FALSE
     added_rows <- 0L
     removed_rows <- 0L
-    if (identical(bound$kind, "groupBy")) {
+    if (identical(bound$kind, "customCode")) {
+      if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
+        abort("runtime_error", "The R Custom Code diff is missing its bounded page context")
+      }
+      if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
+      before_rows <- before$descriptor$shape$rows
+      after_rows <- after$descriptor$shape$rows
+      added_rows <- as.integer(after_rows)
+      removed_rows <- as.integer(before_rows)
+      before_complete <-
+        page$row_offset == 0 &&
+          page$row_limit >= before_rows &&
+          length(page$view$filters) == 0L
+      after_complete <-
+        after_page$page$offset == 0 &&
+          after_page$page$totalRows == after_rows &&
+          length(after_page$page$rows) == after_rows
+      truncated <- !(before_complete && after_complete)
+    } else if (identical(bound$kind, "groupBy")) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R Group By diff is missing its bounded page context")
       }
@@ -8201,7 +8631,7 @@ openwrangler_r_kernel_agent <- local({
         cursor <- cursor - 1L
       }
       if (slash_count %% 2L == 1L) {
-        abort("invalid_request", "R by-example requests cannot contain U+0000 text")
+        abort("invalid_request", "R runtime requests cannot contain U+0000 text", TRUE)
       }
     }
     invisible(NULL)
@@ -8286,9 +8716,11 @@ openwrangler_r_kernel_agent <- local({
     required_functions <- c(
       "capture_frame",
       "capture_categorical_result",
+      "capture_custom_code_result",
       "capture_group_result",
       "capture_live_frame",
       "isolate_capture",
+      "isolate_custom_code_input",
       "rename_column",
       "rename_column_at",
       "clone_column_at",
@@ -8624,6 +9056,7 @@ openwrangler_r_kernel_agent <- local({
         }
 
         session <- begin_editing(frame_contract, session)
+        view_schema_base <- session$committed
 
         retained_plan <- session$plan
         retained_bound_plan <- session$boundPlan
@@ -8639,7 +9072,13 @@ openwrangler_r_kernel_agent <- local({
             abort("invalid_request", "An edited R step must retain its applied step ID", TRUE)
           }
           retained_plan <- session$plan[-length(session$plan)]
-          replayed <- replay_plan(frame_contract, session$original, retained_plan)
+          replayed <- replay_plan(
+            frame_contract,
+            session$original,
+            retained_plan,
+            source_environment,
+            session$variableName
+          )
           base <- replayed$capture
           retained_bound_plan <- replayed$boundPlan
         }
@@ -8650,7 +9089,31 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "Applied R step IDs must be unique", TRUE)
         }
 
-        applied <- apply_step(frame_contract, base, step)
+        preflight_custom_code <- if (identical(step$kind, "customCode")) {
+          compile_plan(
+            session$variableName,
+            c(retained_bound_plan, list(list(
+              id = step$id,
+              kind = step$kind,
+              params = list(code = step$params$code)
+            ))),
+            frame_contract$limits$columns,
+            frame_contract$limits$factorLevels,
+            frame_contract$limits$textBytes,
+            frame_contract$limits$payloadBytes,
+            frame_contract$limits$nameBytes
+          )
+        } else {
+          NULL
+        }
+
+        applied <- apply_step(
+          frame_contract,
+          base,
+          step,
+          source_environment,
+          session$variableName
+        )
         candidate <- session
         candidate$draft <- applied$capture
         candidate$draftStep <- step
@@ -8659,7 +9122,14 @@ openwrangler_r_kernel_agent <- local({
         candidate$editing <- TRUE
         candidate$revision <- next_revision(session)
         candidate_bound_plan <- c(retained_bound_plan, list(applied$bound))
-        draft_page <- materialize(frame_contract, candidate$draft, page)
+        effective_view <- if (identical(applied$bound$kind, "customCode")) {
+          reconcile_custom_code_view(page$view, view_schema_base, candidate$draft)
+        } else {
+          NULL
+        }
+        effective_page <- page
+        if (!is.null(effective_view)) effective_page$view <- effective_view
+        draft_page <- materialize(frame_contract, candidate$draft, effective_page)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -8672,10 +9142,10 @@ openwrangler_r_kernel_agent <- local({
             frame_contract,
             base,
             applied$capture,
-            page,
+            effective_page,
             after_page = draft_page
           ),
-          code = compile_plan(
+          code = if (!is.null(preflight_custom_code)) preflight_custom_code else compile_plan(
             candidate$variableName,
             candidate_bound_plan,
             frame_contract$limits$columns,
@@ -8685,6 +9155,7 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$nameBytes
           )
         )
+        if (!is.null(effective_view)) response$effectiveView <- effective_view
         if (identical(applied$bound$kind, "fillMissingValues")) {
           response$remainingMissingCells <- frame_contract$count_missing_at(
             candidate$draft,
@@ -8753,7 +9224,9 @@ openwrangler_r_kernel_agent <- local({
         inspected <- replay_plan(
           frame_contract,
           session$original,
-          utils::head(session$plan, step_index - if (identical(side, "input")) 1L else 0L)
+          utils::head(session$plan, step_index - if (identical(side, "input")) 1L else 0L),
+          source_environment,
+          session$variableName
         )
         inspection_page <- materialize(
           frame_contract,
@@ -8844,7 +9317,13 @@ openwrangler_r_kernel_agent <- local({
         }
         page <- decode_page(payload$page, frame_contract$limits)
         retained_plan <- session$plan[-length(session$plan)]
-        replayed <- replay_plan(frame_contract, session$original, retained_plan)
+        replayed <- replay_plan(
+          frame_contract,
+          session$original,
+          retained_plan,
+          source_environment,
+          session$variableName
+        )
         candidate <- session
         candidate$plan <- retained_plan
         candidate$boundPlan <- replayed$boundPlan

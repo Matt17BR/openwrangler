@@ -1196,19 +1196,25 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
     );
   }
   if (kind === "customCode") {
+    const isNativeR = metadata.backend === "r";
+    const languageLabel = isNativeR ? "Engine-native R" : "Engine-native Python";
     return (
       <label className="formField codeField">
-        <span>Engine-native Python</span>
+        <span>{languageLabel}</span>
         <textarea
+          aria-label={languageLabel}
           name="code"
           rows={12}
           required
-          defaultValue={param("code", metadata.backend === "pandas" ? "result = df.copy()" : "result = df")}
+          defaultValue={param(
+            "code",
+            isNativeR ? "result <- df" : metadata.backend === "pandas" ? "result = df.copy()" : "result = df"
+          )}
           spellCheck={false}
         />
         <small>
-          Assign an engine-native dataframe or relation to <code>result</code>. Custom code runs only in a trusted
-          workspace.
+          {isNativeR ? "Assign an R data frame" : "Assign an engine-native dataframe or relation"} to{" "}
+          <code>result</code>. Custom code runs only in a trusted workspace.
         </small>
       </label>
     );

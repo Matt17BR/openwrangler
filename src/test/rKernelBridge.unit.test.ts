@@ -8,6 +8,7 @@ import type {
   CeilNumberTransformStep,
   CloneColumnTransformStep,
   ColumnSummary,
+  CustomCodeTransformStep,
   DataDiff,
   DatasetStats,
   FillMissingValuesTransformStep,
@@ -2481,7 +2482,8 @@ describe("canonical R kernel bridge", () => {
             "ceilNumber",
             "formatDatetime",
             "groupBy",
-            "byExample"
+            "byExample",
+            "customCode"
           ]
         }
       }
@@ -6262,31 +6264,936 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("mutation diff");
   });
 
-  it("keeps the remaining unsupported cleaning operation out of native R sessions", async () => {
+  it("publishes arbitrary custom R schemas with name-pooled lineage and exact code persistence", async () => {
+    const source = frameContract();
+    const step: CustomCodeTransformStep = {
+      id: "r-custom",
+      kind: "customCode",
+      params: {
+        code: "result <- data.frame(value = as.character(df$missing), value = df$missing, fresh = df$flag, check.names = FALSE)\n"
+      }
+    };
+    const transformed = customCodeContract(
+      source,
+      step.id,
+      [
+        { name: "value", sourcePosition: 6 },
+        { name: "value", sourcePosition: 6 },
+        { name: "fresh", sourcePosition: 5 }
+      ],
+      { rows: 2, rowNames: "explicit" }
+    );
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: transformed,
+      diff: customCodeDiff(source, transformed),
+      code: "open_wrangler_result <- local({ ... })\n",
+      effectiveView: { filters: [], sorts: [] }
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      step,
+      expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      source.schema,
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: {
+        shape: { rows: 2, columns: 3 },
+        schema: [
+          expect.objectContaining({ id: "r:c:0", name: "value", position: 0, type: "string" }),
+          expect.objectContaining({ id: "c:step:r-custom:0", name: "value", position: 1, type: "string" }),
+          expect.objectContaining({ id: "c:step:r-custom:1", name: "fresh", position: 2, type: "boolean" })
+        ],
+        draftStep: step
+      },
+      diff: {
+        addedRows: 2,
+        removedRows: 1,
+        addedColumns: ["value", "fresh"],
+        removedColumns: ["count", "date", "when", "elapsed", "flag", "missing", "infinite"]
+      }
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: transformed,
+      code: "open_wrangler_result <- local({ ... })\n"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: { steps: [step] }
+    });
+
+    transport.undoStep.mockResolvedValueOnce({
+      sessionId,
+      action: "undo",
+      revision: 3,
+      page: source,
+      code: "open_wrangler_result <- orders\n"
+    });
+    await expect(bridge.request(planRequest("undoStep", 2))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "undo",
+      metadata: { shape: { rows: 1, columns: 8 }, steps: [] }
+    });
+  });
+
+  it("edits latest custom R code against its original input while preserving surviving output views", async () => {
+    const source = frameContract();
+    const stepId = "r-custom-edit";
+    const firstStep: CustomCodeTransformStep = {
+      id: stepId,
+      kind: "customCode",
+      params: { code: "result <- data.frame(value = df$value, fresh = df$count)\n" }
+    };
+    const first = customCodeContract(source, stepId, [
+      { name: "value", sourcePosition: 0 },
+      { name: "fresh", sourcePosition: 1 }
+    ]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: first,
+      diff: customCodeDiff(source, first),
+      code: "first\n",
+      effectiveView: { filters: [], sorts: [] }
+    });
+    await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: firstStep,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: first,
+      code: "first\n"
+    });
+    await bridge.request(planRequest("applyDraft", 1));
+
+    const filterModel = {
+      filters: [
+        {
+          column: "fresh",
+          type: "integer" as const,
+          predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 0 }]
+        }
+      ],
+      sort: [{ column: "fresh", direction: "desc" as const, nulls: "last" as const }]
+    };
+    transport.getPage.mockResolvedValueOnce(first);
+    await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 2,
+      viewRequestId: "custom-edit-view",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel
+    });
+
+    const replacementStep: CustomCodeTransformStep = {
+      id: stepId,
+      kind: "customCode",
+      params: { code: "result <- data.frame(count = df$count, fresh = df$count, novel = df$flag)\n" }
+    };
+    const replacement = customCodeContract(source, stepId, [
+      { name: "count", sourcePosition: 1 },
+      { name: "fresh", sourcePosition: 1 },
+      { name: "novel", sourcePosition: 5 }
+    ]);
+    const effectiveView = {
+      filters: [
+        {
+          column: { id: `c:step:${stepId}:0`, name: "fresh" },
+          type: "integer" as const,
+          predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 0 }]
+        }
+      ],
+      sorts: [
+        {
+          column: { id: `c:step:${stepId}:0`, name: "fresh" },
+          direction: "desc" as const,
+          nulls: "last" as const
+        }
+      ]
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 3,
+      page: replacement,
+      diff: { ...customCodeDiff(source, replacement), truncated: true },
+      code: "replacement\n",
+      effectiveView
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 2,
+      replaceStepId: stepId,
+      step: replacementStep,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      2,
+      replacementStep,
+      expect.objectContaining({ view: effectiveView }),
+      source.schema,
+      stepId,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      diff: { truncated: true },
+      metadata: {
+        filterModel,
+        draftStep: replacementStep,
+        draftReplacesStepId: stepId,
+        latestStepInputSchema: source.schema.map(({ semantics: _semantics, ...column }) => column)
+      }
+    });
+  });
+
+  it("accepts the exact effective view after custom R code prunes missing viewed columns", async () => {
+    const source = frameContract();
+    const step: CustomCodeTransformStep = {
+      id: "r-custom-pruned-view",
+      kind: "customCode",
+      params: { code: "result <- data.frame(count = df$count)\n" }
+    };
+    const output = customCodeContract(source, step.id, [{ name: "count", sourcePosition: 1 }]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.getPage.mockResolvedValueOnce(source);
+    await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 0,
+      viewRequestId: "custom-pruned-source-view",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [
+          {
+            column: "value",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+          }
+        ],
+        sort: [{ column: "value", direction: "asc", nulls: "last" }]
+      }
+    });
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: customCodeDiff(source, output),
+      code: "generated\n",
+      effectiveView: { filters: [], sorts: [] }
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      step,
+      expect.objectContaining({
+        view: {
+          filters: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })],
+          sorts: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })]
+        }
+      }),
+      source.schema,
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: { filterModel: { filters: [], sort: [] } }
+    });
+  });
+
+  it("rejects unsafe custom R source before dispatch", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
-    const steps = [{ id: "r-custom", kind: "customCode", params: { code: "result <- df" } }] satisfies TransformStep[];
-
-    for (const step of steps) {
+    for (const code of ["result <- df\u0000", "# comment only\r # still a comment", "x".repeat(64 * 1_024 + 1)]) {
       await expect(
         bridge.request({
           kind: "previewStep",
           sessionId,
           revision: 0,
-          step,
+          step: { id: "r-custom-invalid", kind: "customCode", params: { code } },
           offset: 0,
           limit: 20,
           columnOffset: 0,
           columnLimit: 8
         })
-      ).resolves.toMatchObject({
-        kind: "error",
-        code: "unsupported_operation",
-        message: expect.stringContaining(step.kind)
-      });
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
     }
     expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on mismatched custom R lineage, flavor, diff, and effective views", async () => {
+    const source = frameContract();
+    const step: CustomCodeTransformStep = {
+      id: "r-custom-invalid-response",
+      kind: "customCode",
+      params: { code: "result <- data.frame(value = df$value, fresh = df$count)\n" }
+    };
+    const valid = customCodeContract(source, step.id, [
+      { name: "value", sourcePosition: 0 },
+      { name: "fresh", sourcePosition: 1 }
+    ]);
+    const request = {
+      kind: "previewStep" as const,
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    };
+    const cases: readonly Readonly<{
+      label: string;
+      page: RFramePageContract;
+      diff: DataDiff;
+      effectiveView?: RKernelStepPreviewResult["effectiveView"];
+    }>[] = [
+      {
+        label: "empty schema",
+        page: {
+          ...valid,
+          shape: { ...valid.shape, columns: 0 },
+          schema: [],
+          page: {
+            ...valid.page,
+            columnIds: [],
+            rows: valid.page.rows.map((row) => ({ ...row, values: [] }))
+          }
+        },
+        diff: customCodeDiff(source, valid),
+        effectiveView: { filters: [], sorts: [] }
+      },
+      {
+        label: "private name",
+        page: {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === 1 ? { ...column, name: "__OPEN_WRANGLER_INTERNAL_ROW_ID_hidden" } : { ...column }
+          )
+        },
+        diff: customCodeDiff(source, valid),
+        effectiveView: { filters: [], sorts: [] }
+      },
+      {
+        label: "lineage",
+        page: {
+          ...valid,
+          schema: valid.schema.map((column, index) =>
+            index === 1 ? { ...column, id: `c:step:${step.id}:1` } : { ...column }
+          ),
+          page: {
+            ...valid.page,
+            columnIds: valid.page.columnIds.map((id, index) => (index === 1 ? `c:step:${step.id}:1` : id))
+          }
+        },
+        diff: customCodeDiff(source, valid),
+        effectiveView: { filters: [], sorts: [] }
+      },
+      {
+        label: "flavor",
+        page: {
+          ...valid,
+          dataframeFlavor: "r.tibble",
+          frameSemantics: { ...valid.frameSemantics, classes: ["tbl_df", "tbl", "data.frame"] }
+        },
+        diff: customCodeDiff(source, valid),
+        effectiveView: { filters: [], sorts: [] }
+      },
+      {
+        label: "diff",
+        page: valid,
+        diff: { ...customCodeDiff(source, valid), addedRows: 0 },
+        effectiveView: { filters: [], sorts: [] }
+      },
+      {
+        label: "effective view",
+        page: valid,
+        diff: customCodeDiff(source, valid),
+        effectiveView: {
+          filters: [],
+          sorts: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
+        }
+      },
+      { label: "missing effective view", page: valid, diff: customCodeDiff(source, valid) }
+    ];
+
+    for (const candidate of cases) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: candidate.page,
+        diff: candidate.diff,
+        code: "generated\n",
+        ...(candidate.effectiveView === undefined ? {} : { effectiveView: candidate.effectiveView })
+      });
+      await expect(bridge.request(request), candidate.label).rejects.toThrow();
+      expect(transport.previewStep, candidate.label).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("requires custom R rows to use the fresh identity suffix while allowing valid sorted order", async () => {
+    const source = frameContract();
+    const step: CustomCodeTransformStep = {
+      id: "r-custom-row-identities",
+      kind: "customCode",
+      params: { code: "result <- df[c(1L, 1L, 1L), , drop = FALSE]\n" }
+    };
+    const valid = customCodeContract(source, step.id, [{ name: "value", sourcePosition: 0 }], { rows: 3 });
+    const request = {
+      kind: "previewStep" as const,
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    };
+    for (const [label, rowIds] of [
+      ["stale", ["r:r:0", "r:r:2", "r:r:3"]],
+      ["out-of-suffix", ["r:r:1", "r:r:2", "r:r:4"]],
+      ["duplicate", ["r:r:1", "r:r:1", "r:r:3"]],
+      ["unordered full page", ["r:r:2", "r:r:1", "r:r:3"]]
+    ] as const) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const malformed = contractWithRowIds(valid, rowIds);
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: malformed,
+        diff: customCodeDiff(source, malformed),
+        code: "generated\n",
+        effectiveView: { filters: [], sorts: [] }
+      });
+      await expect(bridge.request(request), label).rejects.toThrow(/row identit|physical output order/u);
+    }
+
+    const partialRequest = { ...request, offset: 1, limit: 1 };
+    for (const [label, rowId, accepts] of [
+      ["misbound partial page", "r:r:3", false],
+      ["exact partial page", "r:r:2", true]
+    ] as const) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const partial = {
+        ...valid,
+        page: {
+          ...valid.page,
+          offset: 1,
+          limit: 1,
+          rows: [{ ...(valid.page.rows[1] as RFramePageContract["page"]["rows"][number]), id: rowId }]
+        }
+      };
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: partial,
+        diff: customCodeDiff(source, partial),
+        code: "generated\n",
+        effectiveView: { filters: [], sorts: [] }
+      });
+      const result = bridge.request(partialRequest);
+      if (accepts) await expect(result, label).resolves.toMatchObject({ kind: "stepPreview" });
+      else await expect(result, label).rejects.toThrow("physical output order");
+    }
+
+    const filteredTransport = fakeTransport(source);
+    const filteredBridge = createBridge(filteredTransport);
+    await filteredBridge.request(openRequest("editing"));
+    filteredTransport.getPage.mockResolvedValueOnce(source);
+    await filteredBridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 0,
+      viewRequestId: "custom-filtered-row-identities",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [
+          {
+            column: "value",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+          }
+        ],
+        sort: []
+      }
+    });
+    const filtered = {
+      ...valid,
+      page: {
+        ...valid.page,
+        totalRows: 2,
+        rows: [
+          { ...(valid.page.rows[2] as RFramePageContract["page"]["rows"][number]), rowNumber: 0 },
+          { ...(valid.page.rows[0] as RFramePageContract["page"]["rows"][number]), rowNumber: 1 }
+        ]
+      }
+    };
+    const filteredEffectiveView = {
+      filters: [
+        {
+          column: { id: "r:c:0", name: "value" },
+          type: "float" as const,
+          predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 0 }]
+        }
+      ],
+      sorts: []
+    };
+    filteredTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: filtered,
+      diff: { ...customCodeDiff(source, valid), truncated: true },
+      code: "generated\n",
+      effectiveView: filteredEffectiveView
+    });
+    await expect(filteredBridge.request(request)).rejects.toThrow("physical output order");
+
+    const sortedTransport = fakeTransport(source);
+    const sortedBridge = createBridge(sortedTransport);
+    await sortedBridge.request(openRequest("editing"));
+    sortedTransport.getPage.mockResolvedValueOnce(source);
+    await sortedBridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 0,
+      viewRequestId: "custom-sorted-row-identities",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [],
+        sort: [{ column: "value", direction: "desc", nulls: "last" }]
+      }
+    });
+    const sorted = contractWithRowIds(valid, ["r:r:3", "r:r:2", "r:r:1"]);
+    const effectiveView = {
+      filters: [],
+      sorts: [{ column: { id: "r:c:0", name: "value" }, direction: "desc" as const, nulls: "last" as const }]
+    };
+    sortedTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: sorted,
+      diff: customCodeDiff(source, sorted),
+      code: "generated\n",
+      effectiveView
+    });
+    await expect(sortedBridge.request(request)).resolves.toMatchObject({
+      kind: "stepPreview",
+      page: { rows: [{ id: "r:r:3" }, { id: "r:r:2" }, { id: "r:r:1" }] }
+    });
+  });
+
+  it("retains exact custom row identities across later pages and partial applied-step inspection", async () => {
+    const source = frameContract();
+    const step: CustomCodeTransformStep = {
+      id: "r-custom-retained-identities",
+      kind: "customCode",
+      params: { code: "result <- df[c(1L, 1L, 1L), , drop = FALSE]\n" }
+    };
+    const output = customCodeContract(source, step.id, [{ name: "value", sourcePosition: 0 }], { rows: 3 });
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: customCodeDiff(source, output),
+      code: "generated\n",
+      effectiveView: { filters: [], sorts: [] }
+    });
+    await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: output,
+      code: "generated\n"
+    });
+    await bridge.request(planRequest("applyDraft", 1));
+
+    transport.getPage.mockResolvedValueOnce(contractWithRowIds(output, ["r:r:0", "r:r:2", "r:r:3"]));
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 2,
+        viewRequestId: "custom-stale-page",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      })
+    ).rejects.toThrow("out-of-suffix row identity");
+
+    const inputPartial = {
+      ...source,
+      page: { ...source.page, offset: 1, limit: 1, rows: [] }
+    };
+    const outputPartial = {
+      ...output,
+      page: {
+        ...output.page,
+        offset: 1,
+        limit: 1,
+        rows: [{ ...(output.page.rows[1] as RFramePageContract["page"]["rows"][number]), id: "r:r:3" }]
+      }
+    };
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: step.id,
+      stepIndex: 0,
+      inputPage: inputPartial,
+      outputPage: outputPartial,
+      inputSchema: source.schema,
+      outputSchema: output.schema,
+      code: "generated\n"
+    });
+    const inspectionRequest = {
+      kind: "inspectStep" as const,
+      sessionId,
+      revision: 2,
+      stepId: step.id,
+      offset: 1,
+      limit: 1,
+      columnOffset: 0,
+      columnLimit: 8
+    };
+    await expect(bridge.request(inspectionRequest)).rejects.toThrow("physical output order");
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: step.id,
+      stepIndex: 0,
+      inputPage: inputPartial,
+      outputPage: contractWithRowIds(outputPartial, ["r:r:2"]),
+      inputSchema: source.schema,
+      outputSchema: output.schema,
+      code: "generated\n"
+    });
+    await expect(bridge.request(inspectionRequest)).resolves.toMatchObject({
+      kind: "stepInspection",
+      outputPage: { rows: [{ id: "r:r:2", rowNumber: 1 }] }
+    });
+  });
+
+  it.each(["discard", "undo"] as const)(
+    "rejects stale source row identities when %s returns to a custom-derived committed frame",
+    async (action) => {
+      const source = frameContract();
+      const customStep: CustomCodeTransformStep = {
+        id: `r-custom-${action}-identity`,
+        kind: "customCode",
+        params: { code: "result <- data.frame(value = df$value)\n" }
+      };
+      const customOutput = customCodeContract(source, customStep.id, [{ name: "value", sourcePosition: 0 }]);
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: customOutput,
+        diff: customCodeDiff(source, customOutput),
+        code: "custom\n",
+        effectiveView: { filters: [], sorts: [] }
+      });
+      await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: customStep,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+      transport.applyDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "apply",
+        revision: 2,
+        page: customOutput,
+        code: "custom\n"
+      });
+      await bridge.request(planRequest("applyDraft", 1));
+
+      const renameStep = {
+        id: `r-custom-${action}-rename`,
+        kind: "renameColumn",
+        params: { column: { id: "r:c:0", name: "value" }, newName: "renamed" }
+      } as const;
+      const renamed = renameContract(customOutput, "r:c:0", "renamed");
+      transport.queuePreview({
+        sessionId,
+        revision: 3,
+        page: renamed,
+        diff: renameDiff(),
+        code: "renamed\n"
+      });
+      await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 2,
+        step: renameStep,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+      const staleCustomOutput = contractWithRowIds(customOutput, ["r:r:0"]);
+      if (action === "discard") {
+        transport.discardDraft.mockResolvedValueOnce({
+          sessionId,
+          action: "discard",
+          revision: 4,
+          page: staleCustomOutput,
+          code: "custom\n"
+        });
+        await expect(bridge.request(planRequest("discardDraft", 3))).rejects.toThrow("out-of-suffix row identity");
+      } else {
+        transport.applyDraft.mockResolvedValueOnce({
+          sessionId,
+          action: "apply",
+          revision: 4,
+          page: renamed,
+          code: "renamed\n"
+        });
+        await bridge.request(planRequest("applyDraft", 3));
+        transport.undoStep.mockResolvedValueOnce({
+          sessionId,
+          action: "undo",
+          revision: 5,
+          page: staleCustomOutput,
+          code: "custom\n"
+        });
+        await expect(bridge.request(planRequest("undoStep", 4))).rejects.toThrow("out-of-suffix row identity");
+      }
+    }
+  );
+
+  it("requires a truncated custom diff when a surviving filter excludes input before including output", async () => {
+    const source = replaceContractCell(frameContract(), "r:c:0", rCell("number", "-1", "-1"));
+    const step: CustomCodeTransformStep = {
+      id: "r-custom-filtered-replacement",
+      kind: "customCode",
+      params: { code: "result <- transform(df, value = abs(value))\n" }
+    };
+    const output = replaceContractCell(
+      customCodeContract(source, step.id, [{ name: "value", sourcePosition: 0 }]),
+      "r:c:0",
+      rCell("number", "1", "1")
+    );
+    const filteredSource = {
+      ...source,
+      page: { ...source.page, totalRows: 0, rows: [] }
+    };
+    const filterModel = {
+      filters: [
+        {
+          column: "value",
+          type: "float" as const,
+          predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 0 }]
+        }
+      ],
+      sort: []
+    };
+    const effectiveView = {
+      filters: [
+        {
+          column: { id: "r:c:0", name: "value" },
+          type: "float" as const,
+          predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 0 }]
+        }
+      ],
+      sorts: []
+    };
+    const request = {
+      kind: "previewStep" as const,
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    };
+
+    for (const truncated of [false, true]) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.getPage.mockResolvedValueOnce(filteredSource);
+      await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: `custom-filtered-replacement-${String(truncated)}`,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel
+      });
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: output,
+        diff: { ...customCodeDiff(source, output), truncated },
+        code: "generated\n",
+        effectiveView
+      });
+      const result = bridge.request(request);
+      if (truncated) await expect(result).resolves.toMatchObject({ kind: "stepPreview", diff: { truncated: true } });
+      else await expect(result).rejects.toThrow("invalid custom-code diff");
+    }
+  });
+
+  it("retains a valid runtime-derived data.table key across custom preview and apply", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:0"]);
+    const step: CustomCodeTransformStep = {
+      id: "r-custom-key",
+      kind: "customCode",
+      params: { code: "result <- data.table::copy(df)\n" }
+    };
+    const output = customCodeContract(
+      source,
+      step.id,
+      [
+        { name: "value", sourcePosition: 0 },
+        { name: "count", sourcePosition: 1 }
+      ],
+      { keyColumnIds: ["r:c:0"] }
+    );
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: customCodeDiff(source, output),
+      code: "generated\n",
+      effectiveView: { filters: [], sorts: [] }
+    });
+    await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: output,
+      code: "generated\n"
+    });
+    await bridge.request(planRequest("applyDraft", 1));
+    transport.getPage.mockResolvedValueOnce(output);
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 2,
+        viewRequestId: "custom-key-view",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      })
+    ).resolves.toMatchObject({ kind: "page", revision: 2 });
   });
 
   it("publishes dynamic native R one-hot schemas with duplicate removed labels atomically", async () => {
@@ -8682,6 +9589,90 @@ function cloneContract(
   };
 }
 
+function customCodeContract(
+  source: RFramePageContract,
+  stepId: string,
+  outputs: readonly Readonly<{ name: string; sourcePosition: number }>[],
+  options: Readonly<{
+    rows?: number;
+    rowNames?: "positional" | "explicit";
+    keyColumnIds?: readonly string[];
+  }> = {}
+): RFramePageContract {
+  const idsByName = new Map<string, string[]>();
+  for (const input of source.schema) {
+    idsByName.set(input.name, [...(idsByName.get(input.name) ?? []), input.id]);
+  }
+  let createdOrdinal = 0;
+  const schema = outputs.map((output, position) => {
+    const template = source.schema[output.sourcePosition];
+    if (!template) throw new Error("Unknown fake R custom-code source position.");
+    const retainedId = idsByName.get(output.name)?.shift();
+    const id = retainedId ?? `c:step:${stepId}:${createdOrdinal++}`;
+    return { ...template, id, name: output.name, position };
+  });
+  const rows = options.rows ?? 1;
+  const rowNames = options.rowNames ?? source.frameSemantics.rowNames;
+  const columnOffset = Math.min(source.page.columnOffset, schema.length);
+  const projected = schema.slice(columnOffset, columnOffset + source.page.columnLimit);
+  const sourceRow = source.page.rows[0];
+  if (!sourceRow && rows > 0) throw new Error("Fake R custom-code output requires one source row template.");
+  return {
+    ...source,
+    shape: { rows: source.shape.rows + rows, columns: schema.length },
+    frameSemantics: {
+      ...source.frameSemantics,
+      rowNames,
+      keyColumnIds: [...(options.keyColumnIds ?? [])]
+    },
+    schema,
+    page: {
+      ...source.page,
+      offset: 0,
+      totalRows: rows,
+      columnOffset,
+      columnIds: projected.map((column) => column.id),
+      rows: Array.from({ length: rows }, (_, rowNumber) => ({
+        id: `r:r:${source.shape.rows + rowNumber}`,
+        rowNumber,
+        ...(rowNames === "explicit" ? { rowLabel: `custom-${rowNumber + 1}` } : {}),
+        values: projected.map((column) => {
+          const output = outputs[column.position] as { sourcePosition: number };
+          return { ...(sourceRow?.values[output.sourcePosition] as RFrameCell) };
+        })
+      }))
+    }
+  };
+}
+
+function customCodeDiff(source: RFramePageContract, output: RFramePageContract): DataDiff {
+  const inputIds = new Set(source.schema.map((column) => column.id));
+  const outputIds = new Set(output.schema.map((column) => column.id));
+  return {
+    addedRows: output.page.totalRows,
+    removedRows: source.page.totalRows,
+    addedColumns: output.schema.filter((column) => !inputIds.has(column.id)).map((column) => column.name),
+    removedColumns: source.schema.filter((column) => !outputIds.has(column.id)).map((column) => column.name),
+    changedCells: 0,
+    cells: [],
+    truncated:
+      output.page.offset !== 0 ||
+      output.page.limit < source.page.totalRows ||
+      output.page.totalRows !== output.page.rows.length
+  };
+}
+
+function contractWithRowIds(source: RFramePageContract, rowIds: readonly string[]): RFramePageContract {
+  if (rowIds.length !== source.page.rows.length) throw new Error("Fake R row IDs must match the page row count.");
+  return {
+    ...source,
+    page: {
+      ...source.page,
+      rows: source.page.rows.map((row, index) => ({ ...row, id: rowIds[index] as string }))
+    }
+  };
+}
+
 function minMaxScaleContract(
   source: RFramePageContract,
   columnId: string,
@@ -9399,7 +10390,8 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "ceilNumber",
       "formatDatetime",
       "groupBy",
-      "byExample"
+      "byExample",
+      "customCode"
     ]
   };
 }

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import {
   R_KERNEL_EXPORT_CHUNK_BYTES,
+  R_KERNEL_MAX_CUSTOM_CODE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
   encodeRKernelRequest,
@@ -879,6 +880,97 @@ describe("native R kernel protocol", () => {
         { inputSchema: minimalFramePage().schema, previewStep: saved }
       )
     ).toThrow("changed a saved by-example program");
+  });
+
+  it("bounds custom R source and requires an exact custom-only effective view", () => {
+    const step = { id: "custom-step", kind: "customCode", params: { code: "result <- df\n" } } as const;
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    for (const code of ["result <- df\u0000", "   \r\n\t", "# only\r  # comments\n"]) {
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: { ...request.payload, step: { ...step, params: { code } } }
+        })
+      ).toThrow();
+    }
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: {
+          ...request.payload,
+          step: { ...step, params: { code: `# comment\r${"x".repeat(R_KERNEL_MAX_CUSTOM_CODE_BYTES)}` } }
+        }
+      })
+    ).toThrow("UTF-8 byte limit");
+
+    const response = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: {
+        addedRows: 1,
+        removedRows: 1,
+        addedColumns: ["duplicate", "duplicate"],
+        removedColumns: ["duplicate", "duplicate"],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      },
+      code: "open_wrangler_result <- frame\n",
+      effectiveView: emptyView()
+    } as const;
+    const context = { inputSchema: minimalFramePage().schema, previewStep: step } as const;
+    expect(decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, context)).toMatchObject({
+      kind: "stepPreview",
+      effectiveView: { filters: [], sorts: [] },
+      diff: { addedColumns: ["duplicate", "duplicate"], removedColumns: ["duplicate", "duplicate"] }
+    });
+
+    const { effectiveView: _effectiveView, ...missingEffectiveView } = response;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(missingEffectiveView), previewRequestId, context)).toThrow(
+      "invalid fields"
+    );
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({ ...response, effectiveView: { logic: null, filters: [], sorts: [] } }),
+        previewRequestId,
+        context
+      )
+    ).toThrow("view logic");
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, {
+        inputSchema: minimalFramePage().schema,
+        previewStep: renameStep()
+      })
+    ).toThrow("invalid fields");
+
+    const page = minimalFramePage();
+    for (const malformedPage of [
+      {
+        ...page,
+        schema: page.schema.map((column) => ({ ...column, id: "not-a-stable-id" })),
+        page: { ...page.page, columnIds: ["not-a-stable-id"] }
+      },
+      { ...page, frameSemantics: { ...page.frameSemantics, rowNames: "explicit" } },
+      { ...page, frameSemantics: { ...page.frameSemantics, keyColumnIds: ["r:c:0"] } },
+      {
+        ...page,
+        schema: page.schema.map((column) => ({ ...column, name: "__OPEN_WRANGLER_INTERNAL_ROW_ID_hidden" }))
+      }
+    ]) {
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify({ ...response, page: malformedPage }), previewRequestId, context)
+      ).toThrow();
+    }
   });
 
   it("strictly validates native R missing-row and duplicate-row requests", () => {
@@ -3181,7 +3273,7 @@ describe("exact IRkernel session transport", () => {
     });
     mockKernel(controller.kernel, async () => {
       kernelLookups += 1;
-      if (kernelLookups > 4) throw new Error("unexpected post-response kernel lookup");
+      if (kernelLookups > 6) throw new Error("unexpected post-response kernel lookup");
       return controller.kernel;
     });
     const document = notebookDocument();
@@ -3195,7 +3287,7 @@ describe("exact IRkernel session transport", () => {
       sessionId,
       revision: 1
     });
-    expect(kernelLookups).toBe(4);
+    expect(kernelLookups).toBe(6);
     await transport.close(sessionId);
     await transport.dispose();
   });
@@ -3479,6 +3571,104 @@ describe("exact IRkernel session transport", () => {
     await expect(nextPage).resolves.toMatchObject({ page: { rows: [{ id: "r:r:0" }] } });
     expect(requests.map((request) => request.requestId)).toEqual([openRequestId, pageRequestId, closeRequestId]);
     expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+  });
+
+  it("revokes queued Custom Code and opens after settlement while still allowing exact close cleanup", async () => {
+    const trustDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted");
+    let trusted = true;
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, get: () => trusted });
+    const pendingPage = deferred<unknown>();
+    const requests: RKernelRequest[] = [];
+    let kernelLookups = 0;
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "getPage") return pendingPage.promise;
+      if (request.kind === "previewStep") {
+        return response(request, {
+          kind: "stepPreview",
+          sessionId,
+          revision: request.payload.revision + 1,
+          page: minimalFramePage(),
+          diff: {
+            addedRows: 1,
+            removedRows: 1,
+            addedColumns: [],
+            removedColumns: [],
+            changedCells: 0,
+            cells: [],
+            truncated: false
+          },
+          code: "open_wrangler_result <- frame\n",
+          effectiveView: emptyView()
+        });
+      }
+      if (request.kind === "closeSession") {
+        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+      }
+      return response(request, {
+        kind: "page",
+        sessionId: request.payload.sessionId,
+        page: minimalFramePage()
+      });
+    });
+    mockKernel(controller.kernel, async () => {
+      kernelLookups += 1;
+      return controller.kernel;
+    });
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      pageRequestId,
+      previewRequestId,
+      applyRequestId,
+      closeRequestId
+    ]);
+
+    try {
+      await transport.open("frame", pageWindow());
+      const cancellation = cancellationSource();
+      const page = transport
+        .getPage(sessionId, pageWindow(), { cancellation: cancellation.token })
+        .catch((error: unknown) => error);
+      await vi.waitFor(() => expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "getPage"]));
+      cancellation.cancel();
+      const detached = await page;
+      expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+      expect(detached).toMatchObject({ reason: "cancellation", dispatched: true });
+
+      const lookupsBeforePreview = kernelLookups;
+      const customStep = {
+        id: "queued-custom",
+        kind: "customCode",
+        params: { code: "result <- df\n" }
+      } as const;
+      const preview = transport.previewStep(sessionId, 0, customStep, pageWindow(), minimalFramePage().schema);
+      const queuedSessionId = "55555555-5555-4555-8555-555555555555";
+      const queuedOpen = transport.open("frame", pageWindow(), { requestedSessionId: queuedSessionId });
+      await vi.waitFor(() => expect(kernelLookups).toBeGreaterThanOrEqual(lookupsBeforePreview + 3));
+      await Promise.resolve();
+      trusted = false;
+      const previewRejection = expect(preview).rejects.toThrow("Trust this workspace");
+      const openRejection = expect(queuedOpen).rejects.toThrow("Trust this workspace");
+
+      pendingPage.resolve(response(requests[1]!, { kind: "page", sessionId, page: minimalFramePage() }));
+      await (detached as DetachedBridgeRequestError).settlement;
+      await previewRejection;
+      await openRejection;
+      expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "getPage"]);
+      expect(mappedSessions(transport).has(queuedSessionId)).toBe(false);
+
+      await expect(transport.close(sessionId)).resolves.toBeUndefined();
+      expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "getPage", "closeSession"]);
+      await expect(transport.dispose()).resolves.toBeUndefined();
+    } finally {
+      trusted = true;
+      await transport.dispose().catch(() => undefined);
+      if (trustDescriptor) Object.defineProperty(vscode.workspace, "isTrusted", trustDescriptor);
+      else Reflect.deleteProperty(vscode.workspace, "isTrusted");
+    }
   });
 
   it("parks the next page request behind a timed-out page execution", async () => {

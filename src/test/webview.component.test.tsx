@@ -4384,6 +4384,41 @@ describe("App file import options", () => {
     expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
   });
 
+  it("opens native R Custom code with R syntax and forwards the exact edited source", async () => {
+    const rMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "r",
+      rDataframeFlavor: "r.data.frame",
+      capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
+    };
+    const customCode = 'result <- df[df$city == "Milan", , drop = FALSE]';
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: rMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "openOperation",
+      operationKind: "customCode",
+      expectedSessionId: rMetadata.sessionId,
+      expectedRevision: rMetadata.revision
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
+    const code = within(dialog).getByLabelText("Engine-native R", { exact: true });
+    expect(code).toHaveValue("result <- df");
+    fireEvent.change(code, { target: { value: customCode } });
+    webviewPostMessage.mockClear();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+
+    const previewRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "previewStep")?.request;
+    expect(previewRequest).toMatchObject({
+      kind: "previewStep",
+      step: { kind: "customCode", params: { code: customCode } }
+    });
+  });
+
   it("queues a native operation intent until the current grid request finishes", async () => {
     const limitedMetadata: SessionMetadata = {
       ...metadata,

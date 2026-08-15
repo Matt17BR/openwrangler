@@ -21,10 +21,11 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse, isRetainedTransformStep, isTransformStep } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 13 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 14 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
+export const R_KERNEL_MAX_CUSTOM_CODE_BYTES = 64 * 1_024;
 
 const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const maximumVariableNameBytes = 1_024;
@@ -418,6 +419,26 @@ export interface RKernelRetainedByExampleStep extends RKernelByExampleStep {
     }>;
 }
 
+export interface RKernelCustomCodeStep {
+  readonly id: string;
+  readonly kind: "customCode";
+  readonly params: Readonly<{
+    code: string;
+  }>;
+}
+
+/** jsonlite truncates embedded NULs and custom R code has a private transport budget. */
+export function assertRKernelCustomCodeTransportCode(code: string): void {
+  const validated = boundedText(code, "request.payload.step.params.code", R_KERNEL_MAX_CUSTOM_CODE_BYTES, false);
+  const hasExecutableLine = validated.split(/\r\n|[\n\r]/u).some((line) => {
+    const trimmed = line.trimStart();
+    return trimmed.length > 0 && !trimmed.startsWith("#");
+  });
+  if (!hasExecutableLine) {
+    fail("Native R custom code must contain an executable expression, not only whitespace or comments.");
+  }
+}
+
 /** jsonlite truncates embedded NULs, so native-R requests reject them before dispatch. */
 export function assertRKernelByExampleTransportStrings(step: RKernelByExampleStep): void {
   const pending: unknown[] = [step];
@@ -464,6 +485,7 @@ export type RKernelTransformStep =
   | RKernelFormatDatetimeStep
   | RKernelDropColumnsStep
   | RKernelSelectColumnsStep
+  | RKernelCustomCodeStep
   | RKernelByExampleStep;
 
 export interface RKernelStepPreviewResult {
@@ -474,6 +496,7 @@ export interface RKernelStepPreviewResult {
   readonly code: string;
   readonly remainingMissingCells?: number;
   readonly retainedStep?: RKernelRetainedByExampleStep;
+  readonly effectiveView?: RKernelViewQuery;
 }
 
 export interface RKernelPlanUpdatedResult {
@@ -682,6 +705,7 @@ export type RKernelResponse =
       code: string;
       remainingMissingCells?: number;
       retainedStep?: RKernelRetainedByExampleStep;
+      effectiveView?: RKernelViewQuery;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -924,6 +948,7 @@ export function decodeRKernelResponseJson(
   if (kind === "stepPreview") {
     const expectedPreviewStep = context.previewStep;
     const expectsRetainedStep = expectedPreviewStep?.kind === "byExample";
+    const expectsEffectiveView = expectedPreviewStep?.kind === "customCode";
     const record = exactRecord(
       value,
       [
@@ -935,7 +960,8 @@ export function decodeRKernelResponseJson(
         "page",
         "diff",
         "code",
-        ...(expectsRetainedStep ? (["retainedStep"] as const) : [])
+        ...(expectsRetainedStep ? (["retainedStep"] as const) : []),
+        ...(expectsEffectiveView ? (["effectiveView"] as const) : [])
       ],
       ["remainingMissingCells"]
     );
@@ -945,6 +971,7 @@ export function decodeRKernelResponseJson(
     const retainedStep = expectsRetainedStep
       ? decodeRetainedByExampleStep(record.retainedStep, expectedPreviewStep)
       : undefined;
+    const effectiveView = expectsEffectiveView ? decodeViewQuery(record.effectiveView) : undefined;
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
@@ -952,7 +979,7 @@ export function decodeRKernelResponseJson(
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       page,
-      diff: validateMutationDiff(record.diff, page, inputSchema),
+      diff: validateMutationDiff(record.diff, page, inputSchema, expectsEffectiveView),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false),
       ...(record.remainingMissingCells === undefined
         ? {}
@@ -963,7 +990,8 @@ export function decodeRKernelResponseJson(
               page.shape.rows
             )
           }),
-      ...(retainedStep === undefined ? {} : { retainedStep })
+      ...(retainedStep === undefined ? {} : { retainedStep }),
+      ...(effectiveView === undefined ? {} : { effectiveView })
     });
   }
   if (kind === "planUpdated") {
@@ -1298,6 +1326,12 @@ function validateRequest(request: RKernelRequest): void {
 function validateTransformStep(value: unknown): void {
   const step = exactRecord(value, ["id", "kind", "params"], "R kernel transform step");
   boundedText(step.id, "request.payload.step.id", maximumStepIdBytes, false);
+  if (step.kind === "customCode") {
+    const params = exactRecord(step.params, ["code"], "R kernel custom-code parameters");
+    if (typeof params.code !== "string") fail("R kernel custom code must be a string.");
+    assertRKernelCustomCodeTransportCode(params.code);
+    return;
+  }
   if (step.kind === "byExample") {
     if (!isTransformStep(value)) {
       fail("R kernel by-example parameters are malformed or exceed their bounded public contract.");
@@ -1863,7 +1897,8 @@ function validateTransformColumnReferences(value: unknown, operation: "drop" | "
 function validateMutationDiff(
   value: unknown,
   outputPage: RFramePageContract,
-  inputSchema: readonly RColumnSchema[]
+  inputSchema: readonly RColumnSchema[],
+  allowDuplicateAddedColumns = false
 ): DataDiff {
   const diff = exactRecord(value, [
     "addedRows",
@@ -1900,7 +1935,7 @@ function validateMutationDiff(
   const removedColumns = diff.removedColumns.map((column, index) =>
     boundedText(column, `response.diff.removedColumns[${index}]`, maximumVariableNameBytes, true)
   );
-  if (new Set(addedColumns).size !== addedColumns.length) {
+  if (!allowDuplicateAddedColumns && new Set(addedColumns).size !== addedColumns.length) {
     fail("R kernel added-column diff names must be unique.");
   }
   const outputById = new Map(outputPage.schema.map((column) => [column.id, column]));
@@ -2064,6 +2099,35 @@ function validateViewQuery(value: unknown): void {
   }
   validateFilters(view.filters, "request.view.filters", false);
   validateSorts(view.sorts, "request.view.sorts");
+}
+
+function decodeViewQuery(value: unknown): RKernelViewQuery {
+  validateViewQuery(value);
+  const view = value as RKernelViewQuery;
+  return Object.freeze({
+    ...(view.logic === undefined ? {} : { logic: view.logic }),
+    filters: Object.freeze(
+      view.filters.map((filter) =>
+        Object.freeze({
+          column: Object.freeze({ ...filter.column }),
+          type: filter.type,
+          ...(filter.logic === undefined ? {} : { logic: filter.logic }),
+          ...(filter.valueFilter === undefined
+            ? {}
+            : {
+                valueFilter: Object.freeze({
+                  ...filter.valueFilter,
+                  selectedValues: Object.freeze([...filter.valueFilter.selectedValues])
+                })
+              }),
+          predicates: Object.freeze(filter.predicates.map((predicate) => Object.freeze({ ...predicate })))
+        })
+      )
+    ),
+    sorts: Object.freeze(
+      view.sorts.map((rule) => Object.freeze({ ...rule, column: Object.freeze({ ...rule.column }) }))
+    )
+  });
 }
 
 function validateTransformFilterModel(value: unknown): void {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import * as vscode from "vscode";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RProcessSessionTransport } from "../extension/r/rProcessTransport";
@@ -15,6 +16,163 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("does not retain an untrusted open candidate and can reuse its requested session identity", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-untrusted-open-test-"));
+    const trustDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted");
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: false });
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: "frame <- data.frame(value = 1:2)"
+    });
+    const requestedSessionId = randomUUID();
+    try {
+      await expect(transport.open("frame", pageWindow(), { requestedSessionId })).rejects.toThrow(
+        "Trust this workspace"
+      );
+      const internals = transport as unknown as {
+        openingSessions: ReadonlySet<string>;
+        mappedSessions: ReadonlySet<string>;
+        startPromise?: Promise<unknown>;
+        owned?: unknown;
+      };
+      expect(internals.openingSessions.size).toBe(0);
+      expect(internals.mappedSessions.size).toBe(0);
+      expect(internals.startPromise).toBeUndefined();
+      expect(internals.owned).toBeUndefined();
+      expect(await readdir(temporaryParent)).toEqual([]);
+
+      Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: true });
+      await expect(transport.open("frame", pageWindow(), { requestedSessionId })).resolves.toMatchObject({
+        sessionId: requestedSessionId
+      });
+      await expect(transport.close(requestedSessionId)).resolves.toBeUndefined();
+    } finally {
+      if (trustDescriptor) Object.defineProperty(vscode.workspace, "isTrusted", trustDescriptor);
+      else Reflect.deleteProperty(vscode.workspace, "isTrusted");
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("does not dispatch queued R process work after workspace trust is revoked", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-trust-queue-test-"));
+    const trustDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted");
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: true });
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: `frame <- data.frame(value = c("alpha", "beta"), stringsAsFactors = FALSE)`
+    });
+    try {
+      const sessionId = randomUUID();
+      const opened = await transport.open("frame", pageWindow(), { requestedSessionId: sessionId });
+      const slowPreview = transport.previewStep(
+        sessionId,
+        0,
+        {
+          id: "slow-custom-trust-step",
+          kind: "customCode",
+          params: { code: "Sys.sleep(0.5)\nresult <- df\n" }
+        },
+        pageWindow(),
+        opened.page.schema
+      );
+      await sleep(50);
+      const queuedPage = transport.getPage(sessionId, pageWindow());
+      Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: false });
+
+      await expect(slowPreview).resolves.toMatchObject({ revision: 1, effectiveView: { filters: [], sorts: [] } });
+      await expect(queuedPage).rejects.toThrow("Trust this workspace");
+      await expect(transport.discoverVariables()).rejects.toThrow("Trust this workspace");
+      await expect(transport.close(sessionId)).resolves.toBeUndefined();
+    } finally {
+      if (trustDescriptor) Object.defineProperty(vscode.workspace, "isTrusted", trustDescriptor);
+      else Reflect.deleteProperty(vscode.workspace, "isTrusted");
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("forwards custom effective views and retained by-example steps through the process transport", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-preview-fields-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: `frame <- data.frame(value = c("alpha", "beta"), stringsAsFactors = FALSE)`
+    });
+    const customSessionId = randomUUID();
+    const byExampleSessionId = randomUUID();
+    try {
+      const customOpened = await transport.open("frame", pageWindow(), { requestedSessionId: customSessionId });
+      const custom = await transport.previewStep(
+        customSessionId,
+        0,
+        {
+          id: "custom-process-step",
+          kind: "customCode",
+          params: { code: "result <- df\n" }
+        },
+        pageWindow(),
+        customOpened.page.schema
+      );
+      expect(custom).toMatchObject({
+        revision: 1,
+        effectiveView: { filters: [], sorts: [] },
+        page: { shape: { rows: 4, columns: 1 } }
+      });
+      await transport.discardDraft(customSessionId, custom.revision, pageWindow());
+
+      const byExampleOpened = await transport.open("frame", pageWindow(), {
+        requestedSessionId: byExampleSessionId
+      });
+      const byExample = await transport.previewStep(
+        byExampleSessionId,
+        0,
+        {
+          id: "by-example-process-step",
+          kind: "byExample",
+          params: {
+            sourceColumns: [{ id: "r:c:0", name: "value" }],
+            newColumn: "value copy",
+            examples: [
+              { inputs: ["alpha"], output: "alpha" },
+              { inputs: ["beta"], output: "beta" }
+            ]
+          }
+        },
+        pageWindow(),
+        byExampleOpened.page.schema
+      );
+      expect(byExample).toMatchObject({
+        revision: 1,
+        retainedStep: {
+          id: "by-example-process-step",
+          kind: "byExample",
+          params: {
+            program: { kind: "column" },
+            warnings: expect.any(Array),
+            candidateCount: expect.any(Number)
+          }
+        }
+      });
+      await transport.close(customSessionId);
+      await transport.close(byExampleSessionId);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("streams committed CSV and Parquet exports through bounded host chunks without changing the source frame", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-test-"));
     const transport = new RProcessSessionTransport({
@@ -530,7 +688,9 @@ not_a_frame <- matrix(1:4, nrow = 2L)
       expect(preview.code).toContain(".ow_generated_result <- base::evalq({");
       expect(preview.code).toContain('base::get("plain_frame", envir = .ow_source_environment, inherits = FALSE)');
       expect(preview.code).toContain("base::list(.ow_caller_environment = base::environment())");
-      expect(preview.code).toContain("base::list(.ow_source_environment = .ow_caller_environment)");
+      expect(preview.code).toContain(
+        "base::list(.ow_source_environment = .ow_caller_environment, .ow_custom_parent_environment = .ow_caller_environment)"
+      );
       expect(preview.code).toContain(
         "base::assign(.ow_publication_name, .ow_generated_result, envir = .ow_caller_environment, inherits = FALSE)"
       );
