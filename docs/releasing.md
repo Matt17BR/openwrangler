@@ -91,8 +91,11 @@ Protected pull-request CI solely runs the direct R contract on R 4.4 and 4.5. Pr
 install their canonical VSIX in VS Code and Cursor and run distinct R notebook/platform journeys. Explicit candidate
 `core-operations` keeps its existing phase and job positions but owns one complete installed Clone Column lifecycle:
 preview, apply, applied-step inspection, editing and reapplying the same step with stable step/output identities, then
-undo. Direct native-R, runtime, generated-code, and catalog suites own exhaustive semantics for all 27 operations,
-including the current unhosted Transform-by-example slice; Custom code remains the only unsupported R operation.
+undo. Direct suites own the prior 27 operations, and focused Custom Code contracts cover operation 28; the source
+catalog is complete but remains **Partial** until a fresh hosted candidate and dedicated all-28 release/performance
+evidence pass. Custom Code is trusted arbitrary R, not a sandbox: release evidence must prove workspace-trust gating,
+source/result publication atomicity, dynamic-frame and generated-code behavior, and must not claim rollback for
+deliberate ambient side effects.
 Every candidate core cell runs that same Clone lifecycle; Linux VS Code retains all-block grid depth, while macOS and
 Windows VS Code plus Linux Cursor retain representative single-round-trip grid/profile/view seams within the same
 hard deadline. Explicit candidate core disables native-frame and embedded-restart work on every platform. A fresh
@@ -186,8 +189,9 @@ the packaged extension-host, candidate-workflow, and testing-record references. 
 document, insertion, and export journeys; a release-candidate R performance record; and first-class VS Code/Cursor
 acceptance. The active R-terminal transport and export rows claim Linux only, matching the platform where the
 candidate installs and exercises the native R editor tooling. The Cursor literate row likewise claims Linux and
-distinguishes the R Markdown document command from the Quarto R/Python title actions. The current 27-operation R
-suites cannot satisfy either all-28 catalog row: dedicated complete-catalog runtime/generated-code and code-export
+distinguishes the R Markdown document command from the Quarto R/Python title actions. The current prior-27 suites plus
+focused Custom Code contracts cannot satisfy either all-28 catalog row: dedicated complete-catalog
+runtime/generated-code and code-export
 tests must be tracked before those rows can become Done. `GRP_df`, `indexed_frame`, Windows direct-document execution,
 and remote R documents remain outside that table. Successful candidate jobs do not change a documentation row to Done by themselves: the exact tracked record
 and row-specific evidence must already substantiate the claim. Historical stable 1.x recovery does not require the

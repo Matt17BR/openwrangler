@@ -2447,20 +2447,29 @@ openwrangler_r_frame_contract <- local({
     if (!is.character(column_names) || length(column_names) != column_count) {
       abort("invalid-schema", "the dataframe does not have one name per column")
     }
+    column_names <- plain_metadata_storage(column_names)
     column_names <- vapply(
       seq_along(column_names),
-      function(index) bounded_utf8(column_names[[index]], sprintf("column name %d", index), maximum_name_bytes),
+      function(index) bounded_utf8(
+        .subset2(column_names, index),
+        sprintf("column name %d", index),
+        maximum_name_bytes
+      ),
       character(1L),
       USE.NAMES = FALSE
     )
     for (index in seq_along(column_names)) {
-      spend_json_string(metadata_budget, column_names[[index]], sprintf("column name %d", index))
+      spend_json_string(
+        metadata_budget,
+        .subset2(column_names, index),
+        sprintf("column name %d", index)
+      )
     }
 
     schema <- lapply(seq_len(column_count), function(index) {
       spend_payload_budget(metadata_budget, column_fixed_bytes, sprintf("column %d metadata", index))
       semantics <- column_semantics(
-        value[[index]],
+        .subset2(value, index),
         sprintf("column %d", index),
         metadata_budget,
         validate_values = validate_values
@@ -2469,11 +2478,11 @@ openwrangler_r_frame_contract <- local({
         TRUE
       } else {
         add_metric(metrics, "nullableScans")
-        column_has_missing(value[[index]], semantics)
+        column_has_missing(.subset2(value, index), semantics)
       }
       list(
         id = sprintf("r:c:%d", index - 1L),
-        name = column_names[[index]],
+        name = .subset2(column_names, index),
         position = index - 1L,
         rawType = raw_column_type(semantics),
         type = public_column_type(semantics$kind),
@@ -2540,12 +2549,20 @@ openwrangler_r_frame_contract <- local({
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
     cast_positions = NULL,
-    cast_dtypes = NULL
+    cast_dtypes = NULL,
+    preserve_data_table_element_names = FALSE
   ) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
     validate_frame_structure(value)
+    if (
+      !is.logical(preserve_data_table_element_names) ||
+        length(preserve_data_table_element_names) != 1L ||
+        is.na(preserve_data_table_element_names)
+    ) {
+      abort("internal-error", "the data.table element-name preservation flag is invalid")
+    }
     if (!is.null(nullability_source)) validate_capture(nullability_source)
     if (
       is.null(nullability_source) &&
@@ -2618,7 +2635,24 @@ openwrangler_r_frame_contract <- local({
     }
     value <- normalize_supported_frame(value)
     flavor <- frame_flavor(value)
+    source_element_names <- if (
+      isTRUE(preserve_data_table_element_names) &&
+        identical(flavor, "r.data.table")
+    ) {
+      lapply(seq_len(storage_length(value)), function(position) {
+        attr(.subset2(value, position), "names", exact = TRUE)
+      })
+    } else {
+      NULL
+    }
     snapshot <- isolated_snapshot(value, flavor)
+    if (!is.null(source_element_names)) {
+      for (position in seq_along(source_element_names)) {
+        if (!is.null(source_element_names[[position]])) {
+          data.table::setattr(.subset2(snapshot, position), "names", source_element_names[[position]])
+        }
+      }
+    }
     assert_frame_attributes(snapshot, flavor)
     metrics <- new_capture_metrics()
     inspected <- inspect_frame(
@@ -3388,7 +3422,33 @@ openwrangler_r_frame_contract <- local({
   }
 
   isolate_capture <- function(capture) {
-    capture_frame(read_capture_frame(capture), nullability_source = capture)
+    capture_frame(
+      read_capture_frame(capture),
+      nullability_source = capture,
+      preserve_data_table_element_names = TRUE
+    )
+  }
+
+  isolate_custom_code_input <- function(capture) {
+    validate_capture(capture)
+    source <- read_capture_frame(capture)
+    flavor <- capture$descriptor$dataframeFlavor
+    element_names <- if (identical(flavor, "r.data.table")) {
+      lapply(seq_len(storage_length(source)), function(position) {
+        attr(.subset2(source, position), "names", exact = TRUE)
+      })
+    } else {
+      NULL
+    }
+    result <- isolated_snapshot(source, flavor)
+    if (!is.null(element_names)) {
+      for (position in seq_along(element_names)) {
+        if (!is.null(element_names[[position]])) {
+          data.table::setattr(.subset2(result, position), "names", element_names[[position]])
+        }
+      }
+    }
+    result
   }
 
   rename_column_at <- function(value, position, old_name, new_name) {
@@ -7462,6 +7522,391 @@ openwrangler_r_frame_contract <- local({
     finish_capture(result)
   }
 
+  validate_custom_code_output_budget <- function(frame, descriptor) {
+    schema <- plain_metadata_storage(descriptor$schema)
+    row_count <- as.double(descriptor$shape$rows)
+    budget <- new_payload_budget()
+
+    validate_nested_metadata <- function(value, label, allow_asis = FALSE) {
+      nested <- attributes(value)
+      if (is.null(nested)) return(invisible(NULL))
+      if (
+        !isTRUE(allow_asis) ||
+          !identical(names(nested), "class") ||
+          !identical(plain_metadata_storage(nested$class), "AsIs") ||
+          !is.null(attributes(nested$class))
+      ) {
+        abort("invalid-view-query", sprintf("%s has unsupported nested attributes", label))
+      }
+      spend_operation_output_budget(
+        budget,
+        character_vector_slot_bytes + nchar("AsIs", type = "bytes"),
+        label
+      )
+      invisible(NULL)
+    }
+
+    charge_text <- function(
+      values,
+      label,
+      maximum_bytes = maximum_text_bytes,
+      charge_slots = TRUE
+    ) {
+      if (!is.character(values)) {
+        abort("invalid-view-query", sprintf("%s must be text", label))
+      }
+      plain <- plain_metadata_storage(values)
+      if (isTRUE(charge_slots)) {
+        spend_operation_output_budget(
+          budget,
+          as.double(storage_length(plain)) * character_vector_slot_bytes,
+          label
+        )
+      }
+      for (index in seq_along(plain)) {
+        item <- .subset2(plain, index)
+        if (is.na(item)) next
+        item <- bounded_utf8(item, sprintf("%s %d", label, index), maximum_bytes)
+        spend_operation_output_budget(budget, nchar(item, type = "bytes"), label)
+      }
+      invisible(NULL)
+    }
+
+    spend_operation_output_budget(
+      budget,
+      metadata_base_bytes + as.double(length(schema)) * column_fixed_bytes,
+      "custom-code frame metadata"
+    )
+    validate_nested_metadata(attr(frame, "names", exact = TRUE), "custom-code column names", TRUE)
+    charge_text(
+      vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE),
+      "custom-code column names",
+      maximum_name_bytes
+    )
+    charge_text(
+      plain_metadata_storage(descriptor$frameSemantics$classes),
+      "custom-code frame classes",
+      maximum_name_bytes
+    )
+    if (identical(descriptor$dataframeFlavor, "r.data.table")) {
+      validate_nested_metadata(attr(frame, "sorted", exact = TRUE), "custom-code data.table key", TRUE)
+      charge_text(
+        data_table_key_names(frame),
+        "custom-code data.table key",
+        maximum_name_bytes
+      )
+    }
+
+    raw_frame_row_names <- attr(frame, "row.names", exact = TRUE)
+    validate_nested_metadata(raw_frame_row_names, "custom-code row names")
+    frame_row_names <- tryCatch(
+      .row_names_info(frame, type = 0L),
+      error = function(error) error
+    )
+    if (
+      inherits(frame_row_names, "error") ||
+        (!is.integer(frame_row_names) && !is.character(frame_row_names))
+    ) {
+      abort("invalid-view-query", "custom-code row names are malformed")
+    }
+    validate_nested_metadata(frame_row_names, "custom-code canonical row names")
+    if (is.character(frame_row_names)) {
+      charge_text(frame_row_names, "custom-code row names", maximum_name_bytes)
+    } else {
+      spend_operation_output_budget(
+        budget,
+        as.double(storage_length(frame_row_names)) * 4,
+        "custom-code row names"
+      )
+    }
+
+    for (position in seq_along(schema)) {
+      column <- .subset2(frame, position)
+      semantics <- schema[[position]]$semantics
+      kind <- semantics$kind
+      raw_classes <- attr(column, "class", exact = TRUE)
+      if (!is.null(raw_classes)) {
+        validate_nested_metadata(raw_classes, sprintf("custom-code column %d classes", position), TRUE)
+        charge_text(
+          raw_classes,
+          sprintf("custom-code column %d classes", position),
+          maximum_name_bytes
+        )
+      }
+      element_bytes <- if (kind %in% c("logical", "integer", "factor")) 4 else 8
+      spend_operation_output_budget(
+        budget,
+        row_count * element_bytes,
+        sprintf("custom-code column %d", position)
+      )
+
+      element_names <- attr(column, "names", exact = TRUE)
+      if (!is.null(element_names)) {
+        charge_text(element_names, sprintf("custom-code column %d names", position))
+      }
+      if (identical(kind, "character")) {
+        charge_text(
+          column,
+          sprintf("custom-code column %d values", position),
+          charge_slots = FALSE
+        )
+      } else if (identical(kind, "factor")) {
+        validate_nested_metadata(
+          attr(column, "levels", exact = TRUE),
+          sprintf("custom-code column %d factor levels", position),
+          TRUE
+        )
+        charge_text(
+          attr(column, "levels", exact = TRUE),
+          sprintf("custom-code column %d factor levels", position)
+        )
+      } else if (kind %in% c("date", "datetime", "difftime")) {
+        storage <- unclass(column)
+        if (any(is.nan(storage)) || any(!is.na(storage) & !is.finite(storage))) {
+          abort("invalid-view-query", sprintf("custom-code column %d contains non-finite classed values", position))
+        }
+        if (identical(kind, "date") && any(!is.na(storage) & storage != floor(storage))) {
+          abort("invalid-view-query", sprintf("custom-code column %d contains a fractional Date", position))
+        }
+        if (identical(kind, "datetime") && !is.null(attr(column, "tzone", exact = TRUE))) {
+          validate_nested_metadata(
+            attr(column, "tzone", exact = TRUE),
+            sprintf("custom-code column %d timezone", position),
+            TRUE
+          )
+          charge_text(
+            attr(column, "tzone", exact = TRUE),
+            sprintf("custom-code column %d timezone", position),
+            maximum_name_bytes
+          )
+        }
+        if (identical(kind, "difftime")) {
+          validate_nested_metadata(
+            attr(column, "units", exact = TRUE),
+            sprintf("custom-code column %d duration units", position),
+            TRUE
+          )
+          charge_text(
+            attr(column, "units", exact = TRUE),
+            sprintf("custom-code column %d duration units", position),
+            maximum_name_bytes
+          )
+        }
+      }
+    }
+    invisible(NULL)
+  }
+
+  preflight_custom_code_output_storage <- function(frame) {
+    raw_row_names <- attr(frame, "row.names", exact = TRUE)
+    if (!is.integer(raw_row_names) && !is.character(raw_row_names)) {
+      abort("unsupported-frame", "the dataframe has malformed row names")
+    }
+    if (!is.null(attributes(raw_row_names))) {
+      abort("unsupported-frame", "the dataframe row names have unsupported nested attributes")
+    }
+    canonical_row_names <- tryCatch(
+      .row_names_info(frame, type = 0L),
+      error = function(error) error
+    )
+    if (
+      inherits(canonical_row_names, "error") ||
+        (!is.integer(canonical_row_names) && !is.character(canonical_row_names)) ||
+        !is.null(attributes(canonical_row_names))
+    ) {
+      abort("unsupported-frame", "the dataframe has malformed row names")
+    }
+    row_names <- plain_metadata_storage(canonical_row_names)
+    compact <- is.integer(row_names) &&
+      length(row_names) == 2L &&
+      is.na(.subset2(row_names, 1L))
+    if (compact) {
+      terminal <- .subset2(row_names, 2L)
+      if (is.na(terminal) || terminal == 0L) {
+        abort("unsupported-frame", "the dataframe has malformed row names")
+      }
+      row_count <- abs(as.double(terminal))
+    } else {
+      row_count <- as.double(length(row_names))
+    }
+    if (!is.finite(row_count) || row_count != floor(row_count) || row_count > maximum_rows) {
+      abort("unsupported-frame", "the dataframe has malformed row names")
+    }
+    columns <- unclass(frame)
+    column_count <- as.double(length(columns))
+    lower_bound <- metadata_base_bytes + column_count * column_fixed_bytes
+
+    add_vector_slots <- function(value, width = character_vector_slot_bytes) {
+      if (is.null(value)) return(invisible(NULL))
+      lower_bound <<- lower_bound + as.double(storage_length(value)) * width
+      if (!is.null(attributes(value))) lower_bound <<- lower_bound + character_vector_slot_bytes + 4
+      if (!is.finite(lower_bound) || lower_bound > maximum_operation_output_bytes) {
+        abort(
+          "operation-output-too-large",
+          sprintf(
+            "Custom Code exceeds the %d-byte R operation output budget before value inspection",
+            maximum_operation_output_bytes
+          )
+        )
+      }
+      invisible(NULL)
+    }
+
+    add_vector_slots(attr(frame, "names", exact = TRUE))
+    add_vector_slots(attr(frame, "class", exact = TRUE))
+    add_vector_slots(row_names, if (is.character(row_names)) character_vector_slot_bytes else 4)
+    add_vector_slots(attr(frame, "sorted", exact = TRUE))
+    for (position in seq_along(columns)) {
+      column <- .subset2(columns, position)
+      element_bytes <- if (typeof(column) %in% c("logical", "integer")) 4 else 8
+      lower_bound <- lower_bound + row_count * element_bytes
+      add_vector_slots(attr(column, "names", exact = TRUE))
+      add_vector_slots(attr(column, "class", exact = TRUE))
+      add_vector_slots(attr(column, "levels", exact = TRUE))
+      add_vector_slots(attr(column, "tzone", exact = TRUE))
+      add_vector_slots(attr(column, "units", exact = TRUE))
+      if (!is.finite(lower_bound) || lower_bound > maximum_operation_output_bytes) {
+        abort(
+          "operation-output-too-large",
+          sprintf(
+            "Custom Code exceeds the %d-byte R operation output budget before value inspection",
+            maximum_operation_output_bytes
+          )
+        )
+      }
+    }
+    validate_frame_structure(frame)
+    invisible(NULL)
+  }
+
+  capture_custom_code_result <- function(value, source_capture, step_id) {
+    validate_capture(source_capture)
+    step_id <- bounded_utf8(step_id, "custom-code step identity", maximum_step_id_bytes)
+    if (identical(step_id, "")) {
+      abort("invalid-view-query", "custom-code step identity must not be empty")
+    }
+    if (!is.data.frame(value)) {
+      abort("invalid-view-query", "Custom Code must assign an R dataframe to result")
+    }
+
+    normalized <- normalize_supported_frame(value)
+    preflight_custom_code_output_storage(normalized)
+    preflight_metrics <- new_capture_metrics()
+    preflight <- inspect_frame(
+      normalized,
+      conservative_nullable = FALSE,
+      validate_values = TRUE,
+      metrics = preflight_metrics
+    )
+    if (!identical(
+      preflight$descriptor$dataframeFlavor,
+      source_capture$descriptor$dataframeFlavor
+    )) {
+      abort("invalid-view-query", "Custom Code must return the same R dataframe flavor as its input")
+    }
+    if (preflight$descriptor$shape$columns < 1L) {
+      abort("invalid-view-query", "Custom Code must return at least one column")
+    }
+    validate_custom_code_output_budget(normalized, preflight$descriptor)
+
+    captured <- capture_frame(normalized, preserve_data_table_element_names = TRUE)
+    if (!identical(captured$descriptor, preflight$descriptor)) {
+      abort("internal-error", "Custom Code output changed while it was captured")
+    }
+
+    source_schema <- plain_metadata_storage(source_capture$descriptor$schema)
+    output_schema <- plain_metadata_storage(captured$descriptor$schema)
+    source_names <- vapply(source_schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    output_names <- vapply(output_schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    if (any(output_names == "")) {
+      abort("invalid-view-query", "Custom Code must return non-empty column names")
+    }
+    if (any(vapply(output_names, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+
+    consumed <- logical(length(source_schema))
+    created_ordinal <- 0L
+    output_ids <- vapply(seq_along(output_schema), function(position) {
+      matches <- which(!consumed & source_names == output_names[[position]])
+      if (length(matches) != 0L) {
+        matched <- matches[[1L]]
+        consumed[[matched]] <<- TRUE
+        return(source_ids[[matched]])
+      }
+      result <- bounded_utf8(
+        paste0("c:step:", step_id, ":", created_ordinal),
+        sprintf("custom-code output identity %d", position),
+        maximum_column_id_bytes
+      )
+      created_ordinal <<- created_ordinal + 1L
+      result
+    }, character(1L), USE.NAMES = FALSE)
+    if (
+      anyDuplicated(output_ids) ||
+        !all(vapply(output_ids, is_canonical_column_id, logical(1L), USE.NAMES = FALSE))
+    ) {
+      abort("internal-error", "Custom Code produced conflicting output identities")
+    }
+
+    generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    for (position in seq_along(output_schema)) {
+      output_schema[[position]]$id <- output_ids[[position]]
+      output_schema[[position]]$position <- position - 1L
+    }
+    descriptor <- captured$descriptor
+    descriptor$schema <- json_array(output_schema)
+    generated_key_ids <- plain_metadata_storage(descriptor$frameSemantics$keyColumnIds)
+    if (length(generated_key_ids) != 0L) {
+      key_positions <- match(generated_key_ids, generated_ids)
+      if (anyNA(key_positions)) {
+        abort("internal-error", "Custom Code returned invalid data.table key metadata")
+      }
+      descriptor$frameSemantics$keyColumnIds <- json_array(output_ids[key_positions])
+    }
+
+    metadata_bytes <- captured$metadataBytes
+    old_identity_bytes <- sum(vapply(generated_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    new_identity_bytes <- sum(vapply(output_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    old_key_bytes <- sum(vapply(generated_key_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    new_key_ids <- plain_metadata_storage(descriptor$frameSemantics$keyColumnIds)
+    new_key_bytes <- sum(vapply(new_key_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    additional_bytes <- max(0, new_identity_bytes - old_identity_bytes) + max(0, new_key_bytes - old_key_bytes)
+    if (additional_bytes != 0) {
+      metadata_budget <- new_payload_budget(metadata_bytes)
+      spend_payload_budget(metadata_budget, additional_bytes, "custom-code output identities")
+      metadata_bytes <- metadata_budget$used
+    }
+
+    output_rows <- as.double(descriptor$shape$rows)
+    source_domain <- as.double(source_capture$rowIdentityDomain)
+    row_identity_domain <- source_domain + output_rows
+    if (!is.finite(row_identity_domain) || row_identity_domain > maximum_rows) {
+      abort(
+        "operation-output-too-large",
+        sprintf("Custom Code cannot expand the R row-identity domain beyond %s rows", format(maximum_rows))
+      )
+    }
+    row_origins <- if (output_rows == 0) {
+      numeric()
+    } else {
+      seq.int(source_domain + 1, length.out = as.integer(output_rows))
+    }
+
+    result <- new.env(parent = emptyenv())
+    result$mode <- "isolated"
+    result$snapshot <- captured$snapshot
+    result$sourceReader <- NULL
+    result$descriptor <- descriptor
+    result$rowOrigins <- row_origins
+    result$rowIdentityDomain <- row_identity_domain
+    result$metadataBytes <- metadata_bytes
+    result$metrics <- captured$metrics
+    result$sortCache <- new_sort_cache()
+    finish_capture(result)
+  }
+
   resolve_row_operation_columns <- function(value, positions, expected_names, operation) {
     inspected <- inspect_frame(
       value,
@@ -8355,8 +8800,10 @@ openwrangler_r_frame_contract <- local({
   list(
     capture_frame = capture_frame,
     capture_categorical_result = capture_categorical_result,
+    capture_custom_code_result = capture_custom_code_result,
     capture_live_frame = capture_live_frame,
     isolate_capture = isolate_capture,
+    isolate_custom_code_input = isolate_custom_code_input,
     rename_column = rename_column,
     rename_column_at = rename_column_at,
     clone_column = clone_column,

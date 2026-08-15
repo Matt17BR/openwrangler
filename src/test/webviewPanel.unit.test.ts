@@ -3307,6 +3307,104 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { backend: "r" as const, code: 'result <- df[df$city == "Berlin", , drop = FALSE]' },
+    { backend: "pandas" as const, code: 'result = df.loc[df["city"] == "Berlin"].copy()' }
+  ])("blocks every $backend custom-code preview until the workspace is trusted", async ({ backend, code }) => {
+    const customStep = { id: `${backend}-custom`, kind: "customCode" as const, params: { code } };
+    const backendMetadata: SessionMetadata = {
+      ...metadata,
+      backend,
+      ...(backend === "r" ? { rDataframeFlavor: "r.data.frame" as const } : {}),
+      capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
+    };
+    const opened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: backendMetadata
+    };
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...backendMetadata, revision: 1, draftStep: customStep },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      },
+      code: backend === "r" ? "clean_data <- function(df) df\n" : "def clean_data(df):\n    return df\n"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> =>
+      candidate.kind === "previewStep" ? preview : opened
+    );
+    const harness = createPanelHarness({ request }, { openResponse: opened, backend });
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    request.mockClear();
+    harness.posted.length = 0;
+    const trustDescriptor = Object.getOwnPropertyDescriptor(workspace, "isTrusted");
+    const message = {
+      kind: "runtimeRequest",
+      request: {
+        kind: "previewStep",
+        step: customStep,
+        offset: 0,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      }
+    } as const;
+
+    try {
+      Object.defineProperty(workspace, "isTrusted", { configurable: true, value: false });
+      await harness.send(message);
+      await harness.send(message);
+      await OpenWranglerPanel.previewStepForSessionForTesting({
+        ...message.request,
+        sessionId: backendMetadata.sessionId,
+        revision: backendMetadata.revision
+      });
+
+      expect(request).not.toHaveBeenCalled();
+      expect(harness.posted).toEqual([
+        {
+          kind: "error",
+          code: "workspace_untrusted",
+          message: "Trust this workspace before running custom code.",
+          recoverable: true
+        },
+        {
+          kind: "error",
+          code: "workspace_untrusted",
+          message: "Trust this workspace before running custom code.",
+          recoverable: true
+        },
+        {
+          kind: "error",
+          code: "workspace_untrusted",
+          message: "Trust this workspace before running custom code.",
+          recoverable: true
+        }
+      ]);
+
+      Object.defineProperty(workspace, "isTrusted", { configurable: true, value: true });
+      await harness.send(message);
+
+      expect(request).toHaveBeenCalledOnce();
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "previewStep", step: customStep }),
+        undefined
+      );
+    } finally {
+      if (trustDescriptor) Object.defineProperty(workspace, "isTrusted", trustDescriptor);
+      else delete (workspace as unknown as { isTrusted?: unknown }).isTrusted;
+    }
+  });
+
   it("decodes only the exact change-import-options message shape", async () => {
     const source: SessionSource = {
       kind: "file",

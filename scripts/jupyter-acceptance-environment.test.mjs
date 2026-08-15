@@ -1496,9 +1496,10 @@ test("default R profiles retain embedded coverage while candidate core keeps one
   const advertisedOperations = [
     ...source.slice(operationCatalogStart, operationCatalogEnd).matchAll(/^\s+"([^"]+)",?$/gmu)
   ].map((match) => match[1]);
-  assert.equal(advertisedOperations.length, 27, "Native R must advertise its exact 27-operation catalog.");
-  assert.equal(advertisedOperations.at(-1), "byExample");
-  assert.equal(advertisedOperations.includes("customCode"), false);
+  assert.equal(advertisedOperations.length, 28, "Native R must advertise its exact 28-operation catalog.");
+  assert.equal(advertisedOperations.at(-1), "customCode");
+  assert.equal(advertisedOperations.includes("byExample"), true);
+  assert.equal(advertisedOperations.includes("customCode"), true);
   const preflight = source.slice(runStart, profileStart);
   const profiles = source.slice(profileStart, journeyStart);
   const journey = source.slice(journeyStart, journeyEnd);
@@ -1557,7 +1558,7 @@ test("default R profiles retain embedded coverage while candidate core keeps one
   );
   assert.match(
     journey,
-    /exerciseReleasedRRepresentativeEditingJourney\(testing, workbench, base\.sessionId, phase\);[\s\S]*coverage\.focusedEditing === "categorical-operations"[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\);[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\);[\s\S]*coverage\.focusedEditing === "value-operations"[\s\S]*exerciseReleasedRValueOperationsJourney\(/u
+    /exerciseReleasedRRepresentativeEditingJourney\(testing, workbench, base\.sessionId, notebook, phase\);[\s\S]*coverage\.focusedEditing === "categorical-operations"[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\);[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\);[\s\S]*coverage\.focusedEditing === "value-operations"[\s\S]*exerciseReleasedRValueOperationsJourney\(/u
   );
   assert.equal((journey.match(/await exerciseReleasedROneHotJourney\(/gu) ?? []).length, 1);
   assert.equal((journey.match(/await exerciseReleasedRMultiLabelJourney\(/gu) ?? []).length, 1);
@@ -1633,7 +1634,9 @@ test("default R profiles retain embedded coverage while candidate core keeps one
 
   const gridStart = source.indexOf("async function exerciseReleasedRGridJourney(");
   const gridEnd = source.indexOf("\nasync function exerciseReleasedRPersistentRowsJourney(", gridStart);
+  const customStart = source.indexOf("async function exerciseReleasedRCustomCodeJourney(");
   const representativeStart = source.indexOf("async function exerciseReleasedRRepresentativeEditingJourney(");
+  const customEnd = representativeStart;
   const representativeEnd = source.indexOf("\nfunction releasedRCloneFailureSnapshot(", representativeStart);
   const cloneFailureStart = representativeEnd + 1;
   const cloneLifecycleStart = source.indexOf(
@@ -1643,30 +1646,77 @@ test("default R profiles retain embedded coverage while candidate core keeps one
   const cloneLifecycleEnd = source.indexOf("\nasync function exerciseReleasedREditingJourney(", cloneLifecycleStart);
   const comprehensiveStart = source.indexOf("async function exerciseReleasedREditingJourney(", representativeEnd);
   const comprehensiveEnd = source.indexOf("\nasync function exerciseReleasedRFormulaJourney(", comprehensiveStart);
+  const formulaStart = comprehensiveEnd + 1;
+  const formulaEnd = source.indexOf("\nasync function exerciseReleasedRFormatDatetimeJourney(", formulaStart);
   assert.ok(
     gridStart >= 0 &&
       gridEnd > gridStart &&
+      customStart >= 0 &&
+      customEnd > customStart &&
       representativeStart >= 0 &&
       representativeEnd > representativeStart &&
       cloneFailureStart > representativeEnd &&
       cloneLifecycleStart > cloneFailureStart &&
       cloneLifecycleEnd > cloneLifecycleStart &&
-      comprehensiveEnd > comprehensiveStart
+      comprehensiveEnd > comprehensiveStart &&
+      formulaStart > comprehensiveEnd &&
+      formulaEnd > formulaStart
   );
   const grid = source.slice(gridStart, gridEnd);
+  const custom = source.slice(customStart, customEnd);
   const representative = source.slice(representativeStart, representativeEnd);
   const cloneFailure = source.slice(cloneFailureStart, cloneLifecycleStart);
   const cloneLifecycle = source.slice(cloneLifecycleStart, cloneLifecycleEnd);
   const comprehensive = source.slice(comprehensiveStart, comprehensiveEnd);
+  const formula = source.slice(formulaStart, formulaEnd);
+  const generatedBoundaryStart = source.indexOf("function assertReleasedRGeneratedSourceBoundary(");
+  const generatedBoundaryEnd = source.indexOf("\nfunction assertReleasedRRowGeneratedCode(", generatedBoundaryStart);
+  assert.ok(generatedBoundaryStart >= 0 && generatedBoundaryEnd > generatedBoundaryStart);
+  const generatedBoundary = source.slice(generatedBoundaryStart, generatedBoundaryEnd);
+  assert.match(
+    generatedBoundary,
+    /base::list\(\.ow_source_environment = \.ow_caller_environment, \.ow_custom_parent_environment = \.ow_caller_environment\)/u,
+    "Packaged R generated-code checks must retain both caller-derived environment bindings."
+  );
+  assert.doesNotMatch(
+    generatedBoundary,
+    /base::list\(\.ow_source_environment = \.ow_caller_environment\)"/u,
+    "Packaged R generated-code checks must not regress to the stale one-binding source boundary."
+  );
   assert.match(
     representative,
-    /supportedOperations\.length, 27[\s\S]*supportedOperations\.includes\("byExample"\), true[\s\S]*supportedOperations\.includes\("customCode"\), false/u,
+    /supportedOperations\.length, 28[\s\S]*supportedOperations\.includes\("byExample"\), true[\s\S]*supportedOperations\.includes\("customCode"\), true/u,
     "The representative packaged R journey must assert the exact capability catalog."
   );
   assert.match(
     representative,
-    /getByRole\("button", \{ name: \/\^Transform by example\\b\/u \}\)\.count\(\), 1[\s\S]*getByRole\("button", \{ name: \/\^Custom code\\b\/u \}\)\.count\(\), 0/u,
-    "The representative packaged R picker must expose Transform by example while omitting Custom code."
+    /getByRole\("button", \{ name: \/\^Transform by example\\b\/u \}\)\.count\(\), 1[\s\S]*getByRole\("button", \{ name: \/\^Custom code\\b\/u \}\)\.count\(\), 1/u,
+    "The representative packaged R picker must expose Transform by example and Custom code."
+  );
+  assert.match(
+    representative,
+    /exerciseReleasedRCustomCodeJourney\(testing, workbench, sessionId, notebook, phase\)/u,
+    "Every representative packaged R profile must execute the native Custom code lifecycle."
+  );
+  assert.match(
+    custom,
+    /getByLabel\("Engine-native R", \{ exact: true \}\)[\s\S]*inputValue\(\), "result <- df"[\s\S]*fill\(RELEASED_R_CUSTOM_CODE\)[\s\S]*draft\?\.kind === "customCode"[\s\S]*draft\.params\.code === RELEASED_R_CUSTOM_CODE[\s\S]*metadata\.shape\.rows === 3[\s\S]*metadata\.shape\.columns === 3[\s\S]*getByRole\("button", \{ name: "Apply step", exact: true \}\)[\s\S]*step\?\.kind === "customCode"[\s\S]*custom-code-source-after-apply[\s\S]*getByRole\("button", \{ name: "Undo", exact: true \}\)[\s\S]*metadata\.shape\.rows === 1_205[\s\S]*metadata\.shape\.columns === 25[\s\S]*custom-code:complete/u,
+    "Packaged R Custom code must prove form syntax, exact payload, preview, apply, undo, and source isolation."
+  );
+  assert.match(
+    source,
+    /function assertReleasedRCustomCodeGeneratedCode\([\s\S]*code\.includes\(JSON\.stringify\(customCode\)\)[\s\S]*base::parse\(text = \.ow_custom_code/u,
+    "Packaged Custom code acceptance must verify exact quoted source and the generated R parser boundary."
+  );
+  assert.match(
+    formula,
+    /\/\^Transform by example\\b\/u,[\s\S]*\/\^Custom code\\b\/u[\s\S]*getByRole\("button", \{ name: expected \}\)\.count\(\), 1/u,
+    "The comprehensive packaged R catalog must require Custom code as an advertised operation."
+  );
+  assert.doesNotMatch(
+    formula,
+    /unsupported|Custom code[\s\S]*count\(\), 0/u,
+    "No packaged R catalog may retain the pre-support Custom code exclusion."
   );
   assert.doesNotMatch(
     representative,

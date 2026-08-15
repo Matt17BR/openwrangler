@@ -338,8 +338,13 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "ceilNumber",
   "formatDatetime",
   "groupBy",
-  "byExample"
+  "byExample",
+  "customCode"
 ]);
+const RELEASED_R_CUSTOM_CODE = [
+  'result <- df[df$row_id <= 3L, c("row_id", "score"), drop = FALSE]',
+  "result$score_plus_one <- result$score + 1"
+].join("\n");
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
@@ -2699,7 +2704,7 @@ async function exerciseReleasedRJupyterExtension(
         coverage.editing
       );
     } else {
-      await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, phase);
+      await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, notebook, phase);
       if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {
         await exerciseReleasedROneHotJourney(testing, workbench, base.sessionId);
         await exerciseReleasedRMultiLabelJourney(testing, workbench, base.sessionId);
@@ -7003,10 +7008,128 @@ async function releasedRFirstVisibleRow(
   return row;
 }
 
+async function exerciseReleasedRCustomCodeJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  notebook: vscode.NotebookDocument,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:custom-code:picker`);
+  const operationPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  const customChoice = operationPicker.dialog.getByRole("button", { name: /^Custom code\b/u });
+  assert.equal(await customChoice.count(), 1, "The native R picker must expose exactly one Custom code operation.");
+  await customChoice.click();
+  await operationPicker.dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const codeEditor = operationPicker.dialog.getByLabel("Engine-native R", { exact: true });
+  await codeEditor.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await codeEditor.inputValue(), "result <- df", "Native R Custom code must start with valid R syntax.");
+  await codeEditor.fill(RELEASED_R_CUSTOM_CODE);
+
+  recordAcceptanceProgress(`${phase}:editing:custom-code:preview`);
+  await operationPicker.dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "customCode" &&
+        draft.params.code === RELEASED_R_CUSTOM_CODE &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 3 &&
+        active.metadata.shape.columns === 3 &&
+        active.metadata.schema.map((column) => column.name).join(",") === "row_id,score,score_plus_one"
+      );
+    },
+    30_000,
+    "previewing native R Custom code through its operation form"
+  );
+  await operationPicker.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const previewed = testing.activeSession();
+  assert.ok(previewed?.metadata.draftStep?.kind === "customCode", "The native R custom preview must retain its draft.");
+  const stepId = previewed.metadata.draftStep.id;
+  assertReleasedRCustomCodeGeneratedCode(previewed.code ?? "", RELEASED_R_CUSTOM_CODE);
+  const previewRows = await releasedRVisibleRows(testing, sessionId, `${phase}-custom-code-preview`, 3);
+  assert.equal(previewRows.length, 3);
+  assert.deepEqual(
+    previewRows.map((row) => row.values.map((value) => value.display)),
+    [
+      ["1", "1", "2"],
+      ["2", "2", "3"],
+      ["3", "3", "4"]
+    ]
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Custom code preview must be acknowledged before apply."
+  );
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code preview");
+  const draftReview = app.getByRole("region", { name: "Draft review" });
+  await draftReview.getByText("Custom code", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress(`${phase}:editing:custom-code:apply`);
+  await draftReview.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "customCode" &&
+        step.id === stepId &&
+        step.params.code === RELEASED_R_CUSTOM_CODE &&
+        active.metadata.shape.rows === 3 &&
+        active.metadata.shape.columns === 3 &&
+        active.metadata.schema.map((column) => column.name).join(",") === "row_id,score,score_plus_one"
+      );
+    },
+    30_000,
+    "applying native R Custom code"
+  );
+  const applied = testing.activeSession();
+  assertReleasedRCustomCodeGeneratedCode(applied?.code ?? "", RELEASED_R_CUSTOM_CODE);
+  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:custom-code-source-after-apply`);
+
+  recordAcceptanceProgress(`${phase}:editing:custom-code:undo`);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied native R Custom code step must be acknowledged before undo."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.shape.rows === 1_205 &&
+        active.metadata.shape.columns === 25 &&
+        active.metadata.schema[0]?.name === "row_id" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Custom code"
+  );
+  const restored = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-custom-code-undone`);
+  assert.equal(restored.values[0]?.display, "1");
+  assert.equal(restored.values[1]?.display, "A");
+  assert.equal(restored.values[2]?.display, "1");
+  recordAcceptanceProgress(`${phase}:editing:custom-code:complete`);
+}
+
 async function exerciseReleasedRRepresentativeEditingJourney(
   testing: TestApi,
   workbench: Page,
   sessionId: string,
+  notebook: vscode.NotebookDocument,
   phase: "jupyter-r" | "jupyter-r-remote"
 ): Promise<void> {
   recordAcceptanceProgress(`${phase}:editing:representative:open`);
@@ -7024,9 +7147,9 @@ async function exerciseReleasedRRepresentativeEditingJourney(
   assert.equal(opened.metadata.mode, "editing");
   assert.equal(opened.metadata.capabilities.editable, true);
   assert.deepEqual(opened.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
-  assert.equal(opened.metadata.capabilities.supportedOperations.length, 27);
+  assert.equal(opened.metadata.capabilities.supportedOperations.length, 28);
   assert.equal(opened.metadata.capabilities.supportedOperations.includes("byExample"), true);
-  assert.equal(opened.metadata.capabilities.supportedOperations.includes("customCode"), false);
+  assert.equal(opened.metadata.capabilities.supportedOperations.includes("customCode"), true);
 
   recordAcceptanceProgress(`${phase}:editing:representative:operation-catalog`);
   const operationPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
@@ -7038,7 +7161,7 @@ async function exerciseReleasedRRepresentativeEditingJourney(
     "The representative R picker must expose exactly its advertised operation catalog."
   );
   assert.equal(await operationCatalog.getByRole("button", { name: /^Transform by example\b/u }).count(), 1);
-  assert.equal(await operationCatalog.getByRole("button", { name: /^Custom code\b/u }).count(), 0);
+  assert.equal(await operationCatalog.getByRole("button", { name: /^Custom code\b/u }).count(), 1);
   await operationPicker.dialog.getByRole("button", { name: "Close operation picker" }).click();
   await operationPicker.dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
@@ -7150,6 +7273,7 @@ async function exerciseReleasedRRepresentativeEditingJourney(
   );
   const restored = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-representative-rename-restored`);
   assert.equal(restored.values[0]?.display, "1");
+  await exerciseReleasedRCustomCodeJourney(testing, workbench, sessionId, notebook, phase);
   recordAcceptanceProgress(`${phase}:editing:representative:complete`);
 }
 
@@ -9216,12 +9340,10 @@ async function exerciseReleasedRFormulaJourney(testing: TestApi, workbench: Page
     /^Format datetime\b/u,
     /^One-hot encode\b/u,
     /^Multi-label binarize\b/u,
-    /^Transform by example\b/u
+    /^Transform by example\b/u,
+    /^Custom code\b/u
   ]) {
     assert.equal(await catalog.getByRole("button", { name: expected }).count(), 1);
-  }
-  for (const unsupported of [/^Custom code\b/u]) {
-    assert.equal(await catalog.getByRole("button", { name: unsupported }).count(), 0);
   }
   await dialog.getByPlaceholder("Search operations").fill("formula");
   await dialog.getByRole("button", { name: /^Formula column\b/u }).click();
@@ -10143,7 +10265,9 @@ function assertReleasedRGeneratedSourceBoundary(code: string, variableName = "or
     },
     {
       stage: "released-r:source-boundary:source-environment",
-      passed: code.includes("base::list(.ow_source_environment = .ow_caller_environment)")
+      passed: code.includes(
+        "base::list(.ow_source_environment = .ow_caller_environment, .ow_custom_parent_environment = .ow_caller_environment)"
+      )
     },
     {
       stage: "released-r:source-boundary:publication",
@@ -10768,6 +10892,19 @@ async function previewReleasedRRename(
 function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
   assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRCustomCodeGeneratedCode(code: string, customCode: string, variableName = "orders_frame"): void {
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
+  assert.ok(
+    code.includes(JSON.stringify(customCode)),
+    "Generated R must preserve the exact Custom code source as one quoted scalar."
+  );
+  assert.ok(
+    code.includes("base::parse(text = .ow_custom_code"),
+    "Generated R Custom code must parse only the safely quoted scalar."
+  );
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 

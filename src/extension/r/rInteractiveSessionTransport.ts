@@ -389,7 +389,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         ...(replaceStepId === undefined ? {} : { replaceStepId })
       }),
       options,
-      { inputSchema }
+      { inputSchema, previewStep: step }
     );
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
     if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
@@ -402,6 +402,8 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       page: response.page,
       diff: response.diff,
       code: response.code,
+      ...(response.retainedStep === undefined ? {} : { retainedStep: response.retainedStep }),
+      ...(response.effectiveView === undefined ? {} : { effectiveView: response.effectiveView }),
       ...(response.remainingMissingCells === undefined ? {} : { remainingMissingCells: response.remainingMissingCells })
     });
   }
@@ -822,7 +824,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
 
   private async closeCandidateSession(sessionId: string, options: RKernelRequestOptions): Promise<void> {
     const request = this.request("closeSession", { sessionId });
-    const scheduled = this.scheduleKernel(request);
+    const scheduled = this.scheduleKernelCleanup(request);
     const tracked: ScheduledRequest<RKernelResponse> = {
       state: scheduled.state,
       completion: scheduled.completion.then((response) => {
@@ -845,7 +847,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     revision: number,
     exportId: string
   ): ScheduledRequest<RKernelResponse> {
-    return this.scheduleKernelDuringDisposal(this.request("closeDataExport", { sessionId, revision, exportId }));
+    return this.scheduleKernelCleanup(this.request("closeDataExport", { sessionId, revision, exportId }));
   }
 
   private async awaitExactDataExportClose(
@@ -876,7 +878,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   }
 
   private async recoverFromExportCleanupFailure(sessionId: string, cleanupError: unknown): Promise<void> {
-    const scheduledClose = this.scheduleKernelDuringDisposal(this.request("closeSession", { sessionId }));
+    const scheduledClose = this.scheduleKernelCleanup(this.request("closeSession", { sessionId }));
     try {
       if (cleanupError instanceof DetachedBridgeRequestError && cleanupError.dispatched) {
         await cleanupError.settlement;
@@ -1000,7 +1002,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     const cleanupSessions = new Set([...this.mappedSessions, ...this.openingSessions, ...this.abandonedOpenSessions]);
     for (const sessionId of cleanupSessions) {
       const request = this.request("closeSession", { sessionId });
-      const scheduled = this.scheduleKernelDuringDisposal(request);
+      const scheduled = this.scheduleKernelCleanup(request);
       work.push(
         scheduled.completion.then((response) => {
           if (!isCorrelatedClose(response, sessionId)) {
@@ -1047,7 +1049,9 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     await this.finishHostCleanup([...failures, ...this.takeAllCleanupFailures()]);
   }
 
-  private scheduleKernelDuringDisposal(request: RKernelRequest): ScheduledRequest<RKernelResponse> {
+  private scheduleKernelCleanup(
+    request: Extract<RKernelRequest, { kind: "closeSession" | "closeDataExport" }>
+  ): ScheduledRequest<RKernelResponse> {
     const payload = encodeRKernelRequest(request);
     return this.schedule(
       request.requestId,

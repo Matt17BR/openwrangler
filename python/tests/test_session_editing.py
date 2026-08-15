@@ -56,6 +56,50 @@ def test_custom_code_cannot_forge_a_private_row_identity_column(tmp_path):
     assert manager.sessions[opened["metadata"]["sessionId"]].revision == 0
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize(("second_flag", "filtered_total"), [("drop", 1), ("keep", 2)])
+def test_custom_code_diff_is_conservatively_truncated_under_an_active_filter(
+    tmp_path, backend, second_flag, filtered_total
+):
+    path = tmp_path / f"custom-filtered-replacement-{backend}-{second_flag}.csv"
+    path.write_text(f"flag,value\nkeep,1\n{second_flag},2\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=10
+    )
+    session_id = opened["metadata"]["sessionId"]
+    filter_model = {
+        "filters": [
+            {
+                "column": "flag",
+                "type": "string",
+                "predicates": [{"kind": "predicate", "operator": "equals", "value": "keep"}],
+            }
+        ],
+        "sort": [],
+    }
+    filtered = manager.get_page(session_id, 0, 0, 10, filter_model)
+    assert filtered["page"]["totalRows"] == filtered_total
+
+    code = {
+        "pandas": 'result = df.assign(flag="keep")',
+        "polars": 'result = df.with_columns(pl.lit("keep").alias("flag"))',
+        "duckdb": "result = df.project(\"'keep' AS flag, value\")",
+    }[backend]
+    preview = manager.preview_step(
+        session_id,
+        0,
+        transform("custom-filtered-replacement", "customCode", code=code),
+        0,
+        10,
+    )
+
+    assert preview["page"]["totalRows"] == 2
+    assert preview["diff"]["addedRows"] == 2
+    assert preview["diff"]["removedRows"] == 2
+    assert preview["diff"]["truncated"] is True
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 def test_draft_preview_apply_edit_and_undo_replays_the_immutable_source(tmp_path, backend, monkeypatch):
     source = "group,value\na,1\na,2\nb,3\n"

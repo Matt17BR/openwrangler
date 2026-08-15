@@ -1,6 +1,6 @@
 openwrangler_r_interactive_agent <- local({
   protocol_version <- 1L
-  kernel_transport_version <- 13L
+  kernel_transport_version <- 14L
   maximum_request_bytes <- 16L * 1024L * 1024L
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_error_bytes <- 4096L

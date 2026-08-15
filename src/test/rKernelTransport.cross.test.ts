@@ -625,6 +625,138 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("round-trips native R Custom Code through notebook preview, apply, generated code, and undo", () => {
+    const customSessionId = "1a000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "1a000000-0000-4000-8000-000000000002",
+      preview: "1a000000-0000-4000-8000-000000000003",
+      apply: "1a000000-0000-4000-8000-000000000004",
+      undo: "1a000000-0000-4000-8000-000000000005",
+      close: "1a000000-0000-4000-8000-000000000006"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const effectiveView = {
+      filters: [
+        {
+          column: { id: "r:c:1", name: "label" },
+          type: "string" as const,
+          predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "alpha" }]
+        }
+      ],
+      sorts: []
+    };
+    const customPage = { ...pageWindow(), view: effectiveView } as const;
+    const step = {
+      id: "custom-kernel-step",
+      kind: "customCode",
+      params: {
+        code: "result <- data.frame(label = df$label, doubled = df$value * 2L, check.names = FALSE)\n"
+      }
+    } as const;
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: customSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const previewRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: { sessionId: customSessionId, revision: 0, step, page: customPage }
+    };
+    const preview = requestCode(previewRequest);
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: customSessionId, revision: 1, page: customPage }
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: customSessionId, revision: 2, page: customPage }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: customSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(value = c(1L, 2L), label = c("alpha", "beta"), stringsAsFactors = FALSE)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${undo.code}
+stopifnot(identical(frame, frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Custom Code session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema,
+      previewStep: step
+    });
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      effectiveView,
+      page: {
+        shape: { rows: 4, columns: 2 },
+        page: { totalRows: 1, rows: [{ id: "r:r:2" }] }
+      },
+      diff: {
+        addedRows: 2,
+        removedRows: 2,
+        addedColumns: ["doubled"],
+        removedColumns: ["value"],
+        changedCells: 0,
+        cells: [],
+        truncated: true
+      }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R Custom Code preview.");
+    expect(previewed.page.schema.map(({ id, name, type }) => ({ id, name, type }))).toEqual([
+      { id: "r:c:1", name: "label", type: "string" },
+      { id: "c:step:custom-kernel-step:0", name: "doubled", type: "integer" }
+    ]);
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R Custom Code step.");
+    expect(applied.code).toContain("custom-kernel-step");
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 3,
+      page: { shape: { rows: 2, columns: 2 } },
+      code: ""
+    });
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: customSessionId
+    });
+
+    const generated = runR(`
+frame <- data.frame(value = c(1L, 2L), label = c("alpha", "beta"), stringsAsFactors = FALSE)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${applied.code}
+stopifnot(identical(names(open_wrangler_result), c("label", "doubled")))
+stopifnot(identical(open_wrangler_result$label, c("alpha", "beta")))
+stopifnot(identical(open_wrangler_result$doubled, c(2L, 4L)))
+stopifnot(identical(frame, frame_before))
+cat("generated-ok\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("round-trips native R by-example null literals through saved replay and generated code", () => {
     const editingSessionId = "1b000000-0000-4000-8000-000000000001";
     const ids = {

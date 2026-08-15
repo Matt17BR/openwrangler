@@ -6,15 +6,25 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Native R now implements **Transform by Example** as its 27th of 28 cleaning operations. Ordered stable column
-  references and example rows produce one deterministic canonical program that is reused for live evaluation,
-  retained replay, and executable generated R. Strict scalar, UTF-8, program-size, integer-envelope, and signed-zero
-  checks fail before publication; direct contracts cover preview, apply, latest-step edit, replay, inspection, and
-  undo across base, tibble, `data.table`, and ordinary `collapse` frames. **Custom Code** remains the only unsupported
-  R catalog operation, the Native R matrix remains **Partial**, and this unhosted source slice changes no candidate
-  selector, job, phase, deadline, or retry. To retain margin inside the existing native-R contract and kernel-startup
-  bounds after this larger runtime, the host gzip-compresses the trusted R sources before base64 embedding; base R
-  decompresses them without changing raw-source bundle identity or evaluation semantics.
+- Native R now exposes all 28 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
+  accepts at most 64 KiB of exact UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures before
+  evaluation, and requires a local non-active `result` with the same canonical dataframe flavor and at least one
+  column. It supports dynamic rows, columns, row names, and `data.table` keys; duplicate output names reuse input
+  lineage in FIFO order, while genuinely new columns and every output row receive fresh identities. Preview
+  reconciles the active view against the result schema and treats the operation as a full row replacement. Live and
+  executable generated R agree for deterministic code, input, and environment across base, tibble, `data.table`, and
+  ordinary `collapse` frames. Source/result publication is atomic, but the feature executes trusted arbitrary R, not
+  sandboxed code: deliberate filesystem, network, global-environment, or aliased-object side effects are outside the
+  transaction. The public protocol remains v2 while the private R transport advances to v14. Native R remains
+  **Partial** because this unhosted source has neither fresh hosted candidate proof nor the dedicated all-28 release
+  and performance evidence; no candidate selector, job, phase, 300-second/180-second deadline, or retry changes.
+- Native R **Transform by Example** uses ordered stable column references and example rows to produce one
+  deterministic canonical program reused for live evaluation, retained replay, and executable generated R. Strict
+  scalar, UTF-8, program-size, integer-envelope, and signed-zero checks fail before publication; direct contracts
+  cover preview, apply, latest-step edit, replay, inspection, and undo across base, tibble, `data.table`, and ordinary
+  `collapse` frames. To retain margin inside the existing native-R contract and kernel-startup bounds after the larger
+  runtime, the host gzip-compresses the trusted R sources before base64 embedding; base R decompresses them without
+  changing raw-source bundle identity or evaluation semantics.
 - Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
   `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the candidate and Remote SSH owners, published
   `v1.99.6` to GitHub and both registries, and completed successfully. Canonical artifact `9240263388` contained the

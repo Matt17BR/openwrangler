@@ -203,7 +203,7 @@ host protocol; the Python runtime never reads those messages.
 `r/openwrangler_runtime/kernel_agent.R` owns native R sessions. The host creates a UUID before an open,
 and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
 statistics, and column-value requests read through that binding and reject structural changes. These messages have a
-separate private transport-v13 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
+separate private transport-v14 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
 request IDs, and oversized responses. The trusted runtime sources are gzip-compressed and then base64-embedded in the
 kernel bootstrap; base R decompresses them before evaluation, while the exact uncompressed sources still determine the
 bundle identity. A remote IRkernel therefore does not need access to the extension filesystem.
@@ -362,9 +362,32 @@ native filters, ordered sorts, value search and selection, and column and datase
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize, Lowercase,
 Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format
-Datetime, Group and aggregate, and Transform by example. Custom code is the only catalog operation not supported in R.
-Executable generated R evaluates its implementation in a fresh environment whose parent is `baseenv()`, while an
-explicit private binding identifies only the caller environment from which the exact source variable is copied.
+Datetime, Group and aggregate, Transform by example, and Custom code.
+
+Custom Code retains the public protocol-v2 `{code}` step while private transport v14 adds its effective-view receipt.
+Both host and R decoders bound the exact source at 64 KiB of UTF-8 and reject unpaired text, NUL, blank/comment-only
+input, and parse errors before evaluation. R parses once, then evaluates the expressions in a child of a shield
+environment. The `df` binding is a further-isolated copy; the shield locks the selected source name and `result`, so an
+ordinary `<<-` or by-reference update cannot mutate the selected source through those names. The step must create an
+exact local, non-active `result` that has at least one column and the same canonical base-data-frame, tibble, or
+`data.table` flavor. Deliberate access through another alias or the global environment, and filesystem or network side
+effects, remain trusted arbitrary R behavior and are not transactional.
+
+The result may change row count, schema, row names, and a `data.table` key. Equal output names consume matching input
+column identities in FIFO order, including duplicates; unmatched output columns receive
+`c:step:<step-id>:<created-output-ordinal>`. Every Custom Code result receives a fresh row-identity generation. Preview
+reconciles filters and sorts against columns whose stable identity and required type still match, returns that exact
+effective view, and represents the diff as a full row replacement; any active filter makes the bounded diff
+conservatively truncated. Session revision, plan, draft, schema, identities, generated code, and effective view publish
+together only after output validation, so failure restores the last confirmed state. This atomicity does not roll back
+the ambient side effects described above.
+
+Executable generated R safely embeds the exact Custom Code text as one quoted scalar, parses it once, and repeats the
+same input isolation, shield, result validation, flavor normalization, lineage, and resource checks. It is equivalent
+to live execution when code, input, and ambient environment are deterministic. For the ordinary generated helpers,
+the plan implementation evaluates in a fresh environment whose parent is `baseenv()`, while an explicit private
+binding identifies only the caller environment from which the exact source variable is copied. Custom Code alone uses
+that caller environment as its shield parent because it is intentionally arbitrary R.
 The shared source preflight and the Formula, Format Datetime, and categorical implementation helpers avoid
 caller-defined operator, S3-method, and helper-name lookup; this is not a blanket claim for every older generated
 operation. Generated code rejects an
@@ -388,8 +411,9 @@ The hosted gate also passes against a containerized IRkernel in VS Code, includi
 frame, and final session cleanup. Local packaged acceptance keeps fresh core, value, and categorical editing profiles
 and moves candidate native-frame and restart work into dedicated selectors. Explicit candidate `core-operations`
 owns one complete installed Clone Column lifecycle: preview, apply, applied-step inspection, editing and reapplying
-the same step while preserving its step and output identities, then undo. Direct native-R, runtime, generated-code,
-and catalog suites own exhaustive semantics for all 27 operations. The `value-operations` targeted slice still owns exactly Find and
+the same step while preserving its step and output identities, then undo. Direct suites own the prior 27 operations,
+and focused Custom Code contracts cover operation 28; the dedicated all-28 release owner remains outstanding. The
+`value-operations` targeted slice still owns exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The
 `categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
@@ -634,8 +658,9 @@ executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
 `literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
 partitions scheduling while keeping the installed Clone lifecycle in the existing core phase, the unchanged complete
 value and categorical slices, one comprehensive Linux native-frame owner, and representative native/restart seams on
-every hosted platform. Exhaustive 27-operation semantics remain direct R/runtime/catalog-test ownership. Adding
-Transform by example changes no candidate selector, job, phase, shard, deadline, or retry policy.
+every hosted platform. Exhaustive semantics for the prior 27 operations remain direct R/runtime/catalog-test
+ownership. Focused Custom Code contracts expose operation 28 without satisfying the dedicated all-28 release owner. This
+unhosted addition changes no candidate selector, job, phase, shard, deadline, or retry policy.
 
 Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
 fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own

@@ -163,6 +163,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
 
   async discoverVariables(options: RKernelRequestOptions = {}): Promise<RProcessVariableDiscovery> {
     this.assertActive();
+    this.assertWorkspaceTrusted();
     const timeoutMs = requestTimeout(options.timeoutMs);
     const startup = this.ensureStarted();
     void startup.catch(() => undefined);
@@ -193,6 +194,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     options: RKernelRequestOptions = {}
   ): Promise<RKernelOpenResult> {
     this.assertActive();
+    this.assertWorkspaceTrusted();
     const sessionId = options.requestedSessionId ?? this.createId();
     this.assertSessionIdentityAvailable(sessionId);
     const request = this.request("openSession", { sessionId, variableName, page });
@@ -381,7 +383,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         ...(replaceStepId === undefined ? {} : { replaceStepId })
       }),
       options,
-      { inputSchema }
+      { inputSchema, previewStep: step }
     );
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
     if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
@@ -393,6 +395,8 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       page: response.page,
       diff: response.diff,
       code: response.code,
+      ...(response.retainedStep === undefined ? {} : { retainedStep: response.retainedStep }),
+      ...(response.effectiveView === undefined ? {} : { effectiveView: response.effectiveView }),
       ...(response.remainingMissingCells === undefined ? {} : { remainingMissingCells: response.remainingMissingCells })
     });
   }
@@ -574,6 +578,8 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
 
   private schedule(request: RKernelRequest, decodeContext?: RKernelResponseDecodeContext): ScheduledRequest {
     this.assertActive();
+    const requiresTrust = request.kind !== "closeSession";
+    if (requiresTrust) this.assertWorkspaceTrusted();
     const payload = encodeRKernelRequest(request);
     const preceding = this.queueTail;
     const state = { dispatched: false, abandonBeforeDispatch: false };
@@ -583,6 +589,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       if (state.abandonBeforeDispatch) throw new KernelRequestCancelledError();
       this.assertActive();
       if (started.owned.closeState) throw processClosedError(started.owned);
+      if (requiresTrust) this.assertWorkspaceTrusted();
       state.dispatched = true;
       await writeRequestFrame(started.owned.child, request.requestId, payload);
       const responsePath = path.join(started.owned.responseRoot, `${request.requestId}.json`);
@@ -659,6 +666,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       await mkdir(responseRoot, { mode: 0o700 });
       await mkdir(exportRoot, { mode: 0o700 });
       this.assertActive();
+      this.assertWorkspaceTrusted();
 
       const child = spawn(this.options.rscriptPath, ["--vanilla", processAgent], {
         cwd: this.options.workingDirectory,
@@ -815,6 +823,12 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
 
   private assertActive(): void {
     if (this.disposed) throw new Error("The R process transport is disposed.");
+  }
+
+  private assertWorkspaceTrusted(): void {
+    if (!vscode.workspace.isTrusted) {
+      throw new Error("Trust this workspace before Open Wrangler accesses the R process.");
+    }
   }
 }
 
