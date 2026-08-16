@@ -101,8 +101,8 @@ test("fixed dependency profiles match ordinary, released-Jupyter, remote-only, a
   ]);
 });
 
-test("repository Python commands use the deterministic prepared-interpreter resolver", () => {
-  for (const file of ["run-python.mjs", "run-pyright.mjs", "generate-reference.mjs"]) {
+test("repository scripts that execute Python use the deterministic prepared-interpreter resolver", () => {
+  for (const file of ["run-python.mjs", "run-pyright.mjs"]) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     assert.match(source, /resolveAndPreflightAcceptancePython\(\{[\s\S]*profile: "repository-command"/u, file);
     assert.doesNotMatch(source, /["']python3["']|\?\?\s*["']python["']|\bPATH\b/u, file);
