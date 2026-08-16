@@ -385,12 +385,18 @@ test("product CI covers protected product branches", () => {
   assert.deepEqual(ci?.on?.push?.branches, PRODUCT_PUSH_BRANCHES);
   assert.deepEqual(ci?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
 
-  for (const path of ["codeql.yml", "cross-platform.yml"]) {
-    const workflow = parseYaml(readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8"));
-    assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PULL_REQUEST_BRANCHES);
-    assert.deepEqual(workflow?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
-    assert.equal(workflow?.on?.push, undefined, `${path} must not repeat the ready-PR matrix after merge.`);
-  }
+  const codeql = parseYaml(readFileSync(new URL("../.github/workflows/codeql.yml", import.meta.url), "utf8"));
+  assert.deepEqual(codeql?.on?.push?.branches, PRODUCT_PUSH_BRANCHES);
+  assert.deepEqual(codeql?.on?.pull_request?.branches, PROTECTED_PULL_REQUEST_BRANCHES);
+  assert.deepEqual(codeql?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
+  assert.deepEqual(codeql?.on?.schedule, [{ cron: "23 4 * * 2" }]);
+
+  const crossPlatform = parseYaml(
+    readFileSync(new URL("../.github/workflows/cross-platform.yml", import.meta.url), "utf8")
+  );
+  assert.deepEqual(crossPlatform?.on?.pull_request?.branches, PROTECTED_PULL_REQUEST_BRANCHES);
+  assert.deepEqual(crossPlatform?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
+  assert.equal(crossPlatform?.on?.push, undefined, "Cross-platform must not repeat the ready-PR matrix after merge.");
 });
 
 test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
@@ -1696,7 +1702,7 @@ test("authoritative CI work is independently attributable before the required ag
   assert.deepEqual(ownersByCommand.get("npm run test:scripts:portable"), ["contract-tests"]);
 });
 
-test("ready substantive PRs run full while protected pushes keep only fast feedback", () => {
+test("ready substantive PRs run full while push tiers retain their exact owners", () => {
   const classifierEnvironment = {
     CI_EVENT_NAME: "${{ github.event_name }}",
     CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
@@ -2454,7 +2460,7 @@ test("draft feedback uses a different context before same-SHA ready validation",
   for (const relativePath of requiredPullRequestWorkflows) {
     const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
     const workflow = parseYaml(source);
-    assert.match(source, /\non:\n {2}pull_request:/u, `${relativePath} must retain its pull-request trigger.`);
+    assert.match(source, /\n {2}pull_request:\n/u, `${relativePath} must retain its pull-request trigger.`);
     assert.deepEqual(
       workflow?.on?.pull_request?.types,
       PULL_REQUEST_ACTIVITY_TYPES,

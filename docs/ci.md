@@ -296,7 +296,8 @@ revalidates them while removing the container, runtime image, and base image in 
 uncertainty still withholds failure evidence.
 
 Cross-platform, CodeQL, and performance workflows also run on schedules so changes in external products are found
-between releases. Released Jupyter is run manually when that integration needs to be checked. Dispatching the same
+between releases. CodeQL additionally runs both configured languages on every push to protected `main`, which keeps
+default-branch alerts current. Released Jupyter is run manually when that integration needs to be checked. Dispatching the same
 Released Jupyter target again cancels its older diagnostic run; a macOS, Windows, or Linux target does not cancel
 either of the others. Release candidates are not replaced this way.
 

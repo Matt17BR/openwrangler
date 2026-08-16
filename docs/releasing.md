@@ -408,7 +408,8 @@ feedback` check; the protected `validate` context appears only when the pull req
 changes targeting `main` run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native
 extension-host, platform, and security checks. The slower native editor, Jupyter, Remote SSH, and
 installed-performance checks run against the exact release candidate before publication. Pushes to `main` repeat
-fast feedback only; publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
+fast feedback and run complete JavaScript/TypeScript and Python CodeQL analysis; publication remains restricted to
+`main`. [CI and release checks](ci.md) has the current map.
 Ready pull requests run formatting, ESLint, and TypeScript concurrently inside `Fast feedback`. The native R matrix
 starts after that static preflight and overlaps `Contract tests`; the required `validate` fan-in still accepts only
 when both succeed. The remaining heavier UI, engine, package, and editor jobs start after both preflights. An early
@@ -421,6 +422,13 @@ platform and Python CodeQL names are preserved by carrier cells. At least one re
 path is mandatory; exact adjunct release documents may accompany it, while any unlisted, shared-dependency,
 classifier, or mixed product path fails closed to full CI. This pull-request optimization does not weaken or replace
 complete exact-artifact release-candidate acceptance.
+
+The active `main` ruleset keeps its existing rebase-only pull-request, thread-resolution, linear-history, deletion,
+force-push, and required-status protections. Its CodeQL merge rule blocks non-security errors and high-or-higher
+security alerts reported on changed pull-request lines. A successful workflow is not an alert-clearance receipt:
+before changing this rule, query the code-scanning API for the fresh protected-main analysis and require zero open
+high or critical CodeQL alerts. Preserve the complete current ruleset request when adding or changing that one rule,
+then read the ruleset back and compare every retained rule.
 The shared candidate-acceptance workflow itself also forces full CI until its inspector pins an exact per-job step
 inventory. The preview and stable release workflows also force full CI while their publication-permissioned jobs lack
 exact step inventories. Their parsers and candidate-boundary tests still execute in the focused lane.
