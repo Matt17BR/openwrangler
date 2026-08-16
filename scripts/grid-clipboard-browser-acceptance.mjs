@@ -6,6 +6,7 @@ const hostileCell = " \u0000=SUM(A1:A2)";
 const hostileRowLabel = "\t\uFEFF@ROW()";
 const expectedRow = `"'${hostileRowLabel}"\t'${hostileCell}\t-2024\t-10.5\tfalse`;
 const oversizedMarker = "=OW_BROWSER_OVERSIZED:";
+const clipboardDeniedReason = "Could not write to the clipboard. Check this editor's clipboard permissions.";
 
 export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirectory) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
@@ -25,23 +26,16 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
 
     await firstCell.click();
     const copyRow = page.getByRole("button", { name: "Copy row" });
-    await copyRow.click();
-    await page.waitForFunction(() => globalThis.openWranglerClipboardBoundary.navigatorWrites.length === 1);
-    let boundary = await readClipboardBoundary(page);
-    assertExactWrites(boundary, { navigatorWrites: [expectedRow], fallbackWrites: [] });
-
-    await page.evaluate(() => {
-      globalThis.openWranglerClipboardBoundary.rejectNavigatorWrite = true;
-    });
-    await copyRow.click();
-    await page.waitForFunction(() => globalThis.openWranglerClipboardBoundary.fallbackWrites.length === 1);
-    boundary = await readClipboardBoundary(page);
-    assertExactWrites(boundary, {
-      navigatorWrites: [expectedRow, expectedRow],
-      fallbackWrites: [expectedRow]
-    });
-    if (boundary.activeAriaLabel !== "Copy row") {
-      throw new Error(`The clipboard fallback restored focus to ${JSON.stringify(boundary.activeAriaLabel)}.`);
+    const adapterCases = [
+      adapterCase("navigator success", "success", "success", 1, 1, 0, 0, true),
+      adapterCase("navigator unavailable", "unavailable", "success", 0, 0, 1, 1, true),
+      adapterCase("navigator rejection", "reject", "success", 1, 0, 1, 1, true),
+      adapterCase("navigator synchronous throw", "throw", "success", 1, 0, 1, 1, true),
+      adapterCase("navigator rejection with execCommand false", "reject", "false", 1, 0, 1, 0, false),
+      adapterCase("navigator throw with execCommand throw", "throw", "throw", 1, 0, 1, 0, false)
+    ];
+    for (const scenario of adapterCases) {
+      await exerciseAdapterCase(page, copyRow, scenario);
     }
 
     await publishClipboardFixture(page, { oversized: true });
@@ -69,12 +63,7 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
       });
     }
     await lastCell.waitFor();
-    await page.evaluate(() => {
-      const boundary = globalThis.openWranglerClipboardBoundary;
-      boundary.navigatorWrites.length = 0;
-      boundary.fallbackWrites.length = 0;
-      boundary.rejectNavigatorWrite = false;
-    });
+    await configureClipboardBoundary(page, { navigatorMode: "throw", fallbackMode: "throw" });
     await firstCell.click();
     await lastCell.click({ modifiers: ["Shift"] });
     await page.getByText("16 rows by 4 columns selected", { exact: true }).waitFor();
@@ -82,10 +71,17 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
     const announcement = page.getByRole("status", { name: "Clipboard copy result" });
     await announcement.filter({ hasText: clipboardLimitReason }).waitFor();
     const rejection = await readClipboardRejection(page);
-    if (rejection.navigatorWriteCount !== 0 || rejection.fallbackWriteCount !== 0) {
+    if (
+      rejection.navigatorAttemptCount !== 0 ||
+      rejection.navigatorWriteCount !== 0 ||
+      rejection.fallbackAttemptCount !== 0 ||
+      rejection.fallbackWriteCount !== 0
+    ) {
       throw new Error(
         `Oversized clipboard rejection reached a platform adapter: ${JSON.stringify({
+          navigatorAttemptCount: rejection.navigatorAttemptCount,
           navigatorWriteCount: rejection.navigatorWriteCount,
+          fallbackAttemptCount: rejection.fallbackAttemptCount,
           fallbackWriteCount: rejection.fallbackWriteCount
         })}.`
       );
@@ -104,15 +100,18 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
   }
 
   console.log(
-    "Grid clipboard formula neutralization, platform-adapter writes, fallback focus restoration, and payload-free oversized rejection verified in Chromium."
+    "Grid clipboard formula neutralization, adapter failure fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
   );
 }
 
 function installClipboardBoundary() {
   const boundary = {
+    navigatorAttempts: [],
     navigatorWrites: [],
+    fallbackAttempts: [],
     fallbackWrites: [],
-    rejectNavigatorWrite: false
+    navigatorMode: "success",
+    fallbackMode: "success"
   };
   Object.defineProperty(globalThis, "openWranglerClipboardBoundary", {
     configurable: false,
@@ -120,11 +119,19 @@ function installClipboardBoundary() {
   });
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
-    value: {
-      async writeText(text) {
-        boundary.navigatorWrites.push(text);
-        if (boundary.rejectNavigatorWrite) throw new Error("deterministic clipboard rejection");
-      }
+    get() {
+      if (boundary.navigatorMode === "unavailable") return undefined;
+      return {
+        writeText(text) {
+          boundary.navigatorAttempts.push(text);
+          if (boundary.navigatorMode === "reject") {
+            return Promise.reject(new Error(`deterministic rejection of ${text}`));
+          }
+          if (boundary.navigatorMode === "throw") throw new Error(`deterministic throw for ${text}`);
+          boundary.navigatorWrites.push(text);
+          return Promise.resolve();
+        }
+      };
     }
   });
   Object.defineProperty(document, "execCommand", {
@@ -132,10 +139,73 @@ function installClipboardBoundary() {
     value(command) {
       if (command !== "copy") return false;
       const active = document.activeElement;
-      boundary.fallbackWrites.push(active instanceof HTMLTextAreaElement ? active.value : undefined);
+      const text = active instanceof HTMLTextAreaElement ? active.value : undefined;
+      boundary.fallbackAttempts.push(text);
+      if (boundary.fallbackMode === "throw") throw new Error(`deterministic fallback throw for ${text}`);
+      if (boundary.fallbackMode === "false") return false;
+      boundary.fallbackWrites.push(text);
       return true;
     }
   });
+}
+
+function adapterCase(
+  label,
+  navigatorMode,
+  fallbackMode,
+  navigatorAttemptCount,
+  navigatorWriteCount,
+  fallbackAttemptCount,
+  fallbackWriteCount,
+  succeeds
+) {
+  return {
+    label,
+    navigatorMode,
+    fallbackMode,
+    navigatorAttemptCount,
+    navigatorWriteCount,
+    fallbackAttemptCount,
+    fallbackWriteCount,
+    succeeds
+  };
+}
+
+async function exerciseAdapterCase(page, copyRow, scenario) {
+  await configureClipboardBoundary(page, scenario);
+  await copyRow.click();
+  await page.waitForFunction(({ fallbackAttemptCount, navigatorAttemptCount }) => {
+    const boundary = globalThis.openWranglerClipboardBoundary;
+    return (
+      boundary.navigatorAttempts.length === navigatorAttemptCount &&
+      boundary.fallbackAttempts.length === fallbackAttemptCount
+    );
+  }, scenario);
+  const expectedAnnouncement = scenario.succeeds ? "Copied row with its row label." : clipboardDeniedReason;
+  await page.waitForFunction(
+    (expected) =>
+      document.querySelector('[aria-label="Clipboard copy result"]')?.textContent === expected &&
+      document.activeElement?.getAttribute("aria-label") === "Copy row",
+    expectedAnnouncement
+  );
+
+  const actual = await readClipboardBoundary(page);
+  assertAdapterCase(actual, scenario, expectedAnnouncement);
+}
+
+async function configureClipboardBoundary(page, { navigatorMode, fallbackMode }) {
+  await page.evaluate(
+    ({ nextFallbackMode, nextNavigatorMode }) => {
+      const boundary = globalThis.openWranglerClipboardBoundary;
+      boundary.navigatorAttempts.length = 0;
+      boundary.navigatorWrites.length = 0;
+      boundary.fallbackAttempts.length = 0;
+      boundary.fallbackWrites.length = 0;
+      boundary.navigatorMode = nextNavigatorMode;
+      boundary.fallbackMode = nextFallbackMode;
+    },
+    { nextFallbackMode: fallbackMode, nextNavigatorMode: navigatorMode }
+  );
 }
 
 async function publishClipboardFixture(page, { oversized }) {
@@ -201,10 +271,13 @@ async function readClipboardBoundary(page) {
     const boundary = globalThis.openWranglerClipboardBoundary;
     const announcement = document.querySelector('[aria-label="Clipboard copy result"]')?.textContent ?? "";
     return {
+      navigatorAttempts: [...boundary.navigatorAttempts],
       navigatorWrites: [...boundary.navigatorWrites],
+      fallbackAttempts: [...boundary.fallbackAttempts],
       fallbackWrites: [...boundary.fallbackWrites],
       activeAriaLabel: document.activeElement?.getAttribute("aria-label"),
-      announcement
+      announcement,
+      fallbackTextareaCount: document.querySelectorAll('textarea[aria-hidden="true"]').length
     };
   });
 }
@@ -213,27 +286,48 @@ async function readClipboardRejection(page) {
   return page.evaluate(() => {
     const boundary = globalThis.openWranglerClipboardBoundary;
     return {
+      navigatorAttemptCount: boundary.navigatorAttempts.length,
       navigatorWriteCount: boundary.navigatorWrites.length,
+      fallbackAttemptCount: boundary.fallbackAttempts.length,
       fallbackWriteCount: boundary.fallbackWrites.length,
       announcement: document.querySelector('[aria-label="Clipboard copy result"]')?.textContent ?? ""
     };
   });
 }
 
-function assertExactWrites(actual, expected) {
+function assertAdapterCase(actual, expected, expectedAnnouncement) {
+  const expectedNavigatorAttempts = Array.from({ length: expected.navigatorAttemptCount }, () => expectedRow);
+  const expectedNavigatorWrites = Array.from({ length: expected.navigatorWriteCount }, () => expectedRow);
+  const expectedFallbackAttempts = Array.from({ length: expected.fallbackAttemptCount }, () => expectedRow);
+  const expectedFallbackWrites = Array.from({ length: expected.fallbackWriteCount }, () => expectedRow);
   if (
-    actual.navigatorWrites.length !== expected.navigatorWrites.length ||
-    actual.navigatorWrites.some((text, index) => text !== expected.navigatorWrites[index]) ||
-    actual.fallbackWrites.length !== expected.fallbackWrites.length ||
-    actual.fallbackWrites.some((text, index) => text !== expected.fallbackWrites[index])
+    !arraysEqual(actual.navigatorAttempts, expectedNavigatorAttempts) ||
+    !arraysEqual(actual.navigatorWrites, expectedNavigatorWrites) ||
+    !arraysEqual(actual.fallbackAttempts, expectedFallbackAttempts) ||
+    !arraysEqual(actual.fallbackWrites, expectedFallbackWrites) ||
+    actual.navigatorWrites.length + actual.fallbackWrites.length !==
+      expected.navigatorWriteCount + expected.fallbackWriteCount ||
+    actual.activeAriaLabel !== "Copy row" ||
+    actual.fallbackTextareaCount !== 0 ||
+    actual.announcement !== expectedAnnouncement ||
+    (!expected.succeeds &&
+      [hostileCell, hostileRowLabel, expectedRow, "deterministic"].some((text) => actual.announcement.includes(text)))
   ) {
     throw new Error(
-      `The production clipboard adapters received unexpected writes: ${JSON.stringify({
+      `The ${expected.label} clipboard case violated its bounded adapter contract: ${JSON.stringify({
+        navigatorAttemptLengths: actual.navigatorAttempts.slice(0, 8).map((text) => text?.length),
         navigatorWriteLengths: actual.navigatorWrites.slice(0, 8).map((text) => text?.length),
+        fallbackAttemptLengths: actual.fallbackAttempts.slice(0, 8).map((text) => text?.length),
         fallbackWriteLengths: actual.fallbackWrites.slice(0, 8).map((text) => text?.length),
+        navigatorAttemptCount: actual.navigatorAttempts.length,
         navigatorWriteCount: actual.navigatorWrites.length,
+        fallbackAttemptCount: actual.fallbackAttempts.length,
         fallbackWriteCount: actual.fallbackWrites.length
       })}.`
     );
   }
+}
+
+function arraysEqual(actual, expected) {
+  return actual.length === expected.length && actual.every((text, index) => text === expected[index]);
 }
