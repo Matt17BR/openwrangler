@@ -33,6 +33,7 @@ import {
 } from "../extension/dependencyInstaller";
 import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
+import { PythonDependencyProbeRegistry } from "../extension/pythonDependencyState";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
 
 vi.mock("../extension/pythonEnvironment", async (importOriginal) => {
@@ -1522,7 +1523,7 @@ describe("PythonBridge dependency installation", () => {
       requirements: missingDependencies().requirements,
       selectionEpoch: 0
     });
-    expect([...internals.dependencyCache]).toEqual([["cached-diagnostic", ["pandas"]]]);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.runtimeEpoch).toBe(0);
   });
 
@@ -1543,7 +1544,7 @@ describe("PythonBridge dependency installation", () => {
       helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
     });
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.runtimeEpoch).toBe(1);
     expect(internals.selectionEpoch).toBe(1);
     expect(information).toHaveBeenCalledWith("Open Wrangler runtime dependencies were installed.");
@@ -1826,7 +1827,7 @@ describe("PythonBridge dependency installation", () => {
     const installation = bridge.installMissingDependencies();
     await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(raw.dependencyMutations.size).toBe(1);
 
     controlled.closeWithFailure(new Error("pip exited with code 9"));
@@ -1906,7 +1907,7 @@ describe("PythonBridge dependency installation", () => {
     expect(controlled.child.kill).not.toHaveBeenCalled();
     expect(raw.dependencyMutations.size).toBe(1);
     expect(raw.dependencyInstallOperation?.phase).toBe("uncertain");
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(information).not.toHaveBeenCalled();
 
     const firstShutdown = bridge.shutdown();
@@ -2021,7 +2022,7 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.installMissingDependencies()).resolves.toBe(true);
 
     expect(raw.environmentSelections.get(independentSelection!.key)).toBe(independentSelection);
-    expect(raw.dependencyCache.get(independentDependencyKeys[0]!)).toEqual(["polars"]);
+    expect(raw.dependencyProbes.completedMissing(independentDependencyKeys[0]!)).toEqual(["polars"]);
   });
 
   it("keeps a failed pre-pip quiescence barrier until late runtime exit, then permits a clean retry", async () => {
@@ -2343,13 +2344,19 @@ describe("PythonBridge dependency installation", () => {
       selectionEpoch: 1
     };
     internals.lastMissingDependencies = newerTarget;
-    internals.dependencyCache.set("new-selection", ["polars"]);
+    const newerDependencyKey = await cacheDependencyProbe(
+      internals.dependencyProbes,
+      newerTarget.environment,
+      newerTarget.dependencies,
+      ["polars"]
+    );
+    newerTarget.selection.dependencyKeys.add(newerDependencyKey);
     const runtimeEpochAfterSelectionChange = internals.runtimeEpoch;
     execution.resolve();
 
     await expect(installation).resolves.toBe(true);
     expect(internals.lastMissingDependencies).toBe(newerTarget);
-    expect([...internals.dependencyCache]).toEqual([["new-selection", ["polars"]]]);
+    expect(internals.dependencyProbes.completedMissing(newerDependencyKey)).toEqual(["polars"]);
     expect(internals.runtimeEpoch).toBe(runtimeEpochAfterSelectionChange);
   });
 
@@ -2389,7 +2396,13 @@ describe("PythonBridge dependency installation", () => {
       selectionEpoch: 1
     };
     internals.lastMissingDependencies = newerTarget;
-    internals.dependencyCache.set("new-selection", ["polars"]);
+    const newerDependencyKey = await cacheDependencyProbe(
+      internals.dependencyProbes,
+      newerTarget.environment,
+      newerTarget.dependencies,
+      ["polars"]
+    );
+    newerTarget.selection.dependencyKeys.add(newerDependencyKey);
     execution.resolve();
 
     await expect(installation).resolves.toBe(true);
@@ -2397,7 +2410,7 @@ describe("PythonBridge dependency installation", () => {
     expect(raw.environmentSelections.has(sharedSelection.key)).toBe(false);
     expect(sharedRuntime.runtimeEpoch).toBe(1);
     expect(internals.lastMissingDependencies).toBe(newerTarget);
-    expect(internals.dependencyCache.get("new-selection")).toEqual(["polars"]);
+    expect(internals.dependencyProbes.completedMissing(newerDependencyKey)).toEqual(["polars"]);
   });
 
   it("invalidates a completed shared probe when pip completes in the same selection epoch", async () => {
@@ -2423,18 +2436,18 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.installMissingDependencies()).resolves.toBe(true);
     expect(internals.selectionEpoch).toBe(1);
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.environmentSelections.size).toBe(0);
 
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
 
     await expect(internals.prepareRequest(request)).resolves.toMatchObject({
       kind: "openSession",
       backend: "polars"
     });
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(1);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(1);
   });
 
   it("enforces Workspace Trust before production confirmation", async () => {
@@ -2461,7 +2474,7 @@ describe("PythonBridge dependency installation", () => {
     bridge.clearRuntimeSelection();
 
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.runtimeEpoch).toBe(1);
     expect(internals.selectionEpoch).toBe(1);
   });
@@ -2478,14 +2491,19 @@ describe("PythonBridge dependency installation", () => {
     expect(internals.selectionEpoch).toBe(selectionEpoch);
   });
 
-  it("invalidates runtime selection on direct pythonPath configuration changes and disposes the listener", () => {
+  it("invalidates runtime selection on direct pythonPath configuration changes and disposes the listener", async () => {
     const bridge = new PythonBridge(testExtensionContext());
     const internals = bridge as unknown as DependencyBridgeInternals;
     const target = missingDependencies();
     internals.lastMissingDependencies = target;
     internals.environmentSelections.set(target.selection.key, target.selection);
-    internals.dependencyCache.set("configured", ["pandas"]);
-    target.selection.dependencyKeys.add("configured");
+    const configuredDependencyKey = await cacheDependencyProbe(
+      internals.dependencyProbes,
+      target.environment,
+      target.dependencies,
+      ["pandas"]
+    );
+    target.selection.dependencyKeys.add(configuredDependencyKey);
     const workspace = vscode.workspace as unknown as TestWorkspace;
 
     workspace.__fireDidChangeConfiguration("editor.fontSize");
@@ -2493,7 +2511,7 @@ describe("PythonBridge dependency installation", () => {
     workspace.__fireDidChangeConfiguration("openWrangler.pythonPath");
     expect(internals.selectionEpoch).toBe(1);
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
 
     bridge.dispose();
     workspace.__fireDidChangeConfiguration("openWrangler.pythonPath");
@@ -3772,7 +3790,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.selectionEpoch).toBe(0);
     expect(internals.runtimeEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(1);
-    expect(internals.dependencyCache.size).toBe(1);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(1);
     expect(raw.dependencyAuthorizationEpoch).toBe(0);
 
     internals.handlePythonEnvironmentSelectionChange({
@@ -3783,7 +3801,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.selectionEpoch).toBe(1);
     expect(internals.runtimeEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(0);
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(raw.dependencyAuthorizationEpoch).toBe(1);
   });
 
@@ -3806,7 +3824,7 @@ describe("PythonBridge environment resource selection", () => {
 
     expect(internals.selectionEpoch).toBe(1);
     expect(internals.environmentSelections.size).toBe(0);
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
   });
 
   it("ignores Python extension events while an explicit Open Wrangler interpreter wins", async () => {
@@ -3830,7 +3848,7 @@ describe("PythonBridge environment resource selection", () => {
 
     expect(internals.selectionEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(1);
-    expect(internals.dependencyCache.size).toBe(1);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(1);
   });
 
   it("clears a stale install target after successful dependency resolution without discarding the probe cache", async () => {
@@ -3850,10 +3868,10 @@ describe("PythonBridge environment resource selection", () => {
     });
 
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(1);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(1);
     await internals.prepareRequest(openSessionRequest(source));
     expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce();
-    expect(internals.dependencyCache.size).toBe(1);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(1);
   });
 
   it("re-publishes a cached missing-dependency diagnostic after an earlier target is cleared", async () => {
@@ -3957,7 +3975,7 @@ describe("PythonBridge environment resource selection", () => {
     });
 
     expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(3);
-    expect(internals.dependencyCache.size).toBe(3);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(3);
     const dependencyKeyFor = (source: SessionSource): string =>
       [...raw.environmentSelections.get(source.uri!)!.dependencyKeys][0]!;
     expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(executableSource));
@@ -3978,174 +3996,15 @@ describe("PythonBridge environment resource selection", () => {
     const second = internals.prepareRequest(openSessionRequest(secondSource));
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
 
-    expect(raw.dependencyProbes.size).toBe(1);
-    expect(raw.dependencyCache.size).toBe(0);
+    expect(raw.dependencyProbes.diagnostics()).toMatchObject({ inFlightCount: 1, completedCount: 0 });
     probe.resolve({ missing: [], available: ["polars"] });
 
     await expect(first).resolves.toMatchObject({ kind: "openSession", backend: "polars" });
     await expect(second).resolves.toMatchObject({ kind: "openSession", backend: "polars" });
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(raw.dependencyCache.size).toBe(1);
-    expect(raw.dependencyProbeOwners.size).toBe(1);
+    expect(raw.dependencyProbes.diagnostics()).toMatchObject({ inFlightCount: 0, completedCount: 1 });
     expect([...raw.environmentSelections.get(firstSource.uri!)!.dependencyKeys]).toEqual([
       ...raw.environmentSelections.get(secondSource.uri!)!.dependencyKeys
     ]);
-  });
-
-  it("does not coalesce descriptors that differ in any semantic field, including equal install specs", async () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    const baseline: PythonDependency = {
-      importModule: "engine",
-      distribution: "engine-dist",
-      installSpec: "shared-install-spec",
-      minimumVersion: "1.0",
-      maximumVersionExclusive: "2.0"
-    };
-    const descriptors: PythonDependency[] = [
-      baseline,
-      { ...baseline, importModule: "other-engine" },
-      { ...baseline, distribution: "other-dist" },
-      { ...baseline, minimumVersion: "1.1" },
-      { ...baseline, maximumVersionExclusive: "2.1" },
-      { ...baseline, installSpec: "other-install-spec" }
-    ];
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: [] });
-
-    const outcomes = await Promise.all(
-      descriptors.map((dependency) => Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency])))
-    );
-
-    expect(descriptors.slice(0, 5).every(({ installSpec }) => installSpec === baseline.installSpec)).toBe(true);
-    expect(outcomes.map(({ missing }) => missing)).toEqual(descriptors.map(() => []));
-    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(descriptors.length);
-    expect(raw.dependencyCache.size).toBe(descriptors.length);
-    expect(raw.dependencyProbeOwners.size).toBe(descriptors.length);
-  });
-
-  it.each(["success", "rejection"] as const)(
-    "protects a same-key replacement from detached old-probe %s cleanup and publication",
-    async (completion) => {
-      const { bridge } = createEnvironmentHarness();
-      const raw = bridge as unknown as RawBridgeInternals;
-      const dependency: PythonDependency = {
-        importModule: "polars",
-        distribution: "polars",
-        installSpec: "polars"
-      };
-      const staleProbe = deferred<{ missing: string[]; available: string[] }>();
-      const currentProbe = deferred<{ missing: string[]; available: string[] }>();
-      vi.mocked(pythonEnvironment.probeDependencies)
-        .mockReturnValueOnce(staleProbe.promise)
-        .mockReturnValueOnce(currentProbe.promise);
-
-      const stale = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
-      const staleOutcome = stale.catch((error: unknown) => error);
-      await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-      const key = [...raw.dependencyProbes.keys()][0]!;
-      const staleFlight = raw.dependencyProbes.get(key)!;
-      raw.invalidateDependencyProbeKey(key);
-      const current = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
-      const currentFlight = raw.dependencyProbes.get(key)!;
-      await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(2));
-
-      expect(staleFlight.detached).toBe(true);
-      expect(currentFlight).not.toBe(staleFlight);
-      if (completion === "success") {
-        staleProbe.resolve({ missing: ["polars"], available: [] });
-      } else {
-        staleProbe.reject(new Error("old probe failed"));
-      }
-      const detached = await staleOutcome;
-
-      expect(detached).toMatchObject({ name: "DetachedDependencyProbeError" });
-      expect(raw.dependencyProbes.get(key)).toBe(currentFlight);
-      expect(raw.dependencyCache.size).toBe(0);
-      expect(raw.dependencyProbeOwners.size).toBe(0);
-
-      currentProbe.resolve({ missing: [], available: ["polars"] });
-      await expect(current).resolves.toMatchObject({ missing: [] });
-      expect(raw.dependencyProbes.size).toBe(0);
-      expect(raw.dependencyCache.get(key)).toEqual([]);
-      expect(raw.dependencyProbeOwners.get(key)).toBe(currentFlight);
-    }
-  );
-
-  it("does not launch a deferred dependency probe after a same-key replacement", async () => {
-    const dependency: PythonDependency = {
-      importModule: "polars",
-      distribution: "polars",
-      installSpec: "polars"
-    };
-    const replacementProbe = deferred<{ missing: string[]; available: string[] }>();
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(replacementProbe.promise);
-
-    const stale = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
-    const staleOutcome = stale.catch((error: unknown) => error);
-    const key = [...raw.dependencyProbes.keys()][0]!;
-    const staleFlight = raw.dependencyProbes.get(key)!;
-    raw.invalidateDependencyProbeKey(key);
-    const current = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
-    const currentFlight = raw.dependencyProbes.get(key)!;
-
-    expect(staleFlight.detached).toBe(true);
-    expect(currentFlight).not.toBe(staleFlight);
-    await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    expect(raw.dependencyProbes.get(key)).toBe(currentFlight);
-
-    replacementProbe.resolve({ missing: [], available: ["polars"] });
-    await expect(staleOutcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
-    await expect(current).resolves.toMatchObject({ missing: [] });
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(raw.dependencyCache.get(key)).toEqual([]);
-    expect(raw.dependencyProbeOwners.get(key)).toBe(currentFlight);
-  });
-
-  it("does not launch a dependency probe whose deferred start is overtaken by shutdown", async () => {
-    const dependency: PythonDependency = {
-      importModule: "polars",
-      distribution: "polars",
-      installSpec: "polars"
-    };
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
-    const bridge = new PythonBridge(testExtensionContext());
-    const raw = bridge as unknown as RawBridgeInternals;
-
-    const probe = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
-    const outcome = probe.catch((error: unknown) => error);
-    expect(raw.dependencyProbes.size).toBe(1);
-    await bridge.shutdown();
-
-    await expect(outcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
-    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(raw.dependencyProbeOwners.size).toBe(0);
-    expect(raw.dependencyCache.size).toBe(0);
-  });
-
-  it("does not launch a deferred dependency probe after its package mutation begins", async () => {
-    const dependency: PythonDependency = {
-      importModule: "polars",
-      distribution: "polars",
-      installSpec: "polars"
-    };
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
-
-    const probe = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
-    const outcome = probe.catch((error: unknown) => error);
-    const flight = [...raw.dependencyProbes.values()][0]!;
-    raw.dependencyMutations.set(flight.packageEnvironmentKey, {});
-    raw.invalidateDependencyProbesForPackageEnvironment(flight.packageEnvironmentKey);
-
-    await expect(outcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
-    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(raw.dependencyProbeOwners.size).toBe(0);
-    expect(raw.dependencyCache.size).toBe(0);
   });
 
   it("does not let a detached old completion overwrite newer cached or install state", async () => {
@@ -4176,15 +4035,14 @@ describe("PythonBridge environment resource selection", () => {
     const currentTarget = raw.lastMissingDependencies;
     const currentSelection = raw.environmentSelections.get(source.uri!);
     const key = [...currentSelection!.dependencyKeys][0]!;
-    expect(raw.dependencyCache.get(key)).toEqual(["polars"]);
-    expect(raw.dependencyProbeOwners.get(key)?.detached).toBe(false);
+    expect(raw.dependencyProbes.completedMissing(key)).toEqual(["polars"]);
 
     staleProbe.resolve({ missing: [], available: ["polars"] });
     await expect(stalePreparation).resolves.toMatchObject({
       kind: "error",
       code: "runtime_selection_changed"
     });
-    expect(raw.dependencyCache.get(key)).toEqual(["polars"]);
+    expect(raw.dependencyProbes.completedMissing(key)).toEqual(["polars"]);
     expect(raw.lastMissingDependencies).toBe(currentTarget);
     expect(raw.lastMissingDependencies?.selection).toBe(currentSelection);
   });
@@ -4201,12 +4059,12 @@ describe("PythonBridge environment resource selection", () => {
     const first = internals.prepareRequest(openSessionRequest(firstSource));
     const second = internals.prepareRequest(openSessionRequest(secondSource));
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    const key = [...raw.dependencyProbes.keys()][0]!;
+    const key = [...raw.environmentSelections.get(firstSource.uri!)!.dependencyKeys][0]!;
     const missing = ["polars"];
     const result = {
       available: [] as string[],
       get missing(): string[] {
-        queueMicrotask(() => raw.invalidateDependencyProbeKey(key));
+        queueMicrotask(() => raw.dependencyProbes.invalidateKey(key));
         return missing;
       }
     };
@@ -4214,105 +4072,8 @@ describe("PythonBridge environment resource selection", () => {
 
     await expect(first).resolves.toMatchObject({ kind: "error", code: "runtime_selection_changed" });
     await expect(second).resolves.toMatchObject({ kind: "error", code: "runtime_selection_changed" });
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(raw.dependencyCache.size).toBe(0);
-    expect(raw.dependencyProbeOwners.size).toBe(0);
+    expect(raw.dependencyProbes.isEmpty).toBe(true);
     expect(raw.lastMissingDependencies).toBeUndefined();
-  });
-
-  it("detaches all in-flight dependency work for a package-root mutation", async () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    const firstEnvironment = {
-      ...environment,
-      executable: testPythonExecutablePath("/env/bin/python"),
-      version: "3.12.4"
-    };
-    const secondEnvironment = {
-      ...environment,
-      executable: testPythonExecutablePath("/env/bin/python3"),
-      version: "3.13.2"
-    };
-    const dependency: PythonDependency = {
-      importModule: "polars",
-      distribution: "polars",
-      installSpec: "polars"
-    };
-    const firstProbe = deferred<{ missing: string[]; available: string[] }>();
-    const secondProbe = deferred<{ missing: string[]; available: string[] }>();
-    vi.mocked(pythonEnvironment.probeDependencies)
-      .mockReturnValueOnce(firstProbe.promise)
-      .mockReturnValueOnce(secondProbe.promise);
-
-    const first = Promise.resolve(raw.probeDependenciesForEnvironment(firstEnvironment, [dependency]));
-    const second = Promise.resolve(raw.probeDependenciesForEnvironment(secondEnvironment, [dependency]));
-    const firstOutcome = first.catch((error: unknown) => error);
-    const secondOutcome = second.catch((error: unknown) => error);
-    await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(2));
-    const flights = [...raw.dependencyProbes.values()];
-    expect(flights).toHaveLength(2);
-    expect(new Set(flights.map(({ packageEnvironmentKey }) => packageEnvironmentKey)).size).toBe(1);
-
-    raw.invalidateDependencyProbesForPackageEnvironment(flights[0]!.packageEnvironmentKey);
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(flights.every(({ detached }) => detached)).toBe(true);
-    firstProbe.resolve({ missing: [], available: ["polars"] });
-    secondProbe.resolve({ missing: ["polars"], available: [] });
-
-    await expect(firstOutcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
-    await expect(secondOutcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
-    expect(raw.dependencyCache.size).toBe(0);
-    expect(raw.dependencyProbeOwners.size).toBe(0);
-  });
-
-  it("cleans up a failed dependency probe so the exact request can retry", async () => {
-    const source = remoteSourceAt("/single-flight/retry.csv");
-    const { bridge, internals } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies)
-      .mockRejectedValueOnce(new Error("probe failed"))
-      .mockResolvedValueOnce({ missing: [], available: ["polars"] });
-
-    await expect(internals.prepareRequest(openSessionRequest(source))).rejects.toThrow("probe failed");
-    expect(raw.dependencyProbes.size).toBe(0);
-    expect(raw.dependencyCache.size).toBe(0);
-    expect(raw.dependencyProbeOwners.size).toBe(0);
-
-    await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
-      kind: "openSession",
-      backend: "polars"
-    });
-    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(2);
-    expect(raw.dependencyCache.size).toBe(1);
-    expect(raw.dependencyProbeOwners.size).toBe(1);
-  });
-
-  it("bounds completed probes to a 128-entry LRU and refreshes a cache hit", async () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    const dependency = (index: number): PythonDependency => ({
-      importModule: `engine_${index}`,
-      distribution: `engine-${index}`,
-      installSpec: `engine-${index}`
-    });
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: [] });
-
-    for (let index = 0; index < 128; index += 1) {
-      await raw.probeDependenciesForEnvironment(environment, [dependency(index)]);
-    }
-    const initialKeys = [...raw.dependencyCache.keys()];
-    expect(initialKeys).toHaveLength(128);
-    await raw.probeDependenciesForEnvironment(environment, [dependency(0)]);
-    await raw.probeDependenciesForEnvironment(environment, [dependency(128)]);
-
-    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(129);
-    expect(raw.dependencyCache.size).toBe(128);
-    expect(raw.dependencyProbeOwners.size).toBe(128);
-    expect(raw.dependencyCache.has(initialKeys[0]!)).toBe(true);
-    expect(raw.dependencyCache.has(initialKeys[1]!)).toBe(false);
-    expect(raw.dependencyCache.has(initialKeys[2]!)).toBe(true);
-    expect(initialKeys).not.toContain([...raw.dependencyCache.keys()].at(-1));
   });
 
   it("does not publish an old deferred probe after runtime selection is cleared", async () => {
@@ -4337,7 +4098,7 @@ describe("PythonBridge environment resource selection", () => {
       recoverable: true
     });
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.selectionEpoch).toBe(1);
   });
 
@@ -4366,7 +4127,7 @@ describe("PythonBridge environment resource selection", () => {
     });
     expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
   });
 
   it("terminally invalidates a deferred environment resolution before shutdown awaits cleanup", async () => {
@@ -4384,7 +4145,7 @@ describe("PythonBridge environment resource selection", () => {
       pythonEnvironment.PythonEnvironmentResolutionDisposedError
     );
     expect(internals.environmentSelections.size).toBe(0);
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.lastMissingDependencies).toBeUndefined();
 
     resolution.resolve(environment);
@@ -4394,7 +4155,7 @@ describe("PythonBridge environment resource selection", () => {
     });
     expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
     expect(internals.environmentSelections.size).toBe(0);
-    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.lastMissingDependencies).toBeUndefined();
   });
 
@@ -4408,10 +4169,9 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    expect(internals.dependencyProbes.size).toBe(1);
+    expect(internals.dependencyProbes.diagnostics().inFlightCount).toBe(1);
     await bridge.shutdown();
-    expect(internals.dependencyProbes.size).toBe(0);
-    expect(internals.dependencyProbeOwners.size).toBe(0);
+    expect(internals.dependencyProbes.diagnostics().inFlightCount).toBe(0);
     probe.resolve({ missing: ["polars"], available: [] });
 
     await expect(preparation).resolves.toMatchObject({
@@ -4419,9 +4179,7 @@ describe("PythonBridge environment resource selection", () => {
       code: "runtime_selection_changed"
     });
     expect(internals.environmentSelections.size).toBe(0);
-    expect(internals.dependencyCache.size).toBe(0);
-    expect(internals.dependencyProbes.size).toBe(0);
-    expect(internals.dependencyProbeOwners.size).toBe(0);
+    expect(internals.dependencyProbes.isEmpty).toBe(true);
     expect(internals.lastMissingDependencies).toBeUndefined();
   });
 
@@ -4460,7 +4218,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.scopeRecency.has(oldestSource.uri!)).toBe(false);
     expect(oldest!.stderrBuffer).toBe("");
     expect(oldest!.runtimeExitError).toBeUndefined();
-    expect(raw.dependencyCache.size).toBe(128);
+    expect(raw.dependencyProbes.diagnostics().completedCount).toBe(128);
     expect(raw.runtimeSlots.has(remoteSourceAt("/retention/143.csv").uri!)).toBe(true);
   });
 
@@ -4559,7 +4317,7 @@ describe("PythonBridge environment resource selection", () => {
     await internals.prepareRequest(openSessionRequest(remoteSourceAt("/retention/deferred-peer-final.csv")));
     expect(raw.runtimeSlots.has(targetSource.uri!)).toBe(false);
     expect(raw.environmentSelections.has(targetSource.uri!)).toBe(false);
-    expect(raw.dependencyCache.size).toBe(2);
+    expect(raw.dependencyProbes.diagnostics().completedCount).toBe(2);
   });
 
   it("does not let a stale lease release mutate a same-key replacement slot", () => {
@@ -4769,8 +4527,8 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.environmentSelections.get(source.uri!)).toBe(currentSelection);
     expect(currentSelection?.resolvedEnvironment).toEqual(currentEnvironment);
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect(raw.dependencyCache.size).toBe(1);
-    expect([...currentSelection!.dependencyKeys]).toEqual([...raw.dependencyCache.keys()]);
+    expect(raw.dependencyProbes.diagnostics().completedCount).toBe(1);
+    expect([...currentSelection!.dependencyKeys]).toEqual(raw.dependencyProbes.diagnostics().completedKeys);
   });
 });
 
@@ -4833,18 +4591,6 @@ interface TestProvisionalSessionReservation {
   state: "pending" | "closing";
 }
 
-interface TestDependencyProbeFlight {
-  readonly key: string;
-  readonly packageEnvironmentKey: string;
-  detached: boolean;
-  promise: Promise<TestDependencyProbeOutcome>;
-}
-
-interface TestDependencyProbeOutcome {
-  readonly missing: string[];
-  readonly flight?: TestDependencyProbeFlight;
-}
-
 interface RawBridgeInternals {
   disposed: boolean;
   scopeUseClock: number;
@@ -4856,9 +4602,7 @@ interface RawBridgeInternals {
   sessionOwners: Map<string, TestRuntimeSlot>;
   provisionalSessions: Map<string, TestProvisionalSessionReservation>;
   environmentSelections: Map<string, TestEnvironmentSelection>;
-  dependencyCache: Map<string, string[]>;
-  dependencyProbes: Map<string, TestDependencyProbeFlight>;
-  dependencyProbeOwners: Map<string, TestDependencyProbeFlight>;
+  dependencyProbes: PythonDependencyProbeRegistry;
   dependencyGuardStatusFlights: Map<string, unknown>;
   activeDependencyGuardCommands:
     Set<OwnedDependencyGuardCommand<DependencyGuardStatus | DependencyGuardValidation>> | undefined;
@@ -4890,10 +4634,6 @@ interface RawBridgeInternals {
     processSelection?: TestProcessSelection;
   }>;
   processSelectionFor(request: OpenWranglerRequest): Promise<TestProcessSelection>;
-  probeDependenciesForEnvironment(
-    environment: TestPythonEnvironment,
-    dependencies: readonly PythonDependency[]
-  ): TestDependencyProbeOutcome | Promise<TestDependencyProbeOutcome>;
   markDependencyEnvironmentUncertain(
     environment: TestPythonEnvironment,
     token: string | undefined,
@@ -4901,8 +4641,6 @@ interface RawBridgeInternals {
     selection?: TestEnvironmentSelection
   ): void;
   dependencyGuardStatusForEnvironment(environment: TestPythonEnvironment): Promise<DependencyGuardStatus>;
-  invalidateDependencyProbeKey(key: string): void;
-  invalidateDependencyProbesForPackageEnvironment(packageEnvironmentKey: string): void;
   runtimeSlot(key: string): TestRuntimeSlot;
   retainRuntime(runtime: TestRuntimeSlot): () => void;
   ensureProcess(runtime: TestRuntimeSlot, selection: TestProcessSelection): Promise<ChildProcessWithoutNullStreams>;
@@ -4922,6 +4660,25 @@ interface RawBridgeInternals {
   restartRuntime(runtime: TestRuntimeSlot, reason: string): void;
   stopRuntimeIfIdle(runtime: TestRuntimeSlot): void;
   trimInactiveScopes(): void;
+}
+
+function createDependencyProbeRegistry(raw: RawBridgeInternals): PythonDependencyProbeRegistry {
+  return new PythonDependencyProbeRegistry(
+    (packageEnvironmentKey) => raw.disposed || raw.dependencyMutations.has(packageEnvironmentKey),
+    (executable, dependencies) => pythonEnvironment.probeDependencies(executable, dependencies)
+  );
+}
+
+async function cacheDependencyProbe(
+  registry: PythonDependencyProbeRegistry,
+  environment: TestPythonEnvironment,
+  dependencies: readonly PythonDependency[],
+  missing: readonly string[]
+): Promise<string> {
+  vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValueOnce({ missing: [...missing], available: [] });
+  const probe = registry.probe(environment, dependencies);
+  await probe.result;
+  return probe.key;
 }
 
 interface LifecycleBridgeInternals {
@@ -5000,9 +4757,7 @@ function createLifecycleHarness(): {
     scopeRecency: new Map([[selection.key, 1]]),
     disposed: false,
     environmentSelections: new Map([[selection.key, selection]]),
-    dependencyCache: new Map<string, string[]>(),
-    dependencyProbes: new Map<string, TestDependencyProbeFlight>(),
-    dependencyProbeOwners: new Map<string, TestDependencyProbeFlight>(),
+    dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
     launchDependencyGuardStatus: startDependencyGuardStatus,
@@ -5067,7 +4822,7 @@ function createLifecycleHarness(): {
 }
 
 interface EnvironmentBridgeInternals {
-  dependencyCache: Map<string, string[]>;
+  dependencyProbes: PythonDependencyProbeRegistry;
   environmentSelections: Map<string, TestEnvironmentSelection>;
   lastMissingDependencies: TestMissingDependencies | undefined;
   runtimeEpoch: number;
@@ -5080,7 +4835,7 @@ interface EnvironmentBridgeInternals {
 }
 
 interface DependencyBridgeInternals {
-  dependencyCache: Map<string, string[]>;
+  dependencyProbes: PythonDependencyProbeRegistry;
   environmentSelections: Map<string, TestEnvironmentSelection>;
   lastMissingDependencies: TestMissingDependencies | undefined;
   runtimeEpoch: number;
@@ -5140,9 +4895,7 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     scopeUseClock: 0,
     scopeRecency: new Map<string, number>(),
     environmentSelections: new Map<string, TestEnvironmentSelection>(),
-    dependencyCache: new Map<string, string[]>(),
-    dependencyProbes: new Map<string, TestDependencyProbeFlight>(),
-    dependencyProbeOwners: new Map<string, TestDependencyProbeFlight>(),
+    dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
     launchDependencyGuardStatus: startDependencyGuardStatus,
@@ -5157,8 +4910,8 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     output: { appendLine: vi.fn(), dispose: vi.fn() }
   });
   const internals: EnvironmentBridgeInternals = {
-    get dependencyCache() {
-      return raw.dependencyCache;
+    get dependencyProbes() {
+      return raw.dependencyProbes;
     },
     get environmentSelections() {
       return raw.environmentSelections;
@@ -5206,7 +4959,6 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
   vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(
     target.environment as pythonEnvironment.PythonEnvironment
   );
-  target.selection.dependencyKeys.add("cached-diagnostic");
   const runtime = testRuntimeSlot(target.selection.key);
   Object.assign(bridge as object, {
     context: testExtensionContext(),
@@ -5222,9 +4974,7 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     scopeUseClock: 1,
     scopeRecency: new Map([[target.selection.key, 1]]),
     environmentSelections: new Map([[target.selection.key, target.selection]]),
-    dependencyCache: new Map<string, string[]>([["cached-diagnostic", ["pandas"]]]),
-    dependencyProbes: new Map<string, TestDependencyProbeFlight>(),
-    dependencyProbeOwners: new Map<string, TestDependencyProbeFlight>(),
+    dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
     launchDependencyGuardStatus: startDependencyGuardStatus,
@@ -5240,8 +4990,8 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     output: { appendLine: vi.fn(), dispose: vi.fn() }
   });
   const internals: DependencyBridgeInternals = {
-    get dependencyCache() {
-      return raw.dependencyCache;
+    get dependencyProbes() {
+      return raw.dependencyProbes;
     },
     get environmentSelections() {
       return raw.environmentSelections;
@@ -5725,9 +5475,7 @@ function createMultiScopeHarness(): {
       [firstSelection.key, firstSelection],
       [secondSelection.key, secondSelection]
     ]),
-    dependencyCache: new Map<string, string[]>(),
-    dependencyProbes: new Map<string, TestDependencyProbeFlight>(),
-    dependencyProbeOwners: new Map<string, TestDependencyProbeFlight>(),
+    dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
     launchDependencyGuardStatus: startDependencyGuardStatus,
@@ -5830,9 +5578,7 @@ function createHarness(
     scopeUseClock: 1,
     scopeRecency: new Map([[selection.key, 1]]),
     environmentSelections: new Map([[selection.key, selection]]),
-    dependencyCache: new Map<string, string[]>(),
-    dependencyProbes: new Map<string, TestDependencyProbeFlight>(),
-    dependencyProbeOwners: new Map<string, TestDependencyProbeFlight>(),
+    dependencyProbes: createDependencyProbeRegistry(internals),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
     launchDependencyGuardStatus: startDependencyGuardStatus,
