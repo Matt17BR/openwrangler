@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from decimal import MAX_EMAX, Decimal, localcontext
 from pathlib import Path
@@ -238,7 +239,12 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
 
 def test_pandas_private_row_ids_are_fixed_width_and_keep_public_identity_bytes() -> None:
     engine = PandasEngine()
-    source = pd.DataFrame({"value": np.arange(10_000, dtype=np.int64)})
+    source = pd.DataFrame(
+        {
+            "group": ["a"] * 5_000 + ["b"] * 5_000,
+            "value": np.arange(10_000, dtype=np.int64),
+        }
+    )
 
     identified = engine.ensure_row_ids(source, "fixed-width")
     internal = engine.internal_row_id_column(identified)
@@ -246,17 +252,136 @@ def test_pandas_private_row_ids_are_fixed_width_and_keep_public_identity_bytes()
 
     assert private_values.dtype == np.dtype("int64")
     assert private_values.memory_usage(index=False, deep=True) == len(identified) * np.dtype("int64").itemsize
-    assert [row["id"] for row in engine.page(identified, 9_998, 2)["rows"]] == [
+    expected_tail = b'["r:fixed-width:9998","r:fixed-width:9999"]'
+    page = engine.page(
+        identified,
+        9_998,
+        2,
+        column_projection=[(1, "c:source:1")],
+    )
+    assert page["columnIds"] == ["c:source:1"]
+    assert (
+        json.dumps(
+            [row["id"] for row in page["rows"]],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        == expected_tail
+    )
+
+    filtered_sorted = engine.apply_filter_model(
+        identified,
+        {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 9_998}],
+                }
+            ],
+            "sort": [{"column": "value", "direction": "desc", "nulls": "last"}],
+        },
+    )
+    assert [row["id"] for row in engine.page(filtered_sorted, 0, 2)["rows"]] == [
+        "r:fixed-width:9999",
+        "r:fixed-width:9998",
+    ]
+
+    public_step = validate_step(
+        {
+            "id": "rename-value",
+            "kind": "renameColumn",
+            "params": {"column": source_lineage(engine.schema(identified))[1], "newName": "amount"},
+        }
+    )
+    renamed = engine.apply_transform(
+        identified,
+        bind_step(public_step, engine.schema(identified), source_lineage(engine.schema(identified))),
+    )
+    assert [row["id"] for row in engine.page(renamed, 9_998, 2)["rows"]] == [
         "r:fixed-width:9998",
         "r:fixed-width:9999",
     ]
 
-    source.iloc[0, 0] = -1
-    assert engine.page(identified, 0, 1)["rows"][0]["values"][0]["raw"] == 0
+    source.iloc[0, 1] = -1
+    assert engine.page(identified, 0, 1)["rows"][0]["values"][1]["raw"] == 0
 
     identified.iloc[0, identified.columns.get_loc(internal)] = -1
     with pytest.raises(EngineError, match="invalid private row identity value"):
         engine.page(identified, 0, 1)
+
+
+def test_pandas_group_and_custom_code_regenerate_fixed_width_row_identity(tmp_path: Path) -> None:
+    source = tmp_path / "pandas-row-generations.csv"
+    source.write_text("group,value\na,1\na,2\nb,3\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source.name, "path": str(source)},
+        backend="pandas",
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    source_ids = [row["id"] for row in opened["page"]["rows"]]
+
+    grouped = manager.preview_step(
+        session_id,
+        0,
+        {
+            "id": "group-values",
+            "kind": "groupBy",
+            "params": {
+                "keys": [{"id": "c:source:0", "name": "group"}],
+                "aggregations": [
+                    {
+                        "column": {"id": "c:source:1", "name": "value"},
+                        "operation": "sum",
+                        "alias": "total",
+                    }
+                ],
+            },
+        },
+        0,
+        10,
+    )
+    assert [row["id"] for row in grouped["page"]["rows"]] == [
+        f"r:{session_id}:group-values:0",
+        f"r:{session_id}:group-values:1",
+    ]
+    assert not set(source_ids).intersection(row["id"] for row in grouped["page"]["rows"])
+    draft = manager.sessions[session_id].draft_frame
+    assert isinstance(draft, pd.DataFrame)
+    internal = manager.sessions[session_id].engine.internal_row_id_column(draft)
+    assert internal is not None
+    assert draft[internal].dtype == np.dtype("int64")
+    assert draft[internal].memory_usage(index=False, deep=True) == 2 * np.dtype("int64").itemsize
+
+    discarded = manager.discard_draft(session_id, 1, 0, 10)
+    custom = manager.preview_step(
+        session_id,
+        discarded["revision"],
+        {
+            "id": "replace-rows",
+            "kind": "customCode",
+            "params": {"code": "result = df.iloc[::-1].reset_index(drop=True)"},
+        },
+        0,
+        10,
+    )
+    assert [row["id"] for row in custom["page"]["rows"]] == [
+        f"r:{session_id}:replace-rows:0",
+        f"r:{session_id}:replace-rows:1",
+        f"r:{session_id}:replace-rows:2",
+    ]
+    assert not set(source_ids).intersection(row["id"] for row in custom["page"]["rows"])
+    draft = manager.sessions[session_id].draft_frame
+    assert isinstance(draft, pd.DataFrame)
+    internal = manager.sessions[session_id].engine.internal_row_id_column(draft)
+    assert internal is not None
+    assert draft[internal].dtype == np.dtype("int64")
+
+    manager.close_session(session_id, custom["revision"])
+    assert manager.sessions == {}
 
 
 def test_pandas_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema() -> None:

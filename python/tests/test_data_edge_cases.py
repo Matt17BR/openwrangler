@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
@@ -229,6 +230,9 @@ def test_pandas_multiindex_columns_keep_the_private_row_identity_hidden(tmp_path
 
     assert isinstance(internal, tuple)
     assert str(internal[0]).startswith(INTERNAL_ROW_ID_PREFIX)
+    private_values = identified.iloc[:, identified.columns.get_loc(internal)]
+    assert private_values.dtype == np.dtype("int64")
+    assert private_values.memory_usage(index=False, deep=True) == 2 * np.dtype("int64").itemsize
     assert engine.shape(identified) == {"rows": 2, "columns": 2}
     assert len(engine.schema(identified)) == 2
     page = engine.page(identified, 0, 10)
