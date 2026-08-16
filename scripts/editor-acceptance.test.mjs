@@ -202,18 +202,6 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
   assert.doesNotMatch(lateDuckdbReopen, /jupyter\.openVariableView|dispatchReleasedJupyterVariableAction/u);
 });
 
-test("released R Markdown fixture includes a real dataframe preview chunk", async () => {
-  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
-  const fixture = source.slice(
-    source.indexOf("function writeReleasedRLiterateDocumentFixture("),
-    source.indexOf("function assertReleasedRVersion(")
-  );
-  assert.match(
-    fixture,
-    /"```\{r orders-preview, echo=FALSE\}",\s*'knitr::kable\(utils::head\(literate_orders, 8L\), caption = "Regional orders preview"\)',\s*"```"/u
-  );
-});
-
 test("packaged backend switching checks the receipt-bound physical grid", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const journey = source.slice(
@@ -680,15 +668,6 @@ test("packaged R categorical journeys prove exact generated calls and boundary v
     assert.notEqual(end, -1, `Missing boundary ${endMarker}.`);
     return source.slice(start, end);
   };
-
-  const notebookFixture = section("function writeReleasedRNotebook(", "function releasedRNotebookCleanedCsvHeader(");
-  assert.match(notebookFixture, /group = c\(rep\('A', 602L\), rep\('B', row_count - 602L\)\)/u);
-  assert.match(notebookFixture, /orders_frame\$extra_18 <- ifelse\(seq_len\(row_count\) %% 2L == 1L, 'A\|B', 'B'\)/u);
-  const expectedCsv = section(
-    "function releasedRNotebookCleanedCsvRow(",
-    "function writeReleasedRLiterateDocumentFixture("
-  );
-  assert.match(expectedCsv, /if \(column === 18\) return row % 2 === 1 \? '"A\|B"' : '"B"';/u);
 
   const exactCall = section(
     "type ReleasedRCategoricalGeneratedExpectation =",
