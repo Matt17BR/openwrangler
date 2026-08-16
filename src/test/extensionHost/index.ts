@@ -7001,7 +7001,17 @@ async function releasedRFirstVisibleRow(
     limit: 1,
     filterModel: active.viewState.filterModel
   });
-  assert.equal(response.kind, "page");
+  if (response.kind !== "page") {
+    const diagnostic = {
+      kind: response.kind,
+      code: response.kind === "error" ? response.code : null,
+      recoverable: response.kind === "error" ? response.recoverable : null,
+      viewRequestId:
+        "viewRequestId" in response && typeof response.viewRequestId === "string" ? response.viewRequestId : null,
+      messageReceipt: response.kind === "error" ? codePreviewDocumentReceipt(response.message) : null
+    };
+    assert.fail(`The native R first-row request did not return a page: ${JSON.stringify(diagnostic)}.`);
+  }
   if (response.kind !== "page") throw new Error("The native R first-row request did not return a page.");
   const row = response.page.rows[0];
   assert.ok(row, "The native R first-row request must return one row.");
@@ -7118,10 +7128,26 @@ async function exerciseReleasedRCustomCodeJourney(
     30_000,
     "undoing native R Custom code"
   );
-  const restored = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-custom-code-undone`);
-  assert.equal(restored.values[0]?.display, "1");
-  assert.equal(restored.values[1]?.display, "A");
-  assert.equal(restored.values[2]?.display, "1");
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The undone native R Custom code step must reach its renderer before checking restored cells."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code session after undo");
+  const restoredDisplays = ["1", "A", "1"] as const;
+  for (const [column, display] of restoredDisplays.entries()) {
+    await app
+      .locator(`td[data-grid-row="0"][data-grid-column="${column}"][aria-label=${JSON.stringify(display)}]`)
+      .waitFor({ state: "visible", timeout: 10_000 });
+  }
+  assert.deepEqual(
+    await Promise.all(
+      restoredDisplays.map((_, column) =>
+        app.locator(`td[data-grid-row="0"][data-grid-column="${column}"] .gridCellText`).innerText()
+      )
+    ),
+    restoredDisplays
+  );
   recordAcceptanceProgress(`${phase}:editing:custom-code:complete`);
 }
 
