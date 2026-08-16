@@ -11,7 +11,8 @@ matrix for release candidates or changes that cross those boundaries.
 
 - `npm run check:tier-a` is the fail-complete Tier A command. It preserves every invariant in `npm run check` and
   `npm test`; concurrency changes wall time, not the test inventory. The two-branch ceiling is the local resource
-  budget, and `--continue-on-error` plus named branch output prevents one early failure from hiding the other result.
+  budget, and `--continue-on-error` plus `--print-label` prefixes every interleaved output line so one early failure
+  cannot hide or obscure the other result.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
