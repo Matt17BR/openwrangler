@@ -103,6 +103,7 @@ import {
   sameRendererSynchronizationReceipt
 } from "./acknowledgedRenderer";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
+import { waitForImportRendererRecovery } from "./importRendererRecovery";
 import {
   captureNotebookWorkbenchScreenshot,
   captureWorkbenchScreenshot,
@@ -32459,46 +32460,20 @@ async function exerciseLiveImportReconfiguration(
         "the exact acknowledged import renderer to retire physically"
       )
   );
-  await waitFor(
-    () =>
-      !testing.panelHydrated(stableSessionId) &&
-      !testing.panelSynchronizable(stableSessionId) &&
-      testing.panelSynchronizationReceipt(stableSessionId) === undefined,
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    "the exact retiring renderer receipt to invalidate host readiness automatically",
-    () =>
-      JSON.stringify({
-        panelHydrated: testing.panelHydrated(stableSessionId),
-        panelSynchronizable: testing.panelSynchronizable(stableSessionId),
-        receipt: testing.panelSynchronizationReceipt(stableSessionId),
-        coordinator: testing.diagnostics()
-      })
+  const recoveredRendererReceipt = await waitForImportRendererRecovery(
+    testing,
+    stableSessionId,
+    changed.metadata.revision,
+    retainedRendererReceipt,
+    {
+      retirementTimeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
+      recoveryTimeoutMs: SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      onRetired: () => recordAcceptanceProgress("verify:file-inputs:reconfigure:renderer-retirement-received"),
+      diagnostics: () => testing.diagnostics(),
+      waitForCondition: (condition, timeoutMs, description, diagnostic) =>
+        waitFor(condition, timeoutMs, description, diagnostic)
+    }
   );
-  recordAcceptanceProgress("verify:file-inputs:reconfigure:renderer-retirement-received");
-
-  await waitFor(
-    () => {
-      const receipt = testing.panelSynchronizationReceipt(stableSessionId);
-      return Boolean(
-        testing.panelHydrated(stableSessionId) &&
-        receipt?.sessionId === stableSessionId &&
-        receipt.revision === changed.metadata.revision &&
-        receipt.syncId !== retainedRendererReceipt.syncId
-      );
-    },
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the existing bounded startup recovery to hydrate a replacement renderer without a test action",
-    () =>
-      JSON.stringify({
-        priorReceipt: retainedRendererReceipt,
-        panelHydrated: testing.panelHydrated(stableSessionId),
-        panelSynchronizable: testing.panelSynchronizable(stableSessionId),
-        receipt: testing.panelSynchronizationReceipt(stableSessionId),
-        coordinator: testing.diagnostics()
-      })
-  );
-  const recoveredRendererReceipt = testing.panelSynchronizationReceipt(stableSessionId);
-  assert.ok(recoveredRendererReceipt, "Automatic renderer recovery must publish one exact replacement receipt.");
   const recoveredRendererTarget = await waitForExactSessionWebviewAction(
     page,
     testing,
