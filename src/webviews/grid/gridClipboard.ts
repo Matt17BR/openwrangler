@@ -25,6 +25,14 @@ export type GridClipboardResult = { ok: true; payload: GridClipboardPayload } | 
 
 const maximumClipboardCells = 100_000;
 const maximumClipboardBytes = 4 * 1024 * 1024;
+const spreadsheetFormulaPrefix = /^[\s\p{Cc}\uFEFF]*[=+\-@]/u;
+const clipboardQuotingCharacter = /["\t\r\n]/u;
+
+interface ClipboardFieldPlan {
+  byteLength: number;
+  neutralizeFormula: boolean;
+  quote: boolean;
+}
 
 export function collapsedGridClipboardSelection(
   contextId: string,
@@ -165,20 +173,25 @@ export function buildGridClipboardPayload({
     const row = rowsByNumber.get(rowNumber);
     if (!row) return { ok: false, reason: "Wait for every selected row to load before copying." };
     const fields: string[] = [];
+    const appendField = (value: string, userDerivedString: boolean): boolean => {
+      const separatorBytes = fields.length === 0 ? (outputRows.length === 0 ? 0 : 1) : 1;
+      const remainingBytes = maximumClipboardBytes - outputBytes - separatorBytes;
+      const plan = planClipboardField(value, userDerivedString, remainingBytes);
+      if (!plan) return false;
+      outputBytes += separatorBytes + plan.byteLength;
+      fields.push(renderClipboardField(value, plan));
+      return true;
+    };
+    if (mode === "row" && row.rowLabel !== undefined) {
+      if (!appendField(row.rowLabel, true)) return clipboardByteLimitError();
+      includesRowLabel = true;
+    }
     for (const column of columnPositions) {
       const cell = row.values[column];
       if (!cell) return { ok: false, reason: "Wait for every selected cell to load before copying." };
-      fields.push(clipboardField(cell.display));
-    }
-    if (mode === "row" && row.rowLabel !== undefined) {
-      fields.unshift(clipboardField(row.rowLabel));
-      includesRowLabel = true;
+      if (!appendField(cell.display, cell.kind === "string")) return clipboardByteLimitError();
     }
     const outputRow = fields.join("\t");
-    outputBytes += new TextEncoder().encode(outputRow).byteLength + (outputRows.length === 0 ? 0 : 1);
-    if (outputBytes > maximumClipboardBytes) {
-      return { ok: false, reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range." };
-    }
     outputRows.push(outputRow);
   }
 
@@ -226,7 +239,43 @@ export async function writeGridClipboardText(text: string): Promise<void> {
   }
 }
 
-function clipboardField(value: string): string {
-  if (!/["\t\r\n]/u.test(value)) return value;
-  return `"${value.replaceAll('"', '""')}"`;
+function planClipboardField(
+  value: string,
+  userDerivedString: boolean,
+  maximumBytes: number
+): ClipboardFieldPlan | undefined {
+  const neutralizeFormula = userDerivedString && spreadsheetFormulaPrefix.test(value);
+  const quote = clipboardQuotingCharacter.test(value);
+  let byteLength = (neutralizeFormula ? 1 : 0) + (quote ? 2 : 0);
+  if (byteLength > maximumBytes) return undefined;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (quote && codeUnit === 0x22) byteLength += 1;
+    if (codeUnit <= 0x7f) byteLength += 1;
+    else if (codeUnit <= 0x7ff) byteLength += 2;
+    else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff && index + 1 < value.length) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        byteLength += 4;
+        index += 1;
+      } else {
+        byteLength += 3;
+      }
+    } else {
+      byteLength += 3;
+    }
+    if (byteLength > maximumBytes) return undefined;
+  }
+
+  return { byteLength, neutralizeFormula, quote };
+}
+
+function renderClipboardField(value: string, plan: ClipboardFieldPlan): string {
+  if (!plan.quote) return plan.neutralizeFormula ? `'${value}` : value;
+  return `"${plan.neutralizeFormula ? "'" : ""}${value.replaceAll('"', '""')}"`;
+}
+
+function clipboardByteLimitError(): GridClipboardResult {
+  return { ok: false, reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range." };
 }

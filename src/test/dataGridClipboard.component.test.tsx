@@ -82,6 +82,27 @@ describe("DataGrid clipboard interactions", () => {
     expect(await screen.findByText("Copied row.")).toBeTruthy();
   });
 
+  it("writes formula-neutralized strings and row labels while preserving a typed negative", async () => {
+    const formulaPage: GridPage = {
+      ...page,
+      rows: [
+        {
+          ...page.rows[0],
+          rowLabel: " \uFEFF@ROW()",
+          values: [cell("=2+2"), numberCell(-10.5)]
+        },
+        page.rows[1]
+      ]
+    };
+    renderGrid("view-a", formulaPage);
+    focusCell(screen.getByRole("cell", { name: "=2+2" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("' \uFEFF@ROW()\t'=2+2\t-10.5"));
+    expect(await screen.findByText("Copied row with its row label.")).toBeTruthy();
+  });
+
   it("extends a rectangular pointer selection and copies its exact displayed values", async () => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
