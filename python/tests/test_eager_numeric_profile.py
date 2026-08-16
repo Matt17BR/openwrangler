@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import json
 import sys
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from benchmarks import eager_numeric_profile
+
+def _load_probe() -> Any:
+    path = Path(__file__).parents[1] / "benchmarks" / "eager_numeric_profile.py"
+    spec = spec_from_file_location("openwrangler_eager_numeric_profile_probe", path)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+eager_numeric_profile = _load_probe()
 
 
 def _report(elapsed_ms: float, peak_rss_delta_bytes: int) -> dict[str, Any]:
