@@ -13,6 +13,7 @@ const MAX_VARIABLES = 256;
 const MAX_NAME_BYTES = 1_024;
 const DEFAULT_DEBOUNCE_MS = 40;
 const DEFAULT_RETRY_MS = 20;
+const DEFAULT_RECONCILE_MS = 2_000;
 const DEFAULT_ATTACH_TIMEOUT_MS = 60_000;
 const SESSION_RECORD_STABILITY_MS = 500;
 const MIN_ATTACH_POLL_MS = 100;
@@ -38,6 +39,7 @@ export interface RVscodeWorkspaceWatcherOptions {
   readonly extensionPath?: string;
   readonly debounceMs?: number;
   readonly retryMs?: number;
+  readonly reconcileMs?: number;
   readonly attachTimeoutMs?: number;
 }
 
@@ -90,6 +92,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
   private readonly invalidationEmitter = new vscode.EventEmitter<void>();
   private readonly debounceMs: number;
   private readonly retryMs: number;
+  private readonly reconcileMs: number;
   private readonly attachTimeoutMs: number;
   private expectedProcessId: number | undefined;
   private workspaceApi: VscodeRWorkspaceApi | undefined;
@@ -97,6 +100,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
   private session: SessionFiles | undefined;
   private directoryWatcher: FSWatcher | undefined;
   private readTimer: NodeJS.Timeout | undefined;
+  private reconcileTimer: NodeJS.Timeout | undefined;
   private attachWait: Readonly<{ timer: NodeJS.Timeout; resolve: () => void }> | undefined;
   private initialRead: Promise<RProcessVariableDiscovery> | undefined;
   private readTail: Promise<void> = Promise.resolve();
@@ -115,6 +119,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
   ) {
     this.debounceMs = boundedDelay(options.debounceMs, DEFAULT_DEBOUNCE_MS);
     this.retryMs = boundedDelay(options.retryMs, DEFAULT_RETRY_MS);
+    this.reconcileMs = boundedDuration(options.reconcileMs, DEFAULT_RECONCILE_MS);
     this.attachTimeoutMs = boundedDuration(options.attachTimeoutMs, DEFAULT_ATTACH_TIMEOUT_MS);
   }
 
@@ -141,6 +146,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
         try {
           const discovery = await this.readConsistentWorkspace();
           this.lastSignature = discoverySignature(discovery);
+          this.scheduleReconciliation();
           return discovery;
         } catch (error) {
           this.releaseWorkspaceApi();
@@ -181,6 +187,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
         try {
           const discovery = await this.readConsistentWorkspace();
           this.lastSignature = discoverySignature(discovery);
+          this.scheduleReconciliation();
           return discovery;
         } catch (error) {
           this.dispose();
@@ -230,6 +237,8 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
     this.disposed = true;
     if (this.readTimer) clearTimeout(this.readTimer);
     this.readTimer = undefined;
+    if (this.reconcileTimer) clearTimeout(this.reconcileTimer);
+    this.reconcileTimer = undefined;
     this.cancelAttachWait();
     this.directoryWatcher?.close();
     this.directoryWatcher = undefined;
@@ -243,35 +252,58 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
     if (this.readTimer) clearTimeout(this.readTimer);
     this.readTimer = setTimeout(() => {
       this.readTimer = undefined;
-      const read = this.readTail.then(async () => {
-        try {
-          const discovery = await this.readConsistentWorkspace();
-          const signature = discoverySignature(discovery);
-          if (signature === this.lastSignature || this.disposed || this.invalidated) return;
-          this.lastSignature = signature;
-          this.changeEmitter.fire(discovery);
-        } catch {
-          this.invalidate();
-        }
-      });
-      this.readTail = read.catch(() => undefined);
+      void this.queueRead();
     }, this.debounceMs);
     this.readTimer.unref();
+  }
+
+  private scheduleReconciliation(): void {
+    if (this.disposed || this.invalidated || this.reconcileTimer) return;
+    this.reconcileTimer = setTimeout(() => {
+      this.reconcileTimer = undefined;
+      void this.queueRead().finally(() => this.scheduleReconciliation());
+    }, this.reconcileMs);
+    this.reconcileTimer.unref();
+  }
+
+  private queueRead(): Promise<void> {
+    const read = this.readTail.then(async () => {
+      try {
+        const discovery = await this.readConsistentWorkspace();
+        const signature = discoverySignature(discovery);
+        if (signature === this.lastSignature || this.disposed || this.invalidated) return;
+        this.lastSignature = signature;
+        this.changeEmitter.fire(discovery);
+      } catch {
+        this.invalidate();
+      }
+    });
+    this.readTail = read.catch(() => undefined);
+    return read;
   }
 
   private async readConsistentWorkspace(): Promise<RProcessVariableDiscovery> {
     const expectedProcessId = this.expectedProcessId;
     const workspaceApi = this.workspaceApi;
     if (expectedProcessId && workspaceApi) {
-      await this.verifyCurrent();
-      const workspace = workspaceApi.workspace.data;
-      if (workspace === undefined) throw new WorkspaceMetadataNotReadyError();
-      const discovery = decodeWorkspaceValue(workspace);
-      if (workspaceApi.workspace.data !== workspace) {
-        throw new Error("The vscode-R workspace changed while Open Wrangler was reading it.");
+      let lastError: unknown;
+      for (let attempt = 0; attempt < READ_ATTEMPTS; attempt += 1) {
+        try {
+          await this.verifyCurrent();
+          const workspace = workspaceApi.workspace.data;
+          if (workspace === undefined) throw new WorkspaceMetadataNotReadyError();
+          const discovery = decodeWorkspaceValue(workspace);
+          if (workspaceApi.workspace.data !== workspace) {
+            throw new Error("The vscode-R workspace changed while Open Wrangler was reading it.");
+          }
+          await this.verifyCurrent();
+          return discovery;
+        } catch (error) {
+          lastError = error;
+          if (attempt + 1 < READ_ATTEMPTS) await delay(this.retryMs);
+        }
       }
-      await this.verifyCurrent();
-      return discovery;
+      throw lastError instanceof Error ? lastError : new Error("Open Wrangler could not read the vscode-R workspace.");
     }
     const session = this.session;
     if (!expectedProcessId || !session) throw new Error("The vscode-R workspace watcher is not attached.");
@@ -330,6 +362,8 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
     this.invalidated = true;
     if (this.readTimer) clearTimeout(this.readTimer);
     this.readTimer = undefined;
+    if (this.reconcileTimer) clearTimeout(this.reconcileTimer);
+    this.reconcileTimer = undefined;
     this.cancelAttachWait();
     this.directoryWatcher?.close();
     this.directoryWatcher = undefined;

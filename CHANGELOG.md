@@ -8,6 +8,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Active R-terminal discovery now performs a bounded, serialized reconciliation of vscode-R's read-only workspace
+  metadata every two seconds. This closes the missed-event gap without polling the R process, sending terminal code,
+  overlapping metadata reads, or changing the explicit Refresh fallback.
 - Pull-request CI now runs formatting, ESLint, and TypeScript concurrently and starts the latency-critical R 4.4/4.5
   matrix after static preflight so it overlaps portable contracts while the protected fan-in still requires both.
   Native-R contract execution is split into named, independently timed frame, kernel-agent, catalog, and real-R
