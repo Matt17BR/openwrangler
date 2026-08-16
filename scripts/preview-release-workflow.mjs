@@ -121,8 +121,8 @@ function inspectPackageSourceBinding(job, problems) {
   if (
     setupNodeSteps.length !== 1 ||
     !exactKeys(setupNode, ["uses", "with"]) ||
-    !exactKeys(setupNode.with, ["node-version", "cache"]) ||
-    setupNode.with["node-version"] !== 22 ||
+    !exactKeys(setupNode.with, ["node-version-file", "cache"]) ||
+    setupNode.with["node-version-file"] !== ".node-version" ||
     setupNode.with.cache !== "npm" ||
     remotePreflights.length !== 1 ||
     setupPythonSteps.length !== 1 ||

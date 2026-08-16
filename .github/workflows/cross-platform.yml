@@ -35,7 +35,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
       - id: classify
         run: node scripts/ci-path-classification.mjs
         env:
@@ -124,7 +124,7 @@ jobs:
       - uses: actions/setup-node@v6
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
       - uses: actions/setup-python@v6
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}

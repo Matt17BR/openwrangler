@@ -127,8 +127,8 @@ function inspectPackageSourceBinding(job, problems) {
   if (
     setupNodeSteps.length !== 1 ||
     !exactKeys(setupNode, ["uses", "with"]) ||
-    !exactKeys(setupNode.with, ["node-version", "cache"]) ||
-    setupNode.with["node-version"] !== 22 ||
+    !exactKeys(setupNode.with, ["node-version-file", "cache"]) ||
+    setupNode.with["node-version-file"] !== ".node-version" ||
     setupNode.with.cache !== "npm"
   ) {
     problems.push("package must provision one pinned Node 22 runtime before release metadata validation.");
