@@ -153,6 +153,39 @@ describe("released Jupyter kernel restart", () => {
     expect(original.dispose).toHaveBeenCalledOnce();
   });
 
+  it("reports final-wait notebook drift before timeout and releases the listener", async () => {
+    const original = new FakeKernel("idle");
+    let now = 0;
+    let exactNotebook = true;
+    const descriptions: string[] = [];
+
+    await expect(
+      restartReleasedJupyterKernelAndWait({
+        notebook: "notebook",
+        activateJupyter: async () => "api",
+        getKernel: async () => original,
+        dispatchRestart: async () => {},
+        assertExactNotebook: (_notebook, description) => {
+          descriptions.push(description);
+          if (!exactNotebook) throw new Error("the exact notebook changed during the final restart delay");
+        },
+        timeoutMs: 10,
+        pollIntervalMs: 10,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+          exactNotebook = false;
+        }
+      })
+    ).rejects.toThrow("the exact notebook changed during the final restart delay");
+
+    expect(descriptions.slice(-2)).toEqual([
+      "before delaying its released Jupyter kernel restart poll",
+      "after delaying its released Jupyter kernel restart poll"
+    ]);
+    expect(original.dispose).toHaveBeenCalledOnce();
+  });
+
   it("fails before dispatch when the exact notebook has no kernel", async () => {
     const dispatchRestart = vi.fn();
     await expect(
