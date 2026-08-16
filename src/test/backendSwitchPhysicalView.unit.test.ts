@@ -1,0 +1,215 @@
+import type { Locator } from "playwright-core";
+import { describe, expect, it, vi } from "vitest";
+import {
+  backendSwitchPhysicalViewMatches,
+  sampleBackendSwitchPhysicalView,
+  verifyBackendSwitchPhysicalView,
+  type BackendSwitchPhysicalViewOptions,
+  type BackendSwitchPhysicalViewRoot,
+  type BackendSwitchPhysicalViewSample
+} from "./extensionHost/backendSwitchPhysicalView";
+import type { RendererSynchronizationReceipt } from "./extensionHost/acknowledgedRenderer";
+
+const receipt = (syncId: string, revision = 7): RendererSynchronizationReceipt => ({
+  syncId,
+  sessionId: "session",
+  revision
+});
+
+const matchingSample = (syncId = "sync-a"): BackendSwitchPhysicalViewSample => ({
+  backendLabel: "Change dataframe engine. Current engine: Pandas",
+  backendWidth: 96,
+  connected: true,
+  headerSelected: "true",
+  headerWidth: 287,
+  rowHeight: 20,
+  rowPresent: true,
+  scrollLeft: 113,
+  scrollTop: 740,
+  syncId
+});
+
+function fakeElement(
+  attributes: Record<string, string>,
+  box: Partial<Readonly<{ width: number; height: number }>> = {}
+): NonNullable<ReturnType<BackendSwitchPhysicalViewRoot["querySelector"]>> {
+  return {
+    scrollLeft: 0,
+    scrollTop: 0,
+    closest: () => null,
+    getAttribute: (name: string) => attributes[name] ?? null,
+    getBoundingClientRect: () => ({ width: 0, height: 0, ...box })
+  };
+}
+
+describe("backend-switch physical grid", () => {
+  it("samples the exact backend, market header, row 37, scroller, and renderer receipt", () => {
+    const selectors: string[] = [];
+    const row = fakeElement({}, { height: 20 });
+    const cell = {
+      scrollLeft: 0,
+      scrollTop: 0,
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ width: 0, height: 0 }),
+      closest: (selector: string) => (selector === "tr" ? row : null)
+    };
+    const elements = new Map<string, NonNullable<ReturnType<BackendSwitchPhysicalViewRoot["querySelector"]>>>([
+      ['[data-session-badge="backend"]', fakeElement({ "aria-label": "backend" }, { width: 96 })],
+      ['th[data-column="market"]', fakeElement({ "aria-selected": "true" }, { width: 287 })],
+      ['td[data-grid-row="37"][data-grid-column="1"]', cell],
+      [
+        '[data-testid="data-grid-scroller"]',
+        {
+          scrollLeft: 113,
+          scrollTop: 740,
+          getAttribute: () => null,
+          getBoundingClientRect: () => ({ width: 0, height: 0 }),
+          closest: () => null
+        }
+      ]
+    ]);
+    const root = {
+      isConnected: true,
+      getAttribute: (name: string) => (name === "data-renderer-sync-id" ? "sync-a" : null),
+      querySelector: (selector: string) => {
+        selectors.push(selector);
+        return elements.get(selector) ?? null;
+      }
+    } as unknown as BackendSwitchPhysicalViewRoot;
+
+    expect(sampleBackendSwitchPhysicalView(root)).toEqual({
+      backendLabel: "backend",
+      backendWidth: 96,
+      connected: true,
+      headerSelected: "true",
+      headerWidth: 287,
+      rowHeight: 20,
+      rowPresent: true,
+      scrollLeft: 113,
+      scrollTop: 740,
+      syncId: "sync-a"
+    });
+    expect(selectors).toEqual([
+      '[data-session-badge="backend"]',
+      'th[data-column="market"]',
+      'td[data-grid-row="37"][data-grid-column="1"]',
+      '[data-testid="data-grid-scroller"]'
+    ]);
+  });
+
+  it("requires the exact backend, receipt, selected width, and restored viewport", () => {
+    expect(backendSwitchPhysicalViewMatches(matchingSample(), "sync-a", "Pandas")).toBe(true);
+    for (const changed of [
+      { backendLabel: "Change dataframe engine. Current engine: Polars" },
+      { backendWidth: 0 },
+      { connected: false },
+      { syncId: "sync-b" },
+      { headerSelected: "false" },
+      { headerWidth: 289 },
+      { rowPresent: false },
+      { rowHeight: 0 },
+      { scrollLeft: 115 },
+      { scrollTop: 744 }
+    ]) {
+      expect(backendSwitchPhysicalViewMatches({ ...matchingSample(), ...changed }, "sync-a", "Pandas")).toBe(false);
+    }
+  });
+
+  function options(
+    overrides: Partial<BackendSwitchPhysicalViewOptions<string>> = {}
+  ): BackendSwitchPhysicalViewOptions<string> {
+    let now = 0;
+    const current = receipt("sync-a");
+    const app = {
+      evaluate: async () => matchingSample()
+    } as unknown as Locator;
+    return {
+      sessionId: "session",
+      backend: "Pandas",
+      expectedRevision: 7,
+      discoveryTimeoutMs: 100,
+      activeSession: () => ({ sessionId: "session", metadata: { revision: 7 } }),
+      currentReceipt: () => current,
+      panelHydrated: () => true,
+      requireHydration: async () => {},
+      assertLifecycle: () => {},
+      findCurrentTarget: async () => "target",
+      bindExactApp: async () => app,
+      targetIsRetired: () => false,
+      withDeadline: async (promise) => Promise.resolve(promise),
+      now: () => now,
+      wait: async (durationMs) => {
+        now += durationMs;
+      },
+      ...overrides
+    };
+  }
+
+  it("hydrates, binds one current receipt, and samples its exact app", async () => {
+    const requireHydration = vi.fn(async () => {});
+    const findCurrentTarget = vi.fn(async () => "target");
+    const bindExactApp = vi.fn(async () => ({ evaluate: async () => matchingSample() }) as unknown as Locator);
+    const deadlines: Array<Readonly<{ timeoutMs: number; description: string }>> = [];
+    const withDeadline = async <T>(promise: PromiseLike<T>, timeoutMs: number, description: string): Promise<T> => {
+      deadlines.push({ timeoutMs, description });
+      return Promise.resolve(promise);
+    };
+
+    await verifyBackendSwitchPhysicalView(options({ requireHydration, findCurrentTarget, bindExactApp, withDeadline }));
+
+    expect(requireHydration).toHaveBeenCalledWith(
+      "The Pandas renderer must acknowledge the switched file session before its physical view is checked.",
+      100
+    );
+    expect(findCurrentTarget).toHaveBeenCalledWith(receipt("sync-a"), 100);
+    expect(bindExactApp).toHaveBeenCalledWith("target", "sync-a");
+    expect(deadlines).toEqual([{ timeoutMs: 75, description: "the Pandas receipt-bound physical grid sample" }]);
+  });
+
+  it("discards a receipt superseded during discovery before binding the replacement", async () => {
+    let current = receipt("sync-a");
+    const findCurrentTarget = vi.fn(async (observed: RendererSynchronizationReceipt) => {
+      if (observed.syncId === "sync-a") current = receipt("sync-b");
+      return observed.syncId;
+    });
+    const bindExactApp = vi.fn(async (_target: string, syncId: string) => {
+      return { evaluate: async () => matchingSample(syncId) } as unknown as Locator;
+    });
+
+    await verifyBackendSwitchPhysicalView(options({ currentReceipt: () => current, findCurrentTarget, bindExactApp }));
+
+    expect(findCurrentTarget.mock.calls.map(([observed]) => observed.syncId)).toEqual(["sync-a", "sync-b"]);
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(bindExactApp).toHaveBeenCalledWith("sync-b", "sync-b");
+  });
+
+  it("fails immediately when the switched revision drifts", async () => {
+    const findCurrentTarget = vi.fn(async () => "target");
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          activeSession: () => ({ sessionId: "session", metadata: { revision: 8 } }),
+          findCurrentTarget
+        })
+      )
+    ).rejects.toThrow("The switched revision must remain unchanged through physical verification.");
+    expect(findCurrentTarget).not.toHaveBeenCalled();
+  });
+
+  it("reports the last sample and superseded receipts at the shared deadline", async () => {
+    let now = 0;
+    const nonmatching = { ...matchingSample(), scrollLeft: 0 };
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          discoveryTimeoutMs: 50,
+          bindExactApp: async () => ({ evaluate: async () => nonmatching }) as unknown as Locator,
+          now: () => now,
+          wait: async (durationMs) => {
+            now += durationMs;
+          }
+        })
+      )
+    ).rejects.toThrow(/exceeded its shared renderer deadline.*"scrollLeft":0/u);
+  });
+});
