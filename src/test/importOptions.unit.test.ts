@@ -342,6 +342,35 @@ describe("delimited-file import prompts", () => {
     expect(importOptionMocks.executeCommand).toHaveBeenCalledWith("workbench.action.focusQuickOpen");
   });
 
+  it("offers explicit UTF-16 byte-order recovery choices", async () => {
+    chooseFirstItems();
+    importOptionMocks.showInputBox.mockImplementation(async (options) => options?.value);
+
+    await expect(
+      promptImportOptions(vscode.Uri.file("/tmp/data.tsv"), {
+        delimiter: "\t",
+        encoding: "utf-16be",
+        quoteChar: '"',
+        hasHeader: true
+      })
+    ).resolves.toEqual({
+      delimiter: "\t",
+      encoding: "utf-16be",
+      quoteChar: '"',
+      hasHeader: true
+    });
+
+    expect(picksAt(1).map(({ value }) => value)).toEqual([
+      "utf-16be",
+      "utf-8",
+      "utf8-lossy",
+      "utf-16le",
+      "iso-8859-1",
+      "windows-1252"
+    ]);
+    expect(picksAt(1)[0]).toMatchObject({ description: "Current", value: "utf-16be" });
+  });
+
   it("prefills the custom-delimiter field from the current value", async () => {
     importOptionMocks.showQuickPick.mockImplementation(async (items, options) => {
       const choices = items as Pick[];
