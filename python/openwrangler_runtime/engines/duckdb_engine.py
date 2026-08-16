@@ -12,6 +12,7 @@ from threading import RLock
 from typing import Any, Literal
 from uuid import uuid4
 
+from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -2018,19 +2019,22 @@ def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
         "duckdb": duckdb,
     }
     result: Any | None = None
-    try:
-        exec(code, namespace, namespace)
-        result = namespace.get("result")
-        if not isinstance(result, duckdb.DuckDBPyRelation):
-            raise EngineError("Custom DuckDB code must assign a DuckDBPyRelation to result.")
-        return str(result.sql_query())
-    except EngineError:
-        raise
-    except Exception as error:
-        raise EngineError(f"Custom DuckDB code failed: {error}") from None
-    finally:
-        namespace.clear()
-        result = None
+    with capture_custom_code_output() as output:
+        try:
+            exec(code, namespace, namespace)
+            result = namespace.get("result")
+            if not isinstance(result, duckdb.DuckDBPyRelation):
+                raise EngineError(
+                    append_custom_code_output("Custom DuckDB code must assign a DuckDBPyRelation to result.", output)
+                )
+            return str(result.sql_query())
+        except EngineError:
+            raise
+        except Exception as error:
+            raise EngineError(custom_code_error_message("DuckDB", error, output)) from None
+        finally:
+            namespace.clear()
+            result = None
 
 
 def _write_relation_export(
