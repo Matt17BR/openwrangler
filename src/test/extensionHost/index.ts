@@ -163,6 +163,13 @@ import {
   releasedNotebookRSetupFailureStage
 } from "./releasedNotebookFailure";
 import {
+  bestEffortRendererProvenanceCleanup,
+  createRendererProvenanceOrderContract,
+  notebookTab,
+  rendererProvenanceDiagnostics,
+  rendererProvenanceTabs
+} from "./rendererProvenance";
+import {
   PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
   PACKAGED_OPERATION_DIALOG_VIEWPORT,
@@ -28696,6 +28703,7 @@ async function exercisePackagedRendererProvenance(
   recordAcceptanceProgress("verify:notebook-renderer:fixture-written");
 
   let secondNotebook: vscode.NotebookDocument | undefined;
+  const provenanceOrder = createRendererProvenanceOrderContract();
   try {
     recordAcceptanceProgress("verify:notebook-renderer:open-b");
     const openedSecondNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(secondNotebookPath));
@@ -28725,8 +28733,10 @@ async function exercisePackagedRendererProvenance(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer:shown-b");
+    provenanceOrder.secondNotebookShown();
     recordAcceptanceProgress("verify:notebook-renderer:reveal-a-after-split");
     originEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    provenanceOrder.originRevealed();
     const originKernelBaseline = jupyter.testing.stats(originNotebook.uri);
     const secondKernelBaseline = jupyter.testing.stats(openedSecondNotebook.uri);
     assert.equal(
@@ -28734,6 +28744,7 @@ async function exercisePackagedRendererProvenance(
       openedSecondNotebook,
       "Notebook B must remain active while the renderer event is emitted from notebook A."
     );
+    provenanceOrder.secondNotebookActive();
 
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
@@ -28778,7 +28789,7 @@ async function exercisePackagedRendererProvenance(
       );
     };
     recordAcceptanceProgress("verify:notebook-renderer:activate");
-    let clickBoundaryEntered = false;
+    provenanceOrder.actionDiscoveryStarted();
     try {
       await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
         description: "notebook A's renderer action while notebook B is active",
@@ -28787,7 +28798,7 @@ async function exercisePackagedRendererProvenance(
             acquire: () => waitForNotebookRendererButton(workbench, "renderer provenance A", "Open in Open Wrangler"),
             activate: (button) =>
               activateExactAcceptanceElementOnce(button, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, () => {
-                clickBoundaryEntered = true;
+                provenanceOrder.clickBoundaryEntered();
                 assert.equal(
                   vscode.window.activeNotebookEditor?.notebook,
                   openedSecondNotebook,
@@ -28800,6 +28811,7 @@ async function exercisePackagedRendererProvenance(
         receipt: () => waitForOriginReceipt(true),
         authoritativeReceiptAfterActivationFailure: () => waitForOriginReceipt(false)
       });
+      provenanceOrder.actionReceipted();
     } catch (error) {
       if (!(error instanceof AggregateError)) throw error;
       const activationFailure = error.errors[0];
@@ -28810,7 +28822,7 @@ async function exercisePackagedRendererProvenance(
           ? `${activationCause.name}: ${activationCause.message}`.replaceAll(/\s+/gu, " ").trim().slice(0, 512)
           : "unknown activation failure";
       throw new Error(
-        `${error.message} Activation stage: click boundary ${clickBoundaryEntered ? "entered" : "not entered"}. ` +
+        `${error.message} Activation stage: click boundary ${provenanceOrder.clickBoundaryWasEntered ? "entered" : "not entered"}. ` +
           `Activation cause: ${activationSummary}. ` +
           `Receipt state: ${rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)}`,
         { cause: error }
@@ -28876,106 +28888,13 @@ async function exercisePackagedRendererProvenance(
     await disposePackagedSessionPanel(testing, active.sessionId, "the live renderer provenance session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
     recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
-    const tabsToClose = rendererProvenanceTabs(openedSecondNotebook);
+    const tabsToClose = rendererProvenanceTabs(openedSecondNotebook, isOpenWranglerSessionTab);
     if (tabsToClose.length > 0) assert.equal(await vscode.window.tabGroups.close(tabsToClose, true), true);
     recordAcceptanceProgress("verify:notebook-renderer:complete");
   } catch (error) {
-    await bestEffortRendererProvenanceCleanup(testing, secondNotebook);
+    await bestEffortRendererProvenanceCleanup(testing, secondNotebook, isOpenWranglerSessionTab);
     throw error;
   }
-}
-
-function rendererProvenanceDiagnostics(
-  testing: TestApi,
-  jupyter: FakeJupyterApi,
-  originNotebook: vscode.NotebookDocument,
-  secondNotebook: vscode.NotebookDocument
-): string {
-  const activeNotebook = vscode.window.activeNotebookEditor?.notebook;
-  const source = testing.activeSession()?.metadata.source;
-  const coordinator = testing.diagnostics();
-  const sourceDiagnostic =
-    source?.kind === "notebookVariable"
-      ? {
-          kind: source.kind,
-          variableName: source.variableName,
-          origin:
-            source.uri === originNotebook.uri.toString()
-              ? "A"
-              : source.uri === secondNotebook.uri.toString()
-                ? "B"
-                : "other"
-        }
-      : source
-        ? { kind: source.kind, label: source.label }
-        : null;
-  return JSON.stringify({
-    activeNotebook:
-      activeNotebook === originNotebook
-        ? "A"
-        : activeNotebook === secondNotebook
-          ? "B"
-          : activeNotebook
-            ? "other"
-            : "none",
-    activeSource: sourceDiagnostic,
-    coordinator: {
-      sessionCount: coordinator.sessionCount,
-      activeSessionPresent: coordinator.activeSessionId !== undefined
-    },
-    kernels: {
-      A: {
-        stats: jupyter.testing.stats(originNotebook.uri) ?? null,
-        lookupCalls: jupyter.testing.lookupCalls(originNotebook.uri)
-      },
-      B: {
-        stats: jupyter.testing.stats(secondNotebook.uri) ?? null,
-        lookupCalls: jupyter.testing.lookupCalls(secondNotebook.uri)
-      }
-    },
-    jupyterDenialCalls: jupyter.testing.denialCalls()
-  });
-}
-
-async function bestEffortRendererProvenanceCleanup(
-  testing: TestApi,
-  secondNotebook: vscode.NotebookDocument | undefined
-): Promise<void> {
-  const active = testing.activeSession();
-  if (active?.metadata.source.kind === "notebookVariable" && active.metadata.source.variableName === "renderer_frame") {
-    try {
-      await testing.request({
-        kind: "closeSession",
-        sessionId: active.sessionId,
-        revision: active.metadata.revision
-      });
-    } catch {
-      // Editor-process-group teardown remains the final bounded fallback.
-    }
-  }
-  const tabsToClose = rendererProvenanceTabs(secondNotebook);
-  if (tabsToClose.length > 0) {
-    try {
-      await vscode.window.tabGroups.close(tabsToClose, true);
-    } catch {
-      // Preserve the original acceptance failure.
-    }
-  }
-}
-
-function rendererProvenanceTabs(secondNotebook: vscode.NotebookDocument | undefined): vscode.Tab[] {
-  return [
-    ...(secondNotebook ? [notebookTab(secondNotebook.uri)] : []),
-    ...vscode.window.tabGroups.all
-      .flatMap((group) => group.tabs)
-      .filter((tab) => tab.label === "Open Wrangler: renderer provenance A" || isOpenWranglerSessionTab(tab))
-  ].filter((tab): tab is vscode.Tab => Boolean(tab));
-}
-
-function notebookTab(uri: vscode.Uri): vscode.Tab | undefined {
-  return vscode.window.tabGroups.all
-    .flatMap((group) => group.tabs)
-    .find((tab) => tab.input instanceof vscode.TabInputNotebook && tab.input.uri.toString() === uri.toString());
 }
 
 interface NotebookRendererLoadSnapshot {
