@@ -105,6 +105,7 @@ import {
   cleanupAcceptanceTemporaryDirectory,
   exerciseAcceptanceTemporaryDirectoryCleanupContract
 } from "./acceptanceTemporaryDirectory";
+import { dismissStaleWorkbenchHover, exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import { waitForImportRendererRecovery } from "./importRendererRecovery";
 import {
@@ -19723,99 +19724,11 @@ async function previewRevenueProjection(app: Locator, testing: TestApi, newColum
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 }
 
-async function exportCleanedDataThroughWorkbench(
-  app: Locator,
-  workbench: Page,
-  destination: string,
-  format: "csv" | "parquet" = "csv"
-): Promise<void> {
-  await dismissStaleWorkbenchHover(workbench);
-  await app.getByRole("button", { name: "Export", exact: true }).click();
-  await completeCleanedDataExportDialog(workbench, destination, format);
-}
-
-async function dismissStaleWorkbenchHover(workbench: Page): Promise<void> {
-  await workbench.keyboard.press("Escape");
-  await workbench.mouse.move(1, 1);
-  assert.equal(
-    await pollAcceptanceCondition(async () => (await workbench.locator(".monaco-hover:visible").count()) === 0, {
-      timeoutMs: 3_000,
-      intervalMs: 50
-    }),
-    true,
-    "The workbench must dismiss stale toolbar hovers before the next webview action."
-  );
-}
-
 function assertParquetFile(filePath: string, label: string): void {
   const bytes = readFileSync(filePath);
   assert.ok(bytes.byteLength >= 8, `${label} must contain a complete Parquet file.`);
   assert.equal(bytes.subarray(0, 4).toString("utf8"), "PAR1", `${label} has an invalid Parquet header.`);
   assert.equal(bytes.subarray(-4).toString("utf8"), "PAR1", `${label} has an invalid Parquet footer.`);
-}
-
-async function completeCleanedDataExportDialog(
-  workbench: Page,
-  destination: string,
-  format: "csv" | "parquet" = "csv"
-): Promise<void> {
-  const formatPicker = workbench
-    .locator(".quick-input-widget:visible")
-    .filter({ hasText: "Export Cleaned Data" })
-    .last();
-  await formatPicker.waitFor({ state: "visible", timeout: 10_000 });
-  const label = format === "csv" ? /^CSV/u : /^Parquet/u;
-  const formatOption = formatPicker.getByRole("option").filter({ hasText: label }).first();
-  try {
-    await formatOption.waitFor({ state: "visible", timeout: 10_000 });
-  } catch (error) {
-    const options = (await formatPicker.getByRole("option").allInnerTexts()).map((text) =>
-      text.replace(/\s+/gu, " ").trim().slice(0, 200)
-    );
-    const input = await formatPicker
-      .locator(".quick-input-box input")
-      .first()
-      .inputValue()
-      .catch(() => "");
-    throw new Error(
-      `The cleaned-data export picker did not offer ${format}. Visible options: ${JSON.stringify(options)}. Input: ${JSON.stringify(input)}.`,
-      { cause: error }
-    );
-  }
-  await formatOption.click();
-  assert.equal(
-    await pollAcceptanceCondition(
-      async () =>
-        workbench
-          .locator(".quick-input-widget:visible")
-          .filter({ hasText: "Export Cleaned Data" })
-          .last()
-          .locator(".quick-input-box input")
-          .first()
-          .inputValue()
-          .then((value) => value.endsWith(`.cleaned.${format}`))
-          .catch(() => false),
-      { timeoutMs: 10_000, intervalMs: 50 }
-    ),
-    true,
-    `The cleaned-data Save dialog must retain the suggested .cleaned.${format} destination.`
-  );
-  const saveDialog = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Export Cleaned Data" }).last();
-  const saveInput = saveDialog.locator(".quick-input-box input").first();
-  await saveInput.fill(path.resolve(destination));
-  await saveInput.press("Enter");
-  await saveDialog.waitFor({ state: "hidden", timeout: 30_000 });
-  const exportProgress = workbench
-    .locator(".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible")
-    .filter({ hasText: "Exporting cleaned data…" });
-  assert.equal(
-    await pollAcceptanceCondition(async () => (await exportProgress.count()) === 0, {
-      timeoutMs: 30_000,
-      intervalMs: 50
-    }),
-    true,
-    "The cleaned-data export progress notification must close."
-  );
 }
 
 async function exercisePackagedReopenAndUndoJourney(

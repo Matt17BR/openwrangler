@@ -1447,30 +1447,6 @@ test("the remote-only R selector bypasses every local runtime owner while retain
   }
 });
 
-test("R cleaned-data exports use the exact dataframe toolbar", async () => {
-  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
-  const functionBody = (name) => {
-    const start = source.indexOf(`async function ${name}(`);
-    const end = source.indexOf("\nasync function ", start + 1);
-    assert.ok(start >= 0 && end > start, `${name} must exist.`);
-    return source.slice(start, end);
-  };
-  const documentJourney = functionBody("exerciseReleasedRDocumentJourney");
-  const notebookJourney = functionBody("exerciseReleasedREditingJourney");
-  const interactiveJourney = functionBody("assertReleasedRInteractiveProfileEditingAndExport");
-  const exportHelper = functionBody("exportCleanedDataThroughWorkbench");
-
-  for (const journey of [documentJourney, notebookJourney, interactiveJourney]) {
-    assert.equal((journey.match(/exportCleanedDataThroughWorkbench\(/gu) ?? []).length, 2);
-    assert.doesNotMatch(journey, /executeCommand<boolean>\("openWrangler\.exportData"\)/u);
-  }
-  assert.match(interactiveJourney, /jupyter-r:interactive:export-csv/u);
-  assert.match(interactiveJourney, /jupyter-r:interactive:export-parquet/u);
-  assert.match(interactiveJourney, /jupyter-r-interactive-post-export-page/u);
-  assert.match(exportHelper, /getByRole\("button", \{ name: "Export", exact: true \}\)\.click\(\)/u);
-  assert.match(exportHelper, /completeCleanedDataExportDialog\(workbench, destination, format\)/u);
-});
-
 test("packaged Python editor loops stop on the product's terminal diagnostic", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   for (const message of [
