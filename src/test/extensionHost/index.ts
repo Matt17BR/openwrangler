@@ -50,6 +50,7 @@ import {
   OPEN_WRANGLER_MIME_V2,
   type NotebookOutputPayload
 } from "../../shared/notebookOutput";
+import { operationKinds as RELEASED_R_SUPPORTED_OPERATIONS } from "../../shared/operationCatalog.generated";
 import type {
   ColumnReference,
   GridPage,
@@ -365,36 +366,6 @@ const RELEASED_JUPYTER_R_SETUP_CELL = 1;
 const RELEASED_JUPYTER_R_BINDING_CELL = 2;
 const RELEASED_JUPYTER_R_MEDIA_CELL = 3;
 const RELEASED_JUPYTER_R_SHOWCASE_CELL = 4;
-const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
-  "sortRows",
-  "filterRows",
-  "dropMissingRows",
-  "fillMissingValues",
-  "dropDuplicates",
-  "selectColumns",
-  "dropColumns",
-  "renameColumn",
-  "cloneColumn",
-  "castColumn",
-  "formula",
-  "textLength",
-  "oneHotEncode",
-  "multiLabelBinarize",
-  "findReplace",
-  "stripText",
-  "splitText",
-  "capitalizeText",
-  "lowerText",
-  "upperText",
-  "minMaxScale",
-  "roundNumber",
-  "floorNumber",
-  "ceilNumber",
-  "formatDatetime",
-  "groupBy",
-  "byExample",
-  "customCode"
-]);
 const RELEASED_R_CUSTOM_CODE = [
   'result <- df[df$row_id <= 3L, c("row_id", "score"), drop = FALSE]',
   "result$score_plus_one <- result$score + 1"

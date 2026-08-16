@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
+import { operationKinds } from "../shared/operationCatalog.generated";
 import type {
   ByExampleProgram,
   ByExampleTransformStep,
@@ -2455,36 +2456,7 @@ describe("canonical R kernel bridge", () => {
         mode: "editing",
         capabilities: {
           editable: true,
-          supportedOperations: [
-            "sortRows",
-            "filterRows",
-            "dropMissingRows",
-            "fillMissingValues",
-            "dropDuplicates",
-            "selectColumns",
-            "dropColumns",
-            "renameColumn",
-            "cloneColumn",
-            "castColumn",
-            "formula",
-            "textLength",
-            "oneHotEncode",
-            "multiLabelBinarize",
-            "findReplace",
-            "stripText",
-            "splitText",
-            "capitalizeText",
-            "lowerText",
-            "upperText",
-            "minMaxScale",
-            "roundNumber",
-            "floorNumber",
-            "ceilNumber",
-            "formatDatetime",
-            "groupBy",
-            "byExample",
-            "customCode"
-          ]
+          supportedOperations: operationKinds
         }
       }
     });
@@ -10363,35 +10335,6 @@ function rCapabilities(bridge = false): SourceCapabilities {
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: [
-      "sortRows",
-      "filterRows",
-      "dropMissingRows",
-      "fillMissingValues",
-      "dropDuplicates",
-      "selectColumns",
-      "dropColumns",
-      "renameColumn",
-      "cloneColumn",
-      "castColumn",
-      "formula",
-      "textLength",
-      "oneHotEncode",
-      "multiLabelBinarize",
-      "findReplace",
-      "stripText",
-      "splitText",
-      "capitalizeText",
-      "lowerText",
-      "upperText",
-      "minMaxScale",
-      "roundNumber",
-      "floorNumber",
-      "ceilNumber",
-      "formatDatetime",
-      "groupBy",
-      "byExample",
-      "customCode"
-    ]
+    supportedOperations: [...operationKinds]
   };
 }
