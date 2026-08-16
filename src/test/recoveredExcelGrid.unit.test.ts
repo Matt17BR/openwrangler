@@ -319,6 +319,44 @@ describe("recovered XLSX grid", () => {
     expect(currentClicks).toBe(1);
   });
 
+  it("reacquires when target A retires before dispatch without crossing its stale click", async () => {
+    const retiredTargets = new Set<string>();
+    let activationAttempts = 0;
+    let staleClicks = 0;
+    let currentClicks = 0;
+    const findCurrentTarget = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("target-a")
+      .mockResolvedValue("target-b");
+    const bindExactApp = vi.fn(async (_target: string) => fakeApp());
+    const activateElementOnce = vi.fn(async (_element, _timeoutMs: number, beforeDispatch: () => void) => {
+      activationAttempts += 1;
+      if (activationAttempts === 1) {
+        retiredTargets.add("target-a");
+        beforeDispatch();
+        staleClicks += 1;
+        return;
+      }
+      beforeDispatch();
+      currentClicks += 1;
+    });
+
+    await verifyRecoveredExcelGrid(
+      options({
+        findCurrentTarget,
+        bindExactApp,
+        activateElementOnce,
+        targetIsRetired: (target) => retiredTargets.has(target)
+      })
+    );
+
+    expect(findCurrentTarget).toHaveBeenCalledTimes(2);
+    expect(bindExactApp.mock.calls.map(([target]) => target)).toEqual(["target-a", "target-b"]);
+    expect(activateElementOnce).toHaveBeenCalledTimes(2);
+    expect(staleClicks).toBe(0);
+    expect(currentClicks).toBe(1);
+  });
+
   it("never retries after receipt drift makes a dispatched click indeterminate", async () => {
     let currentReceipt = receipt;
     let activationAttempts = 0;
