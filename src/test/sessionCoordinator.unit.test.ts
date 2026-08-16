@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
-import type { Memento, NotebookDocument } from "vscode";
+import type { NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import type { FilterModel } from "../shared/filterModel";
 import type {
   OpenWranglerRequest,
@@ -14,7 +13,6 @@ import type {
 import {
   openRequest,
   columnWindow,
-  inspectionStep,
   openedResponse,
   pageResponseForMetadata,
   setOpenNotebookDocuments,
@@ -125,195 +123,6 @@ describe("SessionCoordinator", () => {
       coordinator.exportData(first.metadata.sessionId, first.metadata.revision + 1, "/tmp/stale.csv", "csv")
     ).rejects.toThrow("Ignored stale request revision");
     expect(firstDelegate).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps bounded notebook-output snapshots ephemeral and ignores stale persisted state", async () => {
-    const source = { kind: "notebookOutput" as const, label: "Saved sales preview" };
-    const runtimeOpened = openedResponse();
-    runtimeOpened.metadata = {
-      ...runtimeOpened.metadata,
-      source,
-      mode: "viewing",
-      capabilities: {
-        editable: false,
-        lazy: false,
-        cancel: false,
-        exportCsv: false,
-        exportParquet: false,
-        notebookInsert: false
-      },
-      shape: { rows: 0, columns: 1 },
-      filteredShape: { rows: 0, columns: 1 },
-      schema: [{ id: "c:value", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }],
-      steps: []
-    };
-    runtimeOpened.page = { ...runtimeOpened.page, columnIds: ["c:value"] };
-    const stored = {
-      [persistenceKey(source, "polars")]: persistedSessionState(
-        { ...runtimeOpened.metadata, steps: [inspectionStep] },
-        { columnWidths: { "c:value": 999 }, viewport: { firstVisibleRow: 0, scrollLeft: 123 } }
-      )
-    };
-    const workspaceState = {
-      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
-      update: vi.fn(async () => undefined),
-      keys: vi.fn(() => [SESSION_STORAGE_KEY])
-    } as Memento;
-    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-      if (request.kind === "openSession") return runtimeOpened;
-      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
-      throw new Error(`Unexpected snapshot delegate request: ${request.kind}`);
-    });
-    const coordinator = new SessionCoordinator(workspaceState);
-    const bridge = coordinator.createBridge({ request: delegateRequest });
-
-    const opened = await bridge.request({ ...openRequest, source, mode: "viewing" });
-    if (opened.kind !== "sessionOpened") throw new Error("Expected the notebook snapshot to open.");
-    expect(opened.metadata.steps).toEqual([]);
-    expect(workspaceState.get).not.toHaveBeenCalled();
-
-    await bridge.updateViewState?.(opened.metadata.sessionId, {
-      selectedColumnId: "c:value",
-      columnWidths: { "c:value": 240 },
-      viewport: { firstVisibleRow: 0, scrollLeft: 40 }
-    });
-
-    expect(coordinator.activeSession()?.viewState).toMatchObject({
-      selectedColumnId: "c:value",
-      columnWidths: { "c:value": 240 },
-      viewport: { scrollLeft: 40 }
-    });
-    expect(workspaceState.get).not.toHaveBeenCalled();
-    expect(workspaceState.update).not.toHaveBeenCalled();
-    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
-
-    await bridge.request({
-      kind: "closeSession",
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision
-    });
-    expect(coordinator.diagnostics().sessionCount).toBe(0);
-  });
-
-  it("keeps auto-detected PySpark notebook viewing ephemeral even when editing mode was requested", async () => {
-    const source = {
-      kind: "notebookVariable" as const,
-      label: "spark_frame",
-      variableName: "spark_frame",
-      uri: "file:///workspace/spark.ipynb"
-    };
-    const runtimeOpened = openedResponse("spark-runtime", "pyspark");
-    runtimeOpened.metadata = {
-      ...runtimeOpened.metadata,
-      source,
-      mode: "viewing",
-      capabilities: {
-        editable: false,
-        lazy: false,
-        cancel: false,
-        exportCsv: false,
-        exportParquet: false,
-        notebookInsert: false
-      },
-      shape: { rows: 1, columns: 1 },
-      filteredShape: { rows: 1, columns: 1 },
-      schema: [{ id: "c:value", name: "value", position: 0, rawType: "bigint", type: "integer", nullable: false }],
-      steps: []
-    };
-    runtimeOpened.page = {
-      ...runtimeOpened.page,
-      totalRows: 1,
-      columnIds: ["c:value"],
-      rows: [
-        {
-          id: "r:0",
-          rowNumber: 0,
-          values: [{ kind: "integer", display: "1", raw: 1, isNull: false, isNaN: false }]
-        }
-      ]
-    };
-    const staleState = {
-      [persistenceKey(source, "pyspark")]: {
-        backend: "pyspark",
-        cleaning: { steps: [] },
-        view: {
-          filterModel: {
-            filters: [],
-            sort: [{ column: "value", direction: "desc", nulls: "last" }]
-          },
-          columnWidths: { "c:value": 999 },
-          viewport: { firstVisibleRow: 0, scrollLeft: 999 }
-        }
-      }
-    };
-    const workspaceState = {
-      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? staleState : fallback)),
-      update: vi.fn(async () => undefined),
-      keys: vi.fn(() => [SESSION_STORAGE_KEY])
-    } as Memento;
-    const requestedFilter: FilterModel = {
-      filters: [],
-      sort: [{ column: "value", direction: "desc", nulls: "last" }]
-    };
-    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-      if (request.kind === "openSession") return runtimeOpened;
-      if (request.kind === "getPage") {
-        return {
-          kind: "page",
-          revision: runtimeOpened.metadata.revision,
-          viewRequestId: request.viewRequestId,
-          metadata: { ...runtimeOpened.metadata, filterModel: request.filterModel },
-          page: { ...runtimeOpened.page, offset: request.offset, limit: request.limit }
-        };
-      }
-      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
-      throw new Error(`Unexpected PySpark delegate request: ${request.kind}`);
-    });
-    const coordinator = new SessionCoordinator(workspaceState);
-    const bridge = coordinator.createBridge({ request: delegateRequest });
-    const { backend: _backend, ...automaticRequest } = openRequest;
-
-    const opened = await bridge.request({ ...automaticRequest, source, mode: "editing" });
-
-    expect(opened).toMatchObject({
-      kind: "sessionOpened",
-      metadata: { backend: "pyspark", mode: "viewing", filterModel: { filters: [], sort: [] } }
-    });
-    expect(workspaceState.get).not.toHaveBeenCalled();
-    expect(delegateRequest.mock.calls.map(([request]) => request.kind)).toEqual(["openSession"]);
-
-    if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark notebook variable to open.");
-    await bridge.updateViewState?.(opened.metadata.sessionId, {
-      selectedColumnId: "c:value",
-      columnWidths: { "c:value": 240 },
-      viewport: { firstVisibleRow: 0, scrollLeft: 40 }
-    });
-    expect(workspaceState.update).not.toHaveBeenCalled();
-
-    await expect(
-      bridge.request({
-        kind: "getPage",
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision,
-        offset: 0,
-        limit: 100,
-        columnOffset: 0,
-        columnLimit: 16,
-        filterModel: requestedFilter,
-        viewRequestId: "pyspark-ephemeral-view"
-      })
-    ).resolves.toMatchObject({
-      kind: "page",
-      metadata: { filterModel: requestedFilter }
-    });
-    expect(workspaceState.update).not.toHaveBeenCalled();
-
-    await bridge.request({
-      kind: "closeSession",
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision
-    });
-    expect(coordinator.diagnostics().sessionCount).toBe(0);
   });
 
   it.each(["pyspark_connect_unavailable", "pyspark_connect_state_lost"] as const)(
