@@ -165,16 +165,18 @@ export class PythonRuntimeTransport<Runtime extends PythonRuntimeTransportSlot> 
 
   handleLine(runtime: Runtime, proc: ChildProcessWithoutNullStreams, line: string): void {
     if (runtime.process !== proc) return;
-    let envelope: RuntimeResponseEnvelope;
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(line);
-      if (!isRuntimeResponseEnvelope(parsed)) throw new Error("Response does not match the protocol v2 envelope.");
-      envelope = parsed;
-    } catch (error) {
-      this.hooks.reportDiagnostic(`Invalid runtime response: ${line}`);
-      this.hooks.reportDiagnostic(error instanceof Error ? error.message : String(error));
+      parsed = JSON.parse(line) as unknown;
+    } catch {
+      this.hooks.reportDiagnostic("Invalid runtime response: non-JSON payload omitted.");
       return;
     }
+    if (!isRuntimeResponseEnvelope(parsed)) {
+      this.hooks.reportDiagnostic("Invalid runtime response: non-protocol-v2 payload omitted.");
+      return;
+    }
+    const envelope: RuntimeResponseEnvelope = parsed;
 
     const cancellationTarget = this.cancellationTargets.get(envelope.requestId);
     if (cancellationTarget) {

@@ -200,10 +200,21 @@ describe("PythonRuntimeTransport", () => {
       vi.fn()
     );
     const requestId = harness.writes()[0]!.requestId;
+    const secret = `OW_SECRET_DO_NOT_REPORT_${"x".repeat(256 * 1_024)}`;
 
-    harness.respondRaw({ protocolVersion: 2, requestId, response: { kind: "initialized" } });
+    harness.transport.handleLine(harness.runtime, harness.runtime.process!, `{"credential":"${secret}`);
+    harness.respondRaw({
+      protocolVersion: 2,
+      requestId,
+      response: { kind: "initialized", runtimeVersion: secret }
+    });
     expect(harness.runtime.pendingIds.size).toBe(1);
-    expect(harness.diagnostics).toContainEqual(expect.stringContaining("Invalid runtime response"));
+    expect(harness.diagnostics).toEqual([
+      "Invalid runtime response: non-JSON payload omitted.",
+      "Invalid runtime response: non-protocol-v2 payload omitted."
+    ]);
+    expect(harness.diagnostics.join("\n")).not.toContain("OW_SECRET_DO_NOT_REPORT");
+    expect(harness.diagnostics.every((diagnostic) => Buffer.byteLength(diagnostic, "utf8") < 128)).toBe(true);
 
     harness.respond(requestId, initializedResponse);
     await expect(response).resolves.toEqual(initializedResponse);
