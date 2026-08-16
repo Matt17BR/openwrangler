@@ -1122,24 +1122,23 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const focusedRoute = source.slice(
-    source.indexOf('recordAcceptanceProgress("preflight:complete")'),
-    source.indexOf("if (isDataWranglerCoexistencePhase(phase))")
+    source.indexOf("const phaseDispatched = await dispatchExtensionHostPhase(phaseSelection"),
+    source.indexOf("if (phaseDispatched) return;")
   );
-  assert.match(focusedRoute, /phase === "jupyter-r" && testSelector === "interactive-terminal"/u);
+  assert.match(focusedRoute, /focusedRInteractive: async \(\) => \{/u);
   assert.match(
     focusedRoute,
     /recordAcceptanceProgress\("jupyter-r:interactive:tooling-start"\)[\s\S]*await assertReleasedNativeREditorTooling\(\)[\s\S]*recordAcceptanceProgress\("jupyter-r:interactive:tooling-ready"\)[\s\S]*await exerciseReleasedRInteractiveTerminalJourney\(/u
   );
   assert.match(focusedRoute, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true,/u);
   assert.match(focusedRoute, /await exerciseReleasedRInteractiveTerminalJourney\(/u);
-  assert.match(focusedRoute, /testSelector === "literate-documents"/u);
+  assert.match(focusedRoute, /focusedRLiterateDocuments: async \(\) => \{/u);
   assert.match(focusedRoute, /await exerciseReleasedRLiterateDocumentJourneys\(/u);
   assert.match(
     focusedRoute,
     /exerciseReleasedRLiterateDocumentJourneys\([\s\S]*process\.platform === "linux"\s*\? process\.env\.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS\s*: undefined/u,
     "Focused literate acceptance must retain the Linux screenshot-capture path."
   );
-  assert.match(focusedRoute, /return;/u);
   const notebookJourney = source.slice(
     source.indexOf("async function exerciseReleasedRJupyterExtension("),
     source.indexOf("async function exerciseReleasedRInteractiveTerminalJourney(")
