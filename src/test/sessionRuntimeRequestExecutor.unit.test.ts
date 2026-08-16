@@ -51,7 +51,7 @@ describe("SessionRuntimeRequestExecutor", () => {
   it("restores a previously ambiguous mutation before dispatch or fails closed", async () => {
     const request = statsRequest(0);
     const response = datasetStatsResponse();
-    const delegate = bridge(vi.fn(async () => response));
+    const delegate = bridge(requestMock(async () => response));
     const failedSession = runtimeSession(delegate, { recoveryRequired: true });
     const failedHooks = hooks({ replay: vi.fn(async () => false) });
     const executor = runtimeExecutor();
@@ -76,7 +76,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     const request = previewRequest();
     const settlement = Promise.resolve();
     const detached = new DetachedBridgeRequestError("host deadline", "timeout", true, settlement);
-    const detachedSession = runtimeSession(bridge(vi.fn(async () => Promise.reject(detached))));
+    const detachedSession = runtimeSession(bridge(requestMock(async () => Promise.reject(detached))));
     const detachedHooks = hooks();
     const executor = runtimeExecutor();
 
@@ -86,7 +86,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     expect(detachedHooks.replayAfterRuntimeLoss).not.toHaveBeenCalled();
 
     const transportError = new Error("connection lost");
-    const thrownSession = runtimeSession(bridge(vi.fn(async () => Promise.reject(transportError))));
+    const thrownSession = runtimeSession(bridge(requestMock(async () => Promise.reject(transportError))));
     const thrownHooks = hooks();
     await expect(executor.execute(thrownSession, request, undefined, thrownHooks)).rejects.toBe(transportError);
     expect(thrownSession.recoveryRequired).toBe(true);
@@ -98,7 +98,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     const calls: OpenWranglerRequest[] = [];
     const session = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => {
+        requestMock(async (runtimeRequest) => {
           calls.push(runtimeRequest);
           if (calls.length === 1) throw new Error("transport lost");
           return datasetStatsResponse();
@@ -115,7 +115,10 @@ describe("SessionRuntimeRequestExecutor", () => {
     await expect(
       runtimeExecutor().execute(session, request, { viewContextId: "view" }, requestHooks)
     ).resolves.toMatchObject({ kind: "datasetStats", revision: 0 });
-    expect(calls.map((candidate) => candidate.sessionId)).toEqual(["runtime-session", "runtime-2"]);
+    expect(calls.map((candidate) => ("sessionId" in candidate ? candidate.sessionId : undefined))).toEqual([
+      "runtime-session",
+      "runtime-2"
+    ]);
     expect(replay).toHaveBeenCalledWith("runtime-session", {
       priority: "interactive",
       viewContextId: "view"
@@ -127,7 +130,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     let calls = 0;
     const session = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => {
+        requestMock(async (runtimeRequest) => {
           calls += 1;
           if (calls === 1) {
             return {
@@ -135,7 +138,7 @@ describe("SessionRuntimeRequestExecutor", () => {
               code: "unknown_session",
               message: "Unknown session",
               recoverable: true,
-              sessionId: runtimeRequest.sessionId,
+              sessionId: runtimeSessionId(runtimeRequest),
               viewRequestId: request.viewRequestId
             };
           }
@@ -157,12 +160,12 @@ describe("SessionRuntimeRequestExecutor", () => {
 
     const mismatched = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => ({
+        requestMock(async (runtimeRequest) => ({
           kind: "error",
           code: "unknown_session",
           message: "Unknown session",
           recoverable: true,
-          sessionId: runtimeRequest.sessionId,
+          sessionId: runtimeSessionId(runtimeRequest),
           viewRequestId: "wrong-view"
         }))
       ),
@@ -187,14 +190,14 @@ describe("SessionRuntimeRequestExecutor", () => {
       const scheduler = schedulerStub(() => cancelled);
       const session = runtimeSession(
         bridge(
-          vi.fn(async (runtimeRequest) => {
+          requestMock(async (runtimeRequest) => {
             runtimeCalls += 1;
             return {
               kind: "error",
               code: "unknown_session",
               message: "Unknown session",
               recoverable: true,
-              sessionId: runtimeRequest.sessionId,
+              sessionId: runtimeSessionId(runtimeRequest),
               viewRequestId: request.viewRequestId
             };
           })
@@ -232,7 +235,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     let calls = 0;
     const session = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => {
+        requestMock(async (runtimeRequest) => {
           calls += 1;
           if (calls === 1) {
             return {
@@ -240,7 +243,7 @@ describe("SessionRuntimeRequestExecutor", () => {
               code: "live_source_invalidated",
               message: "The live source changed.",
               recoverable: true,
-              sessionId: runtimeRequest.sessionId,
+              sessionId: runtimeSessionId(runtimeRequest),
               viewRequestId: request.viewRequestId
             };
           }
@@ -277,12 +280,12 @@ describe("SessionRuntimeRequestExecutor", () => {
     const page = pageRequest("stale-page", 0);
     const pageSession = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => ({
+        requestMock(async (runtimeRequest) => ({
           kind: "error",
           code: "live_source_invalidated",
           message: "The live source changed.",
           recoverable: true,
-          sessionId: runtimeRequest.sessionId,
+          sessionId: runtimeSessionId(runtimeRequest),
           viewRequestId: page.viewRequestId
         }))
       ),
@@ -301,17 +304,16 @@ describe("SessionRuntimeRequestExecutor", () => {
       viewRequestId: "values",
       column: "value",
       filterModel: emptyFilter,
-      offset: 0,
       limit: 10
     };
     const valuesSession = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => ({
+        requestMock(async (runtimeRequest) => ({
           kind: "error",
           code: "live_source_invalidated",
           message: "The live source changed.",
           recoverable: true,
-          sessionId: runtimeRequest.sessionId,
+          sessionId: runtimeSessionId(runtimeRequest),
           viewRequestId: "values"
         }))
       ),
@@ -330,7 +332,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     const request = statsRequest(0);
     const session = runtimeSession(
       bridge(
-        vi.fn(async () => {
+        requestMock(async () => {
           replaceRuntime(session);
           return datasetStatsResponse();
         })
@@ -347,7 +349,7 @@ describe("SessionRuntimeRequestExecutor", () => {
     const mutation = previewRequest();
     const mutationSession = runtimeSession(
       bridge(
-        vi.fn(async () => ({
+        requestMock(async () => ({
           kind: "error",
           code: "engine_error",
           message: "wrong session",
@@ -367,12 +369,12 @@ describe("SessionRuntimeRequestExecutor", () => {
     const scheduler = schedulerStub();
     const sparkSession = runtimeSession(
       bridge(
-        vi.fn(async (runtimeRequest) => ({
+        requestMock(async (runtimeRequest) => ({
           kind: "error",
           code: "pyspark_connect_state_lost",
           message: "Spark server restarted.",
           recoverable: true,
-          sessionId: runtimeRequest.sessionId,
+          sessionId: runtimeSessionId(runtimeRequest),
           viewRequestId: "spark-page"
         }))
       ),
@@ -443,7 +445,7 @@ function hooks(overrides: Partial<RuntimeRequestHooks> = {}): RuntimeRequestHook
     installRuntimeSettlement: vi.fn(),
     replay: vi.fn(async () => false),
     replayAfterRuntimeLoss: vi.fn(async () => false),
-    close: vi.fn(async () => ({ kind: "sessionClosed", sessionId: "public-session" })),
+    close: vi.fn(async () => ({ kind: "sessionClosed" as const, sessionId: "public-session" })),
     responseCallbacks: { activate: vi.fn(), publishInspection: vi.fn() },
     ...overrides
   };
@@ -458,6 +460,15 @@ function schedulerStub(isCancelled: () => boolean = () => false): SessionRequest
 
 function bridge(request: OpenWranglerBridge["request"]): OpenWranglerBridge {
   return { request };
+}
+
+function requestMock(implementation: OpenWranglerBridge["request"]) {
+  return vi.fn(implementation);
+}
+
+function runtimeSessionId(request: OpenWranglerRequest): string {
+  if (!("sessionId" in request)) throw new Error(`Expected a session-bound request, received ${request.kind}.`);
+  return request.sessionId;
 }
 
 function replaceRuntime(session: RuntimeRequestSession): void {
