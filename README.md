@@ -111,9 +111,9 @@ by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
 
 ## Open files
 
-Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. **Import
-options** is available when a source needs an explicit override. Excel adds sheet selection; Parquet and
-JSONL/NDJSON open directly.
+Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. BOM-marked UTF-16LE
+and UTF-16BE files open through Pandas automatically. **Import options** is available when a source needs an explicit
+override. Excel adds sheet selection; Parquet and JSONL/NDJSON open directly.
 
 <table>
   <tr>

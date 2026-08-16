@@ -12,7 +12,7 @@ export interface PythonDependency {
 }
 
 export interface BackendImportCapabilityFailure {
-  option: "delimiter" | "quoteChar";
+  option: "delimiter" | "encoding" | "quoteChar";
   message: string;
   detail: string;
 }
@@ -38,6 +38,15 @@ export function backendImportCapabilityFailure(
   source: SessionSource
 ): BackendImportCapabilityFailure | undefined {
   if (!isDelimitedFile(source)) return undefined;
+  const encoding = source.importOptions?.encoding?.toLowerCase();
+  if ((encoding === "utf-16le" || encoding === "utf-16be") && backend !== "pandas") {
+    const displayEncoding = encoding === "utf-16le" ? "UTF-16LE" : "UTF-16BE";
+    return {
+      option: "encoding",
+      message: `${backendLabel(backend)} cannot open CSV or TSV files with ${displayEncoding} input.`,
+      detail: `Choose the Pandas backend for ${displayEncoding} input, or select another text encoding.`
+    };
+  }
   const quoteChar = source.importOptions?.quoteChar;
   if (quoteChar && isMultibyteCodePoint(quoteChar) && backend !== "pandas") {
     return {

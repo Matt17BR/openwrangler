@@ -98,7 +98,11 @@ export async function promptImportOptions(
 
   const currentEncoding = nonBlank(currentImportOptions?.encoding) ?? nonBlank(defaults.encoding) ?? "utf-8";
   const encodingChoice = await showImportQuickPick(
-    valueChoices(["utf-8", "utf8-lossy", "iso-8859-1", "windows-1252"], currentEncoding, (value) => value),
+    valueChoices(
+      ["utf-8", "utf8-lossy", "utf-16le", "utf-16be", "iso-8859-1", "windows-1252"],
+      currentEncoding,
+      (value) => value
+    ),
     {
       title: "Text encoding",
       placeHolder: "Choose the source encoding",

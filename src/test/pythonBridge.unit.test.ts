@@ -3457,6 +3457,25 @@ describe("PythonBridge environment resource selection", () => {
     ).toEqual([["pandas"]]);
   });
 
+  it.each(["utf-16le", "utf-16be"])("probes only Pandas for an automatic %s import", async (encoding) => {
+    const source = { ...remoteFileSource(), importOptions: { encoding } };
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["pandas"] });
+
+    await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "pandas",
+      source: { importOptions: { encoding } }
+    });
+
+    expect(
+      vi
+        .mocked(pythonEnvironment.probeDependencies)
+        .mock.calls.map(([, dependencies]) => dependencies.map((dependency) => dependency.importModule))
+    ).toEqual([["pandas"]]);
+  });
+
   it("reports only the preferred automatic Excel backend and its exact missing requirement", async () => {
     const source = remoteSourceAt("/data/workbook.xlsx");
     const { internals } = createEnvironmentHarness();
@@ -3517,6 +3536,29 @@ describe("PythonBridge environment resource selection", () => {
       expect(ensureProcess).not.toHaveBeenCalled();
     }
   );
+
+  it.each([
+    { backend: "polars" as const, encoding: "utf-16le" },
+    { backend: "polars" as const, encoding: "utf-16be" },
+    { backend: "duckdb" as const, encoding: "utf-16le" },
+    { backend: "duckdb" as const, encoding: "utf-16be" }
+  ])("rejects an explicit $backend backend with $encoding before environment work", async ({ backend, encoding }) => {
+    const source = { ...remoteFileSource(), importOptions: { encoding } };
+    const { bridge, internals } = createEnvironmentHarness();
+    const ensureProcess = vi.spyOn(internals, "ensureProcess");
+
+    await expect(bridge.request({ ...openSessionRequest(source), backend })).resolves.toMatchObject({
+      kind: "error",
+      code: "unsupported_import_options",
+      message: expect.stringContaining(encoding === "utf-16le" ? "UTF-16LE" : "UTF-16BE"),
+      detail: expect.stringContaining("Pandas"),
+      recoverable: true
+    });
+
+    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+    expect(ensureProcess).not.toHaveBeenCalled();
+  });
 
   it("passes the exact remote source URI to dependency preparation without rebuilding it as file://", async () => {
     const source = remoteFileSource();
