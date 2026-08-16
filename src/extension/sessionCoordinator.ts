@@ -8,7 +8,6 @@ import type {
   OpenWranglerResponse,
   DataExportedResponse,
   ErrorResponse,
-  FilterModel,
   OpenSessionRequest,
   PageResponse,
   SessionMetadata,
@@ -32,6 +31,15 @@ import { persistedSessionState, type DecodedPersistedSessionState } from "./sess
 import { SessionPersistenceStore } from "./sessionPersistenceStore";
 import { responseMismatch, sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
+  isCurrentLogicalView,
+  isCurrentPageRequest,
+  protocolError,
+  publicMetadata,
+  SessionResponseCommitter,
+  stepInspectionKey,
+  type SessionResponseState
+} from "./sessionResponseCommitter";
+import {
   SessionRequestScheduler,
   requestViewId,
   sessionRequestPriority,
@@ -49,14 +57,9 @@ import {
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
 
-interface CoordinatedSession extends RuntimeSessionState {
-  publicRevision: number;
-  openRequest: OpenSessionRequest;
+interface CoordinatedSession extends SessionResponseState {
   backendPreference?: DataBackend;
   origin?: CoordinatedSessionOrigin;
-  activeViewContextId?: string;
-  latestRequestedViewContextId?: string;
-  latestRequestedPageRequestId?: string;
   scheduler: SessionRequestScheduler;
   closing: boolean;
   reconfiguring: boolean;
@@ -65,8 +68,6 @@ interface CoordinatedSession extends RuntimeSessionState {
   recoveryRequired: boolean;
   /** Host-detached runtime work that must settle before this session may issue more work. */
   runtimeSettlementBarrier?: Promise<void>;
-  stepInspection?: StepInspectionResponse;
-  latestStepInspectionKey?: string;
 }
 
 export interface TextDocumentSessionOrigin {
@@ -135,9 +136,11 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly runtimeCleanup: SessionRuntimeCleanup;
   private readonly persistence: SessionPersistenceStore;
   private readonly runtimeStateRestorer = new SessionRuntimeStateRestorer();
+  private readonly responseCommitter: SessionResponseCommitter;
 
   constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
     this.persistence = new SessionPersistenceStore(workspaceState);
+    this.responseCommitter = new SessionResponseCommitter(this.persistence);
     this.runtimeCleanup = new SessionRuntimeCleanup(
       (delegate) =>
         this.pendingOpens.has(delegate) || [...this.sessions.values()].some((session) => session.delegate === delegate),
@@ -335,7 +338,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (isDeepStrictEqual(next, session.viewState)) return;
     const selectedColumnChanged = next.selectedColumnId !== session.viewState.selectedColumnId;
     session.viewState = next;
-    await this.persistSession(session);
+    await this.responseCommitter.persistSession(session);
     if (selectedColumnChanged && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
       this.setActive(session.publicId);
     }
@@ -905,7 +908,7 @@ export class SessionCoordinator implements vscode.Disposable {
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     let replacementPublished = false;
     try {
-      if (viewStateChanged) await this.persistSession(session);
+      if (viewStateChanged) await this.responseCommitter.persistSession(session);
       await session.scheduler.waitForIdle();
       if (!this.isLiveSession(session) || session.closing) {
         return protocolError(
@@ -1113,7 +1116,7 @@ export class SessionCoordinator implements vscode.Disposable {
     candidateCleanupAttempted = true;
     candidate = undefined;
     this.runtimeCleanup.track(previous, "retired runtime");
-    await this.persistSession(session);
+    await this.responseCommitter.persistSession(session);
     return publicOpenedResponse(
       { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] },
       session.publicId,
@@ -1351,7 +1354,7 @@ export class SessionCoordinator implements vscode.Disposable {
     candidateCleanupAttempted = true;
     candidate = undefined;
     this.runtimeCleanup.track(previous, "retired runtime");
-    await this.persistSession(session);
+    await this.responseCommitter.persistSession(session);
     return publicOpenedResponse(
       {
         kind: "sessionOpened",
@@ -1382,17 +1385,6 @@ export class SessionCoordinator implements vscode.Disposable {
     if (!session || session.closing || session.reconfiguring) return;
     session.activeViewContextId = viewContextId;
     session.latestRequestedViewContextId = viewContextId;
-  }
-
-  private isCurrentPageRequest(
-    session: CoordinatedSession,
-    request: Extract<SessionBoundRequest, { kind: "getPage" }>,
-    options?: BridgeRequestOptions
-  ): boolean {
-    return (
-      request.viewRequestId === session.latestRequestedPageRequestId &&
-      (options?.viewContextId === undefined || options.viewContextId === session.latestRequestedViewContextId)
-    );
   }
 
   private async executeSessionRequest(
@@ -1453,7 +1445,7 @@ export class SessionCoordinator implements vscode.Disposable {
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
     const liveSourceRecoveryIsCurrent = (): boolean => {
       if (requestWasCancelled()) return false;
-      if (publicRequest.kind === "getPage") return this.isCurrentPageRequest(session, publicRequest, options);
+      if (publicRequest.kind === "getPage") return isCurrentPageRequest(session, publicRequest, options);
       return isCurrentLogicalView(session, options);
     };
     const staleBackgroundResponse = (): OpenWranglerResponse =>
@@ -1629,208 +1621,24 @@ export class SessionCoordinator implements vscode.Disposable {
       session.scheduler.cancelBackground();
     }
 
-    if (publicRequest.kind === "inspectStep" && response.kind === "stepInspection") {
-      const expectedIndex = session.metadata.steps.findIndex((step) => step.id === publicRequest.stepId);
-      if (expectedIndex < 0 || response.stepIndex !== expectedIndex) {
-        return protocolError(
-          "invalid_runtime_response",
-          `Ignored an invalid inspectStep response: runtime reported step index ${response.stepIndex} instead of ${expectedIndex}.`,
-          true,
-          session.publicId
-        );
-      }
-      if (session.latestStepInspectionKey !== stepInspectionKey(publicRequest)) {
-        return protocolError(
-          "stale_response",
-          "Ignored an applied-step inspection superseded by a newer selection.",
-          true,
-          session.publicId
-        );
-      }
-      const inspection = { ...response, revision: session.publicRevision };
-      session.stepInspection = inspection;
-      if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
-        this.activeSessionEmitter.fire(activeSnapshot(session));
-      }
-      return inspection;
-    }
-
-    if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
-      const pageRequest = response.kind === "page" && publicRequest.kind === "getPage" ? publicRequest : undefined;
-      if (response.kind === "page" && (!pageRequest || response.viewRequestId !== pageRequest.viewRequestId)) {
-        return protocolError(
-          "stale_response",
-          "Ignored a page response correlated to a different request.",
-          true,
-          session.publicId,
-          requestViewId(publicRequest)
-        );
-      }
-      if (pageRequest && !this.isCurrentPageRequest(session, pageRequest, options)) {
-        return protocolError(
-          "stale_response",
-          "Ignored a page from a superseded logical view.",
-          true,
-          session.publicId,
-          pageRequest.viewRequestId
-        );
-      }
-      if (response.revision < requestRuntimeRevision) {
-        return protocolError(
-          "stale_response",
-          "Ignored a stale grid response.",
-          true,
-          session.publicId,
-          requestViewId(publicRequest)
-        );
-      }
-      const filterChanged = !sameFilterModel(previousFilterModel, response.metadata.filterModel);
-      const revisionChanged = response.revision !== requestRuntimeRevision;
-      const planChanged = response.kind === "stepPreview" || response.kind === "planUpdated";
-      const shapeChanged =
-        !isDeepStrictEqual(session.metadata.shape, response.metadata.shape) ||
-        !isDeepStrictEqual(session.metadata.filteredShape, response.metadata.filteredShape);
-      const stateChanged = filterChanged || revisionChanged || planChanged || shapeChanged;
-      const nextViewState = reconcileViewingState(
-        {
-          ...gridState(session.viewState),
-          filterModel: response.metadata.filterModel,
-          ...(filterChanged && response.kind === "page"
-            ? {
-                viewport: {
-                  firstVisibleRow: response.page.offset,
-                  scrollLeft: session.viewState.viewport.scrollLeft
-                }
-              }
-            : {})
+    return this.responseCommitter.commit(
+      session,
+      publicRequest,
+      response,
+      requestRuntimeRevision,
+      previousFilterModel,
+      options,
+      {
+        activate: () => {
+          if (this.isLiveSession(session)) this.setActive(session.publicId);
         },
-        response.metadata
-      );
-      const viewContextChanged = Boolean(
-        pageRequest &&
-        session.activeViewContextId !== undefined &&
-        options?.viewContextId !== session.activeViewContextId
-      );
-      const draftPresentation: SessionPresentation["draft"] | undefined =
-        response.kind === "stepPreview"
-          ? {
-              diff: response.diff,
-              ...(response.remainingMissingCells === undefined
-                ? {}
-                : { remainingMissingCells: response.remainingMissingCells }),
-              warnings: [...(response.warnings ?? [])],
-              beforeSchema:
-                response.metadata.draftReplacesStepId === undefined
-                  ? session.metadata.schema
-                  : (response.metadata.latestStepInputSchema ?? session.metadata.schema)
-            }
-          : undefined;
-      const nextDraftBaseFilterModel =
-        response.kind === "stepPreview"
-          ? previousFilterModel
-          : response.kind === "planUpdated"
-            ? undefined
-            : session.draftBaseFilterModel;
-      const commitState = (): void => {
-        if (pageRequest) {
-          session.activeViewContextId = options?.viewContextId;
-        } else if (planChanged) {
-          session.activeViewContextId = undefined;
-          session.latestRequestedViewContextId = undefined;
-          session.latestRequestedPageRequestId = undefined;
-        }
-        session.publicRevision += response.revision - requestRuntimeRevision;
-        session.runtimeRevision = response.revision;
-        if (stateChanged) {
-          session.metadata = response.metadata;
-          session.viewState = nextViewState;
-        }
-        if (viewContextChanged) session.metadata = withoutDatasetStats(session.metadata);
-        if (response.kind === "stepPreview" || response.kind === "planUpdated") {
-          session.code = response.code;
-          session.draftPresentation = draftPresentation;
-          session.draftBaseFilterModel = nextDraftBaseFilterModel;
-        }
-      };
-      if (pageRequest && stateChanged) {
-        const committed = await this.persistCurrentPage(
-          session,
-          response.metadata,
-          nextViewState,
-          () => this.isCurrentPageRequest(session, pageRequest, options),
-          () => {
-            commitState();
-            if (this.isLiveSession(session)) this.setActive(session.publicId);
+        publishInspection: () => {
+          if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+            this.activeSessionEmitter.fire(activeSnapshot(session));
           }
-        );
-        if (!committed) {
-          return protocolError(
-            "stale_response",
-            "Ignored a page superseded while its viewing state was being saved.",
-            true,
-            session.publicId,
-            pageRequest.viewRequestId
-          );
         }
-      } else {
-        commitState();
-        if (stateChanged) await this.persistSession(session);
-        if ((stateChanged || viewContextChanged) && this.isLiveSession(session)) this.setActive(session.publicId);
       }
-      return {
-        ...response,
-        revision: session.publicRevision,
-        metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source)
-      };
-    }
-    if (response.kind === "summary" || response.kind === "columnValues") {
-      if (response.revision < requestRuntimeRevision || !isCurrentLogicalView(session, options)) {
-        return protocolError(
-          "stale_response",
-          "Ignored a stale or superseded profiling response.",
-          true,
-          session.publicId,
-          requestViewId(publicRequest)
-        );
-      }
-      return { ...response, revision: session.publicRevision };
-    }
-    if (response.kind === "dataExported") {
-      if (response.revision < requestRuntimeRevision) {
-        return protocolError(
-          "stale_response",
-          "Ignored a stale export response.",
-          true,
-          session.publicId,
-          requestViewId(publicRequest)
-        );
-      }
-      return { ...response, revision: session.publicRevision };
-    }
-    if (response.kind === "datasetStats") {
-      if (response.revision < requestRuntimeRevision || !isCurrentLogicalView(session, options)) {
-        return protocolError(
-          "stale_response",
-          "Ignored stale or superseded dataset statistics.",
-          true,
-          session.publicId,
-          requestViewId(publicRequest)
-        );
-      }
-      if (
-        publicRequest.kind === "getDatasetStats" &&
-        options?.viewContextId !== undefined &&
-        options.viewContextId === session.activeViewContextId
-      ) {
-        session.metadata = { ...session.metadata, stats: response.stats };
-        if (this.isLiveSession(session)) this.setActive(session.publicId);
-      }
-      return { ...response, revision: session.publicRevision };
-    }
-    if (response.kind === "error" && response.sessionId) {
-      return { ...response, sessionId: session.publicId };
-    }
-    return response;
+    );
   }
 
   private async closeSession(
@@ -1944,22 +1752,6 @@ export class SessionCoordinator implements vscode.Disposable {
     backend: SessionMetadata["backend"]
   ): DecodedPersistedSessionState | undefined {
     return this.persistence.load(request.source, backend);
-  }
-
-  private async persistSession(session: CoordinatedSession): Promise<void> {
-    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
-    await this.persistence.save(session.openRequest.source, state);
-  }
-
-  private async persistCurrentPage(
-    session: CoordinatedSession,
-    metadata: SessionMetadata,
-    viewState: PersistedViewingState,
-    isCurrent: () => boolean,
-    commit: () => void
-  ): Promise<boolean> {
-    const state = persistedSessionState(metadata, gridState(viewState), session.draftBaseFilterModel);
-    return this.persistence.commitCurrent(session.openRequest.source, state, isCurrent, commit);
   }
 
   private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
@@ -2173,23 +1965,6 @@ function isRuntimeStateMutation(request: SessionBoundRequest): boolean {
   );
 }
 
-function sameFilterModel(left: FilterModel, right: FilterModel): boolean {
-  return isDeepStrictEqual(normalizeFilterModel(left), normalizeFilterModel(right));
-}
-
-function isCurrentLogicalView(session: CoordinatedSession, options?: BridgeRequestOptions): boolean {
-  return (
-    options?.viewContextId === undefined ||
-    (options.viewContextId === session.activeViewContextId &&
-      options.viewContextId === session.latestRequestedViewContextId)
-  );
-}
-
-function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
-  const { stats: _stats, ...withoutStats } = metadata;
-  return withoutStats;
-}
-
 function runtimeRecoveryOptions(): BridgeRequestOptions {
   return { priority: "interactive" };
 }
@@ -2205,14 +1980,6 @@ function recoveryFollowupOptions(options?: BridgeRequestOptions): BridgeRequestO
   if (!options?.requiredKernelSessionId) return options;
   const { requiredKernelSessionId: _requiredKernelSessionId, ...followup } = options;
   return followup;
-}
-
-function normalizeFilterModel(model: FilterModel): unknown {
-  return {
-    logic: model.logic ?? "and",
-    filters: model.filters.map((filter) => ({ ...filter, logic: filter.logic ?? "and" })),
-    sort: model.sort
-  };
 }
 
 function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined): CoordinatedSessionOrigin | undefined {
@@ -2291,20 +2058,6 @@ function textDocumentOriginMismatch(
   return undefined;
 }
 
-function publicMetadata(
-  metadata: SessionMetadata,
-  publicId: string,
-  publicRevision: number,
-  immutableSource: SessionSource
-): SessionMetadata {
-  return {
-    ...metadata,
-    source: immutableSource,
-    sessionId: publicId,
-    revision: publicRevision
-  };
-}
-
 function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
   const stepInspection = session.stepInspection;
   return {
@@ -2315,10 +2068,6 @@ function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
     ...(session.latestStepInspectionKey ? { stepInspectionActive: true } : {}),
     ...(stepInspection ? { stepInspection } : {})
   };
-}
-
-function stepInspectionKey(request: Extract<SessionBoundRequest, { kind: "inspectStep" }>): string {
-  return `${request.revision}:${request.stepId}:${request.offset}:${request.limit}:${request.columnOffset}:${request.columnLimit}`;
 }
 
 function publicOpenedResponse(
@@ -2368,21 +2117,4 @@ function isPySparkConnectStateLost(
     response.recoverable &&
     response.sessionId === expectedSessionId
   );
-}
-
-function protocolError(
-  code: string,
-  message: string,
-  recoverable: boolean,
-  sessionId?: string,
-  viewRequestId?: string
-): ErrorResponse {
-  return {
-    kind: "error",
-    code,
-    message,
-    recoverable,
-    ...(sessionId ? { sessionId } : {}),
-    ...(viewRequestId ? { viewRequestId } : {})
-  };
 }
