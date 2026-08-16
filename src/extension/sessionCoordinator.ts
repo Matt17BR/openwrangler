@@ -43,6 +43,7 @@ import {
   sessionRequestPriority,
   type SessionRequestExecutionLane
 } from "./sessionRequestScheduler";
+import { SessionRuntimeCleanup, runtimeCleanupOptions } from "./sessionRuntimeCleanup";
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
 
@@ -90,23 +91,11 @@ type CoordinatedSessionOrigin =
 type BridgeSessionOrigin = vscode.NotebookDocument | TextDocumentSessionOrigin;
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
-const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT = 16;
 
 class RuntimeStateRestoreError extends Error {}
 class ReconfigurationCancelledError extends Error {}
 class ReconfigurationSupersededError extends Error {}
-
-type DetachedRuntimeRole =
-  | "import candidate"
-  | "recovery candidate"
-  | "retired runtime"
-  | "saved-plan fallback runtime"
-  | "failed saved-state runtime"
-  | "editing candidate"
-  | "invalid open runtime"
-  | "late-open runtime"
-  | "terminal runtime";
 
 export interface ActiveSessionSnapshot {
   sessionId: string;
@@ -156,14 +145,19 @@ export class SessionCoordinator implements vscode.Disposable {
   private disposed = false;
   private persistenceTail: Promise<void> = Promise.resolve();
   private shutdownPromise: Promise<void> | undefined;
-  private readonly detachedCleanups = new Set<Promise<void>>();
-  private readonly detachedCleanupCounts = new Map<OpenWranglerBridge, number>();
   private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
+  private readonly runtimeCleanup: SessionRuntimeCleanup;
 
   constructor(
     private readonly workspaceState?: vscode.Memento,
-    private readonly diagnosticSink?: (message: string) => void
-  ) {}
+    diagnosticSink?: (message: string) => void
+  ) {
+    this.runtimeCleanup = new SessionRuntimeCleanup(
+      (delegate) =>
+        this.pendingOpens.has(delegate) || [...this.sessions.values()].some((session) => session.delegate === delegate),
+      diagnosticSink
+    );
+  }
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
@@ -575,7 +569,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
       else this.pendingOpens.delete(delegate);
       this.resolvePendingOpenWaitersIfIdle();
-      this.releaseDelegateIfIdle(delegate);
+      this.runtimeCleanup.releaseIfIdle(delegate);
     }
   }
 
@@ -628,12 +622,12 @@ export class SessionCoordinator implements vscode.Disposable {
     sessionOwner.current = session;
     const staleOrigin = sessionOriginMismatch(request, origin);
     if (staleOrigin) {
-      await this.closeRuntimeState(session, "invalid open runtime");
+      await this.runtimeCleanup.close(session, "invalid open runtime");
       return protocolError("invalid_source_origin", staleOrigin, true);
     }
     const openedMismatch = sessionOpenedResponseMismatch(request, response);
     if (openedMismatch) {
-      await this.closeRuntimeState(session, "invalid open runtime");
+      await this.runtimeCleanup.close(session, "invalid open runtime");
       return protocolError(
         "invalid_runtime_response",
         `Ignored an invalid openSession response: ${openedMismatch}`,
@@ -654,7 +648,7 @@ export class SessionCoordinator implements vscode.Disposable {
         );
         cleaningRestored = true;
       } catch {
-        await this.closeRuntimeState(session, "saved-plan fallback runtime");
+        await this.runtimeCleanup.close(session, "saved-plan fallback runtime");
         const clean = await delegate.request(session.openRequest, options);
         if (clean.kind === "error" || clean.kind === "cancelled") return clean;
         if (clean.kind !== "sessionOpened") {
@@ -674,7 +668,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.viewState = initialViewingState(clean.metadata);
         const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
         if (cleanMismatch) {
-          await this.closeRuntimeState(session, "invalid open runtime");
+          await this.runtimeCleanup.close(session, "invalid open runtime");
           return protocolError(
             "invalid_runtime_response",
             `Ignored an invalid openSession response while reopening the immutable source: ${cleanMismatch}`,
@@ -698,7 +692,7 @@ export class SessionCoordinator implements vscode.Disposable {
             options
           );
         } catch {
-          await this.closeRuntimeState(session, "failed saved-state runtime");
+          await this.runtimeCleanup.close(session, "failed saved-state runtime");
           return protocolError(
             "saved_view_restore_failed",
             `Open Wrangler could not restore a confirmed view for ${request.source.label}.`,
@@ -715,7 +709,7 @@ export class SessionCoordinator implements vscode.Disposable {
       }
     }
     if (this.disposed) {
-      await this.closeRuntimeState(session, "late-open runtime");
+      await this.runtimeCleanup.close(session, "late-open runtime");
       return protocolError(
         "coordinator_disposed",
         "The Open Wrangler session coordinator was disposed before the dataframe finished opening.",
@@ -724,7 +718,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
     const finalOrigin = sessionOriginMismatch(request, origin);
     if (finalOrigin) {
-      await this.closeRuntimeState(session, "invalid open runtime");
+      await this.runtimeCleanup.close(session, "invalid open runtime");
       return protocolError("invalid_source_origin", finalOrigin, true);
     }
     this.sessions.set(publicId, session);
@@ -855,7 +849,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
       else this.pendingOpens.delete(delegate);
       this.resolvePendingOpenWaitersIfIdle();
-      this.releaseDelegateIfIdle(delegate);
+      this.runtimeCleanup.releaseIfIdle(delegate);
     }
   }
 
@@ -966,7 +960,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
       else this.pendingOpens.delete(delegate);
       this.resolvePendingOpenWaitersIfIdle();
-      this.releaseDelegateIfIdle(delegate);
+      this.runtimeCleanup.releaseIfIdle(delegate);
     }
   }
 
@@ -1007,7 +1001,7 @@ export class SessionCoordinator implements vscode.Disposable {
     const cleanupCandidate = async (): Promise<void> => {
       if (candidateCleanupAttempted) return;
       candidateCleanupAttempted = true;
-      await this.closeRuntimeState(
+      await this.runtimeCleanup.close(
         candidate ?? {
           publicId: session.publicId,
           runtimeId: candidateSessionId,
@@ -1132,7 +1126,7 @@ export class SessionCoordinator implements vscode.Disposable {
     this.invalidateStepInspection(session);
     candidateCleanupAttempted = true;
     candidate = undefined;
-    this.trackDetachedCleanup(previous, "retired runtime");
+    this.runtimeCleanup.track(previous, "retired runtime");
     await this.persistSession(session);
     return publicOpenedResponse(
       { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] },
@@ -1187,7 +1181,7 @@ export class SessionCoordinator implements vscode.Disposable {
     const cleanupCandidate = async (): Promise<void> => {
       if (candidateCleanupAttempted) return;
       candidateCleanupAttempted = true;
-      await this.closeRuntimeState(
+      await this.runtimeCleanup.close(
         candidate ?? {
           publicId: session.publicId,
           runtimeId: candidateSessionId,
@@ -1370,7 +1364,7 @@ export class SessionCoordinator implements vscode.Disposable {
     this.invalidateStepInspection(session);
     candidateCleanupAttempted = true;
     candidate = undefined;
-    this.trackDetachedCleanup(previous, "retired runtime");
+    this.runtimeCleanup.track(previous, "retired runtime");
     await this.persistSession(session);
     return publicOpenedResponse(
       {
@@ -1500,7 +1494,7 @@ export class SessionCoordinator implements vscode.Disposable {
       }) as SessionBoundRequest;
 
     if (publicRequest.kind === "closeSession") {
-      return this.closeSession(session, runtimeRequest(), options);
+      return this.closeSession(session, options);
     }
 
     let response: OpenWranglerResponse;
@@ -1855,30 +1849,13 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private async closeSession(
     session: CoordinatedSession,
-    request: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
-    const cleanupOptions = terminalRuntimeCleanupOptions(options);
     try {
-      const response = await session.delegate.request(request, cleanupOptions);
+      const response = await this.runtimeCleanup.closeTerminal(session, options);
       if (response.kind === "sessionClosed" && response.sessionId === session.runtimeId) {
         return { ...response, sessionId: session.publicId };
       }
-      if (isTerminalSessionCleanupFailure(response, session.runtimeId)) {
-        this.reportRuntimeCleanupDiagnostic(
-          session,
-          "terminal runtime",
-          `runtime cleanup completed with an error: ${response.message}`
-        );
-        return { ...response, sessionId: session.publicId };
-      }
-
-      this.reportRuntimeCleanupDiagnostic(
-        session,
-        "terminal runtime",
-        `initial close was not authoritative: ${cleanupResponseDescription(response, session.runtimeId)}`
-      );
-      await this.closeRuntimeState(session, "terminal runtime");
       if (response.kind === "error") {
         return { ...response, sessionId: session.publicId };
       }
@@ -1888,22 +1865,6 @@ export class SessionCoordinator implements vscode.Disposable {
         false,
         session.publicId
       );
-    } catch (error) {
-      if (error instanceof DetachedBridgeRequestError) {
-        this.reportRuntimeCleanupDiagnostic(
-          session,
-          "terminal runtime",
-          "the host stopped waiting; the original exact-kernel close remains observed"
-        );
-        throw error;
-      }
-      this.reportRuntimeCleanupDiagnostic(
-        session,
-        "terminal runtime",
-        `initial close transport failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-      await this.closeRuntimeState(session, "terminal runtime");
-      throw error;
     } finally {
       this.releaseSession(session);
     }
@@ -1913,7 +1874,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (this.sessions.get(session.publicId) !== session) return;
     this.sessions.delete(session.publicId);
     if (this.activeSessionId === session.publicId) this.setActive(undefined);
-    this.releaseDelegateIfIdle(session.delegate);
+    this.runtimeCleanup.releaseIfIdle(session.delegate);
   }
 
   private installRuntimeSettlementBarrier(session: CoordinatedSession, settlement: Promise<void>): void {
@@ -1952,11 +1913,7 @@ export class SessionCoordinator implements vscode.Disposable {
       await this.waitForRuntimeSettlement(session);
       if (alreadyClosing) return;
       try {
-        await this.closeSession(session, {
-          kind: "closeSession",
-          sessionId: session.runtimeId,
-          revision: session.runtimeRevision
-        });
+        await this.closeSession(session);
       } catch {
         // Deactivation still releases local state; a standalone runtime also receives EOF below.
       }
@@ -1965,7 +1922,7 @@ export class SessionCoordinator implements vscode.Disposable {
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
     await Promise.race([
-      Promise.allSettled([...closes, this.waitForPendingOpens(), this.waitForDetachedCleanups()]),
+      Promise.allSettled([...closes, this.waitForPendingOpens(), this.runtimeCleanup.waitForTracked()]),
       new Promise<void>((resolve) => {
         timer = setTimeout(
           () => {
@@ -2458,12 +2415,12 @@ export class SessionCoordinator implements vscode.Disposable {
         throw new Error("The originating source changed while recovery was restoring its runtime session.");
       }
     } catch {
-      if (candidate) await this.closeRuntimeState(candidate, "recovery candidate");
+      if (candidate) await this.runtimeCleanup.close(candidate, "recovery candidate");
       return false;
     }
 
     if (!this.isLiveSession(session) || session.closing || (isStillCurrent && !isStillCurrent())) {
-      await this.closeRuntimeState(candidate, "recovery candidate");
+      await this.runtimeCleanup.close(candidate, "recovery candidate");
       return false;
     }
 
@@ -2493,75 +2450,8 @@ export class SessionCoordinator implements vscode.Disposable {
     if (publishActive && this.activeSessionId === session.publicId)
       this.activeSessionEmitter.fire(activeSnapshot(session));
     if (restoredPage) onRestoredPage?.(restoredPage);
-    this.trackDetachedCleanup(previous, "retired runtime");
+    this.runtimeCleanup.track(previous, "retired runtime");
     return true;
-  }
-
-  private trackDetachedCleanup(state: RuntimeSessionState, role: DetachedRuntimeRole): void {
-    const cleanup = this.closeRuntimeState(state, role);
-    this.detachedCleanups.add(cleanup);
-    this.detachedCleanupCounts.set(state.delegate, (this.detachedCleanupCounts.get(state.delegate) ?? 0) + 1);
-    const complete = (): void => {
-      this.detachedCleanups.delete(cleanup);
-      const remaining = (this.detachedCleanupCounts.get(state.delegate) ?? 1) - 1;
-      if (remaining > 0) this.detachedCleanupCounts.set(state.delegate, remaining);
-      else this.detachedCleanupCounts.delete(state.delegate);
-      this.releaseDelegateIfIdle(state.delegate);
-    };
-    void cleanup.then(complete, complete);
-  }
-
-  private async waitForDetachedCleanups(): Promise<void> {
-    while (this.detachedCleanups.size > 0) {
-      await Promise.allSettled([...this.detachedCleanups]);
-    }
-  }
-
-  private async closeRuntimeState(
-    state: RuntimeSessionState,
-    role: DetachedRuntimeRole,
-    options: BridgeRequestOptions = runtimeCleanupOptions(),
-    unknownSessionIsClean = false
-  ): Promise<void> {
-    try {
-      const response = await state.delegate.request(
-        {
-          kind: "closeSession",
-          sessionId: state.runtimeId,
-          revision: state.runtimeRevision
-        },
-        options
-      );
-      if (response.kind === "sessionClosed" && response.sessionId === state.runtimeId) return;
-      if (unknownSessionIsClean && isConfirmedAbsentSession(response, state.runtimeId)) return;
-      this.reportRuntimeCleanupDiagnostic(state, role, cleanupResponseDescription(response, state.runtimeId));
-    } catch (error) {
-      this.reportRuntimeCleanupDiagnostic(state, role, error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  private reportRuntimeCleanupDiagnostic(state: RuntimeSessionState, role: DetachedRuntimeRole, detail: string): void {
-    const message = `Open Wrangler could not confirm cleanup of ${role} session ${state.runtimeId}: ${detail}`;
-    try {
-      if (state.delegate.reportDiagnostic) state.delegate.reportDiagnostic(message);
-      else this.diagnosticSink?.(message);
-    } catch {
-      try {
-        this.diagnosticSink?.(message);
-      } catch {
-        // Diagnostics must never destabilize the live replacement session.
-      }
-    }
-  }
-
-  private releaseDelegateIfIdle(delegate: OpenWranglerBridge): void {
-    if (
-      !this.pendingOpens.has(delegate) &&
-      !this.detachedCleanupCounts.has(delegate) &&
-      ![...this.sessions.values()].some((session) => session.delegate === delegate)
-    ) {
-      delegate.onIdle?.();
-    }
   }
 
   private isLiveSession(session: CoordinatedSession): boolean {
@@ -2664,25 +2554,6 @@ function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
   return withoutStats;
 }
 
-function runtimeCleanupOptions(): BridgeRequestOptions {
-  return {
-    priority: "interactive",
-    timeoutMs: RUNTIME_CLEANUP_TIMEOUT_MS,
-    restartRuntimeOnTimeout: false,
-    startRuntimeIfNeeded: false
-  };
-}
-
-function terminalRuntimeCleanupOptions(options?: BridgeRequestOptions): BridgeRequestOptions {
-  return {
-    ...options,
-    priority: "interactive",
-    timeoutMs: options?.timeoutMs ?? RUNTIME_CLEANUP_TIMEOUT_MS,
-    restartRuntimeOnTimeout: false,
-    startRuntimeIfNeeded: false
-  };
-}
-
 function runtimeRecoveryOptions(): BridgeRequestOptions {
   return { priority: "interactive" };
 }
@@ -2698,37 +2569,6 @@ function recoveryFollowupOptions(options?: BridgeRequestOptions): BridgeRequestO
   if (!options?.requiredKernelSessionId) return options;
   const { requiredKernelSessionId: _requiredKernelSessionId, ...followup } = options;
   return followup;
-}
-
-function isConfirmedAbsentSession(response: OpenWranglerResponse, expectedSessionId: string): boolean {
-  if (response.kind !== "error") return false;
-  if (response.code === "unknown_session") return response.sessionId === expectedSessionId;
-  return (
-    response.code === "engine_error" &&
-    response.message === `Unknown session: ${expectedSessionId}` &&
-    (response.sessionId === undefined || response.sessionId === expectedSessionId)
-  );
-}
-
-function isTerminalSessionCleanupFailure(
-  response: OpenWranglerResponse,
-  expectedSessionId: string
-): response is ErrorResponse & { code: "session_cleanup_failed" } {
-  return (
-    response.kind === "error" &&
-    response.code === "session_cleanup_failed" &&
-    response.recoverable === false &&
-    response.sessionId === expectedSessionId
-  );
-}
-
-function cleanupResponseDescription(response: OpenWranglerResponse, expectedSessionId: string): string {
-  if (response.kind === "sessionClosed") {
-    return `runtime acknowledged session ${response.sessionId} instead of ${expectedSessionId}`;
-  }
-  if (response.kind === "error") return `${response.code}: ${response.message}`;
-  if (response.kind === "cancelled") return `close was cancelled (${response.targetRequestId})`;
-  return `runtime returned ${response.kind}`;
 }
 
 function initialViewingState(metadata: SessionMetadata): PersistedViewingState {
