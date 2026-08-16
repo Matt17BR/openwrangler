@@ -17,7 +17,6 @@ import type {
   StepInspectionResponse
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
-import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import type { GridViewState, PersistedViewingState } from "../shared/viewState";
 import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresentation } from "./dataBridge";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
@@ -33,7 +32,14 @@ import {
   type SessionResponseState
 } from "./sessionResponseCommitter";
 import { SessionRequestScheduler, requestViewId, type SessionRequestExecutionLane } from "./sessionRequestScheduler";
-import { SessionRuntimeCleanup, runtimeCleanupOptions } from "./sessionRuntimeCleanup";
+import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
+import {
+  confirmedReplayOpenRequest,
+  publicOpenedResponse,
+  reconfigurationCancelled,
+  SessionRuntimeReconfigurer,
+  type RuntimeReconfigurationHooks
+} from "./sessionRuntimeReconfigurer";
 import {
   automaticRecoveryOptions,
   isRuntimeStateMutation,
@@ -45,7 +51,6 @@ import {
   gridState,
   initialViewingState,
   reconcileViewingState,
-  RuntimeStateRestoreError,
   SessionRuntimeStateRestorer,
   type RuntimeSessionState
 } from "./sessionRuntimeStateRestorer";
@@ -77,8 +82,6 @@ type CoordinatedSessionOrigin =
 type BridgeSessionOrigin = vscode.NotebookDocument | TextDocumentSessionOrigin;
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
-class ReconfigurationCancelledError extends Error {}
-class ReconfigurationSupersededError extends Error {}
 
 export interface ActiveSessionSnapshot {
   sessionId: string;
@@ -133,6 +136,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly runtimeStateRestorer = new SessionRuntimeStateRestorer();
   private readonly responseCommitter: SessionResponseCommitter;
   private readonly runtimeRequestExecutor: SessionRuntimeRequestExecutor;
+  private readonly runtimeReconfigurer: SessionRuntimeReconfigurer;
 
   constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
     this.persistence = new SessionPersistenceStore(workspaceState);
@@ -142,6 +146,11 @@ export class SessionCoordinator implements vscode.Disposable {
       (delegate) =>
         this.pendingOpens.has(delegate) || [...this.sessions.values()].some((session) => session.delegate === delegate),
       diagnosticSink
+    );
+    this.runtimeReconfigurer = new SessionRuntimeReconfigurer(
+      this.runtimeCleanup,
+      this.runtimeStateRestorer,
+      this.responseCommitter
     );
   }
 
@@ -817,7 +826,7 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       if (options?.cancellation?.isCancellationRequested) return reconfigurationCancelled(session.publicId);
       const response = await this.serializeSessionEstablishment(delegate, () =>
-        this.reconfigureFileSessionExclusive(session, source, options)
+        this.runtimeReconfigurer.replaceFileSession(session, source, options, this.runtimeReconfigurationHooks(session))
       );
       replacementPublished = response.kind === "sessionOpened";
       return response;
@@ -928,7 +937,7 @@ export class SessionCoordinator implements vscode.Disposable {
       const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
       if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
       const response = await this.serializeSessionEstablishment(delegate, () =>
-        this.reconfigureNotebookSessionForEditingExclusive(session, options)
+        this.runtimeReconfigurer.reopenNotebookForEditing(session, options, this.runtimeReconfigurationHooks(session))
       );
       replacementPublished = response.kind === "sessionOpened";
       return response;
@@ -950,419 +959,14 @@ export class SessionCoordinator implements vscode.Disposable {
     }
   }
 
-  private async reconfigureNotebookSessionForEditingExclusive(
-    session: CoordinatedSession,
-    options?: BridgeRequestOptions
-  ): Promise<OpenWranglerResponse> {
-    if (!this.isLiveSession(session) || session.closing) {
-      return protocolError(
-        this.disposed ? "coordinator_disposed" : "session_closing",
-        "The live session closed before Editing mode could open.",
-        false,
-        session.publicId
-      );
-    }
-    const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
-    if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
-
-    const previous: RuntimeSessionState = {
-      publicId: session.publicId,
-      runtimeId: session.runtimeId,
-      runtimeRevision: session.runtimeRevision,
-      delegate: session.delegate,
-      metadata: session.metadata,
-      code: session.code,
-      draftBaseFilterModel: session.draftBaseFilterModel,
-      viewState: session.viewState
+  private runtimeReconfigurationHooks(session: CoordinatedSession): RuntimeReconfigurationHooks {
+    return {
+      isCoordinatorAvailable: () => !this.disposed,
+      isCurrent: () => this.isLiveSession(session) && !session.closing,
+      originMismatch: (request) => sessionOriginMismatch(request, session.origin),
+      recoverConfirmedRuntime: () => this.replayExclusive(session, runtimeRecoveryOptions(), false),
+      invalidateStepInspection: () => this.invalidateStepInspection(session)
     };
-    const candidateSessionId = randomUUID();
-    const candidateRequest: OpenSessionRequest = {
-      ...session.openRequest,
-      backend: session.metadata.backend,
-      mode: "editing",
-      requestedSessionId: candidateSessionId
-    };
-    let candidate: RuntimeSessionState | undefined;
-    let candidateCleanupAttempted = false;
-    const cleanupCandidate = async (): Promise<void> => {
-      if (candidateCleanupAttempted) return;
-      candidateCleanupAttempted = true;
-      await this.runtimeCleanup.close(
-        candidate ?? {
-          publicId: session.publicId,
-          runtimeId: candidateSessionId,
-          runtimeRevision: 0,
-          delegate: session.delegate,
-          metadata: session.metadata,
-          code: "",
-          viewState: session.viewState
-        },
-        "editing candidate",
-        runtimeCleanupOptions(),
-        true
-      );
-    };
-
-    let response: OpenWranglerResponse;
-    try {
-      response = await session.delegate.request(candidateRequest, {
-        ...options,
-        requiredKernelSessionId: previous.runtimeId
-      });
-    } catch (error) {
-      await cleanupCandidate();
-      return protocolError(
-        "editing_mode_open_failed",
-        `Open Wrangler could not confirm the Editing session: ${error instanceof Error ? error.message : String(error)}`,
-        true,
-        session.publicId
-      );
-    }
-    if (response.kind === "error") {
-      await cleanupCandidate();
-      if (response.sessionId && response.sessionId !== candidateSessionId) {
-        return protocolError(
-          "invalid_runtime_response",
-          `Ignored an Editing-mode error correlated to runtime session ${response.sessionId} instead of ${candidateSessionId}.`,
-          true,
-          session.publicId
-        );
-      }
-      return response.sessionId ? { ...response, sessionId: session.publicId } : response;
-    }
-    if (response.kind === "cancelled") {
-      await cleanupCandidate();
-      return response;
-    }
-    if (response.kind !== "sessionOpened") {
-      await cleanupCandidate();
-      return protocolError(
-        "invalid_runtime_response",
-        `The runtime returned ${response.kind} while opening Editing mode.`,
-        true,
-        session.publicId
-      );
-    }
-
-    candidate = {
-      publicId: session.publicId,
-      runtimeId: candidateSessionId,
-      runtimeRevision: response.metadata.revision,
-      delegate: session.delegate,
-      metadata: response.metadata,
-      code: "",
-      viewState: initialViewingState(response.metadata)
-    };
-    const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
-    if (openedMismatch) {
-      await cleanupCandidate();
-      return protocolError(
-        "invalid_runtime_response",
-        `Ignored an invalid Editing openSession response: ${openedMismatch}`,
-        true,
-        session.publicId
-      );
-    }
-    const assertCandidateCurrent = (): void => {
-      if (!this.isLiveSession(session) || session.closing) throw new ReconfigurationSupersededError();
-      if (sessionOriginMismatch(candidateRequest, session.origin)) throw new ReconfigurationSupersededError();
-    };
-    let page: PageResponse;
-    try {
-      assertCandidateCurrent();
-      page = await this.runtimeStateRestorer.restoreOneViewingState(
-        candidate,
-        session.viewState,
-        candidateRequest.pageSize,
-        candidateRequest.columnOffset,
-        candidateRequest.columnLimit,
-        "saved",
-        recoveryFollowupOptions(options),
-        assertCandidateCurrent
-      );
-      assertCandidateCurrent();
-    } catch (error) {
-      await cleanupCandidate();
-      return protocolError(
-        error instanceof ReconfigurationSupersededError ? "invalid_source_origin" : "editing_mode_view_restore_failed",
-        error instanceof ReconfigurationSupersededError
-          ? "The live dataframe source changed while Editing mode was opening."
-          : `Open Wrangler could not restore the current view in Editing mode: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-        true,
-        session.publicId
-      );
-    }
-
-    const publicRevision = session.publicRevision + 1;
-    session.runtimeId = candidate.runtimeId;
-    session.runtimeRevision = candidate.runtimeRevision;
-    session.publicRevision = publicRevision;
-    session.openRequest = confirmedReplayOpenRequest(candidateRequest, candidate.metadata);
-    session.metadata = candidate.metadata;
-    session.code = candidate.code;
-    session.draftPresentation = undefined;
-    session.draftBaseFilterModel = undefined;
-    session.viewState = candidate.viewState;
-    session.recoveryRequired = false;
-    session.activeViewContextId = undefined;
-    session.latestRequestedViewContextId = undefined;
-    session.latestRequestedPageRequestId = undefined;
-    this.invalidateStepInspection(session);
-    candidateCleanupAttempted = true;
-    candidate = undefined;
-    this.runtimeCleanup.track(previous, "retired runtime");
-    await this.responseCommitter.persistSession(session);
-    return publicOpenedResponse(
-      { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] },
-      session.publicId,
-      publicRevision,
-      session.openRequest.source
-    );
-  }
-
-  private async reconfigureFileSessionExclusive(
-    session: CoordinatedSession,
-    source: SessionSource,
-    options?: BridgeRequestOptions
-  ): Promise<OpenWranglerResponse> {
-    if (!this.isLiveSession(session) || session.closing) {
-      return protocolError(
-        this.disposed ? "coordinator_disposed" : "session_closing",
-        "The file session closed before its new import options could be opened.",
-        false,
-        session.publicId
-      );
-    }
-
-    const persisted = persistedSessionState(
-      session.metadata,
-      gridState(session.viewState),
-      session.draftBaseFilterModel
-    );
-    const previous: RuntimeSessionState = {
-      publicId: session.publicId,
-      runtimeId: session.runtimeId,
-      runtimeRevision: session.runtimeRevision,
-      delegate: session.delegate,
-      metadata: session.metadata,
-      code: session.code,
-      draftBaseFilterModel: session.draftBaseFilterModel,
-      viewState: session.viewState
-    };
-    const candidateSessionId = randomUUID();
-    const candidateRequest = replacementOpenRequest(session, source, candidateSessionId, options?.backendPreference);
-    if (!isOpenWranglerRequest(candidateRequest)) {
-      return protocolError(
-        "invalid_import_options",
-        "The selected import options are not valid for an Open Wrangler file session.",
-        true,
-        session.publicId
-      );
-    }
-
-    let candidate: RuntimeSessionState | undefined;
-    let candidateCleanupAttempted = false;
-    const cleanupCandidate = async (): Promise<void> => {
-      if (candidateCleanupAttempted) return;
-      candidateCleanupAttempted = true;
-      await this.runtimeCleanup.close(
-        candidate ?? {
-          publicId: session.publicId,
-          runtimeId: candidateSessionId,
-          runtimeRevision: 0,
-          delegate: session.delegate,
-          metadata: session.metadata,
-          code: "",
-          viewState: session.viewState
-        },
-        "import candidate",
-        runtimeCleanupOptions(),
-        true
-      );
-    };
-    const recoverConfirmedRuntime = async (): Promise<void> => {
-      const recovered =
-        this.isLiveSession(session) &&
-        !session.closing &&
-        (await this.replayExclusive(session, runtimeRecoveryOptions(), false));
-      session.recoveryRequired = !recovered;
-    };
-
-    let response: OpenWranglerResponse;
-    try {
-      response = await session.delegate.request(candidateRequest, options);
-    } catch (error) {
-      await cleanupCandidate();
-      await recoverConfirmedRuntime();
-      return protocolError(
-        "import_reconfiguration_transport_failed",
-        `Open Wrangler could not confirm the new import session: ${error instanceof Error ? error.message : String(error)}`,
-        true,
-        session.publicId
-      );
-    }
-
-    if (response.kind === "error") {
-      await cleanupCandidate();
-      if (response.sessionId && response.sessionId !== candidateSessionId) {
-        return protocolError(
-          "invalid_runtime_response",
-          `Ignored a replacement error correlated to runtime session ${response.sessionId} instead of ${candidateSessionId}.`,
-          true,
-          session.publicId
-        );
-      }
-      return response.sessionId ? { ...response, sessionId: session.publicId } : response;
-    }
-    if (response.kind === "cancelled") {
-      await cleanupCandidate();
-      return response;
-    }
-    if (response.kind !== "sessionOpened") {
-      await cleanupCandidate();
-      return protocolError(
-        "invalid_runtime_response",
-        `The runtime returned ${response.kind} while changing import options.`,
-        true,
-        session.publicId
-      );
-    }
-
-    candidate = {
-      publicId: session.publicId,
-      runtimeId: candidateSessionId,
-      runtimeRevision: response.metadata.revision,
-      delegate: session.delegate,
-      metadata: response.metadata,
-      code: "",
-      viewState: initialViewingState(response.metadata)
-    };
-    const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
-    if (openedMismatch) {
-      await cleanupCandidate();
-      return protocolError(
-        "invalid_runtime_response",
-        `Ignored an invalid replacement openSession response: ${openedMismatch}`,
-        true,
-        session.publicId
-      );
-    }
-    if (options?.cancellation?.isCancellationRequested) {
-      await cleanupCandidate();
-      return reconfigurationCancelled(session.publicId);
-    }
-    if (!this.isLiveSession(session) || session.closing) {
-      await cleanupCandidate();
-      return protocolError(
-        this.disposed ? "coordinator_disposed" : "session_closing",
-        "The file session closed before its replacement runtime could replay any state.",
-        false,
-        session.publicId
-      );
-    }
-
-    let page: PageResponse;
-    const assertCandidateCurrent = (): void => {
-      if (options?.cancellation?.isCancellationRequested) throw new ReconfigurationCancelledError();
-      if (!this.isLiveSession(session) || session.closing) throw new ReconfigurationSupersededError();
-    };
-    try {
-      await this.runtimeStateRestorer.restoreCleaningState(
-        candidate,
-        persisted.cleaning,
-        candidateRequest.columnOffset,
-        candidateRequest.columnLimit,
-        options,
-        assertCandidateCurrent
-      );
-      assertCandidateCurrent();
-      page = await this.runtimeStateRestorer.restoreOneViewingState(
-        candidate,
-        persisted.view,
-        candidateRequest.pageSize,
-        candidateRequest.columnOffset,
-        candidateRequest.columnLimit,
-        "saved",
-        options,
-        assertCandidateCurrent
-      );
-      assertCandidateCurrent();
-    } catch (error) {
-      await cleanupCandidate();
-      if (
-        !(error instanceof RuntimeStateRestoreError) &&
-        !(error instanceof ReconfigurationCancelledError) &&
-        !(error instanceof ReconfigurationSupersededError)
-      ) {
-        await recoverConfirmedRuntime();
-      }
-      if (error instanceof ReconfigurationSupersededError) {
-        return protocolError(
-          this.disposed ? "coordinator_disposed" : "session_closing",
-          "The file session closed while its replacement runtime was restoring state.",
-          false,
-          session.publicId
-        );
-      }
-      if (error instanceof ReconfigurationCancelledError || options?.cancellation?.isCancellationRequested) {
-        return reconfigurationCancelled(session.publicId);
-      }
-      return protocolError(
-        "import_state_replay_failed",
-        error instanceof RuntimeStateRestoreError
-          ? `${error.message} The active session was left unchanged.`
-          : `Open Wrangler could not confirm the replacement runtime: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-        true,
-        session.publicId
-      );
-    }
-
-    if (!this.isLiveSession(session) || session.closing) {
-      await cleanupCandidate();
-      return protocolError(
-        this.disposed ? "coordinator_disposed" : "session_closing",
-        "The file session closed before its new import options could be committed.",
-        false,
-        session.publicId
-      );
-    }
-
-    const publicRevision = session.publicRevision + 1;
-    session.runtimeId = candidate.runtimeId;
-    session.runtimeRevision = candidate.runtimeRevision;
-    session.publicRevision = publicRevision;
-    session.openRequest = confirmedReplayOpenRequest(candidateRequest, candidate.metadata);
-    if (options?.backendPreference === "auto") delete session.backendPreference;
-    else if (options?.backendPreference !== undefined) session.backendPreference = options.backendPreference;
-    session.metadata = candidate.metadata;
-    session.code = candidate.code;
-    session.draftPresentation = candidate.draftPresentation;
-    session.draftBaseFilterModel = candidate.draftBaseFilterModel;
-    session.viewState = candidate.viewState;
-    session.recoveryRequired = false;
-    session.activeViewContextId = undefined;
-    session.latestRequestedViewContextId = undefined;
-    session.latestRequestedPageRequestId = undefined;
-    this.invalidateStepInspection(session);
-    candidateCleanupAttempted = true;
-    candidate = undefined;
-    this.runtimeCleanup.track(previous, "retired runtime");
-    await this.responseCommitter.persistSession(session);
-    return publicOpenedResponse(
-      {
-        kind: "sessionOpened",
-        metadata: session.metadata,
-        page: page.page,
-        summaries: []
-      },
-      session.publicId,
-      publicRevision,
-      source
-    );
   }
 
   private cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void {
@@ -1671,46 +1275,6 @@ function sameFileSourceIdentity(current: SessionSource, replacement: SessionSour
   return isDeepStrictEqual(currentIdentity, replacementIdentity);
 }
 
-function replacementOpenRequest(
-  session: CoordinatedSession,
-  source: SessionSource,
-  requestedSessionId: string,
-  backendPreference: BridgeRequestOptions["backendPreference"] = session.backendPreference
-): OpenSessionRequest {
-  const {
-    source: _previousSource,
-    backend: _confirmedBackend,
-    requestedSessionId: _previousRequestedSessionId,
-    ...stableRequest
-  } = session.openRequest;
-  return {
-    ...stableRequest,
-    kind: "openSession",
-    source,
-    requestedSessionId,
-    ...(backendPreference && backendPreference !== "auto" ? { backend: backendPreference } : {})
-  };
-}
-
-function confirmedReplayOpenRequest(
-  request: OpenSessionRequest,
-  metadata: Pick<SessionMetadata, "backend" | "mode">
-): OpenSessionRequest {
-  const { requestedSessionId: _requestedSessionId, ...stableRequest } = request;
-  return {
-    ...stableRequest,
-    backend: metadata.backend,
-    mode: metadata.mode
-  };
-}
-
-function reconfigurationCancelled(sessionId: string): OpenWranglerResponse {
-  return {
-    kind: "cancelled",
-    targetRequestId: `reconfigure-import:${sessionId}`
-  };
-}
-
 function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined): CoordinatedSessionOrigin | undefined {
   if (!origin) return undefined;
   if (isTextDocumentSessionOrigin(origin)) {
@@ -1796,17 +1360,5 @@ function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
     viewState: session.viewState,
     ...(session.latestStepInspectionKey ? { stepInspectionActive: true } : {}),
     ...(stepInspection ? { stepInspection } : {})
-  };
-}
-
-function publicOpenedResponse(
-  response: SessionOpenedResponse,
-  publicId: string,
-  publicRevision: number,
-  immutableSource: SessionSource
-): SessionOpenedResponse {
-  return {
-    ...response,
-    metadata: publicMetadata(response.metadata, publicId, publicRevision, immutableSource)
   };
 }
