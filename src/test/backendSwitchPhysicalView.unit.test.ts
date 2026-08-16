@@ -241,6 +241,58 @@ describe("backend-switch physical grid", () => {
     expect(findCurrentTarget.mock.calls.map(([observed]) => observed.syncId)).toEqual(["sync-a", "sync-b"]);
   });
 
+  it("does not sample a target retired during binding while its receipt remains current", async () => {
+    let now = 0;
+    let retired = false;
+    const evaluate = vi.fn(async () => matchingSample("sync-a"));
+    const bindExactApp = vi.fn(async () => {
+      retired = true;
+      return { evaluate } as unknown as Locator;
+    });
+
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          discoveryTimeoutMs: 50,
+          bindExactApp,
+          targetIsRetired: () => retired,
+          now: () => now,
+          wait: async (durationMs) => {
+            now += durationMs;
+          }
+        })
+      )
+    ).rejects.toThrow(/exceeded its shared renderer deadline/u);
+
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a matching sample when its current target retires during evaluate", async () => {
+    let now = 0;
+    let retired = false;
+    const evaluate = vi.fn(async () => {
+      retired = true;
+      return matchingSample("sync-a");
+    });
+
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          discoveryTimeoutMs: 50,
+          bindExactApp: async () => ({ evaluate }) as unknown as Locator,
+          targetIsRetired: () => retired,
+          now: () => now,
+          wait: async (durationMs) => {
+            now += durationMs;
+          }
+        })
+      )
+    ).rejects.toThrow(/exceeded its shared renderer deadline/u);
+
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
   it("fails immediately when the exact switched session drifts", async () => {
     const findCurrentTarget = vi.fn(async () => "target");
     await expect(
