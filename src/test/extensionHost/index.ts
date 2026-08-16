@@ -177,6 +177,7 @@ import {
   exerciseReleasedRValueOperationsBeforeLowercase
 } from "./releasedRValueOperations";
 import { createReleasedRTextOperations } from "./releasedRTextOperations";
+import { createReleasedRVariableDiscovery } from "./releasedRVariableDiscovery";
 import { exerciseReleasedRLowercaseOperation } from "./releasedRLowercaseOperation";
 import { exerciseReleasedRCastOperation } from "./releasedRCastOperation";
 import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
@@ -1517,6 +1518,19 @@ const {
   releasedNotebookJsonResult
 });
 
+const exerciseReleasedRVariableDiscovery = createReleasedRVariableDiscovery({
+  activateReleasedNotebookVariableAction,
+  arrangePackagedProductSidebar,
+  assertReleasedSessionPage,
+  captureReleasedRJupyterOperations,
+  prepareReleasedRNotebookScreenshotWorkbench,
+  recordReleasedRAcceptanceSection,
+  releasedJupyterQuickPickRow,
+  showExactReleasedNotebook,
+  waitForReleasedJupyterConsent,
+  waitForReleasedVariableSession
+});
+
 async function exerciseReleasedRJupyterExtension(
   testing: TestApi,
   extension: vscode.Extension<ExtensionApi>,
@@ -1605,117 +1619,15 @@ async function exerciseReleasedRJupyterExtension(
       assert.equal(setup.hostname, kernelTarget.remote.hostname);
     }
 
-    recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "start");
-
-    const consent = await waitForReleasedJupyterConsent(workbench, testing);
-    await consent.allow.click();
-    await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-
-    let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-    let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-    for (const [name, flavor] of [
-      ["orders_frame", "data.frame"],
-      ["orders_tibble", "tibble"],
-      ["orders_table", "data.table"],
-      ["collapse_frame", "data.frame"],
-      ["collapse_tibble", "tibble"],
-      ["collapse_table", "data.table"]
-    ] as const) {
-      const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") });
-      await row.waitFor({ state: "visible", timeout: 90_000 });
-      assert.match(
-        (await row.innerText()).replace(/\s+/gu, " "),
-        new RegExp(`${name}.*R · ${flavor}`, "u"),
-        `Operations must label ${name} with its native R dataframe flavor.`
-      );
-    }
-    for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
-      assert.equal(
-        await operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).count(),
-        0,
-        `Operations must omit unsupported ${name}.`
-      );
-    }
-
-    const actionNotebookEditor = await showExactReleasedNotebook(notebook);
-    assert.equal(
-      actionNotebookEditor,
-      notebookEditor,
-      "The first R toolbar action must retain the exact editor used to execute setup."
-    );
-    const restoreOperationsWorkbench = screenshotOutput
-      ? await prepareReleasedRNotebookScreenshotWorkbench(workbench, notebook, notebookEditor)
-      : undefined;
-    let picker: Locator | undefined;
-    try {
-      if (screenshotOutput) {
-        sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-        operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-        await captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput);
-      }
-      picker = await activateReleasedNotebookVariableAction(workbench, notebook);
-      for (const [name, flavor] of [
-        ["orders_frame", "data.frame"],
-        ["orders_tibble", "tibble"],
-        ["orders_table", "data.table"],
-        ["collapse_frame", "data.frame"],
-        ["collapse_tibble", "tibble"],
-        ["collapse_table", "data.table"]
-      ] as const) {
-        const row = await releasedJupyterQuickPickRow(picker, name);
-        assert.ok(row, `The real R variable picker must expose ${name}.`);
-        assert.match(
-          (await row.innerText()).replace(/\s+/gu, " "),
-          new RegExp(`R · ${flavor}.*Live notebook session`, "u")
-        );
-      }
-      for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
-        assert.equal(
-          await releasedJupyterQuickPickRow(picker, name),
-          undefined,
-          `The real R variable picker must omit unsupported ${name}.`
-        );
-      }
-      await workbench.keyboard.press("Escape");
-      await picker.waitFor({ state: "hidden", timeout: 10_000 });
-    } finally {
-      await restoreOperationsWorkbench?.();
-    }
-    sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-    operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-    const ordersOperation = operations.getByRole("treeitem", { name: /^orders_frame\b/u });
-    await ordersOperation.waitFor({ state: "visible", timeout: 10_000 });
-    await ordersOperation.click();
-    recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "complete");
-
-    let base = await waitForReleasedVariableSession(
-      workbench,
+    let base = await exerciseReleasedRVariableDiscovery(
       testing,
+      workbench,
       notebook,
-      {
-        name: "orders_frame",
-        type: "data.frame",
-        backend: "r",
-        rDataframeFlavor: "r.data.frame",
-        firstValue: "1",
-        notebookInsert: true
-      },
-      "the orders R data.frame opened from Operations"
+      notebookEditor,
+      phase,
+      coverage,
+      screenshotOutput
     );
-    await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page`);
-    assert.deepEqual(base.metadata.capabilities, {
-      editable: true,
-      lazy: false,
-      cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: true,
-      filter: true,
-      sort: true,
-      profile: true,
-      columnValues: true,
-      supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
-    });
     if (screenshotOutput) {
       await disposePackagedSessionPanel(testing, base.sessionId, "the initial R data.frame before media capture");
       const mediaEditor = await showExactReleasedNotebook(notebook);
