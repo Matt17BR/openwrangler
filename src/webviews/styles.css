@@ -1035,7 +1035,8 @@ textarea {
 }
 
 .gridNavigationButton,
-.headerProfilesButton {
+.headerProfilesButton,
+.gridClipboardButton {
   background: transparent;
   color: var(--vscode-foreground);
 }
@@ -1055,6 +1056,44 @@ textarea {
   min-width: max-content;
   padding: 0 4px;
   white-space: nowrap;
+}
+
+.gridClipboardControls {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gridClipboardSelectionStatus {
+  max-width: 180px;
+  overflow: hidden;
+  padding: 0 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gridClipboardButton {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  justify-content: center;
+  min-height: 24px;
+  padding: 2px 6px;
+}
+
+.gridClipboardAnnouncement {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
 }
 
 .headerProfilesButton {
@@ -1158,6 +1197,14 @@ th[data-grid-column]:focus-visible .columnTitle {
 tbody tr:hover td.selectedColumn {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
+}
+
+td.gridClipboardSelected,
+tbody tr:hover td.gridClipboardSelected {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
 }
 
 .gridCell {
@@ -2719,7 +2766,7 @@ dd {
 @container (max-width: 480px) {
   .gridStatusBar {
     display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-columns: auto auto auto minmax(0, 1fr);
   }
 
   .visibleRowsStatus {
@@ -2730,9 +2777,35 @@ dd {
     white-space: normal;
   }
 
+  .gridClipboardControls {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .gridClipboardSelectionStatus {
+    border: 0;
+    clip-path: inset(50%);
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .gridClipboardButton {
+    min-width: 24px;
+    padding: 2px;
+  }
+
+  .gridClipboardButtonLabel {
+    display: none;
+  }
+
   .gridProfileControls {
     justify-self: end;
-    grid-column: 3;
+    grid-column: 4;
     grid-row: 1;
   }
 }

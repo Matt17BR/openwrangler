@@ -1240,6 +1240,19 @@ Shared profile values, 2026-08-10:
 - Focused React tests cover both directions of synchronization, count-mode defaults, unavailable profiles, bar-width
   stability, accessible descriptions, and the bounded 100-value request.
 
+Grid clipboard selection, 2026-08-16:
+
+- Pointer and keyboard users can select one cell or extend an inclusive rectangular range with Shift+click or
+  Shift+Arrow. The footer exposes **Copy cell**, **Copy row**, and **Copy range**; Ctrl/Cmd+C copies the current
+  cell selection.
+- Copy uses full displayed cell values and spreadsheet-safe TSV quoting. A row copy follows the current bounded
+  column projection and includes an exposed row label. It reports when only the loaded columns were copied rather
+  than implying an unbounded full-row fetch.
+- Selection is scoped to the opaque logical view. Stale views and unloaded range cells fail closed, and the copy
+  contract caps one action at 100,000 cells and 4 MiB of displayed text.
+- Focused pure and React owners cover TSV escaping, row labels, projected rows, stale and oversized selections,
+  pointer and keyboard range extension, the platform copy shortcut, view replacement, and clipboard denial.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations remain intentionally limited to native viewing plus their portable inline preview; cleaning, generated-code insertion, and data export are unavailable. PySpark's supported v1.2 surface is the local, viewing-only live-notebook matrix above. Editing, exports, saved output, running-request cancellation, external or authenticated Spark Connect execution, and provisioning are not supported. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; any future expansion needs its own acceptance evidence rather than broadening the current claim by implication. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
