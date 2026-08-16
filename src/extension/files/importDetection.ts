@@ -7,6 +7,8 @@ type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
 const DELIMITERS = [",", "\t", ";", "|"] as const;
 const UTF8_BOM = [0xef, 0xbb, 0xbf] as const;
+const UTF16LE_BOM = [0xff, 0xfe] as const;
+const UTF16BE_BOM = [0xfe, 0xff] as const;
 
 interface ParsedSample {
   readonly rows: readonly (readonly string[])[];
@@ -37,6 +39,18 @@ export function detectedImportOptionsFromSample(filename: string, sample: Uint8A
 }
 
 function decodeSample(sample: Uint8Array): { text: string; encoding: string } {
+  if (startsWith(sample, UTF16LE_BOM)) {
+    return {
+      text: new TextDecoder("utf-16le").decode(sample.subarray(UTF16LE_BOM.length)),
+      encoding: "utf-16le"
+    };
+  }
+  if (startsWith(sample, UTF16BE_BOM)) {
+    return {
+      text: new TextDecoder("utf-16be").decode(sample.subarray(UTF16BE_BOM.length)),
+      encoding: "utf-16be"
+    };
+  }
   const hasBom = UTF8_BOM.every((value, index) => sample[index] === value);
   const bytes = hasBom ? sample.subarray(UTF8_BOM.length) : sample;
   try {
@@ -53,6 +67,10 @@ function decodeSample(sample: Uint8Array): { text: string; encoding: string } {
       encoding: "windows-1252"
     };
   }
+}
+
+function startsWith(sample: Uint8Array, prefix: readonly number[]): boolean {
+  return prefix.every((value, index) => sample[index] === value);
 }
 
 function detectDialect(text: string, fallbackDelimiter: string): DelimiterCandidate {

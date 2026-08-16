@@ -623,6 +623,14 @@ Data-format and typed-edge hardening slice, 2026-07-15:
 
 This completes automated format and source-type edge evidence but keeps entry-point and summary rows **Partial** until the packaged-editor fixture checklist and interactive import/error states are recorded in VS Code and Cursor.
 
+UTF-16 delimited import slice, 2026-08-16:
+
+- The bounded detector decodes BOM-marked UTF-16LE and UTF-16BE samples before delimiter, quote, and header inference. Existing UTF-8 BOM and Windows-1252 cases remain in the same focused suite.
+- Automatic UTF-16 CSV/TSV imports select only Pandas. Explicit Polars and DuckDB requests fail with `unsupported_import_options` before Python selection, dependency probing, or runtime startup.
+- Pandas runtime fixtures open UTF-16LE CSV and UTF-16BE TSV sources with non-ASCII text and close without retaining a session. **Change Import Options** exposes both byte orders for explicit recovery.
+
+This adds focused detector, option, environment, bridge, and runtime evidence for BOM-marked UTF-16 files without changing the source-format or export matrix.
+
 Operation-edge hardening slice, 2026-07-15:
 
 - Pandas and Polars runtime results and executable generated functions agree on stable multi-sort with independent null placement per column, `dropMissingRows` any/all semantics, `dropDuplicates` last/none modes, and finite-only min-max scaling. Round, floor, and ceiling preserve infinities without Pandas overflow.
