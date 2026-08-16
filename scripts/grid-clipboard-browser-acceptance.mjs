@@ -29,10 +29,23 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
     const adapterCases = [
       adapterCase("navigator success", "success", "success", 1, 1, 0, 0, true),
       adapterCase("navigator unavailable", "unavailable", "success", 0, 0, 1, 1, true),
+      adapterCase("navigator writeText missing", "missing", "success", 0, 0, 1, 1, true),
+      adapterCase("navigator writeText non-function", "non-function", "success", 0, 0, 1, 1, true),
       adapterCase("navigator rejection", "reject", "success", 1, 0, 1, 1, true),
       adapterCase("navigator synchronous throw", "throw", "success", 1, 0, 1, 1, true),
       adapterCase("navigator rejection with execCommand false", "reject", "false", 1, 0, 1, 0, false),
-      adapterCase("navigator throw with execCommand throw", "throw", "throw", 1, 0, 1, 0, false)
+      adapterCase("navigator throw with execCommand throw", "throw", "throw", 1, 0, 1, 0, false),
+      adapterCase("missing writeText with absent execCommand", "missing", "absent", 0, 0, 0, 0, false),
+      adapterCase(
+        "non-function writeText with non-function execCommand",
+        "non-function",
+        "non-function",
+        0,
+        0,
+        0,
+        0,
+        false
+      )
     ];
     for (const scenario of adapterCases) {
       await exerciseAdapterCase(page, copyRow, scenario);
@@ -100,7 +113,7 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
   }
 
   console.log(
-    "Grid clipboard formula neutralization, adapter failure fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
+    "Grid clipboard formula neutralization, adapter availability/failure fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
   );
 }
 
@@ -121,6 +134,8 @@ function installClipboardBoundary() {
     configurable: true,
     get() {
       if (boundary.navigatorMode === "unavailable") return undefined;
+      if (boundary.navigatorMode === "missing") return {};
+      if (boundary.navigatorMode === "non-function") return { writeText: { callable: false } };
       return {
         writeText(text) {
           boundary.navigatorAttempts.push(text);
@@ -134,19 +149,17 @@ function installClipboardBoundary() {
       };
     }
   });
-  Object.defineProperty(document, "execCommand", {
-    configurable: true,
-    value(command) {
-      if (command !== "copy") return false;
-      const active = document.activeElement;
-      const text = active instanceof HTMLTextAreaElement ? active.value : undefined;
-      boundary.fallbackAttempts.push(text);
-      if (boundary.fallbackMode === "throw") throw new Error(`deterministic fallback throw for ${text}`);
-      if (boundary.fallbackMode === "false") return false;
-      boundary.fallbackWrites.push(text);
-      return true;
-    }
-  });
+  boundary.execCommand = (command) => {
+    if (command !== "copy") return false;
+    const active = document.activeElement;
+    const text = active instanceof HTMLTextAreaElement ? active.value : undefined;
+    boundary.fallbackAttempts.push(text);
+    if (boundary.fallbackMode === "throw") throw new Error(`deterministic fallback throw for ${text}`);
+    if (boundary.fallbackMode === "false") return false;
+    boundary.fallbackWrites.push(text);
+    return true;
+  };
+  Object.defineProperty(document, "execCommand", { configurable: true, value: boundary.execCommand });
 }
 
 function adapterCase(
@@ -203,6 +216,35 @@ async function configureClipboardBoundary(page, { navigatorMode, fallbackMode })
       boundary.fallbackWrites.length = 0;
       boundary.navigatorMode = nextNavigatorMode;
       boundary.fallbackMode = nextFallbackMode;
+      Object.defineProperty(document, "execCommand", {
+        configurable: true,
+        value:
+          nextFallbackMode === "absent"
+            ? undefined
+            : nextFallbackMode === "non-function"
+              ? { callable: false }
+              : boundary.execCommand
+      });
+
+      const clipboard = navigator.clipboard;
+      if (nextNavigatorMode === "missing" && (!clipboard || "writeText" in clipboard)) {
+        throw new Error("The clipboard boundary did not install a present object with missing writeText.");
+      }
+      if (
+        nextNavigatorMode === "non-function" &&
+        (!clipboard || !("writeText" in clipboard) || typeof clipboard.writeText === "function")
+      ) {
+        throw new Error("The clipboard boundary did not install a non-function writeText value.");
+      }
+      if (nextFallbackMode === "absent" && document.execCommand !== undefined) {
+        throw new Error("The clipboard boundary did not make execCommand unavailable.");
+      }
+      if (
+        nextFallbackMode === "non-function" &&
+        (document.execCommand === undefined || typeof document.execCommand === "function")
+      ) {
+        throw new Error("The clipboard boundary did not install a non-function execCommand value.");
+      }
     },
     { nextFallbackMode: fallbackMode, nextNavigatorMode: navigatorMode }
   );
