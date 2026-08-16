@@ -919,10 +919,8 @@ def test_export_rejects_a_hard_link_added_to_the_host_owned_target(tmp_path):
     opened = manager.open_session(
         {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
     )
-
     with pytest.raises(EngineError, match="singly linked regular temporary file"):
         manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity)
-
     assert target.read_bytes() == b""
     assert target_alias.read_bytes() == b""
     assert source_path.read_text(encoding="utf-8") == "value\n1\n"
@@ -954,17 +952,19 @@ def test_export_rejects_a_hard_link_added_during_runtime_write(tmp_path, monkeyp
 
     session = manager.sessions[opened["metadata"]["sessionId"]]
     monkeypatch.setattr(session.engine, "export_data", export_and_add_hardlink)
-
-    expected_error = (
-        "singly linked" if sys.platform != "win32" else "singly linked|prevented an export-target hard link"
-    )
-    with pytest.raises(EngineError, match=expected_error):
+    with pytest.raises(EngineError) as raised:
         manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity)
-
     assert target.read_text(encoding="utf-8") == "cleaned data"
     if hardlink_created:
+        expected_message = (
+            "Open Wrangler's host-owned temporary export file changed unexpectedly."
+            if sys.platform == "win32"
+            else "Python data export accepts only the host's singly linked regular temporary file."
+        )
+        assert str(raised.value) == expected_message
         assert target_alias.read_text(encoding="utf-8") == "cleaned data"
     else:
+        assert str(raised.value) == "Windows prevented an export-target hard link"
         assert not target_alias.exists()
     assert source_path.read_text(encoding="utf-8") == "value\n1\n"
 
