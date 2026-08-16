@@ -1,4 +1,4 @@
-import type { ExtensionHostTestSelector } from "./phaseDispatch";
+import { releasedJupyterScenario, type ExtensionHostTestSelector } from "./releasedJupyterScenarios";
 
 export type ReleasedRAcceptanceCoverageProfile = Readonly<{
   name:
@@ -103,22 +103,35 @@ export function releasedRNativeFramesAcceptanceCoverageProfile(
 export function releasedRAcceptanceCoverageProfile(
   request: ReleasedRAcceptanceCoverageRequest
 ): ReleasedRAcceptanceCoverageProfile {
-  if (request.selector === "categorical-operations") return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
-  if (request.selector === "value-operations") return RELEASED_R_VALUE_OPERATIONS_COVERAGE;
-  if (request.selector === "kernel-restart") return RELEASED_R_KERNEL_RESTART_COVERAGE;
-  if (request.selector === "native-frames") {
-    return releasedRNativeFramesAcceptanceCoverageProfile(request.editor, request.platform);
+  const scenario = releasedJupyterScenario({
+    editor: request.editor,
+    phaseId: request.phase,
+    platform: request.platform,
+    selector: request.selector
+  });
+  switch (scenario?.rCoverageProfileKey) {
+    case "categorical-operations":
+      return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
+    case "value-operations":
+      return RELEASED_R_VALUE_OPERATIONS_COVERAGE;
+    case "kernel-restart":
+      return RELEASED_R_KERNEL_RESTART_COVERAGE;
+    case "native-frames":
+      return releasedRNativeFramesAcceptanceCoverageProfile(request.editor, request.platform);
+    case "candidate-core":
+      return Object.freeze({
+        ...releasedRCandidateCoreAcceptanceCoverageProfile(request.editor, request.platform),
+        editing: "clone-lifecycle",
+        kernelLifecycle: false,
+        openCollapseSessions: false,
+        openNativeFramesInViewingMode: false,
+        nativeFrameEditing: "none"
+      });
+    case "remote-representative":
+      return RELEASED_R_REPRESENTATIVE_COVERAGE;
+    case "local-default":
+      return releasedRCoreAcceptanceCoverageProfile(request.editor, request.platform);
+    default:
+      throw new Error("Released R coverage requires one eligible declarative Jupyter scenario.");
   }
-  if (request.selector === "core-operations") {
-    return Object.freeze({
-      ...releasedRCandidateCoreAcceptanceCoverageProfile(request.editor, request.platform),
-      editing: "clone-lifecycle",
-      kernelLifecycle: false,
-      openCollapseSessions: false,
-      openNativeFramesInViewingMode: false,
-      nativeFrameEditing: "none"
-    });
-  }
-  if (request.phase === "jupyter-r-remote") return RELEASED_R_REPRESENTATIVE_COVERAGE;
-  return releasedRCoreAcceptanceCoverageProfile(request.editor, request.platform);
 }

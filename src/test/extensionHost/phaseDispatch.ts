@@ -1,26 +1,18 @@
-export const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
-
-export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
+import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
-  "core-operations",
-  "categorical-operations",
-  "value-operations",
-  "kernel-restart",
-  "native-frames",
-  "interactive-terminal",
-  "literate-documents"
-] as const);
+  EXTENSION_HOST_TEST_SELECTORS,
+  releasedJupyterScenario
+} from "./releasedJupyterScenarios";
+import type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase } from "./releasedJupyterScenarios";
 
-export type ExtensionHostTestSelector = (typeof EXTENSION_HOST_TEST_SELECTORS)[number];
+export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, EXTENSION_HOST_TEST_SELECTORS };
+export type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase };
 
 export type DataWranglerCoexistencePhase =
   | "jupyter-coexist-open-select"
   | "jupyter-coexist-open-restart"
   | "jupyter-coexist-data-select"
   | "jupyter-coexist-data-restart";
-
-export type ReleasedJupyterDispatchPhase =
-  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | "jupyter-r" | "jupyter-r-remote";
 
 export interface ExtensionHostPhaseEnvironment {
   readonly OPEN_WRANGLER_TEST_EDITOR?: string;
@@ -68,9 +60,12 @@ export function parseExtensionHostPhaseSelection(
   const selector = rawSelector as ExtensionHostTestSelector | undefined;
   if (
     selector !== undefined &&
-    (selector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR
-      ? phase !== "jupyter-allow" || environment.OPEN_WRANGLER_TEST_EDITOR !== "cursor"
-      : phase !== "jupyter-r")
+    !releasedJupyterScenario({
+      editor: environment.OPEN_WRANGLER_TEST_EDITOR,
+      phaseId: phase,
+      platform,
+      selector
+    })
   ) {
     throw new Error(EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR);
   }
@@ -96,27 +91,26 @@ export async function dispatchExtensionHostPhase(
   selection: ExtensionHostPhaseSelection,
   handlers: ExtensionHostPhaseHandlers
 ): Promise<boolean> {
-  if (selection.phase === "jupyter-r" && selection.selector === "interactive-terminal") {
-    await handlers.focusedRInteractive();
-    return true;
-  }
-  if (selection.phase === "jupyter-r" && selection.selector === "literate-documents") {
-    await handlers.focusedRLiterateDocuments();
-    return true;
-  }
   if (isDataWranglerCoexistencePhase(selection.phase)) {
     await handlers.dataWranglerCoexistence(selection.phase);
     return true;
   }
-  if (
-    selection.phase === "jupyter-deny" ||
-    selection.phase === "jupyter-allow" ||
-    selection.phase === "jupyter-pyspark" ||
-    selection.phase === "jupyter-remote" ||
-    selection.phase === "jupyter-r" ||
-    selection.phase === "jupyter-r-remote"
-  ) {
-    await handlers.releasedJupyter(selection.phase);
+  const releasedJupyter = releasedJupyterScenario({
+    editor: selection.editor,
+    phaseId: selection.phase,
+    platform: selection.platform,
+    selector: selection.selector
+  });
+  if (releasedJupyter?.runnerKey === "focused-r-interactive") {
+    await handlers.focusedRInteractive();
+    return true;
+  }
+  if (releasedJupyter?.runnerKey === "focused-r-literate") {
+    await handlers.focusedRLiterateDocuments();
+    return true;
+  }
+  if (releasedJupyter?.runnerKey === "released-jupyter") {
+    await handlers.releasedJupyter(releasedJupyter.phaseId);
     return true;
   }
   if (selection.phase === "python-environment") {
