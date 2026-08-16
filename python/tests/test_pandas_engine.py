@@ -12,7 +12,7 @@ import pytest
 import openwrangler_runtime.engines.base as engine_base
 import openwrangler_runtime.engines.pandas_engine as pandas_engine_module
 from openwrangler_runtime._column_binding import bind_step
-from openwrangler_runtime.engines import AmbiguousViewColumnError, PandasEngine
+from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError, PandasEngine
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
@@ -234,6 +234,29 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
         {"column": "duplicate", "count": 1},
         {"column": "7", "count": 0},
     ]
+
+
+def test_pandas_private_row_ids_are_fixed_width_and_keep_public_identity_bytes() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": np.arange(10_000, dtype=np.int64)})
+
+    identified = engine.ensure_row_ids(source, "fixed-width")
+    internal = engine.internal_row_id_column(identified)
+    private_values = identified[internal]
+
+    assert private_values.dtype == np.dtype("int64")
+    assert private_values.memory_usage(index=False, deep=True) == len(identified) * np.dtype("int64").itemsize
+    assert [row["id"] for row in engine.page(identified, 9_998, 2)["rows"]] == [
+        "r:fixed-width:9998",
+        "r:fixed-width:9999",
+    ]
+
+    source.iloc[0, 0] = -1
+    assert engine.page(identified, 0, 1)["rows"][0]["values"][0]["raw"] == 0
+
+    identified.iloc[0, identified.columns.get_loc(internal)] = -1
+    with pytest.raises(EngineError, match="invalid private row identity value"):
+        engine.page(identified, 0, 1)
 
 
 def test_pandas_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema() -> None:
