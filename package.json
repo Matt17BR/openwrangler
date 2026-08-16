@@ -5,6 +5,7 @@
   "version": "1.99.7",
   "publisher": "Matt17BR",
   "license": "MIT",
+  "packageManager": "npm@10.9.4",
   "preview": true,
   "repository": {
     "type": "git",
@@ -39,6 +40,7 @@
     "cursor"
   ],
   "engines": {
+    "node": ">=22.22.0 <23",
     "vscode": "^1.106.0"
   },
   "categories": [
@@ -72,6 +74,7 @@
     "build:test-extension": "node scripts/copy-extension-vendor-assets.mjs --guard-output-tree dist-test && node scripts/copy-extension-test-runtime-assets.mjs --guard-output-tree && tsc -p tsconfig.extension-test.json && node scripts/copy-extension-vendor-assets.mjs dist-test && node scripts/copy-extension-test-runtime-assets.mjs",
     "build:webview": "node scripts/build-webviews.mjs",
     "typecheck": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "typecheck:dependencies": "tsc -p tsconfig.dependencies.json --noEmit",
     "lint": "eslint .",
     "lint:python": "node scripts/run-python.mjs -m ruff check python && node scripts/run-python.mjs -m ruff format --check python && node scripts/run-pyright.mjs python",
     "format:check": "prettier --check .",
@@ -87,8 +90,9 @@
     "lock:remote-jupyter": "node scripts/update-remote-jupyter-lock.mjs --write",
     "lock:remote-jupyter:check": "node scripts/update-remote-jupyter-lock.mjs --check",
     "audit:python": "node scripts/run-python.mjs -m pip_audit && npm run audit:remote-jupyter",
+    "audit:node": "npm audit --audit-level=high",
     "audit:remote-jupyter": "node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.txt --disable-pip --require-hashes --progress-spinner off --strict && node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.r.txt --disable-pip --require-hashes --progress-spinner off --strict",
-    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check && npm run brand:check && npm run check:remote-jupyter-lock && npm run license:check",
+    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run typecheck:dependencies && npm run docs:check && npm run brand:check && npm run check:remote-jupyter-lock && npm run license:check",
     "check:fast-feedback": "npm-run-all --parallel --continue-on-error format:check lint typecheck",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "prewatch:extension": "npm run build:extension",
@@ -979,7 +983,7 @@
     "@eslint/js": "^10.0.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@types/node": "^25.9.1",
+    "@types/node": "22.20.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/vscode": "1.106.0",
