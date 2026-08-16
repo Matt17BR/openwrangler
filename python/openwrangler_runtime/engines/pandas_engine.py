@@ -39,7 +39,9 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
-    numeric_visualization,
+    numeric_histogram_bin_count,
+    numeric_histogram_edges,
+    numeric_visualization_from_bin_counts,
     require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
     safe_float_midpoint,
@@ -305,7 +307,7 @@ class PandasEngine(DataFrameEngine):
                 if semantic_type in {"integer", "decimal"} and not numeric.empty:
                     numeric_summary.update(_pandas_exact_numeric_extrema(minimum, maximum, semantic_type))
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
-                summary["visualization"] = numeric_visualization(numeric.tolist())
+                summary["visualization"] = _pandas_numeric_visualization(numeric)
             elif semantic_type == "boolean":
                 summary["visualization"] = boolean_visualization(series.dropna().tolist())
             elif semantic_type in {"datetime", "date"}:
@@ -2411,6 +2413,29 @@ def _maybe_float(value: Any) -> float | None:
         return result if result is None or isfinite(result) else None
     except (TypeError, ValueError):
         return None
+
+
+def _pandas_numeric_visualization(series: Any, max_bins: int = 20) -> dict[str, Any]:
+    import numpy as np
+
+    values = series.to_numpy(dtype=np.float64, na_value=np.nan, copy=False)
+    finite_mask = np.isfinite(values)
+    finite_count = int(np.count_nonzero(finite_mask))
+    if finite_count == 0:
+        return {"kind": "numeric", "bins": []}
+
+    finite_values = values if finite_count == values.size else values[finite_mask]
+    minimum = float(np.min(finite_values))
+    maximum = float(np.max(finite_values))
+    bin_count = numeric_histogram_bin_count(finite_count, int(np.unique(finite_values).size), max_bins)
+    edges = numeric_histogram_edges(minimum, maximum, bin_count)
+    if not edges:
+        return {"kind": "numeric", "bins": []}
+    if minimum == maximum:
+        return numeric_visualization_from_bin_counts(minimum, maximum, [finite_count])
+
+    counts, _ = np.histogram(finite_values, bins=np.asarray(edges, dtype=np.float64))
+    return numeric_visualization_from_bin_counts(minimum, maximum, counts)
 
 
 def _missing_value_counts(series: Any, raw_type: str) -> tuple[int, int]:
