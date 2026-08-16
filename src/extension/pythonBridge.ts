@@ -1,6 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as path from "node:path";
-import * as readline from "node:readline";
 import * as vscode from "vscode";
 import type {
   DataBackend,
@@ -59,6 +58,7 @@ import {
 } from "./pythonDependencyState";
 import { PythonSessionOwnership } from "./pythonSessionOwnership";
 import { PythonRuntimeTransport } from "./pythonRuntimeTransport";
+import { BoundedPythonStdoutLineFramer } from "./pythonStdoutLineFramer";
 
 interface MissingDependencies {
   readonly environment: PythonEnvironment;
@@ -1921,8 +1921,20 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       `Starting protocol v2 runtime with ${pythonPath} (Python ${environment.version}, ${environment.source}, generation ${this.generation}, scope ${runtime.key}).`
     );
 
-    const reader = readline.createInterface({ input: proc.stdout });
-    reader.on("line", (line) => this.runtimeTransport.handleLine(runtime, proc, line));
+    const stdout = new BoundedPythonStdoutLineFramer({
+      onLine: (line) => this.runtimeTransport.handleLine(runtime, proc, line),
+      onFailure: (error) => {
+        if (runtime.process === proc) this.restartRuntime(runtime, error.message);
+      }
+    });
+    proc.stdout.on("data", (chunk: unknown) => stdout.accept(chunk));
+    proc.stdout.on("end", () => {
+      stdout.end();
+      if (runtime.process === proc) {
+        this.restartRuntime(runtime, "Open Wrangler Python runtime stdout ended unexpectedly.");
+      }
+    });
+    proc.stdout.on("error", () => stdout.streamError());
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       runtime.stderrBuffer = `${runtime.stderrBuffer}${text}`.slice(-8000);
@@ -1932,7 +1944,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       this.handleProcessFailure(runtime, proc, this.runtimeUnavailableError(runtime, error, pythonPath))
     );
     proc.on("exit", (code, signal) => {
-      reader.close();
+      stdout.dispose();
       this.handleProcessFailure(
         runtime,
         proc,
