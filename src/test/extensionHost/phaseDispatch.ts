@@ -1,0 +1,139 @@
+export const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
+
+export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
+  CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+  "core-operations",
+  "categorical-operations",
+  "value-operations",
+  "kernel-restart",
+  "native-frames",
+  "interactive-terminal",
+  "literate-documents"
+] as const);
+
+export type ExtensionHostTestSelector = (typeof EXTENSION_HOST_TEST_SELECTORS)[number];
+
+export type DataWranglerCoexistencePhase =
+  | "jupyter-coexist-open-select"
+  | "jupyter-coexist-open-restart"
+  | "jupyter-coexist-data-select"
+  | "jupyter-coexist-data-restart";
+
+export type ReleasedJupyterDispatchPhase =
+  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | "jupyter-r" | "jupyter-r-remote";
+
+export interface ExtensionHostPhaseEnvironment {
+  readonly OPEN_WRANGLER_TEST_EDITOR?: string;
+  readonly OPEN_WRANGLER_TEST_PHASE?: string;
+  readonly OPEN_WRANGLER_TEST_PYTHON?: string;
+  readonly OPEN_WRANGLER_TEST_SELECTOR?: string;
+}
+
+export interface ExtensionHostPhaseSelection {
+  readonly editor: string | undefined;
+  readonly phase: string;
+  readonly platform: NodeJS.Platform;
+  readonly selector: ExtensionHostTestSelector | undefined;
+  readonly testPython: string | undefined;
+}
+
+export interface ExtensionHostPhaseHandlers {
+  readonly dataWranglerCoexistence: (phase: DataWranglerCoexistencePhase) => Promise<void>;
+  readonly focusedRInteractive: () => Promise<void>;
+  readonly focusedRLiterateDocuments: () => Promise<void>;
+  readonly platformSmoke: () => Promise<void>;
+  readonly pythonEnvironment: () => Promise<void>;
+  readonly releasedJupyter: (phase: ReleasedJupyterDispatchPhase) => Promise<void>;
+  readonly remoteWorkspace: () => Promise<void>;
+  readonly seed: () => Promise<void>;
+}
+
+export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".';
+
+export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
+  "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r.";
+
+const extensionHostTestSelectors = new Set<string>(EXTENSION_HOST_TEST_SELECTORS);
+
+export function parseExtensionHostPhaseSelection(
+  environment: ExtensionHostPhaseEnvironment,
+  platform: NodeJS.Platform
+): ExtensionHostPhaseSelection {
+  const phase = environment.OPEN_WRANGLER_TEST_PHASE ?? "verify";
+  const rawSelector = environment.OPEN_WRANGLER_TEST_SELECTOR;
+  if (rawSelector !== undefined && !extensionHostTestSelectors.has(rawSelector)) {
+    throw new Error(EXTENSION_HOST_TEST_SELECTOR_ERROR);
+  }
+  const selector = rawSelector as ExtensionHostTestSelector | undefined;
+  if (
+    selector !== undefined &&
+    (selector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR
+      ? phase !== "jupyter-allow" || environment.OPEN_WRANGLER_TEST_EDITOR !== "cursor"
+      : phase !== "jupyter-r")
+  ) {
+    throw new Error(EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR);
+  }
+  return Object.freeze({
+    editor: environment.OPEN_WRANGLER_TEST_EDITOR,
+    phase,
+    platform,
+    selector,
+    testPython: environment.OPEN_WRANGLER_TEST_PYTHON
+  });
+}
+
+export function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
+  return (
+    phase === "jupyter-coexist-open-select" ||
+    phase === "jupyter-coexist-open-restart" ||
+    phase === "jupyter-coexist-data-select" ||
+    phase === "jupyter-coexist-data-restart"
+  );
+}
+
+export async function dispatchExtensionHostPhase(
+  selection: ExtensionHostPhaseSelection,
+  handlers: ExtensionHostPhaseHandlers
+): Promise<boolean> {
+  if (selection.phase === "jupyter-r" && selection.selector === "interactive-terminal") {
+    await handlers.focusedRInteractive();
+    return true;
+  }
+  if (selection.phase === "jupyter-r" && selection.selector === "literate-documents") {
+    await handlers.focusedRLiterateDocuments();
+    return true;
+  }
+  if (isDataWranglerCoexistencePhase(selection.phase)) {
+    await handlers.dataWranglerCoexistence(selection.phase);
+    return true;
+  }
+  if (
+    selection.phase === "jupyter-deny" ||
+    selection.phase === "jupyter-allow" ||
+    selection.phase === "jupyter-pyspark" ||
+    selection.phase === "jupyter-remote" ||
+    selection.phase === "jupyter-r" ||
+    selection.phase === "jupyter-r-remote"
+  ) {
+    await handlers.releasedJupyter(selection.phase);
+    return true;
+  }
+  if (selection.phase === "python-environment") {
+    await handlers.pythonEnvironment();
+    return true;
+  }
+  if (selection.phase === "platform-smoke") {
+    await handlers.platformSmoke();
+    return true;
+  }
+  if (selection.phase === "remote-workspace") {
+    await handlers.remoteWorkspace();
+    return true;
+  }
+  if (selection.phase === "seed") {
+    await handlers.seed();
+    return true;
+  }
+  return false;
+}

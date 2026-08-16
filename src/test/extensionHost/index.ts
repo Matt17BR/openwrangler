@@ -131,6 +131,16 @@ import {
 } from "./screenshotEvidence";
 import { classifyRendererUrl, prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEditorTabs";
+import {
+  CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+  dispatchExtensionHostPhase,
+  parseExtensionHostPhaseSelection,
+  type DataWranglerCoexistencePhase
+} from "./phaseDispatch";
+import {
+  releasedRAcceptanceCoverageProfile,
+  type ReleasedRAcceptanceCoverageProfile
+} from "./releasedRAcceptanceCoverage";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -548,28 +558,8 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "action-icon-dark.svg"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "action-icon-light.svg"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
-  const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
-  const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
-  const testSelector = process.env.OPEN_WRANGLER_TEST_SELECTOR;
-  assert.ok(
-    testSelector === undefined ||
-      testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR ||
-      testSelector === "core-operations" ||
-      testSelector === "categorical-operations" ||
-      testSelector === "value-operations" ||
-      testSelector === "kernel-restart" ||
-      testSelector === "native-frames" ||
-      testSelector === "interactive-terminal" ||
-      testSelector === "literate-documents",
-    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".'
-  );
-  assert.ok(
-    testSelector === undefined ||
-      (testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR
-        ? phase === "jupyter-allow" && process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor"
-        : phase === "jupyter-r"),
-    "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r."
-  );
+  const phaseSelection = parseExtensionHostPhaseSelection(process.env, process.platform);
+  const { phase, selector: testSelector, testPython } = phaseSelection;
   if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
       .getConfiguration("openWrangler")
@@ -951,120 +941,114 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
-  if (phase === "jupyter-r" && testSelector === "interactive-terminal") {
-    assert.ok(testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
-    recordAcceptanceProgress("jupyter-r:interactive:tooling-start");
-    assert.equal(
-      await assertReleasedNativeREditorTooling(),
-      true,
-      "Focused active R acceptance requires the pinned official R and Quarto editor tooling."
-    );
-    recordAcceptanceProgress("jupyter-r:interactive:tooling-ready");
-    await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
-    console.log("Open Wrangler active R terminal acceptance passed.");
-    return;
-  }
-  if (phase === "jupyter-r" && testSelector === "literate-documents") {
-    assert.equal(
-      await assertReleasedNativeREditorTooling(),
-      true,
-      "Focused literate R acceptance requires the pinned official R and Quarto editor tooling."
-    );
-    const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-literate-"));
-    try {
-      await exerciseReleasedRLiterateDocumentJourneys(
-        testing,
-        await connectToEditorWorkbench(),
-        directory,
-        process.platform === "linux" ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS : undefined
+  const phaseDispatched = await dispatchExtensionHostPhase(phaseSelection, {
+    focusedRInteractive: async () => {
+      assert.ok(testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
+      recordAcceptanceProgress("jupyter-r:interactive:tooling-start");
+      assert.equal(
+        await assertReleasedNativeREditorTooling(),
+        true,
+        "Focused active R acceptance requires the pinned official R and Quarto editor tooling."
       );
-    } finally {
-      cleanupAcceptanceTemporaryDirectory(directory);
+      recordAcceptanceProgress("jupyter-r:interactive:tooling-ready");
+      await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
+      console.log("Open Wrangler active R terminal acceptance passed.");
+    },
+    focusedRLiterateDocuments: async () => {
+      assert.equal(
+        await assertReleasedNativeREditorTooling(),
+        true,
+        "Focused literate R acceptance requires the pinned official R and Quarto editor tooling."
+      );
+      const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-literate-"));
+      try {
+        await exerciseReleasedRLiterateDocumentJourneys(
+          testing,
+          await connectToEditorWorkbench(),
+          directory,
+          process.platform === "linux" ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS : undefined
+        );
+      } finally {
+        cleanupAcceptanceTemporaryDirectory(directory);
+      }
+      console.log("Open Wrangler R Markdown and Quarto acceptance passed.");
+    },
+    dataWranglerCoexistence: async (coexistencePhase) => {
+      assert.ok(testPython, "Real Data Wrangler coexistence acceptance requires the private Jupyter environment.");
+      recordAcceptanceProgress(`${coexistencePhase}:start`);
+      await exerciseReleasedDataWranglerCoexistence(testing, extension, coexistencePhase, testPython);
+      recordAcceptanceProgress(`${coexistencePhase}:complete`);
+      console.log(`Open Wrangler real Data Wrangler coexistence ${coexistencePhase} acceptance passed.`);
+    },
+    releasedJupyter: async (releasedPhase) => {
+      assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
+      recordAcceptanceProgress(`${releasedPhase}:start`);
+      if (releasedPhase === "jupyter-pyspark") {
+        await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
+      } else if (releasedPhase === "jupyter-r" || releasedPhase === "jupyter-r-remote") {
+        const coverage = releasedRAcceptanceCoverageProfile({
+          editor: phaseSelection.editor,
+          phase: releasedPhase,
+          platform: phaseSelection.platform,
+          selector: testSelector
+        });
+        await exerciseReleasedRJupyterExtension(testing, extension, releasedPhase, coverage);
+      } else {
+        await exerciseReleasedJupyterExtension(testing, extension, releasedPhase, testPython);
+      }
+      recordAcceptanceProgress(`${releasedPhase}:complete`);
+      console.log(
+        `Open Wrangler released Jupyter ${
+          releasedPhase === "jupyter-deny"
+            ? "denial"
+            : releasedPhase === "jupyter-remote"
+              ? "remote"
+              : releasedPhase === "jupyter-pyspark"
+                ? "PySpark"
+                : releasedPhase === "jupyter-r"
+                  ? "R"
+                  : releasedPhase === "jupyter-r-remote"
+                    ? "remote R"
+                    : "allow"
+        } acceptance passed.`
+      );
+    },
+    pythonEnvironment: async () => {
+      assert.ok(testPython, "Real Python-extension acceptance requires the runner-selected dependency environment.");
+      recordAcceptanceProgress("python-environment:start");
+      await exerciseRealPythonEnvironmentSelection(testing, workspace, fixture, testPython, extension.extensionPath);
+      recordAcceptanceProgress("python-environment:complete");
+      console.log("Open Wrangler real Python-environment selection acceptance passed.");
+    },
+    platformSmoke: async () => {
+      assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
+      recordAcceptanceProgress("platform-smoke:start");
+      const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
+      await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
+      recordAcceptanceProgress("platform-smoke:excel-dependency-install");
+      await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
+      if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+        recordAcceptanceProgress("platform-smoke:screenshots");
+        await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+      }
+      recordAcceptanceProgress("platform-smoke:complete");
+      console.log("Open Wrangler packaged platform smoke passed.");
+    },
+    remoteWorkspace: async () => {
+      assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");
+      recordAcceptanceProgress("remote-workspace:start");
+      await exerciseRemoteWorkspace(testing, extension, workspace, testPython);
+      recordAcceptanceProgress("remote-workspace:complete");
+      console.log("Open Wrangler real Remote SSH workspace acceptance passed.");
+    },
+    seed: async () => {
+      recordAcceptanceProgress("seed:start");
+      await seedPersistedPlan(testing, fixture, ensurePersistedRecoveryFixture(workspace));
+      recordAcceptanceProgress("seed:complete");
+      console.log("Open Wrangler extension-host persistence seed passed.");
     }
-    console.log("Open Wrangler R Markdown and Quarto acceptance passed.");
-    return;
-  }
-  if (isDataWranglerCoexistencePhase(phase)) {
-    assert.ok(testPython, "Real Data Wrangler coexistence acceptance requires the private Jupyter environment.");
-    recordAcceptanceProgress(`${phase}:start`);
-    await exerciseReleasedDataWranglerCoexistence(testing, extension, phase, testPython);
-    recordAcceptanceProgress(`${phase}:complete`);
-    console.log(`Open Wrangler real Data Wrangler coexistence ${phase} acceptance passed.`);
-    return;
-  }
-  if (
-    phase === "jupyter-deny" ||
-    phase === "jupyter-allow" ||
-    phase === "jupyter-pyspark" ||
-    phase === "jupyter-remote" ||
-    phase === "jupyter-r" ||
-    phase === "jupyter-r-remote"
-  ) {
-    assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
-    recordAcceptanceProgress(`${phase}:start`);
-    if (phase === "jupyter-pyspark") {
-      await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
-    } else if (phase === "jupyter-r" || phase === "jupyter-r-remote") {
-      await exerciseReleasedRJupyterExtension(testing, extension, phase);
-    } else {
-      await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
-    }
-    recordAcceptanceProgress(`${phase}:complete`);
-    console.log(
-      `Open Wrangler released Jupyter ${
-        phase === "jupyter-deny"
-          ? "denial"
-          : phase === "jupyter-remote"
-            ? "remote"
-            : phase === "jupyter-pyspark"
-              ? "PySpark"
-              : phase === "jupyter-r"
-                ? "R"
-                : phase === "jupyter-r-remote"
-                  ? "remote R"
-                  : "allow"
-      } acceptance passed.`
-    );
-    return;
-  }
-  if (phase === "python-environment") {
-    assert.ok(testPython, "Real Python-extension acceptance requires the runner-selected dependency environment.");
-    recordAcceptanceProgress("python-environment:start");
-    await exerciseRealPythonEnvironmentSelection(testing, workspace, fixture, testPython, extension.extensionPath);
-    recordAcceptanceProgress("python-environment:complete");
-    console.log("Open Wrangler real Python-environment selection acceptance passed.");
-    return;
-  }
-  if (phase === "platform-smoke") {
-    assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
-    recordAcceptanceProgress("platform-smoke:start");
-    const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
-    await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
-    recordAcceptanceProgress("platform-smoke:excel-dependency-install");
-    await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
-    if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
-      recordAcceptanceProgress("platform-smoke:screenshots");
-      await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
-    }
-    recordAcceptanceProgress("platform-smoke:complete");
-    console.log("Open Wrangler packaged platform smoke passed.");
-    return;
-  }
-  if (phase === "remote-workspace") {
-    assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");
-    recordAcceptanceProgress("remote-workspace:start");
-    await exerciseRemoteWorkspace(testing, extension, workspace, testPython);
-    recordAcceptanceProgress("remote-workspace:complete");
-    console.log("Open Wrangler real Remote SSH workspace acceptance passed.");
-    return;
-  }
-  if (phase === "seed") {
-    recordAcceptanceProgress("seed:start");
-    await seedPersistedPlan(testing, fixture, ensurePersistedRecoveryFixture(workspace));
-    recordAcceptanceProgress("seed:complete");
-    console.log("Open Wrangler extension-host persistence seed passed.");
-    return;
-  }
+  });
+  if (phaseDispatched) return;
 
   const persistedRecoveryFixture = ensurePersistedRecoveryFixture(workspace);
   if (phase === "single") await seedPersistedPlan(testing, fixture, persistedRecoveryFixture);
@@ -1290,14 +1274,6 @@ function recordAcceptanceProgress(checkpoint: string): void {
   lastAcceptanceProgressCheckpoint = checkpoint;
 }
 
-type DataWranglerCoexistencePhase =
-  | "jupyter-coexist-open-select"
-  | "jupyter-coexist-open-restart"
-  | "jupyter-coexist-data-select"
-  | "jupyter-coexist-data-restart";
-
-const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
-
 type ReleasedJupyterPhase =
   | "jupyter-deny"
   | "jupyter-allow"
@@ -1357,15 +1333,6 @@ interface ReleasedPythonQuartoDocumentFixture {
   readonly variableName: string;
   readonly sentinelName: string;
   readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
-}
-
-function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
-  return (
-    phase === "jupyter-coexist-open-select" ||
-    phase === "jupyter-coexist-open-restart" ||
-    phase === "jupyter-coexist-data-select" ||
-    phase === "jupyter-coexist-data-restart"
-  );
 }
 
 function dataWranglerCoexistenceExpectation(phase: DataWranglerCoexistencePhase): {
@@ -2249,119 +2216,6 @@ async function assertReleasedRRuntimeBinding(
   assert.equal(result.mediaSourceUnchanged, true, `The R media data.frame changed during ${checkpoint}.`);
 }
 
-type ReleasedRAcceptanceCoverageProfile = Readonly<{
-  name:
-    | "categorical-operations"
-    | "value-operations"
-    | "kernel-restart"
-    | "native-frames"
-    | "comprehensive"
-    | "representative";
-  coreJourney: boolean;
-  kernelLifecycle: boolean;
-  gridPaging: "all-blocks" | "single-round-trip";
-  editing: "clone-lifecycle" | "core-catalog" | "rename-lifecycle";
-  focusedEditing: "none" | "categorical-operations" | "value-operations";
-  openCollapseSessions: boolean;
-  openNativeFramesInViewingMode: boolean;
-  nativeFrameEditing: "none" | "rename-and-drop" | "one-operation-per-flavor";
-}>;
-
-const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
-  name: "comprehensive",
-  coreJourney: true,
-  kernelLifecycle: true,
-  gridPaging: "all-blocks",
-  editing: "core-catalog",
-  focusedEditing: "none",
-  openCollapseSessions: true,
-  openNativeFramesInViewingMode: true,
-  nativeFrameEditing: "rename-and-drop"
-});
-
-const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
-  name: "representative",
-  coreJourney: true,
-  kernelLifecycle: true,
-  gridPaging: "single-round-trip",
-  editing: "rename-lifecycle",
-  focusedEditing: "none",
-  openCollapseSessions: false,
-  openNativeFramesInViewingMode: false,
-  nativeFrameEditing: "one-operation-per-flavor"
-});
-
-const RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
-  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
-  name: "categorical-operations",
-  kernelLifecycle: false,
-  focusedEditing: "categorical-operations",
-  nativeFrameEditing: "none"
-});
-
-const RELEASED_R_VALUE_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
-  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
-  name: "value-operations",
-  kernelLifecycle: false,
-  focusedEditing: "value-operations",
-  nativeFrameEditing: "none"
-});
-
-const RELEASED_R_KERNEL_RESTART_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
-  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
-  name: "kernel-restart",
-  coreJourney: false,
-  kernelLifecycle: true
-});
-
-function releasedRCoreAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
-  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
-  return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
-}
-
-function releasedRCandidateCoreAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
-  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
-  return process.platform === "linux" ? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE;
-}
-
-function releasedRNativeFramesAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
-  return Object.freeze({
-    ...releasedRCandidateCoreAcceptanceCoverageProfile(),
-    name: "native-frames",
-    coreJourney: false,
-    kernelLifecycle: false
-  });
-}
-
-function releasedRAcceptanceCoverageProfile(
-  phase: "jupyter-r" | "jupyter-r-remote"
-): ReleasedRAcceptanceCoverageProfile {
-  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations") {
-    return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
-  }
-  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "value-operations") {
-    return RELEASED_R_VALUE_OPERATIONS_COVERAGE;
-  }
-  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart") {
-    return RELEASED_R_KERNEL_RESTART_COVERAGE;
-  }
-  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "native-frames") {
-    return releasedRNativeFramesAcceptanceCoverageProfile();
-  }
-  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "core-operations") {
-    return Object.freeze({
-      ...releasedRCandidateCoreAcceptanceCoverageProfile(),
-      editing: "clone-lifecycle",
-      kernelLifecycle: false,
-      openCollapseSessions: false,
-      openNativeFramesInViewingMode: false,
-      nativeFrameEditing: "none"
-    });
-  }
-  if (phase === "jupyter-r-remote") return RELEASED_R_REPRESENTATIVE_COVERAGE;
-  return releasedRCoreAcceptanceCoverageProfile();
-}
-
 function recordReleasedRAcceptanceSection(
   phase: "jupyter-r" | "jupyter-r-remote",
   coverage: ReleasedRAcceptanceCoverageProfile,
@@ -2374,9 +2228,9 @@ function recordReleasedRAcceptanceSection(
 async function exerciseReleasedRJupyterExtension(
   testing: TestApi,
   extension: vscode.Extension<ExtensionApi>,
-  phase: "jupyter-r" | "jupyter-r-remote"
+  phase: "jupyter-r" | "jupyter-r-remote",
+  coverage: ReleasedRAcceptanceCoverageProfile
 ): Promise<void> {
-  const coverage = releasedRAcceptanceCoverageProfile(phase);
   if (coverage.name === "kernel-restart") {
     await exerciseReleasedRKernelRestartExtension(testing, extension, phase, coverage);
     return;
