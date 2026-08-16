@@ -183,6 +183,77 @@ describe("backend-switch physical grid", () => {
     expect(bindExactApp).toHaveBeenCalledWith("sync-b", "sync-b");
   });
 
+  it("never samples a target retired during binding and succeeds on the replacement receipt", async () => {
+    let current = receipt("sync-a");
+    const retired = new Set<string>();
+    const sampleA = vi.fn(async () => matchingSample("sync-a"));
+    const sampleB = vi.fn(async () => matchingSample("sync-b"));
+    const findCurrentTarget = vi.fn(async (observed: RendererSynchronizationReceipt) => `target-${observed.syncId}`);
+    const bindExactApp = vi.fn(async (target: string) => {
+      if (target === "target-sync-a") {
+        retired.add(target);
+        current = receipt("sync-b");
+        return { evaluate: sampleA } as unknown as Locator;
+      }
+      return { evaluate: sampleB } as unknown as Locator;
+    });
+
+    await verifyBackendSwitchPhysicalView(
+      options({
+        currentReceipt: () => current,
+        findCurrentTarget,
+        bindExactApp,
+        targetIsRetired: (target) => retired.has(target)
+      })
+    );
+
+    expect(findCurrentTarget.mock.calls.map(([observed]) => observed.syncId)).toEqual(["sync-a", "sync-b"]);
+    expect(bindExactApp.mock.calls.map(([target]) => target)).toEqual(["target-sync-a", "target-sync-b"]);
+    expect(sampleA).not.toHaveBeenCalled();
+    expect(sampleB).toHaveBeenCalledOnce();
+  });
+
+  it("discards a sample when its bound target retires during evaluate and reacquires", async () => {
+    let current = receipt("sync-a");
+    const retired = new Set<string>();
+    const sampleA = vi.fn(async () => {
+      retired.add("target-sync-a");
+      current = receipt("sync-b");
+      return matchingSample("sync-a");
+    });
+    const sampleB = vi.fn(async () => matchingSample("sync-b"));
+    const findCurrentTarget = vi.fn(async (observed: RendererSynchronizationReceipt) => `target-${observed.syncId}`);
+    const bindExactApp = vi.fn(async (target: string) => {
+      return { evaluate: target === "target-sync-a" ? sampleA : sampleB } as unknown as Locator;
+    });
+
+    await verifyBackendSwitchPhysicalView(
+      options({
+        currentReceipt: () => current,
+        findCurrentTarget,
+        bindExactApp,
+        targetIsRetired: (target) => retired.has(target)
+      })
+    );
+
+    expect(sampleA).toHaveBeenCalledOnce();
+    expect(sampleB).toHaveBeenCalledOnce();
+    expect(findCurrentTarget.mock.calls.map(([observed]) => observed.syncId)).toEqual(["sync-a", "sync-b"]);
+  });
+
+  it("fails immediately when the exact switched session drifts", async () => {
+    const findCurrentTarget = vi.fn(async () => "target");
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          activeSession: () => ({ sessionId: "replacement", metadata: { revision: 7 } }),
+          findCurrentTarget
+        })
+      )
+    ).rejects.toThrow("The exact session must remain active.");
+    expect(findCurrentTarget).not.toHaveBeenCalled();
+  });
+
   it("fails immediately when the switched revision drifts", async () => {
     const findCurrentTarget = vi.fn(async () => "target");
     await expect(
