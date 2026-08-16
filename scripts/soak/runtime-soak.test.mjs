@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -116,19 +116,20 @@ async function writeFixture(root, relativePath, contents = "fixture\n") {
 
 async function createAttestationFixture() {
   const root = await mkdtemp(join(tmpdir(), "openwrangler-soak-source-"));
-  const paths = [
-    "package.json",
-    "package-lock.json",
-    "scripts/editor-acceptance-evidence.mjs",
-    "scripts/packaged-python-preflight.mjs",
-    "scripts/strict-json.mjs",
-    "scripts/soak/runtime-soak.mjs",
-    "scripts/soak/runtime-soak.test.mjs",
-    "scripts/soak/soak-contract.mjs",
-    "python/openwrangler_runtime/__init__.py",
-    "python/openwrangler_runtime/server.py"
-  ];
-  for (const path of paths) await writeFixture(root, path, path.endsWith(".json") ? "{}\n" : `${path}\n`);
+  const fixtures = new Map([
+    ["package.json", "{}\n"],
+    ["package-lock.json", "{}\n"],
+    ["scripts/editor-acceptance-evidence.mjs", 'import "./strict-json.mjs";\n'],
+    ["scripts/packaged-python-preflight.mjs", "export const preflight = true;\n"],
+    ["scripts/strict-json.mjs", 'import "../src/shared/strictJson.cjs";\n'],
+    ["src/shared/strictJson.cjs", "module.exports = {};\n"],
+    ["scripts/soak/runtime-soak.mjs", 'import "../packaged-python-preflight.mjs";\nimport "./soak-contract.mjs";\n'],
+    ["scripts/soak/runtime-soak.test.mjs", 'import "./runtime-soak.mjs";\n'],
+    ["scripts/soak/soak-contract.mjs", 'import "../editor-acceptance-evidence.mjs";\n'],
+    ["python/openwrangler_runtime/__init__.py", "# package\n"],
+    ["python/openwrangler_runtime/server.py", "# server\n"]
+  ]);
+  for (const [path, contents] of fixtures) await writeFixture(root, path, contents);
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "config", "user.name", "Soak Test"]);
   execFileSync("git", ["-C", root, "config", "user.email", "soak@example.invalid"]);
@@ -261,9 +262,47 @@ test("source attestation rejects dirty runtime, dirty harness, and untracked sha
     await assert.rejects(attestation.revalidate, SoakContractError);
     await writeFile(harnessPath, harnessSource, "utf8");
 
+    const transitivePath = join(root, "src", "shared", "strictJson.cjs");
+    const transitiveSource = await readFile(transitivePath, "utf8");
+    await writeFile(transitivePath, `${transitiveSource}// dirty\n`, "utf8");
+    await assert.rejects(attestation.revalidate, SoakContractError);
+    await writeFile(transitivePath, transitiveSource.replace("{}", "{x:1}"), "utf8");
+    await assert.rejects(attestation.revalidate, SoakContractError);
+    await writeFile(transitivePath, transitiveSource, "utf8");
+
+    if (process.platform !== "win32") {
+      const replacementPath = join(root, "strict-json-replacement.cjs");
+      await writeFile(replacementPath, transitiveSource, "utf8");
+      await rename(transitivePath, `${transitivePath}.tracked`);
+      await symlink(replacementPath, transitivePath);
+      await assert.rejects(attestation.revalidate, SoakContractError);
+      await rm(transitivePath);
+      await rename(`${transitivePath}.tracked`, transitivePath);
+    }
+
     await writeFixture(root, "python/openwrangler_runtime/shadow.py", "raise RuntimeError('shadow')\n");
     await assert.rejects(() => createSourceAttestation(root, privateRoot), SoakContractError);
     await assert.rejects(attestation.revalidate, SoakContractError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(privateRoot, { recursive: true, force: true });
+  }
+});
+
+test("source attestation rejects a future relative import outside its exact executable closure", async () => {
+  const root = await createAttestationFixture();
+  const privateRoot = await mkdtemp(join(tmpdir(), "openwrangler-soak-materialized-"));
+  try {
+    await writeFixture(root, "src/shared/unbound.cjs", "module.exports = {};\n");
+    const strictPath = join(root, "scripts", "strict-json.mjs");
+    await writeFile(
+      strictPath,
+      'import "../src/shared/strictJson.cjs";\nimport "../src/shared/unbound.cjs";\n',
+      "utf8"
+    );
+    execFileSync("git", ["-C", root, "add", "."]);
+    execFileSync("git", ["-C", root, "commit", "-q", "-m", "add unbound import"]);
+    await assert.rejects(() => createSourceAttestation(root, privateRoot), SoakContractError);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(privateRoot, { recursive: true, force: true });

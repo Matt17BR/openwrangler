@@ -2,7 +2,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { resolveAndPreflightAcceptancePython } from "../packaged-python-preflight.mjs";
@@ -36,6 +36,7 @@ const EXECUTED_WORKTREE_PATHS = Object.freeze([
   "scripts/packaged-python-preflight.mjs",
   "scripts/editor-acceptance-evidence.mjs",
   "scripts/strict-json.mjs",
+  "src/shared/strictJson.cjs",
   "package.json",
   "package-lock.json"
 ]);
@@ -633,6 +634,44 @@ function gitBlob(root, objectId) {
   });
 }
 
+function relativeModuleSpecifiers(source) {
+  const specifiers = new Set();
+  const patterns = [
+    /(?:^|\n)\s*(?:import|export)\s+[^;]*?\s+from\s+(["'])([^"'\r\n]+)\1\s*;?/gu,
+    /(?:^|\n)\s*import\s+(["'])([^"'\r\n]+)\1\s*;?/gu,
+    /\b(?:import|require)\s*\(\s*(["'])([^"'\r\n]+)\1\s*\)/gu
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[2].startsWith(".")) specifiers.add(match[2]);
+    }
+  }
+  return [...specifiers].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function assertLocalImportClosure(entries, expectedBytes) {
+  const trackedPaths = new Set(entries.map((entry) => entry.path));
+  for (const entry of entries) {
+    if (!/\.(?:cjs|js|mjs)$/u.test(entry.path)) continue;
+    const source = expectedBytes.get(entry.path)?.bytes.toString("utf8");
+    if (source === undefined) throw new SoakContractError("The source inventory is incomplete.");
+    for (const specifier of relativeModuleSpecifiers(source)) {
+      if (specifier.includes("\\") || specifier.includes("?") || specifier.includes("#")) {
+        throw new SoakContractError("A local executable import is not canonical.");
+      }
+      const importedPath = posix.normalize(posix.join(posix.dirname(entry.path), specifier));
+      if (
+        importedPath.startsWith("../") ||
+        importedPath.startsWith("/") ||
+        importedPath === "." ||
+        !trackedPaths.has(importedPath)
+      ) {
+        throw new SoakContractError("A local executable import is outside the exact source inventory.");
+      }
+    }
+  }
+}
+
 async function walkRegularFiles(root, relativeRoot) {
   const files = [];
   const visit = async (relativeDirectory) => {
@@ -698,13 +737,14 @@ export async function createSourceAttestation(root, privateRoot) {
     if (totalBytes > SOURCE_TOTAL_BYTES) throw new SoakContractError("The source inventory exceeds its byte bound.");
     const digest = sha256Hex(bytes);
     inventory.push(Object.freeze({ path: entry.path, byteLength: bytes.length, sha256: digest }));
-    expectedBytes.set(entry.path, Object.freeze({ byteLength: bytes.length, sha256: digest }));
+    expectedBytes.set(entry.path, Object.freeze({ bytes, byteLength: bytes.length, sha256: digest }));
     if (entry.path.startsWith(`${RUNTIME_SOURCE_ROOT}/`) || entry.path === `${RUNTIME_SOURCE_ROOT}/__init__.py`) {
       const destination = join(materializedRoot, ...entry.path.split("/"));
       await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
       await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
     }
   }
+  assertLocalImportClosure(entries, expectedBytes);
   const executedInventorySha256 = sha256Hex(JSON.stringify(inventory));
   const manifest = expectedBytes.get("package.json");
   const lock = expectedBytes.get("package-lock.json");
