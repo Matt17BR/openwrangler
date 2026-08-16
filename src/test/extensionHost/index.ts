@@ -137,6 +137,7 @@ import {
   parseExtensionHostPhaseSelection,
   type DataWranglerCoexistencePhase
 } from "./phaseDispatch";
+import { createFocusedReleasedRAcceptanceHandlers } from "./focusedReleasedRAcceptance";
 import {
   releasedRAcceptanceCoverageProfile,
   type ReleasedRAcceptanceCoverageProfile
@@ -941,38 +942,22 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
+  const focusedReleasedRHandlers = createFocusedReleasedRAcceptanceHandlers({
+    testing,
+    testPython,
+    platform: process.platform,
+    screenshotOutput: process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS,
+    assertNativeEditorTooling: assertReleasedNativeREditorTooling,
+    connectToEditorWorkbench,
+    createLiterateDirectory: () => mkdtempSync(path.join(tmpdir(), "openwrangler-r-literate-")),
+    cleanupLiterateDirectory: cleanupAcceptanceTemporaryDirectory,
+    exerciseInteractiveTerminalJourney: exerciseReleasedRInteractiveTerminalJourney,
+    exerciseLiterateDocumentJourneys: exerciseReleasedRLiterateDocumentJourneys,
+    log: console.log,
+    recordProgress: recordAcceptanceProgress
+  });
   const phaseDispatched = await dispatchExtensionHostPhase(phaseSelection, {
-    focusedRInteractive: async () => {
-      assert.ok(testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
-      recordAcceptanceProgress("jupyter-r:interactive:tooling-start");
-      assert.equal(
-        await assertReleasedNativeREditorTooling(),
-        true,
-        "Focused active R acceptance requires the pinned official R and Quarto editor tooling."
-      );
-      recordAcceptanceProgress("jupyter-r:interactive:tooling-ready");
-      await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
-      console.log("Open Wrangler active R terminal acceptance passed.");
-    },
-    focusedRLiterateDocuments: async () => {
-      assert.equal(
-        await assertReleasedNativeREditorTooling(),
-        true,
-        "Focused literate R acceptance requires the pinned official R and Quarto editor tooling."
-      );
-      const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-literate-"));
-      try {
-        await exerciseReleasedRLiterateDocumentJourneys(
-          testing,
-          await connectToEditorWorkbench(),
-          directory,
-          process.platform === "linux" ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS : undefined
-        );
-      } finally {
-        cleanupAcceptanceTemporaryDirectory(directory);
-      }
-      console.log("Open Wrangler R Markdown and Quarto acceptance passed.");
-    },
+    ...focusedReleasedRHandlers,
     dataWranglerCoexistence: async (coexistencePhase) => {
       assert.ok(testPython, "Real Data Wrangler coexistence acceptance requires the private Jupyter environment.");
       recordAcceptanceProgress(`${coexistencePhase}:start`);
