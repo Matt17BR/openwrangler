@@ -54,8 +54,6 @@ jobs:
         include:
           - os: macos-latest
             python: "3.12"
-          - os: windows-latest
-            python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Require exact change classification
@@ -145,13 +143,158 @@ jobs:
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         env:
           VSCODE_TEST_VERSION: stable
+
+  windows-python-runtime:
+    name: Windows Python runtime (3.14)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run test:python-environment-smoke
+      - run: python -m pytest python/tests -q
+
+  windows-extension-host:
+    name: Windows extension host (3.14)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: stable
+
+  windows-native-supervisor:
+    name: Windows native supervisor and scripts
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
       - run: npm run test:scripts:native
-        if: >-
-          ${{
-            needs.classify.result == 'success' &&
-            needs.classify.outputs.full_matrix_required == 'true' &&
-            runner.os == 'Windows'
-          }}
+
+  runtime-windows:
+    name: runtime (windows-latest, 3.14)
+    needs: [classify, windows-python-runtime, windows-extension-host, windows-native-supervisor]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require exact Windows runtime outcomes
+        shell: node {0}
+        run: |
+          const flags = {
+            benchmarkHarnessOnly: process.env.BENCHMARK_HARNESS_ONLY,
+            dependencyLockOnly: process.env.DEPENDENCY_LOCK_ONLY,
+            documentationOnly: process.env.DOCUMENTATION_ONLY,
+            draftPullRequest: process.env.DRAFT_PULL_REQUEST,
+            lightweightOnly: process.env.LIGHTWEIGHT_ONLY,
+            packageOnly: process.env.PACKAGE_ONLY,
+            releaseInfrastructureOnly: process.env.RELEASE_INFRASTRUCTURE_ONLY,
+            fullMatrixRequired: process.env.FULL_MATRIX_REQUIRED,
+          };
+          if (process.env.CLASSIFY_RESULT !== "success") {
+            throw new Error("Cross-platform change classification did not succeed.");
+          }
+          for (const [name, value] of Object.entries(flags)) {
+            if (value !== "true" && value !== "false") {
+              throw new Error(`Cross-platform classification ${name} is missing or malformed.`);
+            }
+          }
+          const invalid =
+            (flags.lightweightOnly === "true" &&
+              flags.documentationOnly === "false" &&
+              flags.draftPullRequest === "false") ||
+            (flags.lightweightOnly === "false" &&
+              (flags.documentationOnly === "true" || flags.draftPullRequest === "true")) ||
+            (flags.documentationOnly === "true" && flags.packageOnly === "true") ||
+            (flags.benchmarkHarnessOnly === "true" &&
+              (flags.documentationOnly === "true" ||
+                flags.packageOnly === "true" ||
+                flags.dependencyLockOnly === "true" ||
+                flags.draftPullRequest === "true")) ||
+            (flags.dependencyLockOnly === "true" &&
+              (flags.documentationOnly === "true" || flags.packageOnly === "true")) ||
+            (flags.releaseInfrastructureOnly === "true" &&
+              (flags.benchmarkHarnessOnly === "true" ||
+                flags.documentationOnly === "true" ||
+                flags.packageOnly === "true" ||
+                flags.dependencyLockOnly === "true" ||
+                flags.draftPullRequest === "true")) ||
+            (flags.fullMatrixRequired === "true" &&
+              (flags.benchmarkHarnessOnly === "true" ||
+                flags.documentationOnly === "true" ||
+                flags.packageOnly === "true" ||
+                flags.dependencyLockOnly === "true" ||
+                flags.releaseInfrastructureOnly === "true" ||
+                flags.draftPullRequest === "true")) ||
+            (flags.fullMatrixRequired === "false" &&
+              flags.benchmarkHarnessOnly === "false" &&
+              flags.documentationOnly === "false" &&
+              flags.packageOnly === "false" &&
+              flags.dependencyLockOnly === "false" &&
+              flags.releaseInfrastructureOnly === "false" &&
+              flags.draftPullRequest === "false");
+          if (invalid) throw new Error("Cross-platform change classification is incoherent.");
+
+          const owners = {
+            pythonRuntime: process.env.PYTHON_RUNTIME_RESULT,
+            extensionHost: process.env.EXTENSION_HOST_RESULT,
+            nativeSupervisor: process.env.NATIVE_SUPERVISOR_RESULT,
+          };
+          const expected = flags.fullMatrixRequired === "true" ? "success" : "skipped";
+          for (const [name, result] of Object.entries(owners)) {
+            if (result !== expected) {
+              throw new Error(`Windows runtime owner ${name} was ${result || "missing"}; expected ${expected}.`);
+            }
+          }
+          if (expected === "skipped") {
+            console.log("Full runtime evidence is deferred; this matrix cell preserves its required check context.");
+          }
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          BENCHMARK_HARNESS_ONLY: ${{ needs.classify.outputs.benchmark_harness_only }}
+          DEPENDENCY_LOCK_ONLY: ${{ needs.classify.outputs.dependency_lock_only }}
+          DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
+          DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
+          LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
+          PACKAGE_ONLY: ${{ needs.classify.outputs.package_only }}
+          RELEASE_INFRASTRUCTURE_ONLY: ${{ needs.classify.outputs.release_infrastructure_only }}
+          FULL_MATRIX_REQUIRED: ${{ needs.classify.outputs.full_matrix_required }}
+          PYTHON_RUNTIME_RESULT: ${{ needs.windows-python-runtime.result }}
+          EXTENSION_HOST_RESULT: ${{ needs.windows-extension-host.result }}
+          NATIVE_SUPERVISOR_RESULT: ${{ needs.windows-native-supervisor.result }}
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})

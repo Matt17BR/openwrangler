@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
 import test from "node:test";
@@ -540,6 +541,14 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
       `${relativePath} must retain non-PR evidence that the cancellation expression leaves uninterrupted.`
     );
     for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+      if (relativePath === ".github/workflows/cross-platform.yml" && jobId === "runtime-windows") {
+        assert.equal(
+          job?.if,
+          "${{ always() && !cancelled() }}",
+          "The Windows aggregate must inspect every completed owner result without resisting workflow cancellation."
+        );
+        continue;
+      }
       assert.equal(
         String(job?.if ?? "").includes("always()"),
         false,
@@ -1992,10 +2001,7 @@ test("ready substantive PRs run full while push tiers retain their exact owners"
         runtime: {
           name: undefined,
           matrix: {
-            include: [
-              { os: "macos-latest", python: "3.12" },
-              { os: "windows-latest", python: "3.14" }
-            ]
+            include: [{ os: "macos-latest", python: "3.12" }]
           }
         },
         "dependency-guard-windows": {
@@ -2065,23 +2071,281 @@ test("ready substantive PRs run full while push tiers retain their exact owners"
   });
   assert.deepEqual(codeqlSteps?.[4]?.with, { category: "/language:${{ matrix.language }}" });
 
-  const nativeRuntime = loadWorkflow(".github/workflows/cross-platform.yml")?.jobs?.runtime;
-  assert.equal(nativeRuntime?.["timeout-minutes"], 60);
-  assert.equal(
-    nativeRuntime?.steps?.some((step) => step?.run === "npm run test:extension-host"),
-    true,
-    "The existing macOS/Windows runtime cells must also own native extension-host coverage."
+  const crossPlatform = loadWorkflow(".github/workflows/cross-platform.yml");
+  assert.equal(crossPlatform?.name, "Cross-platform runtime");
+  assert.deepEqual(crossPlatform?.permissions, { contents: "read" });
+  assert.deepEqual(crossPlatform?.concurrency, {
+    group: "cross-platform-${{ github.event_name }}-${{ github.ref }}",
+    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"
+  });
+  assert.deepEqual(Object.keys(crossPlatform?.on ?? {}).sort(), ["pull_request", "schedule", "workflow_dispatch"]);
+  assert.deepEqual(crossPlatform?.on?.pull_request, {
+    branches: ["main"],
+    types: ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"]
+  });
+  assert.equal(crossPlatform?.on?.workflow_dispatch, null);
+  assert.deepEqual(crossPlatform?.on?.schedule, [{ cron: "17 4 * * 1" }]);
+  assert.equal(crossPlatform?.env, undefined);
+  const actionInventory = Object.values(crossPlatform?.jobs ?? {})
+    .flatMap((job) => job?.steps ?? [])
+    .map((step) => step?.uses)
+    .filter((uses) => typeof uses === "string")
+    .sort();
+  assert.deepEqual(actionInventory, [
+    ...Array.from({ length: 6 }, () => "actions/checkout@v6"),
+    ...Array.from({ length: 5 }, () => "actions/setup-node@v6"),
+    ...Array.from({ length: 4 }, () => "actions/setup-python@v6")
+  ]);
+
+  const macRuntime = crossPlatform?.jobs?.runtime;
+  assert.equal(macRuntime?.["timeout-minutes"], 60);
+  assert.deepEqual(macRuntime?.strategy, {
+    "fail-fast": false,
+    matrix: { include: [{ os: "macos-latest", python: "3.12" }] }
+  });
+  assert.equal(macRuntime?.["runs-on"], "${{ matrix.os }}");
+  assert.deepEqual(
+    macRuntime?.steps?.filter((step) => typeof step?.uses === "string").map((step) => [step.uses, step.with]),
+    [
+      ["actions/checkout@v6", undefined],
+      ["actions/setup-node@v6", { "node-version-file": ".node-version", cache: "npm" }],
+      ["actions/setup-python@v6", { "python-version": "${{ matrix.python }}", cache: "pip" }]
+    ],
+    "The macOS runtime owner must retain its exact checkout and toolchain setup."
+  );
+  assert.deepEqual(
+    macRuntime?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
+    [
+      "exit 1",
+      'echo "Full runtime evidence is deferred; this matrix cell preserves its required check context."',
+      "npm ci",
+      "python -m pip install --upgrade pip",
+      'python -m pip install -e "python[dev]"',
+      "npm run test:python-environment-smoke",
+      "python -m pytest python/tests -q",
+      "npm run test:extension-host"
+    ],
+    "The macOS runtime command path must remain unchanged."
   );
   assert.equal(
-    nativeRuntime?.steps?.find((step) => step?.run === "npm run test:extension-host")?.env?.VSCODE_TEST_VERSION,
-    "stable",
-    "Cross-platform extension-host coverage must pin the current stable VS Code build."
+    macRuntime?.steps?.find((step) => step?.run === "npm run test:extension-host")?.env?.VSCODE_TEST_VERSION,
+    "stable"
   );
   assert.equal(
-    nativeRuntime?.steps?.filter((step) => step?.run === "npm run test:scripts:native").length,
-    1,
-    "Windows native script contracts must run once in the existing Windows cell."
+    macRuntime?.steps?.some((step) => step?.run === "npm run test:scripts:native"),
+    false
   );
+
+  const windowsOwnerIf =
+    "${{ !cancelled() && needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
+  const ownerIds = ["windows-python-runtime", "windows-extension-host", "windows-native-supervisor"];
+  for (const ownerId of ownerIds) {
+    const owner = crossPlatform?.jobs?.[ownerId];
+    assert.equal(owner?.needs, "classify");
+    assert.equal(owner?.if, windowsOwnerIf);
+    assert.equal(owner?.["runs-on"], "windows-latest");
+    assert.equal(owner?.["timeout-minutes"], 60);
+    assert.equal(owner?.strategy, undefined, `${ownerId} must run once without retries or a matrix.`);
+    assert.equal(owner?.["continue-on-error"], undefined);
+    assert.equal(owner?.env, undefined);
+    assert.equal(owner?.steps?.[0]?.uses, "actions/checkout@v6");
+    assert.deepEqual(owner?.steps?.[1], {
+      uses: "actions/setup-node@v6",
+      with: { "node-version-file": ".node-version", cache: "npm" }
+    });
+  }
+
+  const pythonRuntime = crossPlatform?.jobs?.["windows-python-runtime"];
+  assert.equal(pythonRuntime?.name, "Windows Python runtime (3.14)");
+  assert.deepEqual(pythonRuntime?.steps?.[2], {
+    uses: "actions/setup-python@v6",
+    with: { "python-version": "3.14", cache: "pip" }
+  });
+  assert.deepEqual(
+    pythonRuntime?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
+    [
+      "npm ci",
+      "python -m pip install --upgrade pip",
+      'python -m pip install -e "python[dev]"',
+      "npm run test:python-environment-smoke",
+      "python -m pytest python/tests -q"
+    ]
+  );
+
+  const extensionHost = crossPlatform?.jobs?.["windows-extension-host"];
+  assert.equal(extensionHost?.name, "Windows extension host (3.14)");
+  assert.deepEqual(extensionHost?.steps?.[2], {
+    uses: "actions/setup-python@v6",
+    with: { "python-version": "3.14", cache: "pip" }
+  });
+  assert.deepEqual(
+    extensionHost?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
+    [
+      "npm ci",
+      "python -m pip install --upgrade pip",
+      'python -m pip install -e "python[dev]"',
+      "npm run test:extension-host"
+    ]
+  );
+  assert.equal(
+    extensionHost?.steps?.find((step) => step?.run === "npm run test:extension-host")?.env?.VSCODE_TEST_VERSION,
+    "stable"
+  );
+
+  const nativeSupervisor = crossPlatform?.jobs?.["windows-native-supervisor"];
+  assert.equal(nativeSupervisor?.name, "Windows native supervisor and scripts");
+  assert.deepEqual(
+    nativeSupervisor?.steps?.filter((step) => typeof step?.uses === "string").map((step) => step.uses),
+    ["actions/checkout@v6", "actions/setup-node@v6"]
+  );
+  assert.deepEqual(
+    nativeSupervisor?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
+    ["npm ci", "npm run test:scripts:native"]
+  );
+
+  const dependencyGuard = crossPlatform?.jobs?.["dependency-guard-windows"];
+  assert.equal(dependencyGuard?.name, "Dependency guard (Windows, Python ${{ matrix.python }})");
+  assert.equal(dependencyGuard?.needs, "classify");
+  assert.equal(dependencyGuard?.if, "${{ !cancelled() }}");
+  assert.equal(dependencyGuard?.["runs-on"], "windows-latest");
+  assert.equal(dependencyGuard?.["timeout-minutes"], 15);
+  assert.deepEqual(dependencyGuard?.strategy, {
+    "fail-fast": false,
+    matrix: { python: ["3.10", "3.12"] }
+  });
+  assert.deepEqual(
+    dependencyGuard?.steps?.filter((step) => typeof step?.uses === "string").map((step) => [step.uses, step.with]),
+    [
+      ["actions/checkout@v6", undefined],
+      ["actions/setup-python@v6", { "python-version": "${{ matrix.python }}" }]
+    ]
+  );
+  assert.deepEqual(
+    dependencyGuard?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
+    [
+      "exit 1",
+      'echo "Full dependency-guard evidence is deferred; this matrix cell preserves its required check context."',
+      "python -m pip install pytest",
+      "python -m pytest python/tests/test_dependency_guard.py -q"
+    ]
+  );
+
+  const legacyWindowsCommandUnion = [
+    "npm run test:python-environment-smoke",
+    "python -m pytest python/tests -q",
+    "npm run test:extension-host",
+    "npm run test:scripts:native"
+  ];
+  assert.deepEqual(
+    ownerIds.flatMap((ownerId) =>
+      (crossPlatform?.jobs?.[ownerId]?.steps ?? [])
+        .map((step) => step?.run)
+        .filter((run) => legacyWindowsCommandUnion.includes(run))
+    ),
+    legacyWindowsCommandUnion,
+    "The three Windows owners must be an exhaustive disjoint union of the prior test commands."
+  );
+
+  const aggregate = crossPlatform?.jobs?.["runtime-windows"];
+  assert.equal(aggregate?.name, "runtime (windows-latest, 3.14)");
+  assert.deepEqual(aggregate?.needs, ["classify", ...ownerIds]);
+  assert.equal(aggregate?.if, "${{ always() && !cancelled() }}");
+  assert.equal(aggregate?.["runs-on"], "ubuntu-latest");
+  assert.equal(aggregate?.["timeout-minutes"], 5);
+  assert.equal(aggregate?.steps?.length, 1);
+  const verdict = aggregate?.steps?.[0];
+  assert.equal(verdict?.name, "Require exact Windows runtime outcomes");
+  assert.equal(verdict?.shell, "node {0}");
+  assert.deepEqual(verdict?.env, {
+    CLASSIFY_RESULT: "${{ needs.classify.result }}",
+    BENCHMARK_HARNESS_ONLY: "${{ needs.classify.outputs.benchmark_harness_only }}",
+    DEPENDENCY_LOCK_ONLY: "${{ needs.classify.outputs.dependency_lock_only }}",
+    DOCUMENTATION_ONLY: "${{ needs.classify.outputs.documentation_only }}",
+    DRAFT_PULL_REQUEST: "${{ needs.classify.outputs.draft_pull_request }}",
+    LIGHTWEIGHT_ONLY: "${{ needs.classify.outputs.lightweight_only }}",
+    PACKAGE_ONLY: "${{ needs.classify.outputs.package_only }}",
+    RELEASE_INFRASTRUCTURE_ONLY: "${{ needs.classify.outputs.release_infrastructure_only }}",
+    FULL_MATRIX_REQUIRED: "${{ needs.classify.outputs.full_matrix_required }}",
+    PYTHON_RUNTIME_RESULT: "${{ needs.windows-python-runtime.result }}",
+    EXTENSION_HOST_RESULT: "${{ needs.windows-extension-host.result }}",
+    NATIVE_SUPERVISOR_RESULT: "${{ needs.windows-native-supervisor.result }}"
+  });
+  assert.equal(
+    aggregate?.steps?.some(
+      (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
+    ),
+    false
+  );
+
+  const requiredEnvironment = {
+    CLASSIFY_RESULT: "success",
+    BENCHMARK_HARNESS_ONLY: "false",
+    DEPENDENCY_LOCK_ONLY: "false",
+    DOCUMENTATION_ONLY: "false",
+    DRAFT_PULL_REQUEST: "false",
+    LIGHTWEIGHT_ONLY: "false",
+    PACKAGE_ONLY: "false",
+    RELEASE_INFRASTRUCTURE_ONLY: "false",
+    FULL_MATRIX_REQUIRED: "true",
+    PYTHON_RUNTIME_RESULT: "success",
+    EXTENSION_HOST_RESULT: "success",
+    NATIVE_SUPERVISOR_RESULT: "success"
+  };
+  const runVerdict = (overrides = {}) => {
+    const env = { ...process.env, ...requiredEnvironment, ...overrides };
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) delete env[name];
+    }
+    return spawnSync(process.execPath, ["-e", verdict?.run ?? ""], { encoding: "utf8", env });
+  };
+  assert.equal(runVerdict().status, 0, "Selected Windows evidence must pass only when all owners succeed.");
+  for (const ownerResult of ["PYTHON_RUNTIME_RESULT", "EXTENSION_HOST_RESULT", "NATIVE_SUPERVISOR_RESULT"]) {
+    for (const result of ["failure", "cancelled", "skipped", "", undefined]) {
+      assert.notEqual(runVerdict({ [ownerResult]: result }).status, 0, `${ownerResult}=${result} must fail closed.`);
+    }
+  }
+  for (const classifyResult of ["failure", "cancelled", "skipped", "", undefined]) {
+    assert.notEqual(runVerdict({ CLASSIFY_RESULT: classifyResult }).status, 0);
+  }
+  for (const flag of [
+    "BENCHMARK_HARNESS_ONLY",
+    "DEPENDENCY_LOCK_ONLY",
+    "DOCUMENTATION_ONLY",
+    "DRAFT_PULL_REQUEST",
+    "LIGHTWEIGHT_ONLY",
+    "PACKAGE_ONLY",
+    "RELEASE_INFRASTRUCTURE_ONLY",
+    "FULL_MATRIX_REQUIRED"
+  ]) {
+    assert.notEqual(runVerdict({ [flag]: "malformed" }).status, 0, `${flag} must reject malformed values.`);
+    assert.notEqual(runVerdict({ [flag]: undefined }).status, 0, `${flag} must reject missing values.`);
+  }
+  assert.notEqual(
+    runVerdict({
+      FULL_MATRIX_REQUIRED: "false",
+      PYTHON_RUNTIME_RESULT: "skipped",
+      EXTENSION_HOST_RESULT: "skipped",
+      NATIVE_SUPERVISOR_RESULT: "skipped"
+    }).status,
+    0,
+    "A substantive change may not claim a deferred Windows context."
+  );
+  const deferredEnvironment = {
+    DOCUMENTATION_ONLY: "true",
+    LIGHTWEIGHT_ONLY: "true",
+    FULL_MATRIX_REQUIRED: "false",
+    PYTHON_RUNTIME_RESULT: "skipped",
+    EXTENSION_HOST_RESULT: "skipped",
+    NATIVE_SUPERVISOR_RESULT: "skipped"
+  };
+  const deferred = runVerdict(deferredEnvironment);
+  assert.equal(deferred.status, 0);
+  assert.match(deferred.stdout, /Full runtime evidence is deferred/u);
+  for (const ownerResult of ["PYTHON_RUNTIME_RESULT", "EXTENSION_HOST_RESULT", "NATIVE_SUPERVISOR_RESULT"]) {
+    for (const result of ["success", "failure", "cancelled", "", undefined]) {
+      assert.notEqual(runVerdict({ ...deferredEnvironment, [ownerResult]: result }).status, 0);
+    }
+  }
 });
 
 test("ready validation stays fail-closed while drafts report separate feedback", () => {
@@ -2752,7 +3016,7 @@ updates:
   );
 });
 
-test("required Linux Python 3.10 owns real discovery while cross-platform keeps distinct native cells", () => {
+test("required Linux Python 3.10 owns real discovery while cross-platform keeps distinct native owners", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   const job = workflow?.jobs?.["python-matrix"];
@@ -2787,10 +3051,11 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
 
   const crossPlatformSource = readFileSync(new URL("../.github/workflows/cross-platform.yml", import.meta.url), "utf8");
   const crossPlatform = parseYaml(crossPlatformSource);
-  assert.deepEqual(crossPlatform?.jobs?.runtime?.strategy?.matrix?.include, [
-    { os: "macos-latest", python: "3.12" },
-    { os: "windows-latest", python: "3.14" }
-  ]);
+  assert.deepEqual(crossPlatform?.jobs?.runtime?.strategy?.matrix?.include, [{ os: "macos-latest", python: "3.12" }]);
+  assert.equal(crossPlatform?.jobs?.["windows-python-runtime"]?.["runs-on"], "windows-latest");
+  assert.equal(crossPlatform?.jobs?.["windows-extension-host"]?.["runs-on"], "windows-latest");
+  assert.equal(crossPlatform?.jobs?.["windows-native-supervisor"]?.["runs-on"], "windows-latest");
+  assert.equal(crossPlatform?.jobs?.["runtime-windows"]?.name, "runtime (windows-latest, 3.14)");
 });
 
 test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
