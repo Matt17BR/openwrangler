@@ -38,6 +38,14 @@ import {
   type DecodedPersistedSessionState,
   type PersistedCleaningState
 } from "./sessionPersistence";
+import {
+  SessionRequestScheduler,
+  requestViewId,
+  sessionRequestPriority,
+  type SessionRequestExecutionLane
+} from "./sessionRequestScheduler";
+
+export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
 
 interface RuntimeSessionState {
   publicId: string;
@@ -59,15 +67,7 @@ interface CoordinatedSession extends RuntimeSessionState {
   activeViewContextId?: string;
   latestRequestedViewContextId?: string;
   latestRequestedPageRequestId?: string;
-  activeForegroundOperation?: Promise<void>;
-  activeForegroundRequest?: SessionBoundRequest;
-  activeBackgroundOperation?: Promise<void>;
-  activeBackgroundRequest?: SessionBoundRequest;
-  interactiveQueue: QueuedSessionOperation[];
-  backgroundQueue: QueuedSessionOperation[];
-  terminalOperation?: QueuedSessionOperation;
-  idleWaiters: Set<() => void>;
-  cancelledActiveViewRequestIds: Set<string>;
+  scheduler: SessionRequestScheduler;
   closing: boolean;
   reconfiguring: boolean;
   reconnecting: boolean;
@@ -89,13 +89,6 @@ type CoordinatedSessionOrigin =
   Readonly<{ kind: "notebook"; document: vscode.NotebookDocument }> | TextDocumentSessionOrigin;
 
 type BridgeSessionOrigin = vscode.NotebookDocument | TextDocumentSessionOrigin;
-
-interface QueuedSessionOperation {
-  request: SessionBoundRequest;
-  options?: BridgeRequestOptions;
-  resolve(response: OpenWranglerResponse): void;
-  reject(error: unknown): void;
-}
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
@@ -136,8 +129,6 @@ export interface SessionCoordinatorDiagnostics {
     sourceLabel: string;
   }>;
 }
-
-export type SessionRequestExecutionLane = "foreground" | "background";
 
 export interface SessionRequestExecutionCheckpoint {
   sessionId: string;
@@ -258,9 +249,9 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     session.reconnecting = true;
-    this.cancelQueuedBackgroundOperations(session);
+    session.scheduler.cancelBackground();
     try {
-      await this.waitForSessionIdle(session);
+      await session.scheduler.waitForIdle();
       if (
         !this.isLiveSession(session) ||
         session.closing ||
@@ -411,39 +402,14 @@ export class SessionCoordinator implements vscode.Disposable {
   ): SessionRequestExecutionCheckpoint | undefined {
     const session = this.sessions.get(sessionId);
     if (!session || session.closing || viewRequestId.length === 0) return undefined;
-    const checkpoints: SessionRequestExecutionCheckpoint[] = [];
-    const append = (
-      request: SessionBoundRequest | undefined,
-      state: SessionRequestExecutionCheckpoint["state"],
-      lane: SessionRequestExecutionLane
-    ): void => {
-      if (request?.kind !== requestKind || requestViewId(request) !== viewRequestId) return;
-      checkpoints.push({ sessionId, state, lane, requestKind, viewRequestId });
-    };
-    append(session.activeForegroundRequest, "active", "foreground");
-    append(session.activeBackgroundRequest, "active", "background");
-    for (const operation of session.interactiveQueue) append(operation.request, "queued", "foreground");
-    for (const operation of session.backgroundQueue) append(operation.request, "queued", "background");
-    if (checkpoints.length > 1) {
-      throw new Error(
-        `The test-only scheduler checkpoint is ambiguous for ${sessionId}/${requestKind}/${viewRequestId}.`
-      );
-    }
-    return checkpoints[0];
+    const checkpoint = session.scheduler.checkpoint(requestKind, viewRequestId);
+    return checkpoint ? { sessionId, ...checkpoint } : undefined;
   }
 
   testingSessionSchedulerState(sessionId: string): SessionSchedulerState | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
-    return {
-      sessionId,
-      quiescent: isSessionIdle(session),
-      activeForegroundOperation: session.activeForegroundOperation !== undefined,
-      activeBackgroundOperation: session.activeBackgroundOperation !== undefined,
-      interactiveQueueLength: session.interactiveQueue.length,
-      backgroundQueueLength: session.backgroundQueue.length,
-      terminalOperation: session.terminalOperation !== undefined
-    };
+    return { sessionId, ...session.scheduler.snapshot() };
   }
 
   async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
@@ -560,7 +526,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
     if (request.kind === "closeSession") {
       session.closing = true;
-      this.cancelQueuedBackgroundOperations(session);
+      session.scheduler.cancelBackground();
     }
     if (request.kind === "inspectStep") {
       const inspectionChanged = Boolean(session.stepInspection && session.stepInspection.stepId !== request.stepId);
@@ -576,7 +542,7 @@ export class SessionCoordinator implements vscode.Disposable {
       session.latestRequestedPageRequestId = request.viewRequestId;
       session.latestRequestedViewContextId = options?.viewContextId;
     }
-    return this.enqueueSessionRequest(session, request, options);
+    return session.scheduler.enqueue(request, options);
   }
 
   private async open(
@@ -635,6 +601,12 @@ export class SessionCoordinator implements vscode.Disposable {
     const publicId = randomUUID();
     const backendPreference =
       options?.backendPreference === "auto" ? undefined : (options?.backendPreference ?? request.backend);
+    const sessionOwner: { current?: CoordinatedSession } = {};
+    const scheduler = new SessionRequestScheduler((scheduledRequest, scheduledOptions) => {
+      const current = sessionOwner.current;
+      if (!current) throw new Error("The session scheduler started before its session was initialized.");
+      return this.executeSessionRequest(current, scheduledRequest, scheduledOptions);
+    });
     const session: CoordinatedSession = {
       publicId,
       runtimeId: response.metadata.sessionId,
@@ -644,10 +616,7 @@ export class SessionCoordinator implements vscode.Disposable {
       ...(backendPreference ? { backendPreference } : {}),
       ...(origin ? { origin } : {}),
       delegate,
-      interactiveQueue: [],
-      backgroundQueue: [],
-      idleWaiters: new Set(),
-      cancelledActiveViewRequestIds: new Set(),
+      scheduler,
       metadata: response.metadata,
       code: "",
       viewState: initialViewingState(response.metadata),
@@ -657,6 +626,7 @@ export class SessionCoordinator implements vscode.Disposable {
       liveReconnectRequired: false,
       recoveryRequired: false
     };
+    sessionOwner.current = session;
     const staleOrigin = sessionOriginMismatch(request, origin);
     if (staleOrigin) {
       await this.closeRuntimeState(session, "invalid open runtime");
@@ -843,11 +813,11 @@ export class SessionCoordinator implements vscode.Disposable {
     if (options?.cancellation?.isCancellationRequested) return reconfigurationCancelled(session.publicId);
 
     session.reconfiguring = true;
-    this.cancelQueuedBackgroundOperations(session);
+    session.scheduler.cancelBackground();
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     let replacementPublished = false;
     try {
-      await this.waitForSessionIdle(session);
+      await session.scheduler.waitForIdle();
       if (!this.isLiveSession(session) || session.closing) {
         return protocolError(
           this.disposed ? "coordinator_disposed" : "session_closing",
@@ -952,12 +922,12 @@ export class SessionCoordinator implements vscode.Disposable {
     const viewStateChanged = !isDeepStrictEqual(nextViewState, session.viewState);
     session.viewState = nextViewState;
     session.reconfiguring = true;
-    this.cancelQueuedBackgroundOperations(session);
+    session.scheduler.cancelBackground();
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     let replacementPublished = false;
     try {
       if (viewStateChanged) await this.persistSession(session);
-      await this.waitForSessionIdle(session);
+      await session.scheduler.waitForIdle();
       if (!this.isLiveSession(session) || session.closing) {
         return protocolError(
           this.disposed ? "coordinator_disposed" : "session_closing",
@@ -1416,144 +1386,16 @@ export class SessionCoordinator implements vscode.Disposable {
     );
   }
 
-  private enqueueSessionRequest(
-    session: CoordinatedSession,
-    request: SessionBoundRequest,
-    options?: BridgeRequestOptions
-  ): Promise<OpenWranglerResponse> {
-    return new Promise((resolve, reject) => {
-      const operation: QueuedSessionOperation = { request, options, resolve, reject };
-      if (request.kind === "closeSession") {
-        // Closing is a terminal barrier: queued background work is discarded before
-        // enqueueing it, while active and already-accepted interactive work finish first.
-        session.terminalOperation = operation;
-      } else if (sessionRequestPriority(request, options) === "background") {
-        session.backgroundQueue.push(operation);
-      } else {
-        session.interactiveQueue.push(operation);
-      }
-      this.startNextSessionOperation(session);
-    });
-  }
-
-  private startNextSessionOperation(session: CoordinatedSession): void {
-    if (!session.activeForegroundOperation && session.interactiveQueue.length > 0) {
-      const next = session.interactiveQueue[0];
-      if (
-        !session.activeBackgroundOperation ||
-        (session.activeBackgroundRequest &&
-          canRunAlongsideBackground(next.request, next.options, session.activeBackgroundRequest))
-      ) {
-        session.interactiveQueue.shift();
-        this.startSessionOperation(session, next, "foreground");
-      }
-    }
-
-    if (
-      !session.activeForegroundOperation &&
-      !session.activeBackgroundOperation &&
-      session.interactiveQueue.length === 0 &&
-      session.backgroundQueue.length === 0
-    ) {
-      const terminal = takeTerminalOperation(session);
-      if (terminal) this.startSessionOperation(session, terminal, "foreground");
-    }
-
-    if (
-      !session.activeForegroundOperation &&
-      !session.activeBackgroundOperation &&
-      session.interactiveQueue.length === 0 &&
-      session.backgroundQueue.length > 0
-    ) {
-      const background = session.backgroundQueue.shift();
-      if (background) this.startSessionOperation(session, background, "background");
-    }
-
-    this.resolveSessionIdleWaiters(session);
-  }
-
-  private startSessionOperation(
-    session: CoordinatedSession,
-    operation: QueuedSessionOperation,
-    lane: "foreground" | "background"
-  ): void {
-    if (lane === "foreground") session.activeForegroundRequest = operation.request;
-    else session.activeBackgroundRequest = operation.request;
-    const activeOperation = this.executeSessionRequest(session, operation.request, operation.options)
-      .then(operation.resolve, operation.reject)
-      .finally(() => {
-        if (lane === "foreground" && session.activeForegroundOperation === activeOperation) {
-          session.activeForegroundOperation = undefined;
-          session.activeForegroundRequest = undefined;
-        }
-        if (lane === "background" && session.activeBackgroundOperation === activeOperation) {
-          session.activeBackgroundOperation = undefined;
-          session.activeBackgroundRequest = undefined;
-        }
-        const viewRequestId = requestViewId(operation.request);
-        if (viewRequestId) session.cancelledActiveViewRequestIds.delete(viewRequestId);
-        this.startNextSessionOperation(session);
-      });
-    if (lane === "foreground") session.activeForegroundOperation = activeOperation;
-    else session.activeBackgroundOperation = activeOperation;
-  }
-
-  private waitForSessionIdle(session: CoordinatedSession): Promise<void> {
-    if (isSessionIdle(session)) return Promise.resolve();
-    return new Promise((resolve) => session.idleWaiters.add(resolve));
-  }
-
-  private resolveSessionIdleWaiters(session: CoordinatedSession): void {
-    if (!isSessionIdle(session)) return;
-    for (const resolve of session.idleWaiters) resolve();
-    session.idleWaiters.clear();
-  }
-
-  private cancelQueuedBackgroundOperations(session: CoordinatedSession): void {
-    this.cancelOperations(session.backgroundQueue.splice(0));
-  }
-
   private cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void {
     const session = this.sessions.get(sessionId);
-    if (!session || viewRequestIds.length === 0) return;
-    const cancelled = new Set(viewRequestIds);
-    for (const active of [session.activeForegroundRequest, session.activeBackgroundRequest]) {
-      const viewRequestId = active ? requestViewId(active) : undefined;
-      if (active && viewRequestId && cancelled.has(viewRequestId) && isCancellableQueuedViewRequest(active)) {
-        session.cancelledActiveViewRequestIds.add(viewRequestId);
-      }
-    }
-    const discarded: QueuedSessionOperation[] = [];
-    const retainUncancelled = (queue: QueuedSessionOperation[]): QueuedSessionOperation[] =>
-      queue.filter((operation) => {
-        const viewRequestId = requestViewId(operation.request);
-        if (viewRequestId && cancelled.has(viewRequestId) && isCancellableQueuedViewRequest(operation.request)) {
-          discarded.push(operation);
-          return false;
-        }
-        return true;
-      });
-    session.interactiveQueue = retainUncancelled(session.interactiveQueue);
-    session.backgroundQueue = retainUncancelled(session.backgroundQueue);
-    this.cancelOperations(discarded);
-    this.startNextSessionOperation(session);
+    if (!session) return;
+    session.scheduler.cancelViewRequests(viewRequestIds);
   }
 
   private prioritizeViewRequest(sessionId: string, viewRequestId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.closing || session.reconfiguring) return;
-    const index = session.backgroundQueue.findIndex(
-      (operation) =>
-        requestViewId(operation.request) === viewRequestId && isCancellableQueuedViewRequest(operation.request)
-    );
-    if (index < 0) return;
-    const [operation] = session.backgroundQueue.splice(index, 1);
-    if (!operation) return;
-    operation.options = { ...operation.options, priority: "interactive" };
-    // Keep the original request and correlation ID while moving the selected
-    // profile onto the foreground lane.
-    session.interactiveQueue.push(operation);
-    this.startNextSessionOperation(session);
+    session.scheduler.prioritizeViewRequest(viewRequestId);
   }
 
   private setViewContext(sessionId: string, viewContextId: string): void {
@@ -1572,23 +1414,6 @@ export class SessionCoordinator implements vscode.Disposable {
       request.viewRequestId === session.latestRequestedPageRequestId &&
       (options?.viewContextId === undefined || options.viewContextId === session.latestRequestedViewContextId)
     );
-  }
-
-  private cancelAllQueuedOperations(session: CoordinatedSession): void {
-    this.cancelOperations(session.interactiveQueue.splice(0));
-    this.cancelOperations(session.backgroundQueue.splice(0));
-    this.startNextSessionOperation(session);
-  }
-
-  private cancelOperations(operations: QueuedSessionOperation[]): void {
-    for (const operation of operations) {
-      const viewRequestId = requestViewId(operation.request);
-      operation.resolve({
-        kind: "cancelled",
-        targetRequestId: `session-queue:${operation.request.kind}`,
-        ...(viewRequestId ? { viewRequestId } : {})
-      });
-    }
   }
 
   private async executeSessionRequest(
@@ -1641,10 +1466,7 @@ export class SessionCoordinator implements vscode.Disposable {
     const isBackground = sessionRequestPriority(publicRequest, options) === "background";
     const rendererBackgroundRead =
       isBackground && isRecoverableRendererBackgroundRead(publicRequest) && options?.viewContextId !== undefined;
-    const requestWasCancelled = (): boolean => {
-      const viewRequestId = requestViewId(publicRequest);
-      return Boolean(viewRequestId && session.cancelledActiveViewRequestIds.has(viewRequestId));
-    };
+    const requestWasCancelled = (): boolean => session.scheduler.isCancelled(requestViewId(publicRequest));
     const rendererBackgroundReadIsCurrent = (): boolean =>
       rendererBackgroundRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
     const canRecoverUnknownSession = (): boolean =>
@@ -1825,7 +1647,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
     if (isPySparkConnectStateLost(response, requestRuntimeId)) {
       session.liveReconnectRequired = true;
-      this.cancelQueuedBackgroundOperations(session);
+      session.scheduler.cancelBackground();
     }
 
     if (publicRequest.kind === "inspectStep" && response.kind === "stepInspection") {
@@ -2118,11 +1940,11 @@ export class SessionCoordinator implements vscode.Disposable {
     const sessions = [...this.sessions.values()].map((session) => {
       const alreadyClosing = session.closing;
       session.closing = true;
-      this.cancelQueuedBackgroundOperations(session);
+      session.scheduler.cancelBackground();
       return { session, alreadyClosing };
     });
     const closes = sessions.map(async ({ session, alreadyClosing }) => {
-      await this.waitForSessionIdle(session);
+      await session.scheduler.waitForIdle();
       // A notebook host deadline detaches only the waiter; the exact kernel
       // request keeps running. Deactivation must not let terminal close
       // overtake that work. The outer shutdown deadline still bounds how long
@@ -2157,7 +1979,7 @@ export class SessionCoordinator implements vscode.Disposable {
     ]);
     if (timer) clearTimeout(timer);
     if (timedOut) {
-      for (const { session } of sessions) this.cancelAllQueuedOperations(session);
+      for (const { session } of sessions) session.scheduler.cancelAll();
     }
     for (const { session } of sessions) this.releaseSession(session);
     if (this.activeSessionId) this.setActive(undefined);
@@ -2748,14 +2570,6 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 }
 
-function sessionRequestPriority(
-  request: SessionBoundRequest,
-  options?: BridgeRequestOptions
-): NonNullable<BridgeRequestOptions["priority"]> {
-  if (options?.priority) return options.priority;
-  return request.kind === "getSummary" || request.kind === "getDatasetStats" ? "background" : "interactive";
-}
-
 function isPersistentSession(source: SessionSource, backend: SessionMetadata["backend"]): boolean {
   // Saved notebook outputs are bounded value snapshots, not reopenable source
   // data. Their rows and viewing state stay in memory only for the owning panel.
@@ -2811,37 +2625,6 @@ function reconfigurationCancelled(sessionId: string): OpenWranglerResponse {
   };
 }
 
-function takeTerminalOperation(session: CoordinatedSession): QueuedSessionOperation | undefined {
-  const operation = session.terminalOperation;
-  session.terminalOperation = undefined;
-  return operation;
-}
-
-function isSessionIdle(session: CoordinatedSession): boolean {
-  return (
-    !session.activeForegroundOperation &&
-    !session.activeBackgroundOperation &&
-    session.interactiveQueue.length === 0 &&
-    session.backgroundQueue.length === 0 &&
-    !session.terminalOperation
-  );
-}
-
-function canRunAlongsideBackground(
-  request: SessionBoundRequest,
-  options: BridgeRequestOptions | undefined,
-  activeBackgroundRequest: SessionBoundRequest
-): boolean {
-  if (activeBackgroundRequest.kind !== "getSummary" && activeBackgroundRequest.kind !== "getDatasetStats") {
-    return false;
-  }
-  return (
-    request.kind === "getPage" ||
-    request.kind === "getColumnValues" ||
-    (request.kind === "getSummary" && options?.priority === "interactive")
-  );
-}
-
 function isIdempotentReadRequest(request: SessionBoundRequest): boolean {
   return (
     request.kind === "getPage" ||
@@ -2863,10 +2646,6 @@ function isRuntimeStateMutation(request: SessionBoundRequest): boolean {
     request.kind === "discardDraft" ||
     request.kind === "undoStep"
   );
-}
-
-function isCancellableQueuedViewRequest(request: SessionBoundRequest): boolean {
-  return request.kind === "getSummary" || request.kind === "getDatasetStats" || request.kind === "getColumnValues";
 }
 
 function sameFilterModel(left: FilterModel, right: FilterModel): boolean {
@@ -3167,10 +2946,6 @@ function cleanupResponseDescription(response: OpenWranglerResponse, expectedSess
   if (response.kind === "error") return `${response.code}: ${response.message}`;
   if (response.kind === "cancelled") return `close was cancelled (${response.targetRequestId})`;
   return `runtime returned ${response.kind}`;
-}
-
-function requestViewId(request: OpenWranglerRequest): string | undefined {
-  return "viewRequestId" in request && typeof request.viewRequestId === "string" ? request.viewRequestId : undefined;
 }
 
 function initialViewingState(metadata: SessionMetadata): PersistedViewingState {
