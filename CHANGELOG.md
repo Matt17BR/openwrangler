@@ -4,6 +4,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Security
+
+- The Data Wrangler comparison harness now reads requests through one bounded descriptor and rejects same-size path,
+  symlink, and hard-link substitutions before decoding. Result publication uses an exclusive no-overwrite commit and
+  identity-aware cleanup. CodeQL also analyzes every push to protected `main`, keeping default-branch security alerts
+  current for merge protection.
+
 ## [1.99.7] - 2026-08-16
 
 ### Changed
