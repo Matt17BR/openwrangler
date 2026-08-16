@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonEnvironment";
 
 import {
+  classifyDependencyProbe,
   decodePythonEnvironmentProbeOutput,
   discoverWindowsSystemPythonExecutables,
   parseWindowsPythonLauncherOutput,
@@ -228,6 +229,25 @@ describe("Python environment API broker", () => {
         }
       ])
     ).rejects.toThrow("requires an absolute executable path");
+  });
+
+  it("accepts only the exact selected fsspec release", () => {
+    const exact = {
+      importModule: "fsspec",
+      distribution: "fsspec",
+      installSpec: "fsspec==2026.7.0",
+      exactVersion: "2026.7.0"
+    };
+
+    expect(classifyDependencyProbe([exact], { fsspec: { found: true, version: "2026.7.0" } })).toEqual({
+      available: ["fsspec"],
+      missing: []
+    });
+    for (const observed of [undefined, "2026.6.0", "2026.8.0"]) {
+      expect(
+        classifyDependencyProbe([exact], observed === undefined ? {} : { fsspec: { found: true, version: observed } })
+      ).toEqual({ available: [], missing: ["fsspec==2026.7.0"] });
+    }
   });
 
   it("pins a wrapper to its reported interpreter without realpathing away a virtual environment", async () => {

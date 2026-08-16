@@ -3076,12 +3076,12 @@ describe("PythonBridge environment resource selection", () => {
     vi.mocked(pythonEnvironment.probeDependencies).mockReset();
   });
 
-  it("skips DuckDB when pytz is missing for an automatic multibyte-delimiter import", async () => {
+  it("skips DuckDB when fsspec is missing for an automatic multibyte-delimiter import", async () => {
     const source = { ...remoteFileSource(), importOptions: { delimiter: "§" } };
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["pytz"], available: ["duckdb>=1.5.4,<1.6"] })
+      .mockResolvedValueOnce({ missing: ["fsspec==2026.7.0"], available: ["duckdb", "pytz"] })
       .mockResolvedValueOnce({ missing: [], available: ["pandas"] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
@@ -3093,7 +3093,7 @@ describe("PythonBridge environment resource selection", () => {
       vi
         .mocked(pythonEnvironment.probeDependencies)
         .mock.calls.map(([, dependencies]) => dependencies.map((dependency) => dependency.importModule))
-    ).toEqual([["duckdb", "pytz"], ["pandas"]]);
+    ).toEqual([["duckdb", "fsspec", "pytz"], ["pandas"]]);
   });
 
   it("probes only Pandas for an automatic multibyte-quote import", async () => {

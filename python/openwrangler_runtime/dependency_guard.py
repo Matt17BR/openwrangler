@@ -77,6 +77,7 @@ _DEPENDENCY_KEYS = {
     "importModule",
     "distribution",
     "installSpec",
+    "exactVersion",
     "minimumVersion",
     "maximumVersionExclusive",
 }
@@ -298,8 +299,13 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
     install_distribution = _normalized_distribution_name(install_match.group("name"))
     if install_distribution != _normalized_distribution_name(distribution):
         _fail(code)
+    exact = value["exactVersion"]
     minimum = value["minimumVersion"]
     maximum = value["maximumVersionExclusive"]
+    if exact is not None:
+        exact = _bounded_string(exact, maximum=64, code=code)
+        if not _BOUND_VERSION_PATTERN.fullmatch(exact):
+            _fail(code)
     if minimum is not None:
         minimum = _bounded_string(minimum, maximum=64, code=code)
         if not _BOUND_VERSION_PATTERN.fullmatch(minimum):
@@ -308,10 +314,17 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
         maximum = _bounded_string(maximum, maximum=64, code=code)
         if not _BOUND_VERSION_PATTERN.fullmatch(maximum):
             _fail(code)
+    constraints = install_match.group("constraints")
+    if exact is None:
+        if any(constraint.startswith("==") for constraint in constraints.split(",")):
+            _fail(code)
+    elif constraints != f"=={exact}" or minimum is not None or maximum is not None:
+        _fail(code)
     return {
         "importModule": import_module,
         "distribution": distribution,
         "installSpec": install_spec,
+        "exactVersion": exact,
         "minimumVersion": minimum,
         "maximumVersionExclusive": maximum,
     }
@@ -2213,8 +2226,11 @@ def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
                 or any(ord(character) < 0x20 for character in observed)
             ):
                 _fail("validation_failed")
+            exact = dependency["exactVersion"]
             minimum = dependency["minimumVersion"]
             maximum = dependency["maximumVersionExclusive"]
+            if exact is not None and observed != exact:
+                _fail("validation_failed")
             if minimum is not None and _compare_release_versions(observed, minimum) < 0:
                 _fail("validation_failed")
             if maximum is not None and _compare_release_versions(observed, maximum) >= 0:

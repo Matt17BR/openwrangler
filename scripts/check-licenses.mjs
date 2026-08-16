@@ -78,7 +78,16 @@ export function inspectDependencyLicensePolicy({ root, lock, notices }) {
     else if (!notices.includes(group.name)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${group.name}.`);
   }
 
-  for (const required of ["MIT", "CC-BY-4.0", "Pandas", "Polars", "PyArrow", "openpyxl", "fastexcel"]) {
+  for (const required of [
+    "MIT",
+    "CC-BY-4.0",
+    "Pandas",
+    "Polars",
+    "PyArrow",
+    "openpyxl",
+    "fastexcel",
+    "fsspec 2026.7.0: BSD-3-Clause License"
+  ]) {
     if (!notices.includes(required)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${required}.`);
   }
   return { errors, productionPackages };

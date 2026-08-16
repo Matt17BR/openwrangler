@@ -56,6 +56,7 @@ def guard_fixture(tmp_path: Path) -> GuardFixture:
             "importModule": "ow_guard_fixture",
             "distribution": "ow-guard-fixture",
             "installSpec": "ow-guard-fixture>=1.0,<2.0",
+            "exactVersion": None,
             "minimumVersion": "1.0",
             "maximumVersionExclusive": "2.0",
         },
@@ -432,6 +433,7 @@ def test_in_process_request_normalization_covers_every_protocol_mode() -> None:
         "importModule": "example.module",
         "distribution": "Example_Package",
         "installSpec": "example-package>=1.2,<2.0",
+        "exactVersion": None,
         "minimumVersion": "1.2",
         "maximumVersionExclusive": "2.0",
     }
@@ -468,6 +470,7 @@ def test_in_process_request_normalization_rejects_noncanonical_inputs() -> None:
         "importModule": "example.module",
         "distribution": "example-package",
         "installSpec": "example-package>=1.2,<2.0",
+        "exactVersion": None,
         "minimumVersion": "1.2",
         "maximumVersionExclusive": "2.0",
     }

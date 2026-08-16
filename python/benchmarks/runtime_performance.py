@@ -252,7 +252,7 @@ def _source_revision() -> dict[str, Any]:
 def _benchmark_provenance(backend: Backend) -> dict[str, Any]:
     from openwrangler_runtime.version import __version__ as runtime_version
 
-    distributions = ("openwrangler-runtime", "polars", "pandas", "duckdb", "pyarrow")
+    distributions = ("openwrangler-runtime", "polars", "pandas", "duckdb", "fsspec", "pyarrow")
     versions: dict[str, str | None] = {}
     for distribution in distributions:
         try:

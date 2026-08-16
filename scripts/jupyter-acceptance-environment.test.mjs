@@ -44,6 +44,7 @@ const dependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   pandas: "2.3.3",
   polars: "1.35.2",
   duckdb: "1.5.4",
+  fsspec: "2026.7.0",
   pyspark: "4.2.0",
   openwranglerRuntimePresent,
   ...overrides
@@ -60,6 +61,7 @@ const coreDependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   pandas: "2.3.3",
   polars: "1.35.2",
   duckdb: "1.5.4",
+  fsspec: "2026.7.0",
   openwranglerRuntimePresent,
   ...overrides
 });
@@ -2004,12 +2006,13 @@ test("Quarto provisions only the exact core compatibility dependencies in a priv
     assert.deepEqual(commands[1].input.args.slice(0, 3), ["-I", "-m", "venv"]);
     assert.deepEqual(commands[1].options, { timeoutMs: 60_000 });
     assert.equal(commands[2].input.label, "Quarto Python private kernel dependency installation");
-    assert.deepEqual(commands[2].input.args.slice(-5), [
+    assert.deepEqual(commands[2].input.args.slice(-6), [
       "ipykernel==6.30.1",
       "jupyter-client==8.9.1",
       "pandas==2.3.3",
       "polars==1.35.2",
-      "duckdb==1.5.4"
+      "duckdb==1.5.4",
+      "fsspec==2026.7.0"
     ]);
     assert.deepEqual(commands[2].input.args.slice(0, 11), [
       "-I",
@@ -2108,11 +2111,12 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.deepEqual(commands[3].input.args.slice(0, 5), ["-I", "-m", "pip", "--isolated", "install"]);
     assert.equal(commands[3].input.args.filter((value) => value === "--no-cache-dir").length, 1);
     assert.ok(commands[3].input.args.includes("--only-binary=:all:"));
-    assert.deepEqual(commands[3].input.args.slice(-11), [
+    assert.deepEqual(commands[3].input.args.slice(-12), [
       "ipykernel==6.30.1",
       "pandas==2.3.3",
       "polars==1.35.2",
       "duckdb==1.5.4",
+      "fsspec==2026.7.0",
       "py4j==0.10.9.9",
       "pyarrow==25.0.0",
       "grpcio==1.83.0",

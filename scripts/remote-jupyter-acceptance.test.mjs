@@ -1940,7 +1940,7 @@ test("the container definition pins its base and direct wheels and never receive
       .trim()
       .split("\n")
       .map((line) => line.split("==")[0]),
-    ["duckdb", "ipykernel", "jupyter-server", "pandas", "polars"]
+    ["duckdb", "fsspec", "ipykernel", "jupyter-server", "pandas", "polars"]
   );
   const lockedEntries = [
     ...requirements.matchAll(/^([a-z][a-z0-9-]*)==[^\s\\]+ \\\n((?: {4}--hash=sha256:[0-9a-f]{64}(?: \\\n|$))+)/gmu)
@@ -1949,6 +1949,7 @@ test("the container definition pins its base and direct wheels and never receive
   assert.equal(requirements.replaceAll(/--hash=sha256:[0-9a-f]{64}/gu, "").includes("--hash="), false);
   for (const dependency of [
     "duckdb",
+    "fsspec",
     "ipykernel",
     "ipython",
     "jupyter-server",
@@ -2052,7 +2053,7 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(dockerfile), false);
   assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(baseDockerfile), false);
   assert.equal(requirementsInput, "jupyter-server==2.20.0\n");
-  for (const dependency of ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
+  for (const dependency of ["duckdb", "fsspec", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
     assert.doesNotMatch(requirements, new RegExp(`^${dependency}==`, "mu"));
   }
   assert.ok((requirements.match(/^[a-z][a-z0-9-]*==/gmu) ?? []).length > 40);

@@ -24,13 +24,14 @@ import {
   createEditorAcceptancePrivateRootReceipt
 } from "./packaged-editor-orchestration.mjs";
 
-const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas", "polars", "duckdb"]);
-const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "pyspark"]);
+const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas", "polars", "duckdb", "fsspec"]);
+const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "fsspec", "pyspark"]);
 const BINARY_DEPENDENCIES = Object.freeze([
   "ipykernel",
   "pandas",
   "polars",
   "duckdb",
+  "fsspec",
   "py4j",
   "pyarrow",
   "grpcio",
@@ -45,6 +46,7 @@ const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   pandas: "2.3.3",
   polars: "1.35.2",
   duckdb: "1.5.4",
+  fsspec: "2026.7.0",
   pyspark: "4.2.0",
   py4j: "0.10.9.9",
   pyarrow: "25.0.0",
@@ -1641,6 +1643,7 @@ export async function probeJupyterAcceptancePython(
     "import pandas",
     "import polars",
     "import duckdb",
+    "import fsspec",
     ...(requirePySpark ? ["import pyspark"] : []),
     "print(json.dumps({",
     '  "ipykernel": importlib.metadata.version("ipykernel"),',
@@ -1648,6 +1651,7 @@ export async function probeJupyterAcceptancePython(
     '  "pandas": importlib.metadata.version("pandas"),',
     '  "polars": importlib.metadata.version("polars"),',
     '  "duckdb": importlib.metadata.version("duckdb"),',
+    '  "fsspec": importlib.metadata.version("fsspec"),',
     ...(requirePySpark ? ['  "pyspark": importlib.metadata.version("pyspark"),'] : []),
     '  "openwranglerRuntimePresent": importlib.util.find_spec("openwrangler_runtime") is not None,',
     "}, sort_keys=True))"

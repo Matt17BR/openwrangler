@@ -220,6 +220,7 @@ export function dependencyProbeKey(
     dependency.importModule,
     dependency.distribution,
     dependency.installSpec,
+    dependency.exactVersion ?? null,
     dependency.minimumVersion ?? null,
     dependency.maximumVersionExclusive ?? null
   ]);
@@ -240,6 +241,7 @@ export function pythonDependenciesEqual(
         dependency.importModule === candidate.importModule &&
         dependency.distribution === candidate.distribution &&
         dependency.installSpec === candidate.installSpec &&
+        dependency.exactVersion === candidate.exactVersion &&
         dependency.minimumVersion === candidate.minimumVersion &&
         dependency.maximumVersionExclusive === candidate.maximumVersionExclusive
       );

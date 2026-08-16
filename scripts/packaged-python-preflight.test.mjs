@@ -79,6 +79,7 @@ test("fixed dependency profiles match ordinary, released-Jupyter, remote-only, a
     "pandas",
     "polars",
     "duckdb",
+    "fsspec",
     "openpyxl",
     "pyarrow"
   ]);
@@ -87,12 +88,14 @@ test("fixed dependency profiles match ordinary, released-Jupyter, remote-only, a
     "ipykernel",
     "pandas",
     "polars",
-    "duckdb"
+    "duckdb",
+    "fsspec"
   ]);
   assert.deepEqual(acceptancePythonProfileModulesForTesting("visual"), [
     "pandas",
     "polars",
     "duckdb",
+    "fsspec",
     "nbformat",
     "nbclient",
     "ipykernel",
@@ -143,12 +146,14 @@ test("the bounded isolated probe emits fixed interpreter and dependency classifi
         "pandas",
         "polars",
         "duckdb",
+        "fsspec",
         "openpyxl",
         "pyarrow"
       ],
       options: { stdio: "ignore", timeout: 15_000, windowsHide: true }
     });
     assert.match(acceptancePythonProbeSourceForTesting, /\(3, 10\).*\(3, 14\)/u);
+    assert.match(acceptancePythonProbeSourceForTesting, /version\(name\) != "2026\.7\.0"/u);
 
     for (const [status, code] of [
       [20, ACCEPTANCE_PYTHON_DEPENDENCY_ERROR],

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { inspectProjectLicensePolicy, inspectVendoredRuntimeLicensePolicy } from "./check-licenses.mjs";
+import {
+  inspectDependencyLicensePolicy,
+  inspectProjectLicensePolicy,
+  inspectVendoredRuntimeLicensePolicy
+} from "./check-licenses.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
@@ -38,6 +42,20 @@ test("fails closed on malformed project-license inputs", () => {
     () => inspectProjectLicensePolicy({ packageJsonSource, licenseBytes: "MIT" }),
     /requires package metadata and exact license bytes/u
   );
+});
+
+test("requires the selected-environment fsspec notice", () => {
+  assert.deepEqual(inspectDependencyLicensePolicy({ root, lock, notices }).errors, []);
+  for (const replacement of ["fsspec 2026.6.0: BSD-3-Clause License", "fsspec 2026.7.0: MIT License"]) {
+    assert.deepEqual(
+      inspectDependencyLicensePolicy({
+        root,
+        lock,
+        notices: notices.replace("fsspec 2026.7.0: BSD-3-Clause License", replacement)
+      }).errors,
+      ["THIRD_PARTY_NOTICES.md is missing fsspec 2026.7.0: BSD-3-Clause License."]
+    );
+  }
 });
 
 test("accepts only the exact vendored js-yaml runtime, development pin, and full MIT notice", () => {

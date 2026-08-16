@@ -14,6 +14,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..export_target import ExportWriterPath
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -836,7 +837,8 @@ class DuckDBEngine(DataFrameEngine):
         query = "SELECT * FROM ow" if row_id is None else f"SELECT * EXCLUDE ({_quote_ident(row_id)}) FROM ow"
         try:
             with self._terminal_connection(frame) as (connection, source_sql):
-                _write_relation_export(connection, _compose_sql(source_sql, query), os.fspath(path), format_name)
+                destination = path if isinstance(path, ExportWriterPath) else os.fspath(path)
+                _write_relation_export(connection, _compose_sql(source_sql, query), destination, format_name)
         except EngineError:
             raise
         except Exception as error:
@@ -2046,7 +2048,7 @@ def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
 def _write_relation_export(
     connection: Any,
     sql: str,
-    path: str,
+    path: str | ExportWriterPath,
     format_name: Literal["csv", "parquet"],
 ) -> None:
     """Write through a temporary relation that dies before connection close."""
@@ -2054,6 +2056,21 @@ def _write_relation_export(
     relation: Any = None
     try:
         relation = connection.sql(sql)
+        if isinstance(path, ExportWriterPath):
+            from .duckdb_export_filesystem import registered_duckdb_export_writer
+
+            with (
+                path.open_binary_writer() as writer,
+                registered_duckdb_export_writer(connection, writer, format_name) as destination,
+            ):
+                try:
+                    if format_name == "csv":
+                        relation.write_csv(destination, use_tmp_file=False)
+                    else:
+                        relation.write_parquet(destination, use_tmp_file=False)
+                finally:
+                    relation = None
+            return
         # The host has already reserved this exact inode. DuckDB's default
         # temporary-file publication would replace it before the host can
         # revalidate and commit the shared export transaction.

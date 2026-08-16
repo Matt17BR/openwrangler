@@ -32,6 +32,12 @@ describe("Python environment requirements", () => {
         maximumVersionExclusive: "1.6"
       },
       {
+        importModule: "fsspec",
+        distribution: "fsspec",
+        installSpec: "fsspec==2026.7.0",
+        exactVersion: "2026.7.0"
+      },
+      {
         importModule: "pytz",
         distribution: "pytz",
         installSpec: "pytz"
