@@ -18,6 +18,10 @@ const mocks = vi.hoisted(() => {
     documents: [] as NotebookDocument[],
     visibleEditors: [] as Array<{ notebook: NotebookDocument }>,
     extensions: new Set(["ms-toolsai.jupyter"]),
+    statusBarProviders: [] as Array<{
+      notebookType: string;
+      provider: { provideCellStatusBarItems(cell: { notebook: NotebookDocument }): unknown };
+    }>,
     preference: "ask",
     prepare: vi.fn<() => Promise<void>>(async () => undefined),
     disposeBridge: vi.fn(),
@@ -65,6 +69,21 @@ vi.mock("vscode", () => ({
   extensions: {
     getExtension: (id: string) => (mocks.extensions.has(id) ? { id } : undefined)
   },
+  notebooks: {
+    registerNotebookCellStatusBarItemProvider: (
+      notebookType: string,
+      provider: { provideCellStatusBarItems(cell: { notebook: NotebookDocument }): unknown }
+    ) => {
+      const registration = { notebookType, provider };
+      mocks.statusBarProviders.push(registration);
+      return {
+        dispose: () => {
+          const index = mocks.statusBarProviders.indexOf(registration);
+          if (index >= 0) mocks.statusBarProviders.splice(index, 1);
+        }
+      };
+    }
+  },
   commands: {
     registerCommand: (id: string, handler: (...args: unknown[]) => unknown) => {
       mocks.commands.set(id, handler);
@@ -110,6 +129,7 @@ describe("NotebookPreviewCoordinator", () => {
     mocks.commands.clear();
     mocks.documents.splice(0);
     mocks.visibleEditors.splice(0);
+    mocks.statusBarProviders.splice(0);
     mocks.extensions.clear();
     mocks.extensions.add("ms-toolsai.jupyter");
     mocks.preference = "ask";
@@ -137,6 +157,19 @@ describe("NotebookPreviewCoordinator", () => {
       coordinator.dispose();
     }
   );
+
+  it("starts first-result formatter preparation before yielding to a timer turn", async () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.runAllTicks();
+
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+    coordinator.dispose();
+  });
 
   it("keeps Interactive Window formatter preparation single-flight across overlapping notebook events", async () => {
     const notebook = fakeNotebook("interactive");
@@ -271,6 +304,26 @@ describe("NotebookPreviewCoordinator", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(mocks.prepare).toHaveBeenCalledTimes(2);
+    coordinator.dispose();
+  });
+
+  it("uses the pending-cell status callback to overtake a cold kernel backoff", async () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.prepare.mockRejectedValueOnce(new Error("Kernel is not started")).mockResolvedValueOnce(undefined);
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+
+    const provider = mocks.statusBarProviders.find(({ notebookType }) => notebookType === "jupyter-notebook");
+    expect(provider?.provider.provideCellStatusBarItems({ notebook })).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.prepare).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
     coordinator.dispose();
   });
 
