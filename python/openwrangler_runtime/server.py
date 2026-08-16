@@ -9,6 +9,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, wait
 from time import monotonic
 from typing import Any
 
+from .custom_code_output import isolate_standalone_protocol_output
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
 from .session import (
@@ -176,6 +177,7 @@ def _with_view_request_id(response: dict[str, Any], request: dict[str, Any]) -> 
 
 
 def main() -> int:
+    protocol_output = isolate_standalone_protocol_output() if hasattr(sys.stdin, "buffer") else sys.stdout
     manager = SessionManager()
     write_lock = threading.Lock()
     pending_lock = threading.Lock()
@@ -188,8 +190,8 @@ def main() -> int:
         with write_lock:
             if transport_failed.is_set():
                 return
-            sys.stdout.write(json.dumps(payload, default=str, allow_nan=False) + "\n")
-            sys.stdout.flush()
+            protocol_output.write(json.dumps(payload, default=str, allow_nan=False) + "\n")
+            protocol_output.flush()
 
     def complete(request_id: str, view_request_id: str | None, future: Future[dict[str, Any]]) -> None:
         try:

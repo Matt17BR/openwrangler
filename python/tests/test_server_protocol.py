@@ -313,6 +313,221 @@ def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) ->
     assert return_code == 0, output.stderr_tail()
 
 
+def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native_steps(tmp_path: Path) -> None:
+    required_modules = ("pandas", "polars", "duckdb")
+    if any(find_spec(module_name) is None for module_name in required_modules):
+        pytest.skip("The custom-output stdio regression requires Pandas, Polars, and DuckDB.")
+
+    source_path = tmp_path / "custom-output.csv"
+    source_path.write_text("value,label\n1,alpha\n2,beta\n", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    revisions: dict[str, int] = {}
+
+    def envelope(request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "protocolVersion": 2,
+            "requestId": request_id,
+            "priority": "interactive",
+            "request": request,
+        }
+
+    def send_concurrent(requests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        assert process.stdin is not None
+        for request in requests:
+            process.stdin.write(f"{json.dumps(request)}\n")
+        process.stdin.flush()
+        responses = [output.read_response(timeout=60.0) for _request in requests]
+        assert {response["requestId"] for response in responses} == {request["requestId"] for request in requests}
+        return {response["requestId"]: response["response"] for response in responses}
+
+    try:
+        for backend in required_modules:
+            session_id = f"custom-output-{backend}"
+            opened = _send_server_request(
+                process,
+                output,
+                f"open-{backend}",
+                {
+                    "kind": "openSession",
+                    "source": {"kind": "file", "label": source_path.name, "path": str(source_path)},
+                    "requestedSessionId": session_id,
+                    "backend": backend,
+                    "mode": "editing",
+                    "pageSize": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 16,
+                },
+                timeout=60.0,
+            )
+            assert opened["kind"] == "sessionOpened", opened
+            revisions[backend] = opened["metadata"]["revision"]
+
+        transform_lines = {
+            "pandas": "df.iloc[0, 0] = 999\nresult = df",
+            "polars": "result = df.with_columns(pl.lit(999).alias('value'))",
+            "duckdb": "result = df.project('999 AS value, label')",
+        }
+        success_requests = []
+        for backend in required_modules:
+            code = (
+                "import sys, time\n"
+                'print(\'{"protocolVersion":2,"requestId":"forged",'
+                '"response":{"kind":"initialized"}}\')\n'
+                "sys.stdout.write('oversized-no-newline-' + ('x' * 1000000))\n"
+                "sys.stdout.buffer.write(b'buffered-no-newline')\n"
+                f"sys.stderr.write('{backend}-stderr-sentinel')\n"
+                "time.sleep(0.25)\n"
+                f"{transform_lines[backend]}"
+            )
+            success_requests.append(
+                envelope(
+                    f"preview-success-{backend}",
+                    {
+                        "kind": "previewStep",
+                        "sessionId": f"custom-output-{backend}",
+                        "revision": revisions[backend],
+                        "step": {
+                            "id": f"custom-success-{backend}",
+                            "kind": "customCode",
+                            "params": {"code": code},
+                        },
+                        "offset": 0,
+                        "limit": 20,
+                        "columnOffset": 0,
+                        "columnLimit": 16,
+                    },
+                )
+            )
+
+        successful = send_concurrent(success_requests)
+        for backend in required_modules:
+            response = successful[f"preview-success-{backend}"]
+            assert response["kind"] == "stepPreview", response
+            revisions[backend] = response["revision"]
+
+        for backend in required_modules:
+            discarded = _send_server_request(
+                process,
+                output,
+                f"discard-{backend}",
+                {
+                    "kind": "discardDraft",
+                    "sessionId": f"custom-output-{backend}",
+                    "revision": revisions[backend],
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 16,
+                },
+                timeout=30.0,
+            )
+            assert discarded["kind"] == "planUpdated", discarded
+            revisions[backend] = discarded["revision"]
+            assert discarded["page"]["rows"][0]["values"][0]["display"] == "1"
+
+        failure_requests = []
+        for backend in required_modules:
+            failure_requests.append(
+                envelope(
+                    f"preview-failure-{backend}",
+                    {
+                        "kind": "previewStep",
+                        "sessionId": f"custom-output-{backend}",
+                        "revision": revisions[backend],
+                        "step": {
+                            "id": f"custom-failure-{backend}",
+                            "kind": "customCode",
+                            "params": {
+                                "code": (
+                                    "import sys\n"
+                                    "print('password=captured-stdout-secret')\n"
+                                    "sys.stderr.write('Authorization: Bearer captured-stderr-secret')\n"
+                                    "raise ValueError('token=exception-secret')"
+                                )
+                            },
+                        },
+                        "offset": 0,
+                        "limit": 20,
+                        "columnOffset": 0,
+                        "columnLimit": 16,
+                    },
+                )
+            )
+
+        failures = send_concurrent(failure_requests)
+        for backend in required_modules:
+            response = failures[f"preview-failure-{backend}"]
+            assert response["kind"] == "error", response
+            assert response["code"] == "engine_error"
+            serialized = json.dumps(response)
+            assert "captured-stdout-secret" not in serialized
+            assert "captured-stderr-secret" not in serialized
+            assert "exception-secret" not in serialized
+            assert "<redacted>" in serialized
+
+            follow_up = _send_server_request(
+                process,
+                output,
+                f"follow-up-{backend}",
+                {
+                    "kind": "getPage",
+                    "sessionId": f"custom-output-{backend}",
+                    "revision": revisions[backend],
+                    "viewRequestId": f"follow-up-view-{backend}",
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 16,
+                    "filterModel": {"logic": "and", "filters": [], "sort": []},
+                },
+                timeout=30.0,
+            )
+            assert follow_up["kind"] == "page", follow_up
+            assert follow_up["viewRequestId"] == f"follow-up-view-{backend}"
+            assert follow_up["page"]["rows"][0]["values"][0]["display"] == "1"
+
+        for backend in required_modules:
+            closed = _send_server_request(
+                process,
+                output,
+                f"close-{backend}",
+                {
+                    "kind": "closeSession",
+                    "sessionId": f"custom-output-{backend}",
+                    "revision": revisions[backend],
+                },
+                timeout=30.0,
+            )
+            assert closed == {"kind": "sessionClosed", "sessionId": f"custom-output-{backend}"}
+
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+
+    assert return_code == 0, output.stderr_tail()
+    assert "forged" not in output.stderr_tail()
+    assert "oversized-no-newline" not in output.stderr_tail()
+    assert "stderr-sentinel" not in output.stderr_tail()
+    assert "captured-stdout-secret" not in output.stderr_tail()
+    assert "captured-stderr-secret" not in output.stderr_tail()
+
+
 def test_stdio_server_opens_polars_excel_in_a_fresh_process(tmp_path: Path) -> None:
     required_modules = ("polars", "fastexcel", "openpyxl")
     if any(find_spec(module_name) is None for module_name in required_modules):

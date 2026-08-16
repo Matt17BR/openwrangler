@@ -59,8 +59,12 @@ def test_custom_output_is_captured_without_reaching_process_streams(monkeypatch)
         print("ordinary stdout")
         sys.stdout.write("no-newline stdout")
         print("ordinary stderr", file=sys.stderr)
-        sys.__stdout__.write("dunder stdout")
-        sys.__stderr__.write("dunder stderr")
+        dunder_stdout = sys.__stdout__
+        dunder_stderr = sys.__stderr__
+        assert dunder_stdout is not None
+        assert dunder_stderr is not None
+        dunder_stdout.write("dunder stdout")
+        dunder_stderr.write("dunder stderr")
 
     assert output.stdout == "ordinary stdout\nno-newline stdoutdunder stdout"
     assert output.stderr == "ordinary stderr\ndunder stderr"
@@ -116,18 +120,40 @@ def test_large_no_newline_output_is_bounded_before_diagnostic_processing() -> No
     assert len(diagnostic.encode("utf-8")) < (2 * MAX_CUSTOM_DIAGNOSTIC_BYTES) + 256
 
 
-def test_custom_failure_diagnostics_are_bounded_redacted_and_unicode_safe() -> None:
+def test_large_buffered_output_retains_only_its_bounded_prefix() -> None:
+    payload = memoryview(bytearray(b"z" * (MAX_CUSTOM_DIAGNOSTIC_BYTES * 100)))
+
+    with capture_custom_code_output() as output:
+        assert sys.stdout.buffer.write(payload) == len(payload)
+
+    assert output.stdout == ("z" * MAX_CUSTOM_DIAGNOSTIC_BYTES) + "\n<output truncated>"
+
+
+def test_custom_failure_diagnostics_are_bounded_and_redacted() -> None:
     with capture_custom_code_output() as output:
         print("Authorization: Bearer stdout-secret")
         print("password=stderr-secret", file=sys.stderr)
-        sys.stderr.write("\ud800")
+        print("sk-proj-abcdefghijklmnop", file=sys.stderr)
+        print("https://example.invalid/path?token=query-secret", file=sys.stderr)
 
     diagnostic = custom_code_error_message("Pandas", ValueError("token=exception-secret"), output)
 
     assert "stdout-secret" not in diagnostic
     assert "stderr-secret" not in diagnostic
     assert "exception-secret" not in diagnostic
+    assert "abcdefghijklmnop" not in diagnostic
+    assert "query-secret" not in diagnostic
     assert "<redacted>" in diagnostic
+    diagnostic.encode("utf-8")
+
+
+def test_unpaired_or_control_output_is_suppressed_before_diagnostic_encoding() -> None:
+    with capture_custom_code_output() as output:
+        sys.stderr.write("prefix\ud800suffix")
+
+    diagnostic = append_custom_code_output("failure", output)
+    assert "prefix" not in diagnostic
+    assert "suffix" not in diagnostic
     assert "<redacted unsafe output>" in diagnostic
     diagnostic.encode("utf-8")
 
@@ -166,12 +192,7 @@ def test_live_engine_output_is_suppressed_but_generated_code_keeps_normal_stream
     backend: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     process_stdout, process_stderr = _install_string_streams(monkeypatch)
-    code = (
-        "import sys\n"
-        f"print('{backend}-live-stdout')\n"
-        f"sys.stderr.write('{backend}-live-stderr')\n"
-        "result = df"
-    )
+    code = f"import sys\nprint('{backend}-live-stdout')\nsys.stderr.write('{backend}-live-stderr')\nresult = df"
 
     with _editing_engine(backend) as (engine, frame):
         transformed = engine.apply_transform(frame, _custom_step(code))
