@@ -217,6 +217,7 @@ import { createReleasedRPersistentRowsJourney } from "./releasedRPersistentRows"
 import { createReleasedRGridJourney } from "./releasedRGrid";
 import { createReleasedRDocumentGrid } from "./releasedRDocumentGrid";
 import { createReleasedRDocumentSession } from "./releasedRDocumentSession";
+import { createReleasedRDocumentVariableInvoker } from "./releasedRDocumentVariable";
 import {
   findReleasedQuartoPreviewLocator,
   openReleasedNativeQuartoPreview as openReleasedNativeQuartoPreviewOwner
@@ -4444,45 +4445,12 @@ async function assertReleasedRDocumentPickerMediaGeometry(
   }
 }
 
-async function invokeReleasedRDocumentVariable(
-  workbench: Page,
-  source: vscode.Uri,
-  variableName: string,
-  assertDiscovery: boolean
-): Promise<void> {
-  const outcome = vscode.commands.executeCommand<boolean>("openWrangler.runRDocument", source);
-  const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
-  const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
-  const first = await Promise.race([
-    picker.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ kind: "picker" as const })),
-    Promise.resolve(outcome).then((value) => ({ kind: "outcome" as const, value }))
-  ]);
-  assert.equal(
-    first.kind,
-    "picker",
-    `The public R-file command ended before showing its real picker: ${JSON.stringify(first)}.`
-  );
-  if (assertDiscovery) {
-    for (const [name, flavor] of [
-      ["orders_frame", "data.frame"],
-      ["orders_tibble", "tibble"],
-      ["orders_table", "data.table"]
-    ] as const) {
-      const row = await releasedJupyterQuickPickRow(picker, name);
-      assert.ok(row, `The plain R picker must expose ${name}.`);
-      assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}`, "u"));
-    }
-  }
-  const input = picker.locator(".quick-input-box input:visible").first();
-  await input.fill(variableName);
-  const row = await releasedJupyterQuickPickRow(picker, variableName);
-  assert.ok(row, `The plain R picker did not expose ${JSON.stringify(variableName)}.`);
-  await row.click();
-  assert.equal(
-    await withBoundedAcceptancePromise(outcome, 30_000, `the public R-file command for ${variableName}`),
-    true
-  );
-}
+const invokeReleasedRDocumentVariable = createReleasedRDocumentVariableInvoker({
+  releasedJupyterQuickPickRow,
+  runReleasedRDocument: (source) => vscode.commands.executeCommand<boolean>("openWrangler.runRDocument", source),
+  withBoundedAcceptancePromise: (promise, timeoutMs, description) =>
+    withBoundedAcceptancePromise(promise, timeoutMs, description)
+});
 
 const waitForReleasedRDocumentSession = createReleasedRDocumentSession({
   SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
