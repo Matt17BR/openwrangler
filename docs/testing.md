@@ -6,6 +6,16 @@ Run memory-intensive local suites serially. This is an operator responsibility; 
 commands across clones or worktrees. Use the focused command for the code being changed, and reserve the complete
 matrix for release candidates or changes that cross all of its boundaries.
 
+- `npm run check:pr` is the authoritative deterministic local command and is exactly `npm run check && npm test`.
+  It must remain below five minutes on the reference checkout and does not replace native R, editor, browser,
+  platform, Remote SSH, or release-candidate acceptance.
+- The compatibility release-train phase retains every existing PR gate and both R versions. A later consolidation
+  may remove a lane only after its A-D owner and direct replacement proof are reviewed, hosted, and mechanically
+  fanned in. There are no automatic retries or timeout increases.
+- Daily canary failures are disposable main-health evidence. Release qualification uses `publish: false`; exact-byte
+  promotion uses `publish: true` plus the successful first-attempt numeric `candidate_run_id`. Neither operation is
+  developed or debugged by mutating public release state.
+
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
 - `npm run test:r-contract` sources the production R module, runs native R assertions, and then sends real base

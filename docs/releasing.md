@@ -410,6 +410,11 @@ The same installed-editor report must prove that the production renderer and for
 
 ## GitHub workflow
 
+This compatibility phase preserves every existing pull-request context, trigger, and semantic gate. Ruleset migration
+and later trigger/job retirement are separate reviewed operations; see [`docs/ci.md`](ci.md) for the ordered proof.
+The new release transaction does not authorize a release dispatch or any version, tag, registry, Marketplace, or
+Azure mutation.
+
 Each coherent change uses a feature branch and pull request. Drafts run `Fast feedback` and report a separate `Draft
 feedback` check; the protected `validate` context appears only when the pull request is marked ready. Ready code
 changes targeting `main` run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native
@@ -451,7 +456,19 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Exactly one non-matrix caller invokes the reusable candidate workflow. That workflow owns fixed internal generic macOS/Windows platform, macOS/Windows `r_platform`, Linux, installed-performance, Python, remote-R, and Linux local-R jobs against the artifact ID. Generic platform cells perform no R setup or native-R tail and run only the focused VS Code `platform-smoke`; Linux VS Code is the one full generic packaged owner and one pinned Linux Cursor run owns the corresponding fork-compatibility smoke. Each `r_platform` cell prepares R once, then orders separately verified VS Code-only `core-operations`, `native-frames`, and `kernel-restart` invocations; its exact raw guard runs after three distinct immediate diagnostic uploads and requires literal success from all three outcomes. The local-R matrix contains exactly two non-cancelling shards. Lifecycle orders separately verified `core-operations`, `kernel-restart`, `interactive-terminal`, and `literate-documents`; editing orders separately verified `native-frames`, `value-operations`, and `categorical-operations`. Every runner starts from a freshly verified exact candidate and new requested-editor private roots, has a fresh deadline, and owns a distinct immediate sealed diagnostic upload. Each cell checks all raw outcomes only after its assigned uploads, so an earlier editor failure cannot suppress later evidence. Explicit candidate core omits both native-frame and restart work on Linux, macOS, and Windows because the dedicated selectors own them. Linux executes both dedicated phases in VS Code and Cursor; macOS and Windows execute them in VS Code. Focused value and categorical selectors also omit native-frame work, remain restart-free, and run their complete catalog only in VS Code. The default/unset core used by the unchanged manual Released Jupyter workflow retains its full catalog, while the remote-R journey retains representative embedded behavior, so no platform loses coverage. The remote-R job avoids hosted R and local editor tooling and starts the existing five-phase Docker journey immediately after common package setup and artifact verification. Candidate Linux retains the live repository-metadata invariant, dependency audits, strict runtime benchmark, one full packaged VS Code journey, and the focused Cursor compatibility smoke; source checks, script contracts, browser/accessibility baselines, extension-host suites, and coverage remain owned by the protected pull-request gate. The package producer owns the sole full VSIX inventory/content verifier. Consumers retain immediate canonical checksum/provenance/archive revalidation but never repeat that full proof. An output-free internal fan-in requires literal success of every candidate job, including `R_PLATFORM_RESULT=success`. Remote SSH depends only on the package and starts alongside candidate acceptance; publication depends directly on package, the candidate call, and Remote SSH. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A `publish: false`
+dispatch from exact protected `main` builds once, validates channel metadata, authors one immutable
+VSIX/checksum/provenance triple, and runs the existing non-matrix candidate call plus Remote SSH against its numeric
+artifact ID. A separate `publish: true` dispatch must name that exact successful first-attempt run. It downloads the
+same unexpired artifact after proving workflow, channel, source, tag, package, candidate fan-in, and Remote SSH
+success; it contains no build or package step. Exactly one non-matrix caller invokes the reusable candidate workflow.
+That workflow retains its complete compatibility matrix in this phase. Consumers immediately revalidate the
+canonical checksum, provenance, and archive but never rebuild or repackage it. External actions are commit-pinned,
+qualification jobs remain read-only and outside protected environments, and no failed candidate can promote.
+
+The daily canary uses a source-derived development identity that cannot equal released bytes. It packages and verifies
+once, runs one representative installed VS Code smoke, retains the Actions artifact for 14 days, and creates no tag,
+release, registry entry, Marketplace/Azure action, or release-candidate claim.
 
 Each local-R shard and `r_platform` cell provisions its packages once through the same pinned dependency action and
 exact configuration as the pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created

@@ -2,6 +2,40 @@
 
 Open Wrangler uses three test levels. The everyday pull-request checks should find ordinary mistakes quickly. Editor and registry checks run against a packaged VSIX before a release. Scheduled jobs watch external dependencies such as VS Code, Jupyter, Python, and security advisories.
 
+## Compatibility phase and target tiers
+
+The first release-train change is deliberately compatible with the active seven-context ruleset. It does not rename
+or remove any pull-request job, trigger, semantic gate, artifact barrier, or fan-in dependency. This is the safe order:
+
+1. land the compatible canary and package-once candidate transaction while all existing contexts remain required;
+2. prove a fresh `validate` result is red when any required dependency is pending, skipped unexpectedly, or failed;
+3. migrate the ruleset in one authenticated, read-back-verified operation; and
+4. only then propose a separate gate-consolidation change with direct replacement evidence for every retired lane.
+
+`npm run check:pr` is the authoritative local deterministic command. It is exactly `npm run check && npm test` and
+was measured at 186.40 seconds on the reference checkout before this compatibility slice. It does not pretend to
+replace native R, editor, browser, platform, remote, or publication acceptance.
+
+The intended A-D ownership model is:
+
+| Tier                                   | Current owner in this compatibility phase                                                                                     | Retirement condition                                                                                                           |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| A: always-run deterministic contracts  | Existing Fast feedback and Contract tests; reproducible locally with `npm run check:pr`                                       | Never path-skipped                                                                                                             |
+| B: changed-subsystem integration       | Existing coverage, visual/axe, packaged-editor, extension-host, Python matrix, R 4.4/4.5, Cross-platform, and CodeQL PR gates | A later owner-array plan must retain the same public/safety behavior and fail closed for unknown paths                         |
+| C: disposable main canary              | Daily source-derived VSIX, representative installed VS Code smoke, 14-day artifact retention                                  | Never a tag, public release, registry publication, or release-candidate claim                                                  |
+| D: release qualification and promotion | Existing complete candidate-acceptance matrix plus Remote SSH, consuming one package artifact                                 | Promotion may use only the successful first-attempt candidate artifact; no rebuild or semantic-test development in publication |
+
+Future consolidation must disposition the existing gates explicitly. Packaged-editor and Python/R platform evidence
+already has an immutable-candidate owner, but remains on PRs during this phase. Visual/axe, coverage, and extension-host
+source evidence have no accepted replacement yet and therefore remain required. Both R versions remain required;
+phase-aware sharding may be wired only after the R runner proves exact selection and exhaustive disjoint union.
+Cross-platform and standalone CodeQL keep their pull-request triggers until the ruleset migration is complete, and
+CodeQL continues to analyze both languages on every protected-main push independently of PR classification.
+
+The measured pre-change baseline is 24 active jobs and 71.13 runner-minutes for a representative green head, with
+p50 10.48 minutes and p95 14.70 minutes across 82 heads. Those numbers are a later consolidation baseline, not a
+claimed improvement from this compatibility PR.
+
 ## Pull requests
 
 Draft pull requests run `Fast feedback`: formatting, linting, TypeScript, generated files, licenses, and workflow tests. A healthy draft reports `Draft feedback`, not a fake failure. The protected `validate` check is deliberately absent until the pull request is marked ready. The `ready_for_review` event starts the merge checks on the same commit.
@@ -82,6 +116,17 @@ until that gate is simplified or repaired; it must not grow another orchestratio
 run record and release notes, not a new metrics service.
 
 ## Release candidates
+
+The release callers expose two separate operations. `publish: false` packages once from exact protected `main`,
+uploads the canonical VSIX/checksum/provenance triple, and runs the existing full candidate and Remote SSH gates
+without mutating tags or registries. `publish: true` accepts the exact successful first-attempt numeric
+`candidate_run_id`, revalidates its workflow, channel, source, tag, job fan-in, artifact ID, checksum, provenance,
+archive, and retention, and promotes those bytes without rebuilding. A failed qualification is reusable as a
+diagnostic record but is never promotable; publication remains one-shot and fail closed.
+
+The daily canary is separate. It derives a reproducible development identity from the protected-main source SHA,
+packages and verifies once, runs one representative installed VS Code smoke, retains the artifact for 14 days, and
+publishes a short Actions summary. It creates no tag, release, registry entry, Azure action, or immutable public asset.
 
 Preview and stable release workflows build the VSIX once. Every acceptance job downloads and verifies that same artifact.
 The package producer first lets the lockfile-owned VSCE API create a raw archive in a private sibling (mode `0700` on

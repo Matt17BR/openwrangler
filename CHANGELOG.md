@@ -13,6 +13,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Release automation now separates disposable protected-main canaries, nonpublishing qualification of one immutable
+  VSIX, and one-shot promotion of those exact qualified bytes. The compatibility phase preserves all existing PR
+  gates while ruleset and gate consolidation remain separate reviewed changes.
 - Development and hosted automation now use exactly Node.js 22.22.0 with npm 10.9.4. The standard check includes a
   strict dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains
   Nano ID 3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
