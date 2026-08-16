@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
+import { verifyGridClipboardBrowserAcceptance } from "./grid-clipboard-browser-acceptance.mjs";
 import { createWebviewBrowserIsolation, resolveWebviewBrowserExecutable } from "./webview-browser.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -77,6 +78,7 @@ try {
   await verifyRProfileAccessibility(browser);
   await verifyGridStatusBar(browser);
   await verifyShortGridProfileResponsiveness(browser);
+  await verifyGridClipboardBrowserAcceptance(browser, harnessDir);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
