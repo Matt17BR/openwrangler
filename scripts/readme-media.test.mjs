@@ -481,7 +481,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
   assert.match(readme, /## Workbench/u);
-  assert.match(readme, /A dataframe workbench for VS Code, Cursor/u);
+  assert.match(
+    readme,
+    /Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4\.2 notebook viewing, and preview native R\./u
+  );
   assert.match(
     readme,
     /sidebar keeps operations, dataset health, filter and sort builders, and cleaning history beside the grid/u
@@ -506,6 +509,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
   assert.match(readme, /Choose from 28 operations/u);
+  assert.match(readme, /Edit and cleaning Undo target only the most recent step/u);
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
   assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live\s+dataframe/u);
@@ -647,21 +651,19 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(comparisonReview, /Observed PSS/u);
   assert.match(comparisonReview, /Primary report SHA-256:/u);
   assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
-  assert.match(
-    readme,
-    /\*\*1\.x:\*\* keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks/u
-  );
+  assert.doesNotMatch(performanceSection, /raw data/iu);
   assert.doesNotMatch(readme, /#36/u);
   assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
-  const v2Roadmap = readme.slice(readme.indexOf("- **1.99 previews:**"), readme.indexOf("## Contributing and support"));
-  assert.match(v2Roadmap, /complete the R operation set, notebook and document workflows, and Parquet export/u);
-  assert.match(v2Roadmap, /ship stable R support after release testing and an updated performance comparison/u);
+  const productRoadmap = readme.slice(roadmapHeadingIndex, readme.indexOf("## Contributing and support"));
   assert.match(
-    v2Roadmap,
-    /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
+    productRoadmap,
+    /\[product roadmap\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/product-roadmap\.md\)/u
   );
-  assert.match(v2Roadmap, /\[#87\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/issues\/87\)/u);
+  assert.match(productRoadmap, /maintainability-first scope freeze/u);
+  assert.match(productRoadmap, /silent Pandas index loss\s+on export/u);
+  assert.match(productRoadmap, /\[#87\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/issues\/87\)/u);
+  assert.doesNotMatch(productRoadmap, /complete the R operation set|ship stable R support/u);
 
   for (const image of [
     "images/readme/v1.2/explore.png",

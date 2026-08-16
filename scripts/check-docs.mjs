@@ -27,6 +27,7 @@ const required = [
   ".github/repository-metadata.json",
   "docs/architecture.md",
   "docs/feature-parity.md",
+  "docs/product-roadmap.md",
   "docs/reference.md",
   "docs/releasing.md",
   "docs/testing.md",
