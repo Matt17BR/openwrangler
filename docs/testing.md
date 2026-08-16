@@ -2,9 +2,16 @@
 
 ## Automated layers
 
-Run memory-intensive local suites serially. This is an operator responsibility; the repository does not coordinate
-commands across clones or worktrees. Use the focused command for the code being changed, and reserve the complete
-matrix for release candidates or changes that cross all of its boundaries.
+Use `npm run check:tier-a` as the authoritative local gate for an ordinary change. It runs the complete static
+`check` branch and ordinary `test` branch concurrently, caps top-level parallelism at two, labels both branches, and
+waits for both to report even when one fails. Do not run another memory-intensive command alongside it. The
+repository cannot coordinate separate clones or worktrees, so cross-worktree resource isolation remains an operator
+responsibility. Use a narrower focused command while iterating, and reserve the complete editor/platform/release
+matrix for release candidates or changes that cross those boundaries.
+
+- `npm run check:tier-a` is the fail-complete Tier A command. It preserves every invariant in `npm run check` and
+  `npm test`; concurrency changes wall time, not the test inventory. The two-branch ceiling is the local resource
+  budget, and `--continue-on-error` plus named branch output prevents one early failure from hiding the other result.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
