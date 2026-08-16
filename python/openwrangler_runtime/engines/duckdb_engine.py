@@ -460,34 +460,70 @@ class DuckDBEngine(DataFrameEngine):
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         summaries: list[dict[str, Any]] = []
         with self._terminal_connection(frame) as (connection, source_sql):
-            total_count = int(_execute_scalar(connection, source_sql, "SELECT count(*) FROM ow") or 0)
             for column, column_id in selected:
                 identifier = _quote_ident(column)
                 raw_type = types[column]
                 semantic_type = _semantic_type(raw_type)
                 nan = _nan_predicate(identifier, raw_type)
                 valid = _valid_predicate(identifier, raw_type)
-                metric_expressions = [
-                    f"count(*) FILTER (WHERE {identifier} IS NULL)",
-                    f"count(*) FILTER (WHERE {nan})",
-                    f"count(DISTINCT {identifier}) FILTER (WHERE {valid})",
+                metric_fields = [
+                    ("total_count", "count(*)"),
+                    ("null_count", f"count(*) FILTER (WHERE {identifier} IS NULL)"),
+                    ("nan_count", f"count(*) FILTER (WHERE {nan})"),
+                    ("distinct_count", f"count(DISTINCT {identifier}) FILTER (WHERE {valid})"),
                 ]
                 if semantic_type == "string":
                     text_length = f"length(CAST({identifier} AS VARCHAR))"
-                    metric_expressions.extend(
+                    metric_fields.extend(
                         [
-                            f"count(*) FILTER (WHERE {valid} AND {text_length} = 0)",
-                            f"min({text_length}) FILTER (WHERE {valid})",
-                            f"max({text_length}) FILTER (WHERE {valid})",
-                            f"avg({text_length}) FILTER (WHERE {valid})",
+                            ("empty_count", f"count(*) FILTER (WHERE {valid} AND {text_length} = 0)"),
+                            ("minimum_length", f"min({text_length}) FILTER (WHERE {valid})"),
+                            ("maximum_length", f"max({text_length}) FILTER (WHERE {valid})"),
+                            ("mean_length", f"avg({text_length}) FILTER (WHERE {valid})"),
                         ]
                     )
-                metrics = _execute_rows(
+                elif semantic_type in {"integer", "float", "decimal"}:
+                    finite = _finite_predicate(identifier, raw_type)
+                    metric_fields.extend(
+                        [
+                            ("minimum", f"min({identifier}) FILTER (WHERE {valid})"),
+                            ("maximum", f"max({identifier}) FILTER (WHERE {valid})"),
+                            ("mean", f"avg({identifier}) FILTER (WHERE {valid})"),
+                            ("median", f"median({identifier}) FILTER (WHERE {valid})"),
+                            ("std", f"stddev_samp({identifier}) FILTER (WHERE {valid})"),
+                            ("finite_minimum", f"min({identifier}) FILTER (WHERE {finite})"),
+                            ("finite_maximum", f"max({identifier}) FILTER (WHERE {finite})"),
+                            ("finite_count", f"count(*) FILTER (WHERE {finite})"),
+                            (
+                                "finite_distinct_count",
+                                f"count(DISTINCT CAST({identifier} AS DOUBLE)) FILTER (WHERE {finite})",
+                            ),
+                        ]
+                    )
+                elif semantic_type == "boolean":
+                    metric_fields.extend(
+                        [
+                            ("true_count", f"count(*) FILTER (WHERE {identifier} IS TRUE)"),
+                            ("false_count", f"count(*) FILTER (WHERE {identifier} IS FALSE)"),
+                        ]
+                    )
+                elif semantic_type in {"datetime", "date"}:
+                    metric_fields.extend(
+                        [
+                            ("minimum", f"min({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
+                            ("maximum", f"max({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
+                        ]
+                    )
+                metric_row = _execute_rows(
                     connection,
                     source_sql,
-                    f"SELECT {', '.join(metric_expressions)} FROM ow",
+                    f"SELECT {', '.join(expression for _name, expression in metric_fields)} FROM ow",
                 )[0]
-                null_count, nan_count, distinct_count = (int(value or 0) for value in metrics[:3])
+                metrics = dict(zip((name for name, _expression in metric_fields), metric_row, strict=True))
+                total_count = int(metrics["total_count"] or 0)
+                null_count = int(metrics["null_count"] or 0)
+                nan_count = int(metrics["nan_count"] or 0)
+                distinct_count = int(metrics["distinct_count"] or 0)
                 top_rows = _execute_rows(
                     connection,
                     source_sql,
@@ -510,13 +546,13 @@ class DuckDBEngine(DataFrameEngine):
                     "topValues": top_values,
                 }
                 if semantic_type == "string":
-                    text_summary: dict[str, int | float] = {"emptyCount": int(metrics[3] or 0)}
-                    if metrics[4] is not None:
+                    text_summary: dict[str, int | float] = {"emptyCount": int(metrics["empty_count"] or 0)}
+                    if metrics["minimum_length"] is not None:
                         text_summary.update(
                             {
-                                "minLength": int(metrics[4]),
-                                "maxLength": int(metrics[5]),
-                                "meanLength": float(metrics[6]),
+                                "minLength": int(metrics["minimum_length"]),
+                                "maxLength": int(metrics["maximum_length"]),
+                                "meanLength": float(metrics["mean_length"]),
                             }
                         )
                     summary["text"] = text_summary
@@ -524,48 +560,35 @@ class DuckDBEngine(DataFrameEngine):
                         top_values, total_count - null_count - nan_count
                     )
                 elif semantic_type in {"integer", "float", "decimal"}:
-                    numeric = _execute_rows(
-                        connection,
-                        source_sql,
-                        f"SELECT min({identifier}), max({identifier}), avg({identifier}), "
-                        f"median({identifier}), stddev_samp({identifier}) FROM ow WHERE {valid}",
-                    )[0]
                     numeric_summary: dict[str, Any] = {
-                        "min": _finite_float(numeric[0]),
-                        "max": _finite_float(numeric[1]),
-                        "mean": _finite_float(numeric[2]),
-                        "median": _finite_float(numeric[3]),
-                        "std": _finite_float(numeric[4]),
+                        "min": _finite_float(metrics["minimum"]),
+                        "max": _finite_float(metrics["maximum"]),
+                        "mean": _finite_float(metrics["mean"]),
+                        "median": _finite_float(metrics["median"]),
+                        "std": _finite_float(metrics["std"]),
                     }
-                    if semantic_type in {"integer", "decimal"} and numeric[0] is not None:
-                        numeric_summary["exactMin"] = normalize_cell(numeric[0])
-                        numeric_summary["exactMax"] = normalize_cell(numeric[1])
+                    if semantic_type in {"integer", "decimal"} and metrics["minimum"] is not None:
+                        numeric_summary["exactMin"] = normalize_cell(metrics["minimum"])
+                        numeric_summary["exactMax"] = normalize_cell(metrics["maximum"])
                     summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                     summary["visualization"] = _numeric_visualization(
                         connection,
                         source_sql,
                         identifier,
                         raw_type,
+                        minimum=metrics["finite_minimum"],
+                        maximum=metrics["finite_maximum"],
+                        finite_count=int(metrics["finite_count"] or 0),
+                        distinct_count=int(metrics["finite_distinct_count"] or 0),
                     )
                 elif semantic_type == "boolean":
-                    counts = _execute_rows(
-                        connection,
-                        source_sql,
-                        f"SELECT count(*) FILTER (WHERE {identifier} IS TRUE), "
-                        f"count(*) FILTER (WHERE {identifier} IS FALSE) FROM ow",
-                    )[0]
                     summary["visualization"] = {
                         "kind": "boolean",
-                        "trueCount": int(counts[0] or 0),
-                        "falseCount": int(counts[1] or 0),
+                        "trueCount": int(metrics["true_count"] or 0),
+                        "falseCount": int(metrics["false_count"] or 0),
                     }
                 elif semantic_type in {"datetime", "date"}:
-                    bounds = _execute_rows(
-                        connection,
-                        source_sql,
-                        f"SELECT min({identifier}), max({identifier}) FROM ow WHERE {identifier} IS NOT NULL",
-                    )[0]
-                    summary["visualization"] = datetime_visualization(bounds[0], bounds[1])
+                    summary["visualization"] = datetime_visualization(metrics["minimum"], metrics["maximum"])
                 else:
                     summary["visualization"] = categorical_visualization(
                         top_values, total_count - null_count - nan_count
@@ -2210,16 +2233,14 @@ def _numeric_visualization(
     source_sql: str,
     identifier: str,
     raw_type: str,
+    *,
+    minimum: Any,
+    maximum: Any,
+    finite_count: int,
+    distinct_count: int,
 ) -> dict[str, Any]:
     finite = _finite_predicate(identifier, raw_type)
-    minimum, maximum, finite_count, distinct_count = _execute_rows(
-        connection,
-        source_sql,
-        f"SELECT min({identifier}), max({identifier}), count(*), "
-        f"count(DISTINCT CAST({identifier} AS DOUBLE)) FROM ow WHERE {finite}",
-    )[0]
-    finite_count = int(finite_count or 0)
-    bin_count = numeric_histogram_bin_count(finite_count, int(distinct_count or 0))
+    bin_count = numeric_histogram_bin_count(finite_count, distinct_count)
     minimum_float = _finite_float(minimum)
     maximum_float = _finite_float(maximum)
     edges = numeric_histogram_edges(minimum_float, maximum_float, bin_count)
