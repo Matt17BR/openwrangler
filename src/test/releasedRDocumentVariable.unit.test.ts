@@ -106,6 +106,18 @@ describe("released R document variable", () => {
     expect(test.releasedJupyterQuickPickRow).toHaveBeenCalledExactlyOnceWith(test.picker, "orders_frame");
   });
 
+  it("rejects a discovery row whose R flavor label does not match its canonical variable", async () => {
+    const test = fixture();
+    Object.assign(test.rows.get("orders_tibble")!, {
+      innerText: vi.fn(async () => "orders_tibble  R · data.frame")
+    });
+
+    await expect(test.invoke(test.workbench, source, "orders_frame", true)).rejects.toThrow(/R · tibble/u);
+    expect(test.inputFill).not.toHaveBeenCalled();
+    for (const click of test.rowClicks.values()) expect(click).not.toHaveBeenCalled();
+    expect(test.boundedCalls).toEqual([]);
+  });
+
   it("fails when the command ends before its picker becomes visible", async () => {
     const test = fixture();
     test.pickerWait.mockReturnValueOnce(new Promise(() => undefined));
