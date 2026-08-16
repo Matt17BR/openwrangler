@@ -61,6 +61,7 @@ import {
   pythonPackageEnvironmentKey,
   samePythonExecutable
 } from "./pythonDependencyState";
+import { PythonSessionOwnership } from "./pythonSessionOwnership";
 
 interface PendingRequest {
   readonly requestId: string;
@@ -133,12 +134,6 @@ interface RuntimeSlot {
   runtimeExitError: Error | undefined;
   stderrBuffer: string;
   runtimeEpoch: number;
-}
-
-interface ProvisionalSessionReservation {
-  readonly runtime: RuntimeSlot;
-  readonly openRequestId: string;
-  state: "pending" | "closing";
 }
 
 interface PreparedRequest {
@@ -218,8 +213,9 @@ async function joinProcessStops(previous: Promise<void>, current: Promise<void>)
 export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private shutdownPromise: Promise<void> | undefined;
   private readonly runtimeSlots = new Map<string, RuntimeSlot>();
-  private readonly sessionOwners = new Map<string, RuntimeSlot>();
-  private readonly provisionalSessions = new Map<string, ProvisionalSessionReservation>();
+  private readonly sessionOwnership = new PythonSessionOwnership<RuntimeSlot>((runtime, reason) =>
+    this.restartRuntime(runtime, reason)
+  );
   private readonly pending = new Map<string, PendingRequest>();
   private readonly cancellationTargets = new Map<string, { targetRequestId: string; runtime: RuntimeSlot }>();
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
@@ -319,7 +315,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     ) {
       return undefined;
     }
-    const runtime = this.sessionOwners.get(sessionId);
+    const runtime = this.sessionOwnership.confirmedOwner(sessionId);
     const processSelection = runtime?.processSelection;
     if (
       !runtime?.process ||
@@ -348,7 +344,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         controller.signal.aborted ||
         this.disposed ||
         !vscode.workspace.isTrusted ||
-        this.sessionOwners.get(sessionId) !== runtime ||
+        this.sessionOwnership.confirmedOwner(sessionId) !== runtime ||
         runtime.processSelection !== processSelection ||
         !this.isCurrentEnvironmentSelection(processSelection.selection)
       ) {
@@ -388,17 +384,16 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     };
 
     if (isSessionBoundRequest(request)) {
-      const confirmedOwner = this.sessionOwners.get(request.sessionId);
-      const provisional = request.kind === "closeSession" ? this.provisionalSessions.get(request.sessionId) : undefined;
+      const confirmedOwner = this.sessionOwnership.confirmedOwner(request.sessionId);
+      const provisional =
+        request.kind === "closeSession" ? this.sessionOwnership.provisionalClaim(request.sessionId) : undefined;
       const owner = confirmedOwner ?? provisional?.runtime;
       if (!owner || (!owner.process && !owner.processStart)) {
-        if (confirmedOwner) this.releaseSessionOwner(request.sessionId, confirmedOwner);
-        if (provisional) {
-          this.releaseProvisionalReservation(request.sessionId, provisional.openRequestId, provisional.runtime);
-        }
+        if (confirmedOwner) this.sessionOwnership.releaseConfirmed(request.sessionId, confirmedOwner);
+        if (provisional) this.sessionOwnership.terminateProvisional(request.sessionId, provisional.runtime);
         return this.unknownSessionError(request);
       }
-      if (!confirmedOwner && provisional) provisional.state = "closing";
+      if (!confirmedOwner && provisional) this.sessionOwnership.markProvisionalClosing(request.sessionId, owner);
       runtime = owner;
       requestLease = this.retainRuntime(owner);
       try {
@@ -538,7 +533,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
 
     const requestId = randomUUID();
-    const provisionalError = this.reserveRequestedSession(runtimeRequest, runtime, requestId);
+    const provisionalError = this.sessionOwnership.reserve(runtimeRequest, runtime, requestId);
     if (provisionalError) {
       this.stopRuntimeIfIdle(runtime);
       releaseRequestLease();
@@ -558,13 +553,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
     return new Promise<OpenWranglerResponse>((resolve, reject) => {
       if (runtime.runtimeExitError) {
-        this.releaseProvisionalReservationForRequest(runtimeRequest, requestId, runtime);
+        this.sessionOwnership.releaseForRequest(runtimeRequest, requestId, runtime);
         releaseRequestLease();
         reject(runtime.runtimeExitError);
         return;
       }
       if (proc.stdin.destroyed || !proc.stdin.writable) {
-        this.releaseProvisionalReservationForRequest(runtimeRequest, requestId, runtime);
+        this.sessionOwnership.releaseForRequest(runtimeRequest, requestId, runtime);
         releaseRequestLease();
         reject(this.runtimeUnavailableError(runtime));
         return;
@@ -580,7 +575,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         if (runtimeRequest.kind === "openSession" || options.restartRuntimeOnTimeout !== false) {
           this.restartRuntime(runtime, "Runtime request timed out; restarting so sessions can be replayed.");
         } else {
-          this.releasePendingProvisionalReservationForRequest(pending.request, pending.requestId, pending.runtime);
+          this.sessionOwnership.releasePendingForRequest(pending.request, pending.requestId, pending.runtime);
           this.stopRuntimeIfIdle(pending.runtime);
         }
       }, timeoutMs);
@@ -609,7 +604,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           if (!error) return;
           const pending = this.takePending(requestId);
           if (pending) {
-            this.releasePendingProvisionalReservationForRequest(pending.request, pending.requestId, runtime);
+            this.sessionOwnership.releasePendingForRequest(pending.request, pending.requestId, runtime);
             pending.reject(this.runtimeUnavailableError(runtime, error));
           }
           this.stopRuntimeIfIdle(runtime);
@@ -617,7 +612,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       } catch (error) {
         const pending = this.takePending(requestId);
         if (pending) {
-          this.releasePendingProvisionalReservationForRequest(pending.request, pending.requestId, runtime);
+          this.sessionOwnership.releasePendingForRequest(pending.request, pending.requestId, runtime);
           pending.reject(this.runtimeUnavailableError(runtime, error));
         }
         this.stopRuntimeIfIdle(runtime);
@@ -1809,12 +1804,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     for (const pending of this.pending.values()) {
       if (pending.runtime === runtime) return false;
     }
-    for (const reservation of this.provisionalSessions.values()) {
-      if (reservation.runtime === runtime) return false;
-    }
-    for (const owner of this.sessionOwners.values()) {
-      if (owner === runtime) return false;
-    }
+    if (this.sessionOwnership.hasClaimsFor(runtime)) return false;
     for (const target of this.cancellationTargets.values()) {
       if (target.runtime === runtime) return false;
     }
@@ -1842,7 +1832,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime.processSelection = undefined;
     runtime.processStartSelection = undefined;
     runtime.runtimeExitError = undefined;
-    this.releaseRuntimeSessionState(runtime);
+    this.sessionOwnership.releaseRuntime(runtime);
     this.rejectRuntime(runtime, new Error(reason));
     this.trimInactiveScopes();
   }
@@ -2098,7 +2088,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime.runtimeExitError = error;
     runtime.process = undefined;
     runtime.processSelection = undefined;
-    this.releaseRuntimeSessionState(runtime);
+    this.sessionOwnership.releaseRuntime(runtime);
     this.output.appendLine(error.message);
     this.rejectRuntime(runtime, error);
     this.trimInactiveScopes();
@@ -2154,7 +2144,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     const pending = this.takePending(envelope.requestId);
     if (!pending) return;
-    const response = this.finalizeRuntimeResponse(pending, envelope.response);
+    const response = this.sessionOwnership.finalizeResponse(pending, envelope.response);
     pending.resolve(response);
     this.stopRuntimeIfIdle(runtime);
   }
@@ -2196,7 +2186,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (!pending.dispatched) {
       const cancelled = this.takePending(targetRequestId);
       if (cancelled) {
-        this.releasePendingProvisionalReservationForRequest(cancelled.request, cancelled.requestId, cancelled.runtime);
+        this.sessionOwnership.releasePendingForRequest(cancelled.request, cancelled.requestId, cancelled.runtime);
         cancelled.resolve({ kind: "cancelled", targetRequestId: "not-started" });
         this.stopRuntimeIfIdle(cancelled.runtime);
       }
@@ -2242,221 +2232,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.cancellationTargets.delete(requestId);
     const pending = this.pending.get(targetRequestId);
     if (pending?.cancellationRequestId === requestId) pending.cancellationRequestId = undefined;
-  }
-
-  private reserveRequestedSession(
-    request: OpenWranglerRequest,
-    runtime: RuntimeSlot,
-    openRequestId: string
-  ): ErrorResponse | undefined {
-    if (request.kind !== "openSession" || !request.requestedSessionId) return undefined;
-    const confirmedOwner = this.sessionOwners.get(request.requestedSessionId);
-    const provisional = this.provisionalSessions.get(request.requestedSessionId);
-    if (confirmedOwner || provisional) {
-      const owner = confirmedOwner ?? provisional!.runtime;
-      return {
-        kind: "error",
-        code: "duplicate_runtime_session",
-        message: `Open Wrangler runtime session ${request.requestedSessionId} is already owned or reserved by Python scope ${owner.key}.`,
-        recoverable: true,
-        sessionId: request.requestedSessionId
-      };
-    }
-    this.provisionalSessions.set(request.requestedSessionId, {
-      runtime,
-      openRequestId,
-      state: "pending"
-    });
-    runtime.provisionalSessionIds.add(request.requestedSessionId);
-    return undefined;
-  }
-
-  private releaseProvisionalReservationForRequest(
-    request: OpenWranglerRequest,
-    openRequestId: string,
-    runtime: RuntimeSlot
-  ): void {
-    if (request.kind === "openSession" && request.requestedSessionId) {
-      this.releaseProvisionalReservation(request.requestedSessionId, openRequestId, runtime);
-    }
-  }
-
-  private releasePendingProvisionalReservationForRequest(
-    request: OpenWranglerRequest,
-    openRequestId: string,
-    runtime: RuntimeSlot
-  ): void {
-    if (request.kind !== "openSession" || !request.requestedSessionId) return;
-    const reservation = this.provisionalSessions.get(request.requestedSessionId);
-    if (reservation?.state !== "pending") return;
-    this.releaseProvisionalReservation(request.requestedSessionId, openRequestId, runtime);
-  }
-
-  private releaseProvisionalReservation(sessionId: string, openRequestId: string, runtime: RuntimeSlot): void {
-    const reservation = this.provisionalSessions.get(sessionId);
-    if (reservation?.runtime !== runtime || reservation.openRequestId !== openRequestId) return;
-    this.provisionalSessions.delete(sessionId);
-    runtime.provisionalSessionIds.delete(sessionId);
-  }
-
-  private terminateProvisionalReservation(sessionId: string, runtime: RuntimeSlot): void {
-    const reservation = this.provisionalSessions.get(sessionId);
-    if (reservation?.runtime !== runtime) return;
-    this.provisionalSessions.delete(sessionId);
-    runtime.provisionalSessionIds.delete(sessionId);
-  }
-
-  private isExactProvisionalReservation(sessionId: string, openRequestId: string, runtime: RuntimeSlot): boolean {
-    const reservation = this.provisionalSessions.get(sessionId);
-    return (
-      reservation?.runtime === runtime && reservation.openRequestId === openRequestId && reservation.state === "pending"
-    );
-  }
-
-  private promoteProvisionalReservation(sessionId: string, openRequestId: string, runtime: RuntimeSlot): boolean {
-    if (!this.isExactProvisionalReservation(sessionId, openRequestId, runtime)) return false;
-    this.releaseProvisionalReservation(sessionId, openRequestId, runtime);
-    if (this.sessionOwners.has(sessionId)) return false;
-    this.bindSessionOwner(sessionId, runtime);
-    return true;
-  }
-
-  private invalidTerminatedReservationResponse(sessionId: string, runtime: RuntimeSlot): ErrorResponse {
-    this.restartRuntime(
-      runtime,
-      `Runtime opened session ${sessionId} after its exact candidate reservation ended; restarting the affected Python scope.`
-    );
-    return this.invalidRuntimeSessionResponse(
-      `The runtime opened session ${sessionId} after its candidate reservation was no longer active.`,
-      sessionId
-    );
-  }
-
-  private duplicateSessionResponse(sessionId: string, runtime: RuntimeSlot): ErrorResponse {
-    this.restartRuntime(
-      runtime,
-      `Runtime returned duplicate session ${sessionId}; restarting the affected Python scope.`
-    );
-    return this.invalidRuntimeSessionResponse(
-      `The runtime returned duplicate session identity ${sessionId} from Python scope ${runtime.key}.`,
-      sessionId
-    );
-  }
-
-  private hasOtherSessionClaim(sessionId: string, runtime: RuntimeSlot, openRequestId?: string): boolean {
-    if (this.sessionOwners.has(sessionId)) return true;
-    const provisional = this.provisionalSessions.get(sessionId);
-    return Boolean(
-      provisional &&
-      (provisional.runtime !== runtime || openRequestId === undefined || provisional.openRequestId !== openRequestId)
-    );
-  }
-
-  private releaseOpenReservation(pending: PendingRequest): void {
-    this.releaseProvisionalReservationForRequest(pending.request, pending.requestId, pending.runtime);
-  }
-
-  private finalizeOpenResponse(pending: PendingRequest, response: OpenWranglerResponse): OpenWranglerResponse {
-    const { request, runtime } = pending;
-    if (request.kind !== "openSession") return response;
-    if (response.kind !== "sessionOpened") {
-      this.releaseOpenReservation(pending);
-      return response;
-    }
-
-    const actual = response.metadata.sessionId;
-    const expected = request.requestedSessionId;
-    if (!expected) {
-      if (this.hasOtherSessionClaim(actual, runtime)) return this.duplicateSessionResponse(actual, runtime);
-      this.bindSessionOwner(actual, runtime);
-      return response;
-    }
-    if (actual !== expected) {
-      this.releaseOpenReservation(pending);
-      this.restartRuntime(
-        runtime,
-        `Runtime returned session ${actual} instead of requested session ${expected}; restarting the affected Python scope.`
-      );
-      return this.invalidRuntimeSessionResponse(
-        `The runtime returned session ${actual} instead of requested session ${expected}.`,
-        expected
-      );
-    }
-    if (!this.isExactProvisionalReservation(expected, pending.requestId, runtime)) {
-      return this.invalidTerminatedReservationResponse(expected, runtime);
-    }
-    if (this.hasOtherSessionClaim(expected, runtime, pending.requestId)) {
-      this.releaseOpenReservation(pending);
-      return this.duplicateSessionResponse(expected, runtime);
-    }
-    if (!this.promoteProvisionalReservation(expected, pending.requestId, runtime)) {
-      return this.invalidTerminatedReservationResponse(expected, runtime);
-    }
-    return response;
-  }
-
-  private finalizeRuntimeResponse(pending: PendingRequest, response: OpenWranglerResponse): OpenWranglerResponse {
-    const { request, runtime } = pending;
-    if (request.kind === "openSession") {
-      return this.finalizeOpenResponse(pending, response);
-    }
-
-    if (isSessionBoundRequest(request)) {
-      const correlatedSessionId = runtimeResponseSessionId(response);
-      if (correlatedSessionId && correlatedSessionId !== request.sessionId) {
-        this.restartRuntime(
-          runtime,
-          `Runtime response named session ${correlatedSessionId} instead of ${request.sessionId}; restarting the affected Python scope.`
-        );
-        return this.invalidRuntimeSessionResponse(
-          `The runtime response named session ${correlatedSessionId} instead of ${request.sessionId}.`,
-          request.sessionId
-        );
-      }
-      if (
-        (request.kind === "closeSession" &&
-          response.kind === "sessionClosed" &&
-          response.sessionId === request.sessionId) ||
-        isConfirmedUnknownSession(response, request.sessionId)
-      ) {
-        this.releaseSessionOwner(request.sessionId, runtime);
-        this.terminateProvisionalReservation(request.sessionId, runtime);
-      }
-    }
-    return response;
-  }
-
-  private invalidRuntimeSessionResponse(message: string, sessionId?: string): ErrorResponse {
-    return {
-      kind: "error",
-      code: "invalid_runtime_response",
-      message,
-      recoverable: true,
-      ...(sessionId ? { sessionId } : {})
-    };
-  }
-
-  private bindSessionOwner(sessionId: string, runtime: RuntimeSlot): void {
-    this.sessionOwners.set(sessionId, runtime);
-    runtime.sessionIds.add(sessionId);
-  }
-
-  private releaseSessionOwner(sessionId: string, runtime: RuntimeSlot): void {
-    if (this.sessionOwners.get(sessionId) === runtime) this.sessionOwners.delete(sessionId);
-    runtime.sessionIds.delete(sessionId);
-  }
-
-  private releaseRuntimeSessionState(runtime: RuntimeSlot): void {
-    for (const sessionId of runtime.sessionIds) {
-      if (this.sessionOwners.get(sessionId) === runtime) this.sessionOwners.delete(sessionId);
-    }
-    runtime.sessionIds.clear();
-    for (const sessionId of runtime.provisionalSessionIds) {
-      if (this.provisionalSessions.get(sessionId)?.runtime === runtime) {
-        this.provisionalSessions.delete(sessionId);
-      }
-    }
-    runtime.provisionalSessionIds.clear();
   }
 
   private unknownSessionError(request: Extract<OpenWranglerRequest, { sessionId: string }>): ErrorResponse {
@@ -2955,32 +2730,6 @@ function isWorkspaceFolder(resource: vscode.Uri | vscode.WorkspaceFolder): resou
 
 function sameUri(left: vscode.Uri, right: vscode.Uri): boolean {
   return left.toString(true) === right.toString(true);
-}
-
-function runtimeResponseSessionId(response: OpenWranglerResponse): string | undefined {
-  switch (response.kind) {
-    case "sessionOpened":
-    case "page":
-    case "stepPreview":
-    case "planUpdated":
-      return response.metadata.sessionId;
-    case "sessionClosed":
-      return response.sessionId;
-    case "error":
-      return response.sessionId;
-    default:
-      return undefined;
-  }
-}
-
-function isConfirmedUnknownSession(response: OpenWranglerResponse, sessionId: string): boolean {
-  return (
-    response.kind === "error" &&
-    ((response.code === "unknown_session" && response.sessionId === sessionId) ||
-      (response.code === "engine_error" &&
-        response.message === `Unknown session: ${sessionId}` &&
-        (response.sessionId === undefined || response.sessionId === sessionId)))
-  );
 }
 
 function waitForRuntimeProcessExit(proc: ChildProcessWithoutNullStreams): Promise<void> {
