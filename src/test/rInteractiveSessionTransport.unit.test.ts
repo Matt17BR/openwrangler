@@ -1079,6 +1079,43 @@ describe("interactive R session transport", () => {
     await rm(temporaryParent, { recursive: true, force: true });
   });
 
+  it("retains a same-size response replacement when identified cleanup loses the pathname", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-cleanup-replacement-unit-"));
+    let replacementPath: string | undefined;
+    let displacedPath: string | undefined;
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      removeFile: async (filePath) => {
+        if (!replacementPath && basename(dirname(filePath)) === "responses") {
+          const contents = await readFile(filePath);
+          replacementPath = filePath;
+          displacedPath = resolve(dirname(filePath), "displaced-owned-response.json");
+          await rename(filePath, displacedPath);
+          await writeFile(filePath, Buffer.alloc(contents.byteLength, 0x78), { mode: 0o600 });
+          throw new Error("simulated response pathname replacement");
+        }
+        await unlink(filePath);
+      },
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+
+    try {
+      await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
+      await expect(transport.dispose()).rejects.toThrow("could not completely clean up");
+      expect(replacementPath).toBeDefined();
+      expect(displacedPath).toBeDefined();
+      expect((await readFile(replacementPath!)).every((byte) => byte === 0x78)).toBe(true);
+      expect((await readFile(displacedPath!, "utf8")).startsWith("{")).toBe(true);
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it.each(["malformed", "wrong-kind"] as const)(
     "invalidates a live session after an indeterminate %s mutation response",
     async (failure) => {

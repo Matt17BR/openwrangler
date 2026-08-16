@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants, watch, type BigIntStats, type FSWatcher } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
+import { watch, type BigIntStats, type FSWatcher } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -35,6 +35,12 @@ import { RKernelDiagnosticError, type RKernelOpenResult, type RKernelRequestOpti
 import type { RColumnSchema, RDataframeFlavor, RFramePageContract } from "./rFrameContract";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
 import { buildRInteractiveDispatchCode, rInteractiveRuntimeBundleId } from "./rInteractiveRuntime";
+import {
+  createNodeRPrivateArtifactOperations,
+  readRPrivateArtifact,
+  rPrivateArtifactFailureRequiresContainerPreservation,
+  type RPrivateArtifactOperations
+} from "./rPrivateArtifactBoundary";
 
 const INTERACTIVE_PROTOCOL_VERSION = 1;
 const RESPONSE_POLL_MS = 20;
@@ -47,10 +53,6 @@ const MAX_RETIRED_SESSION_IDS = 1_024;
 const DISPOSAL_SETTLEMENT_MS = 5_000;
 const DATA_EXPORT_CLEANUP_TIMEOUT_MS = 5_000;
 const TERMINAL_CHANGED_MESSAGE = "The active R terminal changed.";
-const PRIVATE_READ_FLAGS =
-  fsConstants.O_RDONLY |
-  (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0) |
-  (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0);
 
 export interface RInteractiveSessionTransportOptions {
   readonly temporaryParent?: string;
@@ -114,6 +116,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private readonly terminalCloseSubscription: vscode.Disposable | undefined;
   private readonly temporaryParent: string;
   private readonly removeFile: (filePath: string) => Promise<void>;
+  private readonly artifactOperations: RPrivateArtifactOperations;
   private readonly disposalSettlementMs: number;
   private readonly dataExportCleanupTimeoutMs: number;
   private readonly terminalMode: "active" | "activeOrCreate";
@@ -147,6 +150,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private invalidationPublished = false;
   private notificationReadTimer: NodeJS.Timeout | undefined;
   private notificationReadTail: Promise<void> = Promise.resolve();
+  private mailboxCleanupSafe = true;
 
   constructor(context: vscode.ExtensionContext, options: RInteractiveSessionTransportOptions = {}) {
     this.runtimeRoot = path.join(context.extensionPath, "r");
@@ -157,6 +161,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     this.attachmentNonce = this.createId();
     this.temporaryParent = options.temporaryParent ?? tmpdir();
     this.removeFile = options.removeFile ?? unlink;
+    this.artifactOperations = createNodeRPrivateArtifactOperations(this.removeFile);
     this.disposalSettlementMs = options.disposalSettlementMs ?? DISPOSAL_SETTLEMENT_MS;
     this.dataExportCleanupTimeoutMs = options.dataExportCleanupTimeoutMs ?? DATA_EXPORT_CLEANUP_TIMEOUT_MS;
     this.terminalMode = options.terminalMode ?? "activeOrCreate";
@@ -771,8 +776,9 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
             return undefined;
           },
           RESPONSE_POLL_MS,
-          this.removeFile,
-          (error) => this.recordArtifactCleanupFailure(responsePath, "response", error)
+          this.artifactOperations,
+          (error) => this.recordArtifactCleanupFailure(responsePath, "response", error),
+          (error) => this.recordArtifactOwnershipFailure(error)
         );
         const decoded = decode(response);
         if (bootstrapping && expectedProcessId !== undefined) {
@@ -1070,6 +1076,9 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     if (this.notificationReadTimer) clearTimeout(this.notificationReadTimer);
     this.notificationReadTimer = undefined;
     await this.notificationReadTail;
+    if (!this.mailboxCleanupSafe) {
+      throw new Error("Open Wrangler refused to remove an interactive R mailbox with an unowned artifact path.");
+    }
     const current = validatePrivateDirectory(await lstat(mailbox.root, { bigint: true }), "interactive R mailbox");
     if (!sameDirectoryIdentity(mailbox.identity, current)) {
       throw new Error("Open Wrangler refused to remove a replaced interactive R mailbox.");
@@ -1094,7 +1103,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     let payload: string | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        payload = await tryReadPrivateArtifact(mailbox.notificationPath, MAX_DISCOVERY_BYTES);
+        payload = await this.readPrivateMailboxArtifact(mailbox.notificationPath, MAX_DISCOVERY_BYTES);
         if (payload !== undefined) break;
       } catch {
         // A notification is replaced with unlink/rename, so a bounded retry also
@@ -1164,6 +1173,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   }
 
   private recordArtifactCleanupFailure(filePath: string, label: "request" | "response", error: unknown): void {
+    this.recordArtifactOwnershipFailure(error);
     this.artifactCleanupFailures.push(
       new Error(
         `Open Wrangler could not remove its private interactive R ${label} artifact ${path.basename(filePath)}.`,
@@ -1233,9 +1243,29 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   }
 
   private async verifyAttachment(mailbox: InteractiveMailbox, expectedProcessId: number): Promise<void> {
-    const payload = await tryReadPrivateArtifact(mailbox.attachmentPath, MAX_DISCOVERY_BYTES);
+    const payload = await this.readPrivateMailboxArtifact(mailbox.attachmentPath, MAX_DISCOVERY_BYTES);
     if (payload === undefined) throw new Error("Open Wrangler did not receive an R terminal attachment receipt.");
     decodeAttachmentResponse(payload, this.attachmentNonce, this.runtimeBundleId, expectedProcessId);
+  }
+
+  private async readPrivateMailboxArtifact(filePath: string, maximumBytes: number): Promise<string | undefined> {
+    try {
+      const bytes = await readRPrivateArtifact({
+        filePath,
+        maximumBytes,
+        label: "interactive R response",
+        missing: "returnUndefined",
+        operations: this.artifactOperations
+      });
+      return bytes?.toString("utf8");
+    } catch (error) {
+      this.recordArtifactOwnershipFailure(error);
+      throw error;
+    }
+  }
+
+  private recordArtifactOwnershipFailure(error: unknown): void {
+    if (rPrivateArtifactFailureRequiresContainerPreservation(error)) this.mailboxCleanupSafe = false;
   }
 
   private async ensureBoundTerminal(): Promise<number> {
@@ -1327,11 +1357,18 @@ async function waitForResponse(
   maximumBytes: number,
   stopReason: () => string | undefined,
   pollMs: number,
-  removeFile: (filePath: string) => Promise<void>,
-  onCleanupFailure: (error: unknown) => void
+  operations: RPrivateArtifactOperations,
+  onCleanupFailure: (error: unknown) => void,
+  onArtifactFailure: (error: unknown) => void
 ): Promise<string> {
   for (;;) {
-    const response = await tryReadResponse(responsePath, maximumBytes, removeFile, onCleanupFailure);
+    let response: string | undefined;
+    try {
+      response = await tryReadResponse(responsePath, maximumBytes, operations, onCleanupFailure);
+    } catch (error) {
+      onArtifactFailure(error);
+      throw error;
+    }
     if (response !== undefined) return response;
     const stopped = stopReason();
     if (stopped !== undefined) throw new Error(stopped);
@@ -1342,87 +1379,19 @@ async function waitForResponse(
 async function tryReadResponse(
   responsePath: string,
   maximumBytes: number,
-  removeFile: (filePath: string) => Promise<void>,
+  operations: RPrivateArtifactOperations,
   onCleanupFailure: (error: unknown) => void
 ): Promise<string | undefined> {
-  let handle;
-  try {
-    handle = await open(responsePath, PRIVATE_READ_FLAGS);
-  } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
-  let bytes: Buffer | undefined;
-  let primaryError: unknown;
-  try {
-    const opened = validatePrivateFile(await handle.stat({ bigint: true }), BigInt(maximumBytes));
-    const namedBefore = validatePrivateFile(await lstat(responsePath, { bigint: true }), BigInt(maximumBytes));
-    if (!sameIdentity(opened, namedBefore)) throw new Error("Open Wrangler rejected a changing R response.");
-    bytes = Buffer.alloc(Number(opened.size));
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
-      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) {
-        throw new Error("Open Wrangler received a truncated interactive R response.");
-      }
-      offset += bytesRead;
-    }
-    const completed = validatePrivateFile(await handle.stat({ bigint: true }), BigInt(maximumBytes));
-    const namedAfter = validatePrivateFile(await lstat(responsePath, { bigint: true }), BigInt(maximumBytes));
-    if (!sameIdentity(opened, completed) || !sameIdentity(opened, namedAfter)) {
-      throw new Error("Open Wrangler rejected a changing interactive R response.");
-    }
-  } catch (error) {
-    primaryError = error;
-  } finally {
-    try {
-      await handle.close();
-    } catch (error) {
-      onCleanupFailure(error);
-    }
-  }
-  if (primaryError !== undefined) throw primaryError;
-  if (!bytes) throw new Error("Open Wrangler received an empty interactive R response.");
-  try {
-    await removeFile(responsePath);
-  } catch (error) {
-    if (!isMissingFile(error)) onCleanupFailure(error);
-  }
-  return bytes.toString("utf8");
-}
-
-async function tryReadPrivateArtifact(filePath: string, maximumBytes: number): Promise<string | undefined> {
-  let handle;
-  try {
-    handle = await open(filePath, PRIVATE_READ_FLAGS);
-  } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
-  try {
-    const opened = validatePrivateFile(await handle.stat({ bigint: true }), BigInt(maximumBytes));
-    const namedBefore = validatePrivateFile(await lstat(filePath, { bigint: true }), BigInt(maximumBytes));
-    if (!sameIdentity(opened, namedBefore)) {
-      throw new Error("Open Wrangler rejected a changing R discovery notification.");
-    }
-    const bytes = Buffer.alloc(Number(opened.size));
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
-      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) {
-        throw new Error("Open Wrangler received a truncated R discovery notification.");
-      }
-      offset += bytesRead;
-    }
-    const completed = validatePrivateFile(await handle.stat({ bigint: true }), BigInt(maximumBytes));
-    const namedAfter = validatePrivateFile(await lstat(filePath, { bigint: true }), BigInt(maximumBytes));
-    if (!sameIdentity(opened, completed) || !sameIdentity(opened, namedAfter)) {
-      throw new Error("Open Wrangler rejected a changing R discovery notification.");
-    }
-    return bytes.toString("utf8");
-  } finally {
-    await handle.close();
-  }
+  const bytes = await readRPrivateArtifact({
+    filePath: responsePath,
+    maximumBytes,
+    label: "interactive R response",
+    missing: "returnUndefined",
+    removeAfterRead: "success",
+    operations,
+    onCleanupFailure
+  });
+  return bytes?.toString("utf8");
 }
 
 function decodeDiscoveryResponse(payload: string, requestId: string): RProcessVariableDiscovery {
@@ -1517,34 +1486,6 @@ function validatePrivateDirectory(metadata: BigIntStats, label: string): BigIntS
     throw new Error(`Open Wrangler rejected an invalid ${label}.`);
   }
   return metadata;
-}
-
-function validatePrivateFile(metadata: BigIntStats, maximumBytes: bigint): BigIntStats {
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size < 0n ||
-    metadata.size > maximumBytes ||
-    metadata.size > BigInt(Number.MAX_SAFE_INTEGER)
-  ) {
-    throw new Error("Open Wrangler rejected an invalid interactive R response artifact.");
-  }
-  return metadata;
-}
-
-function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.nlink === right.nlink &&
-    left.uid === right.uid &&
-    left.gid === right.gid &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
 }
 
 function sameDirectoryIdentity(left: BigIntStats, right: BigIntStats): boolean {
