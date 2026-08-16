@@ -30,6 +30,7 @@ import {
   renderedRowSegmentSpacers,
   scrollTopForLogicalRow
 } from "./rowScrollModel";
+import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
 import { columnTypePresentation } from "../columnTypes";
 import { numericExtremumDisplay } from "../numericSummary";
 import { ProfileValueToggle } from "../ProfileValueToggle";
@@ -296,6 +297,13 @@ export function DataGrid({
     row: viewState.viewport.firstVisibleRow,
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
+  const gridClipboard = useGridClipboard({
+    contextId: logicalViewContext,
+    schema: metadata.schema,
+    page,
+    initialCoordinate: focusedCell
+  });
+  const resetGridClipboardSelection = gridClipboard.resetSelection;
   const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
 
   useLayoutEffect(() => {
@@ -402,6 +410,10 @@ export function DataGrid({
       row: authoritativeRestorePending ? firstVisibleRow : (page.rows[0]?.rowNumber ?? page.offset),
       column
     });
+    resetGridClipboardSelection({
+      row: authoritativeRestorePending ? firstVisibleRow : (page.rows[0]?.rowNumber ?? page.offset),
+      column
+    });
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const scrollTop = scrollTopForLogicalRow(
@@ -429,6 +441,7 @@ export function DataGrid({
     });
   }, [
     logicalViewContext,
+    resetGridClipboardSelection,
     metadata.schema,
     page.offset,
     page.rows,
@@ -452,6 +465,7 @@ export function DataGrid({
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
     setFocusedCell({ row, column });
+    resetGridClipboardSelection({ row, column });
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
     writeProgrammaticViewport(scroller, { firstVisibleRow: row, scrollTop, scrollLeft });
@@ -463,7 +477,7 @@ export function DataGrid({
       height: scroller.clientHeight
     });
     appliedViewStateRestoreVersion.current = viewStateRestoreVersion;
-  }, [viewStateRestoreVersion, writeProgrammaticViewport]);
+  }, [resetGridClipboardSelection, viewStateRestoreVersion, writeProgrammaticViewport]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
@@ -1334,6 +1348,10 @@ export function DataGrid({
                   const localColumnPosition = pageColumnPositionById.get(column.id);
                   const cell = localColumnPosition === undefined ? undefined : row.values[localColumnPosition];
                   const cellUnavailable = localColumnPosition === undefined;
+                  const clipboardSelected = gridClipboard.isSelected({
+                    row: row.rowNumber,
+                    column: column.position
+                  });
                   const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
                   const displayCell = gridCellPresentation(cell);
@@ -1381,6 +1399,7 @@ export function DataGrid({
                   const openCellMenu = () => {
                     reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                     setFocusedCell({ row: row.rowNumber, column: column.position });
+                    gridClipboard.resetSelection({ row: row.rowNumber, column: column.position });
                     setCellFilterMenuTarget({ row: row.rowNumber, column: column.position, columnId: column.id });
                   };
                   const filterAction = (action: "include" | "exclude") => {
@@ -1394,14 +1413,16 @@ export function DataGrid({
                       data-grid-row={row.rowNumber}
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
-                      aria-selected={viewState.selectedColumnId === column.id}
+                      aria-selected={viewState.selectedColumnId === column.id || clipboardSelected}
                       aria-label={accessibleLabel ?? renderedCell ?? ""}
                       data-diff-state={cellDiff ? "changed" : addedColumn ? "added" : undefined}
+                      data-clipboard-selected={clipboardSelected ? "true" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
                       className={[
                         "gridCell",
                         cell?.isNull || cell?.isNaN ? "missingCell" : "",
                         viewState.selectedColumnId === column.id ? "selectedColumn" : "",
+                        clipboardSelected ? "gridClipboardSelected" : "",
                         cellDiff ? "diffChangedCell" : "",
                         addedColumn ? "diffAddedColumn" : "",
                         cellMenuOpen ? "cellFilterMenuOpen" : ""
@@ -1412,13 +1433,27 @@ export function DataGrid({
                       onFocus={() => {
                         focusRequested.current = false;
                         setFocusedCell({ row: row.rowNumber, column: column.position });
+                        gridClipboard.focusCell({ row: row.rowNumber, column: column.position });
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                      }}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0 || gridCellControlTarget(event.target, event.currentTarget)) return;
+                        gridClipboard.selectCell({ row: row.rowNumber, column: column.position }, event.shiftKey);
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         openCellMenu();
                       }}
                       onKeyDown={(event) => {
+                        if (
+                          event.target === event.currentTarget &&
+                          (event.ctrlKey || event.metaKey) &&
+                          event.key.toLowerCase() === "c"
+                        ) {
+                          event.preventDefault();
+                          void gridClipboard.copy("range");
+                          return;
+                        }
                         if (
                           event.target === event.currentTarget &&
                           (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
@@ -1556,6 +1591,7 @@ export function DataGrid({
                   page.totalRows
                 ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
         </span>
+        <GridClipboardControls controller={gridClipboard} />
         <div className="gridProfileControls">
           {!profilesDisabled && onProfileValueModeChange && (
             <ProfileValueToggle
@@ -1646,6 +1682,7 @@ export function DataGrid({
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
     setFocusedCell({ row: nextRow, column: nextColumn });
+    gridClipboard.selectCell({ row: nextRow, column: nextColumn }, event.shiftKey);
     const scroller = scrollerRef.current;
     let firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
     if (scroller) {
@@ -2244,6 +2281,12 @@ function columnHeaderControlTarget(target: EventTarget, header: HTMLTableCellEle
   if (!(target instanceof Element)) return false;
   const control = target.closest("button, details, summary, a, input, select, textarea, [role='button']");
   return control !== null && control !== header;
+}
+
+function gridCellControlTarget(target: EventTarget, cell: HTMLTableCellElement): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest("button, [role='menu'], [role='menuitem']");
+  return control !== null && control !== cell;
 }
 
 function CompactExtremum({
