@@ -168,6 +168,7 @@ import {
   restartReleasedJupyterKernelAndWait as restartReleasedJupyterKernelAndWaitOwner,
   type ReleasedJupyterKernelRestartBoundary
 } from "./releasedJupyterKernelRestart";
+import { RELEASED_JUPYTER_VARIABLES_PANDAS } from "./releasedJupyterVariables";
 import { createReleasedPythonTerminalFailureObserver } from "./releasedPythonTerminalFailure";
 import {
   bestEffortRendererProvenanceCleanup,
@@ -360,14 +361,6 @@ const RELEASED_JUPYTER_INTERACTIVE_EXPORT_COMMAND = "jupyter.interactive.exporta
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
 const PACKAGED_FILE_ACTION_MEDIA_HEIGHT = 865;
-const RELEASED_JUPYTER_VARIABLES_PANDAS = {
-  name: "orders_df",
-  type: "DataFrame",
-  backend: "pandas",
-  firstValue: "2400001",
-  insertionInputColumn: "units",
-  insertionOutputColumn: "units_plus_10"
-} as const;
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
