@@ -210,6 +210,7 @@ import { exerciseReleasedRGroupByOperation } from "./releasedRGroupByOperation";
 import { createReleasedRFormulaDatetimeOperations } from "./releasedRFormulaDatetimeOperations";
 import { createReleasedRRepresentativeEditingJourney } from "./releasedRRepresentativeEditing";
 import { createReleasedRValueOperationState } from "./releasedRValueOperationState";
+import { createReleasedRPageBoundary } from "./releasedRPageBoundary";
 import {
   findReleasedQuartoPreviewLocator,
   openReleasedNativeQuartoPreview as openReleasedNativeQuartoPreviewOwner
@@ -5893,65 +5894,6 @@ async function previewAndDiscardReleasedRTextTool(
   assert.equal(discarded.kind, "planUpdated", `Native R ${kind} must discard cleanly.`);
 }
 
-async function releasedRVisibleRows(
-  testing: TestApi,
-  sessionId: string,
-  requestId: string,
-  limit: number
-): Promise<GridPage["rows"]> {
-  const active = testing.activeSession();
-  assert.equal(active?.sessionId, sessionId, "The native R row check must retain its exact session.");
-  assert.ok(active, "The native R row check requires one active session.");
-  const response = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    sessionId,
-    revision: active.metadata.revision,
-    viewRequestId: requestId,
-    offset: 0,
-    limit,
-    filterModel: active.viewState.filterModel
-  });
-  assert.equal(response.kind, "page");
-  if (response.kind !== "page") throw new Error("The native R row request did not return a page.");
-  return response.page.rows;
-}
-
-async function releasedRFirstVisibleRow(
-  testing: TestApi,
-  sessionId: string,
-  requestId: string
-): Promise<GridPage["rows"][number]> {
-  const active = testing.activeSession();
-  assert.equal(active?.sessionId, sessionId, "The native R row check must retain its exact session.");
-  assert.ok(active, "The native R row check requires one active session.");
-  const response = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    sessionId,
-    revision: active.metadata.revision,
-    viewRequestId: requestId,
-    offset: 0,
-    limit: 1,
-    filterModel: active.viewState.filterModel
-  });
-  if (response.kind !== "page") {
-    const diagnostic = {
-      kind: response.kind,
-      code: response.kind === "error" ? response.code : null,
-      recoverable: response.kind === "error" ? response.recoverable : null,
-      viewRequestId:
-        "viewRequestId" in response && typeof response.viewRequestId === "string" ? response.viewRequestId : null,
-      messageReceipt: response.kind === "error" ? codePreviewDocumentReceipt(response.message) : null
-    };
-    assert.fail(`The native R first-row request did not return a page: ${JSON.stringify(diagnostic)}.`);
-  }
-  if (response.kind !== "page") throw new Error("The native R first-row request did not return a page.");
-  const row = response.page.rows[0];
-  assert.ok(row, "The native R first-row request must return one row.");
-  return row;
-}
-
 async function exerciseReleasedRValueOperationsJourney(
   testing: TestApi,
   workbench: Page,
@@ -6245,6 +6187,8 @@ async function exerciseReleasedRCloneEditingLifecycle(
     "undoing the edited native R Clone Column step"
   );
 }
+
+const { releasedRVisibleRows, releasedRFirstVisibleRow } = createReleasedRPageBoundary({ GRID_COLUMN_WINDOW });
 
 const { assertReleasedRValueOperationsCleanState, recordReleasedRValueOperationCheckpoint } =
   createReleasedRValueOperationState({
