@@ -35,6 +35,7 @@ import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
 import { PythonDependencyProbeRegistry } from "../extension/pythonDependencyState";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
+import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
 
 vi.mock("../extension/pythonEnvironment", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../extension/pythonEnvironment")>();
@@ -540,14 +541,14 @@ describe("PythonBridge process-slot routing", () => {
     const secondOpen = harness.bridge.request(secondRequest);
     await harness.waitForWrites("first", 1);
     await harness.waitForWrites("second", 1);
-    expect(harness.sessionOwners.has("first-session")).toBe(false);
-    expect(harness.provisionalSessions.get("first-session")?.runtime).toBe(harness.runtimes.first);
+    expect(harness.sessionOwnership.confirmedOwner("first-session")).toBeUndefined();
+    expect(harness.sessionOwnership.provisionalClaim("first-session")?.runtime).toBe(harness.runtimes.first);
     harness.respond("first", harness.writes("first")[0].requestId, openedFor(firstRequest, "first-session"));
     harness.respond("second", harness.writes("second")[0].requestId, openedFor(secondRequest, "second-session"));
     await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
     await expect(secondOpen).resolves.toMatchObject({ kind: "sessionOpened" });
-    expect(harness.provisionalSessions.has("first-session")).toBe(false);
-    expect(harness.sessionOwners.get("first-session")).toBe(harness.runtimes.first);
+    expect(harness.sessionOwnership.provisionalClaim("first-session")).toBeUndefined();
+    expect(harness.sessionOwnership.confirmedOwner("first-session")).toBe(harness.runtimes.first);
 
     const closeFirst = harness.bridge.request({
       kind: "closeSession",
@@ -568,7 +569,7 @@ describe("PythonBridge process-slot routing", () => {
       "Open Wrangler runtime stopped after its last session closed."
     );
     expect(harness.runtimes.second.process).toBe(harness.processes.second);
-    expect(harness.sessionOwners.get("second-session")).toBe(harness.runtimes.second);
+    expect(harness.sessionOwnership.confirmedOwner("second-session")).toBe(harness.runtimes.second);
   });
 
   it("routes cancellation to the process that owns the pending request", async () => {
@@ -597,7 +598,7 @@ describe("PythonBridge process-slot routing", () => {
       targetRequestId: original.requestId
     });
     await expect(response).resolves.toEqual({ kind: "cancelled", targetRequestId: original.requestId });
-    expect(harness.sessionOwners.has("first-candidate")).toBe(false);
+    expect(harness.sessionOwnership.confirmedOwner("first-candidate")).toBeUndefined();
   });
 
   it("does not route ordinary session queries through an unconfirmed candidate reservation", async () => {
@@ -624,80 +625,33 @@ describe("PythonBridge process-slot routing", () => {
     });
     expect(harness.writes("first")).toHaveLength(1);
 
-    harness.respond("first", harness.writes("first")[0].requestId, {
+    const closing = harness.bridge.request({
+      kind: "closeSession",
+      sessionId: "pending-candidate",
+      revision: 0
+    });
+    await harness.waitForWrites("first", 2);
+    expect(harness.sessionOwnership.provisionalClaim("pending-candidate")?.state).toBe("closing");
+    harness.respond("first", harness.writes("first")[1].requestId, {
       kind: "error",
       code: "engine_error",
-      message: "Open failed.",
+      message: "Cleanup did not confirm absence.",
       recoverable: true,
       sessionId: "pending-candidate"
     });
-    await expect(opening).resolves.toMatchObject({ kind: "error", code: "engine_error" });
+    await expect(closing).resolves.toMatchObject({ kind: "error", code: "engine_error" });
+
+    harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "pending-candidate"));
+    await expect(opening).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_runtime_response",
+      sessionId: "pending-candidate"
+    });
+    expect(harness.restartRuntime).toHaveBeenCalledWith(
+      harness.runtimes.first,
+      expect.stringContaining("reservation ended")
+    );
   });
-
-  it.each([
-    {
-      label: "closed",
-      response: { kind: "sessionClosed", sessionId: "racing-candidate" } as OpenWranglerResponse
-    },
-    {
-      label: "unknown",
-      response: {
-        kind: "error",
-        code: "unknown_session",
-        message: "Unknown session: racing-candidate",
-        recoverable: true,
-        sessionId: "racing-candidate"
-      } as OpenWranglerResponse
-    },
-    {
-      label: "failed",
-      response: {
-        kind: "error",
-        code: "engine_error",
-        message: "Cleanup failed before confirmation.",
-        recoverable: true,
-        sessionId: "racing-candidate"
-      } as OpenWranglerResponse
-    }
-  ])(
-    "never resurrects a candidate when cleanup returns $label before its delayed open response",
-    async ({ response }) => {
-      const harness = createMultiScopeHarness();
-      const request = {
-        ...openSessionRequest(remoteSourceAt("/first/data.csv")),
-        requestedSessionId: "racing-candidate"
-      };
-      const opening = harness.bridge.request(request);
-      await harness.waitForWrites("first", 1);
-      const closing = harness.bridge.request({
-        kind: "closeSession",
-        sessionId: "racing-candidate",
-        revision: 0
-      });
-      await harness.waitForWrites("first", 2);
-
-      harness.respond("first", harness.writes("first")[1].requestId, response);
-      await expect(closing).resolves.toEqual(response);
-      if (response.kind === "error" && response.code === "engine_error") {
-        expect(harness.provisionalSessions.get("racing-candidate")?.state).toBe("closing");
-      } else {
-        expect(harness.provisionalSessions.has("racing-candidate")).toBe(false);
-      }
-      expect(harness.sessionOwners.has("racing-candidate")).toBe(false);
-
-      harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "racing-candidate"));
-      await expect(opening).resolves.toMatchObject({
-        kind: "error",
-        code: "invalid_runtime_response",
-        sessionId: "racing-candidate"
-      });
-      expect(harness.restartRuntime).toHaveBeenCalledWith(
-        harness.runtimes.first,
-        expect.stringContaining("reservation ended")
-      );
-      expect(harness.sessionOwners.has("racing-candidate")).toBe(false);
-    }
-  );
 
   it("forces a targeted restart when an open timeout explicitly suppresses generic restart", async () => {
     vi.useFakeTimers();
@@ -713,205 +667,18 @@ describe("PythonBridge process-slot routing", () => {
       });
       await Promise.resolve();
       await Promise.resolve();
-      expect(harness.provisionalSessions.has("timeout-candidate")).toBe(true);
+      expect(harness.sessionOwnership.provisionalClaim("timeout-candidate")).toBeDefined();
 
       const rejection = expect(opening).rejects.toThrow("timed out after 10 ms");
       await vi.advanceTimersByTimeAsync(10);
       await rejection;
-      expect(harness.provisionalSessions.has("timeout-candidate")).toBe(false);
-      expect(harness.sessionOwners.has("timeout-candidate")).toBe(false);
+      expect(harness.sessionOwnership.provisionalClaim("timeout-candidate")).toBeUndefined();
+      expect(harness.sessionOwnership.confirmedOwner("timeout-candidate")).toBeUndefined();
       expect(harness.restartRuntime).toHaveBeenCalledOnce();
       expect(harness.restartRuntime).toHaveBeenCalledWith(harness.runtimes.first, expect.stringContaining("timed out"));
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("prevents promotion after a provisional cleanup close times out without restarting", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createMultiScopeHarness();
-      const request = {
-        ...openSessionRequest(remoteSourceAt("/first/data.csv")),
-        requestedSessionId: "cleanup-timeout-candidate"
-      };
-      const opening = harness.bridge.request(request, { timeoutMs: 5_000 });
-      await Promise.resolve();
-      await Promise.resolve();
-      const closing = harness.bridge.request(
-        {
-          kind: "closeSession",
-          sessionId: "cleanup-timeout-candidate",
-          revision: 0
-        },
-        { timeoutMs: 10, restartRuntimeOnTimeout: false }
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(harness.provisionalSessions.get("cleanup-timeout-candidate")?.state).toBe("closing");
-
-      const closeRejection = expect(closing).rejects.toThrow("timed out after 10 ms");
-      await vi.advanceTimersByTimeAsync(10);
-      await closeRejection;
-      expect(harness.restartRuntime).not.toHaveBeenCalled();
-      expect(harness.provisionalSessions.get("cleanup-timeout-candidate")?.state).toBe("closing");
-
-      harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "cleanup-timeout-candidate"));
-      await expect(opening).resolves.toMatchObject({
-        kind: "error",
-        code: "invalid_runtime_response",
-        sessionId: "cleanup-timeout-candidate"
-      });
-      expect(harness.restartRuntime).toHaveBeenCalledWith(
-        harness.runtimes.first,
-        expect.stringContaining("reservation ended")
-      );
-      expect(harness.sessionOwners.has("cleanup-timeout-candidate")).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("restarts an open-timeout slot even when another confirmed session shares it", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createMultiScopeHarness();
-      const confirmedRequest = {
-        ...openSessionRequest(remoteSourceAt("/first/confirmed.csv")),
-        requestedSessionId: "confirmed-first"
-      };
-      const confirmedOpen = harness.bridge.request(confirmedRequest);
-      await Promise.resolve();
-      await Promise.resolve();
-      harness.respond("first", harness.writes("first")[0].requestId, openedFor(confirmedRequest, "confirmed-first"));
-      await expect(confirmedOpen).resolves.toMatchObject({ kind: "sessionOpened" });
-
-      const candidateRequest = {
-        ...openSessionRequest(remoteSourceAt("/first/candidate.csv")),
-        requestedSessionId: "timed-out-candidate"
-      };
-      const candidateOpen = harness.bridge.request(candidateRequest, {
-        timeoutMs: 10,
-        restartRuntimeOnTimeout: false
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(harness.sessionOwners.get("confirmed-first")).toBe(harness.runtimes.first);
-      expect(harness.provisionalSessions.get("timed-out-candidate")?.runtime).toBe(harness.runtimes.first);
-
-      const rejection = expect(candidateOpen).rejects.toThrow("timed out after 10 ms");
-      await vi.advanceTimersByTimeAsync(10);
-      await rejection;
-      expect(harness.restartRuntime).toHaveBeenCalledWith(harness.runtimes.first, expect.stringContaining("timed out"));
-      expect(harness.sessionOwners.has("confirmed-first")).toBe(false);
-      expect(harness.provisionalSessions.has("timed-out-candidate")).toBe(false);
-      expect(harness.runtimes.second.process).toBe(harness.processes.second);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("prevents promotion after a provisional cleanup write fails", async () => {
-    const harness = createMultiScopeHarness();
-    const request = {
-      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
-      requestedSessionId: "write-failure-candidate"
-    };
-    const opening = harness.bridge.request(request);
-    await harness.waitForWrites("first", 1);
-    const write = harness.processes.first.stdin.write as unknown as ReturnType<typeof vi.fn>;
-    write.mockImplementationOnce((_value: string, callback?: (error?: Error | null) => void) => {
-      callback?.(new Error("cleanup write failed"));
-      return false;
-    });
-
-    await expect(
-      harness.bridge.request({
-        kind: "closeSession",
-        sessionId: "write-failure-candidate",
-        revision: 0
-      })
-    ).rejects.toThrow("cleanup write failed");
-    expect(harness.provisionalSessions.get("write-failure-candidate")?.state).toBe("closing");
-
-    harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "write-failure-candidate"));
-    await expect(opening).resolves.toMatchObject({
-      kind: "error",
-      code: "invalid_runtime_response",
-      sessionId: "write-failure-candidate"
-    });
-    expect(harness.restartRuntime).toHaveBeenCalledWith(
-      harness.runtimes.first,
-      expect.stringContaining("reservation ended")
-    );
-    expect(harness.sessionOwners.has("write-failure-candidate")).toBe(false);
-  });
-
-  it("prevents promotion after provisional cleanup is cancelled before dispatch", async () => {
-    const harness = createMultiScopeHarness();
-    const request = {
-      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
-      requestedSessionId: "cancelled-cleanup-candidate"
-    };
-    const opening = harness.bridge.request(request);
-    await harness.waitForWrites("first", 1);
-    const cleanupCancellation: CancellationTokenLike = {
-      isCancellationRequested: false,
-      onCancellationRequested: (listener) => {
-        listener();
-        return { dispose: vi.fn() };
-      }
-    };
-
-    await expect(
-      harness.bridge.request(
-        {
-          kind: "closeSession",
-          sessionId: "cancelled-cleanup-candidate",
-          revision: 0
-        },
-        { cancellation: cleanupCancellation }
-      )
-    ).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
-    expect(harness.provisionalSessions.get("cancelled-cleanup-candidate")?.state).toBe("closing");
-
-    harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "cancelled-cleanup-candidate"));
-    await expect(opening).resolves.toMatchObject({
-      kind: "error",
-      code: "invalid_runtime_response",
-      sessionId: "cancelled-cleanup-candidate"
-    });
-    expect(harness.restartRuntime).toHaveBeenCalledWith(
-      harness.runtimes.first,
-      expect.stringContaining("reservation ended")
-    );
-    expect(harness.sessionOwners.has("cancelled-cleanup-candidate")).toBe(false);
-  });
-
-  it("fails closed when a second process returns a session identity owned by another scope", async () => {
-    const harness = createMultiScopeHarness();
-    const firstRequest = openSessionRequest(remoteSourceAt("/first/data.csv"));
-    const secondRequest = openSessionRequest(remoteSourceAt("/second/data.csv"));
-    const firstOpen = harness.bridge.request(firstRequest);
-    await harness.waitForWrites("first", 1);
-    harness.respond("first", harness.writes("first")[0].requestId, openedFor(firstRequest, "duplicate-session"));
-    await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
-
-    const secondOpen = harness.bridge.request(secondRequest);
-    await harness.waitForWrites("second", 1);
-    harness.respond("second", harness.writes("second")[0].requestId, openedFor(secondRequest, "duplicate-session"));
-
-    await expect(secondOpen).resolves.toMatchObject({
-      kind: "error",
-      code: "invalid_runtime_response",
-      sessionId: "duplicate-session"
-    });
-    expect(harness.restartRuntime).toHaveBeenCalledOnce();
-    expect(harness.restartRuntime).toHaveBeenCalledWith(
-      harness.runtimes.second,
-      expect.stringContaining("duplicate session")
-    );
-    expect(harness.sessionOwners.get("duplicate-session")).toBe(harness.runtimes.first);
   });
 
   it("restarts only the timed-out process slot", async () => {
@@ -935,7 +702,7 @@ describe("PythonBridge process-slot routing", () => {
       expect(harness.restartRuntime).toHaveBeenCalledOnce();
       expect(harness.restartRuntime).toHaveBeenCalledWith(harness.runtimes.first, expect.stringContaining("timed out"));
       expect(harness.runtimes.second.process).toBe(harness.processes.second);
-      expect(harness.sessionOwners.get("second-session")).toBe(harness.runtimes.second);
+      expect(harness.sessionOwnership.confirmedOwner("second-session")).toBe(harness.runtimes.second);
     } finally {
       vi.useRealTimers();
     }
@@ -3734,8 +3501,8 @@ describe("PythonBridge environment resource selection", () => {
 
     expect(firstProcess.stdin.end).toHaveBeenCalledOnce();
     expect(secondProcess.stdin.end).not.toHaveBeenCalled();
-    expect(raw.sessionOwners.has("first-live-session")).toBe(false);
-    expect(raw.sessionOwners.get("second-live-session")).toBe(secondRuntime);
+    expect(raw.sessionOwnership.confirmedOwner("first-live-session")).toBeUndefined();
+    expect(raw.sessionOwnership.confirmedOwner("second-live-session")).toBe(secondRuntime);
     expect(raw.pending.size).toBe(1);
     raw.handleRuntimeLine(
       secondRuntime!,
@@ -4585,12 +4352,6 @@ interface TestRuntimeSlot {
   runtimeEpoch: number;
 }
 
-interface TestProvisionalSessionReservation {
-  readonly runtime: TestRuntimeSlot;
-  readonly openRequestId: string;
-  state: "pending" | "closing";
-}
-
 interface RawBridgeInternals {
   disposed: boolean;
   scopeUseClock: number;
@@ -4599,8 +4360,7 @@ interface RawBridgeInternals {
   dependencyAuthorizationEpoch: number;
   selectionEpochs: Map<string, number>;
   runtimeSlots: Map<string, TestRuntimeSlot>;
-  sessionOwners: Map<string, TestRuntimeSlot>;
-  provisionalSessions: Map<string, TestProvisionalSessionReservation>;
+  sessionOwnership: PythonSessionOwnership<TestRuntimeSlot>;
   environmentSelections: Map<string, TestEnvironmentSelection>;
   dependencyProbes: PythonDependencyProbeRegistry;
   dependencyGuardStatusFlights: Map<string, unknown>;
@@ -4667,6 +4427,10 @@ function createDependencyProbeRegistry(raw: RawBridgeInternals): PythonDependenc
     (packageEnvironmentKey) => raw.disposed || raw.dependencyMutations.has(packageEnvironmentKey),
     (executable, dependencies) => pythonEnvironment.probeDependencies(executable, dependencies)
   );
+}
+
+function createSessionOwnership(raw: RawBridgeInternals): PythonSessionOwnership<TestRuntimeSlot> {
+  return new PythonSessionOwnership((runtime, reason) => raw.restartRuntime(runtime, reason));
 }
 
 async function cacheDependencyProbe(
@@ -4747,8 +4511,7 @@ function createLifecycleHarness(): {
     context: testExtensionContext(),
     shutdownPromise: undefined,
     runtimeSlots: new Map([[runtime.key, runtime]]),
-    sessionOwners: new Map<string, TestRuntimeSlot>(),
-    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
+    sessionOwnership: createSessionOwnership(raw),
     selectionEpoch: 0,
     dependencyAuthorizationEpoch: 0,
     selectionEpochs: new Map([[selection.key, 0]]),
@@ -4886,8 +4649,7 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
   Object.assign(bridge as object, {
     context,
     runtimeSlots,
-    sessionOwners: new Map<string, TestRuntimeSlot>(),
-    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
+    sessionOwnership: createSessionOwnership(raw),
     selectionEpoch: 0,
     dependencyAuthorizationEpoch: 0,
     selectionEpochs: new Map<string, number>(),
@@ -4963,8 +4725,7 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
   Object.assign(bridge as object, {
     context: testExtensionContext(),
     runtimeSlots: new Map([[runtime.key, runtime]]),
-    sessionOwners: new Map<string, TestRuntimeSlot>(),
-    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
+    sessionOwnership: createSessionOwnership(raw),
     pending: new Map<string, unknown>(),
     cancellationTargets: new Map<string, unknown>(),
     selectionEpoch: 0,
@@ -5381,8 +5142,7 @@ function createMultiScopeHarness(): {
     first: ChildProcessWithoutNullStreams;
     second: ChildProcessWithoutNullStreams;
   };
-  sessionOwners: Map<string, TestRuntimeSlot>;
-  provisionalSessions: Map<string, TestProvisionalSessionReservation>;
+  sessionOwnership: PythonSessionOwnership<TestRuntimeSlot>;
   restartRuntime: ReturnType<typeof vi.fn>;
   stopRuntime: ReturnType<typeof vi.fn>;
   writes(scope: "first" | "second"): RuntimeRequestEnvelope[];
@@ -5433,24 +5193,13 @@ function createMultiScopeHarness(): {
   };
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
   const raw = bridge as unknown as RawBridgeInternals;
-  const sessionOwners = new Map<string, TestRuntimeSlot>();
-  const provisionalSessions = new Map<string, TestProvisionalSessionReservation>();
-  const releaseRuntimeClaims = (runtime: TestRuntimeSlot): void => {
-    for (const sessionId of runtime.sessionIds) {
-      if (sessionOwners.get(sessionId) === runtime) sessionOwners.delete(sessionId);
-    }
-    runtime.sessionIds.clear();
-    for (const sessionId of runtime.provisionalSessionIds) {
-      if (provisionalSessions.get(sessionId)?.runtime === runtime) provisionalSessions.delete(sessionId);
-    }
-    runtime.provisionalSessionIds.clear();
-  };
+  const sessionOwnership = createSessionOwnership(raw);
   const restartRuntime = vi.fn((runtime: TestRuntimeSlot, _reason: string) => {
-    releaseRuntimeClaims(runtime);
+    sessionOwnership.releaseRuntime(runtime);
     runtime.process = undefined;
   });
   const stopRuntime = vi.fn((runtime: TestRuntimeSlot, _reason: string) => {
-    releaseRuntimeClaims(runtime);
+    sessionOwnership.releaseRuntime(runtime);
     runtime.process = undefined;
   });
   Object.assign(bridge as object, {
@@ -5458,8 +5207,7 @@ function createMultiScopeHarness(): {
       [runtimes.first.key, runtimes.first],
       [runtimes.second.key, runtimes.second]
     ]),
-    sessionOwners,
-    provisionalSessions,
+    sessionOwnership,
     selectionEpoch: 0,
     selectionEpochs: new Map([
       [firstSelection.key, 0],
@@ -5508,8 +5256,7 @@ function createMultiScopeHarness(): {
     bridge,
     runtimes,
     processes,
-    sessionOwners,
-    provisionalSessions,
+    sessionOwnership,
     restartRuntime,
     stopRuntime,
     writes,
@@ -5570,8 +5317,7 @@ function createHarness(
   const internals = bridge as unknown as RawBridgeInternals;
   Object.assign(bridge as object, {
     runtimeSlots: new Map([[runtime.key, runtime]]),
-    sessionOwners: new Map<string, TestRuntimeSlot>(),
-    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
+    sessionOwnership: createSessionOwnership(internals),
     selectionEpoch: 0,
     selectionEpochs: new Map([[selection.key, 0]]),
     disposed: false,
