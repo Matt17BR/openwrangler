@@ -91,6 +91,7 @@ import {
   waitForStableExactCodePreviewLayout,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
+import { findCurrentWebviewAction, waitForReplaceableWebviewAction } from "./webviewActionDiscovery";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
 import {
   exactSessionApp,
@@ -33140,36 +33141,20 @@ async function waitForOpenWranglerWebviewAction(
   name: string,
   requireEnabled = false
 ): Promise<OpenWranglerWebviewAction> {
-  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
-  do {
-    const browser = workbench.context().browser();
-    const available = await findCurrentOpenWranglerWebviewAction(workbench, browser, name, requireEnabled, deadline);
-    if (available) return available;
-    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
-  } while (Date.now() < deadline);
-
-  const { action, diagnostics } = await diagnoseThenReacquireAcceptanceAction({
-    timeoutMs: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+  return waitForReplaceableWebviewAction({
+    name,
+    requireEnabled,
+    discoveryTimeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    diagnosticTimeoutMs: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+    findCurrent: (deadline) =>
+      findCurrentOpenWranglerWebviewAction(workbench, workbench.context().browser(), name, requireEnabled, deadline),
     diagnose: async (failureDeadline) => {
       const browser = workbench.context().browser();
       assertOpenWranglerWebviewLifecycle(workbench, browser);
       return openWranglerWebviewDiagnostics(workbench, browser, name, failureDeadline);
     },
-    reacquire: async (failureDeadline) =>
-      findCurrentOpenWranglerWebviewAction(
-        workbench,
-        workbench.context().browser(),
-        name,
-        requireEnabled,
-        failureDeadline
-      )
+    assertLifecycle: () => assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser())
   });
-  if (action) return action;
-  assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser());
-  throw new Error(
-    `The Open Wrangler webview did not expose a visible${requireEnabled ? " enabled" : ""} ` +
-      `${JSON.stringify(name)} button: ${JSON.stringify(diagnostics)}`
-  );
 }
 
 async function findCurrentOpenWranglerWebviewAction(
@@ -33179,29 +33164,20 @@ async function findCurrentOpenWranglerWebviewAction(
   requireEnabled: boolean,
   deadline: number
 ): Promise<OpenWranglerWebviewAction | undefined> {
-  assertOpenWranglerWebviewLifecycle(workbench, browser);
-  for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
-    if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
-    try {
-      const buttons = target.frame.getByRole("button", { name, exact: true });
-      const button = buttons.first();
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) return undefined;
-      const available = await withAcceptanceOperationDeadline(
-        probeRendererButtonReadiness(button, remainingMs, requireEnabled),
-        remainingMs,
-        `the Open Wrangler ${JSON.stringify(name)} button`
-      );
-      assertOpenWranglerWebviewLifecycle(workbench, browser);
-      if (available && !isRetiredRendererTarget(workbench, target.page, target.frame)) {
-        return { target, action: button };
-      }
-    } catch (error) {
-      if (Date.now() >= deadline) return undefined;
-      ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
-    }
-  }
-  return undefined;
+  return findCurrentWebviewAction({
+    name,
+    requireEnabled,
+    deadline,
+    targets: () => openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT),
+    isRetired: (target) => isRetiredRendererTarget(workbench, target.page, target.frame),
+    actionForTarget: (target, accessibleName) =>
+      target.frame.getByRole("button", { name: accessibleName, exact: true }).first(),
+    probe: probeRendererButtonReadiness,
+    withinDeadline: withAcceptanceOperationDeadline,
+    assertLifecycle: () => assertOpenWranglerWebviewLifecycle(workbench, browser),
+    ignoreProbeFailure: (target, error) =>
+      ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error)
+  });
 }
 
 interface GridViewportMeasurement {
