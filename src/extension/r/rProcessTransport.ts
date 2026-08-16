@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { constants as fsConstants, type BigIntStats } from "node:fs";
-import { access, chmod, lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -33,6 +33,13 @@ import {
 } from "./rKernelProtocol";
 import { RKernelDiagnosticError, type RKernelOpenResult, type RKernelRequestOptions } from "./rKernelTransport";
 import type { RColumnSchema, RDataframeFlavor, RFramePageContract } from "./rFrameContract";
+import {
+  readRPrivateArtifact,
+  removeRPrivateArtifactAtPath,
+  rPrivateArtifactCleanupFailed,
+  rPrivateArtifactFailureRequiresContainerPreservation,
+  streamAndRemoveRPrivateArtifact
+} from "./rPrivateArtifactBoundary";
 
 const PROCESS_PROTOCOL_VERSION = 1;
 const MAX_READY_BYTES = 64 * 1_024;
@@ -47,10 +54,6 @@ const FORCED_STOP_MS = 2_000;
 const PROCESS_GROUP_POLL_MS = 25;
 const MAX_RETIRED_SESSION_IDS = 1_024;
 const EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
-const PRIVATE_READ_FLAGS =
-  fsConstants.O_RDONLY |
-  (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0) |
-  (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0);
 
 export interface RProcessVariableDescriptor {
   readonly name: string;
@@ -82,6 +85,7 @@ interface OwnedProcess {
   readonly responseRoot: string;
   readonly exportRoot: string;
   readonly closed: Promise<ProcessClose>;
+  rootCleanupSafe: boolean;
   closeState?: ProcessClose;
   spawnError?: Error;
   stopPromise?: Promise<void>;
@@ -314,7 +318,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     const artifactPath = path.join(this.owned.exportRoot, `${exportId}.${format}`);
     const request = this.request("exportData", { sessionId, revision, exportId, format });
     encodeRKernelRequest(request);
-    let deferredCleanup = false;
+    let cleanupPending = true;
     try {
       const response = await this.executeMapped(request, options);
       if (response.kind === "error") throw new RKernelDiagnosticError(response);
@@ -327,7 +331,24 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       ) {
         throw new Error("The R process returned a mismatched data export.");
       }
-      await streamPrivateExportArtifact(artifactPath, response.bytes, writeChunk);
+      cleanupPending = false;
+      try {
+        await streamAndRemoveRPrivateArtifact(
+          {
+            filePath: artifactPath,
+            maximumBytes: response.bytes,
+            expectedBytes: response.bytes,
+            label: "private R export",
+            chunkBytes: EXPORT_CHUNK_BYTES
+          },
+          writeChunk
+        );
+      } catch (error) {
+        if (rPrivateArtifactCleanupFailed(error) || rPrivateArtifactFailureRequiresContainerPreservation(error)) {
+          await this.recoverFromPrivateArtifactCleanupFailure(error);
+        }
+        throw error;
+      }
       return Object.freeze({
         sessionId,
         revision,
@@ -337,32 +358,44 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       });
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError && error.dispatched) {
-        deferredCleanup = true;
+        cleanupPending = false;
         const cleanup = error.settlement.then(() => this.removePrivateExportArtifactOrDispose(artifactPath));
         throw new DetachedBridgeRequestError(error.message, error.reason, true, cleanup);
       }
       throw error;
     } finally {
-      if (!deferredCleanup) await this.removePrivateExportArtifactOrDispose(artifactPath);
+      if (cleanupPending) await this.removePrivateExportArtifactOrDispose(artifactPath);
     }
   }
 
   private async removePrivateExportArtifactOrDispose(artifactPath: string): Promise<void> {
     try {
-      await removePrivateExportArtifact(artifactPath);
+      await removeRPrivateArtifactAtPath({
+        filePath: artifactPath,
+        maximumBytes: Number.MAX_SAFE_INTEGER,
+        label: "private R export",
+        missing: "returnUndefined"
+      });
     } catch (error) {
-      const cleanupError = error instanceof Error ? error : new Error(String(error));
-      this.publishInvalidation(cleanupError);
-      try {
-        await this.dispose();
-      } catch (disposeError) {
-        throw new AggregateError(
-          [cleanupError, disposeError],
-          "Open Wrangler could not remove a private R export artifact or dispose its owning process."
-        );
-      }
-      throw cleanupError;
+      await this.recoverFromPrivateArtifactCleanupFailure(error);
     }
+  }
+
+  private async recoverFromPrivateArtifactCleanupFailure(error: unknown): Promise<never> {
+    const cleanupError = error instanceof Error ? error : new Error(String(error));
+    if (this.owned && rPrivateArtifactFailureRequiresContainerPreservation(cleanupError)) {
+      this.owned.rootCleanupSafe = false;
+    }
+    this.publishInvalidation(cleanupError);
+    try {
+      await this.dispose();
+    } catch (disposeError) {
+      throw new AggregateError(
+        [cleanupError, disposeError],
+        "Open Wrangler could not remove a private R export artifact or dispose its owning process."
+      );
+    }
+    throw cleanupError;
   }
 
   async previewStep(
@@ -705,7 +738,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
           cleanupError = stopError;
         }
       }
-      if (!owned || owned.closeState) {
+      if (!owned || (owned.closeState && owned.rootCleanupSafe)) {
         try {
           await rm(root, { recursive: true, force: true });
         } catch (removeError) {
@@ -798,7 +831,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       } catch (error) {
         failures.push(error);
       }
-      if (owned.closeState) {
+      if (owned.closeState && owned.rootCleanupSafe) {
         try {
           await rm(owned.root, { recursive: true, force: true });
         } catch (error) {
@@ -843,7 +876,7 @@ function createOwnedProcess(
   const closed = new Promise<ProcessClose>((resolve) => {
     resolveClosed = resolve;
   });
-  const owned: OwnedProcess = { child, root, responseRoot, exportRoot, closed };
+  const owned: OwnedProcess = { child, root, responseRoot, exportRoot, closed, rootCleanupSafe: true };
   child.on("error", (error) => {
     owned.spawnError = error;
     if (child.pid === undefined && !owned.closeState) {
@@ -887,7 +920,13 @@ async function writeRequestFrame(
 
 async function waitForResponse(owned: OwnedProcess, responsePath: string, maximumBytes: number): Promise<string> {
   for (;;) {
-    const response = await tryReadResponse(responsePath, maximumBytes);
+    let response: string | undefined;
+    try {
+      response = await tryReadResponse(responsePath, maximumBytes);
+    } catch (error) {
+      if (rPrivateArtifactFailureRequiresContainerPreservation(error)) owned.rootCleanupSafe = false;
+      throw error;
+    }
     if (response !== undefined) return response;
     if (owned.closeState) throw processClosedError(owned);
     await Promise.race([delay(RESPONSE_POLL_MS), owned.closed]);
@@ -895,150 +934,14 @@ async function waitForResponse(owned: OwnedProcess, responsePath: string, maximu
 }
 
 async function tryReadResponse(responsePath: string, maximumBytes: number): Promise<string | undefined> {
-  let handle;
-  try {
-    handle = await open(responsePath, PRIVATE_READ_FLAGS);
-  } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
-  let bytes: Buffer;
-  try {
-    const opened = privateArtifactSnapshot(
-      await handle.stat({ bigint: true }),
-      BigInt(maximumBytes),
-      "R process response"
-    );
-    const namedBefore = privateArtifactSnapshot(
-      await lstat(responsePath, { bigint: true }),
-      BigInt(maximumBytes),
-      "R process response"
-    );
-    if (!samePrivateArtifactSnapshot(opened, namedBefore)) {
-      throw new Error("Open Wrangler rejected a changing R process response artifact.");
-    }
-    bytes = Buffer.alloc(Number(opened.size));
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
-      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) {
-        throw new Error("Open Wrangler received a truncated R process response artifact.");
-      }
-      offset += bytesRead;
-    }
-    const completed = privateArtifactSnapshot(
-      await handle.stat({ bigint: true }),
-      BigInt(maximumBytes),
-      "R process response"
-    );
-    const namedAfter = privateArtifactSnapshot(
-      await lstat(responsePath, { bigint: true }),
-      BigInt(maximumBytes),
-      "R process response"
-    );
-    if (!samePrivateArtifactSnapshot(opened, completed) || !samePrivateArtifactSnapshot(opened, namedAfter)) {
-      throw new Error("Open Wrangler rejected a changing R process response artifact.");
-    }
-  } finally {
-    await handle.close();
-  }
-  await unlink(responsePath);
-  return bytes.toString("utf8");
-}
-
-async function streamPrivateExportArtifact(
-  artifactPath: string,
-  expectedBytes: number,
-  writeChunk: (chunk: Uint8Array) => Promise<void>
-): Promise<void> {
-  const expectedSize = BigInt(expectedBytes);
-  const handle = await open(artifactPath, PRIVATE_READ_FLAGS);
-  try {
-    const opened = privateArtifactSnapshot(
-      await handle.stat({ bigint: true }),
-      expectedSize,
-      "private R export",
-      expectedSize
-    );
-    const namedBefore = privateArtifactSnapshot(
-      await lstat(artifactPath, { bigint: true }),
-      expectedSize,
-      "private R export",
-      expectedSize
-    );
-    if (!samePrivateArtifactSnapshot(opened, namedBefore)) {
-      throw new Error("Open Wrangler rejected a changing private R export artifact.");
-    }
-    let offset = 0;
-    while (offset < expectedBytes) {
-      const length = Math.min(EXPORT_CHUNK_BYTES, expectedBytes - offset);
-      const chunk = Buffer.allocUnsafe(length);
-      const { bytesRead } = await handle.read(chunk, 0, length, offset);
-      if (bytesRead <= 0) throw new Error("Open Wrangler received a truncated private R export artifact.");
-      await writeChunk(chunk.subarray(0, bytesRead));
-      offset += bytesRead;
-    }
-    const afterRead = privateArtifactSnapshot(
-      await handle.stat({ bigint: true }),
-      expectedSize,
-      "private R export",
-      expectedSize
-    );
-    const namedAfter = privateArtifactSnapshot(
-      await lstat(artifactPath, { bigint: true }),
-      expectedSize,
-      "private R export",
-      expectedSize
-    );
-    if (!samePrivateArtifactSnapshot(opened, afterRead) || !samePrivateArtifactSnapshot(opened, namedAfter)) {
-      throw new Error("Open Wrangler rejected a changing private R export artifact.");
-    }
-  } finally {
-    await handle.close();
-  }
-}
-
-function privateArtifactSnapshot(
-  metadata: BigIntStats,
-  maximumBytes: bigint,
-  label: string,
-  expectedBytes?: bigint
-): BigIntStats {
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size < 0n ||
-    metadata.size > maximumBytes ||
-    metadata.size > BigInt(Number.MAX_SAFE_INTEGER) ||
-    (expectedBytes !== undefined && metadata.size !== expectedBytes)
-  ) {
-    throw new Error(`Open Wrangler rejected an invalid ${label} artifact.`);
-  }
-  return metadata;
-}
-
-function samePrivateArtifactSnapshot(left: BigIntStats, right: BigIntStats): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.nlink === right.nlink &&
-    left.uid === right.uid &&
-    left.gid === right.gid &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs &&
-    left.birthtimeNs === right.birthtimeNs
-  );
-}
-
-async function removePrivateExportArtifact(artifactPath: string): Promise<void> {
-  try {
-    await unlink(artifactPath);
-  } catch (error) {
-    if (!isMissingFile(error)) throw error;
-  }
+  const bytes = await readRPrivateArtifact({
+    filePath: responsePath,
+    maximumBytes,
+    label: "R process response",
+    missing: "returnUndefined",
+    removeAfterRead: "success"
+  });
+  return bytes?.toString("utf8");
 }
 
 function decodeReadyPayload(payload: string): RProcessVariableDiscovery {
@@ -1219,10 +1122,6 @@ function delay(milliseconds: number): Promise<void> {
     const timer = setTimeout(resolve, milliseconds);
     timer.unref();
   });
-}
-
-function isMissingFile(error: unknown): boolean {
-  return isRecord(error) && error.code === "ENOENT";
 }
 
 function isNoSuchProcess(error: unknown): boolean {

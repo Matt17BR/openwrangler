@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -412,7 +412,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
     }
   }, 30_000);
 
-  it("disposes its owned process when a private export artifact cannot be removed", async () => {
+  it("disposes its owned process without removing a substituted private export path", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-cleanup-test-"));
     const transport = new RProcessSessionTransport({
       runtimeRoot,
@@ -422,6 +422,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
       documentText: "frame <- data.frame(value = 1:3)"
     });
     let invalidations = 0;
+    let replacementPath: string | undefined;
     const subscription = transport.onDidInvalidateKernel(() => {
       invalidations += 1;
     });
@@ -436,11 +437,13 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
           const artifactPath = resolve(exportRoot, artifact!);
           await unlink(artifactPath);
           await mkdir(artifactPath);
+          replacementPath = artifactPath;
         })
       ).rejects.toThrow();
       expect(invalidations).toBe(1);
       await expect(transport.discoverVariables()).rejects.toThrow("disposed");
-      expect(await readdir(temporaryParent)).toEqual([]);
+      expect(replacementPath).toBeDefined();
+      expect((await lstat(replacementPath!)).isDirectory()).toBe(true);
     } finally {
       subscription.dispose();
       await transport.dispose();
