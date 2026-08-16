@@ -116,6 +116,49 @@ def test_pandas_csv_import_options(tmp_path):
     assert opened["page"]["rows"][0]["values"][0]["display"] == "München"
 
 
+@pytest.mark.parametrize(
+    ("suffix", "delimiter", "encoding", "bom", "city", "label"),
+    [
+        (".csv", ";", "utf-16le", b"\xff\xfe", "München", "Café"),
+        (".tsv", "\t", "utf-16be", b"\xfe\xff", "東京", "喫茶店"),
+    ],
+    ids=["utf-16le-csv", "utf-16be-tsv"],
+)
+def test_pandas_opens_bom_marked_utf16_delimited_files(
+    suffix: str,
+    delimiter: str,
+    encoding: str,
+    bom: bytes,
+    city: str,
+    label: str,
+    tmp_path,
+) -> None:
+    path = tmp_path / f"utf16{suffix}"
+    contents = f"city{delimiter}label\n{city}{delimiter}{label}\n"
+    path.write_bytes(bom + contents.encode(encoding))
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "file",
+            "label": path.name,
+            "path": str(path),
+            "importOptions": {
+                "delimiter": delimiter,
+                "encoding": encoding,
+                "hasHeader": True,
+                "quoteChar": '"',
+            },
+        },
+        backend="pandas",
+    )
+
+    assert [column["name"] for column in opened["metadata"]["schema"]] == ["city", "label"]
+    assert [cell["display"] for cell in opened["page"]["rows"][0]["values"]] == [city, label]
+    manager.close_session(opened["metadata"]["sessionId"], 0)
+    assert manager.sessions == {}
+
+
 def test_pandas_reads_multibyte_delimiter_and_quote_controls(tmp_path):
     manager = SessionManager()
     cases = [

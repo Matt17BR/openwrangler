@@ -83,12 +83,26 @@ describe("Python environment requirements", () => {
       path: "/tmp/damaged.csv",
       importOptions: { encoding: "utf8-lossy" }
     };
+    const utf16Le: SessionSource = {
+      kind: "file",
+      label: "little-endian.csv",
+      path: "/tmp/little-endian.csv",
+      importOptions: { encoding: "utf-16le" }
+    };
+    const utf16Be: SessionSource = {
+      kind: "file",
+      label: "big-endian.tsv",
+      path: "/tmp/big-endian.tsv",
+      importOptions: { encoding: "utf-16be" }
+    };
 
     expect(automaticBackends(parquet)).toEqual(["polars", "duckdb", "pandas"]);
     expect(automaticBackends(excel)).toEqual(["polars", "pandas"]);
     expect(automaticBackends(legacyExcel)).toEqual(["polars", "pandas"]);
     expect(automaticBackends(latin1)).toEqual(["pandas"]);
     expect(automaticBackends(lossyUtf8)).toEqual(["pandas"]);
+    expect(automaticBackends(utf16Le)).toEqual(["pandas"]);
+    expect(automaticBackends(utf16Be)).toEqual(["pandas"]);
     expect(requiredDependencies(automaticBackends(lossyUtf8)[0], lossyUtf8).map((item) => item.installSpec)).toEqual([
       "pandas"
     ]);

@@ -3,6 +3,17 @@ import { detectedImportOptionsFromSample, IMPORT_DETECTION_SAMPLE_BYTES } from "
 
 const utf8 = (value: string): Uint8Array => new TextEncoder().encode(value);
 
+function utf16(value: string, byteOrder: "le" | "be"): Uint8Array {
+  const bytes = [byteOrder === "le" ? 0xff : 0xfe, byteOrder === "le" ? 0xfe : 0xff];
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    const low = codeUnit & 0xff;
+    const high = codeUnit >> 8;
+    bytes.push(byteOrder === "le" ? low : high, byteOrder === "le" ? high : low);
+  }
+  return new Uint8Array(bytes);
+}
+
 describe("automatic delimited import detection", () => {
   it("keeps standard CSV quoting when ordinary values contain apostrophes and mixed quotes", () => {
     const sample = [
@@ -53,6 +64,33 @@ describe("automatic delimited import detection", () => {
       hasHeader: true
     });
   });
+
+  it.each([
+    {
+      filename: "little-endian.csv",
+      sample: utf16("city;label\n'München';'Café;Haus'\n'Zürich';'Crème;Bar'\n", "le"),
+      delimiter: ";",
+      encoding: "utf-16le",
+      quoteChar: "'"
+    },
+    {
+      filename: "big-endian.tsv",
+      sample: utf16('city\tlabel\n東京\t"喫茶\t店"\n京都\t"抹茶\t店"\n', "be"),
+      delimiter: "\t",
+      encoding: "utf-16be",
+      quoteChar: '"'
+    }
+  ])(
+    "decodes BOM-marked $encoding before dialect and header inference",
+    ({ filename, sample, delimiter, encoding, quoteChar }) => {
+      expect(detectedImportOptionsFromSample(filename, sample)).toEqual({
+        delimiter,
+        encoding,
+        quoteChar,
+        hasHeader: true
+      });
+    }
+  );
 
   it("falls back to Windows-1252 for a common single-byte Western export", () => {
     const prefix = utf8("label;amount\nCaf");
