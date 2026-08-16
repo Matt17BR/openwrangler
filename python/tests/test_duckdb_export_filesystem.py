@@ -56,7 +56,7 @@ def test_duckdb_native_export_streams_to_exact_writer_without_conversion(
 
     engine.export_data(frame, writer_path, format_name)  # type: ignore[arg-type]
 
-    assert (destination.stat().st_dev, destination.stat().st_ino) == identity
+    assert _regular_file_identity(destination) == identity
     if format_name == "csv":
         assert destination.read_text() == "value,label\n7,native\n8,stream\n"
     else:
