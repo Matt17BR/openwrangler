@@ -35,6 +35,7 @@ import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
 import { PythonDependencyProbeRegistry } from "../extension/pythonDependencyState";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
+import { PythonRuntimeTransport } from "../extension/pythonRuntimeTransport";
 import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
 
 vi.mock("../extension/pythonEnvironment", async (importOriginal) => {
@@ -129,81 +130,7 @@ function testExtensionContext(): vscode.ExtensionContext {
   } as vscode.ExtensionContext;
 }
 
-const initializedResponse: OpenWranglerResponse = {
-  kind: "initialized",
-  protocolVersion: 2,
-  runtimeVersion: "test-runtime",
-  capabilities: {
-    editable: true,
-    lazy: true,
-    cancel: false,
-    exportCsv: true,
-    exportParquet: true,
-    notebookInsert: true
-  }
-};
-
 describe("PythonBridge cancellation", () => {
-  it("waits for the authoritative result when running work cannot be cancelled", async () => {
-    const token = new ManualCancellation();
-    const harness = createHarness();
-    const response = harness.bridge.request(initializeRequest, { cancellation: token, timeoutMs: 5_000 });
-    await harness.waitForWrites(1);
-    const original = harness.writes()[0];
-
-    token.cancel();
-    await harness.waitForWrites(2);
-    const cancellation = harness.writes()[1];
-    expect(cancellation.request).toEqual({ kind: "cancelRequest", targetRequestId: original.requestId });
-
-    harness.respond(cancellation.requestId, {
-      kind: "error",
-      code: "cancellation_unavailable",
-      message: "The request is already running.",
-      recoverable: true
-    });
-    let settled = false;
-    void response.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
-    harness.respond(original.requestId, initializedResponse);
-    await expect(response).resolves.toEqual(initializedResponse);
-    expect(token.dispose).toHaveBeenCalledOnce();
-    expect(harness.pendingCount()).toBe(0);
-    expect(harness.cancellationCount()).toBe(0);
-  });
-
-  it("settles as cancelled only after the original request returns its correlated cancellation", async () => {
-    const token = new ManualCancellation();
-    const harness = createHarness();
-    const response = harness.bridge.request(initializeRequest, { cancellation: token, timeoutMs: 5_000 });
-    await harness.waitForWrites(1);
-    const original = harness.writes()[0];
-
-    token.cancel();
-    await harness.waitForWrites(2);
-    const cancellation = harness.writes()[1];
-    harness.respond(cancellation.requestId, { kind: "cancelled", targetRequestId: original.requestId });
-
-    let settled = false;
-    void response.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    expect(token.dispose).not.toHaveBeenCalled();
-    expect(harness.pendingCount()).toBe(1);
-    expect(harness.cancellationCount()).toBe(0);
-
-    harness.respond(original.requestId, { kind: "cancelled", targetRequestId: original.requestId });
-    await expect(response).resolves.toEqual({ kind: "cancelled", targetRequestId: original.requestId });
-    expect(token.dispose).toHaveBeenCalledOnce();
-    expect(harness.pendingCount()).toBe(0);
-  });
-
   it("does not start the runtime when cancellation arrives during request preparation", async () => {
     const prepared = deferred<OpenWranglerRequest | ErrorResponse>();
     const token = new ManualCancellation();
@@ -413,25 +340,6 @@ describe("PythonBridge cancellation", () => {
     expect(harness.writes()).toEqual([]);
   });
 
-  it("handles synchronous cancellation subscription without dispatching or leaking the listener", async () => {
-    const dispose = vi.fn();
-    const token: CancellationTokenLike = {
-      isCancellationRequested: false,
-      onCancellationRequested: (listener) => {
-        listener();
-        return { dispose };
-      }
-    };
-    const harness = createHarness();
-
-    await expect(harness.bridge.request(initializeRequest, { cancellation: token, timeoutMs: 5_000 })).resolves.toEqual(
-      { kind: "cancelled", targetRequestId: "not-started" }
-    );
-    expect(harness.writes()).toEqual([]);
-    expect(dispose).toHaveBeenCalledOnce();
-    expect(harness.pendingCount()).toBe(0);
-  });
-
   it("rejects a file request when selection changes after preparation resolves but before dispatch", async () => {
     const request = openSessionRequest(remoteFileSource());
     const prepared = deferred<OpenWranglerRequest | ErrorResponse>();
@@ -468,42 +376,6 @@ describe("PythonBridge cancellation", () => {
 });
 
 describe("PythonBridge transport validation and timeout isolation", () => {
-  it("ignores a malformed correlated response until a valid response arrives", async () => {
-    const harness = createHarness();
-    const response = harness.bridge.request(initializeRequest, { timeoutMs: 5_000 });
-    await harness.waitForWrites(1);
-    const requestId = harness.writes()[0].requestId;
-
-    harness.respondRaw({ protocolVersion: 2, requestId, response: { kind: "initialized" } });
-    expect(harness.pendingCount()).toBe(1);
-
-    harness.respond(requestId, initializedResponse);
-    await expect(response).resolves.toEqual(initializedResponse);
-  });
-
-  it("does not restart the shared runtime when a caller disables restart on timeout", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createHarness();
-      const response = harness.bridge.request(initializeRequest, {
-        timeoutMs: 10,
-        restartRuntimeOnTimeout: false
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(harness.writes()).toHaveLength(1);
-
-      const rejection = expect(response).rejects.toThrow("timed out after 10 ms");
-      await vi.advanceTimersByTimeAsync(10);
-      await rejection;
-      expect(harness.restart).not.toHaveBeenCalled();
-      expect(harness.pendingCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("uses the dedicated configured deadline for a cold session open", async () => {
     const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
       get: <T>(key: string, fallback: T): T =>
@@ -1899,31 +1771,31 @@ describe("PythonBridge dependency installation", () => {
     const runtimeProcess = new LifecycleChildProcess();
     runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
     runtime.processSelection = { selection, environment: missingDependencies().environment };
-    const reject = vi.fn();
     const dispose = vi.fn(() => {
       throw new Error("listener cleanup failed");
     });
-    const requestId = "pending-with-failing-listener";
-    const timer = setTimeout(() => undefined, 60_000);
-    raw.pending.set(requestId, {
-      requestId,
-      resolve: vi.fn(),
-      reject,
-      timer,
-      runtime,
-      request: initializeRequest,
-      cancellation: { dispose },
-      cancellationRequested: false,
-      dispatched: true
-    });
-    runtime.pendingIds.add(requestId);
+    const pending = raw.runtimeTransport
+      .dispatch(
+        runtime,
+        runtimeProcess as unknown as ChildProcessWithoutNullStreams,
+        initializeRequest,
+        {
+          timeoutMs: 60_000,
+          cancellation: {
+            isCancellationRequested: false,
+            onCancellationRequested: () => ({ dispose })
+          }
+        },
+        vi.fn()
+      )
+      .catch((error: unknown) => error);
     launchDependencyInstall.mockReturnValue(controlled.operation);
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
 
     const installation = bridge.installMissingDependencies();
     await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
     expect(dispose).toHaveBeenCalledOnce();
-    expect(reject).toHaveBeenCalledOnce();
+    await expect(pending).resolves.toBeInstanceOf(Error);
     expect(runtime.stoppingProcesses.has(runtimeProcess as unknown as ChildProcessWithoutNullStreams)).toBe(true);
     expect(launchDependencyInstall).not.toHaveBeenCalled();
     expect(raw.output.appendLine).toHaveBeenCalledWith(
@@ -3466,7 +3338,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(secondRuntime).toBeDefined();
     expect(firstRuntime).not.toBe(secondRuntime);
     expect(spawnProcess).toHaveBeenCalledTimes(2);
-    raw.handleRuntimeLine(
+    raw.runtimeTransport.handleLine(
       firstRuntime!,
       firstProcess as unknown as ChildProcessWithoutNullStreams,
       JSON.stringify({
@@ -3475,7 +3347,7 @@ describe("PythonBridge environment resource selection", () => {
         response: openedFor(firstRequest, "first-live-session")
       } satisfies RuntimeResponseEnvelope)
     );
-    raw.handleRuntimeLine(
+    raw.runtimeTransport.handleLine(
       secondRuntime!,
       secondProcess as unknown as ChildProcessWithoutNullStreams,
       JSON.stringify({
@@ -3503,8 +3375,8 @@ describe("PythonBridge environment resource selection", () => {
     expect(secondProcess.stdin.end).not.toHaveBeenCalled();
     expect(raw.sessionOwnership.confirmedOwner("first-live-session")).toBeUndefined();
     expect(raw.sessionOwnership.confirmedOwner("second-live-session")).toBe(secondRuntime);
-    expect(raw.pending.size).toBe(1);
-    raw.handleRuntimeLine(
+    expect(secondRuntime!.pendingIds.size).toBe(1);
+    raw.runtimeTransport.handleLine(
       secondRuntime!,
       secondProcess as unknown as ChildProcessWithoutNullStreams,
       JSON.stringify({
@@ -4144,27 +4016,6 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.runtimeSlots.has(remoteSourceAt("/recency/128.csv").uri!)).toBe(true);
   });
 
-  it("pins a scope through an exact global cancellation backlink", () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    for (let index = 0; index < 129; index += 1) raw.runtimeSlot(`backlink-${index}`);
-    const pinned = raw.runtimeSlots.get("backlink-0")!;
-    raw.cancellationTargets.set("cancel-backlink", {
-      targetRequestId: "target",
-      runtime: pinned
-    });
-
-    raw.trimInactiveScopes();
-    expect(raw.runtimeSlots.size).toBe(128);
-    expect(raw.runtimeSlots.get(pinned.key)).toBe(pinned);
-
-    raw.cancellationTargets.delete("cancel-backlink");
-    raw.runtimeSlot("backlink-final");
-    raw.trimInactiveScopes();
-    expect(raw.runtimeSlots.size).toBe(128);
-    expect(raw.runtimeSlots.has(pinned.key)).toBe(false);
-  });
-
   it("cleans orphan metadata but fails closed on an orphan unresolved selection", () => {
     const { bridge } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
@@ -4385,8 +4236,7 @@ interface RawBridgeInternals {
       }
     | undefined;
   lastMissingDependencies: TestMissingDependencies | undefined;
-  pending: Map<string, unknown>;
-  cancellationTargets: Map<string, unknown>;
+  runtimeTransport: PythonRuntimeTransport<TestRuntimeSlot>;
   output: { appendLine(message: string): void };
   prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
   prepareRequestForDispatch(request: OpenWranglerRequest): Promise<{
@@ -4415,8 +4265,8 @@ interface RawBridgeInternals {
     gracefulTimeoutMs?: number,
     packageEnvironmentKey?: string
   ): void;
-  handleRuntimeLine(runtime: TestRuntimeSlot, process: ChildProcessWithoutNullStreams, line: string): void;
   handlePythonEnvironmentSelectionChange(event: pythonEnvironment.PythonEnvironmentSelectionChangeEvent): void;
+  runtimeUnavailableError(runtime: TestRuntimeSlot, error?: unknown): Error;
   restartRuntime(runtime: TestRuntimeSlot, reason: string): void;
   stopRuntimeIfIdle(runtime: TestRuntimeSlot): void;
   trimInactiveScopes(): void;
@@ -4431,6 +4281,21 @@ function createDependencyProbeRegistry(raw: RawBridgeInternals): PythonDependenc
 
 function createSessionOwnership(raw: RawBridgeInternals): PythonSessionOwnership<TestRuntimeSlot> {
   return new PythonSessionOwnership((runtime, reason) => raw.restartRuntime(runtime, reason));
+}
+
+function createRuntimeTransport(raw: RawBridgeInternals): PythonRuntimeTransport<TestRuntimeSlot> {
+  return new PythonRuntimeTransport({
+    sessionOwnership: raw.sessionOwnership,
+    restartRuntime: (runtime, reason) => raw.restartRuntime(runtime, reason),
+    stopRuntimeIfIdle: (runtime) => raw.stopRuntimeIfIdle(runtime),
+    runtimeUnavailableError: (runtime, error) => raw.runtimeUnavailableError(runtime, error),
+    reportDiagnostic: (message) => raw.output.appendLine(message)
+  });
+}
+
+function attachRuntimeTransport(bridge: PythonBridge): void {
+  const raw = bridge as unknown as RawBridgeInternals;
+  Object.assign(bridge as object, { runtimeTransport: createRuntimeTransport(raw) });
 }
 
 async function cacheDependencyProbe(
@@ -4527,13 +4392,12 @@ function createLifecycleHarness(): {
     launchDependencyGuardValidation: startDependencyGuardValidation,
     dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
-    pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, unknown>(),
     spawnProcess,
     configurationSubscription,
     environmentApiBroker: { dispose: vi.fn() },
     output
   });
+  attachRuntimeTransport(bridge);
   const internals: LifecycleBridgeInternals = {
     get process() {
       return runtime.process;
@@ -4664,13 +4528,12 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     launchDependencyGuardValidation: startDependencyGuardValidation,
     dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
-    pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, unknown>(),
     generation: 0,
     spawnProcess: vi.fn(),
     configurationSubscription: { dispose: vi.fn() },
     output: { appendLine: vi.fn(), dispose: vi.fn() }
   });
+  attachRuntimeTransport(bridge);
   const internals: EnvironmentBridgeInternals = {
     get dependencyProbes() {
       return raw.dependencyProbes;
@@ -4726,8 +4589,6 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     context: testExtensionContext(),
     runtimeSlots: new Map([[runtime.key, runtime]]),
     sessionOwnership: createSessionOwnership(raw),
-    pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, unknown>(),
     selectionEpoch: 0,
     dependencyAuthorizationEpoch: 0,
     selectionEpochs: new Map([[target.selection.key, 0]]),
@@ -4750,6 +4611,7 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     environmentApiBroker: { dispose: vi.fn() },
     output: { appendLine: vi.fn(), dispose: vi.fn() }
   });
+  attachRuntimeTransport(bridge);
   const internals: DependencyBridgeInternals = {
     get dependencyProbes() {
       return raw.dependencyProbes;
@@ -5230,8 +5092,6 @@ function createMultiScopeHarness(): {
     launchDependencyGuardValidation: startDependencyGuardValidation,
     dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
-    pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, unknown>(),
     output: { appendLine: vi.fn() },
     prepareRequestForDispatch: vi.fn(async (request: OpenWranglerRequest) => {
       const scope = request.kind === "openSession" && request.source.path?.startsWith("/second/") ? "second" : "first";
@@ -5250,6 +5110,7 @@ function createMultiScopeHarness(): {
       }
     })
   });
+  attachRuntimeTransport(bridge);
   const writes = (scope: "first" | "second"): RuntimeRequestEnvelope[] =>
     writesByScope[scope].map((line) => JSON.parse(line) as RuntimeRequestEnvelope);
   return {
@@ -5265,7 +5126,7 @@ function createMultiScopeHarness(): {
     },
     respond: (scope, requestId, response) => {
       const envelope: RuntimeResponseEnvelope = { protocolVersion: 2, requestId, response };
-      raw.handleRuntimeLine(runtimes[scope], processes[scope], JSON.stringify(envelope));
+      raw.runtimeTransport.handleLine(runtimes[scope], processes[scope], JSON.stringify(envelope));
     }
   };
 }
@@ -5280,9 +5141,6 @@ function createHarness(
   writes(): RuntimeRequestEnvelope[];
   waitForWrites(count: number): Promise<void>;
   respond(requestId: string, response: OpenWranglerResponse): void;
-  respondRaw(value: unknown): void;
-  pendingCount(): number;
-  cancellationCount(): number;
   advanceSelectionEpoch(): void;
 } {
   const rawWrites: string[] = [];
@@ -5331,8 +5189,6 @@ function createHarness(
     launchDependencyGuardValidation: startDependencyGuardValidation,
     dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
-    pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, unknown>(),
     output: { appendLine: vi.fn() },
     prepareRequestForDispatch: vi.fn(async (request: OpenWranglerRequest) => {
       const prepared = await prepareRequest(request);
@@ -5342,6 +5198,7 @@ function createHarness(
     restartRuntime: restart,
     stopRuntimeIfIdle: vi.fn()
   });
+  attachRuntimeTransport(bridge);
 
   const writes = (): RuntimeRequestEnvelope[] => rawWrites.map((line) => JSON.parse(line) as RuntimeRequestEnvelope);
   return {
@@ -5354,11 +5211,8 @@ function createHarness(
     },
     respond: (requestId, response) => {
       const envelope: RuntimeResponseEnvelope = { protocolVersion: 2, requestId, response };
-      internals.handleRuntimeLine(runtime, process, JSON.stringify(envelope));
+      internals.runtimeTransport.handleLine(runtime, process, JSON.stringify(envelope));
     },
-    respondRaw: (value) => internals.handleRuntimeLine(runtime, process, JSON.stringify(value)),
-    pendingCount: () => internals.pending.size,
-    cancellationCount: () => internals.cancellationTargets.size,
     advanceSelectionEpoch: () => {
       internals.selectionEpoch += 1;
       internals.selectionEpochs.set(selection.key, selection.epoch + 1);

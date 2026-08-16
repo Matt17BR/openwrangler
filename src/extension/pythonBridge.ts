@@ -1,5 +1,4 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import * as vscode from "vscode";
@@ -8,14 +7,11 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   ErrorResponse,
-  RuntimeRequestEnvelope,
-  RuntimeResponseEnvelope,
   SessionSource
 } from "../shared/protocol";
-import { isSessionBoundRequest, PROTOCOL_VERSION } from "../shared/protocol";
-import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
+import { isSessionBoundRequest } from "../shared/protocol";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
-import { getSetting, runtimeRequestTimeoutMs } from "./configuration";
+import { getSetting } from "./configuration";
 import {
   DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS,
   DEPENDENCY_INSTALL_TIMEOUT_MS,
@@ -62,19 +58,7 @@ import {
   samePythonExecutable
 } from "./pythonDependencyState";
 import { PythonSessionOwnership } from "./pythonSessionOwnership";
-
-interface PendingRequest {
-  readonly requestId: string;
-  resolve: (response: OpenWranglerResponse) => void;
-  reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
-  readonly runtime: RuntimeSlot;
-  readonly request: OpenWranglerRequest;
-  cancellation?: { dispose(): void };
-  cancellationRequestId?: string;
-  cancellationRequested: boolean;
-  dispatched: boolean;
-}
+import { PythonRuntimeTransport } from "./pythonRuntimeTransport";
 
 interface MissingDependencies {
   readonly environment: PythonEnvironment;
@@ -216,8 +200,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly sessionOwnership = new PythonSessionOwnership<RuntimeSlot>((runtime, reason) =>
     this.restartRuntime(runtime, reason)
   );
-  private readonly pending = new Map<string, PendingRequest>();
-  private readonly cancellationTargets = new Map<string, { targetRequestId: string; runtime: RuntimeSlot }>();
+  private readonly runtimeTransport: PythonRuntimeTransport<RuntimeSlot>;
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private readonly spawnProcess = spawn;
 
@@ -265,6 +248,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly excelSheetReads = new Set<AbortController>();
 
   constructor(private readonly context: vscode.ExtensionContext) {
+    this.runtimeTransport = new PythonRuntimeTransport({
+      sessionOwnership: this.sessionOwnership,
+      restartRuntime: (runtime, reason) => this.restartRuntime(runtime, reason),
+      stopRuntimeIfIdle: (runtime) => this.stopRuntimeIfIdle(runtime),
+      runtimeUnavailableError: (runtime, error) => this.runtimeUnavailableError(runtime, error),
+      reportDiagnostic: (message) => this.output.appendLine(message)
+    });
     this.environmentApiBroker = new PythonEnvironmentApiBroker((event) =>
       this.handlePythonEnvironmentSelectionChange(event)
     );
@@ -403,11 +393,11 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         throw error;
       }
     } else if (request.kind === "cancelRequest") {
-      const target = this.pending.get(request.targetRequestId);
-      if (!target || (!target.runtime.process && !target.runtime.processStart)) {
-        return this.cancellationUnavailableError(request.targetRequestId);
+      const targetRuntime = this.runtimeTransport.runtimeForCancellation(request.targetRequestId);
+      if (!targetRuntime || (!targetRuntime.process && !targetRuntime.processStart)) {
+        return this.runtimeTransport.cancellationUnavailable(request.targetRequestId);
       }
-      runtime = target.runtime;
+      runtime = targetRuntime;
       requestLease = this.retainRuntime(runtime);
       try {
         proc = runtime.process ?? (await runtime.processStart!);
@@ -532,92 +522,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
 
-    const requestId = randomUUID();
-    const provisionalError = this.sessionOwnership.reserve(runtimeRequest, runtime, requestId);
-    if (provisionalError) {
-      this.stopRuntimeIfIdle(runtime);
-      releaseRequestLease();
-      return provisionalError;
-    }
-    const envelope: RuntimeRequestEnvelope = {
-      protocolVersion: PROTOCOL_VERSION,
-      requestId,
-      priority:
-        options.priority ??
-        (runtimeRequest.kind === "getSummary" || runtimeRequest.kind === "getDatasetStats"
-          ? "background"
-          : "interactive"),
-      request: runtimeRequest
-    };
-    const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
-
-    return new Promise<OpenWranglerResponse>((resolve, reject) => {
-      if (runtime.runtimeExitError) {
-        this.sessionOwnership.releaseForRequest(runtimeRequest, requestId, runtime);
-        releaseRequestLease();
-        reject(runtime.runtimeExitError);
-        return;
-      }
-      if (proc.stdin.destroyed || !proc.stdin.writable) {
-        this.sessionOwnership.releaseForRequest(runtimeRequest, requestId, runtime);
-        releaseRequestLease();
-        reject(this.runtimeUnavailableError(runtime));
-        return;
-      }
-
-      const timer = setTimeout(() => {
-        const pending = this.takePending(requestId);
-        if (!pending) return;
-        this.sendCancellation(runtime, requestId, false);
-        pending.reject(
-          new Error(`Open Wrangler runtime request ${runtimeRequest.kind} timed out after ${timeoutMs} ms.`)
-        );
-        if (runtimeRequest.kind === "openSession" || options.restartRuntimeOnTimeout !== false) {
-          this.restartRuntime(runtime, "Runtime request timed out; restarting so sessions can be replayed.");
-        } else {
-          this.sessionOwnership.releasePendingForRequest(pending.request, pending.requestId, pending.runtime);
-          this.stopRuntimeIfIdle(pending.runtime);
-        }
-      }, timeoutMs);
-      const pending: PendingRequest = {
-        requestId,
-        resolve,
-        reject,
-        timer,
-        runtime,
-        request: runtimeRequest,
-        cancellationRequested: false,
-        dispatched: false
-      };
-      this.pending.set(requestId, pending);
-      runtime.pendingIds.add(requestId);
-      releaseRequestLease();
-      const cancellation = options.cancellation?.onCancellationRequested(() => this.cancelRequest(requestId));
-      pending.cancellation = cancellation;
-      if (!this.pending.has(requestId)) cancellation?.dispose();
-      if (options.cancellation?.isCancellationRequested) this.cancelRequest(requestId);
-      if (!this.pending.has(requestId)) return;
-
-      try {
-        pending.dispatched = true;
-        proc.stdin.write(`${JSON.stringify(envelope)}\n`, (error) => {
-          if (!error) return;
-          const pending = this.takePending(requestId);
-          if (pending) {
-            this.sessionOwnership.releasePendingForRequest(pending.request, pending.requestId, runtime);
-            pending.reject(this.runtimeUnavailableError(runtime, error));
-          }
-          this.stopRuntimeIfIdle(runtime);
-        });
-      } catch (error) {
-        const pending = this.takePending(requestId);
-        if (pending) {
-          this.sessionOwnership.releasePendingForRequest(pending.request, pending.requestId, runtime);
-          pending.reject(this.runtimeUnavailableError(runtime, error));
-        }
-        this.stopRuntimeIfIdle(runtime);
-      }
-    });
+    return this.runtimeTransport.dispatch(runtime, proc, runtimeRequest, options, releaseRequestLease);
   }
 
   restart(reason = "Open Wrangler runtime restarted."): void {
@@ -1801,13 +1706,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     ) {
       return false;
     }
-    for (const pending of this.pending.values()) {
-      if (pending.runtime === runtime) return false;
-    }
+    if (this.runtimeTransport.hasOwnership(runtime)) return false;
     if (this.sessionOwnership.hasClaimsFor(runtime)) return false;
-    for (const target of this.cancellationTargets.values()) {
-      if (target.runtime === runtime) return false;
-    }
     return true;
   }
 
@@ -1833,7 +1733,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime.processStartSelection = undefined;
     runtime.runtimeExitError = undefined;
     this.sessionOwnership.releaseRuntime(runtime);
-    this.rejectRuntime(runtime, new Error(reason));
+    this.runtimeTransport.rejectRuntime(runtime, new Error(reason));
     this.trimInactiveScopes();
   }
 
@@ -2022,7 +1922,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     );
 
     const reader = readline.createInterface({ input: proc.stdout });
-    reader.on("line", (line) => this.handleRuntimeLine(runtime, proc, line));
+    reader.on("line", (line) => this.runtimeTransport.handleLine(runtime, proc, line));
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       runtime.stderrBuffer = `${runtime.stderrBuffer}${text}`.slice(-8000);
@@ -2090,148 +1990,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime.processSelection = undefined;
     this.sessionOwnership.releaseRuntime(runtime);
     this.output.appendLine(error.message);
-    this.rejectRuntime(runtime, error);
+    this.runtimeTransport.rejectRuntime(runtime, error);
     this.trimInactiveScopes();
-  }
-
-  private handleRuntimeLine(runtime: RuntimeSlot, proc: ChildProcessWithoutNullStreams, line: string): void {
-    if (runtime.process !== proc) return;
-    let envelope: RuntimeResponseEnvelope;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (!isRuntimeResponseEnvelope(parsed)) {
-        throw new Error("Response does not match the protocol v2 envelope.");
-      }
-      envelope = parsed;
-    } catch (error) {
-      this.output.appendLine(`Invalid runtime response: ${line}`);
-      this.output.appendLine(error instanceof Error ? error.message : String(error));
-      return;
-    }
-
-    const cancellationTarget = this.cancellationTargets.get(envelope.requestId);
-    if (cancellationTarget) {
-      if (cancellationTarget.runtime !== runtime) {
-        this.output.appendLine(
-          `Ignored a cancellation response from Python scope ${runtime.key} owned by ${cancellationTarget.runtime.key}.`
-        );
-        return;
-      }
-      this.cancellationTargets.delete(envelope.requestId);
-      const target = this.pending.get(cancellationTarget.targetRequestId);
-      if (target?.cancellationRequestId === envelope.requestId) target.cancellationRequestId = undefined;
-      if (
-        envelope.response.kind === "cancelled" &&
-        envelope.response.targetRequestId === cancellationTarget.targetRequestId
-      ) {
-        this.output.appendLine(
-          `Open Wrangler runtime accepted cancellation for queued request ${cancellationTarget.targetRequestId}; waiting for that request's correlated response.`
-        );
-      } else if (envelope.response.kind !== "error" || envelope.response.code !== "cancellation_unavailable") {
-        this.output.appendLine(
-          `Open Wrangler runtime returned ${envelope.response.kind} while cancelling request ${cancellationTarget.targetRequestId}; waiting for the authoritative result.`
-        );
-      }
-      return;
-    }
-
-    const owner = this.pending.get(envelope.requestId);
-    if (owner && owner.runtime !== runtime) {
-      this.output.appendLine(
-        `Ignored a response from Python scope ${runtime.key} for a request owned by ${owner.runtime.key}.`
-      );
-      return;
-    }
-    const pending = this.takePending(envelope.requestId);
-    if (!pending) return;
-    const response = this.sessionOwnership.finalizeResponse(pending, envelope.response);
-    pending.resolve(response);
-    this.stopRuntimeIfIdle(runtime);
-  }
-
-  private takePending(requestId: string): PendingRequest | undefined {
-    const pending = this.pending.get(requestId);
-    if (!pending) return undefined;
-    this.pending.delete(requestId);
-    pending.runtime.pendingIds.delete(requestId);
-    clearTimeout(pending.timer);
-    try {
-      pending.cancellation?.dispose();
-    } catch (error) {
-      try {
-        this.output.appendLine(
-          `Open Wrangler could not dispose a runtime cancellation listener: ${error instanceof Error ? error.message : String(error)}`
-        );
-      } catch {
-        // Pending ownership must still be released when diagnostics are unavailable.
-      }
-    }
-    if (pending.cancellationRequestId) this.cancellationTargets.delete(pending.cancellationRequestId);
-    return pending;
-  }
-
-  private rejectRuntime(runtime: RuntimeSlot, error: Error): void {
-    for (const requestId of [...runtime.pendingIds]) {
-      this.takePending(requestId)?.reject(error);
-    }
-    for (const [requestId, target] of this.cancellationTargets) {
-      if (target.runtime === runtime) this.cancellationTargets.delete(requestId);
-    }
-  }
-
-  private cancelRequest(targetRequestId: string): void {
-    const pending = this.pending.get(targetRequestId);
-    if (!pending || pending.cancellationRequested) return;
-    pending.cancellationRequested = true;
-    if (!pending.dispatched) {
-      const cancelled = this.takePending(targetRequestId);
-      if (cancelled) {
-        this.sessionOwnership.releasePendingForRequest(cancelled.request, cancelled.requestId, cancelled.runtime);
-        cancelled.resolve({ kind: "cancelled", targetRequestId: "not-started" });
-        this.stopRuntimeIfIdle(cancelled.runtime);
-      }
-      return;
-    }
-    this.sendCancellation(pending.runtime, targetRequestId, true);
-  }
-
-  private sendCancellation(runtime: RuntimeSlot, targetRequestId: string, trackResponse: boolean): void {
-    const proc = runtime.process;
-    if (!proc?.stdin.writable) return;
-    const requestId = randomUUID();
-    const envelope: RuntimeRequestEnvelope = {
-      protocolVersion: PROTOCOL_VERSION,
-      requestId,
-      priority: "interactive",
-      request: { kind: "cancelRequest", targetRequestId }
-    };
-    if (trackResponse) {
-      const pending = this.pending.get(targetRequestId);
-      if (!pending || pending.runtime !== runtime) return;
-      pending.cancellationRequestId = requestId;
-      this.cancellationTargets.set(requestId, { targetRequestId, runtime });
-    }
-    try {
-      proc.stdin.write(`${JSON.stringify(envelope)}\n`, (error) => {
-        if (!error || !trackResponse) return;
-        this.clearCancellationRequest(requestId, targetRequestId);
-        this.output.appendLine(
-          `Open Wrangler could not request cancellation for ${targetRequestId}: ${error.message}. Waiting for the authoritative result.`
-        );
-      });
-    } catch (error) {
-      if (!trackResponse) return;
-      this.clearCancellationRequest(requestId, targetRequestId);
-      this.output.appendLine(
-        `Open Wrangler could not request cancellation for ${targetRequestId}: ${error instanceof Error ? error.message : String(error)}. Waiting for the authoritative result.`
-      );
-    }
-  }
-
-  private clearCancellationRequest(requestId: string, targetRequestId: string): void {
-    this.cancellationTargets.delete(requestId);
-    const pending = this.pending.get(targetRequestId);
-    if (pending?.cancellationRequestId === requestId) pending.cancellationRequestId = undefined;
   }
 
   private unknownSessionError(request: Extract<OpenWranglerRequest, { sessionId: string }>): ErrorResponse {
@@ -2242,15 +2002,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       recoverable: true,
       sessionId: request.sessionId,
       viewRequestId: "viewRequestId" in request ? request.viewRequestId : undefined
-    };
-  }
-
-  private cancellationUnavailableError(targetRequestId: string): ErrorResponse {
-    return {
-      kind: "error",
-      code: "cancellation_unavailable",
-      message: `Open Wrangler runtime request ${targetRequestId} is not available for cancellation.`,
-      recoverable: true
     };
   }
 
