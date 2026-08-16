@@ -60,8 +60,68 @@ def test_duckdb_numeric_summary_executes_the_source_at_most_three_times(
         assert "count(DISTINCT CAST" in aggregate_query
         assert "GROUP BY" in top_values_query
         assert "ORDER BY value_count DESC" in top_values_query
-        assert "count(*) FILTER" in histogram_query
+        assert "histogram(" in histogram_query
         assert sum(bin_["count"] for bin_ in summary["visualization"]["bins"]) == 4
+        with engine._lifecycle_lock:
+            assert engine._active_connections == set()
+    finally:
+        engine.close()
+
+
+def test_duckdb_multicolumn_numeric_summary_fuses_fixed_aggregate_scans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_conversion_guards(monkeypatch)
+    engine = DuckDBEngine()
+    frame = engine.normalize(
+        duckdb.sql(
+            """
+            SELECT * FROM (VALUES
+                (-1::HUGEINT, -1.0000::DECIMAL(18, 4), -1.0::DOUBLE),
+                (0::HUGEINT, 0.0000::DECIMAL(18, 4), 0.0::DOUBLE),
+                (1::HUGEINT, 1.0000::DECIMAL(18, 4), 1.0::DOUBLE),
+                (2::HUGEINT, 2.0000::DECIMAL(18, 4), 2.0::DOUBLE),
+                (NULL::HUGEINT, NULL::DECIMAL(18, 4), 'NaN'::DOUBLE)
+            ) AS source(wide, amount, floating)
+            """
+        )
+    )
+    executions: list[tuple[Any, str, str]] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+
+    def capture_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
+        executions.append((connection, source_sql, query))
+        return native_execute_rows(connection, source_sql, query)
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_rows)
+
+    try:
+        summaries = engine.summaries(
+            frame,
+            [(0, "wide-id"), (1, "amount-id"), (2, "floating-id")],
+        )
+
+        assert len(executions) == 7
+        assert all(connection is executions[0][0] for connection, _source_sql, _query in executions)
+        assert {source_sql for _connection, source_sql, _query in executions} == {frame.sql}
+        *profile_queries, histogram_query = [query for _connection, _source, query in executions]
+        aggregate_queries = profile_queries[::2]
+        top_values_queries = profile_queries[1::2]
+        assert len(aggregate_queries) == 3
+        assert all(
+            query.count("stddev_samp") == 1 and query.count("median(") == 1 and query.count("count(DISTINCT CAST") == 1
+            for query in aggregate_queries
+        )
+        assert len(top_values_queries) == 3
+        assert all("GROUP BY" in query and "ORDER BY value_count DESC" in query for query in top_values_queries)
+        assert histogram_query.count("histogram(") == 3
+        assert "count(*) FILTER" not in histogram_query
+        assert [summary["columnId"] for summary in summaries] == ["wide-id", "amount-id", "floating-id"]
+        assert [sum(bin_["count"] for bin_ in summary["visualization"]["bins"]) for summary in summaries] == [
+            4,
+            4,
+            4,
+        ]
         with engine._lifecycle_lock:
             assert engine._active_connections == set()
     finally:
