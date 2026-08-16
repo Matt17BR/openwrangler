@@ -34,32 +34,6 @@ export const PACKAGED_SCREENSHOT_MARKETS = [
   "Nordics",
   "UK & Ireland"
 ] as const;
-export const PACKAGED_SCREENSHOT_SCENES = [
-  "hero",
-  "file-explorer-action",
-  "explore",
-  "high-contrast-explore",
-  "filter-result",
-  "workflow",
-  "sidebar-overview",
-  "operation-catalog",
-  "operation-configuration",
-  "applied-step-inspection",
-  "latest-step-edited",
-  "latest-step-undone",
-  "notebook-pandas",
-  "notebook-code-insertion",
-  "notebook-variable-picker",
-  "notebook-r-operations",
-  "notebook-pyspark-picker",
-  "notebook-polars",
-  "notebook-duckdb",
-  "notebook-pyspark",
-  "notebook-r",
-  "notebook-r-editing",
-  "notebook-r-code-insertion",
-  "r-quarto-variable-picker"
-] as const;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",
   "market",
@@ -346,17 +320,6 @@ export function packagedScreenshotFeaturedColumnWidths(
     }
   }
   return widths;
-}
-
-export function packagedScreenshotFileName(
-  editor: string,
-  scene: (typeof PACKAGED_SCREENSHOT_SCENES)[number],
-  theme: "dark" | "light" | "high-contrast"
-): string {
-  if (!/^[a-z][a-z0-9-]{0,31}$/u.test(editor)) {
-    throw new TypeError("Screenshot editor keys must be short lowercase identifiers.");
-  }
-  return `${editor}-${scene}-${theme}.png`;
 }
 
 function csvCell(value: string): string {

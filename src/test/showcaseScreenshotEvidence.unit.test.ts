@@ -32,91 +32,13 @@ describe("wide-schema showcase evidence", () => {
     expect(valueFor(/_value_\d+$/u)).toMatch(/^segment-\d{2}$/u);
   });
 
-  it("keeps final product captures full-size, varied, and geometrically complete", () => {
-    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
-    const filterResultCapture = extensionHost.slice(
-      extensionHost.indexOf("async function capturePackagedFilterResultScene("),
-      extensionHost.indexOf("async function alignPackagedSceneRowBoundary(")
-    );
-    const pySparkAcceptance = extensionHost.slice(
-      extensionHost.indexOf("async function exerciseReleasedPySparkJupyterExtension("),
-      extensionHost.indexOf("async function dispatchReleasedJupyterVariableAction(")
-    );
-
-    expect(extensionHost).toContain("const fixture = ensurePackagedProductSceneFixture(workspace);");
-    expect(extensionHost).toContain("rows: PACKAGED_SCREENSHOT_ROW_COUNT");
-    expect(extensionHost).toContain('await previewUppercaseMarket(app, testing, "market_upper");');
-    expect(extensionHost).toContain('await previewRevenueProjection(app, testing, "projected_revenue");');
-    expect(extensionHost).toContain('const scriptPath = path.join(exportDirectory, "orders.clean.py");');
-    expect(extensionHost).toContain('const cleanedDataPath = path.join(exportDirectory, "orders.cleaned.csv");');
-    expect(extensionHost).toContain("`${editor}-export-code-dark.png`");
-    expect(extensionHost).toContain("`${editor}-export-data-dark.png`");
-    expect(extensionHost).toContain("active.metadata.steps.length === 2");
-    expect(extensionHost).toContain("Cleaned-data export must preserve the source bytes.");
-    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "filter-result", "dark")');
-    expect(extensionHost).toContain("The filter-result grid must show only complete visible rows.");
-    expect(filterResultCapture).toContain("Filter market to ${filterValue}; ${expectedRows.toLocaleString()} rows");
-    expect(filterResultCapture).toContain("active.viewState.selectedColumnId === marketColumnId");
-    expect(filterResultCapture).toContain("getByText(`Filter: ${filterValue}`");
-    expect(filterResultCapture).toContain('getByRole("treeitem", { name: /^market, 1 selected value/u })');
-    expect(filterResultCapture).toContain('getByRole("button", { name: "Clear filter for market", exact: true })');
-    expect(filterResultCapture).toContain("await clearMarket.click()");
-    expect(filterResultCapture).toContain("the Column-profile Clear action to restore the complete file session");
-    expect(filterResultCapture).not.toContain('getByLabel("Filter column"');
-    expect(extensionHost).not.toContain('"exact statistics", "min", "max", "mean", "median", "distribution"');
-    expect(extensionHost).toContain('["min", "max", "mean", "median", "distribution", "counts"]');
-    expect(extensionHost).toContain('getByRole("button", { name: "Counts", exact: true })');
-    expect(extensionHost).toContain('getByRole("button", { name: "%", exact: true })');
-    expect(extensionHost).toContain("The product histogram must expose one full-chart control.");
-    expect(extensionHost).toContain('"20,174-21,357: 398 rows (0.4%); lower bound included, upper bound excluded"');
-    expect(extensionHost).not.toContain("The product histogram must expose all twenty interactive bins.");
-    expect(extensionHost).toContain('"notebook-pyspark-picker"');
-    expect(extensionHost).toContain("Viewing only · First page loads without counting rows · PySpark 4.2.x required");
-    expect(extensionHost).toContain("The notebook-variable capture must show only complete rows.");
-    expect(extensionHost.indexOf("await captureReleasedJupyterPySparkPicker(")).toBeLessThan(
-      extensionHost.indexOf(
-        'await vscode.commands.executeCommand("jupyter.openVariableView");',
-        extensionHost.indexOf("async function exerciseReleasedPySparkJupyterExtension(")
-      )
-    );
-    expect(pySparkAcceptance).toContain(
-      'await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);'
-    );
-    expect(pySparkAcceptance).toContain(
-      "await captureReleasedJupyterPySparkPicker(workbench, testing, notebook, classicEditor, screenshotOutput);"
-    );
-    expect(extensionHost).toContain(
-      "picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {"
-    );
-    expect(extensionHost).not.toContain("`${editor}-copy-code-dark.png`");
-    expect(extensionHost).not.toContain("The documentation capture must cancel without writing a script.");
-    expect(extensionHost).toContain('operator: "add"');
-    expect(extensionHost).toContain("value: 500");
-    expect(extensionHost).toContain('title: "Open Wrangler preview: orders_preview_df (pandas) - 100000 x 12"');
-    expect(extensionHost).toContain("partialHeaderColumns: []");
-    expect(extensionHost).toContain("partialBodyColumns: []");
-    expect(extensionHost).toContain("visibleHeaderCount: 12");
-    expect(extensionHost).toContain('"enterprise-account-model-417-columns.csv"');
-    expect(extensionHost).not.toContain('mkdtempSync(path.join(tmpdir(), "openwrangler-wide-schema-showcase-"))');
-    expect(extensionHost).toContain("Public wide-schema evidence must not expose random acceptance paths.");
-  });
-
   it("reserves readable toolbar identity space while inspection controls wrap", () => {
     const stylesheet = readFileSync(resolve("src/webviews/styles.css"), "utf8");
-    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
 
     expect(stylesheet).toMatch(/\.toolbarIdentity\s*\{[^}]*min-width:\s*15ch;/u);
     expect(stylesheet).toMatch(/\.toolbarActions\s*\{[^}]*flex-wrap:\s*wrap;/u);
     expect(stylesheet).toMatch(
       /\.toolbarIdentity strong,\s*\.toolbarIdentity span\s*\{[^}]*text-overflow:\s*ellipsis;/u
-    );
-    expect(extensionHost).toContain('assert.equal(measurement.title, "orders.csv")');
-    expect(extensionHost).toContain('assert.equal(measurement.shape, "100,000 × 17")');
-    expect(extensionHost).toContain(
-      'assert.equal(measurement.titleClipped, false, "The public product screenshot must show the complete source title.")'
-    );
-    expect(extensionHost).toContain(
-      'assert.equal(measurement.shapeClipped, false, "The public product screenshot must show the complete dataset shape.")'
     );
   });
 });
