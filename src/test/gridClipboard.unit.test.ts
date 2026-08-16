@@ -65,6 +65,106 @@ describe("grid clipboard contract", () => {
     });
   });
 
+  it.each([
+    ["an equals sign", "=SUM(A1:A2)", "'=SUM(A1:A2)"],
+    ["leading whitespace and a tab", " \t+cmd", '"\' \t+cmd"'],
+    ["a leading control", "\u0000-42", "'\u0000-42"],
+    ["a leading BOM", '\uFEFF@IMPORTDATA("url")', '"\'\uFEFF@IMPORTDATA(""url"")"']
+  ])("neutralizes formula-like string cells after %s", (_label, display, expected) => {
+    const selection = collapsedGridClipboardSelection("view-a", { row: 0, column: 0 });
+    const formulaPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: ["c:0"],
+      rows: [{ id: "r:0", rowNumber: 0, values: [cell(display)] }]
+    };
+
+    expect(
+      buildGridClipboardPayload({
+        mode: "cell",
+        selection,
+        contextId: "view-a",
+        schema: [schema[0]],
+        page: formulaPage
+      })
+    ).toEqual({
+      ok: true,
+      payload: {
+        text: expected,
+        rowCount: 1,
+        columnCount: 1,
+        includesRowLabel: false,
+        completeRow: true
+      }
+    });
+  });
+
+  it("neutralizes formula-like row labels while retaining TSV quoting", () => {
+    const selection = collapsedGridClipboardSelection("view-a", { row: 4, column: 1 });
+    const formulaLabelPage: GridPage = {
+      ...page,
+      rows: [{ ...page.rows[0], rowLabel: "\t\uFEFF@ROW()" }, page.rows[1]]
+    };
+
+    expect(
+      buildGridClipboardPayload({ mode: "row", selection, contextId: "view-a", schema, page: formulaLabelPage })
+    ).toEqual({
+      ok: true,
+      payload: {
+        text: '"\'\t\uFEFF@ROW()"\tMilan\t"contains\t""quote"""',
+        rowCount: 1,
+        columnCount: 2,
+        includesRowLabel: true,
+        completeRow: true
+      }
+    });
+  });
+
+  it("preserves typed numeric negatives while neutralizing the same displayed string", () => {
+    const numericSchema = Array.from({ length: 4 }, (_, position): ColumnSchema => ({
+      id: `c:${position}`,
+      name: `column_${position}`,
+      position,
+      rawType: "numeric",
+      type: position === 0 ? "string" : "float",
+      nullable: false
+    }));
+    const numericPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: numericSchema.map((column) => column.id),
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: [
+            cell("-42"),
+            { kind: "number", raw: -42, display: "-42", isNull: false, isNaN: false },
+            { kind: "integer", raw: "-42", display: "-42", isNull: false, isNaN: false },
+            { kind: "decimal", raw: "-42.5", display: "-42.5", isNull: false, isNaN: false }
+          ]
+        }
+      ]
+    };
+    const selection = {
+      contextId: "view-a",
+      anchor: { row: 0, column: 0 },
+      focus: { row: 0, column: 3 }
+    };
+
+    expect(
+      buildGridClipboardPayload({
+        mode: "range",
+        selection,
+        contextId: "view-a",
+        schema: numericSchema,
+        page: numericPage
+      })
+    ).toMatchObject({ ok: true, payload: { text: "'-42\t-42\t-42\t-42.5" } });
+  });
+
   it("copies the focused cell independently of the selection anchor", () => {
     const selection = {
       contextId: "view-a",
@@ -146,25 +246,57 @@ describe("grid clipboard contract", () => {
     });
   });
 
-  it("applies the text bound to UTF-8 bytes rather than JavaScript code units", () => {
-    const selection = collapsedGridClipboardSelection("view-a", { row: 0, column: 0 });
-    const oversizedUnicodePage: GridPage = {
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      columnIds: ["c:0"],
-      rows: [{ id: "r:0", rowNumber: 0, values: [cell("😀".repeat(1_048_577))] }]
+  it("enforces the exact UTF-8 cap across many fields without publishing a rejected payload", () => {
+    const maximumBytes = 4 * 1024 * 1024;
+    const columnCount = 4_096;
+    const unicodeChunk = "😀".repeat(255);
+    const boundarySchema = Array.from({ length: columnCount }, (_, position): ColumnSchema => ({
+      id: `c:${position}`,
+      name: `column_${position}`,
+      position,
+      rawType: "String",
+      type: "string",
+      nullable: false
+    }));
+    const selection = {
+      contextId: "view-a",
+      anchor: { row: 0, column: 0 },
+      focus: { row: 0, column: columnCount - 1 }
     };
+    const baseBytes = columnCount * 255 * 4 + columnCount - 1;
+    const exactPadding = maximumBytes - baseBytes;
 
-    expect(
-      buildGridClipboardPayload({
-        mode: "cell",
+    for (const delta of [-1, 0, 1]) {
+      const values = Array.from({ length: columnCount }, (_, index) =>
+        cell(unicodeChunk + (index === columnCount - 1 ? "x".repeat(exactPadding + delta) : ""))
+      );
+      const boundaryPage: GridPage = {
+        offset: 0,
+        limit: 1,
+        totalRows: 1,
+        columnIds: boundarySchema.map((column) => column.id),
+        rows: [{ id: "r:0", rowNumber: 0, values }]
+      };
+      const result = buildGridClipboardPayload({
+        mode: "range",
         selection,
         contextId: "view-a",
-        schema: [schema[0]],
-        page: oversizedUnicodePage
-      })
-    ).toEqual({ ok: false, reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range." });
+        schema: boundarySchema,
+        page: boundaryPage
+      });
+
+      if (delta <= 0) {
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(new TextEncoder().encode(result.payload.text).byteLength).toBe(maximumBytes + delta);
+      } else {
+        expect(result).toEqual({
+          ok: false,
+          reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range."
+        });
+        expect(result).not.toHaveProperty("payload");
+        expect(JSON.stringify(result)).not.toContain("😀");
+      }
+    }
   });
 });
 
