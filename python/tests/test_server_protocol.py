@@ -8,7 +8,7 @@ from codecs import getincrementaldecoder
 from concurrent.futures import Future
 from contextlib import contextmanager, suppress
 from importlib.util import find_spec
-from io import StringIO, TextIOWrapper
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from queue import Empty, Full, Queue
 from typing import Any
@@ -22,6 +22,11 @@ class _PassthroughRequestScope:
     @contextmanager
     def request_scope(self, _request_id: str, _request: dict[str, Any]):
         yield
+
+
+class _BinaryInput:
+    def __init__(self, payload: bytes) -> None:
+        self.buffer = BytesIO(payload)
 
 
 class _ServerOutputPumps:
@@ -1058,3 +1063,433 @@ def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
     for thread in runtime_threads:
         thread.join(1)
     assert all(not thread.is_alive() for thread in runtime_threads)
+
+
+def test_stdio_server_parses_an_accepted_frame_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    class InitializingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.initialized = 0
+
+        def initialize(self) -> dict[str, Any]:
+            self.initialized += 1
+            return {"kind": "initialized"}
+
+        def close_all(self) -> None:
+            return None
+
+    manager = InitializingManager()
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "parse-once",
+        "priority": "interactive",
+        "request": {"kind": "initialize"},
+    }
+    original_loads = json.loads
+    parse_count = 0
+
+    def counting_loads(value: str):
+        nonlocal parse_count
+        parse_count += 1
+        return original_loads(value)
+
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.json, "loads", counting_loads)
+    monkeypatch.setattr(server.sys, "stdin", StringIO(f"{json.dumps(envelope)}\n"))
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    assert parse_count == 1
+    assert manager.initialized == 1
+    assert original_loads(output.getvalue())["response"] == {"kind": "initialized"}
+
+
+@pytest.mark.parametrize(
+    ("frame", "maximum_bytes", "diagnostic"),
+    [
+        (b"x" * 64 + b"\n", 64, "exceeds the 64-byte limit"),
+        (b'{"requestId":"private-unterminated-marker"}', 128, "ended before its LF terminator"),
+        (b'{"requestId":"private-malformed-marker",BROKEN}\n', 128, "not valid JSON"),
+    ],
+    ids=("oversized", "unterminated", "malformed-json"),
+)
+def test_terminal_request_frame_failures_are_bounded_and_never_invoke_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    frame: bytes,
+    maximum_bytes: int,
+    diagnostic: str,
+) -> None:
+    class TrackingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.prepare_calls = 0
+            self.closed = False
+
+        def prepare_backend(self, *_args: Any) -> None:
+            self.prepare_calls += 1
+
+        def close_all(self) -> None:
+            self.closed = True
+
+    manager = TrackingManager()
+    output = StringIO()
+    errors = StringIO()
+    monkeypatch.setattr(server, "MAX_REQUEST_FRAME_BYTES", maximum_bytes)
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", _BinaryInput(frame))
+    monkeypatch.setattr(server.sys, "stdout", output)
+    monkeypatch.setattr(server.sys, "stderr", errors)
+
+    assert server.main() == 1
+
+    assert output.getvalue() == ""
+    assert manager.prepare_calls == 0
+    assert manager.closed is True
+    assert diagnostic in errors.getvalue()
+    assert "private-unterminated-marker" not in errors.getvalue()
+    assert "private-malformed-marker" not in errors.getvalue()
+    assert len(errors.getvalue().encode("utf-8")) <= server.MAX_DIAGNOSTIC_BYTES
+
+
+def test_request_frame_limit_counts_multibyte_utf8_and_the_lf_terminator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InitializingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.initialized = 0
+
+        def initialize(self) -> dict[str, Any]:
+            self.initialized += 1
+            return {"kind": "initialized"}
+
+        def close_all(self) -> None:
+            return None
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "utf8-éééé",
+        "priority": "interactive",
+        "request": {"kind": "initialize"},
+    }
+    frame = f"{json.dumps(envelope, ensure_ascii=False, separators=(',', ':'))}\n".encode()
+    assert len(frame.decode("utf-8")) < len(frame)
+
+    accepted_manager = InitializingManager()
+    accepted_output = StringIO()
+    monkeypatch.setattr(server, "MAX_REQUEST_FRAME_BYTES", len(frame))
+    monkeypatch.setattr(server, "SessionManager", lambda: accepted_manager)
+    monkeypatch.setattr(server.sys, "stdin", _BinaryInput(frame))
+    monkeypatch.setattr(server.sys, "stdout", accepted_output)
+    assert server.main() == 0
+    assert accepted_manager.initialized == 1
+    assert json.loads(accepted_output.getvalue())["requestId"] == envelope["requestId"]
+
+    rejected_manager = InitializingManager()
+    rejected_output = StringIO()
+    monkeypatch.setattr(server, "MAX_REQUEST_FRAME_BYTES", len(frame) - 1)
+    monkeypatch.setattr(server, "SessionManager", lambda: rejected_manager)
+    monkeypatch.setattr(server.sys, "stdin", _BinaryInput(frame))
+    monkeypatch.setattr(server.sys, "stdout", rejected_output)
+    assert server.main() == 1
+    assert rejected_manager.initialized == 0
+    assert rejected_output.getvalue() == ""
+
+
+def test_duplicate_live_request_id_is_terminal_and_does_not_repeat_engine_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BlockingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.prepare_calls = 0
+            self.open_calls = 0
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.closed = False
+
+        def prepare_backend(self, *_args: Any) -> None:
+            self.prepare_calls += 1
+
+        def open_session(self, *_args: Any) -> dict[str, Any]:
+            self.open_calls += 1
+            self.started.set()
+            if not self.release.wait(2):
+                raise TimeoutError("Duplicate-ID test open was not released.")
+            return {"kind": "sessionOpened"}
+
+        def close_all(self) -> None:
+            self.closed = True
+            self.release.set()
+
+    manager = BlockingManager()
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "duplicate-live",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.csv", "path": "sample.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+
+    def duplicate_after_open_starts():
+        yield f"{json.dumps(envelope)}\n"
+        assert manager.started.wait(1)
+        yield f"{json.dumps(envelope)}\n"
+
+    output = StringIO()
+    errors = StringIO()
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", duplicate_after_open_starts())
+    monkeypatch.setattr(server.sys, "stdout", output)
+    monkeypatch.setattr(server.sys, "stderr", errors)
+
+    assert server.main() == 1
+
+    assert manager.prepare_calls == 1
+    assert manager.open_calls == 1
+    assert manager.closed is True
+    assert output.getvalue() == ""
+    assert "reused a live correlation ID" in errors.getvalue()
+    assert "duplicate-live" not in errors.getvalue()
+
+
+def test_terminal_frame_failure_shuts_down_running_mutation_without_synthesizing_a_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BlockingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.apply_calls = 0
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.closed = False
+
+        def apply_draft(self, *_args: Any) -> dict[str, Any]:
+            self.apply_calls += 1
+            self.started.set()
+            if not self.release.wait(2):
+                raise TimeoutError("Terminal-frame mutation was not released.")
+            return {"kind": "planUpdated", "action": "applied", "revision": 1}
+
+        def close_all(self) -> None:
+            self.closed = True
+            self.release.set()
+
+    manager = BlockingManager()
+    mutation = {
+        "protocolVersion": 2,
+        "requestId": "running-mutation",
+        "priority": "interactive",
+        "request": {
+            "kind": "applyDraft",
+            "sessionId": "session",
+            "revision": 0,
+            "offset": 0,
+            "limit": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+    mutation_frame = f"{json.dumps(mutation)}\n"
+    maximum_bytes = len(mutation_frame.encode()) + 8
+
+    def oversized_after_mutation_starts():
+        yield mutation_frame
+        assert manager.started.wait(1)
+        yield ("x" * maximum_bytes) + "\n"
+
+    output = StringIO()
+    monkeypatch.setattr(server, "MAX_REQUEST_FRAME_BYTES", maximum_bytes)
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", oversized_after_mutation_starts())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 1
+
+    assert manager.apply_calls == 1
+    assert manager.closed is True
+    assert output.getvalue() == ""
+
+
+def test_interactive_admission_cap_rejects_before_backend_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BlockingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.initialized = threading.Event()
+            self.release = threading.Event()
+            self.prepare_calls = 0
+
+        def initialize(self) -> dict[str, Any]:
+            self.initialized.set()
+            if not self.release.wait(2):
+                raise TimeoutError("Admission-cap test initialization was not released.")
+            return {"kind": "initialized"}
+
+        def prepare_backend(self, *_args: Any) -> None:
+            self.prepare_calls += 1
+
+        def close_all(self) -> None:
+            self.release.set()
+
+    manager = BlockingManager()
+    initialize = {
+        "protocolVersion": 2,
+        "requestId": "occupies-capacity",
+        "priority": "interactive",
+        "request": {"kind": "initialize"},
+    }
+    rejected_open = {
+        "protocolVersion": 2,
+        "requestId": "rejected-open",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "never-opened.csv", "path": "never-opened.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+
+    def input_at_capacity():
+        yield f"{json.dumps(initialize)}\n"
+        assert manager.initialized.wait(1)
+        yield f"{json.dumps(rejected_open)}\n"
+
+    output = StringIO()
+    monkeypatch.setattr(server, "MAX_INTERACTIVE_LIVE_REQUESTS", 1)
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", input_at_capacity())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    responses = {item["requestId"]: item["response"] for item in map(json.loads, output.getvalue().splitlines())}
+    assert responses["rejected-open"] == {
+        "kind": "error",
+        "code": "server_busy",
+        "message": (
+            "The runtime has reached its bounded interactive work limit; retry after an earlier request completes."
+        ),
+        "recoverable": True,
+    }
+    assert responses["occupies-capacity"] == {"kind": "initialized"}
+    assert manager.prepare_calls == 0
+
+
+def test_queued_cancellation_remains_correlated_and_frees_bounded_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BlockingManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+            self.started = 0
+            self.two_started = threading.Event()
+            self.three_started = threading.Event()
+            self.release = threading.Event()
+
+        def get_summary(self, *_args: Any) -> dict[str, Any]:
+            with self.lock:
+                self.started += 1
+                if self.started == 2:
+                    self.two_started.set()
+                if self.started == 3:
+                    self.three_started.set()
+            if not self.release.wait(2):
+                raise TimeoutError("Queued-cancellation test profiles were not released.")
+            return {"kind": "summary", "revision": 0, "summaries": []}
+
+        def close_all(self) -> None:
+            self.release.set()
+
+    manager = BlockingManager()
+
+    def profile(request_id: str) -> dict[str, Any]:
+        return {
+            "protocolVersion": 2,
+            "requestId": request_id,
+            "priority": "background",
+            "request": {
+                "kind": "getSummary",
+                "sessionId": "session",
+                "revision": 0,
+                "viewRequestId": f"view-{request_id}",
+                "filterModel": {"filters": [], "sort": []},
+                "columnIds": ["c:value"],
+            },
+        }
+
+    cancellation = {
+        "protocolVersion": 2,
+        "requestId": "cancel-profile-2",
+        "priority": "interactive",
+        "request": {"kind": "cancelRequest", "targetRequestId": "profile-2"},
+    }
+
+    def input_with_queued_cancellation():
+        yield f"{json.dumps(profile('profile-0'))}\n"
+        yield f"{json.dumps(profile('profile-1'))}\n"
+        assert manager.two_started.wait(1)
+        yield f"{json.dumps(profile('profile-2'))}\n"
+        yield f"{json.dumps(cancellation)}\n"
+        yield f"{json.dumps(profile('profile-3'))}\n"
+        manager.release.set()
+        assert manager.three_started.wait(1)
+
+    output = StringIO()
+    monkeypatch.setattr(server, "MAX_BACKGROUND_LIVE_REQUESTS", 3)
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", input_with_queued_cancellation())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    responses = {item["requestId"]: item["response"] for item in map(json.loads, output.getvalue().splitlines())}
+    assert responses["profile-2"] == {
+        "kind": "cancelled",
+        "targetRequestId": "profile-2",
+        "viewRequestId": "view-profile-2",
+    }
+    assert responses["cancel-profile-2"] == {"kind": "cancelled", "targetRequestId": "profile-2"}
+    assert responses["profile-3"]["kind"] == "summary"
+    assert manager.started == 3
+
+
+def test_server_bounds_user_controlled_engine_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = "private-engine-payload-"
+
+    class FailingManager(_PassthroughRequestScope):
+        def prepare_backend(self, *_args: Any) -> None:
+            raise server.EngineError(marker + ("é" * 20_000))
+
+        def close_all(self) -> None:
+            return None
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "bounded-engine-error",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.csv", "path": "sample.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", FailingManager)
+    monkeypatch.setattr(server.sys, "stdin", StringIO(f"{json.dumps(envelope)}\n"))
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    response = json.loads(output.getvalue())["response"]
+    assert response["code"] == "engine_error"
+    assert response["message"].startswith(marker)
+    assert response["message"].endswith("...[truncated]")
+    assert len(response["message"].encode("utf-8")) <= server.MAX_DIAGNOSTIC_BYTES
