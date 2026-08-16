@@ -1386,8 +1386,8 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
         assert not has_more
         assert [(item["value"], item["count"]) for item in values] == [("ALPHA", 1), ("alpha", 1)]
         assert all("selectionValue" in item for item in values)
-        assert collected_projections.count(("count", "__ow_value")) == 1
-        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 1
+        assert collected_projections.count(("count", "__ow_value")) == 0
+        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 2
         assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()
@@ -1528,6 +1528,34 @@ def test_partitioned_skewed_frame_keeps_native_progressive_paging_multi_sort_and
 
     # Closing Open Wrangler releases only its logical child, not the user's
     # Classic or Connect Spark session.
+    assert spark_session.range(1).count() == 1
+
+
+def test_column_values_use_one_guarded_terminal_action(
+    spark_session: Any,
+    sample_frame: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, indexed = _open_engine(sample_frame, "single-column-values-action")
+    dataframe_type = type(indexed)
+    original_collect = dataframe_type.collect
+    collected_projections: list[tuple[str, ...]] = []
+
+    def observed_collect(value: Any) -> Any:
+        collected_projections.append(tuple(value.columns))
+        return original_collect(value)
+
+    monkeypatch.setattr(dataframe_type, "collect", observed_collect)
+    try:
+        values, has_more = engine.column_values(indexed, "name", limit=2)
+
+        assert has_more is True
+        assert [(item["value"], item["count"]) for item in values] == [("Beta", 2), ("ALPHA", 1)]
+        assert all("selectionValue" in item for item in values)
+        assert collected_projections == [("count", "__ow_value", "__ow_profile_total_bytes")]
+    finally:
+        engine.close()
+
     assert spark_session.range(1).count() == 1
 
 
@@ -1972,9 +2000,9 @@ def test_large_profile_values_fail_without_transporting_terminal_values(
                     engine.summaries(indexed, [(position, f"{column_name}-id")])
                 with pytest.raises(EngineError, match=r"at most 32 UTF-8 bytes"):
                     engine.column_values(indexed, column_name, limit=10)
-        assert collected_projections.count(("__ow_profile_value_bytes",)) == 5
-        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 5
-        assert transported_profile_values == [None] * 5
+        assert collected_projections.count(("__ow_profile_value_bytes",)) == 0
+        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 10
+        assert transported_profile_values == [None] * 10
         assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()

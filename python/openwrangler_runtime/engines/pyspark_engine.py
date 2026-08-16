@@ -753,14 +753,18 @@ class PySparkEngine(DataFrameEngine):
             .limit(int(limit) + 1)
             .select("count", "__ow_value")
         )
-        byte_count = self._profile_transport_size(functions, value_frame, functions.col("__ow_value"))
+        rows, byte_count = self._guarded_profile_rows(
+            functions,
+            value_frame,
+            functions.col("__ow_value"),
+            PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT,
+        )
         if byte_count > PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT:
             raise EngineError(
                 "PySpark column values may contain at most "
                 f"{PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; this result contains "
                 f"{byte_count:,}. Request fewer values or shorten large values."
             )
-        rows = value_frame.collect()
         values = []
         for row in rows[:limit]:
             value = _spark_python_value(row["__ow_value"])
@@ -911,15 +915,6 @@ class PySparkEngine(DataFrameEngine):
         if type_name in {"FloatType", "DoubleType"}:
             return functions.when(column == functions.lit(0), functions.lit(0).cast(data_type)).otherwise(column)
         return column
-
-    @staticmethod
-    def _profile_transport_size(functions: Any, frame: Any, expression: Any) -> int:
-        byte_count = functions.coalesce(
-            functions.length(functions.encode(expression.cast("string"), "UTF-8")).cast("long"),
-            functions.lit(0).cast("long"),
-        )
-        result = frame.agg(functions.sum(byte_count).alias("__ow_profile_value_bytes")).collect()[0]
-        return int(result["__ow_profile_value_bytes"] or 0)
 
     @staticmethod
     def _guarded_profile_rows(
