@@ -223,6 +223,10 @@ function validatedCapture(value: unknown): DiagnosticCapture {
   if (!Array.isArray(candidate.events) || candidate.events.length > OFFLINE_DIAGNOSTIC_EVENT_CAPACITY) {
     throw new DiagnosticContractError("The diagnostic event window is invalid.");
   }
+  const expectedEventCount = Math.min(totalObserved, OFFLINE_DIAGNOSTIC_EVENT_CAPACITY);
+  if (candidate.events.length !== expectedEventCount || dropped !== totalObserved - expectedEventCount) {
+    throw new DiagnosticContractError("The diagnostic event window does not match the aggregate counts.");
+  }
   const events = candidate.events.map((entry) => {
     const event = exactRecord(entry, ["sequence", "category", "code", "recoverable"]);
     if (
@@ -245,8 +249,8 @@ function validatedCapture(value: unknown): DiagnosticCapture {
   if (events.some((event, index) => index > 0 && events[index - 1].sequence >= event.sequence)) {
     throw new DiagnosticContractError("Diagnostic events must be strictly ordered.");
   }
-  if (dropped !== totalObserved - events.length) {
-    throw new DiagnosticContractError("The diagnostic dropped-event count is inconsistent.");
+  if (events.some((event, index) => event.sequence !== dropped + index + 1)) {
+    throw new DiagnosticContractError("Diagnostic events must be the exact consecutive retained tail.");
   }
   if (!Array.isArray(candidate.counters)) {
     throw new DiagnosticContractError("Diagnostic counters must be an array.");
@@ -257,7 +261,8 @@ function validatedCapture(value: unknown): DiagnosticCapture {
     expectedCounters.set(key, (expectedCounters.get(key) ?? 0) + 1);
   }
   const seenCounters = new Set<string>();
-  const counters = candidate.counters.map((entry) => {
+  const suppliedCounters = new Map<string, DiagnosticCounter>();
+  candidate.counters.forEach((entry) => {
     const counter = exactRecord(entry, ["category", "code", "count"]);
     if (!isCategory(counter.category) || !validCode(counter.category, counter.code)) {
       throw new DiagnosticContractError("A diagnostic counter has an invalid category or code.");
@@ -273,8 +278,15 @@ function validatedCapture(value: unknown): DiagnosticCapture {
     const key = counterKey(counter.category, counter.code);
     if (seenCounters.has(key)) throw new DiagnosticContractError("Diagnostic counters must be unique.");
     seenCounters.add(key);
-    return Object.freeze({ category: counter.category, code: counter.code, count: counter.count });
+    suppliedCounters.set(key, Object.freeze({ category: counter.category, code: counter.code, count: counter.count }));
   });
+  const counters: DiagnosticCounter[] = [];
+  for (const category of CATEGORY_ORDER) {
+    for (const code of DIAGNOSTIC_CODE_CONTRACT[category]) {
+      const counter = suppliedCounters.get(counterKey(category, code));
+      if (counter) counters.push(counter);
+    }
+  }
   for (const [key, windowCount] of expectedCounters) {
     const aggregate = counters.find((counter) => counterKey(counter.category, counter.code) === key)?.count;
     if (aggregate === undefined || aggregate < windowCount) {
