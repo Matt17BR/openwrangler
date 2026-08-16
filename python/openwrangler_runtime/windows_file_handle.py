@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from .error_causality import add_exception_note
+
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
+FILE_READ_DATA = 0x00000001
+FILE_LIST_DIRECTORY = 0x00000001
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
 OPEN_EXISTING = 3
@@ -91,10 +95,10 @@ class WindowsPinnedExportTarget:
         active_kernel32 = kernel32 or _load_kernel32()
         active_get_osfhandle = get_osfhandle or _load_get_osfhandle()
         active_open_osfhandle = open_osfhandle or _load_open_osfhandle()
-        parent_handle = _open_metadata_handle(path.parent, active_kernel32, directory=True)
+        parent_handle = _open_identity_handle(path.parent, active_kernel32, directory=True)
         try:
             parent_identity = _validated_handle_identity(active_kernel32, parent_handle, directory=True)
-            target_handle = _open_metadata_handle(path, active_kernel32, directory=False)
+            target_handle = _open_identity_handle(path, active_kernel32, directory=False)
         except BaseException as error:
             _close_after_error(active_kernel32, [parent_handle], error)
             raise
@@ -125,7 +129,7 @@ class WindowsPinnedExportTarget:
         if _validated_handle_identity(self.kernel32, self.target_handle, directory=False) != self.expected_identity:
             raise WindowsFileHandleValidationError("The Windows export target identity changed unexpectedly.")
 
-        named_parent = _open_metadata_handle(self.path.parent, self.kernel32, directory=True)
+        named_parent = _open_identity_handle(self.path.parent, self.kernel32, directory=True)
         try:
             if _validated_handle_identity(self.kernel32, named_parent, directory=True) != self.parent_identity:
                 raise WindowsFileHandleValidationError("The Windows export parent path changed unexpectedly.")
@@ -135,7 +139,7 @@ class WindowsPinnedExportTarget:
         else:
             _close_handles(self.kernel32, [named_parent])
 
-        named_target = _open_metadata_handle(self.path, self.kernel32, directory=False)
+        named_target = _open_identity_handle(self.path, self.kernel32, directory=False)
         try:
             if _validated_handle_identity(self.kernel32, named_target, directory=False) != self.expected_identity:
                 raise WindowsFileHandleValidationError("The Windows export target path changed unexpectedly.")
@@ -203,9 +207,10 @@ def descriptor_identity(
     return identity.volume_serial_number, identity.file_index
 
 
-def _open_metadata_handle(path: Path, kernel32: Any, *, directory: bool) -> int:
+def _open_identity_handle(path: Path, kernel32: Any, *, directory: bool) -> int:
     flags = FILE_FLAG_OPEN_REPARSE_POINT | (FILE_FLAG_BACKUP_SEMANTICS if directory else 0)
-    return _open_raw_handle(path, kernel32, desired_access=0, flags=flags)
+    desired_access = FILE_LIST_DIRECTORY if directory else FILE_READ_DATA
+    return _open_raw_handle(path, kernel32, desired_access=desired_access, flags=flags)
 
 
 def _open_regular_file_descriptor(
@@ -235,8 +240,9 @@ def _open_raw_handle(path: Path, kernel32: Any, *, desired_access: int, flags: i
         security_descriptor=None,
         inherit_handle=False,
     )
-    # Trusted-workspace native writers need shared write access to this exact inode. Omitting delete sharing blocks
-    # ordinary pathname substitution, but cannot isolate the writer from another same-UID shared writer.
+    # A real read-class access makes the no-delete share mask participate in link-share checks, while shared write
+    # lets the trusted-workspace native engine update this exact inode. The pin cannot distinguish that engine from
+    # another same-UID shared writer, so this is not process isolation.
     handle = kernel32.CreateFileW(
         str(path),
         desired_access,
@@ -280,7 +286,7 @@ def _raise_with_cleanup(error: BaseException, cleanup_error: BaseException, labe
     if error.__cause__ is None:
         raise error from cleanup_error
     detail = f"{type(cleanup_error).__name__}: {cleanup_error}"[:512]
-    error.add_note(f"{label} also failed: {detail}")
+    add_exception_note(error, f"{label} also failed: {detail}")
     raise error
 
 

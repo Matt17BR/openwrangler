@@ -7,12 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from openwrangler_runtime.export_target import ExportTarget, ExportTargetError, ExportWriterPath, _regular_file_identity
+from openwrangler_runtime.export_target import (
+    ExportTarget,
+    ExportTargetError,
+    ExportWriterPath,
+    _add_cleanup_note,
+    _regular_file_identity,
+)
 from openwrangler_runtime.windows_file_handle import (
     FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_LIST_DIRECTORY,
+    FILE_READ_DATA,
     FILE_SHARE_READ,
     FILE_SHARE_WRITE,
     GENERIC_READ,
@@ -21,6 +29,9 @@ from openwrangler_runtime.windows_file_handle import (
     WindowsFileHandleCleanupError,
     WindowsFileHandleValidationError,
     WindowsPinnedExportTarget,
+)
+from openwrangler_runtime.windows_file_handle import (
+    _raise_with_cleanup as _raise_with_windows_cleanup,
 )
 
 TARGET_IDENTITY = (29, (7 << 32) | 11)
@@ -82,7 +93,7 @@ def open_fake_pin(kernel32: FakeKernel32, path: Path | None = None) -> WindowsPi
     )
 
 
-def test_windows_pins_parent_then_target_with_metadata_only_no_delete_sharing() -> None:
+def test_windows_pins_parent_then_target_with_minimal_read_no_delete_sharing() -> None:
     kernel32 = FakeKernel32()
 
     pinned = open_fake_pin(kernel32)
@@ -90,7 +101,7 @@ def test_windows_pins_parent_then_target_with_metadata_only_no_delete_sharing() 
     assert len(kernel32.create_calls) == 4
     for index, call in enumerate(kernel32.create_calls):
         _path, desired_access, sharing, security_pointer, creation, flags, template = call
-        assert desired_access == 0
+        assert desired_access == (FILE_LIST_DIRECTORY if index % 2 == 0 else FILE_READ_DATA)
         assert sharing == FILE_SHARE_READ | FILE_SHARE_WRITE
         assert creation == OPEN_EXISTING
         assert flags == (
@@ -356,6 +367,35 @@ def test_windows_validation_and_pin_cleanup_failures_both_remain_visible(tmp_pat
     assert raised.value.__notes__ == ["Windows export target pin cleanup also failed: OSError: pin cleanup failed"]
 
 
+class DefensivePython310StyleError(RuntimeError):
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "__notes__":
+            raise AttributeError("ordinary note attributes are disabled")
+        super().__setattr__(name, value)
+
+
+def test_cleanup_notes_remain_available_without_base_exception_add_note() -> None:
+    export_error = DefensivePython310StyleError("export failed")
+    BaseException.__setattr__(export_error, "add_note", None)
+    BaseException.__setattr__(export_error, "__notes__", ["prior cleanup evidence"])
+    _add_cleanup_note(export_error, OSError("writer cleanup failed"), "Export writer cleanup")
+    _add_cleanup_note(export_error, OSError("x" * 700), "Export pin cleanup")
+    assert export_error.__notes__ == [
+        "prior cleanup evidence",
+        "Export writer cleanup also failed: OSError: writer cleanup failed",
+        "Export pin cleanup also failed: OSError: " + "x" * 471,
+    ]
+    assert len(export_error.__notes__[-1]) == 512
+
+    windows_error = RuntimeError("Windows validation failed")
+    BaseException.__setattr__(windows_error, "add_note", None)
+    windows_error.__cause__ = OSError("descriptor cleanup failed")
+    with pytest.raises(RuntimeError) as raised:
+        _raise_with_windows_cleanup(windows_error, OSError("pin cleanup failed"), "Windows pin cleanup")
+    assert raised.value is windows_error
+    assert raised.value.__notes__ == ["Windows pin cleanup also failed: OSError: pin cleanup failed"]
+
+
 def test_binary_writer_truncates_and_keeps_the_reserved_identity(tmp_path) -> None:
     path = tmp_path / "host-reserved.parquet"
     path.write_bytes(b"stale")
@@ -537,21 +577,33 @@ def test_windows_pin_blocks_target_and_parent_path_substitution(tmp_path) -> Non
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows hard-link semantics")
-def test_windows_pin_blocks_a_hardlink_added_during_native_write(tmp_path) -> None:
+def test_windows_pin_rejects_a_hardlink_added_during_native_write(tmp_path) -> None:
     target = tmp_path / "host-reserved.csv"
     target.touch()
     identity = _regular_file_identity(target)
     pinned = WindowsPinnedExportTarget.open(target, identity)
     alias = tmp_path / "target-alias.csv"
+    hardlink_blocked = False
 
     try:
-        with pytest.raises(OSError) as hardlink_error:
+        try:
             alias.hardlink_to(target)
-        assert_windows_sharing_violation(hardlink_error.value)
-        assert not alias.exists()
-        pinned.assert_unchanged()
+        except OSError as hardlink_error:
+            assert_windows_sharing_violation(hardlink_error)
+            hardlink_blocked = True
+            assert not alias.exists()
+            pinned.assert_unchanged()
+        else:
+            assert alias.read_bytes() == b""
+            with pytest.raises(WindowsFileHandleValidationError, match="not singly linked"):
+                pinned.assert_unchanged()
     finally:
         pinned.close()
+
+    if hardlink_blocked:
+        alias.hardlink_to(target)
+        assert alias.read_bytes() == target.read_bytes()
+        assert alias.samefile(target)
 
 
 def test_posix_writer_target_detects_replacement_after_native_write(tmp_path) -> None:

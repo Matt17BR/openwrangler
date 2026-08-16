@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from .error_causality import add_exception_note
+
 
 class ExportTargetError(RuntimeError):
     """Raised when the host-owned unpublished export target is not intact."""
@@ -195,7 +197,8 @@ def _raise_with_cleanup(error: BaseException, cleanup_error: BaseException, labe
 
 
 def _add_cleanup_note(error: BaseException, cleanup_error: BaseException, label: str) -> None:
-    error.add_note(f"{label} also failed: {_bounded_cleanup_detail(cleanup_error)}")
+    note = f"{label} also failed: {_bounded_cleanup_detail(cleanup_error)}"
+    add_exception_note(error, note)
 
 
 def _bounded_cleanup_detail(error: BaseException) -> str:
