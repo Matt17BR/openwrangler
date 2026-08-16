@@ -127,6 +127,19 @@ Every request that can run work against an open PySpark session carries its prot
 
 Spark Connect transport errors are handled according to what the server reports. A temporary endpoint outage leaves the confirmed view untouched and allows the failed read to be retried. A missing server session or dataframe blocks ordinary retries and shows a user-initiated **Reconnect** action instead. Reconnect reuses the existing live-variable replay path: it looks up the same variable name in the exact notebook and kernel that opened the view, requires the same schema, and restores the confirmed filter, sort, viewport, widths, and selection before replacing the private runtime. A failed reconnect closes only its candidate and leaves the old confirmed view in place. It never starts Spark, creates a dataframe, switches kernels, loops automatically, or uses captured notebook output as a fallback.
 
+Cleaned-data publication is host-owned for every editing-capable engine. Before a Pandas, Polars, or DuckDB export
+reaches the Python runtime, the standalone or notebook bridge starts the existing atomic file transaction against the
+requested destination and the exact captured source. The transaction reserves one exclusive sibling temporary file,
+closes its host descriptor, and sends Python only that internal absolute path plus its filesystem identity. Python
+requires the target to remain a singly linked regular file with that identity before and after the engine-native
+writer. DuckDB disables its own temporary-file replacement so CSV and Parquet writes retain the reservation. Python
+does not create, unlink, rename, or resolve the user's destination. After a correlated success with the expected
+revision, format, and temporary path, the host revalidates the source, destination, destination parent, and temporary
+identities immediately before one atomic rename. It then reports the user's requested path. Any runtime, validation,
+or commit failure leaves the prior destination and source unchanged and removes only the still-identified owned
+temporary file. Native R uses the same host transaction and final validation; its runtime streams bytes without
+receiving either the temporary or final destination path.
+
 The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
 without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
 columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
@@ -344,7 +357,7 @@ or Parquet. CSV is part of base R. Parquet requires `nanoparquet` 0.5.1 or newer
 session; the runtime checks this when the session opens and again when export starts. An owned document process writes
 an opaque file in its host-private directory; the extension verifies and streams that file. IRkernel and the official
 active R terminal keep their artifacts inside the exact R process and return bounded, offset-addressed chunks. Both
-routes feed the existing atomic file transaction, and R never receives the destination path. Drafts and stale revisions are rejected. Viewing filters and
+routes feed the shared host publication transaction described above. Drafts and stale revisions are rejected. Viewing filters and
 sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to the
 current local extension host; the public export request does not yet carry a VS Code remote authority. The
 active-terminal export path is not counted as release evidence until its packaged VS Code and Cursor journey passes.
