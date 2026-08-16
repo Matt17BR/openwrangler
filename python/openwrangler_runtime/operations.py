@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
 from decimal import Decimal
 from math import isfinite
 from typing import Any
@@ -10,84 +9,12 @@ from typing import Any
 from .by_example import SynthesisError, normalize_by_example
 from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
+from .operation_catalog_generated import OPERATION_DEFINITIONS
 
 
 class OperationError(ValueError):
     """Raised when a transformation step is unknown or malformed."""
 
-
-@dataclass(frozen=True)
-class OperationDefinition:
-    kind: str
-    title: str
-    group: str
-    required: tuple[str, ...]
-    optional: tuple[str, ...] = ()
-
-
-OPERATION_DEFINITIONS = (
-    OperationDefinition("sortRows", "Sort rows", "Rows / order", ("rules",)),
-    OperationDefinition("filterRows", "Filter rows", "Rows / order", ("filterModel",)),
-    OperationDefinition("dropMissingRows", "Drop missing rows", "Rows / order", (), ("columns", "how")),
-    OperationDefinition(
-        "fillMissingValues",
-        "Fill missing values",
-        "Rows / order",
-        ("column", "replacement"),
-    ),
-    OperationDefinition("dropDuplicates", "Drop duplicate rows", "Rows / order", (), ("columns", "keep")),
-    OperationDefinition("selectColumns", "Select columns", "Columns / types", ("columns",)),
-    OperationDefinition("dropColumns", "Drop columns", "Columns / types", ("columns",)),
-    OperationDefinition("renameColumn", "Rename column", "Columns / types", ("column", "newName")),
-    OperationDefinition("cloneColumn", "Clone column", "Columns / types", ("column", "newName")),
-    OperationDefinition("castColumn", "Convert column type", "Columns / types", ("column", "dtype")),
-    OperationDefinition(
-        "formula",
-        "Create formula column",
-        "Columns / types",
-        ("leftColumn", "operator", "newColumn"),
-        ("rightColumn", "value"),
-    ),
-    OperationDefinition("textLength", "Text length", "Columns / types", ("column", "newColumn")),
-    OperationDefinition(
-        "oneHotEncode", "One-hot encode", "Categorical / text", ("columns",), ("prefixSeparator", "dropOriginal")
-    ),
-    OperationDefinition(
-        "multiLabelBinarize",
-        "Multi-label binarize",
-        "Categorical / text",
-        ("column", "delimiter"),
-        ("prefix", "dropOriginal"),
-    ),
-    OperationDefinition(
-        "findReplace",
-        "Find and replace",
-        "Categorical / text",
-        ("column", "find", "replacement"),
-        ("regex", "newColumn"),
-    ),
-    OperationDefinition("stripText", "Strip text", "Categorical / text", ("column",), ("characters", "newColumn")),
-    OperationDefinition("splitText", "Split text", "Categorical / text", ("column", "delimiter", "index", "newColumn")),
-    OperationDefinition("capitalizeText", "Capitalize text", "Categorical / text", ("column",), ("newColumn",)),
-    OperationDefinition("lowerText", "Lowercase text", "Categorical / text", ("column",), ("newColumn",)),
-    OperationDefinition("upperText", "Uppercase text", "Categorical / text", ("column",), ("newColumn",)),
-    OperationDefinition("minMaxScale", "Min-max scale", "Numeric / datetime", ("column",), ("newColumn",)),
-    OperationDefinition("roundNumber", "Round number", "Numeric / datetime", ("column",), ("decimals", "newColumn")),
-    OperationDefinition("floorNumber", "Floor number", "Numeric / datetime", ("column",), ("newColumn",)),
-    OperationDefinition("ceilNumber", "Ceiling number", "Numeric / datetime", ("column",), ("newColumn",)),
-    OperationDefinition(
-        "formatDatetime", "Format datetime", "Numeric / datetime", ("column", "format"), ("newColumn",)
-    ),
-    OperationDefinition("groupBy", "Group and aggregate", "Aggregation", ("keys", "aggregations")),
-    OperationDefinition(
-        "byExample",
-        "Transform by example",
-        "By example",
-        ("sourceColumns", "newColumn", "examples"),
-        ("program", "warnings", "candidateCount"),
-    ),
-    OperationDefinition("customCode", "Custom engine-native code", "Custom", ("code",)),
-)
 
 OPERATION_BY_KIND = {definition.kind: definition for definition in OPERATION_DEFINITIONS}
 FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide", "modulo", "power"}

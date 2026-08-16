@@ -15,6 +15,7 @@ import type {
   TransformStep
 } from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
+import { operationKinds } from "./operationCatalog.generated";
 import { PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
@@ -55,36 +56,7 @@ const CELL_KINDS = new Set([
 const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark", "r"] as const;
 const R_DATAFRAME_FLAVORS = ["r.data.frame", "r.tibble", "r.data.table"] as const;
 const CANONICAL_SOURCE_URI = /^[a-z][a-z0-9+.-]*:(?:%[0-9A-Fa-f]{2}|[!#$&'()*+,\-./0-9:;=?@A-Z[\]_a-z~])+$/u;
-const OPERATION_KINDS = new Set([
-  "sortRows",
-  "filterRows",
-  "dropMissingRows",
-  "fillMissingValues",
-  "dropDuplicates",
-  "selectColumns",
-  "dropColumns",
-  "renameColumn",
-  "cloneColumn",
-  "castColumn",
-  "formula",
-  "textLength",
-  "oneHotEncode",
-  "multiLabelBinarize",
-  "findReplace",
-  "stripText",
-  "splitText",
-  "capitalizeText",
-  "lowerText",
-  "upperText",
-  "minMaxScale",
-  "roundNumber",
-  "floorNumber",
-  "ceilNumber",
-  "formatDatetime",
-  "groupBy",
-  "byExample",
-  "customCode"
-]);
+const OPERATION_KINDS = new Set(operationKinds);
 const PREDICATE_OPERATORS = new Set([
   "equals",
   "notEquals",
