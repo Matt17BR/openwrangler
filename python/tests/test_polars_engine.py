@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from math import nextafter
 from pathlib import Path
 from typing import Any, cast
 
@@ -728,6 +729,52 @@ def test_polars_numeric_histogram_counts_all_valid_values_after_nulls(lazy: bool
     histogram_count = sum(bin_["count"] for bin_ in first["visualization"]["bins"])
     assert histogram_count == row_count // 2
     assert "sampled" not in first["visualization"]
+
+
+def test_polars_eager_numeric_histogram_preserves_boundary_and_rounded_edge_assignment() -> None:
+    adjacent_extremes = [1e308]
+    for _index in range(24):
+        adjacent_extremes.append(nextafter(adjacent_extremes[-1], float("inf")))
+
+    for values in ([float(value) for value in range(21)], adjacent_extremes):
+        summary = PolarsEngine().summaries(pl.DataFrame({"value": values}))[0]
+
+        assert summary["visualization"] == engine_base.numeric_visualization(values)
+
+
+def test_polars_eager_numeric_summaries_never_materialize_python_value_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_list_materialization(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Eager Polars numeric summaries must remain in native expressions.")
+
+    monkeypatch.setattr(pl.Series, "to_list", reject_list_materialization)
+    monkeypatch.setattr(engine_base, "numeric_visualization", reject_list_materialization)
+    monkeypatch.setattr(polars_engine, "numeric_visualization", reject_list_materialization, raising=False)
+    frame = pl.DataFrame(
+        {
+            "integer": pl.Series([None, *[value % 101 for value in range(4_096)]], dtype=pl.Int64),
+            "floating": pl.Series(
+                [None, float("nan"), float("-inf"), float("inf"), *[float(value % 101) for value in range(4_093)]],
+                dtype=pl.Float64,
+            ),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PolarsEngine().summaries(frame)}
+
+    integer = summaries["integer"]
+    assert (integer["totalCount"], integer["nullCount"], integer["nanCount"]) == (4_097, 1, 0)
+    assert integer["distinctCount"] == 101
+    assert integer["topValues"][0] == {"value": "0", "count": 41}
+    assert integer["numeric"]["exactMin"]["display"] == "0"
+    assert integer["numeric"]["exactMax"]["display"] == "100"
+    assert len(integer["visualization"]["bins"]) == 20
+    assert sum(bin_["count"] for bin_ in integer["visualization"]["bins"]) == 4_096
+    floating = summaries["floating"]
+    assert (floating["totalCount"], floating["nullCount"], floating["nanCount"]) == (4_097, 1, 1)
+    assert floating["topValues"][0] == {"value": "0.0", "count": 41}
+    assert sum(bin_["count"] for bin_ in floating["visualization"]["bins"]) == 4_093
 
 
 def test_lazy_polars_header_stats_collect_only_scalar_results(monkeypatch):
