@@ -3,6 +3,204 @@
   "$id": "https://github.com/Matt17BR/openwrangler/protocol/openwrangler.v2.schema.json",
   "title": "OpenWranglerTransportMessage",
   "description": "Runtime transport contract for Open Wrangler protocol v2.",
+  "x-openwrangler-operationCatalog": [
+    {
+      "kind": "sortRows",
+      "title": "Sort rows",
+      "description": "Create a persistent multi-column ordering step.",
+      "group": "Rows / order",
+      "icon": "list-ordered"
+    },
+    {
+      "kind": "filterRows",
+      "title": "Filter rows",
+      "description": "Commit the current viewing filters as an explicit step.",
+      "group": "Rows / order",
+      "icon": "filter"
+    },
+    {
+      "kind": "dropMissingRows",
+      "title": "Drop missing rows",
+      "description": "Remove rows with missing values in selected columns.",
+      "group": "Rows / order",
+      "icon": "clear-all"
+    },
+    {
+      "kind": "fillMissingValues",
+      "title": "Fill missing values",
+      "description": "Fill missing cells using an option available for the column type.",
+      "group": "Rows / order",
+      "icon": "symbol-null"
+    },
+    {
+      "kind": "dropDuplicates",
+      "title": "Drop duplicates",
+      "description": "Keep one row for each repeated value combination.",
+      "group": "Rows / order",
+      "icon": "copy"
+    },
+    {
+      "kind": "selectColumns",
+      "title": "Select columns",
+      "description": "Keep selected columns in the chosen order.",
+      "group": "Columns / types",
+      "icon": "checklist"
+    },
+    {
+      "kind": "dropColumns",
+      "title": "Drop columns",
+      "description": "Remove selected columns from the result.",
+      "group": "Columns / types",
+      "icon": "trash"
+    },
+    {
+      "kind": "renameColumn",
+      "title": "Rename column",
+      "description": "Change a column name without touching the source.",
+      "group": "Columns / types",
+      "icon": "edit"
+    },
+    {
+      "kind": "cloneColumn",
+      "title": "Clone column",
+      "description": "Create a copy of a column under a new name.",
+      "group": "Columns / types",
+      "icon": "files"
+    },
+    {
+      "kind": "castColumn",
+      "title": "Convert type",
+      "description": "Convert values to a supported deterministic type.",
+      "group": "Columns / types",
+      "icon": "symbol-field"
+    },
+    {
+      "kind": "formula",
+      "title": "Formula column",
+      "description": "Create a numeric column from a column and value or column.",
+      "group": "Columns / types",
+      "icon": "symbol-operator"
+    },
+    {
+      "kind": "textLength",
+      "title": "Text length",
+      "description": "Create a column containing character counts.",
+      "group": "Columns / types",
+      "icon": "symbol-numeric"
+    },
+    {
+      "kind": "oneHotEncode",
+      "title": "One-hot encode",
+      "description": "Expand categorical columns into indicator columns.",
+      "group": "Categorical / text",
+      "icon": "symbol-enum"
+    },
+    {
+      "kind": "multiLabelBinarize",
+      "title": "Multi-label binarize",
+      "description": "Expand delimiter-separated labels into indicators.",
+      "group": "Categorical / text",
+      "icon": "list-selection"
+    },
+    {
+      "kind": "findReplace",
+      "title": "Find and replace",
+      "description": "Replace literal text or regular-expression matches.",
+      "group": "Categorical / text",
+      "icon": "replace-all"
+    },
+    {
+      "kind": "stripText",
+      "title": "Strip text",
+      "description": "Remove surrounding whitespace or selected characters.",
+      "group": "Categorical / text",
+      "icon": "whitespace"
+    },
+    {
+      "kind": "splitText",
+      "title": "Split text",
+      "description": "Take one indexed part of delimiter-separated text.",
+      "group": "Categorical / text",
+      "icon": "split-horizontal"
+    },
+    {
+      "kind": "capitalizeText",
+      "title": "Capitalize",
+      "description": "Uppercase the first character and lowercase the rest.",
+      "group": "Categorical / text",
+      "icon": "case-sensitive"
+    },
+    {
+      "kind": "lowerText",
+      "title": "Lowercase",
+      "description": "Convert text to lowercase.",
+      "group": "Categorical / text",
+      "icon": "case-sensitive"
+    },
+    {
+      "kind": "upperText",
+      "title": "Uppercase",
+      "description": "Convert text to uppercase.",
+      "group": "Categorical / text",
+      "icon": "case-sensitive"
+    },
+    {
+      "kind": "minMaxScale",
+      "title": "Min-max scale",
+      "description": "Scale numeric values into the zero-to-one range.",
+      "group": "Numeric / datetime",
+      "icon": "graph"
+    },
+    {
+      "kind": "roundNumber",
+      "title": "Round",
+      "description": "Round numeric values to a selected precision.",
+      "group": "Numeric / datetime",
+      "icon": "symbol-numeric"
+    },
+    {
+      "kind": "floorNumber",
+      "title": "Floor",
+      "description": "Round numeric values downward.",
+      "group": "Numeric / datetime",
+      "icon": "arrow-down"
+    },
+    {
+      "kind": "ceilNumber",
+      "title": "Ceiling",
+      "description": "Round numeric values upward.",
+      "group": "Numeric / datetime",
+      "icon": "arrow-up"
+    },
+    {
+      "kind": "formatDatetime",
+      "title": "Format datetime",
+      "description": "Format parsed dates and datetimes with strftime syntax.",
+      "group": "Numeric / datetime",
+      "icon": "calendar"
+    },
+    {
+      "kind": "groupBy",
+      "title": "Group and aggregate",
+      "description": "Group by keys and calculate named aggregations.",
+      "group": "Aggregation",
+      "icon": "group-by-ref-type"
+    },
+    {
+      "kind": "byExample",
+      "title": "Transform by example",
+      "description": "Synthesize the simplest deterministic program matching every example.",
+      "group": "By example",
+      "icon": "sparkle"
+    },
+    {
+      "kind": "customCode",
+      "title": "Custom code",
+      "description": "Run an engine-native step that assigns a dataframe to result.",
+      "group": "Custom",
+      "icon": "code"
+    }
+  ],
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [2] },
