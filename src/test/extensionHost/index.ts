@@ -33155,6 +33155,7 @@ interface DependencyGuardAcceptanceDependency {
   importModule: string;
   distribution: string;
   installSpec: string;
+  exactVersion: string | null;
   minimumVersion: string | null;
   maximumVersionExclusive: string | null;
 }
@@ -35097,6 +35098,7 @@ function createDependencyGuardRecoveryFixture(
     importModule: "openwrangler_guard_fixture",
     distribution: "openwrangler-guard-fixture",
     installSpec: "openwrangler-guard-fixture>=1.0.0,<2.0.0",
+    exactVersion: null,
     minimumVersion: "1.0.0",
     maximumVersionExclusive: "2.0.0"
   };

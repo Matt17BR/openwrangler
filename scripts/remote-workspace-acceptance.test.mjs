@@ -2374,6 +2374,7 @@ linuxTest("copied Python rejects a retained dirty dependency marker without chan
             importModule: "pandas",
             distribution: "pandas",
             installSpec: "pandas",
+            exactVersion: null,
             minimumVersion: null,
             maximumVersionExclusive: null
           }
