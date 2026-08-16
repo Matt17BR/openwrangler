@@ -143,11 +143,13 @@ class PandasEngine(DataFrameEngine):
         return {"rows": int(df.shape[0]), "columns": len(self._visible_positions(df))}
 
     def ensure_row_ids(self, frame: Any, token: str) -> Any:
+        import numpy as np
+
         df = self.normalize(frame)
         if self._row_id_column(df) is not None:
             return df
         result = df.copy()
-        result[f"{INTERNAL_ROW_ID_PREFIX}{token}"] = [f"r:{token}:{index}" for index in range(len(result))]
+        result[f"{INTERNAL_ROW_ID_PREFIX}{token}"] = np.arange(len(result), dtype=np.int64)
         return result
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
@@ -250,11 +252,13 @@ class PandasEngine(DataFrameEngine):
         selected_positions = [*([row_id_position] if row_id_position is not None else []), *positions]
         sliced = df.iloc[offset : offset + limit, selected_positions]
         value_offset = 1 if row_id_position is not None else 0
+        row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
         for row_number, row in enumerate(sliced.itertuples(index=False, name=None), start=offset):
+            identity = self._page_row_identity(row[0]) if row_id_position is not None else row_number
             rows.append(
                 {
-                    "id": str(row[0]) if row_id_position is not None else f"r:{row_number}",
+                    "id": f"r:{row_id_token}:{identity}" if row_id_token is not None else f"r:{row_number}",
                     "rowNumber": row_number,
                     "values": [normalize_cell(row[value_offset + index]) for index in range(len(positions))],
                 }
@@ -690,6 +694,22 @@ class PandasEngine(DataFrameEngine):
             (position for position, column in enumerate(frame.columns) if is_internal_row_id_label(column)),
             None,
         )
+
+    @staticmethod
+    def _row_id_token(column: Any) -> str:
+        label = column[0] if isinstance(column, tuple) and column else column
+        if not isinstance(label, str) or not label.startswith(INTERNAL_ROW_ID_PREFIX):
+            raise EngineError("The Pandas frame has an invalid private row identity column.")
+        token = label[len(INTERNAL_ROW_ID_PREFIX) :]
+        if not token:
+            raise EngineError("The Pandas frame has an invalid private row identity column.")
+        return token
+
+    @staticmethod
+    def _page_row_identity(value: Any) -> int:
+        if not isinstance(value, Integral) or isinstance(value, bool) or int(value) < 0 or int(value) > _INT64_MAX:
+            raise EngineError("The Pandas frame has an invalid private row identity value.")
+        return int(value)
 
     def _visible_positions(self, frame: Any) -> list[int]:
         return [position for position, column in enumerate(frame.columns) if not is_internal_row_id_label(column)]
