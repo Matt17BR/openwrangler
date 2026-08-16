@@ -31,16 +31,18 @@ that tree and vscode-R's attach files, so an unready source does not hold up the
 The watcher attach record must match `Terminal.processId` before and after setup. Its request, workspace, and marker
 files are size-bounded, opened without following links, checked for owner and identity changes, and read as marker →
 JSON → marker. The provider watches that session's `workspace.lock` and `workspace.json`; it never writes to vscode-R's
-files or sends terminal text. Missing, malformed, stale, foreign, or replaced metadata leaves the explicit Refresh
-action available. A foreign or overwritten record must stay unchanged through a 500 ms startup grace before the
-automatic path gives up; it never restores the old minute-long wait.
+files or sends terminal text. Because both extension events and filesystem notifications can be coalesced or lost,
+a serialized reconciliation read compares the bounded metadata signature every two seconds and publishes only a
+change. It never runs overlapping reads or keeps the extension host alive. Missing, malformed, stale, foreign, or replaced
+metadata leaves the explicit Refresh action available. A foreign or overwritten record must stay unchanged through a
+500 ms startup grace before the automatic path gives up; it never restores the old minute-long wait.
 
 Opening a watcher-listed dataframe or choosing Refresh rechecks the exact terminal and process before creating the
 native transport. That explicit action installs Open Wrangler's bundled dispatcher and one R task callback. After a
 top-level R command, the callback writes the full bounded dataframe list to each attached private mailbox. The host
 debounces those notifications and publishes the latest decoded list without another R command. Dispatcher requests
-suppress their own callback notification. The provider never polls, runs a source document automatically, or moves to
-a different terminal.
+suppress their own callback notification. The provider never polls the R process, runs a source document
+automatically, or moves to a different terminal.
 
 R source tabs use `openWrangler.openRDataframe` for their stable title action. A plain `.R` editor opens from the
 selected official R terminal when one is active and otherwise delegates to `openWrangler.runRDocument` on macOS and

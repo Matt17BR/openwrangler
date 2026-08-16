@@ -188,6 +188,58 @@ describe("vscode-R workspace metadata adapter", () => {
     watcher.dispose();
   });
 
+  it("reconciles vscode-R's exported workspace when its change event is missed", async () => {
+    const fixture = await createFixture(823);
+    roots.push(fixture.root);
+    const terminal = officialTerminal(fixture, 823);
+    mocks.terminals = [terminal];
+    const workspace = {
+      data: {
+        globalenv: {
+          initial_orders: { class: ["data.frame"], type: "list", dim: [4, 2] }
+        }
+      } as unknown,
+      onDidChangeTreeData: () => ({ dispose: () => undefined })
+    };
+    mocks.extension = {
+      extensionPath: fixture.extensionPath,
+      isActive: true,
+      packageJSON: { main: "./dist/extension" },
+      exports: { helpPanel: undefined }
+    };
+    mocks.extensionModuleExports = {
+      rWorkspace: workspace,
+      sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 823\nCommand: R" }
+    };
+    const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
+      extensionPath: fixture.extensionPath,
+      debounceMs: 5,
+      retryMs: 5,
+      reconcileMs: 10
+    })!;
+
+    await expect(watcher.readInitial()).resolves.toEqual({
+      variables: [{ name: "initial_orders", backend: "r", dataframeFlavor: "r.data.frame" }],
+      truncated: false
+    });
+    const updates: unknown[] = [];
+    watcher.onDidChangeVariables((value) => updates.push(value));
+    workspace.data = {
+      globalenv: {
+        reconciled_orders: { class: ["tbl_df", "tbl", "data.frame"], type: "list", dim: [6, 3] }
+      }
+    };
+
+    await vi.waitFor(() =>
+      expect(updates.at(-1)).toEqual({
+        variables: [{ name: "reconciled_orders", backend: "r", dataframeFlavor: "r.tibble" }],
+        truncated: false
+      })
+    );
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    watcher.dispose();
+  });
+
   it("uses authenticated workspace files while vscode-R's exported workspace is not ready", async () => {
     const fixture = await createFixture(821);
     roots.push(fixture.root);
