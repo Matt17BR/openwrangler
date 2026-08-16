@@ -101,6 +101,10 @@ import {
   reacquireAcknowledgedSessionApp as reacquireAcknowledgedSessionAppOwner,
   sameRendererSynchronizationReceipt
 } from "./acknowledgedRenderer";
+import {
+  cleanupAcceptanceTemporaryDirectory,
+  exerciseAcceptanceTemporaryDirectoryCleanupContract
+} from "./acceptanceTemporaryDirectory";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import { waitForImportRendererRecovery } from "./importRendererRecovery";
 import {
@@ -449,73 +453,6 @@ function persistedPanelFilterModel(): FilterModel {
       { column: "market", direction: "desc", nulls: "last" }
     ]
   };
-}
-
-function resolveAcceptanceTemporaryDirectory(directory: string): string {
-  const isolatedTempRoot = path.resolve(tmpdir());
-  const candidate = path.resolve(directory);
-  const relative = path.relative(isolatedTempRoot, candidate);
-  assert.ok(
-    relative.length > 0 &&
-      !path.isAbsolute(relative) &&
-      relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !relative.includes(path.sep),
-    "Acceptance fixture directories must be direct children of the isolated editor temp root."
-  );
-  const metadata = lstatSync(candidate);
-  assert.ok(
-    metadata.isDirectory() && !metadata.isSymbolicLink(),
-    "An acceptance fixture root must remain a real directory."
-  );
-  return candidate;
-}
-
-function cleanupAcceptanceTemporaryDirectory(directory: string): void {
-  const ownedDirectory = resolveAcceptanceTemporaryDirectory(directory);
-  if (process.platform === "win32") {
-    const isolatedTempRoot = path.resolve(tmpdir());
-    assert.equal(
-      process.env.OPEN_WRANGLER_EXTENSION_TESTS,
-      "1",
-      "Windows fixture cleanup may be deferred only inside the editor acceptance harness."
-    );
-    assert.equal(
-      path.basename(path.dirname(isolatedTempRoot)).toLowerCase(),
-      "ow",
-      "Deferred Windows acceptance fixtures require the runner-owned temp parent."
-    );
-    assert.match(
-      path.basename(isolatedTempRoot),
-      /^x-[A-Za-z0-9]+$/u,
-      "Deferred Windows acceptance fixtures require the runner-owned random temp root."
-    );
-    assert.match(
-      path.basename(ownedDirectory),
-      /^openwrangler-[A-Za-z0-9-]+$/u,
-      "Deferred Windows acceptance fixtures must use an Open Wrangler-owned random directory name."
-    );
-    // VS Code's Windows file service may retain a fixture-directory handle until
-    // the workbench exits even after its custom editor and runtime are closed.
-    // The outer acceptance runner owns this temp root and removes it only after
-    // the Job Object is proven empty, which is the first safe deletion boundary.
-    return;
-  }
-  rmSync(ownedDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-}
-
-function exerciseAcceptanceTemporaryDirectoryCleanupContract(): void {
-  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-cleanup-contract-"));
-  assert.throws(
-    () => cleanupAcceptanceTemporaryDirectory(path.join(directory, "nested")),
-    /direct children of the isolated editor temp root/u
-  );
-  cleanupAcceptanceTemporaryDirectory(directory);
-  assert.equal(
-    existsSync(directory),
-    process.platform === "win32",
-    "Windows retains fixture roots until job-empty cleanup; other platforms remove them immediately."
-  );
 }
 
 function columnReference(metadata: SessionMetadata, name: string): ColumnReference {
