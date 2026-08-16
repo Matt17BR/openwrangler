@@ -56,6 +56,7 @@ import type { ProfileValueMode } from "./profileValueMode";
 import { OperationBuilder } from "./operations/OperationBuilder";
 import { ColumnSearch } from "./ColumnSearch";
 import { draftDiffLabels, fillMissingResultLabel } from "./draftResultPresentation";
+import { StepInspectionPanel } from "./StepInspectionPanel";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
@@ -2775,45 +2776,14 @@ export function App() {
         )}
 
         {metadata && inspectionMode && (
-          <section className="inspectionPanel" aria-label="Selected applied-step inspection">
-            <header>
-              <div>
-                <strong>
-                  {pendingStepInspection ? "Loading" : "Inspecting"}{" "}
-                  {selectedInspectionStep ? operationByKind(selectedInspectionStep.kind).title : "applied step"}
-                </strong>
-                <span>
-                  This is that step&apos;s input → output boundary. The confirmed dataframe view and filters are
-                  unchanged.
-                </span>
-              </div>
-              <button type="button" className="secondaryButton" onClick={() => clearStepInspection()}>
-                Show confirmed data
-              </button>
-            </header>
-            {pendingStepInspection && (
-              <div role="status" aria-live="polite">
-                Loading inspection rows {pendingStepInspection.offset + 1} to {pendingStepInspection.offset + pageSize}…
-              </div>
-            )}
-            {stepInspectionError && (
-              <div className="errorBanner" role="alert">
-                {stepInspectionError}
-              </div>
-            )}
-            {stepInspection && (
-              <div className="diffStats" aria-label="Selected step data diff summary">
-                <span>+{stepInspection.diff.addedRows} rows</span>
-                <span>-{stepInspection.diff.removedRows} rows</span>
-                <span>+{stepInspection.diff.addedColumns.length} columns</span>
-                <span>-{stepInspection.diff.removedColumns.length} columns</span>
-                <span>
-                  {stepInspection.diff.changedCells} changed cells
-                  {stepInspection.diff.truncated ? " in this block" : ""}
-                </span>
-              </div>
-            )}
-          </section>
+          <StepInspectionPanel
+            operationTitle={selectedInspectionStep ? operationByKind(selectedInspectionStep.kind).title : undefined}
+            pendingOffset={pendingStepInspection?.offset}
+            pageSize={pageSize}
+            error={stepInspectionError}
+            diff={stepInspection?.diff}
+            onClear={clearStepInspection}
+          />
         )}
 
         <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
