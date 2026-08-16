@@ -25,11 +25,21 @@ describe("SessionPersistenceStore", () => {
   });
 
   it("keeps notebook-output, native R, and Spark state ephemeral", async () => {
-    const memory = memento();
+    const snapshotSource: SessionSource = { kind: "notebookOutput", label: "capture" };
+    const stored = {
+      [persistenceKey(snapshotSource, "polars")]: state("polars", 1),
+      [persistenceKey(source, "r")]: state("r", 2),
+      [persistenceKey(source, "pyspark")]: state("pyspark", 3)
+    };
+    const memory = memento(() => stored);
     const persistence = new SessionPersistenceStore(memory.value);
     const commit = vi.fn();
 
-    await persistence.save({ kind: "notebookOutput", label: "capture" }, state("polars", 1));
+    expect(persistence.load(snapshotSource, "polars")).toBeUndefined();
+    expect(persistence.load(source, "r")).toBeUndefined();
+    expect(persistence.load(source, "pyspark")).toBeUndefined();
+
+    await persistence.save(snapshotSource, state("polars", 1));
     await persistence.save(source, state("r", 2));
     await persistence.save(source, state("pyspark", 3));
     await expect(persistence.commitCurrent(source, state("r", 4), () => true, commit)).resolves.toBe(true);

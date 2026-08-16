@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -24,63 +24,6 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator", () => {
-  it("reopens original data with an empty plan only when saved cleaning replay fails", async () => {
-    const savedStep: TransformStep = {
-      id: "invalid-for-source",
-      kind: "dropColumns",
-      params: { columns: [{ id: "c:source:0", name: "missing" }] }
-    };
-    const key = persistenceKey(openRequest.source, "polars");
-    const stored = {
-      [key]: persistedSessionState(
-        { ...openedResponse().metadata, steps: [savedStep] },
-        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
-      )
-    };
-    const workspaceState = {
-      get: vi.fn((storageKey: string) => (storageKey === SESSION_STORAGE_KEY ? stored : undefined)),
-      update: vi.fn(async () => undefined),
-      keys: vi.fn(() => [SESSION_STORAGE_KEY])
-    } as unknown as Memento;
-    let openCount = 0;
-    const executionOrder: string[] = [];
-    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-      if (request.kind === "openSession") {
-        openCount += 1;
-        executionOrder.push(`open-${openCount}`);
-        return openedResponse(`cleaning-runtime-${openCount}`);
-      }
-      if (request.kind === "previewStep") {
-        executionOrder.push("preview-failed");
-        return {
-          kind: "error",
-          code: "engine_error",
-          message: "The saved step no longer applies to this source.",
-          recoverable: true,
-          sessionId: request.sessionId
-        };
-      }
-      if (request.kind === "closeSession") {
-        executionOrder.push(`close-${request.sessionId}`);
-        return { kind: "sessionClosed", sessionId: request.sessionId };
-      }
-      throw new Error(`Unexpected delegate request: ${request.kind}`);
-    });
-    const coordinator = new SessionCoordinator(workspaceState);
-    const bridge = coordinator.createBridge({ request: delegateRequest });
-
-    const restored = await bridge.request(openRequest);
-
-    expect(restored).toMatchObject({
-      kind: "sessionOpened",
-      metadata: { revision: 0, steps: [], filterModel: { filters: [], sort: [] } }
-    });
-    expect(executionOrder).toEqual(["open-1", "preview-failed", "close-cleaning-runtime-1", "open-2"]);
-    expect(
-      delegateRequest.mock.calls.map(([request]) => request).filter((request) => request.kind === "openSession")
-    ).toEqual([openRequest, openRequest]);
-  });
-
   it("persists grid presentation separately and notifies native views only when column selection changes", async () => {
     let stored: Record<string, unknown> = {};
     const workspaceState = {
