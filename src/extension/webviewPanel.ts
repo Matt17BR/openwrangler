@@ -18,12 +18,13 @@ import { getSetting } from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { automaticBackends } from "./pythonEnvironmentModel";
+import {
+  RendererSynchronizationCoordinator,
+  type RendererImportPreparation,
+  type RendererSynchronizationIdentity
+} from "./rendererSynchronizationCoordinator";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
-const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
-const RENDERER_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
-const MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS = 2;
-const RENDERER_PUBLICATION_TIMEOUT_MS = 5_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 const RETIRED_RENDERER_TEST_HTML =
   '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\';"></head><body></body></html>';
@@ -58,46 +59,9 @@ export class OpenWranglerPanel {
   private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
-  private rendererReady = false;
-  private rendererGeneration = 0;
-  private rendererSynchronizationIdentity:
-    | {
-        syncId: string;
-        sessionId: string;
-        revision: number;
-        layoutTransitionPending: boolean;
-      }
-    | {
-        syncId: string;
-        sessionId: null;
-        revision: null;
-        layoutTransitionPending: false;
-      }
-    | undefined;
-  private rendererHydratedSyncId: string | undefined;
-  private rendererViewStateLocked = true;
-  private rendererSynchronizationAcknowledgement:
-    | {
-        syncId: string;
-        promise: Promise<boolean>;
-        resolve: (hydrated: boolean) => void;
-      }
-    | undefined;
-  private rendererSynchronization: Promise<void> | undefined;
-  private rendererSynchronizationRequested = false;
-  private rendererSynchronizationNeedsInspectionClear = false;
+  private readonly rendererSync: RendererSynchronizationCoordinator;
   private codePreviewRevealedSessionId: string | undefined;
-  private pendingRendererImportAction:
-    | {
-        actionId: string;
-        timer: ReturnType<typeof setTimeout>;
-        resolve: (preparation: RendererImportPreparation | undefined) => void;
-      }
-    | undefined;
-  private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
   private unpublishedAuthoritativeSnapshot = false;
-  private rendererStartupRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  private rendererStartupRecoveryAttempts = 0;
   private openAttemptGeneration = 0;
   private activeSessionOpenProgressGeneration: number | undefined;
   private sessionOpenProgress:
@@ -128,12 +92,40 @@ export class OpenWranglerPanel {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
     };
+    this.rendererSync = new RendererSynchronizationCoordinator({
+      postMessage: (message) => this.panel.webview.postMessage(message),
+      replaceRenderer: () => {
+        this.panel.webview.html = this.renderHtml();
+      },
+      isVisible: () => this.panel.visible,
+      getSnapshot: () => this.snapshot,
+      getOpenResponse: () => this.openResponse,
+      getSessionPresentation: () => {
+        if (!this.sessionId) return undefined;
+        const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
+        return presentation?.sessionId === this.sessionId && presentation.revision === this.sessionRevision
+          ? presentation
+          : undefined;
+      },
+      getViewState: () => (this.sessionId ? this.bridge.getViewState?.(this.sessionId) : undefined),
+      isImportBusy: () => this.changingImportOptions,
+      ensureSessionOpen: () => this.open(),
+      clearStepInspection: () => {
+        if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
+      },
+      layoutTransitionPending: () => this.codePreviewLayoutTransitionPending(),
+      didSynchronize: (synchronization) => this.revealCodePreviewAfterRendererSynchronization(synchronization),
+      didPublishAuthoritativeSnapshot: () => {
+        this.unpublishedAuthoritativeSnapshot = false;
+      },
+      reportDiagnostic: (message) => this.bridge.reportDiagnostic?.(message)
+    });
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => this.handleMessage(message),
       undefined,
       this.disposables
     );
-    this.replaceRendererHtml();
+    this.rendererSync.replaceRenderer();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
@@ -223,10 +215,10 @@ export class OpenWranglerPanel {
 
   static async synchronizePanelForSession(sessionId: string): Promise<boolean> {
     const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
-    if (!target?.rendererReady || target.disposed) return false;
+    if (!target?.rendererSync.rendererReady || target.disposed) return false;
     target.invalidateRendererSynchronization();
     await target.enqueueRendererSynchronization(false);
-    const synchronization = target.rendererSynchronizationIdentity;
+    const synchronization = target.rendererSync.currentSynchronization;
     if (!synchronization) return false;
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
@@ -238,23 +230,23 @@ export class OpenWranglerPanel {
     const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
     if (!target?.isRendererSynchronizableForSession(sessionId)) return false;
 
-    const current = target.rendererSynchronizationIdentity;
+    const current = target.rendererSync.currentSynchronization;
     if (current?.sessionId === sessionId && current.revision === target.snapshot?.metadata.revision) {
       const acknowledged = await target.waitForRendererSynchronizationAcknowledgement(current.syncId, deadlineMs);
-      if (acknowledged && target.rendererSynchronizationIdentity === current && target.hasHydratedRenderer()) {
+      if (acknowledged && target.rendererSync.currentSynchronization === current && target.hasHydratedRenderer()) {
         return true;
       }
       if (target.hasHydratedRenderer()) return true;
       if (!target.isRendererSynchronizableForSession(sessionId)) return false;
       // A normal renderer pull may have replaced the marker while this
       // readiness-aware test path was waiting. Never retire that newer generation.
-      if (target.rendererSynchronizationIdentity !== current) return target.hasHydratedRenderer();
+      if (target.rendererSync.currentSynchronization !== current) return target.hasHydratedRenderer();
     }
 
     if (Date.now() >= deadlineMs) return false;
     target.invalidateRendererSynchronization();
     await target.enqueueRendererSynchronization(false);
-    const synchronization = target.rendererSynchronizationIdentity;
+    const synchronization = target.rendererSync.currentSynchronization;
     if (
       !synchronization ||
       synchronization.sessionId !== sessionId ||
@@ -263,7 +255,9 @@ export class OpenWranglerPanel {
       return false;
     }
     const acknowledged = await target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId, deadlineMs);
-    return acknowledged && target.rendererSynchronizationIdentity === synchronization && target.hasHydratedRenderer();
+    return (
+      acknowledged && target.rendererSync.currentSynchronization === synchronization && target.hasHydratedRenderer()
+    );
   }
 
   static panelSynchronizableForSession(sessionId: string): boolean {
@@ -275,7 +269,7 @@ export class OpenWranglerPanel {
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<SessionOpenedResponse | undefined> {
     const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === request.sessionId);
-    if (!target?.rendererReady || target.disposed) return undefined;
+    if (!target?.rendererSync.rendererReady || target.disposed) return undefined;
     await target.forward(request);
     return target.snapshot?.metadata.draftStep?.id === request.step.id &&
       target.snapshot.metadata.revision > request.revision
@@ -294,8 +288,10 @@ export class OpenWranglerPanel {
     sessionId: string
   ): Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }> | undefined {
     const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
-    const synchronization = target?.rendererSynchronizationIdentity;
-    return target?.hasHydratedRenderer() && synchronization?.sessionId === sessionId
+    const synchronization = target?.rendererSync.currentSynchronization;
+    return target?.hasHydratedRenderer() &&
+      synchronization?.sessionId === sessionId &&
+      synchronization.revision !== null
       ? {
           syncId: synchronization.syncId,
           sessionId: synchronization.sessionId,
@@ -402,9 +398,7 @@ export class OpenWranglerPanel {
     this.importChangeCancellation?.cancel();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
-    this.clearRendererStartupRecoveryTimer();
-    this.settleRendererImportAction(undefined, undefined);
-    this.settleRendererSynchronizationAcknowledgement(undefined, false);
+    this.rendererSync.dispose();
     OpenWranglerPanel.panels.delete(this);
     this.deactivate();
     if (this.sessionId) {
@@ -431,61 +425,30 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "ready") {
-      this.clearRendererStartupRecoveryTimer();
-      this.rendererReady = true;
-      this.invalidateRendererSynchronization();
+      this.rendererSync.rendererStarted();
       await this.publishSessionOpenProgress();
-      if (!this.rendererReady) return;
+      if (!this.rendererSync.rendererReady) return;
       await this.enqueueRendererSynchronization(true);
-      this.scheduleRendererStartupRecovery();
+      this.rendererSync.scheduleStartupRecovery();
       return;
     }
 
     if (decoded.kind === "requestSessionSnapshot") {
-      this.clearRendererStartupRecoveryTimer();
-      this.rendererReady = true;
-      this.invalidateRendererSynchronization();
+      this.rendererSync.rendererStarted();
       await this.publishSessionOpenProgress();
-      if (!this.rendererReady) return;
+      if (!this.rendererSync.rendererReady) return;
       await this.enqueueRendererSynchronization(false);
-      this.scheduleRendererStartupRecovery();
+      this.rendererSync.scheduleStartupRecovery();
       return;
     }
 
     if (decoded.kind === "rendererSynchronized") {
-      const synchronization = this.rendererSynchronizationIdentity;
-      if (
-        synchronization?.syncId === decoded.syncId &&
-        synchronization.sessionId === decoded.sessionId &&
-        synchronization.revision === decoded.revision
-      ) {
-        this.rendererHydratedSyncId = decoded.syncId;
-        this.rendererViewStateLocked = false;
-        this.pendingPreReadyImportResponse = undefined;
-        this.clearRendererStartupRecoveryTimer();
-        this.rendererStartupRecoveryAttempts = 0;
-        this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
-        this.revealCodePreviewAfterRendererSynchronization(synchronization);
-      }
+      this.rendererSync.acknowledge(decoded);
       return;
     }
 
     if (decoded.kind === "rendererRetiring") {
-      const synchronization = this.rendererSynchronizationIdentity;
-      if (
-        this.disposed ||
-        !this.hasHydratedRenderer() ||
-        !synchronization ||
-        synchronization.syncId !== decoded.syncId ||
-        synchronization.sessionId !== decoded.sessionId ||
-        synchronization.revision !== decoded.revision
-      ) {
-        return;
-      }
-      this.clearRendererStartupRecoveryTimer();
-      this.rendererReady = false;
-      this.invalidateRendererSynchronization();
-      this.scheduleRendererStartupRecovery();
+      this.rendererSync.retire(decoded);
       return;
     }
 
@@ -508,7 +471,7 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "updateViewState") {
-      if (this.changingImportOptions || this.rendererViewStateLocked) {
+      if (this.changingImportOptions || this.rendererSync.rendererViewStateLocked) {
         await this.postViewState();
       } else if (this.sessionId) {
         await this.bridge.updateViewState?.(this.sessionId, decoded.state);
@@ -524,15 +487,15 @@ export class OpenWranglerPanel {
     if (decoded.kind === "changeImportOptions") {
       let task: Promise<void>;
       if (decoded.actionId !== undefined) {
-        if (this.pendingRendererImportAction?.actionId !== decoded.actionId) return;
+        if (!this.rendererSync.expectsImportAction(decoded.actionId)) return;
         task = this.enqueueImportOptionsChange();
-        this.settleRendererImportAction(decoded.actionId, { task });
+        this.rendererSync.settleImportAction(decoded.actionId, { task });
       } else if (this.nativeImportCommand && this.currentImportChangeTask) {
         task = this.currentImportChangeTask;
-        this.settleRendererImportAction(undefined, { task });
+        this.rendererSync.settleImportAction(undefined, { task });
       } else {
         task = this.enqueueImportOptionsChange();
-        this.settleRendererImportAction(undefined, { task });
+        this.rendererSync.settleImportAction(undefined, { task });
       }
       await task;
       return;
@@ -648,7 +611,7 @@ export class OpenWranglerPanel {
           await this.post(response);
           await this.postSessionPresentation();
           await this.postViewState();
-          if (this.rendererReady) this.scheduleRendererSynchronization(false);
+          if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
           return;
         }
         await this.post(response);
@@ -717,7 +680,7 @@ export class OpenWranglerPanel {
         await this.post(response);
         await this.postSessionPresentation();
         await this.postViewState();
-        if (this.rendererReady) this.scheduleRendererSynchronization(false);
+        if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
         return;
       }
       await this.post(response);
@@ -986,7 +949,7 @@ export class OpenWranglerPanel {
       if (!this.disposed && generation === this.openAttemptGeneration) {
         this.changingImportOptions = false;
         await this.postRendererMessage({ kind: "importOptionsState", busy: false });
-        if (this.rendererReady) await this.enqueueRendererSynchronization(false);
+        if (this.rendererSync.rendererReady) await this.enqueueRendererSynchronization(false);
       }
     }
   }
@@ -1131,7 +1094,7 @@ export class OpenWranglerPanel {
       if (!this.disposed && generation === this.openAttemptGeneration) {
         this.changingImportOptions = false;
         await this.postRendererMessage({ kind: "importOptionsState", busy: false });
-        if (this.rendererReady) await this.enqueueRendererSynchronization(false);
+        if (this.rendererSync.rendererReady) await this.enqueueRendererSynchronization(false);
       }
     }
   }
@@ -1308,7 +1271,7 @@ export class OpenWranglerPanel {
         (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated")
       ) {
         published = await this.postViewState();
-        if (published && this.rendererReady) this.scheduleRendererSynchronization(false);
+        if (published && this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
       }
     } catch (error) {
       if (this.disposed) return;
@@ -1331,7 +1294,9 @@ export class OpenWranglerPanel {
         this.scheduleRendererStartupRecovery();
       }
       await this.postRuntimeResponse(request, response);
-      if (request.kind === "openSession" && this.rendererReady) this.scheduleRendererSynchronization(false);
+      if (request.kind === "openSession" && this.rendererSync.rendererReady) {
+        this.scheduleRendererSynchronization(false);
+      }
     }
   }
 
@@ -1339,54 +1304,8 @@ export class OpenWranglerPanel {
     return this.postRendererMessage(response);
   }
 
-  private async postRendererMessage(message: unknown): Promise<boolean> {
-    if (this.disposed) return false;
-    const generation = this.rendererGeneration;
-    const rendererReadyAtPublication = this.rendererReady;
-    const hydratedSyncIdAtPublication = this.hasHydratedRenderer() ? this.rendererHydratedSyncId : undefined;
-    let publication: Thenable<boolean>;
-    try {
-      publication = this.panel.webview.postMessage(message);
-    } catch {
-      this.handleRendererPublicationFailure(generation, rendererReadyAtPublication, hydratedSyncIdAtPublication);
-      return false;
-    }
-
-    const posted = await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = (delivered: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(delivered);
-      };
-      const timer = setTimeout(() => finish(false), RENDERER_PUBLICATION_TIMEOUT_MS);
-      void Promise.resolve(publication).then(
-        (delivered) => finish(delivered),
-        () => finish(false)
-      );
-    });
-    if (!posted) {
-      this.handleRendererPublicationFailure(generation, rendererReadyAtPublication, hydratedSyncIdAtPublication);
-    }
-    return posted && !this.disposed && generation === this.rendererGeneration;
-  }
-
-  private handleRendererPublicationFailure(
-    generation: number,
-    rendererReadyAtPublication: boolean,
-    hydratedSyncIdAtPublication: string | undefined
-  ): void {
-    if (this.disposed || generation !== this.rendererGeneration) return;
-    if (this.hasHydratedRenderer() && this.rendererHydratedSyncId !== hydratedSyncIdAtPublication) return;
-    if (!rendererReadyAtPublication) {
-      this.scheduleRendererStartupRecovery();
-      return;
-    }
-    this.rendererReady = false;
-    this.invalidateRendererSynchronization();
-    if (this.recoverRendererAfterStartupStall()) return;
-    this.scheduleRendererStartupRecovery();
+  private postRendererMessage(message: unknown): Promise<boolean> {
+    return this.rendererSync.postMessage(message);
   }
 
   private updateSessionOpenProgress(generation: number, stage: SessionOpenProgressStage): void {
@@ -1407,13 +1326,13 @@ export class OpenWranglerPanel {
     }
     if (this.sessionOpenProgress?.generation !== generation) return;
     this.sessionOpenProgress = undefined;
-    if (!this.disposed && this.rendererReady) {
+    if (!this.disposed && this.rendererSync.rendererReady) {
       await this.enqueueSessionOpenProgressPublication(null);
     }
   }
 
   private publishSessionOpenProgress(): Promise<void> {
-    if (this.disposed || !this.rendererReady || !this.sessionOpenProgress) return Promise.resolve();
+    if (this.disposed || !this.rendererSync.rendererReady || !this.sessionOpenProgress) return Promise.resolve();
     return this.enqueueSessionOpenProgressPublication(this.sessionOpenProgress.stage);
   }
 
@@ -1431,126 +1350,40 @@ export class OpenWranglerPanel {
   }
 
   private async postImportResponse(response: OpenWranglerResponse): Promise<void> {
-    if (response.kind === "sessionOpened") {
-      if (this.pendingPreReadyImportResponse) this.invalidateRendererSynchronization();
-      this.pendingPreReadyImportResponse = undefined;
-    } else {
-      this.pendingPreReadyImportResponse = response;
-      this.invalidateRendererSynchronization();
-    }
-    await this.post(response);
+    await this.rendererSync.postImportResponse(response);
   }
 
   private hasHydratedRenderer(): boolean {
-    const synchronization = this.rendererSynchronizationIdentity;
-    return Boolean(
-      this.hasSynchronizedRenderer() &&
-      this.snapshot &&
-      synchronization &&
-      synchronization.sessionId === this.snapshot.metadata.sessionId &&
-      synchronization.revision === this.snapshot.metadata.revision
-    );
-  }
-
-  private hasSynchronizedRenderer(): boolean {
-    const synchronization = this.rendererSynchronizationIdentity;
-    return Boolean(this.rendererReady && synchronization && this.rendererHydratedSyncId === synchronization.syncId);
+    return this.rendererSync.hasHydratedRenderer();
   }
 
   private isRendererSynchronizableForSession(sessionId: string): boolean {
     return Boolean(
       !this.disposed &&
       !this.opening &&
-      this.rendererReady &&
+      this.rendererSync.rendererReady &&
       this.sessionId === sessionId &&
       this.snapshot?.metadata.sessionId === sessionId
     );
   }
 
   private invalidateRendererSynchronization(): void {
-    this.settleRendererSynchronizationAcknowledgement(undefined, false);
-    this.rendererSynchronizationIdentity = undefined;
-    this.rendererHydratedSyncId = undefined;
-    this.rendererViewStateLocked = true;
-    this.settleRendererImportAction(undefined, undefined);
+    this.rendererSync.invalidate();
   }
 
   private waitForRendererSynchronizationAcknowledgement(
     syncId: string,
     deadlineMs = Number.POSITIVE_INFINITY
   ): Promise<boolean> {
-    if (this.hasHydratedRenderer() && this.rendererHydratedSyncId === syncId) return Promise.resolve(true);
-    const acknowledgement = this.rendererSynchronizationAcknowledgement;
-    if (!acknowledgement || acknowledgement.syncId !== syncId) return Promise.resolve(false);
-    const timeoutMs = Math.min(RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS, Math.max(0, deadlineMs - Date.now()));
-    if (timeoutMs <= 0) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = (hydrated: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(hydrated);
-      };
-      const timer = setTimeout(() => finish(false), timeoutMs);
-      void acknowledgement.promise.then(finish);
-    });
-  }
-
-  private settleRendererSynchronizationAcknowledgement(syncId: string | undefined, hydrated: boolean): boolean {
-    const acknowledgement = this.rendererSynchronizationAcknowledgement;
-    if (!acknowledgement || (syncId !== undefined && acknowledgement.syncId !== syncId)) return false;
-    this.rendererSynchronizationAcknowledgement = undefined;
-    acknowledgement.resolve(hydrated);
-    return true;
+    return this.rendererSync.waitForAcknowledgement(syncId, deadlineMs);
   }
 
   private scheduleRendererStartupRecovery(): void {
-    if (
-      this.disposed ||
-      this.hasSynchronizedRenderer() ||
-      this.rendererStartupRecoveryAttempts >= MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS ||
-      this.rendererStartupRecoveryTimer ||
-      !this.openResponse ||
-      !this.panel.visible
-    ) {
-      return;
-    }
-    this.rendererStartupRecoveryTimer = setTimeout(() => {
-      this.rendererStartupRecoveryTimer = undefined;
-      this.recoverRendererAfterStartupStall();
-    }, RENDERER_STARTUP_RECOVERY_TIMEOUT_MS);
-  }
-
-  private recoverRendererAfterStartupStall(): boolean {
-    if (
-      this.disposed ||
-      this.hasSynchronizedRenderer() ||
-      this.rendererStartupRecoveryAttempts >= MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS ||
-      !this.openResponse ||
-      !this.panel.visible
-    ) {
-      return false;
-    }
-    this.clearRendererStartupRecoveryTimer();
-    this.rendererStartupRecoveryAttempts += 1;
-    this.replaceRendererHtml();
-    this.scheduleRendererStartupRecovery();
-    this.bridge.reportDiagnostic?.("Open Wrangler reloaded a renderer that did not complete its startup handshake.");
-    return true;
-  }
-
-  private replaceRendererHtml(): void {
-    this.rendererGeneration += 1;
-    this.rendererReady = false;
-    this.invalidateRendererSynchronization();
-    this.panel.webview.html = this.renderHtml();
+    this.rendererSync.scheduleStartupRecovery();
   }
 
   private clearRendererStartupRecoveryTimer(): void {
-    if (!this.rendererStartupRecoveryTimer) return;
-    clearTimeout(this.rendererStartupRecoveryTimer);
-    this.rendererStartupRecoveryTimer = undefined;
+    this.rendererSync.clearStartupRecoveryTimer();
   }
 
   private codePreviewLayoutTransitionPending(): boolean {
@@ -1564,9 +1397,7 @@ export class OpenWranglerPanel {
     return changedSession && (behavior === "always" || draftStepId !== undefined);
   }
 
-  private revealCodePreviewAfterRendererSynchronization(
-    synchronization: NonNullable<OpenWranglerPanel["rendererSynchronizationIdentity"]>
-  ): void {
+  private revealCodePreviewAfterRendererSynchronization(synchronization: RendererSynchronizationIdentity): void {
     if (!synchronization.layoutTransitionPending) return;
     const snapshot = this.snapshot;
     const canReveal =
@@ -1595,117 +1426,15 @@ export class OpenWranglerPanel {
   }
 
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
-    if (!this.hasHydratedRenderer()) return Promise.resolve(undefined);
-    this.settleRendererImportAction(undefined, undefined);
-    const actionId = randomNonce();
-    return new Promise<RendererImportPreparation | undefined>((resolve) => {
-      const timer = setTimeout(() => {
-        this.settleRendererImportAction(actionId, undefined);
-      }, RENDERER_IMPORT_PREPARATION_TIMEOUT_MS);
-      this.pendingRendererImportAction = { actionId, timer, resolve };
-      void this.panel.webview.postMessage({ kind: "requestImportOptionsChange", actionId }).then(
-        (posted) => {
-          if (!posted) this.settleRendererImportAction(actionId, undefined);
-        },
-        () => this.settleRendererImportAction(actionId, undefined)
-      );
-    });
-  }
-
-  private settleRendererImportAction(
-    actionId: string | undefined,
-    preparation: RendererImportPreparation | undefined
-  ): boolean {
-    const pending = this.pendingRendererImportAction;
-    if (!pending || (actionId !== undefined && pending.actionId !== actionId)) return false;
-    this.pendingRendererImportAction = undefined;
-    clearTimeout(pending.timer);
-    pending.resolve(preparation);
-    return true;
+    return this.rendererSync.requestImportOptionsChange();
   }
 
   private scheduleRendererSynchronization(clearInspection: boolean): void {
-    void this.enqueueRendererSynchronization(clearInspection).catch(() => {
-      this.bridge.reportDiagnostic?.("Open Wrangler could not synchronize the active editor renderer.");
-    });
+    this.rendererSync.scheduleSynchronization(clearInspection);
   }
 
   private enqueueRendererSynchronization(clearInspection: boolean): Promise<void> {
-    this.rendererSynchronizationRequested = true;
-    this.rendererSynchronizationNeedsInspectionClear ||= clearInspection;
-    if (this.rendererSynchronization) return this.rendererSynchronization;
-
-    const synchronization = (async () => {
-      try {
-        do {
-          this.rendererSynchronizationRequested = false;
-          const shouldClearInspection = this.rendererSynchronizationNeedsInspectionClear;
-          this.rendererSynchronizationNeedsInspectionClear = false;
-          await this.synchronizeRenderer(shouldClearInspection);
-        } while (!this.disposed && this.rendererSynchronizationRequested);
-      } finally {
-        this.rendererSynchronization = undefined;
-      }
-    })();
-    this.rendererSynchronization = synchronization;
-    return synchronization;
-  }
-
-  private async synchronizeRenderer(clearInspection: boolean): Promise<void> {
-    if (this.disposed || !this.rendererReady) return;
-    const generation = this.rendererGeneration;
-    this.rendererViewStateLocked = true;
-    if (clearInspection) {
-      if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
-      await this.postStepInspectionCleared(false);
-    }
-    if (!this.snapshot && !this.openResponse) await this.open();
-    if (this.disposed || !this.rendererReady || generation !== this.rendererGeneration) return;
-    const synchronization = this.snapshot
-      ? {
-          syncId: randomNonce(),
-          sessionId: this.snapshot.metadata.sessionId,
-          revision: this.snapshot.metadata.revision,
-          layoutTransitionPending: this.codePreviewLayoutTransitionPending()
-        }
-      : {
-          syncId: randomNonce(),
-          sessionId: null,
-          revision: null,
-          layoutTransitionPending: false as const
-        };
-    this.settleRendererImportAction(undefined, undefined);
-    this.settleRendererSynchronizationAcknowledgement(undefined, false);
-    this.rendererSynchronizationIdentity = synchronization;
-    this.rendererHydratedSyncId = undefined;
-    let resolveAcknowledgement!: (hydrated: boolean) => void;
-    const acknowledgement = new Promise<boolean>((resolve) => {
-      resolveAcknowledgement = resolve;
-    });
-    this.rendererSynchronizationAcknowledgement = {
-      syncId: synchronization.syncId,
-      promise: acknowledgement,
-      resolve: resolveAcknowledgement
-    };
-    if (this.snapshot) {
-      if (!(await this.post(this.snapshot))) return;
-      if (!(await this.postSessionPresentation())) return;
-      if (!(await this.postViewState())) return;
-      this.unpublishedAuthoritativeSnapshot = false;
-    } else if (this.openResponse) {
-      if (!(await this.post(this.openResponse))) return;
-    }
-    if (this.pendingPreReadyImportResponse) {
-      if (!(await this.post(this.pendingPreReadyImportResponse))) return;
-    }
-    if (!(await this.postRendererMessage({ kind: "importOptionsState", busy: this.changingImportOptions }))) return;
-    if (this.rendererSynchronizationIdentity !== synchronization) {
-      this.rendererSynchronizationRequested = true;
-      return;
-    }
-    if (await this.postRendererMessage({ kind: "rendererSynchronization", ...synchronization })) {
-      this.scheduleRendererStartupRecovery();
-    }
+    return this.rendererSync.enqueueSynchronization(clearInspection);
   }
 
   private activate(): void {
@@ -2023,10 +1752,6 @@ type WebviewRequest =
       viewContextId?: string;
       priority?: "interactive" | "background";
     };
-
-interface RendererImportPreparation {
-  readonly task: Promise<void>;
-}
 
 const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "getPage",
