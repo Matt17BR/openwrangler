@@ -38,7 +38,6 @@ from .base import (
     normalize_summary_projection,
     numeric_histogram_bin_count,
     numeric_histogram_edges,
-    numeric_visualization,
     numeric_visualization_from_bin_counts,
     require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
@@ -407,7 +406,6 @@ class PolarsEngine(DataFrameEngine):
                 numeric_series = series.drop_nulls()
                 if semantic_type == "float":
                     numeric_series = numeric_series.drop_nans()
-                numeric_values = numeric_series.to_list()
                 minimum = numeric_series.min()
                 maximum = numeric_series.max()
                 numeric_summary: dict[str, Any] = {
@@ -421,7 +419,7 @@ class PolarsEngine(DataFrameEngine):
                     numeric_summary["exactMin"] = normalize_cell(minimum)
                     numeric_summary["exactMax"] = normalize_cell(maximum)
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
-                summary["visualization"] = numeric_visualization(numeric_values)
+                summary["visualization"] = _polars_numeric_visualization(numeric_series)
             elif semantic_type == "boolean":
                 summary["visualization"] = boolean_visualization(series.drop_nulls().to_list())
             elif semantic_type in {"datetime", "date"}:
@@ -3575,6 +3573,55 @@ def _polars_text_summary(series: Any) -> dict[str, int | float]:
         "maxLength": int(lengths.max()),
         "meanLength": float(lengths.mean()),
     }
+
+
+def _polars_numeric_visualization(series: Any, max_bins: int = 20) -> dict[str, Any]:
+    from math import nextafter
+
+    import polars as pl
+
+    numeric_values = series.cast(pl.Float64, strict=False)
+    finite_mask = numeric_values.is_finite().fill_null(False)
+    finite_count = int(finite_mask.sum())
+    if finite_count == 0:
+        return {"kind": "numeric", "bins": []}
+    finite_values = numeric_values if finite_count == len(numeric_values) else numeric_values.filter(finite_mask)
+    bin_count = numeric_histogram_bin_count(finite_count, int(finite_values.n_unique()), max_bins)
+    minimum = _maybe_float(finite_values.min())
+    maximum = _maybe_float(finite_values.max())
+    edges = numeric_histogram_edges(minimum, maximum, bin_count)
+    if not edges:
+        return {"kind": "numeric", "bins": []}
+    if minimum == maximum:
+        return numeric_visualization_from_bin_counts(minimum, maximum, [finite_count])
+
+    histogram_edges = [edges[0], *[nextafter(edge, float("-inf")) for edge in edges[1:-1]], edges[-1]]
+    if all(left < right for left, right in zip(histogram_edges, histogram_edges[1:], strict=False)):
+        histogram = finite_values.hist(
+            bins=histogram_edges,
+            include_breakpoint=False,
+            include_category=False,
+        )
+        counts = (row[0] for row in histogram.iter_rows())
+    else:
+        value_name = "__open_wrangler_numeric_value"
+        numeric_value = pl.col(value_name)
+        bucket = pl.when(numeric_value < pl.lit(edges[1])).then(pl.lit(0, dtype=pl.UInt8))
+        for bin_index in range(1, bin_count - 1):
+            bucket = bucket.when(numeric_value < pl.lit(edges[bin_index + 1])).then(pl.lit(bin_index, dtype=pl.UInt8))
+        bucket = bucket.otherwise(pl.lit(bin_count - 1, dtype=pl.UInt8)).alias("bucket")
+        grouped_counts = (
+            finite_values.to_frame(value_name)
+            .lazy()
+            .group_by(bucket)
+            .agg(pl.len().alias("count"))
+            .collect(engine="streaming")
+        )
+        normalized_counts = [0] * bin_count
+        for bin_index, count in grouped_counts.iter_rows():
+            normalized_counts[int(bin_index)] = int(count)
+        counts = normalized_counts
+    return numeric_visualization_from_bin_counts(minimum, maximum, counts)
 
 
 def _maybe_float(value: Any) -> float | None:

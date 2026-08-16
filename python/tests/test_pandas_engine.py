@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import openwrangler_runtime.engines.base as engine_base
 import openwrangler_runtime.engines.pandas_engine as pandas_engine_module
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import AmbiguousViewColumnError, PandasEngine
@@ -527,6 +528,51 @@ def test_pandas_numeric_histogram_is_exact_for_a_large_filtered_view():
     assert sum(bin_["count"] for bin_ in bins) == 4_501
     assert all(left["max"] == right["min"] for left, right in zip(bins, bins[1:], strict=False))
     assert [bin_["max"] - bin_["min"] for bin_ in bins] == pytest.approx([bins[0]["max"] - bins[0]["min"]] * len(bins))
+
+
+def test_pandas_eager_numeric_histogram_preserves_boundary_and_rounded_edge_assignment() -> None:
+    adjacent_extremes = [1e308]
+    for _index in range(24):
+        adjacent_extremes.append(float(np.nextafter(adjacent_extremes[-1], float("inf"))))
+
+    for values in ([float(value) for value in range(21)], adjacent_extremes):
+        summary = PandasEngine().summaries(pd.DataFrame({"value": values}))[0]
+
+        assert summary["visualization"] == engine_base.numeric_visualization(values)
+
+
+def test_pandas_eager_numeric_summaries_never_materialize_python_value_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_list_materialization(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Eager Pandas numeric summaries must remain in native arrays.")
+
+    monkeypatch.setattr(pd.Series, "tolist", reject_list_materialization)
+    monkeypatch.setattr(engine_base, "numeric_visualization", reject_list_materialization)
+    monkeypatch.setattr(pandas_engine_module, "numeric_visualization", reject_list_materialization, raising=False)
+    integer_values = pd.Series([None, *[value % 101 for value in range(4_096)]], dtype="Int64")
+    floating_values = pd.Series(
+        [None, float("nan"), float("-inf"), float("inf"), *[float(value % 101) for value in range(4_093)]],
+        dtype=object,
+    )
+
+    summaries = {
+        summary["column"]: summary
+        for summary in PandasEngine().summaries(pd.DataFrame({"integer": integer_values, "floating": floating_values}))
+    }
+
+    integer = summaries["integer"]
+    assert (integer["totalCount"], integer["nullCount"], integer["nanCount"]) == (4_097, 1, 0)
+    assert integer["distinctCount"] == 101
+    assert integer["topValues"][0] == {"value": "0", "count": 41}
+    assert integer["numeric"]["exactMin"]["display"] == "0"
+    assert integer["numeric"]["exactMax"]["display"] == "100"
+    assert len(integer["visualization"]["bins"]) == 20
+    assert sum(bin_["count"] for bin_ in integer["visualization"]["bins"]) == 4_096
+    floating = summaries["floating"]
+    assert (floating["totalCount"], floating["nullCount"], floating["nanCount"]) == (4_097, 1, 1)
+    assert floating["topValues"][0] == {"value": "0.0", "count": 41}
+    assert sum(bin_["count"] for bin_ in floating["visualization"]["bins"]) == 4_093
 
 
 def test_pandas_custom_code_cannot_mutate_nested_source_objects():
