@@ -335,6 +335,28 @@ prepared-Polars boundary changed from 90.637 ms to 88.124 ms (2.8% lower), while
 46,680,064 to 45,608,960 bytes (2.3% lower). The isolated preparation stage grew from 56.999 ms to 59.651 ms because
 it now owns the deferred implementation import; the complete first-selected-backend boundary did not regress.
 
+`python/benchmarks/eager_numeric_profile.py` is the bounded eager numeric-summary probe. It accepts only Pandas or
+Polars, 2,000,000–5,000,000 rows, one to five fresh child-process samples, and a 1–300-second per-child timeout. Each
+child builds one native integer frame before measuring a complete summary, validates exact count, distinct, top-value,
+typed-extrema, and 20-bin outcomes, and reports median elapsed time plus incremental current and peak RSS. A candidate
+run can consume a matching baseline report; it exits nonzero if either median elapsed time or median incremental peak
+RSS regresses. Run the same command from the baseline and candidate checkouts, adding `--baseline-report` to the latter:
+
+```bash
+PYTHONPATH=python .venv/bin/python python/benchmarks/eager_numeric_profile.py \
+  --backend pandas --rows 2000000 --samples 3 --timeout-seconds 120
+PYTHONPATH=python .venv/bin/python python/benchmarks/eager_numeric_profile.py \
+  --backend polars --rows 2000000 --samples 3 --timeout-seconds 120
+```
+
+On 2026-08-16, same-host CPython 3.14.4 measurements compared rebased Lane B frontier
+`49c8053af42799865d8917fdfb0ff039fdc15f7d` with eager-profile implementation
+`0a21a5766be547490d4fc7cf7abce4fbb4f79bec`. For Pandas 3.0.3, median elapsed time fell from 856.037 ms to
+170.694 ms (80.1% lower) and incremental peak RSS fell from 180,133,888 to 43,388,928 bytes (75.9% lower). For
+Polars 1.42.1, median elapsed time fell from 911.523 ms to 151.679 ms (83.4% lower) and incremental peak RSS fell
+from 196,968,448 to 46,419,968 bytes (76.4% lower). These are focused runtime diagnostics, not editor or release
+thresholds.
+
 Runtime-selection acceptance must use a dependency-isolated interpreter that is directly executable by Node without a command shell and records every probe invocation. Every platform creates a no-pip virtual environment and installs only an isolated `.pth` invocation recorder in that environment; a shell wrapper is invalid because production resolution must pin through it to the interpreter reported by `sys.executable`. The fixture must prove exact Polars, DuckDB, lossy-Pandas, and legacy-Excel missing-dependency diagnostics, no runtime process or generation change after declining the real modal, an unchanged invocation log, and restoration of the configured fallback interpreter. Focused bridge tests additionally inject a superseded pre-dispatch selection, require one successful fresh-selection retry, require repeated churn to fail boundedly, and prove that an already-dispatched open is never reissued; session-bound mutations remain outside this retry path. Automatic Excel failure must retain and display only the preferred backend's exact requirements; panel and React tests require the structured **Install required dependency** action to be visible and enabled after the terminal error regardless of stale generic grid-loading state, disable it during an import change or dependency request, prove decline remains retryable, and permit a reopen only after the existing zero-argument command returns confirmed success. Native-editor failure evidence records bounded button enabled/busy state and persisted-replay state so a renderer race cannot collapse into an unclassified timeout.
 
 Resource-scoped Python-selection tests must exercise the released stable event API, exact resource forwarding, one activation/subscription, absent/failed/malformed optional integrations, terminal disposal, and explicit-override precedence. A virtual monotonic clock and process seam must cover the one 30-second aggregate budget across activation, selected-environment lookup, launcher discovery, every probe, and a reported-executable re-probe; each process receives at most 10 seconds and no more than the remaining aggregate budget. Windows fixtures must prove case-insensitive deduplication, supported minor-version ordering, normal-before-free-threaded ABI ordering, path tie-breaking, and a 16-candidate cap before executable checks. Terminal cases must include exact-deadline races, deliberately late completion, request cancellation, same-scope joiners, broker/bridge disposal, trust loss, invalidation, supersession, and shutdown; late success and rejection must not publish into or remove a same-key replacement. Cancellation after a confirmed resolution must leave it cached, while cancellation during shared unresolved selection gives the owner the existing not-started result and makes joiners stale. Deterministic barriers must additionally cover workspace-folder sharing, independent multi-root process slots even under one executable, external-resource scopes, same-folder sibling events, unscoped events, stale resolution/probe continuations, and same-executable pip invalidation. Runtime routing tests must prove exact confirmed-session and pending-cancellation ownership, cleanup-only provisional routing, targeted timeouts/restarts, cross-slot duplicate rejection, late-response fail-closed behavior, and deterministic multi-slot shutdown errors. The serial real-platform smoke is deliberately outside the parallel Vitest path and may expose only its bounded metadata allowlist. The opt-in packaged phase pins the released Python extension and uses executable-specific exclusive markers so A → B → A must produce one process generation per switch, replay the exact committed plan/data, preserve the source, and end with no session or runtime.
