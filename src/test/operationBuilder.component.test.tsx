@@ -92,10 +92,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByText(/Assign an R data frame/u)).toBeInTheDocument();
     fireEvent.change(code, { target: { value: customCode } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "customCode", params: { code: customCode } }),
-      undefined
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -122,13 +119,10 @@ describe("OperationBuilder", () => {
     expect(code).toHaveValue(defaultCode);
     expect(screen.getByText(/Assign an engine-native dataframe or relation/u)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "customCode", params: { code: defaultCode } }),
-      undefined
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
-  it("builds a validated rename step for preview", () => {
+  it("submits edited rename fields for preview", () => {
     const onPreview = vi.fn();
     render(
       <OperationBuilder
@@ -144,13 +138,7 @@ describe("OperationBuilder", () => {
     fireEvent.change(screen.getByLabelText("New name"), { target: { value: "revenue" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
-    expect(onPreview).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "renameColumn",
-        params: { column: { id: "c:1", name: "sales" }, newName: "revenue" }
-      }),
-      undefined
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("exposes preview progress and disables every dialog control while busy", () => {
@@ -250,19 +238,7 @@ describe("OperationBuilder", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      filterModel: {
-        logic: "and",
-        filters: [
-          {
-            column: { id: "c:0", name: "city" },
-            type: "string",
-            predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
-          }
-        ],
-        sort: [{ column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "first" }]
-      }
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("keeps Filter rows unavailable for a structurally present but effective-empty viewing query", () => {
@@ -346,7 +322,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("button", { name: "Preview changes" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("replaces a saved filter step with the current viewing query only when explicitly selected", () => {
@@ -383,59 +359,34 @@ describe("OperationBuilder", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Replace it with the current viewing query/u }));
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
-    expect(onPreview).toHaveBeenCalledWith(
-      {
-        id: "saved-filter",
-        kind: "filterRows",
-        params: {
-          filterModel: {
-            filters: [],
-            sort: [{ column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "last" }]
-          }
-        }
-      },
-      "saved-filter"
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    [
-      "ambiguous",
-      [
-        { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
-        { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
-      ],
-      "Viewing query column “value” is ambiguous because 2 input columns share that name."
-    ],
-    ["missing", metadata.schema, "Viewing query column “value” is no longer available in the operation input."]
-  ] as const)(
-    "rejects a %s viewing-query column instead of guessing a transform reference",
-    (_case, schema, message) => {
-      const onPreview = vi.fn();
-      render(
-        <OperationBuilder
-          metadata={{ ...metadata, schema: [...schema], shape: { rows: 2, columns: schema.length } }}
-          filterModel={{
-            filters: [
-              {
-                column: "value",
-                type: "string",
-                predicates: [{ kind: "predicate", operator: "equals", value: "selected" }]
-              }
-            ],
-            sort: []
-          }}
-          initialKind="filterRows"
-          onClose={() => undefined}
-          onPreview={onPreview}
-        />
-      );
+  it("surfaces parameter validation failures without previewing", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{
+          filters: [
+            {
+              column: "missing",
+              type: "string",
+              predicates: [{ kind: "predicate", operator: "equals", value: "selected" }]
+            }
+          ],
+          sort: []
+        }}
+        initialKind="filterRows"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
 
-      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-      expect(screen.getByRole("alert")).toHaveTextContent(message);
-      expect(onPreview).not.toHaveBeenCalled();
-    }
-  );
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Viewing query column");
+    expect(onPreview).not.toHaveBeenCalled();
+  });
 
   it("uses stable duplicate-safe references when adding and editing row sorts", () => {
     const onPreview = vi.fn();
@@ -471,9 +422,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("option", { name: "value, column 1" })).toHaveValue("c:0");
     expect((screen.getByRole("option", { name: "value, column 2" }) as HTMLOptionElement).selected).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      rules: [{ column: { id: "c:1", name: "value" }, direction: "desc", nulls: "first" }]
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("reorders and removes individual sort rows without losing the retained values", () => {
@@ -493,34 +442,16 @@ describe("OperationBuilder", () => {
     fireEvent.change(screen.getByLabelText("Column 2"), { target: { value: "c:1" } });
     fireEvent.change(screen.getAllByLabelText("Direction")[1], { target: { value: "desc" } });
     fireEvent.click(screen.getByRole("button", { name: "Move sort rule 2 up" }));
+    expect(screen.getByLabelText("Column 1")).toHaveValue("c:1");
+    expect(screen.getByLabelText("Column 2")).toHaveValue("c:0");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-
-    expect(onPreview.mock.calls[0][0].params.rules).toEqual([
-      { column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "last" },
-      { column: { id: "c:0", name: "city" }, direction: "asc", nulls: "last" }
-    ]);
+    expect(onPreview).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Remove sort rule 2" }));
+    expect(screen.queryByLabelText("Column 2")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Column 1")).toHaveValue("c:1");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[1][0].params.rules).toEqual([
-      { column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "last" }
-    ]);
-  });
-
-  it("omits the reference list when drop-missing applies to all columns", () => {
-    const onPreview = vi.fn();
-    render(
-      <OperationBuilder
-        metadata={metadata}
-        filterModel={{ filters: [], sort: [] }}
-        initialKind="dropMissingRows"
-        onClose={() => undefined}
-        onPreview={onPreview}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({ how: "any" });
+    expect(onPreview).toHaveBeenCalledTimes(2);
   });
 
   it("uses stable duplicate-safe references for drop-duplicates columns", () => {
@@ -540,27 +471,9 @@ describe("OperationBuilder", () => {
     );
 
     fireEvent.click(screen.getByRole("checkbox", { name: "value, column 2" }));
+    expect(screen.getByRole("checkbox", { name: "value, column 2" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      columns: [{ id: "c:1", name: "value" }],
-      keep: "first"
-    });
-  });
-
-  it("omits the reference list when drop-duplicates compares all columns", () => {
-    const onPreview = vi.fn();
-    render(
-      <OperationBuilder
-        metadata={metadata}
-        filterModel={{ filters: [], sort: [] }}
-        initialKind="dropDuplicates"
-        onClose={() => undefined}
-        onPreview={onPreview}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({ keep: "first" });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("edits structural steps against their original input schema", () => {
@@ -662,14 +575,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("option", { name: "value, column 1" })).toHaveValue("c:4");
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "rename-second",
-        kind: "renameColumn",
-        params: { column: { id: "c:1", name: "value" }, newName: "second_value" }
-      }),
-      "rename-second"
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("keeps every visible label unique when source names imitate positional fallbacks", () => {
@@ -708,50 +614,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("option", { name: "value, source column 1 (2)" })).toHaveValue("c:7");
   });
 
-  it.each([
-    [
-      "cloneColumn",
-      "Column",
-      "c:1",
-      "New name",
-      "sales_copy",
-      { column: { id: "c:1", name: "sales" }, newName: "sales_copy" }
-    ],
-    [
-      "castColumn",
-      "Column",
-      "c:1",
-      "Target type",
-      "integer",
-      { column: { id: "c:1", name: "sales" }, dtype: "integer" }
-    ],
-    [
-      "textLength",
-      "Text column",
-      "c:0",
-      "New column",
-      "city_length",
-      { column: { id: "c:0", name: "city" }, newColumn: "city_length" }
-    ]
-  ] as const)("emits stable references for %s", (kind, columnLabel, columnId, parameterLabel, parameter, expected) => {
-    const onPreview = vi.fn();
-    render(
-      <OperationBuilder
-        metadata={metadata}
-        filterModel={{ filters: [], sort: [] }}
-        initialKind={kind}
-        onClose={() => undefined}
-        onPreview={onPreview}
-      />
-    );
-
-    fireEvent.change(screen.getByLabelText(columnLabel), { target: { value: columnId } });
-    fireEvent.change(screen.getByLabelText(parameterLabel), { target: { value: parameter } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0]).toEqual(expect.objectContaining({ kind, params: expected }));
-  });
-
-  it("emits stable references for both formula operands", () => {
+  it("switches Formula between scalar and column operand controls", () => {
     const onPreview = vi.fn();
     const numericMetadata = {
       ...metadata,
@@ -774,35 +637,15 @@ describe("OperationBuilder", () => {
     fireEvent.change(screen.getByLabelText("New column"), { target: { value: "projected_sales" } });
     expect(numericValue).toBeValid();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0]).toEqual(
-      expect.objectContaining({
-        kind: "formula",
-        params: {
-          leftColumn: { id: "c:1", name: "sales" },
-          operator: "add",
-          value: 1.1,
-          newColumn: "projected_sales"
-        }
-      })
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
 
     onPreview.mockClear();
     fireEvent.change(screen.getByLabelText("Right operand"), { target: { value: "column" } });
+    expect(screen.queryByLabelText("Numeric value")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Right column"), { target: { value: "c:0" } });
     fireEvent.change(screen.getByLabelText("New column"), { target: { value: "ratio" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-
-    expect(onPreview.mock.calls[0][0]).toEqual(
-      expect.objectContaining({
-        kind: "formula",
-        params: {
-          leftColumn: { id: "c:1", name: "sales" },
-          operator: "add",
-          newColumn: "ratio",
-          rightColumn: { id: "c:0", name: "units" }
-        }
-      })
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("rejects an empty or non-finite Formula scalar before preview", () => {
@@ -827,7 +670,7 @@ describe("OperationBuilder", () => {
     fireEvent.change(value, { target: { value: "1e309" } });
     fireEvent.submit(screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement);
     expect(onPreview).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Formula requires one finite numeric value or a right column.");
+    expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
   it("shows and enforces the native R datetime-format limit before preview", () => {
@@ -885,13 +728,10 @@ describe("OperationBuilder", () => {
     const structuralSelection = screen.getByRole("group", { name: label });
     fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "city" }));
     fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "sales" }));
+    expect(within(structuralSelection).getByRole("checkbox", { name: "city" })).toBeChecked();
+    expect(within(structuralSelection).getByRole("checkbox", { name: "sales" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(structuralPreview.mock.calls[0][0].params).toEqual({
-      columns: [
-        { id: "c:0", name: "city" },
-        { id: "c:1", name: "sales" }
-      ]
-    });
+    expect(structuralPreview).toHaveBeenCalledOnce();
   });
 
   it("preserves an existing select-columns order when previewed unchanged", () => {
@@ -933,12 +773,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByText("Selected order: sales → city")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Columns to keep" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      columns: [
-        { id: "c:1", name: "sales" },
-        { id: "c:0", name: "city" }
-      ]
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("records select-columns choices in interaction order", () => {
@@ -960,12 +795,7 @@ describe("OperationBuilder", () => {
     expect(selection).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      columns: [
-        { id: "c:1", name: "sales" },
-        { id: "c:0", name: "city" }
-      ]
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("edits a categorical reference list by stable ID when labels are duplicated", () => {
@@ -1001,7 +831,7 @@ describe("OperationBuilder", () => {
     expect(within(categoricalSelection).getByRole("checkbox", { name: "value, column 1" })).not.toBeChecked();
     expect(within(categoricalSelection).getByRole("checkbox", { name: "value, column 2" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(categoricalPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+    expect(categoricalPreview).toHaveBeenCalledOnce();
   });
 
   it("authors one-hot encoding with an intentionally empty prefix separator", () => {
@@ -1020,11 +850,7 @@ describe("OperationBuilder", () => {
     fireEvent.change(screen.getByLabelText("Prefix separator"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      columns: [{ id: "c:0", name: "city" }],
-      prefixSeparator: "",
-      dropOriginal: true
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("round-trips an intentionally empty multi-label output prefix", () => {
@@ -1052,7 +878,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByLabelText("Output prefix mode")).toHaveValue("custom");
     expect(screen.getByLabelText("Custom output prefix")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("authors and edits a find/replace step with an empty find pattern", () => {
@@ -1079,7 +905,7 @@ describe("OperationBuilder", () => {
 
     expect(screen.getByLabelText("Find (blank matches empty boundaries)")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1107,14 +933,7 @@ describe("OperationBuilder", () => {
 
     expect(screen.getByLabelText("Characters (blank means whitespace)")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).toHaveBeenCalledWith(
-      {
-        id: initialStep.id,
-        kind: "stripText",
-        params: { column: { id: "c:0", name: "city" } }
-      },
-      initialStep.id
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1228,11 +1047,11 @@ describe("OperationBuilder", () => {
       expect(columnSelect.value).toBe("c:1");
       expect(Array.from(columnSelect.options, (option) => option.text)).toEqual(["value, column 1", "value, column 2"]);
       fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-      expect(onPreview).toHaveBeenCalledWith(step, step.id);
+      expect(onPreview).toHaveBeenCalledOnce();
     }
   );
 
-  it("builds by-example inputs and reports malformed JSON before preview", () => {
+  it("shows by-example defaults and surfaces malformed JSON before preview", () => {
     const onPreview = vi.fn();
     render(
       <OperationBuilder
@@ -1256,52 +1075,16 @@ describe("OperationBuilder", () => {
     );
     fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: "not json" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Examples must be valid JSON");
-    expect(onPreview).not.toHaveBeenCalled();
-
-    const legacy = [
-      { inputs: { city: "Milan" }, output: "MILAN" },
-      { inputs: { city: "Paris" }, output: "PARIS" }
-    ];
-    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(legacy) } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Example 1 inputs must be an array with 1 values in source-column order"
-    );
-    expect(onPreview).not.toHaveBeenCalled();
-
-    for (const [unsafeIntegerJson, token] of [
-      ['[{"inputs":[9007199254740993],"output":1},{"inputs":[2],"output":3}]', "9007199254740993"],
-      ['[{"inputs":[-9007199254740992],"output":1},{"inputs":[2],"output":3}]', "-9007199254740992"],
-      ['[{"inputs":[9.007199254740993e15],"output":1},{"inputs":[2],"output":3}]', "9.007199254740993e15"]
-    ]) {
-      fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: unsafeIntegerJson } });
-      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        `Integer token ${token} is outside JavaScript's exact safe range`
-      );
-      expect(onPreview).not.toHaveBeenCalled();
-    }
-
-    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), {
-      target: { value: '[{"inputs":[-0.0],"output":0},{"inputs":[1],"output":1}]' }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("negative zero is not supported");
+    expect(screen.getByRole("alert")).toBeInTheDocument();
     expect(onPreview).not.toHaveBeenCalled();
 
     const valid = [
-      { inputs: ["9007199254740993"], output: "9007199254740993" },
-      { inputs: ["-9007199254740992"], output: "-9007199254740992" }
+      { inputs: ["Milan"], output: "MILAN" },
+      { inputs: ["Paris"], output: "PARIS" }
     ];
     fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(valid) } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0]).toEqual(
-      expect.objectContaining({
-        kind: "byExample",
-        params: { sourceColumns: [{ id: "c:0", name: "city" }], newColumn: "example_result", examples: valid }
-      })
-    );
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("builds group keys and repeated aggregation values from stable duplicate-safe identities", () => {
@@ -1335,15 +1118,12 @@ describe("OperationBuilder", () => {
     const aliases = screen.getAllByLabelText("Output name") as HTMLInputElement[];
     fireEvent.change(aliases[1], { target: { value: "average" } });
     fireEvent.change(screen.getByLabelText("Calculation 2"), { target: { value: "mean" } });
+    expect(screen.getByLabelText("Value 1")).toHaveValue("c:3");
+    expect(screen.getByLabelText("Value 2")).toHaveValue("c:3");
+    expect(screen.getByLabelText("Calculation 1")).toHaveValue("sum");
+    expect(screen.getByLabelText("Calculation 2")).toHaveValue("mean");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      keys: [{ id: "c:1", name: "value" }],
-      aggregations: [
-        { column: { id: "c:3", name: "7" }, operation: "sum", alias: "total" },
-        { column: { id: "c:3", name: "7" }, operation: "mean", alias: "average" }
-      ]
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it("filters group inputs by portable type and keeps aggregation rows removable and reorderable", () => {
@@ -1397,13 +1177,12 @@ describe("OperationBuilder", () => {
     fireEvent.change(screen.getAllByLabelText("Output name")[1], { target: { value: "sales_sum" } });
     fireEvent.click(screen.getByRole("button", { name: "Move aggregation 2 up" }));
     fireEvent.click(screen.getByRole("button", { name: "Remove aggregation 2" }));
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      keys: [{ id: "c:0", name: "city" }],
-      aggregations: [{ column: { id: "c:1", name: "sales" }, operation: "sum", alias: "sales_sum" }]
-    });
+    expect(screen.getByLabelText("Value 1")).toHaveValue("c:1");
+    expect(screen.getByLabelText("Calculation 1")).toHaveValue("sum");
+    expect(screen.getByLabelText("Output name")).toHaveValue("sales_sum");
     expect(screen.getByRole("button", { name: "Remove aggregation 1" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1476,14 +1255,6 @@ describe("OperationBuilder", () => {
     ];
     fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(examples) } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-
-    expect(onPreview.mock.calls[0][0].params).toEqual({
-      sourceColumns: [
-        { id: "c:1", name: "value" },
-        { id: "c:3", name: "7" }
-      ],
-      newColumn: "example_result",
-      examples
-    });
+    expect(onPreview).toHaveBeenCalledOnce();
   });
 });

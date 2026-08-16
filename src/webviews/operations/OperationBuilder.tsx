@@ -2,15 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
-import type {
-  ColumnReference,
-  ColumnSchema,
-  ColumnType,
-  OperationKind,
-  SessionMetadata,
-  TransformFilterModel,
-  TransformStep
-} from "../../shared/protocol";
+import type { ColumnSchema, ColumnType, OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
 import {
   operationGroups,
   operationByKind,
@@ -19,7 +11,6 @@ import {
 } from "../../shared/operations";
 import { isTransformStep } from "../../shared/protocolValidation";
 import { FillMissingFields } from "./FillMissingFields";
-import { buildFillMissingParams } from "./fillMissingModel";
 import {
   ColumnReferenceSelect,
   ColumnReferencesSelect,
@@ -29,6 +20,7 @@ import {
   SelectField,
   TextField
 } from "./operationFormControls";
+import { buildParams, columnReferenceId } from "./operationParams";
 import { savedStepEditError } from "./savedStepEditValidation";
 
 interface OperationBuilderProps {
@@ -99,45 +91,6 @@ function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>): void {
   } else if (!event.shiftKey && (active === last || active === dialog || !dialog.contains(active))) {
     event.preventDefault();
     first.focus();
-  }
-}
-
-function isSafeByExampleScalar(value: unknown): value is string | number | boolean | null {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    !Object.is(value, -0) &&
-    (!Number.isInteger(value) || Number.isSafeInteger(value))
-  );
-}
-
-function rejectUnsafeIntegerJsonTokens(source: string): void {
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      continue;
-    }
-    if (character !== "-" && (character < "0" || character > "9")) continue;
-    const match = source.slice(index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u);
-    if (!match) continue;
-    const token = match[0];
-    const numeric = Number(token);
-    if (Number.isFinite(numeric) && Number.isInteger(numeric) && !Number.isSafeInteger(numeric)) {
-      throw new Error(
-        `Integer token ${token} is outside JavaScript's exact safe range; use smaller examples to synthesize the same operation.`
-      );
-    }
-    index += token.length - 1;
   }
 }
 
@@ -899,226 +852,8 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
   return null;
 }
 
-function buildParams(
-  kind: OperationKind,
-  form: FormData,
-  filterModel: FilterModel,
-  availableColumns: ColumnSchema[],
-  savedFilterModel?: TransformFilterModel
-): Record<string, unknown> {
-  const value = (name: string) => String(form.get(name) ?? "");
-  const optional = (target: Record<string, unknown>, name: string, transformed = value(name)) => {
-    if (transformed !== "") target[name] = transformed;
-  };
-  const columnReference = (name: string) => referenceForId(value(name), availableColumns);
-  const columnReferences = (name: string) =>
-    form
-      .getAll(name)
-      .map(String)
-      .map((id) => referenceForId(id, availableColumns));
-  const requiredColumnReferences = (name: string, label: string) => {
-    const references = columnReferences(name);
-    if (references.length === 0) throw new Error(`${label} requires at least one compatible column.`);
-    return references;
-  };
-  if (kind === "sortRows") {
-    const columns = columnReferences("sortColumn");
-    if (columns.length === 0) throw new Error("Sort rows requires at least one sort rule.");
-    const directions = form.getAll("sortDirection").map(String);
-    const nulls = form.getAll("sortNulls").map(String);
-    return { rules: columns.map((column, index) => ({ column, direction: directions[index], nulls: nulls[index] })) };
-  }
-  if (kind === "filterRows") {
-    const useSaved = savedFilterModel !== undefined && value("filterSource") !== "current";
-    return { filterModel: useSaved ? savedFilterModel : transformFilterModel(filterModel, availableColumns) };
-  }
-  if (kind === "dropMissingRows") {
-    const columns = columnReferences("columns");
-    return { ...(columns.length > 0 ? { columns } : {}), how: value("how") };
-  }
-  if (kind === "fillMissingValues") return { ...buildFillMissingParams(form, availableColumns) };
-  if (kind === "dropDuplicates") {
-    const params: Record<string, unknown> = { keep: value("keep") };
-    const columns = columnReferences("columns");
-    if (columns.length) params.columns = columns;
-    return params;
-  }
-  if (kind === "selectColumns" || kind === "dropColumns")
-    return {
-      columns: requiredColumnReferences("columns", kind === "selectColumns" ? "Select columns" : "Drop columns")
-    };
-  if (kind === "oneHotEncode")
-    return {
-      columns: requiredColumnReferences("columns", "One-hot encoding"),
-      prefixSeparator: value("prefixSeparator"),
-      dropOriginal: form.has("dropOriginal")
-    };
-  if (kind === "renameColumn" || kind === "cloneColumn") {
-    return { column: columnReference("column"), newName: value("newName") };
-  }
-  if (kind === "castColumn") return { column: columnReference("column"), dtype: value("dtype") };
-  if (kind === "formula") {
-    const scalar = value("value").trim();
-    if (value("operandMode") !== "column" && (scalar === "" || !Number.isFinite(Number(scalar)))) {
-      throw new Error("Formula requires one finite numeric value or a right column.");
-    }
-    return {
-      leftColumn: columnReference("leftColumn"),
-      operator: value("operator"),
-      newColumn: value("newColumn"),
-      ...(value("operandMode") === "column"
-        ? { rightColumn: columnReference("rightColumn") }
-        : { value: Number(scalar) })
-    };
-  }
-  if (kind === "textLength") return { column: columnReference("column"), newColumn: value("newColumn") };
-  if (kind === "multiLabelBinarize") {
-    const params: Record<string, unknown> = {
-      column: columnReference("column"),
-      delimiter: value("delimiter"),
-      dropOriginal: form.has("dropOriginal")
-    };
-    if (value("prefixMode") === "custom") params.prefix = value("prefix");
-    return params;
-  }
-  if (kind === "findReplace") {
-    const params: Record<string, unknown> = {
-      column: columnReference("column"),
-      find: value("find"),
-      replacement: value("replacement"),
-      regex: form.has("regex")
-    };
-    optional(params, "newColumn");
-    return params;
-  }
-  if (kind === "stripText") {
-    const params: Record<string, unknown> = { column: columnReference("column") };
-    optional(params, "characters");
-    optional(params, "newColumn");
-    return params;
-  }
-  if (kind === "splitText")
-    return {
-      column: columnReference("column"),
-      delimiter: value("delimiter"),
-      index: Number(value("index")),
-      newColumn: value("newColumn")
-    };
-  if (["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
-    const params: Record<string, unknown> = { column: columnReference("column") };
-    optional(params, "newColumn");
-    return params;
-  }
-  if (kind === "roundNumber") {
-    const params: Record<string, unknown> = {
-      column: columnReference("column"),
-      decimals: Number(value("decimals"))
-    };
-    optional(params, "newColumn");
-    return params;
-  }
-  if (kind === "formatDatetime") {
-    const params: Record<string, unknown> = { column: columnReference("column"), format: value("format") };
-    optional(params, "newColumn");
-    return params;
-  }
-  if (kind === "groupBy") {
-    const columns = form.getAll("aggregationColumn").map(String);
-    const operations = form.getAll("aggregationOperation").map(String);
-    const aliases = form.getAll("aggregationAlias").map(String);
-    if (columns.length === 0 || columns.length !== operations.length || columns.length !== aliases.length) {
-      throw new Error("Group by requires at least one complete compatible aggregation.");
-    }
-    return {
-      keys: requiredColumnReferences("keys", "Group by"),
-      aggregations: columns.map((id, index) => ({
-        column: referenceForId(id, availableColumns),
-        operation: operations[index],
-        alias: aliases[index]
-      }))
-    };
-  }
-  if (kind === "byExample") {
-    let examples: unknown;
-    const examplesJson = value("examples");
-    rejectUnsafeIntegerJsonTokens(examplesJson);
-    try {
-      examples = JSON.parse(examplesJson);
-    } catch {
-      throw new Error("Examples must be valid JSON.");
-    }
-    if (!Array.isArray(examples)) throw new Error("Examples JSON must be an array.");
-    const sourceColumns = requiredColumnReferences("sourceColumns", "By-example");
-    if (sourceColumns.length > 16) throw new Error("By-example supports at most 16 source columns.");
-    if (examples.length < 2 || examples.length > 64) {
-      throw new Error("By-example requires between 2 and 64 examples.");
-    }
-    for (const [index, example] of examples.entries()) {
-      if (
-        typeof example !== "object" ||
-        example === null ||
-        Array.isArray(example) ||
-        !("inputs" in example) ||
-        !Array.isArray(example.inputs) ||
-        example.inputs.length !== sourceColumns.length ||
-        !("output" in example)
-      ) {
-        throw new Error(
-          `Example ${index + 1} inputs must be an array with ${sourceColumns.length} values in source-column order.`
-        );
-      }
-      if (!example.inputs.every(isSafeByExampleScalar) || !isSafeByExampleScalar(example.output)) {
-        throw new Error(
-          `Example ${index + 1} values must be portable JSON scalars; negative zero is not supported and integer values must stay within JavaScript's exact safe range.`
-        );
-      }
-    }
-    return {
-      sourceColumns,
-      newColumn: value("newColumn"),
-      examples
-    };
-  }
-  return { code: value("code") };
-}
-
-function columnReferenceId(value: unknown): string | undefined {
-  return typeof value === "object" && value !== null && "id" in value && typeof value.id === "string"
-    ? value.id
-    : undefined;
-}
-
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
-}
-
-function referenceForId(id: string, columns: ColumnSchema[]): ColumnReference {
-  const column = columns.find((candidate) => candidate.id === id);
-  if (!column) throw new Error("The selected column is no longer available.");
-  return { id: column.id, name: column.name };
-}
-
-function transformFilterModel(filterModel: FilterModel, columns: ColumnSchema[]): TransformFilterModel {
-  const referenceForName = (name: string): ColumnReference => {
-    const matches = columns.filter((column) => column.name === name);
-    if (matches.length === 0) {
-      throw new Error(`Viewing query column “${name}” is no longer available in the operation input.`);
-    }
-    if (matches.length > 1) {
-      throw new Error(
-        `Viewing query column “${name}” is ambiguous because ${matches.length} input columns share that name.`
-      );
-    }
-    return { id: matches[0].id, name: matches[0].name };
-  };
-
-  return {
-    ...(filterModel.logic === undefined ? {} : { logic: filterModel.logic }),
-    filters: filterModel.filters
-      .filter(isActiveColumnFilter)
-      .map((filter) => ({ ...filter, column: referenceForName(filter.column) })),
-    sort: filterModel.sort.map((rule) => ({ ...rule, column: referenceForName(rule.column) }))
-  };
 }
 
 function compatibleColumns(columns: ColumnSchema[], allowedTypes: ReadonlySet<ColumnType>): ColumnSchema[] {
