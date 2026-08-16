@@ -45,6 +45,31 @@ def test_strict_pyspark_version_contract() -> None:
     )
 
 
+def test_summary_metric_batch_ranges_bound_exact_distinct_groups_and_action_formula() -> None:
+    numeric_shape = (2, 13)
+    mixed_shapes = [
+        numeric_shape,
+        numeric_shape,
+        numeric_shape,
+        (1, 8),
+        (1, 6),
+        (1, 6),
+        (1, 4),
+        (1, 4),
+        (1, 4),
+        (1, 4),
+    ]
+
+    mixed_batches = pyspark_engine_module._summary_metric_batch_ranges(mixed_shapes)
+    numeric_batches = pyspark_engine_module._summary_metric_batch_ranges([numeric_shape] * 50)
+
+    assert mixed_batches == [(0, 2), (2, 5), (5, 9), (9, 10)]
+    assert len(mixed_batches) + len(mixed_shapes) + 3 == 17
+    assert len(numeric_batches) == 25
+    assert len(numeric_batches) + 50 + 50 == 125
+    assert all(end - start == 2 for start, end in numeric_batches)
+
+
 @pytest.fixture(scope="module", params=("classic", "connect"))
 def spark_session(request: pytest.FixtureRequest) -> Iterator[Any]:
     pyspark = pytest.importorskip("pyspark")
@@ -1596,7 +1621,24 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert score["numeric"]["min"] == -1_000_000.25
         assert score["numeric"]["max"] == 1_000_000.75
         assert sum(bin_["count"] for bin_ in score["visualization"]["bins"]) == 92
+        assert len(collected_projections) == 3
+        assert (
+            sum(
+                bool(columns) and all(column.startswith("__ow_summary_") for column in columns)
+                for columns in collected_projections
+            )
+            == 1
+        )
+        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 1
+        assert (
+            sum(
+                bool(columns) and all(column.startswith("__ow_hist_") for column in columns)
+                for columns in collected_projections
+            )
+            == 1
+        )
 
+        collected_projections.clear()
         summaries = engine.summaries(indexed, projection)
         assert [summary["columnId"] for summary in summaries] == [column_id for _position, column_id in projection]
         assert [summary["column"] for summary in summaries] == list(PROFILE_COLUMN_NAMES)
@@ -1608,7 +1650,20 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert summaries[9]["rawType"] == "struct<region:string,priority:int>"
         assert all(summaries[position]["topValues"] for position in (6, 7, 8, 9))
         guarded_top_value_projection = ("count", "__ow_value", "__ow_profile_total_bytes")
-        assert collected_projections.count(guarded_top_value_projection) == len(projection) + 1
+        fixed_metric_projections = [
+            columns
+            for columns in collected_projections
+            if columns and all(column.startswith("__ow_summary_") for column in columns)
+        ]
+        histogram_projections = [
+            columns
+            for columns in collected_projections
+            if columns and all(column.startswith("__ow_hist_") for column in columns)
+        ]
+        assert len(fixed_metric_projections) == 4
+        assert collected_projections.count(guarded_top_value_projection) == len(projection)
+        assert len(histogram_projections) == 3
+        assert len(collected_projections) == 17
         assert ("__ow_profile_value_bytes",) not in collected_projections
 
         ordered = engine.apply_filter_model(
@@ -1632,6 +1687,58 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert page["rows"][1]["values"][7]["raw"] == ["Enterprise", "tier-1"]
         assert page["rows"][1]["values"][8]["raw"] == {"region": "Nordics", "bucket": "1"}
         assert page["rows"][1]["values"][9]["raw"] == {"region": "Nordics", "priority": 1}
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark_session: Any) -> None:
+    frame = spark_session.sql(
+        """
+        SELECT * FROM VALUES
+          (CAST(-9007199254740993 AS BIGINT),
+           CAST('-123456789012345.123456789012345678' AS DECIMAL(38, 18)),
+           CAST(NULL AS DOUBLE), CAST(NULL AS STRING), CAST(NULL AS DATE), CAST(NULL AS TIMESTAMP)),
+          (CAST(9007199254740995 AS BIGINT),
+           CAST('987654321098765.987654321098765432' AS DECIMAL(38, 18)),
+           CAST('NaN' AS DOUBLE), '', DATE '2026-01-01', TIMESTAMP '2026-01-01 00:00:00'),
+          (CAST(0 AS BIGINT), CAST('0.000000000000000000' AS DECIMAL(38, 18)),
+           CAST('Infinity' AS DOUBLE), 'é', DATE '2026-01-02', TIMESTAMP '2026-01-01 12:30:00'),
+          (CAST(1 AS BIGINT), CAST('1.000000000000000000' AS DECIMAL(38, 18)),
+           CAST('-Infinity' AS DOUBLE), 'é', DATE '2026-01-03', TIMESTAMP '2026-01-02 00:00:00'),
+          (CAST(2 AS BIGINT), CAST(NULL AS DECIMAL(38, 18)),
+           CAST(-0.0 AS DOUBLE), '😀', CAST(NULL AS DATE), CAST(NULL AS TIMESTAMP)),
+          (CAST(NULL AS BIGINT), CAST('2.000000000000000000' AS DECIMAL(38, 18)),
+           CAST(3.5 AS DOUBLE), '東京', DATE '2026-01-04', TIMESTAMP '2026-01-03 23:59:59')
+        AS fixture(wide, amount, floating, text_value, day_value, timestamp_value)
+        """
+    )
+    engine, indexed = _open_engine(frame, "fused-summary-equality")
+    try:
+        schema = engine.schema(indexed)
+        projection = [(int(column["position"]), f"fixture:{column['name']}") for column in schema]
+
+        fused = engine.summaries(indexed, projection)
+        per_column = [engine.summaries(indexed, [item])[0] for item in projection]
+
+        def encode(value: Any) -> bytes:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+
+        assert fused == per_column
+        assert encode(fused) == encode(per_column)
+        assert fused[0]["numeric"]["exactMin"]["display"] == "-9007199254740993"
+        assert fused[1]["numeric"]["exactMax"]["display"] == "987654321098765.987654321098765432"
+        assert fused[2]["nullCount"] == 1
+        assert fused[2]["nanCount"] == 1
+        assert fused[3]["text"] == pytest.approx({"emptyCount": 1, "minLength": 0, "maxLength": 2, "meanLength": 1.2})
+        assert fused[4]["visualization"]["kind"] == "datetime"
+        assert fused[5]["visualization"]["kind"] == "datetime"
     finally:
         engine.close()
 

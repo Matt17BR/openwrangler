@@ -76,6 +76,8 @@ PYSPARK_PAGE_COMPLEX_DEPTH_LIMIT = 64
 PYSPARK_PAGE_ANCHOR_LIMIT = 4_096
 PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
 PYSPARK_PROFILE_PROTOCOL_BYTE_LIMIT = 16 * 1024 * 1024
+PYSPARK_SUMMARY_DISTINCT_GROUP_LIMIT = 4
+PYSPARK_SUMMARY_SCALAR_ALIAS_LIMIT = 32
 _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS = 16 * 1024
 
 
@@ -483,12 +485,12 @@ class PySparkEngine(DataFrameEngine):
         visible = self._visible_columns(frame)
         projection = normalize_summary_projection(len(visible), column_projection)
         type_by_column = self._type_by_column(frame)
-        summaries: list[dict[str, Any]] = []
-        remaining_transport_bytes = PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT
-        for position, column_id in projection:
+        field_by_column = self._field_by_column(frame)
+        profile_plans: list[dict[str, Any]] = []
+        for profile_index, (position, column_id) in enumerate(projection):
             column_name = visible[position]
             raw_type, column_type = type_by_column[column_name]
-            data_type = self._field_by_column(frame)[column_name].dataType
+            data_type = field_by_column[column_name].dataType
             column = _spark_column(functions, column_name)
             nan = functions.isnan(column) if column_type == "float" else functions.lit(False)
             valid = column.isNotNull() & ~nan
@@ -500,59 +502,166 @@ class PySparkEngine(DataFrameEngine):
             grouped_value = self._groupable_value(functions, column, data_type)
             display_value = self._profile_display_value(functions, column, data_type)
 
-            metric_expressions: list[Any] = [
-                functions.count(functions.lit(1)).alias("__ow_total"),
-                functions.sum(functions.when(column.isNull(), 1).otherwise(0)).alias("__ow_null"),
-                functions.sum(functions.when(nan, 1).otherwise(0)).alias("__ow_nan"),
-                functions.countDistinct(functions.when(valid, grouped_value)).alias("__ow_distinct"),
-            ]
+            metric_expressions: list[Any] = []
+            metric_aliases: dict[str, str] = {}
+
+            _append_summary_metric(
+                profile_index,
+                metric_expressions,
+                metric_aliases,
+                "__ow_total",
+                functions.count(functions.lit(1)),
+            )
+            _append_summary_metric(
+                profile_index,
+                metric_expressions,
+                metric_aliases,
+                "__ow_null",
+                functions.sum(functions.when(column.isNull(), 1).otherwise(0)),
+            )
+            _append_summary_metric(
+                profile_index,
+                metric_expressions,
+                metric_aliases,
+                "__ow_nan",
+                functions.sum(functions.when(nan, 1).otherwise(0)),
+            )
+            _append_summary_metric(
+                profile_index,
+                metric_expressions,
+                metric_aliases,
+                "__ow_distinct",
+                functions.countDistinct(functions.when(valid, grouped_value)),
+            )
+            distinct_group_count = 1
             if column_type in {"integer", "float", "decimal"}:
                 valid_column = functions.when(valid, column)
                 finite_column = functions.when(finite, column)
-                metric_expressions.extend(
-                    [
-                        functions.min(valid_column).alias("__ow_min"),
-                        functions.max(valid_column).alias("__ow_max"),
-                        functions.avg(valid_column).alias("__ow_mean"),
-                        functions.median(valid_column).alias("__ow_median"),
-                        functions.stddev_samp(valid_column).alias("__ow_std"),
-                        functions.min(finite_column).alias("__ow_hist_min"),
-                        functions.max(finite_column).alias("__ow_hist_max"),
-                        functions.sum(functions.when(finite, 1).otherwise(0)).alias("__ow_hist_count"),
-                        functions.countDistinct(functions.when(finite, column.cast("double"))).alias(
-                            "__ow_hist_distinct"
-                        ),
-                    ]
+                for metric_name, metric_expression in (
+                    ("__ow_min", functions.min(valid_column)),
+                    ("__ow_max", functions.max(valid_column)),
+                    ("__ow_mean", functions.avg(valid_column)),
+                    ("__ow_median", functions.median(valid_column)),
+                    ("__ow_std", functions.stddev_samp(valid_column)),
+                    ("__ow_hist_min", functions.min(finite_column)),
+                    ("__ow_hist_max", functions.max(finite_column)),
+                    ("__ow_hist_count", functions.sum(functions.when(finite, 1).otherwise(0))),
+                ):
+                    _append_summary_metric(
+                        profile_index,
+                        metric_expressions,
+                        metric_aliases,
+                        metric_name,
+                        metric_expression,
+                    )
+                _append_summary_metric(
+                    profile_index,
+                    metric_expressions,
+                    metric_aliases,
+                    "__ow_hist_distinct",
+                    functions.countDistinct(functions.when(finite, column.cast("double"))),
                 )
+                # The exact profile distinct and finite-double histogram
+                # distinct expressions are intentionally charged separately.
+                # Spark may rewrite distinct aggregates through Expand, so
+                # grouping too many syntactically different arguments in one
+                # action can multiply shuffle/state work.
+                distinct_group_count = 2
             elif column_type == "boolean":
-                metric_expressions.extend(
-                    [
-                        functions.sum(functions.when(column.isNotNull() & column, 1).otherwise(0)).alias("__ow_true"),
-                        functions.sum(functions.when(column.isNotNull() & ~column, 1).otherwise(0)).alias("__ow_false"),
-                    ]
+                _append_summary_metric(
+                    profile_index,
+                    metric_expressions,
+                    metric_aliases,
+                    "__ow_true",
+                    functions.sum(functions.when(column.isNotNull() & column, 1).otherwise(0)),
+                )
+                _append_summary_metric(
+                    profile_index,
+                    metric_expressions,
+                    metric_aliases,
+                    "__ow_false",
+                    functions.sum(functions.when(column.isNotNull() & ~column, 1).otherwise(0)),
                 )
             elif column_type in {"datetime", "date"}:
-                metric_expressions.extend(
-                    [
-                        functions.min(column).alias("__ow_min"),
-                        functions.max(column).alias("__ow_max"),
-                    ]
+                _append_summary_metric(
+                    profile_index,
+                    metric_expressions,
+                    metric_aliases,
+                    "__ow_min",
+                    functions.min(column),
+                )
+                _append_summary_metric(
+                    profile_index,
+                    metric_expressions,
+                    metric_aliases,
+                    "__ow_max",
+                    functions.max(column),
                 )
             elif column_type == "string":
                 text_length = functions.length(column.cast("string"))
                 valid_text_length = functions.when(valid, text_length)
-                metric_expressions.extend(
-                    [
-                        functions.sum(functions.when(valid & (text_length == functions.lit(0)), 1).otherwise(0)).alias(
-                            "__ow_empty"
-                        ),
-                        functions.min(valid_text_length).alias("__ow_min_length"),
-                        functions.max(valid_text_length).alias("__ow_max_length"),
-                        functions.avg(valid_text_length).alias("__ow_mean_length"),
-                    ]
+                _append_summary_metric(
+                    profile_index,
+                    metric_expressions,
+                    metric_aliases,
+                    "__ow_empty",
+                    functions.sum(functions.when(valid & (text_length == functions.lit(0)), 1).otherwise(0)),
                 )
+                for metric_name, metric_expression in (
+                    ("__ow_min_length", functions.min(valid_text_length)),
+                    ("__ow_max_length", functions.max(valid_text_length)),
+                    ("__ow_mean_length", functions.avg(valid_text_length)),
+                ):
+                    _append_summary_metric(
+                        profile_index,
+                        metric_expressions,
+                        metric_aliases,
+                        metric_name,
+                        metric_expression,
+                    )
 
-            metrics = frame.agg(*metric_expressions).collect()[0]
+            profile_plans.append(
+                {
+                    "columnId": column_id,
+                    "column": column_name,
+                    "type": column_type,
+                    "rawType": raw_type,
+                    "dataType": data_type,
+                    "columnExpression": column,
+                    "validExpression": valid,
+                    "finiteExpression": finite,
+                    "groupedValueExpression": grouped_value,
+                    "displayValueExpression": display_value,
+                    "metricExpressions": metric_expressions,
+                    "metricAliases": metric_aliases,
+                    "distinctGroupCount": distinct_group_count,
+                }
+            )
+
+        for batch_start, batch_end in _summary_metric_batch_ranges(
+            [(int(plan["distinctGroupCount"]), len(plan["metricExpressions"])) for plan in profile_plans]
+        ):
+            batch = profile_plans[batch_start:batch_end]
+            fixed_result = frame.agg(
+                *(expression for plan in batch for expression in plan["metricExpressions"])
+            ).collect()[0]
+            for plan in batch:
+                plan["metrics"] = {name: fixed_result[alias] for name, alias in plan["metricAliases"].items()}
+
+        summaries: list[dict[str, Any]] = []
+        remaining_transport_bytes = PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT
+        for plan in profile_plans:
+            column_id = str(plan["columnId"])
+            column_name = str(plan["column"])
+            column_type = str(plan["type"])
+            raw_type = str(plan["rawType"])
+            data_type = plan["dataType"]
+            column = plan["columnExpression"]
+            valid = plan["validExpression"]
+            finite = plan["finiteExpression"]
+            grouped_value = plan["groupedValueExpression"]
+            display_value = plan["displayValueExpression"]
+            metrics = plan["metrics"]
             total_count = int(metrics["__ow_total"] or 0)
             null_count = int(metrics["__ow_null"] or 0)
             nan_count = int(metrics["__ow_nan"] or 0)
@@ -1073,6 +1182,49 @@ def _current_pyspark_request_id() -> str | None:
     """Return the request bound to this execution context for focused tests."""
 
     return _ACTIVE_PYSPARK_REQUEST_ID.get()
+
+
+def _append_summary_metric(
+    profile_index: int,
+    metric_expressions: list[Any],
+    metric_aliases: dict[str, str],
+    name: str,
+    expression: Any,
+) -> None:
+    alias = f"__ow_summary_{profile_index}_{name.removeprefix('__ow_')}"
+    metric_aliases[name] = alias
+    metric_expressions.append(expression.alias(alias))
+
+
+def _summary_metric_batch_ranges(metric_shapes: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Greedily bound Spark's distinct expansion and fixed aggregate width."""
+
+    ranges: list[tuple[int, int]] = []
+    batch_start = 0
+    batch_distinct_groups = 0
+    batch_scalar_aliases = 0
+    item_count = 0
+    for item_count, (distinct_groups, scalar_aliases) in enumerate(metric_shapes, start=1):
+        if distinct_groups < 1 or scalar_aliases < 1:
+            raise EngineError("PySpark summary metric batches require positive fixed bounds.")
+        if (
+            distinct_groups > PYSPARK_SUMMARY_DISTINCT_GROUP_LIMIT
+            or scalar_aliases > PYSPARK_SUMMARY_SCALAR_ALIAS_LIMIT
+        ):
+            raise EngineError("One PySpark summary column exceeds the fixed aggregate batch bounds.")
+        if batch_distinct_groups and (
+            batch_distinct_groups + distinct_groups > PYSPARK_SUMMARY_DISTINCT_GROUP_LIMIT
+            or batch_scalar_aliases + scalar_aliases > PYSPARK_SUMMARY_SCALAR_ALIAS_LIMIT
+        ):
+            ranges.append((batch_start, item_count - 1))
+            batch_start = item_count - 1
+            batch_distinct_groups = 0
+            batch_scalar_aliases = 0
+        batch_distinct_groups += distinct_groups
+        batch_scalar_aliases += scalar_aliases
+    if item_count:
+        ranges.append((batch_start, item_count))
+    return ranges
 
 
 def _is_unsupported_profile_type(raw_type: str) -> bool:
