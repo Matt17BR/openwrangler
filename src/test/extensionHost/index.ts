@@ -34,7 +34,7 @@ import {
   type Request,
   type Response
 } from "playwright-core";
-import type { Jupyter, JupyterServerCollection, KernelStatus } from "@vscode/jupyter-extension";
+import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import {
   DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS,
@@ -163,6 +163,10 @@ import {
   releasedNotebookOutputClassification,
   releasedNotebookRSetupFailureStage
 } from "./releasedNotebookFailure";
+import {
+  restartReleasedJupyterKernelAndWait as restartReleasedJupyterKernelAndWaitOwner,
+  type ReleasedJupyterKernelRestartBoundary
+} from "./releasedJupyterKernelRestart";
 import {
   bestEffortRendererProvenanceCleanup,
   createRendererProvenanceOrderContract,
@@ -16878,78 +16882,18 @@ async function exerciseReleasedJupyterRestartReplay(
 
 async function restartReleasedJupyterKernelAndWait(
   notebook: vscode.NotebookDocument,
-  checkpoint?: (boundary: "dispatch:start" | "dispatch:complete" | "idle:start" | "idle:complete") => void
+  checkpoint?: (boundary: ReleasedJupyterKernelRestartBoundary) => void
 ): Promise<void> {
   const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
   assert.ok(extension, "The released Jupyter extension must remain installed for restart acceptance.");
-  assertExactOpenNotebookDocument(notebook, "before acquiring its released Jupyter kernel for restart");
-  const api = await extension.activate();
-  assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for restart observation");
-  const originalKernel = await api.kernels.getKernel(notebook.uri);
-  assertExactOpenNotebookDocument(notebook, "after acquiring its released Jupyter kernel for restart");
-  assert.ok(originalKernel, "The released Jupyter kernel must remain available before restart.");
-
-  let restartDispatched = false;
-  let observedRestart = false;
-  let restartCommandState: "pending" | "fulfilled" | "rejected" = "pending";
-  let restartCommandError: unknown;
-  const statuses = new Set<KernelStatus>();
-  const recordStatus = (status: KernelStatus): void => {
-    statuses.add(status);
-    if (restartDispatched && status !== "idle") observedRestart = true;
-  };
-  const throwIfRestartCommandRejected = (): void => {
-    if (restartCommandState === "rejected") {
-      throw new Error("The released Jupyter kernel restart command was rejected.", {
-        cause: restartCommandError
-      });
-    }
-  };
-  recordStatus(originalKernel.status);
-  const statusListener = originalKernel.onDidChangeStatus(recordStatus);
-  try {
-    const deadline = Date.now() + 90_000;
-    checkpoint?.("dispatch:start");
-    restartDispatched = true;
-    const restartCommand = vscode.commands.executeCommand("jupyter.restartkernel", notebook.uri);
-    void Promise.resolve(restartCommand).then(
-      () => {
-        restartCommandState = "fulfilled";
-      },
-      (error: unknown) => {
-        restartCommandState = "rejected";
-        restartCommandError = error;
-      }
-    );
-    assertExactOpenNotebookDocument(notebook, "after dispatching the released Jupyter kernel restart");
-    checkpoint?.("dispatch:complete");
-    checkpoint?.("idle:start");
-
-    do {
-      throwIfRestartCommandRejected();
-      assertExactOpenNotebookDocument(notebook, "while waiting for its released Jupyter kernel restart");
-      const currentKernel = await api.kernels.getKernel(notebook.uri);
-      assertExactOpenNotebookDocument(notebook, "after polling its released Jupyter kernel restart");
-      if (!currentKernel) {
-        observedRestart = true;
-      } else {
-        recordStatus(currentKernel.status);
-        if (currentKernel !== originalKernel) observedRestart = true;
-        throwIfRestartCommandRejected();
-        if (observedRestart && currentKernel.status === "idle") {
-          checkpoint?.("idle:complete");
-          return;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } while (Date.now() < deadline);
-    throw new Error(
-      `Timed out waiting for the released Jupyter kernel to restart and return idle. ` +
-        `Command state: ${restartCommandState}. Observed statuses: ${JSON.stringify([...statuses])}`
-    );
-  } finally {
-    statusListener.dispose();
-  }
+  await restartReleasedJupyterKernelAndWaitOwner({
+    notebook,
+    activateJupyter: () => extension.activate(),
+    getKernel: (api, exactNotebook) => api.kernels.getKernel(exactNotebook.uri),
+    dispatchRestart: (exactNotebook) => vscode.commands.executeCommand("jupyter.restartkernel", exactNotebook.uri),
+    assertExactNotebook: assertExactOpenNotebookDocument,
+    checkpoint
+  });
 }
 
 async function closeReleasedJupyterSessionTabs(): Promise<void> {
