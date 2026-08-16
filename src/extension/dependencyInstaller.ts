@@ -1134,6 +1134,7 @@ function dependencyGuardDependencyWire(dependency: PythonDependency): {
   importModule: string;
   distribution: string;
   installSpec: string;
+  exactVersion: string | null;
   minimumVersion: string | null;
   maximumVersionExclusive: string | null;
 } {
@@ -1141,6 +1142,7 @@ function dependencyGuardDependencyWire(dependency: PythonDependency): {
     importModule: dependency.importModule,
     distribution: dependency.distribution,
     installSpec: dependency.installSpec,
+    exactVersion: dependency.exactVersion ?? null,
     minimumVersion: dependency.minimumVersion ?? null,
     maximumVersionExclusive: dependency.maximumVersionExclusive ?? null
   };

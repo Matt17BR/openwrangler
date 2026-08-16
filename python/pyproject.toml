@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
   "polars",
   "duckdb>=1.5.4,<1.6",
+  "fsspec==2026.7.0",
   "pytz",
   "pandas",
   "pyarrow",

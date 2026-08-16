@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   REMOTE_JUPYTER_INPUT_PATH,
+  REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER,
   REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER,
   REMOTE_JUPYTER_LOCK_PATH,
   REMOTE_JUPYTER_LOCK_PLATFORM,
@@ -26,6 +27,11 @@ const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
 test("the remote Jupyter lock is complete, canonical, and above its security floor", async () => {
   const { directEntries, lockedEntries } = await checkRemoteJupyterLockFiles();
   assert.equal(directEntries.find(({ name }) => name === "jupyter-server")?.version, "2.20.0");
+  assert.equal(directEntries.find(({ name }) => name === "fsspec")?.version, "2026.7.0");
+  assert.deepEqual(lockedEntries.find(({ name }) => name === "fsspec")?.hashes, [
+    "b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279",
+    "c803c40f4cf860b49dea58ee3e1c33cb9c790520e233537e1340049f89b82a88"
+  ]);
   assert.ok(lockedEntries.length > 50);
 });
 
@@ -34,7 +40,7 @@ test("the R fixture has a separate server-only lock without Python dataframe eng
   assert.deepEqual(directEntries, [{ name: "jupyter-server", version: "2.20.0" }]);
   assert.ok(lockedEntries.length > 40);
   const names = new Set(lockedEntries.map(({ name }) => name));
-  for (const forbidden of ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
+  for (const forbidden of ["duckdb", "fsspec", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
     assert.equal(names.has(forbidden), false);
   }
 });
@@ -77,15 +83,20 @@ test("the lock compiler freezes its tool, target, index, and release horizon", (
   assert.equal(REMOTE_JUPYTER_LOCK_PYTHON_VERSION, "3.12");
   assert.equal(REMOTE_JUPYTER_LOCK_PLATFORM, "x86_64-manylinux_2_28");
   assert.equal(REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER, "2026-07-27T00:00:00Z");
+  assert.equal(REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER, "fsspec=2026-07-29T00:00:00Z");
   assert.deepEqual(argumentsList.slice(0, 3), ["pip", "compile", REMOTE_JUPYTER_INPUT_PATH]);
   assert.ok(argumentsList.includes("--only-binary=:all:"));
   assert.ok(argumentsList.includes("--generate-hashes"));
+  assert.ok(argumentsList.includes("--exclude-newer-package"));
+  assert.ok(argumentsList.includes(REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER));
   assert.ok(argumentsList.includes("--no-config"));
   assert.ok(argumentsList.includes("--upgrade"));
   assert.deepEqual(argumentsList.slice(-2), ["--output-file", output]);
   const rArguments = remoteRJupyterCompileArguments(output);
   assert.deepEqual(rArguments.slice(0, 3), ["pip", "compile", REMOTE_R_JUPYTER_INPUT_PATH]);
-  assert.deepEqual(rArguments.slice(3), argumentsList.slice(3));
+  assert.equal(rArguments.includes("--exclude-newer-package"), false);
+  const packageOverride = argumentsList.indexOf("--exclude-newer-package");
+  assert.deepEqual(rArguments.slice(3), argumentsList.toSpliced(packageOverride, 2).slice(3));
 });
 
 test("the lock compiler accepts only the exact resolver version output", () => {

@@ -10,6 +10,7 @@ export const REMOTE_R_JUPYTER_INPUT_PATH = resolve(REPOSITORY_ROOT, "scripts", "
 export const REMOTE_R_JUPYTER_LOCK_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.r.txt");
 export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze([
   "duckdb",
+  "fsspec",
   "ipykernel",
   "jupyter-server",
   "pandas",
@@ -21,6 +22,7 @@ export const REMOTE_JUPYTER_LOCK_TOOL_VERSION = "0.11.32";
 export const REMOTE_JUPYTER_LOCK_PYTHON_VERSION = "3.12";
 export const REMOTE_JUPYTER_LOCK_PLATFORM = "x86_64-manylinux_2_28";
 export const REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER = "2026-07-27T00:00:00Z";
+export const REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER = "fsspec=2026-07-29T00:00:00Z";
 
 const PACKAGE_NAME = /^[a-z][a-z0-9-]*$/u;
 const PACKAGE_VERSION = /^[0-9]+(?:[._+-][0-9A-Za-z]+)*$/u;
@@ -179,7 +181,7 @@ export function validateRemoteJupyterLock(inputText, lockText) {
 export function validateRemoteRJupyterLock(inputText, lockText) {
   return validateFixtureLock(inputText, lockText, REMOTE_R_JUPYTER_DIRECT_DEPENDENCIES, {
     minimumPackages: 40,
-    forbiddenPackages: ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]
+    forbiddenPackages: ["duckdb", "fsspec", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]
   });
 }
 
@@ -219,7 +221,9 @@ function fixtureCompileArguments(inputPath, outputPath) {
 }
 
 export function remoteJupyterCompileArguments(outputPath) {
-  return fixtureCompileArguments(REMOTE_JUPYTER_INPUT_PATH, outputPath);
+  const argumentsList = fixtureCompileArguments(REMOTE_JUPYTER_INPUT_PATH, outputPath);
+  argumentsList.splice(-3, 0, "--exclude-newer-package", REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER);
+  return argumentsList;
 }
 
 export function remoteRJupyterCompileArguments(outputPath) {

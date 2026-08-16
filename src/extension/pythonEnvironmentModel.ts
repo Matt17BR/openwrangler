@@ -7,6 +7,7 @@ export interface PythonDependency {
   importModule: string;
   distribution: string;
   installSpec: string;
+  exactVersion?: string;
   minimumVersion?: string;
   maximumVersionExclusive?: string;
 }
@@ -79,6 +80,12 @@ export function requiredDependencies(backend: FileDataBackend, source: SessionSo
       installSpec: "duckdb>=1.5.4,<1.6",
       minimumVersion: "1.5.4",
       maximumVersionExclusive: "1.6"
+    });
+    add({
+      importModule: "fsspec",
+      distribution: "fsspec",
+      installSpec: "fsspec==2026.7.0",
+      exactVersion: "2026.7.0"
     });
     add({
       importModule: "pytz",

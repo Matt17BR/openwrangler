@@ -161,6 +161,7 @@ describe("owned dependency installation", () => {
             importModule: "pandas",
             distribution: "pandas",
             installSpec: "pandas>=2.2,<3",
+            exactVersion: null,
             minimumVersion: "2.2",
             maximumVersionExclusive: "3"
           },
@@ -168,6 +169,7 @@ describe("owned dependency installation", () => {
             importModule: "xlrd",
             distribution: "xlrd",
             installSpec: "xlrd>=2.0.1",
+            exactVersion: null,
             minimumVersion: "2.0.1",
             maximumVersionExclusive: null
           }

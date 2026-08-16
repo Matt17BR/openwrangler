@@ -522,58 +522,118 @@ def test_operation_and_all_nested_cleanup_failures_remain_visible(tmp_path, monk
     ]
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows sharing semantics")
-def test_windows_pin_blocks_target_and_parent_path_substitution(tmp_path) -> None:
+def prepared_windows_export_pin(tmp_path: Path) -> tuple[Path, Path, tuple[int, int], WindowsPinnedExportTarget]:
     parent = tmp_path / "export-parent"
     parent.mkdir()
     target = parent / "host-reserved.csv"
     target.write_bytes(b"reserved")
     identity = _regular_file_identity(target)
-    pinned = WindowsPinnedExportTarget.open(target, identity)
+    return parent, target, identity, WindowsPinnedExportTarget.open(target, identity)
 
+
+def assert_windows_export_pin_unchanged(
+    target: Path, identity: tuple[int, int], pinned: WindowsPinnedExportTarget
+) -> None:
+    assert target.read_bytes() == b"reserved"
+    assert _regular_file_identity(target) == identity
+    pinned.assert_unchanged()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows sharing semantics")
+def test_windows_pin_blocks_target_rename_with_sharing_violation(tmp_path: Path) -> None:
+    _parent, target, identity, pinned = prepared_windows_export_pin(tmp_path)
+    displaced = target.with_name("displaced.csv")
     try:
-        with pytest.raises(OSError) as rename_error:
-            target.rename(parent / "displaced.csv")
-        assert_windows_sharing_violation(rename_error.value)
-        with pytest.raises(OSError) as unlink_error:
-            target.unlink()
-        assert_windows_sharing_violation(unlink_error.value)
-        replacement = parent / "foreign.csv"
-        replacement.write_bytes(b"foreign")
-        with pytest.raises(OSError) as replace_error:
-            os.replace(replacement, target)
-        assert_windows_sharing_violation(replace_error.value)
-
-        symlink_source = parent / "symlink-source.csv"
-        symlink_source.write_bytes(b"symlink source")
-        symlink_replacement = parent / "replacement-link.csv"
-        try:
-            symlink_replacement.symlink_to(symlink_source)
-        except OSError as symlink_error:
-            assert getattr(symlink_error, "winerror", None) == 1314
-        else:
-            with pytest.raises(OSError) as symlink_replace_error:
-                os.replace(symlink_replacement, target)
-            assert_windows_sharing_violation(symlink_replace_error.value)
-            assert symlink_replacement.is_symlink()
-            assert symlink_source.read_bytes() == b"symlink source"
-
-        with pytest.raises(OSError) as parent_rename_error:
-            parent.rename(tmp_path / "displaced-parent")
-        assert_windows_sharing_violation(parent_rename_error.value)
-        assert target.read_bytes() == b"reserved"
-        assert replacement.read_bytes() == b"foreign"
-        assert _regular_file_identity(target) == identity
-        pinned.assert_unchanged()
+        with pytest.raises(OSError) as raised:
+            target.rename(displaced)
+        assert getattr(raised.value, "winerror", None) == 32
+        assert not displaced.exists()
+        assert_windows_export_pin_unchanged(target, identity, pinned)
     finally:
         pinned.close()
 
-    released_target = parent / "released-target.csv"
-    target.rename(released_target)
-    released_target.rename(target)
-    released_parent = tmp_path / "released-parent"
-    parent.rename(released_parent)
-    assert (released_parent / target.name).read_bytes() == b"reserved"
+    target.rename(displaced)
+    displaced.rename(target)
+    assert target.read_bytes() == b"reserved"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows sharing semantics")
+def test_windows_pin_blocks_target_unlink_with_sharing_violation(tmp_path: Path) -> None:
+    _parent, target, identity, pinned = prepared_windows_export_pin(tmp_path)
+    try:
+        with pytest.raises(OSError) as raised:
+            target.unlink()
+        assert getattr(raised.value, "winerror", None) == 32
+        assert_windows_export_pin_unchanged(target, identity, pinned)
+    finally:
+        pinned.close()
+
+    target.unlink()
+    assert not target.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows sharing semantics")
+def test_windows_pin_blocks_regular_replace_with_access_denied(tmp_path: Path) -> None:
+    parent, target, identity, pinned = prepared_windows_export_pin(tmp_path)
+    replacement = parent / "foreign.csv"
+    replacement.write_bytes(b"foreign")
+    try:
+        with pytest.raises(OSError) as raised:
+            os.replace(replacement, target)
+        assert getattr(raised.value, "winerror", None) == 5
+        assert replacement.read_bytes() == b"foreign"
+        assert_windows_export_pin_unchanged(target, identity, pinned)
+    finally:
+        pinned.close()
+
+    os.replace(replacement, target)
+    assert target.read_bytes() == b"foreign"
+    assert not replacement.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows sharing semantics")
+def test_windows_pin_blocks_symlink_replace_with_access_denied(tmp_path: Path) -> None:
+    parent, target, identity, pinned = prepared_windows_export_pin(tmp_path)
+    symlink_source = parent / "symlink-source.csv"
+    symlink_source.write_bytes(b"symlink source")
+    replacement = parent / "replacement-link.csv"
+
+    try:
+        try:
+            replacement.symlink_to(symlink_source)
+        except OSError as symlink_error:
+            assert getattr(symlink_error, "winerror", None) == 1314
+            return
+        else:
+            with pytest.raises(OSError) as raised:
+                os.replace(replacement, target)
+            assert getattr(raised.value, "winerror", None) == 5
+            assert replacement.is_symlink()
+            assert symlink_source.read_bytes() == b"symlink source"
+            assert_windows_export_pin_unchanged(target, identity, pinned)
+    finally:
+        pinned.close()
+
+    os.replace(replacement, target)
+    assert target.is_symlink()
+    assert symlink_source.read_bytes() == b"symlink source"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows sharing semantics")
+def test_windows_pin_blocks_parent_rename_with_sharing_violation(tmp_path: Path) -> None:
+    parent, target, identity, pinned = prepared_windows_export_pin(tmp_path)
+    displaced = tmp_path / "displaced-parent"
+    try:
+        with pytest.raises(OSError) as raised:
+            parent.rename(displaced)
+        assert getattr(raised.value, "winerror", None) == 32
+        assert not displaced.exists()
+        assert_windows_export_pin_unchanged(target, identity, pinned)
+    finally:
+        pinned.close()
+
+    parent.rename(displaced)
+    assert (displaced / target.name).read_bytes() == b"reserved"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows hard-link semantics")

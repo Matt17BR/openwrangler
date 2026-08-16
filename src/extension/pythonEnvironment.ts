@@ -650,9 +650,17 @@ export async function probeDependencies(
     windowsHide: true
   });
   const result = JSON.parse(stdout.trim()) as Record<string, { found: boolean; version?: string }>;
+  return classifyDependencyProbe(dependencies, result);
+}
+
+export function classifyDependencyProbe(
+  dependencies: readonly PythonDependency[],
+  result: Readonly<Record<string, { found: boolean; version?: string }>>
+): DependencyProbe {
   const supported = (dependency: PythonDependency): boolean => {
     const observed = result[dependency.importModule];
     if (!observed?.found) return false;
+    if (dependency.exactVersion && observed.version !== dependency.exactVersion) return false;
     if (dependency.minimumVersion && compareVersions(observed.version, dependency.minimumVersion) < 0) return false;
     if (
       dependency.maximumVersionExclusive &&

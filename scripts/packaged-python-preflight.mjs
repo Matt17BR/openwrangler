@@ -12,15 +12,16 @@ const DEPENDENCY_FAILURE_EXIT = 20;
 const PROFILES = Object.freeze({
   "interpreter-only": Object.freeze([]),
   "repository-command": Object.freeze([]),
-  editor: Object.freeze(["pandas", "polars", "duckdb", "openpyxl", "pyarrow"]),
-  "editor-jupyter": Object.freeze(["pandas", "polars", "duckdb", "openpyxl", "pyarrow", "ipykernel"]),
-  "jupyter-bootstrap": Object.freeze(["ipykernel", "pandas", "polars", "duckdb"]),
+  editor: Object.freeze(["pandas", "polars", "duckdb", "fsspec", "openpyxl", "pyarrow"]),
+  "editor-jupyter": Object.freeze(["pandas", "polars", "duckdb", "fsspec", "openpyxl", "pyarrow", "ipykernel"]),
+  "jupyter-bootstrap": Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "fsspec"]),
   "jupyter-host": Object.freeze(["jupyter_client"]),
-  "jupyter-host-literate": Object.freeze(["jupyter_client", "ipykernel", "pandas", "polars", "duckdb"]),
+  "jupyter-host-literate": Object.freeze(["jupyter_client", "ipykernel", "pandas", "polars", "duckdb", "fsspec"]),
   visual: Object.freeze([
     "pandas",
     "polars",
     "duckdb",
+    "fsspec",
     "nbformat",
     "nbclient",
     "ipykernel",
@@ -40,11 +41,14 @@ const PROFILE_LABELS = Object.freeze({
 });
 const PROBE_SOURCE = [
   "import importlib",
+  "import importlib.metadata",
   "import sys",
   `if not ((3, 10) <= sys.version_info[:2] <= (3, 14)): raise SystemExit(${INTERPRETER_FAILURE_EXIT})`,
   "sys.path.insert(0, sys.argv.pop(1))",
   "for name in sys.argv[1:]:",
-  "    try: importlib.import_module(name)",
+  "    try:",
+  "        importlib.import_module(name)",
+  '        if name == "fsspec" and importlib.metadata.version(name) != "2026.7.0": raise ValueError',
   `    except BaseException: raise SystemExit(${DEPENDENCY_FAILURE_EXIT})`
 ].join("\n");
 

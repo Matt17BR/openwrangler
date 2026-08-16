@@ -52,6 +52,7 @@ describe("PythonDependencyProbeRegistry", () => {
       { ...baseline, importModule: "other-engine" },
       { ...baseline, distribution: "other-dist" },
       { ...baseline, installSpec: "other-install-spec" },
+      { ...baseline, exactVersion: "1.0.0" },
       { ...baseline, minimumVersion: "1.1" },
       { ...baseline, maximumVersionExclusive: "2.1" }
     ];
