@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from io import TextIOBase
 from typing import Any, TextIO
 
 MAX_CUSTOM_DIAGNOSTIC_BYTES = 8 * 1024
@@ -16,7 +16,18 @@ _PRIVATE_KEY_OUTPUT = "<redacted private-key output>"
 
 _PRIVATE_KEY_PATTERN = re.compile(r"-{4,5}\s*BEGIN[^\r\n]{0,160}PRIVATE KEY", re.IGNORECASE)
 _BEARER_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_OPAQUE_TOKEN_PATTERN = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|npm_[A-Za-z0-9]{12,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|sk-(?:proj-)?[A-Za-z0-9_-]{12,}|"
+    r"hf_[A-Za-z0-9]{12,}|pypi-[A-Za-z0-9_-]{12,}|owr_[A-Za-z0-9_-]{12,})\b",
+    re.IGNORECASE,
+)
 _URL_CREDENTIAL_PATTERN = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/?#]+:)[^\s@/?#]+(@)", re.IGNORECASE)
+_QUERY_SECRET_PATTERN = re.compile(
+    r"([?&](?:signature|sig|credential|auth(?:orization)?|api[_-]?key|access[_-]?token|token|code|"
+    r"client[_-]?secret|password|passwd)=)[^&#\s]*",
+    re.IGNORECASE,
+)
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(\b(?:authorization|auth|cookie|password|passwd|pwd|passphrase|api[_ -]?key|access[_ -]?token|"
     r"refresh[_ -]?token|secret|credential|token|pat)\b\s*(?::|=|=>|->)\s*)"
@@ -87,6 +98,20 @@ class _BoundedTextBuffer:
         retained = "".join(self._parts)
         return f"{retained}{_TRUNCATED_MARKER}" if self._truncated else retained
 
+    def write_bytes(self, value: bytes | bytearray | memoryview) -> int:
+        byte_view = memoryview(value).cast("B")
+        original_length = byte_view.nbytes
+        remaining = self._byte_limit - self._retained_bytes
+        if remaining <= 0:
+            if original_length:
+                self._truncated = True
+            return original_length
+        candidate = bytes(byte_view[:remaining])
+        self.write(candidate.decode("utf-8", errors="replace"))
+        if len(candidate) < original_length:
+            self._truncated = True
+        return original_length
+
 
 class _CaptureState:
     def __init__(self) -> None:
@@ -96,6 +121,10 @@ class _CaptureState:
     def write(self, channel: str, value: Any) -> int:
         return (self.stdout if channel == "stdout" else self.stderr).write(value)
 
+    def write_bytes(self, channel: str, value: bytes | bytearray | memoryview) -> int:
+        return (self.stdout if channel == "stdout" else self.stderr).write_bytes(value)
+
+
 class _BinaryCaptureRouter:
     def __init__(self, owner: _TextCaptureRouter) -> None:
         self._owner = owner
@@ -103,15 +132,13 @@ class _BinaryCaptureRouter:
     def write(self, value: Any) -> int:
         if not isinstance(value, (bytes, bytearray, memoryview)):
             raise TypeError(f"a bytes-like object is required, not {type(value).__name__}")
-        payload = bytes(value)
         state = _current_capture()
         if state is None:
             fallback = getattr(self._owner.fallback, "buffer", None)
             if fallback is None:
-                return self._owner.fallback.write(payload.decode("utf-8", errors="replace"))
-            return fallback.write(payload)
-        state.write(self._owner.channel, payload.decode("utf-8", errors="replace"))
-        return len(payload)
+                return self._owner.fallback.write(bytes(value).decode("utf-8", errors="replace"))
+            return fallback.write(value)
+        return state.write_bytes(self._owner.channel, value)
 
     def flush(self) -> None:
         if _current_capture() is None:
@@ -122,7 +149,7 @@ class _BinaryCaptureRouter:
                 self._owner.fallback.flush()
 
 
-class _TextCaptureRouter(TextIOBase):
+class _TextCaptureRouter:
     def __init__(self, channel: str, fallback: TextIO) -> None:
         self.channel = channel
         self.fallback = fallback
@@ -219,6 +246,54 @@ def install_custom_code_output_capture() -> None:
         _stdout_router.fallback = _saved_stderr
 
 
+def isolate_standalone_protocol_output() -> TextIO:
+    """Return the sole writer for standalone NDJSON stdout.
+
+    The returned stream owns a non-inheritable duplicate of the process's
+    original stdout descriptor. Descriptor 1 is then redirected to stderr and
+    every public Python stdout handle is replaced by the request-aware router.
+    Custom ``print()``, ``sys.stdout.write()``, ``sys.__stdout__.write()``,
+    buffered writes, and child-process stdout therefore cannot reach the
+    protocol pipe. The caller must keep the returned writer private.
+
+    In-process tests may supply stream doubles without file descriptors. Those
+    retain the existing writer and exercise framing without installing the
+    process-lifetime standalone boundary.
+    """
+
+    stdout = sys.stdout
+    stderr = sys.stderr
+    try:
+        stdout_descriptor = stdout.fileno()
+        stderr_descriptor = stderr.fileno()
+    except (AttributeError, OSError):
+        return stdout
+    if stdout_descriptor == stderr_descriptor:
+        raise RuntimeError("Standalone runtime stdout and stderr must use distinct descriptors.")
+
+    stdout.flush()
+    stderr.flush()
+    protocol_descriptor = os.dup(stdout_descriptor)
+    os.set_inheritable(protocol_descriptor, False)
+    protocol_output = os.fdopen(
+        protocol_descriptor,
+        "w",
+        buffering=1,
+        encoding=getattr(stdout, "encoding", None) or "utf-8",
+        errors=getattr(stdout, "errors", None) or "strict",
+        newline="\n",
+        closefd=True,
+    )
+    try:
+        os.dup2(stderr_descriptor, stdout_descriptor, inheritable=False)
+        install_custom_code_output_capture()
+    except BaseException:
+        os.dup2(protocol_output.fileno(), stdout_descriptor, inheritable=False)
+        protocol_output.close()
+        raise
+    return protocol_output
+
+
 @contextmanager
 def capture_custom_code_output() -> Iterator[CapturedCustomCodeOutput]:
     global _active_scopes
@@ -286,7 +361,9 @@ def _redact_diagnostic(value: str) -> str:
     if _UNSAFE_CONTROL_PATTERN.search(bounded) or _SURROGATE_PATTERN.search(bounded):
         return _UNSAFE_OUTPUT
     redacted = _BEARER_PATTERN.sub(f"Bearer {_REDACTED_VALUE}", bounded)
+    redacted = _OPAQUE_TOKEN_PATTERN.sub(_REDACTED_VALUE, redacted)
     redacted = _URL_CREDENTIAL_PATTERN.sub(rf"\1{_REDACTED_VALUE}\2", redacted)
+    redacted = _QUERY_SECRET_PATTERN.sub(rf"\1{_REDACTED_VALUE}", redacted)
     return _SECRET_ASSIGNMENT_PATTERN.sub(rf"\1{_REDACTED_VALUE}", redacted)
 
 
