@@ -152,6 +152,7 @@ import {
   assertReleasedRTextLengthGeneratedCode,
   releasedRCategoricalGeneratedCall
 } from "./releasedRGeneratedCode";
+import { assertReleasedNativeREditorTooling as assertReleasedNativeREditorToolingOwner } from "./releasedRTooling";
 import {
   findReleasedQuartoPreviewLocator,
   openReleasedNativeQuartoPreview as openReleasedNativeQuartoPreviewOwner
@@ -4330,53 +4331,16 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
 }
 
 async function assertReleasedNativeREditorTooling(): Promise<boolean> {
-  const expected = [
-    ["reditorsupport.r-syntax", "0.1.4"],
-    ["reditorsupport.r", "2.8.8"],
-    ["quarto.quarto", "1.135.0"]
-  ] as const;
-  const installed = expected.map(([id, version]) => ({ id, version, extension: vscode.extensions.getExtension(id) }));
-  if (installed.every(({ extension }) => extension === undefined)) return false;
-  for (const { id, version, extension } of installed) {
-    assert.ok(extension, `Packaged R acceptance requires ${id}@${version}.`);
-    assert.equal(extension.packageJSON.version, version, `Packaged R acceptance requires ${id}@${version}.`);
-  }
-  for (const id of ["reditorsupport.r", "quarto.quarto"] as const) {
-    const extension = vscode.extensions.getExtension(id);
-    assert.ok(extension);
-    await withBoundedAcceptancePromise(extension.activate(), 30_000, `activating ${id}`);
-    assert.equal(extension.isActive, true, `${id} must activate in the private editor profile.`);
-  }
-  const commands = new Set(await vscode.commands.getCommands(true));
-  for (const command of [
-    "r.runSelection",
-    "r.runSource",
-    "r.knitRmdToHtml",
-    "quarto.runCurrentCell",
-    "quarto.renderDocument",
-    "quarto.preview"
-  ]) {
-    assert.ok(commands.has(command), `The native R/Quarto profile did not register ${command}.`);
-  }
-  const quarto = vscode.workspace.getConfiguration("quarto").get<string>("path");
-  assert.ok(quarto && path.isAbsolute(quarto) && existsSync(quarto), "Quarto must use the pinned private CLI.");
-  const quartoConfiguration = vscode.workspace.getConfiguration("quarto");
-  assert.equal(
-    quartoConfiguration.get<string>("render.previewType"),
-    "internal",
-    "The native editor journey must keep Quarto previews inside VS Code."
-  );
-  assert.equal(
-    quartoConfiguration.get<boolean>("render.previewReveal"),
-    true,
-    "The native editor journey must reveal the Quarto preview."
-  );
-  assert.equal(
-    execFileSync(quarto, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim(),
-    "1.10.18",
-    "The native editor journey must use Quarto 1.10.18."
-  );
-  return true;
+  return assertReleasedNativeREditorToolingOwner({
+    getExtension: (id) => vscode.extensions.getExtension(id),
+    getCommands: () => vscode.commands.getCommands(true),
+    getConfiguration: <T>(section: string, key: string) => vscode.workspace.getConfiguration(section).get<T>(key),
+    pathIsAbsolute: path.isAbsolute,
+    pathExists: existsSync,
+    quartoVersion: (executable) =>
+      execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim(),
+    withBoundedPromise: withBoundedAcceptancePromise
+  });
 }
 
 async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.Uri): Promise<() => Promise<void>> {
