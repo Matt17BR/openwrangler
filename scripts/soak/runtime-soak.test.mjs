@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { redactEditorAcceptanceJson } from "../editor-acceptance-evidence.mjs";
-import { executeRuntimeSoak, runRuntimeSoakCli } from "./runtime-soak.mjs";
+import {
+  BoundedLfFramer,
+  createSourceAttestation,
+  executeRuntimeSoak,
+  runRuntimeSoakCli,
+  RuntimeServer
+} from "./runtime-soak.mjs";
 import {
   createScenarioSelector,
   createSoakReceipt,
@@ -24,6 +33,7 @@ const subject = Object.freeze({
   kind: "source_tree",
   sourceCommit: "a".repeat(40),
   sourceTree: "b".repeat(40),
+  executedInventorySha256: "e".repeat(64),
   packageManifestSha256: "c".repeat(64),
   dependencyLockSha256: "d".repeat(64)
 });
@@ -68,9 +78,10 @@ function receiptValue(outcome = "success") {
 }
 
 class FakeAdapter {
-  constructor({ failAt, advance = () => undefined } = {}) {
+  constructor({ failAt, advance = () => undefined, cleanupConfirmed = true } = {}) {
     this.failAt = failAt;
     this.advance = advance;
+    this.cleanupConfirmed = cleanupConfirmed;
     this.calls = [];
     this.closeCalls = 0;
     this.forceCloseCalls = 0;
@@ -93,8 +104,37 @@ class FakeAdapter {
 
   async forceClose() {
     this.forceCloseCalls += 1;
-    return true;
+    return this.cleanupConfirmed;
   }
+}
+
+async function writeFixture(root, relativePath, contents = "fixture\n") {
+  const path = join(root, ...relativePath.split("/"));
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, contents, "utf8");
+}
+
+async function createAttestationFixture() {
+  const root = await mkdtemp(join(tmpdir(), "openwrangler-soak-source-"));
+  const paths = [
+    "package.json",
+    "package-lock.json",
+    "scripts/editor-acceptance-evidence.mjs",
+    "scripts/packaged-python-preflight.mjs",
+    "scripts/strict-json.mjs",
+    "scripts/soak/runtime-soak.mjs",
+    "scripts/soak/runtime-soak.test.mjs",
+    "scripts/soak/soak-contract.mjs",
+    "python/openwrangler_runtime/__init__.py",
+    "python/openwrangler_runtime/server.py"
+  ];
+  for (const path of paths) await writeFixture(root, path, path.endsWith(".json") ? "{}\n" : `${path}\n`);
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Soak Test"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "soak@example.invalid"]);
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-q", "-m", "fixture"]);
+  return root;
 }
 
 test("argument bounds are canonical and preserve the printed deterministic defaults", () => {
@@ -157,6 +197,126 @@ test("the fixed PRNG seed creates deterministic epochs that each cover every sce
   }
 });
 
+test("raw LF framing bounds bytes before decode and accepts split UTF-8", async () => {
+  const stream = new PassThrough();
+  const framer = new BoundedLfFramer(stream, 8);
+  const encoded = Buffer.from("é\n", "utf8");
+  stream.write(encoded.subarray(0, 1));
+  stream.write(encoded.subarray(1));
+  assert.deepEqual(await framer.next(), { kind: "line", value: "é" });
+  assert.ok(framer.bufferedBytesForTesting().maximum <= 8);
+  stream.end();
+  assert.deepEqual(await framer.next(), { kind: "end" });
+});
+
+test("raw LF framing rejects oversized, invalid, unsupported, and partial frames exactly once", async () => {
+  const oversized = new PassThrough();
+  const oversizedFramer = new BoundedLfFramer(oversized, 8);
+  oversized.write(Buffer.alloc(1_024, 0x61));
+  assert.deepEqual(await oversizedFramer.next(), { kind: "invalid" });
+  assert.deepEqual(oversizedFramer.bufferedBytesForTesting(), { current: 0, maximum: 0 });
+  oversized.end(Buffer.from("\n"));
+  assert.deepEqual(await oversizedFramer.next(), { kind: "end" });
+
+  const invalidUtf8 = new PassThrough();
+  const invalidUtf8Framer = new BoundedLfFramer(invalidUtf8, 8);
+  invalidUtf8.end(Buffer.from([0xc3, 0x28, 0x0a]));
+  assert.deepEqual(await invalidUtf8Framer.next(), { kind: "invalid" });
+  assert.deepEqual(await invalidUtf8Framer.next(), { kind: "end" });
+
+  const partial = new PassThrough();
+  const partialFramer = new BoundedLfFramer(partial, 8);
+  partial.end("partial");
+  assert.deepEqual(await partialFramer.next(), { kind: "invalid" });
+  assert.deepEqual(await partialFramer.next(), { kind: "end" });
+
+  const unsupported = new EventEmitter();
+  const unsupportedFramer = new BoundedLfFramer(unsupported, 8);
+  unsupported.emit("data", { arbitrary: true });
+  assert.deepEqual(await unsupportedFramer.next(), { kind: "invalid" });
+  unsupported.emit("end");
+  assert.deepEqual(await unsupportedFramer.next(), { kind: "end" });
+});
+
+test("source attestation rejects dirty runtime, dirty harness, and untracked shadowing", async () => {
+  const root = await createAttestationFixture();
+  const privateRoot = await mkdtemp(join(tmpdir(), "openwrangler-soak-materialized-"));
+  try {
+    const attestation = await createSourceAttestation(root, privateRoot);
+    assert.match(attestation.subject.executedInventorySha256, /^[a-f0-9]{64}$/u);
+    assert.match(
+      await readFile(join(attestation.runtimePythonRoot, "openwrangler_runtime", "server.py"), "utf8"),
+      /server/u
+    );
+
+    const runtimePath = join(root, "python", "openwrangler_runtime", "server.py");
+    const runtimeSource = await readFile(runtimePath, "utf8");
+    await writeFile(runtimePath, `${runtimeSource}# dirty\n`, "utf8");
+    await assert.rejects(attestation.revalidate, SoakContractError);
+    await writeFile(runtimePath, runtimeSource, "utf8");
+
+    const harnessPath = join(root, "scripts", "soak", "runtime-soak.mjs");
+    const harnessSource = await readFile(harnessPath, "utf8");
+    await writeFile(harnessPath, `${harnessSource}// dirty\n`, "utf8");
+    await assert.rejects(attestation.revalidate, SoakContractError);
+    await writeFile(harnessPath, harnessSource, "utf8");
+
+    await writeFixture(root, "python/openwrangler_runtime/shadow.py", "raise RuntimeError('shadow')\n");
+    await assert.rejects(() => createSourceAttestation(root, privateRoot), SoakContractError);
+    await assert.rejects(attestation.revalidate, SoakContractError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(privateRoot, { recursive: true, force: true });
+  }
+});
+
+test("stop timeout retains ownership through one kill and exact late-or-never exit settlement", async () => {
+  class FakeChild extends EventEmitter {
+    constructor(exitAfterKillMs) {
+      super();
+      this.exitAfterKillMs = exitAfterKillMs;
+      this.exitCode = null;
+      this.signalCode = null;
+      this.stdin = new PassThrough();
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.killCalls = 0;
+    }
+
+    kill() {
+      this.killCalls += 1;
+      if (this.exitAfterKillMs !== undefined) {
+        setTimeout(() => {
+          this.signalCode = "SIGKILL";
+          this.emit("exit", null, "SIGKILL");
+          this.stdout.end();
+          this.stderr.end();
+        }, this.exitAfterKillMs);
+      }
+      return true;
+    }
+  }
+
+  const late = new FakeChild(1);
+  const lateServer = new RuntimeServer("python", tmpdir(), tmpdir(), undefined, {
+    spawnProcess: () => late,
+    stopTimeoutMs: 20
+  });
+  assert.deepEqual(await lateServer.stop("cleanup"), { settled: true, clean: false });
+  assert.equal(late.killCalls, 1);
+
+  const never = new FakeChild(undefined);
+  const neverServer = new RuntimeServer("python", tmpdir(), tmpdir(), undefined, {
+    spawnProcess: () => never,
+    stopTimeoutMs: 5
+  });
+  assert.deepEqual(await neverServer.stop("cleanup"), { settled: false, clean: false });
+  assert.equal(await neverServer.forceStop(), false);
+  assert.equal(never.killCalls, 1);
+  never.stdout.end();
+  never.stderr.end();
+});
+
 test("receipt serialization is deterministic, bounded, checksummed, and rejects free-form containers", () => {
   const first = createSoakReceipt(receiptValue());
   const second = createSoakReceipt(receiptValue());
@@ -210,6 +370,7 @@ test("one failure receipt is private, schema-valid, re-redacted, bounded, and se
 
 test("a successful run exercises every branch without a success artifact or retry", async () => {
   let monotonicMs = 0;
+  let revalidations = 0;
   const adapter = new FakeAdapter({ advance: () => (monotonicMs += 10) });
   const result = await executeRuntimeSoak({
     options: { seed: 123, iterations: 4, durationSeconds: 0, wallSeconds: 60 },
@@ -217,12 +378,16 @@ test("a successful run exercises every branch without a success artifact or retr
     tools,
     identifiers,
     adapter,
-    clock: { epochMs: () => 1_776_470_400_000 + monotonicMs, monotonicMs: () => monotonicMs }
+    clock: { epochMs: () => 1_776_470_400_000 + monotonicMs, monotonicMs: () => monotonicMs },
+    beforeReceipt: async () => {
+      revalidations += 1;
+    }
   });
   assert.equal(result.failure, undefined);
   assert.equal(result.receipt.envelope.payload.outcome, "success");
   assert.equal(adapter.closeCalls, 1);
   assert.equal(adapter.forceCloseCalls, 0);
+  assert.equal(revalidations, 1);
   assert.equal(adapter.calls.length, 4);
   assert.deepEqual([...adapter.calls].sort(), [...SOAK_SCENARIOS].sort());
   assert.deepEqual(
@@ -248,6 +413,50 @@ test("the first classified failure stops immediately and performs cleanup withou
   assert.equal(adapter.closeCalls, 0);
   assert.equal(adapter.forceCloseCalls, 1);
   assert.equal(result.receipt.envelope.payload.run.completedIterations, 1);
+  assert.equal(result.retentionAllowed, true);
+});
+
+test("source revalidation failure emits no receipt after confirmed cleanup", async () => {
+  let monotonicMs = 0;
+  const adapter = new FakeAdapter({ advance: () => (monotonicMs += 10) });
+  await assert.rejects(
+    () =>
+      executeRuntimeSoak({
+        options: { seed: 123, iterations: 4, durationSeconds: 0, wallSeconds: 60 },
+        subject,
+        tools,
+        identifiers,
+        adapter,
+        clock: { epochMs: () => 1_776_470_400_000 + monotonicMs, monotonicMs: () => monotonicMs },
+        beforeReceipt: async () => {
+          throw new SoakContractError("source changed");
+        }
+      }),
+    SoakContractError
+  );
+  assert.equal(adapter.closeCalls, 1);
+  assert.equal(adapter.forceCloseCalls, 0);
+});
+
+test("cleanup uncertainty prevents failure-receipt retention and does not retry", async () => {
+  let monotonicMs = 0;
+  const adapter = new FakeAdapter({
+    failAt: 1,
+    advance: () => (monotonicMs += 10),
+    cleanupConfirmed: false
+  });
+  const result = await executeRuntimeSoak({
+    options: { seed: 123, iterations: 4, durationSeconds: 0, wallSeconds: 60 },
+    subject,
+    tools,
+    identifiers,
+    adapter,
+    clock: { epochMs: () => 1_776_470_400_000 + monotonicMs, monotonicMs: () => monotonicMs }
+  });
+  assert.equal(result.failure?.code, "cleanup_failed");
+  assert.equal(result.retentionAllowed, false);
+  assert.equal(adapter.forceCloseCalls, 1);
+  assert.equal(adapter.calls.length, 1);
 });
 
 test("the run continues past its minimum iterations until the requested duration is satisfied", async () => {

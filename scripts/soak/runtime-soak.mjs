@@ -1,10 +1,9 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile, lstat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { resolveAndPreflightAcceptancePython } from "../packaged-python-preflight.mjs";
 import {
@@ -24,12 +23,23 @@ import {
 } from "./soak-contract.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const pythonRoot = resolve(repositoryRoot, "python");
 const RESPONSE_MAX_BYTES = 1024 * 1024;
 const STDERR_COUNT_LIMIT = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 5_000;
 const PROGRESS_INTERVAL = 100;
+const SOURCE_FILE_LIMIT = 512;
+const SOURCE_TOTAL_BYTES = 64 * 1024 * 1024;
+const EXECUTED_WORKTREE_PATHS = Object.freeze([
+  "scripts/soak/runtime-soak.mjs",
+  "scripts/soak/soak-contract.mjs",
+  "scripts/packaged-python-preflight.mjs",
+  "scripts/editor-acceptance-evidence.mjs",
+  "scripts/strict-json.mjs",
+  "package.json",
+  "package-lock.json"
+]);
+const RUNTIME_SOURCE_ROOT = "python/openwrangler_runtime";
 const SERVER_SOURCE = [
   "import runpy",
   "import sys",
@@ -87,19 +97,123 @@ function waitWithBound(promise, timeoutMs, code, phase, signal) {
   });
 }
 
-class RuntimeServer {
-  constructor(executable, workingRoot, signal) {
+export class BoundedLfFramer {
+  constructor(stream, maximumBytes = RESPONSE_MAX_BYTES) {
+    this.maximumBytes = maximumBytes;
+    this.buffer = Buffer.alloc(0);
+    this.invalid = false;
+    this.closed = false;
+    this.queue = [];
+    this.waiter = undefined;
+    this.maximumBufferedBytes = 0;
+    stream.on("data", (chunk) => this.accept(chunk));
+    stream.once("end", () => this.finish());
+    stream.once("error", () => this.invalidate());
+  }
+
+  accept(chunk) {
+    if (this.invalid || this.closed) return;
+    if (!Buffer.isBuffer(chunk) && !(chunk instanceof Uint8Array)) {
+      this.reject();
+      return;
+    }
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const newline = bytes.indexOf(0x0a, offset);
+      const end = newline === -1 ? bytes.length : newline;
+      const segment = bytes.subarray(offset, end);
+      const nextLength = this.buffer.length + segment.length;
+      if (nextLength > this.maximumBytes) {
+        this.reject();
+        return;
+      } else if (segment.length > 0) {
+        this.buffer =
+          this.buffer.length === 0 ? Buffer.from(segment) : Buffer.concat([this.buffer, segment], nextLength);
+        this.maximumBufferedBytes = Math.max(this.maximumBufferedBytes, this.buffer.length);
+      }
+      if (newline === -1) return;
+      let line = this.buffer;
+      this.buffer = Buffer.alloc(0);
+      if (line.at(-1) === 0x0d) line = line.subarray(0, -1);
+      try {
+        this.publish({ kind: "line", value: new TextDecoder("utf-8", { fatal: true }).decode(line) });
+      } catch {
+        this.reject();
+        return;
+      }
+      offset = end + 1;
+    }
+  }
+
+  finish() {
+    if (this.closed) return;
+    if (this.buffer.length > 0 && !this.invalid) this.reject();
+    this.buffer = Buffer.alloc(0);
+    this.closed = true;
+    this.publish({ kind: "end" });
+  }
+
+  invalidate() {
+    if (this.closed) return;
+    this.reject();
+  }
+
+  reject() {
+    this.buffer = Buffer.alloc(0);
+    if (!this.invalid) this.publish({ kind: "invalid" });
+    this.invalid = true;
+  }
+
+  publish(value) {
+    if (this.waiter) {
+      const waiter = this.waiter;
+      this.waiter = undefined;
+      waiter(value);
+      return;
+    }
+    if (this.queue.length >= 4) {
+      this.queue = [{ kind: "invalid" }];
+      return;
+    }
+    this.queue.push(value);
+  }
+
+  next() {
+    if (this.queue.length > 0) return Promise.resolve(this.queue.shift());
+    if (this.closed) return Promise.resolve({ kind: "end" });
+    if (this.waiter) return Promise.resolve({ kind: "invalid" });
+    return new Promise((resolveFrame) => {
+      this.waiter = resolveFrame;
+    });
+  }
+
+  bufferedBytesForTesting() {
+    return Object.freeze({ current: this.buffer.length, maximum: this.maximumBufferedBytes });
+  }
+}
+
+export class RuntimeServer {
+  constructor(
+    executable,
+    workingRoot,
+    runtimePythonRoot,
+    signal,
+    { spawnProcess = spawn, stopTimeoutMs = STOP_TIMEOUT_MS } = {}
+  ) {
     this.signal = signal;
     this.requestNumber = 0;
     this.stderrBytes = 0;
-    this.process = spawn(executable, ["-I", "-X", "utf8", "-c", SERVER_SOURCE, pythonRoot], {
+    this.stopTimeoutMs = stopTimeoutMs;
+    this.killAttempted = false;
+    this.process = spawnProcess(executable, ["-I", "-B", "-X", "utf8", "-c", SERVER_SOURCE, runtimePythonRoot], {
       cwd: workingRoot,
       env: runtimeEnvironment(workingRoot),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
-    this.lines = createInterface({ input: this.process.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
+    this.lines = new BoundedLfFramer(this.process.stdout);
     this.process.stdin.on("error", () => {
       // A correlated request observes the owned runtime exit; never surface an unbounded stream error.
     });
@@ -136,8 +250,8 @@ class RuntimeServer {
       throw new SoakRunError("runtime_exit", phase);
     }
     const result = await waitWithBound(this.lines.next(), timeoutMs, "protocol_timeout", phase, this.signal);
-    if (result.done || typeof result.value !== "string") throw new SoakRunError("runtime_exit", phase);
-    if (Buffer.byteLength(result.value, "utf8") > RESPONSE_MAX_BYTES) {
+    if (result.kind === "end") throw new SoakRunError("runtime_exit", phase);
+    if (result.kind !== "line" || typeof result.value !== "string") {
       throw new SoakRunError("protocol_invalid", phase);
     }
     let envelopeResponse;
@@ -163,28 +277,37 @@ class RuntimeServer {
   }
 
   async crash(phase) {
+    this.killAttempted = true;
     if (!this.process.kill("SIGKILL")) throw new SoakRunError("scenario_failed", phase);
-    await waitWithBound(this.exit, STOP_TIMEOUT_MS, "runtime_exit", phase, this.signal);
+    await waitWithBound(this.exit, this.stopTimeoutMs, "runtime_exit", phase, this.signal);
   }
 
-  async stop(phase, requireZero = true) {
+  async stop(phase) {
     if (this.process.exitCode === null && this.process.signalCode === null) this.process.stdin.end();
     let exit;
     try {
-      exit = await waitWithBound(this.exit, STOP_TIMEOUT_MS, "cleanup_failed", phase, undefined);
-    } catch (error) {
-      this.process.kill("SIGKILL");
-      throw error;
+      exit = await waitWithBound(this.exit, this.stopTimeoutMs, "cleanup_failed", phase, undefined);
+    } catch {
+      if (!this.killAttempted) {
+        this.killAttempted = true;
+        this.process.kill("SIGKILL");
+      }
+      try {
+        exit = await waitWithBound(this.exit, this.stopTimeoutMs, "cleanup_failed", phase, undefined);
+      } catch {
+        return Object.freeze({ settled: false, clean: false });
+      }
     }
-    if (requireZero && (exit.code !== 0 || exit.signal !== null)) {
-      throw new SoakRunError("runtime_exit", phase);
-    }
+    return Object.freeze({ settled: true, clean: exit.code === 0 && exit.signal === null });
   }
 
   async forceStop() {
-    if (this.process.exitCode === null && this.process.signalCode === null) this.process.kill("SIGKILL");
+    if (this.process.exitCode === null && this.process.signalCode === null && !this.killAttempted) {
+      this.killAttempted = true;
+      this.process.kill("SIGKILL");
+    }
     try {
-      await waitWithBound(this.exit, STOP_TIMEOUT_MS, "cleanup_failed", "cleanup", undefined);
+      await waitWithBound(this.exit, this.stopTimeoutMs, "cleanup_failed", "cleanup", undefined);
       return true;
     } catch {
       return false;
@@ -218,9 +341,10 @@ function expectErrorCode(response, code, phase) {
 }
 
 export class PythonRuntimeSoakAdapter {
-  constructor({ executable, workingRoot, sourcePath, seed, signal }) {
+  constructor({ executable, workingRoot, runtimePythonRoot, sourcePath, seed, signal }) {
     this.executable = executable;
     this.workingRoot = workingRoot;
+    this.runtimePythonRoot = runtimePythonRoot;
     this.sourcePath = sourcePath;
     this.seed = seed;
     this.signal = signal;
@@ -229,7 +353,7 @@ export class PythonRuntimeSoakAdapter {
   }
 
   async initialize(remainingMs) {
-    this.server = new RuntimeServer(this.executable, this.workingRoot, this.signal);
+    this.server = new RuntimeServer(this.executable, this.workingRoot, this.runtimePythonRoot, this.signal);
     const response = await this.server.request({ kind: "initialize" }, "initialize", requestDeadline(remainingMs));
     expectKind(response, "initialized", "initialize");
     if (typeof response.runtimeVersion !== "string") throw new SoakRunError("protocol_invalid", "initialize");
@@ -288,7 +412,7 @@ export class PythonRuntimeSoakAdapter {
     if (scenario === "crash_restart") {
       const { sessionId } = await this.openSession(iteration, scenario, timeoutMs);
       await this.server.crash(scenario);
-      this.server = new RuntimeServer(this.executable, this.workingRoot, this.signal);
+      this.server = new RuntimeServer(this.executable, this.workingRoot, this.runtimePythonRoot, this.signal);
       const initialized = await this.server.request({ kind: "initialize" }, scenario, timeoutMs);
       expectKind(initialized, "initialized", scenario);
       if (initialized.runtimeVersion !== this.runtimeVersion) throw new SoakRunError("scenario_failed", scenario);
@@ -346,15 +470,18 @@ export class PythonRuntimeSoakAdapter {
   async close() {
     if (!this.server) return;
     const current = this.server;
-    this.server = undefined;
-    await current.stop("cleanup");
+    const exit = await current.stop("cleanup");
+    if (!exit.settled) throw new SoakRunError("cleanup_failed", "cleanup");
+    if (this.server === current) this.server = undefined;
+    if (!exit.clean) throw new SoakRunError("runtime_exit", "cleanup");
   }
 
   async forceClose() {
     if (!this.server) return true;
     const current = this.server;
-    this.server = undefined;
-    return current.forceStop();
+    const settled = await current.forceStop();
+    if (settled && this.server === current) this.server = undefined;
+    return settled;
   }
 }
 
@@ -373,7 +500,8 @@ export async function executeRuntimeSoak({
     epochMs: () => Date.now(),
     monotonicMs: () => performance.now()
   },
-  onProgress = () => undefined
+  onProgress = () => undefined,
+  beforeReceipt = async () => undefined
 }) {
   const selector = createScenarioSelector(options.seed);
   const counts = new Map(SOAK_SCENARIOS.map((scenario) => [scenario, 0]));
@@ -383,6 +511,7 @@ export async function executeRuntimeSoak({
   let completedIterations = 0;
   let phase = "initialize";
   let failure;
+  let retentionAllowed = true;
   let initialized = false;
   const remaining = () => deadlineMs - clock.monotonicMs();
 
@@ -419,13 +548,15 @@ export async function executeRuntimeSoak({
     const classified = error instanceof SoakRunError ? error : new SoakRunError("scenario_failed", phase);
     failure = { code: classified.code, phase: classified.phase, iteration: initialized ? completedIterations + 1 : 0 };
     const cleanupConfirmed = await adapter.forceClose();
-    if (!cleanupConfirmed && failure.code === "scenario_failed") {
+    retentionAllowed = cleanupConfirmed;
+    if (!cleanupConfirmed) {
       failure = { code: "cleanup_failed", phase: "cleanup", iteration: completedIterations };
     }
   }
 
   const endedEpochMs = clock.epochMs();
   const elapsedMs = Math.max(0, Math.floor(clock.monotonicMs() - startedMonotonicMs));
+  await beforeReceipt();
   const receipt = createSoakReceipt({
     outcome: failure ? "failure" : "success",
     subject,
@@ -447,34 +578,194 @@ export async function executeRuntimeSoak({
     },
     ...(failure ? { failure } : {})
   });
-  return Object.freeze({ receipt, failure });
+  return Object.freeze({ receipt, failure, retentionAllowed });
 }
 
-async function sourceSubject(root) {
-  const git = (argument) =>
-    execFileSync("git", ["-C", root, "rev-parse", argument], {
-      encoding: "utf8",
-      timeout: 10_000,
-      maxBuffer: 4_096,
-      windowsHide: true
-    }).trim();
-  const [manifest, lock] = await Promise.all([
-    readFile(join(root, "package.json")),
-    readFile(join(root, "package-lock.json"))
-  ]);
-  return Object.freeze({
-    kind: "source_tree",
-    sourceCommit: git("HEAD"),
-    sourceTree: git("HEAD^{tree}"),
-    packageManifestSha256: sha256Hex(manifest),
-    dependencyLockSha256: sha256Hex(lock)
+function gitOutput(root, args, { encoding = "utf8", maxBuffer = 2 * 1024 * 1024 } = {}) {
+  return execFileSync("git", ["-C", root, ...args], {
+    encoding,
+    timeout: 15_000,
+    maxBuffer,
+    windowsHide: true
   });
 }
 
-function probeVersions(executable) {
-  const output = execFileSync(executable, ["-I", "-X", "utf8", "-c", VERSION_PROBE_SOURCE, pythonRoot], {
-    cwd: repositoryRoot,
-    env: runtimeEnvironment(tmpdir()),
+function trackedSourceEntries(root) {
+  const raw = gitOutput(
+    root,
+    [
+      "ls-tree",
+      "-r",
+      "-z",
+      "HEAD",
+      "--",
+      RUNTIME_SOURCE_ROOT,
+      "scripts/soak",
+      ...EXECUTED_WORKTREE_PATHS.filter((path) => !path.startsWith("scripts/soak/"))
+    ],
+    { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 }
+  );
+  const entries = [];
+  for (const record of raw.toString("utf8").split("\0")) {
+    if (!record) continue;
+    const match = /^100644 blob ([a-f0-9]{40})\t([^\0]+)$/u.exec(record);
+    if (!match || match[2].startsWith("/") || match[2].split("/").includes("..")) {
+      throw new SoakContractError("The source inventory contains an unsupported entry.");
+    }
+    entries.push(Object.freeze({ objectId: match[1], path: match[2] }));
+  }
+  entries.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  if (entries.length < 1 || entries.length > SOURCE_FILE_LIMIT) {
+    throw new SoakContractError("The source inventory exceeds its file bound.");
+  }
+  for (const required of EXECUTED_WORKTREE_PATHS) {
+    if (!entries.some((entry) => entry.path === required)) {
+      throw new SoakContractError("The source inventory is missing a required executable input.");
+    }
+  }
+  return Object.freeze(entries);
+}
+
+function gitBlob(root, objectId) {
+  return gitOutput(root, ["cat-file", "blob", objectId], {
+    encoding: "buffer",
+    maxBuffer: 16 * 1024 * 1024
+  });
+}
+
+async function walkRegularFiles(root, relativeRoot) {
+  const files = [];
+  const visit = async (relativeDirectory) => {
+    const absoluteDirectory = resolve(root, relativeDirectory);
+    if (relative(root, absoluteDirectory).split(sep).includes("..")) {
+      throw new SoakContractError("The source inventory escaped its root.");
+    }
+    const children = await readdir(absoluteDirectory, { withFileTypes: true });
+    children.sort((left, right) => left.name.localeCompare(right.name, "en"));
+    for (const child of children) {
+      const relativePath = join(relativeDirectory, child.name).split(sep).join("/");
+      if (child.isSymbolicLink()) throw new SoakContractError("The source inventory contains a symbolic link.");
+      if (child.isDirectory()) {
+        await visit(relativePath);
+      } else if (child.isFile()) {
+        files.push(relativePath);
+        if (files.length > SOURCE_FILE_LIMIT) throw new SoakContractError("The source inventory is too large.");
+      } else {
+        throw new SoakContractError("The source inventory contains a non-regular entry.");
+      }
+    }
+  };
+  await visit(relativeRoot);
+  return files;
+}
+
+function assertTrackedSourceClean(root) {
+  const output = gitOutput(root, [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=no",
+    "--",
+    RUNTIME_SOURCE_ROOT,
+    "scripts/soak",
+    ...EXECUTED_WORKTREE_PATHS.filter((path) => !path.startsWith("scripts/soak/"))
+  ]);
+  if (output.length !== 0) throw new SoakContractError("The executed source differs from the recorded commit.");
+}
+
+export async function createSourceAttestation(root, privateRoot) {
+  const sourceCommit = gitOutput(root, ["rev-parse", "HEAD"]).trim();
+  const sourceTree = gitOutput(root, ["rev-parse", "HEAD^{tree}"]).trim();
+  const entries = trackedSourceEntries(root);
+  assertTrackedSourceClean(root);
+  const trackedPaths = new Set(entries.map((entry) => entry.path));
+  for (const sourceRoot of [RUNTIME_SOURCE_ROOT, "scripts/soak"]) {
+    const actualPaths = await walkRegularFiles(root, sourceRoot);
+    if (actualPaths.some((path) => !trackedPaths.has(path))) {
+      throw new SoakContractError("The source roots contain an untracked executable input.");
+    }
+  }
+
+  const materializedRoot = join(privateRoot, "recorded-source");
+  const runtimePythonRoot = join(materializedRoot, "python");
+  await mkdir(runtimePythonRoot, { recursive: true, mode: 0o700 });
+  let totalBytes = 0;
+  const inventory = [];
+  const expectedBytes = new Map();
+  for (const entry of entries) {
+    const bytes = gitBlob(root, entry.objectId);
+    totalBytes += bytes.length;
+    if (totalBytes > SOURCE_TOTAL_BYTES) throw new SoakContractError("The source inventory exceeds its byte bound.");
+    const digest = sha256Hex(bytes);
+    inventory.push(Object.freeze({ path: entry.path, byteLength: bytes.length, sha256: digest }));
+    expectedBytes.set(entry.path, Object.freeze({ byteLength: bytes.length, sha256: digest }));
+    if (entry.path.startsWith(`${RUNTIME_SOURCE_ROOT}/`) || entry.path === `${RUNTIME_SOURCE_ROOT}/__init__.py`) {
+      const destination = join(materializedRoot, ...entry.path.split("/"));
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+      await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+    }
+  }
+  const executedInventorySha256 = sha256Hex(JSON.stringify(inventory));
+  const manifest = expectedBytes.get("package.json");
+  const lock = expectedBytes.get("package-lock.json");
+  if (!manifest || !lock) throw new SoakContractError("The source inventory is missing package metadata.");
+
+  const revalidate = async () => {
+    if (
+      gitOutput(root, ["rev-parse", "HEAD"]).trim() !== sourceCommit ||
+      gitOutput(root, ["rev-parse", "HEAD^{tree}"]).trim() !== sourceTree
+    ) {
+      throw new SoakContractError("The recorded source identity changed during the soak.");
+    }
+    assertTrackedSourceClean(root);
+    for (const sourceRoot of [RUNTIME_SOURCE_ROOT, "scripts/soak"]) {
+      const actualPaths = await walkRegularFiles(root, sourceRoot);
+      if (actualPaths.some((path) => !trackedPaths.has(path))) {
+        throw new SoakContractError("The source roots gained an untracked executable input.");
+      }
+    }
+    for (const entry of entries.filter((candidate) => !candidate.path.startsWith(`${RUNTIME_SOURCE_ROOT}/`))) {
+      const bytes = await readFile(join(root, ...entry.path.split("/")));
+      const expected = expectedBytes.get(entry.path);
+      if (bytes.length !== expected.byteLength || sha256Hex(bytes) !== expected.sha256) {
+        throw new SoakContractError("An executed source file changed during the soak.");
+      }
+    }
+    const materializedPaths = await walkRegularFiles(materializedRoot, RUNTIME_SOURCE_ROOT);
+    const runtimeEntries = entries.filter((entry) => entry.path.startsWith(`${RUNTIME_SOURCE_ROOT}/`));
+    if (
+      materializedPaths.length !== runtimeEntries.length ||
+      materializedPaths.some((path, index) => path !== runtimeEntries[index].path)
+    ) {
+      throw new SoakContractError("The materialized runtime inventory changed during the soak.");
+    }
+    for (const entry of runtimeEntries) {
+      const bytes = await readFile(join(materializedRoot, ...entry.path.split("/")));
+      const expected = expectedBytes.get(entry.path);
+      if (bytes.length !== expected.byteLength || sha256Hex(bytes) !== expected.sha256) {
+        throw new SoakContractError("A materialized runtime file changed during the soak.");
+      }
+    }
+  };
+  await revalidate();
+  return Object.freeze({
+    subject: Object.freeze({
+      kind: "source_tree",
+      sourceCommit,
+      sourceTree,
+      executedInventorySha256,
+      packageManifestSha256: manifest.sha256,
+      dependencyLockSha256: lock.sha256
+    }),
+    runtimePythonRoot,
+    revalidate
+  });
+}
+
+function probeVersions(executable, runtimePythonRoot, workingRoot) {
+  const output = execFileSync(executable, ["-I", "-B", "-X", "utf8", "-c", VERSION_PROBE_SOURCE, runtimePythonRoot], {
+    cwd: workingRoot,
+    env: runtimeEnvironment(workingRoot),
     encoding: "utf8",
     timeout: 30_000,
     maxBuffer: 16 * 1024,
@@ -492,28 +783,30 @@ function probeVersions(executable) {
 }
 
 async function verifiedPrivateRoot(prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  const status = await lstat(root);
+  const path = await mkdtemp(join(tmpdir(), prefix));
+  const status = await lstat(path);
   if (
     !status.isDirectory() ||
     status.isSymbolicLink() ||
-    (process.platform !== "win32" && status.uid !== process.getuid())
+    (process.platform !== "win32" && (status.uid !== process.getuid() || (status.mode & 0o077) !== 0))
   ) {
     throw new SoakContractError("The soak workspace is not privately owned.");
   }
-  return root;
+  return Object.freeze({ path, dev: status.dev, ino: status.ino });
 }
 
-async function removePrivateRoot(root) {
-  const status = await lstat(root);
+async function removePrivateRoot(receipt) {
+  const status = await lstat(receipt.path);
   if (
     !status.isDirectory() ||
     status.isSymbolicLink() ||
-    (process.platform !== "win32" && status.uid !== process.getuid())
+    status.dev !== receipt.dev ||
+    status.ino !== receipt.ino ||
+    (process.platform !== "win32" && (status.uid !== process.getuid() || (status.mode & 0o077) !== 0))
   ) {
     throw new SoakContractError("The soak workspace ownership changed before cleanup.");
   }
-  await rm(root, { recursive: true, force: false });
+  await rm(receipt.path, { recursive: true, force: false });
 }
 
 export async function runRuntimeSoakCli(args, dependencies = {}) {
@@ -535,45 +828,56 @@ export async function runRuntimeSoakCli(args, dependencies = {}) {
   const interrupt = () => signalController.abort();
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
-  let workingRoot;
+  let workingRootReceipt;
   try {
-    workingRoot = await verifiedPrivateRoot("openwrangler-soak-work-");
+    workingRootReceipt = await verifiedPrivateRoot("openwrangler-soak-work-");
+    const workingRoot = workingRootReceipt.path;
     const sourcePath = join(workingRoot, "soak.csv");
     await writeFile(sourcePath, "city,value,flag\nBerlin,12,true\nParis,7,false\nRome,,true\nMadrid,9,false\n", {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600
     });
-    const subject = await sourceSubject(repositoryRoot);
+    const attestation = await createSourceAttestation(repositoryRoot, workingRoot);
     const executable = resolveAndPreflightAcceptancePython({
       profile: "repository-command",
       repositoryRoot,
       environment: process.env,
       platform: process.platform
     });
-    const tools = probeVersions(executable);
+    const tools = probeVersions(executable, attestation.runtimePythonRoot, workingRoot);
     const identifiers = createRunIdentifiers();
     const adapter = new PythonRuntimeSoakAdapter({
       executable,
       workingRoot,
+      runtimePythonRoot: attestation.runtimePythonRoot,
       sourcePath,
       seed: options.seed,
       signal: signalController.signal
     });
     const result = await executeRuntimeSoak({
       options,
-      subject,
+      subject: attestation.subject,
       tools,
       identifiers,
       adapter,
       signal: signalController.signal,
+      beforeReceipt: attestation.revalidate,
       onProgress: (progress) =>
         stderr(
           `OW_SOAK_PROGRESS seed=${progress.seed} completed=${progress.completedIterations} elapsedMs=${progress.elapsedMs} branches=${progress.branches.map((entry) => `${entry.scenario}:${entry.count}`).join(",")}`
         )
     });
-    await removePrivateRoot(workingRoot);
-    workingRoot = undefined;
+    if (!result.retentionAllowed) {
+      // The exact child may still own this private root. Leave it untouched and publish no path.
+      workingRootReceipt = undefined;
+      stderr(
+        `OW_SOAK_FAILED code=${result.failure.code} phase=${result.failure.phase} seed=${options.seed} receipt=none`
+      );
+      return 1;
+    }
+    await removePrivateRoot(workingRootReceipt);
+    workingRootReceipt = undefined;
     if (!result.failure) {
       stdout(result.receipt.json.trim());
       return 0;
@@ -589,9 +893,9 @@ export async function runRuntimeSoakCli(args, dependencies = {}) {
   } finally {
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
-    if (workingRoot) {
+    if (workingRootReceipt) {
       try {
-        await removePrivateRoot(workingRoot);
+        await removePrivateRoot(workingRootReceipt);
       } catch {
         // Ownership uncertainty deliberately suppresses diagnostics and further traversal.
       }
