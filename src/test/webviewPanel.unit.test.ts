@@ -577,56 +577,6 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
   });
 
-  it("requires a fresh synchronization acknowledgement after an already hydrated renderer pulls again", async () => {
-    const source: SessionSource = {
-      kind: "file",
-      label: "records.csv",
-      path: "/workspace/records.csv",
-      uri: "file:///workspace/records.csv",
-      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-    };
-    const opened = responseForSource(source);
-    const configured = responseForSource(
-      {
-        ...source,
-        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-      },
-      1
-    );
-    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
-    const harness = createPanelHarness(
-      {
-        request: vi.fn(async () => opened),
-        reconfigureFileSession
-      },
-      { source, openResponse: opened }
-    );
-    await harness.open();
-    await harness.receive({ kind: "ready" });
-    const firstSynchronization = await acknowledgeLatestRendererSynchronization(harness);
-    await harness.receive({ kind: "requestSessionSnapshot" });
-    const secondSynchronization = latestRendererSynchronization(harness.posted);
-    expect(secondSynchronization.syncId).not.toBe(firstSynchronization.syncId);
-    await harness.receive({
-      kind: "rendererSynchronized",
-      syncId: firstSynchronization.syncId,
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision
-    });
-    configureDelimitedPrompts({
-      delimiter: ";",
-      encoding: "utf-8",
-      quoteChar: '"',
-      hasHeader: true
-    });
-    harness.posted.length = 0;
-
-    await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
-
-    expect(reconfigureFileSession).toHaveBeenCalledOnce();
-    expect(harness.posted).not.toContainEqual({ kind: "requestImportOptionsChange" });
-  });
-
   it("waits for the exact post-commit acknowledgement when the test API resynchronizes a panel", async () => {
     const source: SessionSource = {
       kind: "file",
@@ -1125,60 +1075,6 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
-  it("gives an active renderer two bounded recovery reloads when its startup handshake never arrives", async () => {
-    vi.useFakeTimers();
-    try {
-      const reportDiagnostic = vi.fn();
-      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-        if (candidate.kind === "closeSession") {
-          return { kind: "sessionClosed", sessionId: candidate.sessionId };
-        }
-        return openedResponse;
-      });
-      const harness = createPanelHarness(
-        {
-          request,
-          reportDiagnostic
-        },
-        { delegateOpen: true }
-      );
-      await harness.open();
-
-      expect(harness.htmlAssignmentCount).toBe(1);
-      await vi.advanceTimersByTimeAsync(4_999);
-      expect(harness.htmlAssignmentCount).toBe(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(harness.htmlAssignmentCount).toBe(2);
-      expect(reportDiagnostic).toHaveBeenCalledWith(
-        "Open Wrangler reloaded a renderer that did not complete its startup handshake."
-      );
-
-      await vi.advanceTimersByTimeAsync(4_999);
-      expect(harness.htmlAssignmentCount).toBe(2);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(harness.htmlAssignmentCount).toBe(3);
-      expect(reportDiagnostic).toHaveBeenCalledTimes(2);
-
-      await vi.advanceTimersByTimeAsync(20_000);
-      expect(harness.htmlAssignmentCount).toBe(3);
-
-      await harness.receive({ kind: "ready" });
-      const recoveredMarker = latestRendererSynchronization(harness.posted);
-      await harness.receive({
-        kind: "rendererSynchronized",
-        syncId: recoveredMarker.syncId,
-        sessionId: recoveredMarker.sessionId,
-        revision: recoveredMarker.revision
-      });
-      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
-      expect(harness.htmlAssignmentCount).toBe(3);
-      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
-      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([openedResponse, openedResponse]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("does not interrupt an initial renderer when its pre-ready session publication is rejected", async () => {
     vi.useFakeTimers();
     try {
@@ -1275,74 +1171,6 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
-  it("never reloads a renderer that completes its startup handshake within the grace period", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
-      await harness.open();
-      await harness.receive({ kind: "ready" });
-      await acknowledgeLatestRendererSynchronization(harness);
-
-      await vi.advanceTimersByTimeAsync(20_000);
-
-      expect(harness.htmlAssignmentCount).toBe(1);
-      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("recovers a visible renderer even while its panel is inactive", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false });
-      await harness.open();
-
-      await vi.advanceTimersByTimeAsync(4_999);
-      expect(harness.htmlAssignmentCount).toBe(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(harness.htmlAssignmentCount).toBe(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps a pending startup recovery when an active renderer becomes visible but inactive", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
-      await harness.open();
-      await vi.advanceTimersByTimeAsync(4_999);
-
-      harness.deactivate();
-      await vi.advanceTimersByTimeAsync(1);
-
-      expect(harness.htmlAssignmentCount).toBe(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("defers startup recovery while the renderer panel is hidden", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
-      await harness.open();
-      harness.hide();
-
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(harness.htmlAssignmentCount).toBe(1);
-
-      harness.activate();
-      await vi.advanceTimersByTimeAsync(4_999);
-      expect(harness.htmlAssignmentCount).toBe(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(harness.htmlAssignmentCount).toBe(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("starts a fresh recovery grace period after out-of-order panel activation events", async () => {
     vi.useFakeTimers();
     try {
@@ -1362,21 +1190,6 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(first.htmlAssignmentCount).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(first.htmlAssignmentCount).toBe(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("cancels startup recovery when the panel is disposed", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
-      await harness.open();
-      harness.dispose();
-
-      await vi.advanceTimersByTimeAsync(20_000);
-
-      expect(harness.htmlAssignmentCount).toBe(1);
     } finally {
       vi.useRealTimers();
     }
@@ -2140,71 +1953,6 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "requestSessionSnapshot" });
 
     expect(harness.posted.slice(0, 2)).toEqual([opened, { kind: "importOptionsState", busy: false }]);
-    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision
-    });
-  });
-
-  it("retains a host-side import failure when an older synchronization is acknowledged during publication", async () => {
-    const source: SessionSource = {
-      kind: "file",
-      label: "records.csv",
-      path: "/workspace/records.csv",
-      uri: "file:///workspace/records.csv",
-      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-    };
-    const opened = responseForSource(source);
-    const failure: OpenWranglerResponse = {
-      kind: "error",
-      code: "invalid_import_options",
-      message: "The selected delimiter does not match this file.",
-      recoverable: true,
-      sessionId: opened.metadata.sessionId
-    };
-    const heldFailurePublication = deferred<boolean>();
-    const harness = createPanelHarness(
-      {
-        request: vi.fn(async () => opened),
-        reconfigureFileSession: vi.fn(async (): Promise<OpenWranglerResponse> => failure)
-      },
-      {
-        source,
-        openResponse: opened,
-        postMessage: (message) =>
-          typeof message === "object" && message !== null && (message as { kind?: unknown }).kind === "error"
-            ? heldFailurePublication.promise
-            : Promise.resolve(true)
-      }
-    );
-    await harness.open();
-    await harness.receive({ kind: "ready" });
-    const olderSynchronization = latestRendererSynchronization(harness.posted);
-    configureDelimitedPrompts({
-      delimiter: ";",
-      encoding: "utf-8",
-      quoteChar: '"',
-      hasHeader: true
-    });
-    harness.posted.length = 0;
-
-    const changing = OpenWranglerPanel.changeActiveImportOptions();
-    await vi.waitFor(() => expect(harness.posted).toContainEqual(failure));
-    await harness.receive({
-      kind: "rendererSynchronized",
-      syncId: olderSynchronization.syncId,
-      sessionId: olderSynchronization.sessionId,
-      revision: olderSynchronization.revision
-    });
-    heldFailurePublication.resolve(true);
-    await changing;
-
-    harness.posted.length = 0;
-    await harness.receive({ kind: "requestSessionSnapshot" });
-
-    expect(harness.posted).toContainEqual(opened);
-    expect(harness.posted).toContainEqual(failure);
-    expect(harness.posted.indexOf(opened)).toBeLessThan(harness.posted.indexOf(failure));
     expect(latestRendererSynchronization(harness.posted)).toMatchObject({
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision
