@@ -4,7 +4,7 @@ import json
 import re
 import signal
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
@@ -15,6 +15,15 @@ from typing import Any
 
 import pytest
 from python.benchmarks.pyspark_profile import PROFILE_COLUMN_NAMES, build_mixed_profile_frame, summary_projection
+from python.tests.pyspark_connect_test_support import (
+    FakeConnectFrame as _FakeConnectFrame,
+)
+from python.tests.pyspark_connect_test_support import (
+    FakeSparkConnectError as _FakeSparkConnectError,
+)
+from python.tests.pyspark_connect_test_support import (
+    spark_session as _shared_spark_session,
+)
 
 import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
@@ -28,6 +37,8 @@ from openwrangler_runtime.session import (
     PySparkConnectUnavailableError,
     SessionManager,
 )
+
+spark_session = _shared_spark_session
 
 _PYSPARK_VERSION_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
@@ -94,30 +105,6 @@ def test_profile_display_decoder_keeps_unsupported_types_on_singleton_plans() ->
     assert pyspark_engine_module._profile_display_decoder(data_types.CharType(8)) is None
     assert pyspark_engine_module._profile_display_decoder(data_types.VarcharType(8)) is None
     assert pyspark_engine_module._profile_display_decoder(data_types.DayTimeIntervalType()) is None
-
-
-@pytest.fixture(scope="module", params=("classic", "connect"))
-def spark_session(request: pytest.FixtureRequest) -> Iterator[Any]:
-    pyspark = pytest.importorskip("pyspark")
-    assert pyspark.__version__.startswith("4.2.")
-    SparkSession = import_module("pyspark.sql").SparkSession
-
-    if request.param == "classic":
-        spark = (
-            SparkSession.builder.master("local[2]")
-            .appName("open-wrangler-pyspark-tests")
-            .config("spark.ui.enabled", "false")
-            .config("spark.sql.shuffle.partitions", "2")
-            .getOrCreate()
-        )
-        spark.sparkContext.setLogLevel("ERROR")
-    else:
-        spark = SparkSession.builder.remote("local[2]").getOrCreate()
-        spark.conf.set("spark.sql.shuffle.partitions", "2")
-    try:
-        yield spark
-    finally:
-        spark.stop()
 
 
 @pytest.fixture
@@ -253,48 +240,6 @@ class _RestoreFailingSparkContext:
 class _FakeClassicFrame:
     def __init__(self, spark_context: Any) -> None:
         self.sparkSession = SimpleNamespace(sparkContext=spark_context)
-
-
-class _FakeConnectFrame:
-    def __init__(self) -> None:
-        self.sparkSession = SimpleNamespace()
-
-
-_FakeConnectFrame.__module__ = "pyspark.sql.connect.dataframe"
-
-
-class _FakeSparkConnectError(Exception):
-    def __init__(
-        self,
-        *,
-        condition: str | None = None,
-        parameters: Mapping[str, str] | None = None,
-        status_name: str | None = None,
-        accessors_fail: bool = False,
-    ) -> None:
-        super().__init__(condition or status_name or "Spark Connect request failed")
-        self.condition = condition
-        self.parameters = parameters
-        self.status_name = status_name
-        self.accessors_fail = accessors_fail
-
-    def getCondition(self) -> str | None:
-        if self.accessors_fail:
-            raise RuntimeError("condition unavailable")
-        return self.condition
-
-    def getMessageParameters(self) -> Mapping[str, str] | None:
-        if self.accessors_fail:
-            raise RuntimeError("parameters unavailable")
-        return self.parameters
-
-    def getGrpcStatusCode(self) -> Any:
-        if self.accessors_fail:
-            raise RuntimeError("status unavailable")
-        return SimpleNamespace(name=self.status_name) if self.status_name else None
-
-
-_FakeSparkConnectError.__module__ = "pyspark.errors.exceptions.connect"
 
 
 class _ClosablePySparkSession:
@@ -497,78 +442,6 @@ def test_classic_request_scope_does_not_mask_an_earlier_failure_during_restore(
     assert pyspark_engine_module._current_pyspark_request_id() is None
 
 
-def test_connect_request_scope_keeps_only_local_request_identity() -> None:
-    engine = PySparkEngine()
-    frame = _FakeConnectFrame()
-    engine._indexed_frame = frame
-    previous_sigint = signal.getsignal(signal.SIGINT)
-
-    with engine.request_scope("connect-request"):
-        assert pyspark_engine_module._current_pyspark_request_id() == "connect-request"
-        assert vars(frame.sparkSession) == {}
-        assert signal.getsignal(signal.SIGINT) is previous_sigint
-
-    assert pyspark_engine_module._current_pyspark_request_id() is None
-    assert vars(frame.sparkSession) == {}
-    assert signal.getsignal(signal.SIGINT) is previous_sigint
-
-
-@pytest.mark.parametrize(
-    "condition",
-    (
-        "NO_ACTIVE_SESSION",
-        "INVALID_HANDLE.SESSION_CHANGED",
-        "INVALID_HANDLE.SESSION_CLOSED",
-        "INVALID_HANDLE.SESSION_NOT_FOUND",
-        "CONNECT_INVALID_PLAN.DATAFRAME_NOT_FOUND",
-    ),
-)
-def test_connect_request_failure_classifies_lost_server_state(condition: str) -> None:
-    engine = PySparkEngine()
-    engine._indexed_frame = _FakeConnectFrame()
-
-    assert engine.classify_request_failure(_FakeSparkConnectError(condition=condition)) == "state_lost"
-
-
-def test_connect_request_failure_classifies_reattach_session_loss() -> None:
-    engine = PySparkEngine()
-    engine._indexed_frame = _FakeConnectFrame()
-
-    error = _FakeSparkConnectError(
-        condition="RESPONSE_ALREADY_RECEIVED",
-        parameters={"error_type": "INVALID_HANDLE.SESSION_NOT_FOUND"},
-    )
-    assert engine.classify_request_failure(error) == "state_lost"
-
-
-def test_connect_request_failure_classifies_exhausted_unavailable_status() -> None:
-    engine = PySparkEngine()
-    engine._indexed_frame = _FakeConnectFrame()
-
-    assert (
-        engine.classify_request_failure(_FakeSparkConnectError(status_name="UNAVAILABLE")) == "temporarily_unavailable"
-    )
-
-
-def test_connect_request_failure_does_not_guess_from_messages_or_unrelated_conditions() -> None:
-    engine = PySparkEngine()
-    engine._indexed_frame = _FakeConnectFrame()
-
-    assert engine.classify_request_failure(RuntimeError("INVALID_HANDLE.SESSION_NOT_FOUND")) is None
-    assert (
-        engine.classify_request_failure(_FakeSparkConnectError(condition="INVALID_HANDLE.OPERATION_NOT_FOUND")) is None
-    )
-    assert (
-        engine.classify_request_failure(
-            _FakeSparkConnectError(
-                condition="RESPONSE_ALREADY_RECEIVED",
-                parameters={"error_type": "INVALID_HANDLE.OPERATION_NOT_FOUND"},
-            )
-        )
-        is None
-    )
-
-
 def test_connect_request_failure_requires_connect_and_safe_structured_accessors() -> None:
     engine = PySparkEngine()
     engine._indexed_frame = _FakeClassicFrame(_FakeSparkContext())
@@ -724,19 +597,6 @@ def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_opera
 
     assert pyspark_engine_module._current_pyspark_request_id() is None
     assert signal.getsignal(signal.SIGINT) is previous_sigint
-
-
-def test_connect_stopped_probe_uses_the_session_local_flag() -> None:
-    class ConnectSession:
-        def __init__(self, stopped: bool) -> None:
-            self.is_stopped = stopped
-
-    class Frame:
-        def __init__(self, stopped: bool) -> None:
-            self.sparkSession = ConnectSession(stopped)
-
-    assert PySparkEngine.live_source_is_stopped(Frame(False)) is False
-    assert PySparkEngine.live_source_is_stopped(Frame(True)) is True
 
 
 def test_classic_stopped_probe_uses_the_cleared_context_handle_and_jvm_state() -> None:
