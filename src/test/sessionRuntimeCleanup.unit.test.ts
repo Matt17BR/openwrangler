@@ -137,6 +137,20 @@ describe("SessionRuntimeCleanup", () => {
     expect(diagnostics).toHaveBeenCalledWith(expect.stringMatching(/import candidate.*unknown_session/));
   });
 
+  it("tracks retired cleanup with bounded non-starting options", async () => {
+    let observed: BridgeRequestOptions | undefined;
+    const delegate = bridge(async (_request, options) => {
+      observed = options;
+      return { kind: "sessionClosed", sessionId: "runtime" };
+    });
+    const cleanup = new SessionRuntimeCleanup(() => true);
+
+    cleanup.track(target(delegate), "retired runtime");
+    await cleanup.waitForTracked();
+
+    expect(observed).toEqual(runtimeCleanupOptions());
+  });
+
   it("drains every detached cleanup before publishing delegate idle", async () => {
     const first = deferred<OpenWranglerResponse>();
     const second = deferred<OpenWranglerResponse>();
