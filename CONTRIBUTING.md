@@ -1,30 +1,165 @@
 # Contributing to Open Wrangler
 
-Open Wrangler welcomes bug fixes, tests, documentation, and product improvements. Read `AGENTS.md` and the linked architecture and testing documents before making changes.
+Open Wrangler welcomes bug fixes, tests, documentation, and product improvements. Read `AGENTS.md`,
+[Architecture](docs/architecture.md), and [Testing](docs/testing.md) before making changes.
 
-## Development setup
+## Prerequisites
+
+- Git.
+- Node.js 22.17 or newer in the Node 22 release line. The development and release workflows use Node 22, and the
+  locked development dependencies require Node 22.17 or newer.
+- VS Code 1.106 or newer for the Extension Development Host.
+- Python 3.10 through 3.14. Python 3.12 is the recommended development version and is the reference version in the
+  main CI workflow.
+
+Use npm from the selected Node installation. The lockfile is authoritative; do not substitute another package
+manager.
+
+## Clone and install
+
+Clone the repository and install its locked Node dependencies:
 
 ```bash
+git clone https://github.com/Matt17BR/openwrangler.git
+cd openwrangler
+node --version
 npm ci
-python3 -m venv .venv
-.venv/bin/python -m pip install -e "python[dev]"
-npm run build
-npm test
 ```
 
-Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/python`.
+The Node version should start with `v22.` and be at least `v22.17.0`.
 
-To install the current checkout in VS Code or Cursor without running the release matrix:
+Create a checkout-local Python environment and install the runtime with its development dependencies. The `.venv`
+name matters because repository commands discover that environment without shell activation.
+
+On macOS or Linux with Bash or zsh:
 
 ```bash
-npm run package:dev
-code --install-extension openwrangler-dev.vsix --force
-# or: cursor --install-extension openwrangler-dev.vsix --force
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e "python[dev]"
 ```
+
+On Windows with PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e "python[dev]"
+```
+
+On Windows with Command Prompt:
+
+```bat
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e "python[dev]"
+```
+
+Python 3.10, 3.11, 3.13, and 3.14 are also supported. Use the matching executable or Windows launcher selector when
+you need to reproduce a version-specific result.
+
+### Python selection for repository commands
+
+Commands such as `npm run lint:python`, `npm run test:python`, and `npm run reference:check` use the checkout `.venv`
+by default. An active absolute `VIRTUAL_ENV` is also accepted. If the development interpreter is elsewhere, set
+`OPEN_WRANGLER_PYTHON` to the absolute path of an existing Python 3.10-3.14 executable.
+
+Bash or zsh:
+
+```bash
+export OPEN_WRANGLER_PYTHON=/absolute/path/to/venv/bin/python
+```
+
+PowerShell:
+
+```powershell
+$env:OPEN_WRANGLER_PYTHON = "C:\absolute\path\to\venv\Scripts\python.exe"
+```
+
+Command Prompt:
+
+```bat
+set "OPEN_WRANGLER_PYTHON=C:\absolute\path\to\venv\Scripts\python.exe"
+```
+
+`OPEN_WRANGLER_PYTHON` selects Python for repository and visual-test commands. It does not configure the extension
+running in an Extension Development Host. The extension uses the environment selected by the Python extension, then
+a supported system interpreter. Set `openWrangler.pythonPath` to an absolute executable path when the development
+host needs an explicit override.
+
+## Golden path
+
+The following path proves a fresh checkout can build, run one focused test, start Open Wrangler in an Extension
+Development Host, and produce a development VSIX.
+
+1. Build the extension and webviews:
+
+   ```bash
+   npm run build
+   ```
+
+2. Run one focused Vitest file:
+
+   ```bash
+   npx vitest run src/test/configuration.unit.test.ts
+   ```
+
+3. Open the checkout in VS Code:
+
+   ```bash
+   code .
+   ```
+
+   In **Run and Debug**, choose **Run Open Wrangler** and press F5. The tracked launch configuration runs the existing
+   `npm run build` task, opens this checkout in a new Extension Development Host, and loads the extension from the
+   current source tree.
+
+   Trust the development workspace. Select the checkout `.venv` with **Python: Select Interpreter**, or set
+   `openWrangler.pythonPath` to its absolute Python executable as described above. Then right-click
+   `fixtures/sample.csv` and choose **Open in Open Wrangler**. A grid with the four sample columns confirms that the
+   bundled Python runtime can start from the selected environment.
+
+4. Close the development host and create a development VSIX:
+
+   ```bash
+   npm run package:dev
+   npm run verify:vsix -- openwrangler-dev.vsix
+   ```
+
+   `package:dev` performs a clean build and writes `openwrangler-dev.vsix`. It does not run the source test suite or
+   the release-candidate matrix. Install it with one of these commands when you need to test the package in your
+   normal editor:
+
+   ```bash
+   code --install-extension openwrangler-dev.vsix --force
+   # or
+   cursor --install-extension openwrangler-dev.vsix --force
+   ```
+
+Do not commit the VSIX, `.venv`, `node_modules`, editor profiles, notebook caches, or scratch files.
+
+## Fast feedback
+
+Use the narrowest command that covers the change. Do not run memory-intensive suites concurrently.
+
+- `npm run check:fast-feedback` runs Prettier, ESLint, and both TypeScript checks in parallel.
+- `npm run check` runs the complete static, generated-file, documentation, brand, dependency-lock, and license checks.
+  It does not run the source test suites.
+- `npx vitest run src/test/configuration.unit.test.ts` runs one Vitest file. Add `-t "test name"` to select one test.
+- `node scripts/run-python.mjs -m pytest python/tests/test_engine_registry.py -q` runs one Pytest file through the
+  repository's cross-platform Python resolver. Add `-k "test_name"` to select matching tests.
+- `npx vitest --watch src/test/configuration.unit.test.ts` watches one Vitest file.
+- `npm run watch` watches the extension and both webview bundles. Reload the Extension Development Host after a
+  completed rebuild.
+- `npm run package:dev` creates the development VSIX without invoking release-candidate checks.
+
+See [Testing](docs/testing.md) for suite ownership, required editor scenarios, visual prerequisites, and CI gates. See
+[Releasing](docs/releasing.md) for production packaging, candidate verification, and publication. Those release paths
+are not part of the contributor golden path.
 
 ## Writing for people
 
-Read [`docs/writing-style.md`](docs/writing-style.md) before editing the README, changelog, issues, pull request text,
+Read [the writing guide](docs/writing-style.md) before editing the README, changelog, issues, pull request text,
 release notes, registry listings, screenshots, or other public copy. Lead with the user-visible change, keep
 architecture and test proofs in their own documents, and use a concrete commit subject. Public text needs a real
 editorial read; do not rely on an AI detector or a word list.
@@ -41,15 +176,18 @@ editorial read; do not rely on an AI detector or a word list.
   changes separate. Use rebase merge when a pull request has several reviewable commits; squash only when the pull
   request is already one coherent commit.
 - Add or update tests with every behavior change.
-- Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
+- Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable
+  generated-code coverage for every editing-capable engine.
 - Update the documentation listed in the `AGENTS.md` matrix.
 - Review user-facing text and pull request summaries against `docs/writing-style.md`.
 - Add and review `docs/release-notes/<version>.md` in every release pull request; the publisher does not generate it.
-- A release pull request contains only the version bump, changelog, release notes, and release metadata. Merge
-  product, test-harness, media, and unrelated documentation work first.
-- Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
+- A release pull request contains only the version bump, changelog, release notes, and release metadata. Merge product,
+  test-harness, media, and unrelated documentation work first.
+- Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME
+  types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
-- Push independently green branch commits before opening a pull request when early review is not needed. A draft pull request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the same commit.
-- Do not commit generated VSIX files, local virtual environments, editor profiles, notebook execution caches, or user scratch files.
+- Push independently green branch commits before opening a pull request when early review is not needed. A draft pull
+  request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the
+  same commit.
 
 All required checks must pass before merge. Feature work is tested in both VS Code and Cursor before a prerelease.
