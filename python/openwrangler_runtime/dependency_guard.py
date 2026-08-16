@@ -130,8 +130,25 @@ def _emit(payload: dict[str, Any]) -> None:
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("ascii") + b"\n"
     if len(encoded) > MAX_FRAME_BYTES:
         _fail("internal_error")
-    sys.stdout.buffer.write(encoded)
-    sys.stdout.buffer.flush()
+    try:
+        sys.stdout.buffer.write(encoded)
+        sys.stdout.buffer.flush()
+    except (BrokenPipeError, OSError):
+        _discard_failed_stdout()
+        raise
+
+
+def _discard_failed_stdout() -> None:
+    try:
+        descriptor = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(descriptor, sys.stdout.buffer.fileno())
+    except (OSError, ValueError):
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def _emit_error(code: str) -> None:
