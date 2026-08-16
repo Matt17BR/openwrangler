@@ -90,7 +90,9 @@ export async function restartReleasedJupyterKernelAndWait<Api, Notebook, Kernel 
           return;
         }
       }
+      assertExactNotebook(notebook, "before delaying its released Jupyter kernel restart poll");
       await wait(pollIntervalMs);
+      assertExactNotebook(notebook, "after delaying its released Jupyter kernel restart poll");
     } while (now() < deadline);
     throw new Error(
       `Timed out waiting for the released Jupyter kernel to restart and return idle. ` +
