@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
@@ -10,7 +9,6 @@ import type {
   OpenSessionRequest,
   PageResponse,
   SessionMetadata,
-  SessionOpenedResponse,
   SessionSource,
   SessionBoundRequest,
   StepInspectionResponse
@@ -19,23 +17,22 @@ import { isSessionBoundRequest } from "../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../shared/viewState";
 import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresentation } from "./dataBridge";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
-import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
-import type { DecodedPersistedSessionState } from "./sessionPersistence";
-import { SessionPersistenceStore } from "./sessionPersistenceStore";
-import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
-  protocolError,
-  publicMetadata,
-  SessionResponseCommitter,
-  stepInspectionKey,
-  type SessionResponseState
-} from "./sessionResponseCommitter";
-import { SessionRequestScheduler, requestViewId, type SessionRequestExecutionLane } from "./sessionRequestScheduler";
+  canReopenLiveSessionForEditing,
+  normalizeSessionOrigin,
+  sameFileSourceIdentity,
+  sessionOriginMismatch,
+  type BridgeSessionOrigin,
+  type CoordinatedSessionOrigin,
+  type TextDocumentSessionOrigin
+} from "./sessionOrigin";
+import { SessionPersistenceStore } from "./sessionPersistenceStore";
+import { protocolError, publicMetadata, SessionResponseCommitter, stepInspectionKey } from "./sessionResponseCommitter";
+import { requestViewId, type SessionRequestExecutionLane } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
+import { SessionRuntimeEstablisher, type RuntimeEstablishedSession } from "./sessionRuntimeEstablisher";
 import { SessionRuntimeRecovery, type RuntimeRecoveryHooks } from "./sessionRuntimeRecovery";
 import {
-  confirmedReplayOpenRequest,
-  publicOpenedResponse,
   reconfigurationCancelled,
   SessionRuntimeReconfigurer,
   type RuntimeReconfigurationHooks
@@ -45,38 +42,13 @@ import {
   runtimeRecoveryOptions,
   SessionRuntimeRequestExecutor
 } from "./sessionRuntimeRequestExecutor";
-import {
-  gridState,
-  initialViewingState,
-  reconcileViewingState,
-  SessionRuntimeStateRestorer
-} from "./sessionRuntimeStateRestorer";
+import { gridState, reconcileViewingState, SessionRuntimeStateRestorer } from "./sessionRuntimeStateRestorer";
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
 
-interface CoordinatedSession extends SessionResponseState {
-  backendPreference?: DataBackend;
-  origin?: CoordinatedSessionOrigin;
-  scheduler: SessionRequestScheduler;
-  closing: boolean;
-  reconfiguring: boolean;
-  reconnecting: boolean;
-  liveReconnectRequired: boolean;
-  recoveryRequired: boolean;
-  /** Host-detached runtime work that must settle before this session may issue more work. */
-  runtimeSettlementBarrier?: Promise<void>;
-}
+type CoordinatedSession = RuntimeEstablishedSession;
 
-export interface TextDocumentSessionOrigin {
-  readonly kind: "textDocument";
-  readonly document: vscode.TextDocument;
-  readonly version: number;
-}
-
-type CoordinatedSessionOrigin =
-  Readonly<{ kind: "notebook"; document: vscode.NotebookDocument }> | TextDocumentSessionOrigin;
-
-type BridgeSessionOrigin = vscode.NotebookDocument | TextDocumentSessionOrigin;
+export type { TextDocumentSessionOrigin } from "./sessionOrigin";
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 
@@ -131,6 +103,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly runtimeCleanup: SessionRuntimeCleanup;
   private readonly persistence: SessionPersistenceStore;
   private readonly runtimeStateRestorer = new SessionRuntimeStateRestorer();
+  private readonly runtimeEstablisher: SessionRuntimeEstablisher;
   private readonly responseCommitter: SessionResponseCommitter;
   private readonly runtimeRequestExecutor: SessionRuntimeRequestExecutor;
   private readonly runtimeReconfigurer: SessionRuntimeReconfigurer;
@@ -144,6 +117,11 @@ export class SessionCoordinator implements vscode.Disposable {
       (delegate) =>
         this.pendingOpens.has(delegate) || [...this.sessions.values()].some((session) => session.delegate === delegate),
       diagnosticSink
+    );
+    this.runtimeEstablisher = new SessionRuntimeEstablisher(
+      this.runtimeCleanup,
+      this.runtimeStateRestorer,
+      this.persistence
     );
     this.runtimeReconfigurer = new SessionRuntimeReconfigurer(
       this.runtimeCleanup,
@@ -513,151 +491,15 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin
   ): Promise<OpenWranglerResponse> {
-    const invalidOrigin = sessionOriginMismatch(request, origin);
-    if (invalidOrigin) return protocolError("invalid_source_origin", invalidOrigin, true);
-    const response = await delegate.request(request, options);
-    if (response.kind === "error" || response.kind === "cancelled") return response;
-    if (response.kind !== "sessionOpened") {
-      return protocolError(
-        "invalid_runtime_response",
-        `The runtime returned ${response.kind} while opening an Open Wrangler session.`,
-        true
-      );
-    }
-
-    const publicId = randomUUID();
-    const backendPreference =
-      options?.backendPreference === "auto" ? undefined : (options?.backendPreference ?? request.backend);
-    const sessionOwner: { current?: CoordinatedSession } = {};
-    const scheduler = new SessionRequestScheduler((scheduledRequest, scheduledOptions) => {
-      const current = sessionOwner.current;
-      if (!current) throw new Error("The session scheduler started before its session was initialized.");
-      return this.executeSessionRequest(current, scheduledRequest, scheduledOptions);
+    const result = await this.runtimeEstablisher.establish(delegate, request, options, origin, {
+      isCoordinatorAvailable: () => !this.disposed,
+      executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
+        this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
     });
-    const session: CoordinatedSession = {
-      publicId,
-      runtimeId: response.metadata.sessionId,
-      publicRevision: response.metadata.revision,
-      runtimeRevision: response.metadata.revision,
-      openRequest: confirmedReplayOpenRequest(request, response.metadata),
-      ...(backendPreference ? { backendPreference } : {}),
-      ...(origin ? { origin } : {}),
-      delegate,
-      scheduler,
-      metadata: response.metadata,
-      code: "",
-      viewState: initialViewingState(response.metadata),
-      closing: false,
-      reconfiguring: false,
-      reconnecting: false,
-      liveReconnectRequired: false,
-      recoveryRequired: false
-    };
-    sessionOwner.current = session;
-    const staleOrigin = sessionOriginMismatch(request, origin);
-    if (staleOrigin) {
-      await this.runtimeCleanup.close(session, "invalid open runtime");
-      return protocolError("invalid_source_origin", staleOrigin, true);
-    }
-    const openedMismatch = sessionOpenedResponseMismatch(request, response);
-    if (openedMismatch) {
-      await this.runtimeCleanup.close(session, "invalid open runtime");
-      return protocolError(
-        "invalid_runtime_response",
-        `Ignored an invalid openSession response: ${openedMismatch}`,
-        true
-      );
-    }
-    let opened: SessionOpenedResponse = { ...response, summaries: [] };
-    const persisted = this.loadPersistedSession(request, response.metadata.backend);
-    if (persisted) {
-      let cleaningRestored = false;
-      try {
-        await this.runtimeStateRestorer.restoreCleaningState(
-          session,
-          persisted.cleaning,
-          request.columnOffset,
-          request.columnLimit,
-          options
-        );
-        cleaningRestored = true;
-      } catch {
-        await this.runtimeCleanup.close(session, "saved-plan fallback runtime");
-        const clean = await delegate.request(session.openRequest, options);
-        if (clean.kind === "error" || clean.kind === "cancelled") return clean;
-        if (clean.kind !== "sessionOpened") {
-          return protocolError(
-            "invalid_runtime_response",
-            `The runtime returned ${clean.kind} while reopening the immutable source.`,
-            true
-          );
-        }
-        session.runtimeId = clean.metadata.sessionId;
-        session.runtimeRevision = clean.metadata.revision;
-        session.publicRevision = clean.metadata.revision;
-        session.metadata = clean.metadata;
-        session.code = "";
-        session.draftPresentation = undefined;
-        session.draftBaseFilterModel = undefined;
-        session.viewState = initialViewingState(clean.metadata);
-        const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
-        if (cleanMismatch) {
-          await this.runtimeCleanup.close(session, "invalid open runtime");
-          return protocolError(
-            "invalid_runtime_response",
-            `Ignored an invalid openSession response while reopening the immutable source: ${cleanMismatch}`,
-            true
-          );
-        }
-        opened = { ...clean, summaries: [] };
-        void vscode.window.showWarningMessage(
-          `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
-        );
-      }
-      if (cleaningRestored) {
-        let page: PageResponse;
-        try {
-          page = await this.runtimeStateRestorer.restoreViewingState(
-            session,
-            persisted.view,
-            request.pageSize,
-            request.columnOffset,
-            request.columnLimit,
-            options
-          );
-        } catch {
-          await this.runtimeCleanup.close(session, "failed saved-state runtime");
-          return protocolError(
-            "saved_view_restore_failed",
-            `Open Wrangler could not restore a confirmed view for ${request.source.label}.`,
-            true
-          );
-        }
-        session.publicRevision = session.runtimeRevision;
-        opened = {
-          kind: "sessionOpened",
-          metadata: session.metadata,
-          page: page.page,
-          summaries: []
-        };
-      }
-    }
-    if (this.disposed) {
-      await this.runtimeCleanup.close(session, "late-open runtime");
-      return protocolError(
-        "coordinator_disposed",
-        "The Open Wrangler session coordinator was disposed before the dataframe finished opening.",
-        false
-      );
-    }
-    const finalOrigin = sessionOriginMismatch(request, origin);
-    if (finalOrigin) {
-      await this.runtimeCleanup.close(session, "invalid open runtime");
-      return protocolError("invalid_source_origin", finalOrigin, true);
-    }
-    this.sessions.set(publicId, session);
-    this.setActive(publicId);
-    return publicOpenedResponse(opened, publicId, session.publicRevision, session.openRequest.source);
+    if (!result.established) return result.response;
+    this.sessions.set(result.session.publicId, result.session);
+    this.setActive(result.session.publicId);
+    return result.response;
   }
 
   private async reconfigureFileSession(
@@ -1060,13 +902,6 @@ export class SessionCoordinator implements vscode.Disposable {
     this.pendingOpenWaiters.clear();
   }
 
-  private loadPersistedSession(
-    request: OpenSessionRequest,
-    backend: SessionMetadata["backend"]
-  ): DecodedPersistedSessionState | undefined {
-    return this.persistence.load(request.source, backend);
-  }
-
   private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
     return this.serializeSessionEstablishment(session.delegate, () =>
       this.runtimeRecovery.replay(session, options, this.runtimeRecoveryHooks(session))
@@ -1127,89 +962,6 @@ export class SessionCoordinator implements vscode.Disposable {
   private isLiveSession(session: CoordinatedSession): boolean {
     return !this.disposed && this.sessions.get(session.publicId) === session;
   }
-}
-
-function sameFileSourceIdentity(current: SessionSource, replacement: SessionSource): boolean {
-  if (current.kind !== "file" || replacement.kind !== "file") return false;
-  const { importOptions: _currentImportOptions, ...currentIdentity } = current;
-  const { importOptions: _replacementImportOptions, ...replacementIdentity } = replacement;
-  return isDeepStrictEqual(currentIdentity, replacementIdentity);
-}
-
-function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined): CoordinatedSessionOrigin | undefined {
-  if (!origin) return undefined;
-  if (isTextDocumentSessionOrigin(origin)) {
-    if (!Number.isSafeInteger(origin.version) || origin.version < 0) {
-      throw new TypeError("A source-document origin requires a valid captured document version.");
-    }
-    return Object.freeze({ kind: "textDocument", document: origin.document, version: origin.version });
-  }
-  return Object.freeze({ kind: "notebook", document: origin });
-}
-
-function isTextDocumentSessionOrigin(origin: BridgeSessionOrigin): origin is TextDocumentSessionOrigin {
-  return "kind" in origin && origin.kind === "textDocument";
-}
-
-function canReopenLiveSessionForEditing(session: CoordinatedSession): boolean {
-  if (session.metadata.mode !== "viewing" || session.metadata.backend === "pyspark") return false;
-  if (session.openRequest.source.kind === "notebookVariable") {
-    return session.origin?.kind === "notebook" && session.metadata.capabilities.notebookInsert;
-  }
-  return (
-    session.openRequest.source.kind === "rInteractiveVariable" &&
-    session.metadata.backend === "r" &&
-    session.origin === undefined &&
-    !session.metadata.capabilities.notebookInsert &&
-    session.metadata.capabilities.documentInsert !== true
-  );
-}
-
-function sessionOriginMismatch(
-  request: OpenSessionRequest,
-  origin: CoordinatedSessionOrigin | undefined
-): string | undefined {
-  if (request.source.kind === "documentVariable" && origin?.kind !== "textDocument") {
-    return "A live document-variable session requires its exact originating text document.";
-  }
-  if (!origin) return undefined;
-  return origin.kind === "notebook"
-    ? notebookOriginMismatch(request, origin.document)
-    : textDocumentOriginMismatch(request, origin);
-}
-
-function notebookOriginMismatch(request: OpenSessionRequest, notebook: vscode.NotebookDocument): string | undefined {
-  if (request.source.kind !== "notebookVariable" || !request.source.uri) {
-    return "Notebook provenance may be attached only to a live notebook-variable session.";
-  }
-  if (request.source.uri !== notebook.uri.toString()) {
-    return "The notebook variable source did not match its originating notebook document.";
-  }
-  if (!isSoleOpenNotebookDocument(notebook)) {
-    return "The originating notebook is no longer open. Reopen it and try again.";
-  }
-  return undefined;
-}
-
-function textDocumentOriginMismatch(
-  request: OpenSessionRequest,
-  origin: TextDocumentSessionOrigin
-): string | undefined {
-  if (request.source.kind !== "documentVariable" || !request.source.uri) {
-    return "Source-document provenance may be attached only to a live document-variable session.";
-  }
-  const document = origin.document;
-  if (request.source.uri !== document.uri.toString()) {
-    return "The document variable source did not match its originating text document.";
-  }
-  const matches = vscode.workspace.textDocuments.filter((candidate) => candidate.uri.toString() === request.source.uri);
-  if (document.isClosed || matches.length !== 1 || matches[0] !== document) {
-    return "The originating source document is no longer uniquely open. Reopen it and try again.";
-  }
-  if (document.version !== origin.version) {
-    return "The originating source document changed after Open Wrangler captured it. Run the file again.";
-  }
-  return undefined;
 }
 
 function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
