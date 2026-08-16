@@ -119,6 +119,11 @@ import {
   type DependencyGuardRecoveryFixture
 } from "./dependencyGuardRecoveryFixture";
 import {
+  createInstrumentedPythonEnvironment,
+  instrumentedRuntimeStarts,
+  verifyInstrumentedPythonEnvironmentMarker
+} from "./instrumentedPythonEnvironment";
+import {
   createExcelDependencyInstallPython,
   createPackagedExcelDependencyWorkbook
 } from "./excelDependencyInstallFixture";
@@ -32487,11 +32492,6 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
 
 const PINNED_REAL_PYTHON_EXTENSION_VERSION = "2026.4.0";
 
-interface InstrumentedPythonEnvironment {
-  executable: string;
-  runtimeMarkerDirectory: string;
-}
-
 async function exerciseRealPythonEnvironmentSelection(
   testing: TestApi,
   workspace: vscode.Uri,
@@ -32701,79 +32701,6 @@ async function exerciseRealPythonEnvironmentSelection(
   }
 }
 
-function createInstrumentedPythonEnvironment(
-  environmentRoot: string,
-  dependencyPython: string,
-  label: string
-): InstrumentedPythonEnvironment {
-  execFileSync(dependencyPython, ["-m", "venv", "--without-pip", environmentRoot], {
-    stdio: "pipe",
-    timeout: 60_000,
-    windowsHide: true
-  });
-  const executable =
-    process.platform === "win32"
-      ? path.join(environmentRoot, "Scripts", "python.exe")
-      : path.join(environmentRoot, "bin", "python");
-  assert.equal(existsSync(executable), true, `Instrumented Python environment ${label} must be executable.`);
-  const dependencySitePackages = execFileSync(
-    dependencyPython,
-    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-    {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-      windowsHide: true
-    }
-  ).trim();
-  const environmentSitePackages = execFileSync(
-    executable,
-    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-    {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-      windowsHide: true
-    }
-  ).trim();
-  assert.ok(dependencySitePackages && environmentSitePackages);
-  const runtimeMarkerDirectory = path.join(environmentRoot, "runtime-starts");
-  mkdirSync(runtimeMarkerDirectory);
-  const runtimeMarkerImportLine = [
-    "import os, sys, uuid; ",
-    "os.path.isfile(os.path.join(os.environ.get('PYTHONPATH', '').split(os.pathsep, 1)[0], ",
-    "'openwrangler_runtime', 'server.py')) and not hasattr(sys, '_openwrangler_acceptance_runtime_marked') and ",
-    `(setattr(sys, '_openwrangler_acceptance_runtime_marked', True), open(os.path.join(${JSON.stringify(runtimeMarkerDirectory)}, `,
-    "'runtime-' + uuid.uuid4().hex + '.marker'), 'x').close())"
-  ].join("");
-  writeFileSync(
-    path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
-    `${dependencySitePackages}\n${runtimeMarkerImportLine}\n`,
-    "utf8"
-  );
-  return { executable, runtimeMarkerDirectory };
-}
-
-function verifyInstrumentedPythonEnvironmentMarker(
-  environment: InstrumentedPythonEnvironment,
-  runtimeRoot: string
-): void {
-  assert.deepEqual(instrumentedRuntimeMarkers(environment), []);
-  execFileSync(environment.executable, ["-c", "pass"], {
-    env: { ...process.env, PYTHONPATH: runtimeRoot },
-    stdio: "pipe",
-    timeout: 30_000,
-    windowsHide: true
-  });
-  const markers = instrumentedRuntimeMarkers(environment);
-  assert.equal(markers.length, 1, "The executable .pth marker must identify one runtime-root launch.");
-  const markerPath = path.join(environment.runtimeMarkerDirectory, markers[0]!);
-  const metadata = lstatSync(markerPath);
-  assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1);
-  rmSync(markerPath);
-  assert.deepEqual(instrumentedRuntimeMarkers(environment), []);
-}
-
 async function waitForSelectedPythonEnvironment(
   pythonApi: PythonExtension,
   resource: vscode.WorkspaceFolder,
@@ -32788,16 +32715,6 @@ async function waitForSelectedPythonEnvironment(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for the released Python extension to publish the selected environment.");
-}
-
-function instrumentedRuntimeStarts(environment: InstrumentedPythonEnvironment): number {
-  return instrumentedRuntimeMarkers(environment).length;
-}
-
-function instrumentedRuntimeMarkers(environment: InstrumentedPythonEnvironment): string[] {
-  const entries = readdirSync(environment.runtimeMarkerDirectory);
-  assert.ok(entries.length <= 16, "Instrumented Python runtime markers exceeded their fixed bound.");
-  return entries.filter((entry) => /^runtime-[0-9a-f]{32}\.marker$/u.test(entry));
 }
 
 function launchAcceptanceGuardParent(fixture: DependencyGuardRecoveryFixture): AcceptanceGuardProcess {
