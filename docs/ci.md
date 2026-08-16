@@ -25,6 +25,15 @@ and workflow contracts. The latency-critical R 4.4/4.5 matrix starts after that 
 and editor jobs start only after `Fast feedback` and `Contract tests` pass, so an early preflight failure still avoids
 their cost without removing any check from a green pull request.
 
+A successful pull-request run retains no ordinary artifacts. The canonical PR package and checksum move only between
+same-run consumers through a run-, attempt-, commit-, and producer-digest-bound cache key. The producer publishes its
+exact digest and size as job outputs; consumers treat restored cache contents as untrusted, fail closed on a cache miss
+or receipt mismatch, and repeat checksum, size, and inventory verification before use. Pull-request merge-ref cache
+scope prevents these entries from becoming protected-main inputs. Visual and coverage reports upload for seven days
+only when their owning check fails. Packaged-editor diagnostics keep their stricter producer receipt, exact emitted
+non-glob path, immediate failure-only upload, and seven-day retention. Release workflows continue to publish their
+canonical artifact triples; the PR cache is never release input.
+
 The R 4.4 and 4.5 jobs run the same native contract. Their explicit package set is resolved into a lockfile and
 restored from a versioned cache, so an unchanged dependency set does not compile from scratch on every pull request.
 The runner reports and bounds the frame, kernel-agent, catalog, and real-R transport phases independently. A slow or

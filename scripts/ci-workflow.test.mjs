@@ -67,6 +67,14 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
 const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const SETUP_R_DEPENDENCIES_ACTION = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const PINNED_SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const PINNED_PR_CACHE_SAVE_ACTION = "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809";
+const PINNED_PR_CACHE_RESTORE_ACTION = "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809";
+const PINNED_UPLOAD_ACTION = "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f";
+const PR_VSIX_CACHE_SAVE_KEY =
+  "openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ steps.canonical_receipt.outputs.sha256 }}";
+const PR_VSIX_CACHE_RESTORE_KEY =
+  "openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ needs.canonical-vsix.outputs.vsix-sha256 }}";
+const FAILURE_ONLY_ARTIFACT_IF = "${{ failure() && !cancelled() }}";
 const REFERENCE_PYTHON_OUTPUT = "${{ steps.reference_python.outputs.python-path }}";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const CANONICAL_CI_IF =
@@ -1720,7 +1728,7 @@ test("authoritative CI work is independently attributable before the required ag
   assert.deepEqual(linuxPackaged?.needs, ["classify", "fast-feedback", "contract-tests", "canonical-vsix"]);
   assert.equal(linuxPackaged?.if, FULL_CI_IF);
   assert.match(
-    linuxPackaged?.steps?.find((step) => step?.name === "Require the canonical PR artifact")?.if ?? "",
+    linuxPackaged?.steps?.find((step) => step?.name === "Require the canonical PR package")?.if ?? "",
     /needs\.canonical-vsix\.result != 'success'/u
   );
   assert.equal(
@@ -1740,6 +1748,169 @@ test("authoritative CI work is independently attributable before the required ag
   }
   assert.deepEqual(ownersByCommand.get("npm run test:scripts:workflow"), ["fast-feedback"]);
   assert.deepEqual(ownersByCommand.get("npm run test:scripts:portable"), ["contract-tests"]);
+});
+
+test("successful PR validation retains no ordinary run artifacts", () => {
+  const allowedUploadNames = new Map([
+    [
+      ".github/workflows/ci.yml",
+      [
+        "coverage-reports",
+        "packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+        "webview-visual-evidence"
+      ]
+    ],
+    [".github/workflows/cross-platform.yml", []],
+    [".github/workflows/codeql.yml", []]
+  ]);
+  const uploadInventories = new Map();
+  for (const relativePath of requiredPullRequestWorkflows) {
+    const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+    const workflow = parseYaml(source);
+    const rawUploadReferences = [
+      ...source.matchAll(/^\s*(?:-\s*)?uses:\s*["']?(actions\/upload-artifact@[^\s"'#]+)["']?(?:\s+#.*)?$/gmu)
+    ].map((match) => match[1]);
+    const uploads = Object.entries(workflow?.jobs ?? {}).flatMap(([jobId, job]) =>
+      (job?.steps ?? [])
+        .filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
+        .map((step) => ({ jobId, step }))
+    );
+    assert.deepEqual(
+      uploads.map(({ step }) => step.uses),
+      rawUploadReferences,
+      `${relativePath} raw and parsed artifact-upload inventories must agree.`
+    );
+    for (const reference of rawUploadReferences) {
+      assert.equal(reference, PINNED_UPLOAD_ACTION, `${relativePath} must use the approved pinned artifact uploader.`);
+    }
+    assert.deepEqual(
+      uploads.map(({ step }) => step?.with?.name).sort(),
+      allowedUploadNames.get(relativePath),
+      `${relativePath} must retain only its approved failure-evidence uploads.`
+    );
+    uploadInventories.set(relativePath, { uploads, workflow });
+  }
+
+  const ciInventory = uploadInventories.get(".github/workflows/ci.yml");
+  assert.ok(ciInventory);
+  const { uploads, workflow } = ciInventory;
+  const canonicalJob = workflow?.jobs?.["canonical-vsix"];
+  const canonicalSteps = canonicalJob?.steps;
+  assert.ok(Array.isArray(canonicalSteps), "CI must retain one canonical PR package owner.");
+  assert.deepEqual(canonicalJob?.outputs, {
+    "vsix-sha256": "${{ steps.canonical_receipt.outputs.sha256 }}",
+    "vsix-size": "${{ steps.canonical_receipt.outputs.size }}"
+  });
+  assert.ok(canonicalSteps.some((step) => step?.run === "mkdir canonical-vsix"));
+  assert.ok(
+    canonicalSteps.some((step) => step?.run === "npm run package:prepared -- --out canonical-vsix/openwrangler.vsix")
+  );
+  assert.ok(canonicalSteps.some((step) => step?.run === "npm run verify:vsix -- canonical-vsix/openwrangler.vsix"));
+  const canonicalReceipt = canonicalSteps.find((step) => step?.id === "canonical_receipt");
+  assert.equal(canonicalReceipt?.name, "Create canonical PR checksum");
+  assert.match(canonicalReceipt?.run ?? "", /appendFileSync\(process\.env\.GITHUB_OUTPUT/u);
+  assert.match(canonicalReceipt?.run ?? "", /sha256=\$\{digest\}\\nsize=\$\{size\}\\n/u);
+  const cacheSaves = canonicalSteps.filter(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/cache/save@")
+  );
+  assert.equal(cacheSaves.length, 1, "The canonical producer must own exactly one cache save.");
+  const [cacheSave] = cacheSaves;
+  assert.deepEqual(cacheSave, {
+    name: "Save canonical PR package for same-run consumers",
+    uses: PINNED_PR_CACHE_SAVE_ACTION,
+    with: {
+      path: "canonical-vsix",
+      key: PR_VSIX_CACHE_SAVE_KEY,
+      enableCrossOsArchive: false
+    }
+  });
+  assert.equal(canonicalSteps[canonicalSteps.indexOf(cacheSave) - 1]?.name, "Revalidate canonical PR checksum");
+
+  for (const jobId of ["linux-packaged-editor", "remote-workspace"]) {
+    const steps = workflow?.jobs?.[jobId]?.steps;
+    assert.ok(Array.isArray(steps), `${jobId} must remain an exact-package consumer.`);
+    const restores = steps.filter(
+      (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/cache/restore@")
+    );
+    assert.deepEqual(restores, [
+      {
+        name: "Restore canonical PR package",
+        uses: PINNED_PR_CACHE_RESTORE_ACTION,
+        with: {
+          path: "canonical-vsix",
+          key: PR_VSIX_CACHE_RESTORE_KEY,
+          "fail-on-cache-miss": true
+        }
+      }
+    ]);
+    const verifier = steps.find((step) =>
+      jobId === "linux-packaged-editor" ? step?.name === "Verify canonical PR checksum" : step?.id === "candidate"
+    );
+    assert.equal(verifier?.env?.EXPECTED_SHA256, "${{ needs.canonical-vsix.outputs.vsix-sha256 }}");
+    assert.equal(verifier?.env?.EXPECTED_SIZE, "${{ needs.canonical-vsix.outputs.vsix-size }}");
+    assert.match(verifier?.run ?? "", /checksum is not bound to its producer/u);
+    assert.match(verifier?.run ?? "", /size is not bound to its producer/u);
+    assert.equal(
+      steps.some((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/download-artifact@")),
+      false,
+      `${jobId} must not create a retained run artifact merely to transfer the PR package.`
+    );
+    assert.ok(
+      steps.indexOf(restores[0]) < steps.findIndex((step) => String(step?.run ?? "").includes("openwrangler.vsix")),
+      `${jobId} must restore the package before its first checksum or inventory consumer.`
+    );
+  }
+
+  assert.deepEqual(
+    uploads.map(({ step }) => step?.with?.name).sort(),
+    [
+      "coverage-reports",
+      "packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+      "webview-visual-evidence"
+    ],
+    "PR CI may retain only bounded failure evidence."
+  );
+  for (const name of ["coverage-reports", "webview-visual-evidence"]) {
+    const upload = uploads.find(({ step }) => step?.with?.name === name)?.step;
+    assert.equal(upload?.if, FAILURE_ONLY_ARTIFACT_IF);
+    assert.equal(upload?.with?.["if-no-files-found"], "ignore");
+    assert.equal(upload?.with?.["retention-days"], 7);
+    assert.equal(upload?.with?.["include-hidden-files"], false);
+  }
+  const editorUpload = uploads.find(({ jobId }) => jobId === "linux-packaged-editor")?.step;
+  const editorSteps = workflow?.jobs?.["linux-packaged-editor"]?.steps;
+  assert.ok(Array.isArray(editorSteps));
+  const editorProducer = editorSteps.find((step) => step?.id === "packaged_editor");
+  assert.equal(
+    editorSteps.indexOf(editorUpload),
+    editorSteps.indexOf(editorProducer) + 1,
+    "Sealed editor diagnostics must upload immediately after their exact producer."
+  );
+  assert.equal(
+    editorUpload?.if,
+    "${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(editorUpload?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
+  assert.equal(editorUpload?.with?.["if-no-files-found"], "error");
+  assert.equal(editorUpload?.with?.["retention-days"], 7);
+  assert.equal(editorUpload?.with?.["include-hidden-files"], false);
+
+  for (const relativePath of [".github/workflows/release.yml", ".github/workflows/stable-release.yml"]) {
+    const release = parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
+    const packageSteps = release?.jobs?.package?.steps;
+    assert.ok(Array.isArray(packageSteps), `${relativePath} must retain its canonical release-package owner.`);
+    assert.equal(
+      packageSteps.some((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/cache/")),
+      false,
+      `${relativePath} must not substitute a PR cache for its canonical release artifact.`
+    );
+    const canonicalUpload = packageSteps.find((step) => step?.id === "canonical_artifact");
+    assert.match(canonicalUpload?.uses ?? "", /^actions\/upload-artifact@[0-9a-f]{40}$/u);
+    assert.equal(
+      release?.jobs?.package?.outputs?.["artifact-id"],
+      "${{ steps.canonical_artifact.outputs.artifact-id }}"
+    );
+  }
 });
 
 test("ready substantive PRs run full while push tiers retain their exact owners", () => {
@@ -2411,7 +2582,7 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
 
   const steps = job?.steps;
   assert.ok(Array.isArray(steps), "CI must retain the opt-in Remote SSH acceptance job.");
-  const prerequisite = steps.find((step) => step?.name === "Require the canonical PR artifact");
+  const prerequisite = steps.find((step) => step?.name === "Require the canonical PR package");
   assert.match(prerequisite?.if ?? "", /needs\.canonical-vsix\.result != 'success'/u);
   assert.equal(prerequisite?.run, "exit 1");
 
@@ -2472,17 +2643,20 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
     "Remote SSH CI must install one self-contained runtime environment."
   );
 
-  const download = steps.find(
-    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/download-artifact@")
-  );
-  assert.equal(download?.with?.name, "openwrangler-vsix");
-  assert.equal(download?.with?.path, "canonical-vsix");
+  const restore = steps.find((step) => step?.uses === PINNED_PR_CACHE_RESTORE_ACTION);
+  assert.deepEqual(restore?.with, {
+    path: "canonical-vsix",
+    key: PR_VSIX_CACHE_RESTORE_KEY,
+    "fail-on-cache-miss": true
+  });
 
   const candidate = steps.find((step) => step?.id === "candidate");
   assert.match(candidate?.run ?? "", /resolve\("canonical-vsix\/openwrangler\.vsix"\)/u);
   assert.match(candidate?.run ?? "", /path=\$\{candidatePath\}/u);
   assert.match(candidate?.run ?? "", /openwrangler\.vsix\.sha256/u);
   assert.match(candidate?.run ?? "", /GITHUB_OUTPUT/u);
+  assert.equal(candidate?.env?.EXPECTED_SHA256, "${{ needs.canonical-vsix.outputs.vsix-sha256 }}");
+  assert.equal(candidate?.env?.EXPECTED_SIZE, "${{ needs.canonical-vsix.outputs.vsix-size }}");
 
   const acceptance = steps.find((step) => step?.id === "remote_workspace");
   assert.match(acceptance?.run ?? "", /^npm run test:remote-workspace --/u);
