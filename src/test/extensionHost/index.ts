@@ -220,6 +220,7 @@ import { createReleasedRInteractiveTerminalJourney } from "./releasedRInteractiv
 import { createReleasedRInteractiveTerminalSupport } from "./releasedRInteractiveTerminalSupport";
 import { createReleasedRInteractiveTitleActions } from "./releasedRInteractiveTitleAction";
 import { createReleasedRRuntimeBinding } from "./releasedRRuntimeBinding";
+import { createReleasedRKernelLifecycle } from "./releasedRKernelLifecycleJourney";
 import {
   findReleasedQuartoPreviewLocator,
   openReleasedNativeQuartoPreview as openReleasedNativeQuartoPreviewOwner
@@ -2398,133 +2399,23 @@ async function exerciseReleasedRKernelRestartExtension(
   recordReleasedRAcceptanceSection(phase, coverage, "notebook", "complete");
 }
 
-function recordReleasedRKernelLifecycleCheckpoint(phase: "jupyter-r" | "jupyter-r-remote", checkpoint: string): void {
-  recordAcceptanceProgress(`${phase}:kernel-restart:${checkpoint}`);
-}
-
-async function exerciseReleasedRKernelLifecycle(
-  testing: TestApi,
-  workbench: Page,
-  notebook: vscode.NotebookDocument,
-  setup: Readonly<Record<string, unknown>>,
-  kernelTarget: ReleasedJupyterKernelTarget,
-  phase: "jupyter-r" | "jupyter-r-remote"
-): Promise<void> {
-  recordReleasedRKernelLifecycleCheckpoint(phase, "notebook-show:start");
-  await showExactReleasedNotebook(notebook);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "notebook-show:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "variable-invoke:start");
-  await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "variable-invoke:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "session-receipt:start");
-  const beforeRestart = await waitForReleasedVariableSession(
-    workbench,
-    testing,
-    notebook,
-    {
-      name: "orders_frame",
-      type: "data.frame",
-      backend: "r",
-      rDataframeFlavor: "r.data.frame",
-      firstValue: "1",
-      notebookInsert: true
-    },
-    "the R restart session"
-  );
-  recordReleasedRKernelLifecycleCheckpoint(phase, "session-receipt:complete");
-  await restartReleasedJupyterKernelAndWait(notebook, (checkpoint) =>
-    recordReleasedRKernelLifecycleCheckpoint(phase, `restart-${checkpoint}`)
-  );
-
-  recordReleasedRKernelLifecycleCheckpoint(phase, "invalidation:start");
-  const stale = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    sessionId: beforeRestart.sessionId,
-    revision: beforeRestart.metadata.revision,
-    viewRequestId: `${phase}-restarted-session`,
-    offset: 0,
-    limit: 10,
-    filterModel: beforeRestart.metadata.filterModel
-  });
-  assert.equal(stale.kind, "error");
-  if (stale.kind !== "error") throw new Error("The restarted R session unexpectedly returned data.");
-  assert.equal(stale.code, "r_kernel_changed");
-  assert.equal(stale.recoverable, true);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "invalidation:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "invalidated-session-cleanup:start");
-  await disposePackagedSessionPanel(testing, beforeRestart.sessionId, "the invalidated R session");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "invalidated-session-cleanup:complete");
-
-  recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-show:start");
-  const replacementEditor = await showExactReleasedNotebook(notebook);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-show:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-kernel-probe:start");
-  await executeReleasedNotebookCell(
-    notebook,
-    RELEASED_JUPYTER_R_KERNEL_CELL,
-    RELEASED_JUPYTER_R_KERNEL_RESULT,
-    `${phase}:replacement-kernel-probe`,
-    replacementEditor
-  );
-  recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-kernel-probe:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-setup:start");
-  await executeReleasedNotebookCell(
-    notebook,
-    RELEASED_JUPYTER_R_SETUP_CELL,
-    RELEASED_JUPYTER_R_SETUP_RESULT,
-    `${phase}:replacement-setup`,
-    replacementEditor
-  );
-  const replacementSetup = releasedNotebookJsonResult(
-    notebook.cellAt(RELEASED_JUPYTER_R_SETUP_CELL),
-    RELEASED_JUPYTER_R_SETUP_RESULT,
-    "replacement R setup"
-  );
-  assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
-  assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
-  if (!kernelTarget.remote) assertReleasedRPrivateLibrary(replacementSetup, "replacement R setup");
-  assert.equal(replacementSetup.collapseVersion, "2.1.7");
-  if (kernelTarget.remote) {
-    assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
-    assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
-  }
-  recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-setup:complete");
-
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-invoke:start");
-  await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-invoke:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session:start");
-  const recovered = await waitForReleasedVariableSession(
-    workbench,
-    testing,
-    notebook,
-    {
-      name: "orders_frame",
-      type: "data.frame",
-      backend: "r",
-      rDataframeFlavor: "r.data.frame",
-      firstValue: "1",
-      notebookInsert: true
-    },
-    "the reopened R session after kernel restart"
-  );
-  assert.notEqual(recovered.sessionId, beforeRestart.sessionId);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-page:start");
-  await assertReleasedSessionPage(testing, recovered, "1", `${phase}-recovered-page`);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-page:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session-cleanup:start");
-  await disposePackagedSessionPanel(testing, recovered.sessionId, "the recovered R session");
-  assert.equal(testing.diagnostics().sessionCount, 0);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session-cleanup:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "binding-cleanup-show:start");
-  const cleanupEditor = await showExactReleasedNotebook(notebook);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "binding-cleanup-show:complete");
-  recordReleasedRKernelLifecycleCheckpoint(phase, "binding-cleanup-wait:start");
-  await waitForReleasedRRuntimeBindingCleanup(notebook, cleanupEditor, phase);
-  recordReleasedRKernelLifecycleCheckpoint(phase, "binding-cleanup-wait:complete");
-}
+const { exerciseReleasedRKernelLifecycle, recordReleasedRKernelLifecycleCheckpoint } = createReleasedRKernelLifecycle({
+  GRID_COLUMN_WINDOW,
+  RELEASED_JUPYTER_R_KERNEL_CELL,
+  RELEASED_JUPYTER_R_SETUP_CELL,
+  assertReleasedRPrivateLibrary,
+  assertReleasedRVersion,
+  assertReleasedSessionPage,
+  disposePackagedSessionPanel,
+  executeReleasedNotebookCell,
+  invokeReleasedNotebookToolbarVariable,
+  recordAcceptanceProgress,
+  releasedNotebookJsonResult,
+  restartReleasedJupyterKernelAndWait,
+  showExactReleasedNotebook,
+  waitForReleasedRRuntimeBindingCleanup,
+  waitForReleasedVariableSession
+});
 
 const {
   activateReleasedRInteractiveTitleAction,
