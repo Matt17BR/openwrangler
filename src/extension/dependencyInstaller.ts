@@ -4,20 +4,28 @@ import { chmodSync, mkdtempSync, rmdirSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
-import { TextDecoder } from "node:util";
+import {
+  BoundedDependencyGuardFrameReader,
+  DEPENDENCY_GUARD_MAX_FRAME_BYTES,
+  DependencyGuardProtocolError,
+  type DependencyGuardMode
+} from "./dependencyGuardFrameReader";
 import type { PythonEnvironment } from "./pythonEnvironment";
 import type { PythonDependency } from "./pythonEnvironmentModel";
 import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 
 export const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
-export const DEPENDENCY_GUARD_MAX_FRAME_BYTES = 65_536;
+export {
+  DEPENDENCY_GUARD_MAX_FRAME_BYTES,
+  DependencyGuardProtocolError,
+  type DependencyGuardMode
+} from "./dependencyGuardFrameReader";
 export const DEPENDENCY_GUARD_COMMAND_TIMEOUT_MS = 30_000;
 export const DEPENDENCY_INSTALL_READY_TIMEOUT_MS = 30_000;
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export const DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS = 5_000;
 
-export type DependencyGuardMode = "install" | "status" | "validate";
 export type DependencyGuardErrorCode =
   | "invalid_request"
   | "busy"
@@ -108,16 +116,6 @@ export interface DependencyGuardClientOptions {
 
 export interface StartDependencyInstallOptions extends Omit<DependencyGuardClientOptions, "timeoutMs"> {
   readonly readyTimeoutMs?: number;
-}
-
-export class DependencyGuardProtocolError extends Error {
-  constructor(
-    readonly mode: DependencyGuardMode,
-    message: string
-  ) {
-    super(`Open Wrangler dependency guard ${mode} protocol failed: ${message}`);
-    this.name = "DependencyGuardProtocolError";
-  }
 }
 
 export class DependencyGuardCommandError extends Error {
@@ -352,6 +350,7 @@ function ownDependencyInstall(
   let protocolError: Error | undefined;
   let helperError: DependencyGuardCommandError | undefined;
   let readyTimeoutError: Error | undefined;
+  let output: BoundedDependencyGuardFrameReader | undefined;
   let resolveExit!: () => void;
   let resolveReady!: (ready: DependencyGuardReady) => void;
   let rejectReady!: (error: Error) => void;
@@ -401,11 +400,13 @@ function ownDependencyInstall(
     }
   };
   const recordProtocolError = (error: Error): void => {
+    output?.dispose();
     protocolError ??= error;
     settleReady(error);
     closeInputWithoutGo();
   };
   const recordProcessError = (error: Error): void => {
+    output?.dispose();
     processError ??= error;
     settleReady(error);
     closeInputWithoutGo();
@@ -418,6 +419,7 @@ function ownDependencyInstall(
 
   const guardStdio = dependencyGuardStdio(child);
   const readyTimer = setTimeout(() => {
+    output?.dispose();
     let failure: Error = new DependencyInstallReadyTimeoutError(executable, readyTimeoutMs);
     readyTimeoutError = failure;
     closeInputWithoutGo();
@@ -442,7 +444,7 @@ function ownDependencyInstall(
       new DependencyGuardProtocolError("install", "the helper process did not expose the required stdin/stdout pipes")
     );
   } else {
-    const output = new BoundedDependencyGuardFrameReader(
+    const reader = new BoundedDependencyGuardFrameReader(
       "install",
       (frame) => {
         if (!spawned) {
@@ -464,7 +466,9 @@ function ownDependencyInstall(
       },
       recordProtocolError
     );
-    guardStdio.stdout.on("data", (chunk: unknown) => output.accept(chunk));
+    output = reader;
+    guardStdio.stdout.on("data", (chunk: unknown) => reader.accept(chunk));
+    guardStdio.stdout.once("end", () => reader.end());
     guardStdio.stdout.on("error", (error: Error) => {
       recordProcessError(new Error(`Open Wrangler could not read dependency guard output: ${error.message}`));
     });
@@ -491,6 +495,7 @@ function ownDependencyInstall(
     }
   });
   child.once("error", (error: Error) => {
+    output?.dispose();
     recordProcessError(error);
     if (spawned) return;
     settleExit();
@@ -500,6 +505,7 @@ function ownDependencyInstall(
     settleCompletion(combineCleanupFailure(failure, workingDirectory.cleanup()));
   });
   child.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    output?.dispose();
     closed = true;
     settleExit();
     if (!readySettled) {
@@ -676,6 +682,7 @@ function startDependencyGuardCommand<Result>(
   let helperError: DependencyGuardCommandError | undefined;
   let result: Result | undefined;
   let resultReceived = false;
+  let output: BoundedDependencyGuardFrameReader | undefined;
   let completionSettled = false;
   let ownershipSettled = false;
   let resolveCompletion!: (value: Result) => void;
@@ -702,9 +709,11 @@ function startDependencyGuardCommand<Result>(
     else resolveCompletion(value);
   };
   const recordProtocolError = (error: Error): void => {
+    output?.dispose();
     protocolError ??= error;
   };
   const recordProcessError = (error: Error): void => {
+    output?.dispose();
     processError ??= error;
   };
 
@@ -714,7 +723,7 @@ function startDependencyGuardCommand<Result>(
       new DependencyGuardProtocolError(mode, "the helper process did not expose the required stdin/stdout pipes")
     );
   } else {
-    const output = new BoundedDependencyGuardFrameReader(
+    const reader = new BoundedDependencyGuardFrameReader(
       mode,
       (frame) => {
         if (!spawned) {
@@ -732,7 +741,9 @@ function startDependencyGuardCommand<Result>(
       },
       recordProtocolError
     );
-    guardStdio.stdout.on("data", (chunk: unknown) => output.accept(chunk));
+    output = reader;
+    guardStdio.stdout.on("data", (chunk: unknown) => reader.accept(chunk));
+    guardStdio.stdout.once("end", () => reader.end());
     guardStdio.stdout.on("error", (error: Error) => {
       recordProcessError(new Error(`Open Wrangler could not read dependency guard output: ${error.message}`));
     });
@@ -753,6 +764,7 @@ function startDependencyGuardCommand<Result>(
     }
   });
   child.once("error", (error: Error) => {
+    output?.dispose();
     recordProcessError(error);
     if (spawned) return;
     const failure = new Error(
@@ -763,6 +775,7 @@ function startDependencyGuardCommand<Result>(
     settleCompletion(combined);
   });
   child.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    output?.dispose();
     closed = true;
     const cleanupError = workingDirectory.cleanup();
     const failure = dependencyGuardCommandCloseFailure({
@@ -798,6 +811,7 @@ function startDependencyGuardCommand<Result>(
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      output?.dispose();
       const uncertainty = new DependencyGuardCommandTimeoutError(mode, executable, timeoutMs);
       try {
         if (!closed) unrefCommand();
@@ -869,101 +883,6 @@ function dependencyGuardCommandCloseFailure(state: DependencyGuardCommandCloseSt
     state.mode,
     `result frame did not match ${dependencyGuardCloseDetail(state.code, state.signal)}`
   );
-}
-
-class BoundedDependencyGuardFrameReader {
-  private readonly chunks: Buffer[] = [];
-  private byteLength = 0;
-  private frameReceived = false;
-  private failed = false;
-
-  constructor(
-    private readonly mode: DependencyGuardMode,
-    private readonly onFrame: (frame: Record<string, unknown>) => void,
-    private readonly onFailure: (error: Error) => void
-  ) {}
-
-  accept(chunk: unknown): void {
-    if (this.failed) return;
-    const bytes = dependencyGuardOutputBytes(chunk);
-    if (!bytes) {
-      this.fail("the helper output stream emitted an unsupported chunk type");
-      return;
-    }
-    if (bytes.length === 0) return;
-    if (this.frameReceived) {
-      this.fail("the helper emitted bytes after its single result frame");
-      return;
-    }
-
-    const newline = bytes.indexOf(0x0a);
-    if (newline === -1) {
-      if (this.byteLength + bytes.length >= DEPENDENCY_GUARD_MAX_FRAME_BYTES) {
-        this.fail(`the helper frame exceeded ${DEPENDENCY_GUARD_MAX_FRAME_BYTES} bytes including LF`);
-        return;
-      }
-      this.chunks.push(Buffer.from(bytes));
-      this.byteLength += bytes.length;
-      return;
-    }
-    if (newline !== bytes.length - 1) {
-      this.fail("the helper emitted more than one frame or trailing bytes");
-      return;
-    }
-    const frameLength = this.byteLength + bytes.length;
-    if (frameLength > DEPENDENCY_GUARD_MAX_FRAME_BYTES) {
-      this.fail(`the helper frame exceeded ${DEPENDENCY_GUARD_MAX_FRAME_BYTES} bytes including LF`);
-      return;
-    }
-    this.chunks.push(Buffer.from(bytes));
-    this.byteLength = frameLength;
-    this.frameReceived = true;
-
-    try {
-      const frame = decodeDependencyGuardFrame(Buffer.concat(this.chunks, this.byteLength), this.mode);
-      this.onFrame(frame);
-    } catch (error) {
-      this.fail(asError(error).message, error instanceof DependencyGuardProtocolError ? error : undefined);
-    }
-  }
-
-  private fail(message: string, existing?: Error): void {
-    if (this.failed) return;
-    this.failed = true;
-    this.onFailure(existing ?? new DependencyGuardProtocolError(this.mode, message));
-  }
-}
-
-function decodeDependencyGuardFrame(frame: Buffer, mode: DependencyGuardMode): Record<string, unknown> {
-  if (frame.length === 0 || frame[frame.length - 1] !== 0x0a) {
-    throw new DependencyGuardProtocolError(mode, "the helper frame was not LF terminated");
-  }
-  if (frame.length > 1 && frame[frame.length - 2] === 0x0d) {
-    throw new DependencyGuardProtocolError(mode, "the helper frame used CRLF instead of LF");
-  }
-  const payload = frame.subarray(0, -1);
-  if (payload.length === 0 || payload.includes(0x00)) {
-    throw new DependencyGuardProtocolError(mode, "the helper frame was empty or contained NUL");
-  }
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(payload);
-  } catch {
-    throw new DependencyGuardProtocolError(mode, "the helper frame was not valid UTF-8");
-  }
-  if (hasDuplicateTopLevelJsonKeys(text)) {
-    throw new DependencyGuardProtocolError(mode, "the helper frame contained duplicate object keys");
-  }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(text) as unknown;
-  } catch {
-    throw new DependencyGuardProtocolError(mode, "the helper frame was not valid JSON");
-  }
-  if (!isRecord(decoded)) {
-    throw new DependencyGuardProtocolError(mode, "the helper frame was not a JSON object");
-  }
-  return decoded;
 }
 
 function decodeDependencyGuardReady(frame: Record<string, unknown>, token: string): DependencyGuardReady {
@@ -1039,64 +958,6 @@ function requireExactFrameKeys(
   if (actual.length !== expected.length || expected.some((key) => !Object.hasOwn(frame, key))) {
     throw new DependencyGuardProtocolError(mode, "the helper frame had an unexpected shape");
   }
-}
-
-function hasDuplicateTopLevelJsonKeys(text: string): boolean {
-  const keys = new Set<string>();
-  let depth = 0;
-  let expectsKey = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character === '"') {
-      const start = index;
-      index = endOfJsonString(text, index);
-      if (index < 0) return false;
-      if (depth === 1 && expectsKey) {
-        let key: unknown;
-        try {
-          key = JSON.parse(text.slice(start, index + 1)) as unknown;
-        } catch {
-          return false;
-        }
-        if (typeof key === "string") {
-          if (keys.has(key)) return true;
-          keys.add(key);
-        }
-        expectsKey = false;
-      }
-      continue;
-    }
-    if (character === "{") {
-      depth += 1;
-      if (depth === 1) expectsKey = true;
-      continue;
-    }
-    if (character === "}") {
-      depth -= 1;
-      continue;
-    }
-    if (character === "," && depth === 1) {
-      expectsKey = true;
-    }
-  }
-  return false;
-}
-
-function endOfJsonString(text: string, start: number): number {
-  let escaped = false;
-  for (let index = start + 1; index < text.length; index += 1) {
-    const character = text[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (character === '"') return index;
-  }
-  return -1;
 }
 
 function dependencyGuardEnvironmentWire(environment: PythonEnvironment): {
@@ -1218,17 +1079,6 @@ function unrefDependencyGuardProcess(
 
 function isUnrefableDependencyGuardPipe(value: object): value is UnrefableDependencyGuardPipe {
   return "unref" in value && typeof value.unref === "function";
-}
-
-function dependencyGuardOutputBytes(chunk: unknown): Buffer | undefined {
-  if (Buffer.isBuffer(chunk)) return chunk;
-  if (chunk instanceof Uint8Array) return Buffer.from(chunk);
-  if (typeof chunk === "string") return Buffer.from(chunk, "utf8");
-  return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isCanonicalUuid(value: unknown): value is string {
