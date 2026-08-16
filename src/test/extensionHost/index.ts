@@ -92,7 +92,12 @@ import {
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
-import { waitForFreshExactSessionPanelHydration } from "./panelHydration";
+import {
+  exactSessionApp,
+  reacquireAcknowledgedSessionApp as reacquireAcknowledgedSessionAppOwner,
+  sameRendererSynchronizationReceipt
+} from "./acknowledgedRenderer";
+import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
   captureNotebookWorkbenchScreenshot,
   captureWorkbenchScreenshot,
@@ -11256,18 +11261,13 @@ async function reacquireAcknowledgedSessionApp(
   sessionId: string,
   expectation: string
 ): Promise<Locator> {
-  const receipt = testing.panelSynchronizationReceipt(sessionId);
-  assert.ok(receipt, `${expectation} The host must retain its acknowledged renderer receipt.`);
-  assert.equal(testing.panelHydrated(sessionId), true, `${expectation} The current renderer must remain hydrated.`);
-  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt);
-  const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
-  assert.ok(app, `${expectation} The current acknowledged renderer must expose the exact session.`);
-  assert.equal(
-    sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
-    true,
-    `${expectation} The renderer receipt must remain unchanged through acquisition.`
+  return reacquireAcknowledgedSessionAppOwner(
+    testing,
+    sessionId,
+    expectation,
+    (receipt) => waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt),
+    (target, synchronizationId) => exactSessionApp(target.frame, sessionId, synchronizationId)
   );
-  return app;
 }
 
 async function captureReleasedRJupyterWorkbench(
@@ -18846,30 +18846,6 @@ async function findCurrentOpenWranglerGridTarget(
   return undefined;
 }
 
-async function exactSessionApp(
-  frame: Frame,
-  expectedSessionId: string,
-  expectedRendererSynchronizationId?: string
-): Promise<Locator | undefined> {
-  assert.match(expectedSessionId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
-  if (expectedRendererSynchronizationId !== undefined) {
-    assert.match(expectedRendererSynchronizationId, /^[A-Za-z0-9]{32}$/u);
-  }
-  const synchronizationSelector =
-    expectedRendererSynchronizationId === undefined
-      ? ""
-      : `[data-renderer-sync-id="${expectedRendererSynchronizationId}"]`;
-  const app = frame.locator(`main.app[data-session-id="${expectedSessionId}"]${synchronizationSelector}`);
-  return (await app.count()) === 1 ? app : undefined;
-}
-
-function sameRendererSynchronizationReceipt(
-  left: Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined,
-  right: Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined
-): boolean {
-  return left?.syncId === right?.syncId && left?.sessionId === right?.sessionId && left?.revision === right?.revision;
-}
-
 async function waitForExactSessionWebviewButton(
   workbench: Page,
   testing: TestApi,
@@ -21234,40 +21210,18 @@ async function requireFreshExactSessionPanelHydration(
   expectation: string,
   timeoutMs = OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS
 ): Promise<void> {
-  const active = testing.activeSession();
-  assert.equal(active?.sessionId, sessionId, `${expectation} The exact session must remain active.`);
-  assert.ok(active, `${expectation} The exact session must expose its current revision.`);
-  const expectedRevision = active.metadata.revision;
-  const synchronized = await waitForFreshExactSessionPanelHydration(testing, sessionId, {
-    expectedRevision,
+  return requireFreshExactSessionPanelHydrationOwner(testing, sessionId, expectation, {
     timeoutMs,
-    pollIntervalMs: 25
-  });
-  assert.equal(
-    synchronized,
-    true,
-    `${expectation} State: ${JSON.stringify({
+    diagnosticState: () => ({
       expectedSessionId: sessionId,
-      expectedRevision,
       activeSessionId: testing.activeSession()?.sessionId,
       activeRevision: testing.activeSession()?.metadata.revision,
       panelHydrated: testing.panelHydrated(sessionId),
       panelSynchronizable: testing.panelSynchronizable(sessionId),
       panelSynchronizationReceipt: testing.panelSynchronizationReceipt(sessionId),
       activeTab: activeEditorTabDiagnostic()
-    })}`
-  );
-  const acknowledged = testing.activeSession();
-  assert.equal(
-    acknowledged?.sessionId,
-    sessionId,
-    `${expectation} The acknowledged renderer must still belong to the exact active session.`
-  );
-  assert.equal(
-    acknowledged?.metadata.revision,
-    expectedRevision,
-    `${expectation} The active session must not advance while its renderer is being acknowledged.`
-  );
+    })
+  });
 }
 
 async function previewUppercaseMarketReplacement(

@@ -1,8 +1,65 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  requireFreshExactSessionPanelHydration,
   waitForFreshExactSessionPanelHydration,
+  type ActiveExactSessionPanelSynchronizationApi,
   type ExactSessionPanelSynchronizationApi
 } from "./extensionHost/panelHydration";
+
+function activeTesting(
+  overrides: Partial<ActiveExactSessionPanelSynchronizationApi> = {}
+): ActiveExactSessionPanelSynchronizationApi {
+  const sessionId = "session-a";
+  const revision = 7;
+  return {
+    activeSession: vi.fn(() => ({ sessionId, metadata: { revision } })),
+    synchronizePanel: vi.fn(async () => true),
+    ensurePanelSynchronized: vi.fn(async () => true),
+    panelHydrated: vi.fn(() => true),
+    panelSynchronizable: vi.fn(() => true),
+    panelSynchronizationReceipt: vi.fn(() => ({ syncId: "sync-a", sessionId, revision })),
+    ...overrides
+  };
+}
+
+describe("required fresh exact-session panel hydration", () => {
+  it("binds the acknowledgement to the active session revision and caller deadline", async () => {
+    const testing = activeTesting();
+
+    await expect(
+      requireFreshExactSessionPanelHydration(testing, "session-a", "Preview", {
+        timeoutMs: 30_000
+      })
+    ).resolves.toBeUndefined();
+    expect(testing.synchronizePanel).toHaveBeenCalledWith("session-a");
+  });
+
+  it("rejects another active session before requesting renderer synchronization", async () => {
+    const testing = activeTesting({
+      activeSession: vi.fn(() => ({ sessionId: "session-b", metadata: { revision: 7 } }))
+    });
+
+    await expect(
+      requireFreshExactSessionPanelHydration(testing, "session-a", "Preview", { timeoutMs: 30_000 })
+    ).rejects.toThrow(/exact session must remain active/u);
+    expect(testing.synchronizePanel).not.toHaveBeenCalled();
+  });
+
+  it("rejects a session revision that advances during acknowledgement", async () => {
+    let revision = 7;
+    const testing = activeTesting({
+      activeSession: vi.fn(() => ({ sessionId: "session-a", metadata: { revision } })),
+      synchronizePanel: vi.fn(async () => {
+        revision = 8;
+        return true;
+      })
+    });
+
+    await expect(
+      requireFreshExactSessionPanelHydration(testing, "session-a", "Preview", { timeoutMs: 30_000 })
+    ).rejects.toThrow(/must not advance/u);
+  });
+});
 
 describe("fresh exact-session panel hydration", () => {
   it("accepts the newly forced renderer generation without publishing a replacement", async () => {
