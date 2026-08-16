@@ -3,6 +3,12 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "path";
 
 const jsYamlVendorTestModule = resolve(__dirname, "node_modules/js-yaml/dist/js-yaml.cjs.js");
+const realRContractTests = [
+  "src/test/rFrameContract.cross.test.ts",
+  "src/test/rInteractiveSessionTransport.cross.test.ts",
+  "src/test/rKernelTransport.cross.test.ts",
+  "src/test/rProcessTransport.cross.test.ts"
+];
 
 export default defineConfig(({ mode }) => {
   const notebookRendererBuild = mode === "notebook-renderer";
@@ -45,6 +51,10 @@ export default defineConfig(({ mode }) => {
       // avoiding platform-load failures unrelated to an individual assertion.
       testTimeout: 15_000,
       include: ["src/test/**/*.test.ts", "src/test/**/*.test.tsx"],
+      // Real-R contracts are an explicit test tier with their own environment,
+      // package preflight, and bounded phase runner. Keep ordinary Vitest runs
+      // honest instead of discovering and conditionally skipping that tier.
+      ...(process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1" ? {} : { exclude: realRContractTests }),
       coverage: {
         provider: "v8",
         // Coverage remapping has a separate CPU-derived concurrency default.
