@@ -19,9 +19,6 @@ import { getSetting, runtimeRequestTimeoutMs } from "./configuration";
 import {
   DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS,
   DEPENDENCY_INSTALL_TIMEOUT_MS,
-  DependencyGuardCommandError,
-  DependencyGuardCommandTimeoutError,
-  DependencyGuardProtocolError,
   type DependencyGuardStatus,
   type DependencyGuardValidation,
   type OwnedDependencyGuardCommand,
@@ -38,7 +35,6 @@ import {
   PythonEnvironmentResolutionDisposedError,
   PythonEnvironmentResolutionSupersededError,
   isPythonEnvironmentResolutionTerminalError,
-  probeDependencies,
   requiredDependencies,
   resolvePythonEnvironment,
   type PythonEnvironment,
@@ -54,6 +50,17 @@ import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
 import { discoverExcelSheetNames } from "./files/excelSheetNames";
+import {
+  DependencyGuardCrossIdentityFlightError,
+  DetachedDependencyProbeError,
+  PythonDependencyProbeRegistry,
+  dependencyGuardFailureReason,
+  dependencyGuardRecoveryGuidance,
+  pythonDependenciesEqual,
+  pythonEnvironmentIdentityKey,
+  pythonPackageEnvironmentKey,
+  samePythonExecutable
+} from "./pythonDependencyState";
 
 interface PendingRequest {
   readonly requestId: string;
@@ -157,18 +164,6 @@ interface DependencyInstallOperation {
   target?: MissingDependencies;
 }
 
-interface DependencyProbeFlight {
-  readonly key: string;
-  readonly packageEnvironmentKey: string;
-  detached: boolean;
-  promise: Promise<DependencyProbeOutcome>;
-}
-
-interface DependencyProbeOutcome {
-  readonly missing: string[];
-  readonly flight?: DependencyProbeFlight;
-}
-
 interface DependencyGuardStatusFlight {
   readonly environmentIdentityKey: string;
   readonly promise: Promise<DependencyGuardStatus>;
@@ -199,27 +194,12 @@ type DependencyRecoveryTarget = DependencyEnvironmentUncertainty & {
   readonly selectionEpoch: number;
 };
 
-class DetachedDependencyProbeError extends Error {
-  constructor() {
-    super("The Python dependency probe was invalidated before it completed.");
-    this.name = "DetachedDependencyProbeError";
-  }
-}
-
-class DependencyGuardCrossIdentityFlightError extends Error {
-  constructor() {
-    super("A dependency guard check for another executable identity in this package environment is still settling.");
-    this.name = "DependencyGuardCrossIdentityFlightError";
-  }
-}
-
 const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple Python runtime shutdown failures.";
 // Inactive scopes are retained as a small LRU so repeated external-file opens can
 // reuse dependency/environment work without allowing arbitrary resource URIs to
 // grow the bridge maps forever. Live or explicitly leased scopes may temporarily
 // exceed this bound; the next ownership release trims back to it.
 const MAX_RETAINED_INACTIVE_SCOPES = 128;
-const MAX_COMPLETED_DEPENDENCY_PROBES = 128;
 const MAX_RETAINED_DEPENDENCY_UNCERTAINTIES = 128;
 
 async function joinProcessStops(previous: Promise<void>, current: Promise<void>): Promise<void> {
@@ -274,9 +254,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private disposed = false;
   private readonly environmentSelections = new Map<string, EnvironmentSelection>();
   private readonly trustedPicklePreflights = new WeakMap<TrustedPicklePythonPreflight, TrustedPicklePreflightOwner>();
-  private readonly dependencyCache = new Map<string, string[]>();
-  private readonly dependencyProbes = new Map<string, DependencyProbeFlight>();
-  private readonly dependencyProbeOwners = new Map<string, DependencyProbeFlight>();
+  private readonly dependencyProbes = new PythonDependencyProbeRegistry(
+    (packageEnvironmentKey) => this.disposed || this.dependencyMutations.has(packageEnvironmentKey)
+  );
   private readonly dependencyGuardStatusFlights = new Map<string, DependencyGuardStatusFlight>();
   private activeDependencyGuardCommands:
     Set<OwnedDependencyGuardCommand<DependencyGuardStatus | DependencyGuardValidation>> | undefined = new Set();
@@ -677,124 +657,11 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       ...this.runtimeSlots.keys(),
       ...(this.lastMissingDependencies ? [this.lastMissingDependencies.selection.key] : [])
     ]);
-    if (
-      !force &&
-      keys.size === 0 &&
-      this.dependencyCache.size === 0 &&
-      this.dependencyProbes.size === 0 &&
-      this.dependencyProbeOwners.size === 0 &&
-      !this.lastMissingDependencies
-    ) {
+    if (!force && keys.size === 0 && this.dependencyProbes.isEmpty && !this.lastMissingDependencies) {
       return;
     }
-    this.invalidateAllDependencyProbes();
+    this.dependencyProbes.invalidateAll();
     this.invalidateSelectionScopes(keys, reason, force);
-  }
-
-  private invalidateAllDependencyProbes(): void {
-    for (const flight of this.dependencyProbes.values()) flight.detached = true;
-    for (const flight of this.dependencyProbeOwners.values()) flight.detached = true;
-    this.dependencyCache.clear();
-    this.dependencyProbes.clear();
-    this.dependencyProbeOwners.clear();
-  }
-
-  private invalidateDependencyProbeKey(key: string): void {
-    const inFlight = this.dependencyProbes.get(key);
-    if (inFlight) inFlight.detached = true;
-    const completed = this.dependencyProbeOwners.get(key);
-    if (completed) completed.detached = true;
-    this.dependencyCache.delete(key);
-    this.dependencyProbes.delete(key);
-    this.dependencyProbeOwners.delete(key);
-  }
-
-  private invalidateDependencyProbesForPackageEnvironment(packageEnvironmentKey: string): void {
-    const prefix = pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey);
-    const keys = new Set([
-      ...this.dependencyCache.keys(),
-      ...this.dependencyProbes.keys(),
-      ...this.dependencyProbeOwners.keys()
-    ]);
-    for (const key of keys) if (key.startsWith(prefix)) this.invalidateDependencyProbeKey(key);
-  }
-
-  private getCompletedDependencyProbe(key: string): DependencyProbeOutcome | undefined {
-    const missing = this.dependencyCache.get(key);
-    if (missing === undefined) return undefined;
-    this.dependencyCache.delete(key);
-    this.dependencyCache.set(key, missing);
-    return { missing, flight: this.dependencyProbeOwners.get(key) };
-  }
-
-  private publishCompletedDependencyProbe(
-    key: string,
-    missing: readonly string[],
-    flight: DependencyProbeFlight
-  ): DependencyProbeOutcome {
-    const retained = [...missing];
-    this.dependencyCache.delete(key);
-    this.dependencyCache.set(key, retained);
-    this.dependencyProbeOwners.set(key, flight);
-    while (this.dependencyCache.size > MAX_COMPLETED_DEPENDENCY_PROBES) {
-      const oldest = this.dependencyCache.keys().next().value;
-      if (oldest === undefined) break;
-      this.dependencyCache.delete(oldest);
-      this.dependencyProbeOwners.delete(oldest);
-    }
-    return { missing: retained, flight };
-  }
-
-  private probeDependenciesForEnvironment(
-    environment: PythonEnvironment,
-    dependencies: readonly PythonDependency[]
-  ): DependencyProbeOutcome | Promise<DependencyProbeOutcome> {
-    const key = dependencyProbeKey(environment, dependencies);
-    const completed = this.getCompletedDependencyProbe(key);
-    if (completed !== undefined) return completed;
-    return this.probeDependenciesSingleFlight(key, pythonPackageEnvironmentKey(environment), environment, dependencies);
-  }
-
-  private probeDependenciesSingleFlight(
-    key: string,
-    packageEnvironmentKey: string,
-    environment: PythonEnvironment,
-    dependencies: readonly PythonDependency[]
-  ): Promise<DependencyProbeOutcome> {
-    const existing = this.dependencyProbes.get(key);
-    if (existing) return existing.promise;
-
-    const flight = {
-      key,
-      packageEnvironmentKey,
-      detached: false
-    } as DependencyProbeFlight;
-    const detached = (): boolean =>
-      flight.detached ||
-      this.dependencyProbes.get(flight.key) !== flight ||
-      this.disposed ||
-      this.dependencyMutations.has(flight.packageEnvironmentKey);
-    const promise = Promise.resolve()
-      .then(() => {
-        if (detached()) throw new DetachedDependencyProbeError();
-        return probeDependencies(environment.executable, dependencies);
-      })
-      .then(
-        (result) => {
-          const missing = [...result.missing];
-          if (detached()) throw new DetachedDependencyProbeError();
-          this.dependencyProbes.delete(flight.key);
-          return this.publishCompletedDependencyProbe(flight.key, missing, flight);
-        },
-        (error: unknown) => {
-          if (detached()) throw new DetachedDependencyProbeError();
-          this.dependencyProbes.delete(flight.key);
-          throw error;
-        }
-      );
-    flight.promise = promise;
-    this.dependencyProbes.set(key, flight);
-    return promise;
   }
 
   private invalidateSelectionScopes(keys: ReadonlySet<string>, reason: string, force = false): void {
@@ -818,7 +685,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionSupersededError());
         this.environmentSelections.delete(key);
         for (const dependencyKey of selection.dependencyKeys) {
-          this.invalidateDependencyProbeKey(dependencyKey);
+          this.dependencyProbes.invalidateKey(dependencyKey);
         }
       }
       if (this.lastMissingDependencies?.selection.key === key) this.lastMissingDependencies = undefined;
@@ -875,11 +742,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       if (!this.isCurrentEnvironmentSelection(selection)) throw new PythonEnvironmentResolutionSupersededError();
 
       const dependencies = trustedPickleConversionDependencies();
-      const dependencyKey = dependencyProbeKey(environment, dependencies);
-      selection.dependencyKeys.add(dependencyKey);
-      const completedOrProbe = this.probeDependenciesForEnvironment(environment, dependencies);
-      const outcome = completedOrProbe instanceof Promise ? await completedOrProbe : completedOrProbe;
-      if (outcome.flight?.detached || !this.isCurrentEnvironmentSelection(selection)) {
+      const probe = this.dependencyProbes.probe(environment, dependencies);
+      selection.dependencyKeys.add(probe.key);
+      const outcome = probe.result instanceof Promise ? await probe.result : probe.result;
+      if (!outcome.isCurrent() || !this.isCurrentEnvironmentSelection(selection)) {
         throw new PythonEnvironmentResolutionSupersededError();
       }
       if (this.dependencyMutations.has(pythonPackageEnvironmentKey(environment))) {
@@ -1547,7 +1413,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     reason: string
   ): StoppingRuntimeProcess[] {
     const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
-    this.invalidateDependencyProbesForPackageEnvironment(packageEnvironmentKey);
+    this.dependencyProbes.invalidatePackageEnvironment(packageEnvironmentKey);
     const affected = new Set(
       [...this.environmentSelections.values()]
         .filter(
@@ -1738,7 +1604,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionDisposedError());
     }
     this.environmentSelections.clear();
-    this.invalidateAllDependencyProbes();
+    this.dependencyProbes.invalidateAll();
     this.lastMissingDependencies = undefined;
 
     try {
@@ -2785,14 +2651,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
       const dependencies = requiredDependencies(backend, request.source);
       const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
-      const key = dependencyProbeKey(environment, dependencies);
-      selection.dependencyKeys.add(key);
+      const probe = this.dependencyProbes.probe(environment, dependencies);
+      selection.dependencyKeys.add(probe.key);
       let missing: string[];
       try {
-        const completedOrProbe = this.probeDependenciesForEnvironment(environment, dependencies);
-        const outcome = completedOrProbe instanceof Promise ? await completedOrProbe : completedOrProbe;
-        if (outcome.flight?.detached) return { request: this.runtimeSelectionChangedError() };
-        missing = outcome.missing;
+        const outcome = probe.result instanceof Promise ? await probe.result : probe.result;
+        if (!outcome.isCurrent()) return { request: this.runtimeSelectionChangedError() };
+        missing = [...outcome.missing];
       } catch (error) {
         if (error instanceof DetachedDependencyProbeError) {
           return { request: this.runtimeSelectionChangedError() };
@@ -3118,129 +2983,9 @@ function isConfirmedUnknownSession(response: OpenWranglerResponse, sessionId: st
   );
 }
 
-function pythonExecutableKey(executable: string): string {
-  const normalized = path.normalize(executable);
-  return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
-}
-
-function pythonPackageEnvironmentKey(environment: Pick<PythonEnvironment, "packageRootIdentity">): string {
-  return JSON.stringify([environment.packageRootIdentity.device, environment.packageRootIdentity.inode]);
-}
-
-function pythonEnvironmentIdentityKey(
-  environment: Pick<
-    PythonEnvironment,
-    "executable" | "executableIdentity" | "packageRoot" | "packageRootIdentity" | "version"
-  >
-): string {
-  return JSON.stringify([
-    pythonPackageEnvironmentKey(environment),
-    pythonExecutableKey(environment.executable),
-    path.normalize(environment.packageRoot),
-    environment.version,
-    environment.executableIdentity.device,
-    environment.executableIdentity.inode,
-    environment.executableIdentity.size,
-    environment.executableIdentity.mtimeNs,
-    environment.executableIdentity.ctimeNs
-  ]);
-}
-
-function dependencyProbeKey(
-  environment: Pick<
-    PythonEnvironment,
-    "executable" | "executableIdentity" | "packageRoot" | "packageRootIdentity" | "version"
-  >,
-  dependencies: readonly PythonDependency[]
-): string {
-  if (!isFullyQualifiedPythonPath(environment.executable)) {
-    throw new Error("Python dependency probing requires an absolute executable path.");
-  }
-  const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
-  const descriptorKey = dependencies.map((dependency) => [
-    dependency.importModule,
-    dependency.distribution,
-    dependency.installSpec,
-    dependency.minimumVersion ?? null,
-    dependency.maximumVersionExclusive ?? null
-  ]);
-  const probeIdentity = JSON.stringify([pythonEnvironmentIdentityKey(environment), descriptorKey]);
-  return `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${probeIdentity}`;
-}
-
-function pythonDependenciesEqual(left: readonly PythonDependency[], right: readonly PythonDependency[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((dependency, index) => {
-      const candidate = right[index];
-      return (
-        candidate !== undefined &&
-        dependency.importModule === candidate.importModule &&
-        dependency.distribution === candidate.distribution &&
-        dependency.installSpec === candidate.installSpec &&
-        dependency.minimumVersion === candidate.minimumVersion &&
-        dependency.maximumVersionExclusive === candidate.maximumVersionExclusive
-      );
-    })
-  );
-}
-
-function dependencyGuardFailureReason(reason: unknown): string {
-  return reason instanceof Error
-    ? reason.message
-    : typeof reason === "string"
-      ? reason
-      : "Unknown dependency guard failure.";
-}
-
-function dependencyGuardRecoveryGuidance(reason: unknown): string {
-  if (reason instanceof DependencyGuardCommandError) {
-    switch (reason.code) {
-      case "busy":
-        return "Another dependency guard currently owns this environment. Wait for it to finish, then retry.";
-      case "malformed_state":
-      case "invalid_request":
-      case "internal_error":
-        return "The dependency recovery journal could not be verified. Inspect or restore the exact environment before retrying.";
-      case "validation_failed":
-      case "pip_failed":
-        return "The selected environment did not satisfy the guarded dependency validation. Repair it, then retry.";
-      case "environment_changed":
-        return "The executable or package environment changed since the dependency operation began. Select the intended runtime again.";
-      case "stale_or_missing_marker":
-        return "The dependency recovery marker changed before validation. Retry so Open Wrangler can inspect the exact environment again.";
-    }
-  }
-  if (reason instanceof DependencyGuardProtocolError || reason instanceof DependencyGuardCommandTimeoutError) {
-    return "The dependency guard response could not be verified. Wait for any environment changes to finish, then retry.";
-  }
-  if (
-    typeof reason === "string" &&
-    (reason.includes("durable dependency-mutation journal") || reason.includes("has not been validated"))
-  ) {
-    return (
-      "Open Wrangler found an unfinished dependency change. Run " +
-      "Open Wrangler: Revalidate Runtime Dependencies before using the exact environment."
-    );
-  }
-  if (reason instanceof DependencyGuardCrossIdentityFlightError) {
-    return "Another executable identity in this package environment is being checked. Retry after that check settles.";
-  }
-  return "The exact Python environment must be recovered and validated before Open Wrangler can use it.";
-}
-
-function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {
-  return `${packageEnvironmentKey.length}:${packageEnvironmentKey}:`;
-}
-
 function waitForRuntimeProcessExit(proc: ChildProcessWithoutNullStreams): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => {
     proc.once("exit", () => resolve());
   });
-}
-
-function samePythonExecutable(left: string | undefined, right: string): boolean {
-  if (!left) return false;
-  return pythonExecutableKey(left) === pythonExecutableKey(right);
 }
