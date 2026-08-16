@@ -3,6 +3,7 @@ media/
 node_modules/
 tmp/
 .venv/
+.node-version
 scratch.txt
 package-lock.json
 fixtures/*.ipynb
