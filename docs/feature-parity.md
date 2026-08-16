@@ -408,7 +408,7 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Complete 28-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Fill-missing editor journey and DuckDB semantic edge matrix  |
 | Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                  |
 | Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                             |
-| CSV and Parquet cleaned-data export          | Yes                 | Partial | Native/atomic packaged exports preserve source bytes    | Failure injection and cross-platform destination matrix      |
+| CSV and Parquet cleaned-data export          | Yes                 | Partial | Native exports plus host publication failure injection  | Cross-platform installed-editor destination matrix           |
 | Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix         |
 | Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate |
 
@@ -1260,6 +1260,16 @@ Grid clipboard selection, 2026-08-16:
   contract caps one action at 100,000 cells and 4 MiB of displayed text.
 - Focused pure and React owners cover TSV escaping, row labels, projected rows, stale and oversized selections,
   pointer and keyboard range extension, the platform copy shortcut, view replacement, and clipboard denial.
+
+Shared cleaned-data publication, 2026-08-16:
+
+- Pandas, Polars, and DuckDB CSV/Parquet runtime tests write only a host-reserved target with a pinned filesystem
+  identity. DuckDB retains that inode by disabling its own temporary-file replacement.
+- The standalone and notebook Python bridges use the same host atomic-file transaction as Native R. Python receives
+  only the internal target, while the successful public response reports the user's destination.
+- Focused transaction tests replace the destination, destination parent, and runtime target; introduce destination
+  symlink and source hard-link aliases; and inject runtime and commit failures. The source and prior destination remain
+  unchanged, and cleanup removes only the still-identified owned temporary file.
 
 ## Explicitly deferred from 1.0
 
