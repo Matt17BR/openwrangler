@@ -332,6 +332,249 @@ def test_lazy_polars_schema_discovery_does_not_collect_column_profiles(monkeypat
     ]
 
 
+def test_polars_normalize_keeps_lazyframes_and_converts_series() -> None:
+    engine = PolarsEngine()
+    lazy = pl.DataFrame({"value": [1, 2]}).lazy()
+
+    assert engine.normalize(lazy) is lazy
+    normalized_series = engine.normalize(pl.Series("value", [1, 2]))
+    assert isinstance(normalized_series, pl.DataFrame)
+    assert normalized_series.to_dict(as_series=False) == {"value": [1, 2]}
+
+
+def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_and_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import __main__
+
+    row_count = 1_000_003
+    source_path = tmp_path / "large-live-source.parquet"
+    (
+        pl.LazyFrame()
+        .select(pl.int_range(0, row_count).alias("row"))
+        .with_columns(
+            [
+                (pl.col("row") % 7).alias("group"),
+                (pl.lit("ROW-") + (pl.col("row") % 17).cast(pl.String)).alias("label"),
+                ((pl.col("row") * 13) % 10_000).alias("score"),
+            ]
+        )
+        .sink_parquet(source_path)
+    )
+    live = pl.scan_parquet(source_path)
+    original_schema = live.collect_schema()
+    original_plan = live.explain(optimized=False)
+    monkeypatch.setattr(__main__, "large_live_lazyframe", live, raising=False)
+
+    native_collect = pl.LazyFrame.collect
+    native_collect_all = pl.collect_all
+    native_to_list = pl.Series.to_list
+    collected_heights: list[int] = []
+    to_list_lengths: list[int] = []
+
+    def bounded_collect(frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        result = cast(pl.DataFrame, native_collect(frame, *args, **kwargs))
+        collected_heights.append(result.height)
+        assert result.height <= 20, "A live LazyFrame query collected an unbounded result."
+        return result
+
+    def bounded_collect_all(frames: Any, *args: Any, **kwargs: Any) -> list[pl.DataFrame]:
+        results = native_collect_all(frames, *args, **kwargs)
+        collected_heights.extend(result.height for result in results)
+        assert all(result.height <= 20 for result in results), "A live LazyFrame profile collected unbounded results."
+        return results
+
+    def bounded_to_list(series: pl.Series) -> list[Any]:
+        to_list_lengths.append(len(series))
+        assert len(series) <= 20, "A live LazyFrame query converted an unbounded series to a list."
+        return native_to_list(series)
+
+    def reject_to_pandas(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("A live Polars LazyFrame must remain Polars-native.")
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", bounded_collect)
+    monkeypatch.setattr(pl, "collect_all", bounded_collect_all)
+    monkeypatch.setattr(pl.Series, "to_list", bounded_to_list)
+    monkeypatch.setattr(pl.DataFrame, "to_pandas", reject_to_pandas, raising=False)
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "label": "large_live_lazyframe",
+            "variableName": "large_live_lazyframe",
+        },
+        backend="polars",
+        mode="editing",
+        page_size=3,
+        column_offset=2,
+        column_limit=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    runtime = manager.sessions[session_id]
+
+    assert opened["metadata"]["shape"] == {"rows": row_count, "columns": 4}
+    assert opened["metadata"]["capabilities"]["lazy"] is True
+    assert opened["summaries"] == []
+    assert [column["name"] for column in opened["metadata"]["schema"]] == ["row", "group", "label", "score"]
+    assert opened["page"]["columnIds"] == [opened["metadata"]["schema"][2]["id"]]
+    assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["ROW-0", "ROW-1", "ROW-2"]
+    assert isinstance(runtime.original, pl.LazyFrame)
+    assert isinstance(runtime.committed, pl.LazyFrame)
+
+    filter_model = {
+        "logic": "and",
+        "filters": [
+            {
+                "column": "group",
+                "type": "integer",
+                "logic": "and",
+                "valueFilter": None,
+                "predicates": [{"kind": "predicate", "operator": "equals", "value": 3}],
+            }
+        ],
+        "sort": [{"column": "score", "direction": "desc", "nulls": "last"}],
+    }
+    filtered_page = manager.get_page(
+        session_id,
+        0,
+        120,
+        5,
+        filter_model,
+        column_offset=0,
+        column_limit=2,
+    )
+    assert filtered_page["metadata"]["capabilities"]["lazy"] is True
+    assert filtered_page["page"]["columnIds"] == [
+        opened["metadata"]["schema"][0]["id"],
+        opened["metadata"]["schema"][1]["id"],
+    ]
+    assert len(filtered_page["page"]["rows"]) == 5
+    assert all(row["values"][1]["display"] == "3" for row in filtered_page["page"]["rows"])
+
+    score_id = opened["metadata"]["schema"][3]["id"]
+    summary = manager.get_summary(session_id, 0, filter_model, [score_id])
+    assert summary["summaries"][0]["totalCount"] == filtered_page["metadata"]["filteredShape"]["rows"]
+    assert summary["summaries"][0]["numeric"]["max"] == 9999.0
+    stats = manager.get_dataset_stats(session_id, 0, filter_model)
+    assert stats["stats"]["missingCells"] == 0
+    assert len(stats["stats"]["missingValuesByColumn"]) == 4
+
+    label_column = opened["metadata"]["schema"][2]
+    preview = manager.preview_step(
+        session_id,
+        0,
+        {
+            "id": "lower-live-label",
+            "kind": "lowerText",
+            "params": {
+                "column": {"id": label_column["id"], "name": label_column["name"]},
+                "newColumn": "label_lower",
+            },
+        },
+        0,
+        4,
+        column_offset=3,
+        column_limit=2,
+    )
+    assert preview["metadata"]["capabilities"]["lazy"] is True
+    assert isinstance(runtime.draft_frame, pl.LazyFrame)
+    assert preview["diff"]["addedColumns"] == ["label_lower"]
+    assert preview["page"]["rows"][0]["values"][1]["display"].startswith("row-")
+
+    applied = manager.apply_draft(session_id, 1, 0, 4, column_offset=3, column_limit=2)
+    assert applied["metadata"]["capabilities"]["lazy"] is True
+    assert isinstance(runtime.committed, pl.LazyFrame)
+
+    export_path = tmp_path / "large-live-cleaned.parquet"
+    exported = manager.export_data(session_id, 2, str(export_path), "parquet")
+    assert exported["shape"] == {"rows": row_count, "columns": 5}
+    exported_metrics = (
+        pl.scan_parquet(export_path)
+        .select(
+            [
+                pl.len().alias("rows"),
+                pl.col("label_lower").first().alias("first_label"),
+            ]
+        )
+        .collect(engine="streaming")
+    )
+    assert exported_metrics.row(0) == (row_count, "row-0")
+
+    assert manager.close_session(session_id, 2) == {"kind": "sessionClosed", "sessionId": session_id}
+    assert session_id not in manager.sessions
+    assert live.collect_schema() == original_schema
+    assert live.explain(optimized=False) == original_plan
+    assert collected_heights
+    assert max(collected_heights) <= 20
+    assert all(length <= 20 for length in to_list_lengths)
+
+
+@pytest.mark.parametrize("kind", ["oneHotEncode", "multiLabelBinarize"])
+def test_live_notebook_lazyframe_materializes_only_after_explicit_dynamic_encoder_preview(
+    kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import __main__
+
+    source_path = tmp_path / f"explicit-{kind}.parquet"
+    pl.DataFrame({"category": ["a", "b", "a"], "tags": ["x|y", "y", "x"]}).write_parquet(source_path)
+    live = pl.scan_parquet(source_path)
+    monkeypatch.setattr(__main__, "explicit_lazy_encoder", live, raising=False)
+    native_collect = pl.LazyFrame.collect
+    collected_heights: list[int] = []
+
+    def tracked_collect(frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        result = cast(pl.DataFrame, native_collect(frame, *args, **kwargs))
+        collected_heights.append(result.height)
+        return result
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", tracked_collect)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "label": "explicit_lazy_encoder",
+            "variableName": "explicit_lazy_encoder",
+        },
+        backend="polars",
+        mode="editing",
+        page_size=2,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    assert opened["metadata"]["capabilities"]["lazy"] is True
+    assert max(collected_heights) <= 2
+    collected_heights.clear()
+
+    schema = {column["name"]: column for column in opened["metadata"]["schema"]}
+    if kind == "oneHotEncode":
+        params = {
+            "columns": [{"id": schema["category"]["id"], "name": "category"}],
+            "dropOriginal": False,
+        }
+    else:
+        params = {
+            "column": {"id": schema["tags"]["id"], "name": "tags"},
+            "delimiter": "|",
+            "dropOriginal": False,
+        }
+    preview = manager.preview_step(
+        session_id,
+        0,
+        {"id": f"explicit-{kind}", "kind": kind, "params": params},
+        0,
+        2,
+    )
+
+    assert collected_heights[0] == 3
+    assert max(collected_heights) == 3
+    assert isinstance(manager.sessions[session_id].draft_frame, pl.DataFrame)
+    assert preview["metadata"]["capabilities"]["lazy"] is False
+    manager.close_session(session_id, 1)
+
+
 def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monkeypatch):
     row_count = 12_305
     values = pl.concat(
