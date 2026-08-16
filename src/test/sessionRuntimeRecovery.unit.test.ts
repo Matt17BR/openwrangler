@@ -135,7 +135,10 @@ describe("SessionRuntimeRecovery", () => {
   });
 });
 
-function runtimeSession(delegate: OpenWranglerBridge, backend: SessionMetadata["backend"] = "polars") {
+function runtimeSession(
+  delegate: OpenWranglerBridge,
+  backend: SessionMetadata["backend"] = "polars"
+): RuntimeRecoverySession {
   const opened = openedResponse("runtime-old", backend);
   return {
     publicId: "public-session",
@@ -155,21 +158,20 @@ function runtimeSession(delegate: OpenWranglerBridge, backend: SessionMetadata["
     reconfiguring: false,
     reconnecting: false,
     liveReconnectRequired: false
-  } satisfies RuntimeRecoverySession;
+  };
 }
 
-function hooks(): RuntimeRecoveryHooks & {
-  clearPublishedStepInspection: ReturnType<typeof vi.fn>;
-  publishActive: ReturnType<typeof vi.fn>;
-  replayAfterRuntimeLoss: ReturnType<typeof vi.fn>;
-} {
+function hooks() {
+  const clearPublishedStepInspection = vi.fn(() => undefined);
+  const publishActive = vi.fn(() => undefined);
+  const replayAfterRuntimeLoss = vi.fn<RuntimeRecoveryHooks["replayAfterRuntimeLoss"]>(async () => false);
   return {
     isCurrent: () => true,
     originMismatch: () => undefined,
-    clearPublishedStepInspection: vi.fn(),
-    publishActive: vi.fn(),
-    replayAfterRuntimeLoss: vi.fn()
-  };
+    clearPublishedStepInspection,
+    publishActive,
+    replayAfterRuntimeLoss
+  } satisfies RuntimeRecoveryHooks;
 }
 
 function bridge(request: OpenWranglerBridge["request"]): OpenWranglerBridge {

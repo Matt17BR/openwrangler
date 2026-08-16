@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import type {
   FilterModel,
+  GridPage,
   OpenWranglerResponse,
   SessionBoundRequest,
   SessionMetadata,
@@ -464,10 +465,17 @@ function pageResponse(
     revision: confirmed.revision,
     viewRequestId: request.viewRequestId,
     metadata: confirmed,
-    page: {
-      ...gridPage(request.offset, request.limit, totalRows),
-      ...(totalRows === null ? { hasMore: true } : {})
-    }
+    page:
+      totalRows === null
+        ? {
+            offset: request.offset,
+            limit: request.limit,
+            totalRows: null,
+            hasMore: true,
+            columnIds: ["c:value"],
+            rows: []
+          }
+        : gridPage(request.offset, request.limit, totalRows)
   };
 }
 
@@ -481,7 +489,7 @@ function planResponse(
     action,
     revision: confirmed.revision,
     metadata: confirmed,
-    page: gridPage(0, 10, confirmed.filteredShape.rows),
+    page: gridPage(0, 10, exactRows(confirmed)),
     code
   };
 }
@@ -501,8 +509,14 @@ function inspectionResponse(stepIndex: number): StepInspectionResponse {
   };
 }
 
-function gridPage(offset: number, limit: number, totalRows: number | null) {
+function gridPage(offset: number, limit: number, totalRows: number): GridPage {
   return { offset, limit, totalRows, columnIds: ["c:value"], rows: [] };
+}
+
+function exactRows(confirmed: SessionMetadata): number {
+  const rows = confirmed.filteredShape.rows;
+  if (rows === null) throw new Error("This response fixture requires an exact row count.");
+  return rows;
 }
 
 function emptyDiff() {

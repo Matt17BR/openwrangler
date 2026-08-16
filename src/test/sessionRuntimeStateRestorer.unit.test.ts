@@ -393,16 +393,27 @@ function pageResponse(
     revision: request.revision,
     viewRequestId: request.viewRequestId,
     metadata: next,
-    page: {
-      offset: request.offset,
-      limit: request.limit,
-      totalRows,
-      ...(totalRows === null ? { hasMore: true } : {}),
-      columnIds: next.schema
-        .slice(request.columnOffset, request.columnOffset + request.columnLimit)
-        .map((column) => column.id),
-      rows: []
-    }
+    page:
+      totalRows === null
+        ? {
+            offset: request.offset,
+            limit: request.limit,
+            totalRows: null,
+            hasMore: true,
+            columnIds: next.schema
+              .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+              .map((column) => column.id),
+            rows: []
+          }
+        : {
+            offset: request.offset,
+            limit: request.limit,
+            totalRows,
+            columnIds: next.schema
+              .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+              .map((column) => column.id),
+            rows: []
+          }
   };
 }
 
@@ -446,10 +457,12 @@ function projectedPage(
   request: { offset: number; limit: number; columnOffset: number; columnLimit: number },
   confirmed: SessionMetadata
 ) {
+  const totalRows = confirmed.filteredShape.rows;
+  if (totalRows === null) throw new Error("This projected-page fixture requires an exact row count.");
   return {
     offset: request.offset,
     limit: request.limit,
-    totalRows: confirmed.filteredShape.rows,
+    totalRows,
     columnIds: confirmed.schema
       .slice(request.columnOffset, request.columnOffset + request.columnLimit)
       .map((column) => column.id),
