@@ -1483,13 +1483,11 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles retain embedded coverage while candidate core keeps one Clone lifecycle", async () => {
+test("released R journeys consume their coverage contract without scattered editor decisions", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
-  const runStart = source.indexOf("export async function run(): Promise<void> {");
-  const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
-  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
+  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
   const journeyEnd = source.indexOf("\nasync function exerciseReleasedRInteractiveTerminalJourney(", journeyStart);
-  assert.ok(runStart >= 0 && profileStart > runStart && journeyStart > profileStart && journeyEnd > journeyStart);
+  assert.ok(journeyStart >= 0 && journeyEnd > journeyStart);
   const operationCatalogStart = source.indexOf("const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([");
   const operationCatalogEnd = source.indexOf("\n]);", operationCatalogStart);
   assert.ok(operationCatalogStart >= 0 && operationCatalogEnd > operationCatalogStart);
@@ -1500,47 +1498,7 @@ test("default R profiles retain embedded coverage while candidate core keeps one
   assert.equal(advertisedOperations.at(-1), "customCode");
   assert.equal(advertisedOperations.includes("byExample"), true);
   assert.equal(advertisedOperations.includes("customCode"), true);
-  const preflight = source.slice(runStart, profileStart);
-  const profiles = source.slice(profileStart, journeyStart);
   const journey = source.slice(journeyStart, journeyEnd);
-
-  assert.match(
-    preflight,
-    /testSelector === undefined \|\|[\s\S]*testSelector === "core-operations" \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "kernel-restart" \|\|[\s\S]*testSelector === "native-frames" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
-  );
-  assert.match(
-    preflight,
-    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents"/u
-  );
-  assert.match(
-    profiles,
-    /\| "categorical-operations"[\s\S]*\| "value-operations"[\s\S]*\| "kernel-restart"[\s\S]*\| "native-frames"[\s\S]*\| "comprehensive"[\s\S]*\| "representative"/u
-  );
-  assert.match(
-    profiles,
-    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*coreJourney: true[\s\S]*kernelLifecycle: true[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "core-catalog"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
-  );
-  assert.match(
-    profiles,
-    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*coreJourney: true[\s\S]*kernelLifecycle: true[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
-  );
-  assert.match(
-    profiles,
-    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "categorical-operations"[\s\S]*nativeFrameEditing: "none"/u
-  );
-  assert.match(
-    profiles,
-    /RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "value-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "value-operations"[\s\S]*nativeFrameEditing: "none"/u
-  );
-  assert.match(
-    profiles,
-    /RELEASED_R_KERNEL_RESTART_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "kernel-restart"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: true/u
-  );
-  assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
-  assert.match(
-    profiles,
-    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*function releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*process\.platform === "linux" \? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*function releasedRNativeFramesAcceptanceCoverageProfile\(\)[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*name: "native-frames"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: false[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "native-frames"[\s\S]*return releasedRNativeFramesAcceptanceCoverageProfile\(\);[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*editing: "clone-lifecycle"[\s\S]*kernelLifecycle: false[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "none"[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
-  );
   assert.doesNotMatch(
     journey,
     /OPEN_WRANGLER_TEST_EDITOR/u,

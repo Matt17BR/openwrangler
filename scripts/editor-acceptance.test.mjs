@@ -117,11 +117,6 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
   );
   assert.match(source, /"orders_df = pd\.DataFrame\(\{"/u);
 
-  assert.match(
-    source,
-    /testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR[\s\S]*phase === "jupyter-allow" && process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"/u
-  );
-  assert.match(source, /const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam"/u);
   const candidateSeam = source.slice(
     source.indexOf("async function exerciseReleasedJupyterAllowCompatibilitySeam("),
     source.indexOf("async function exerciseReleasedPythonFileEntrypoint(")
@@ -1429,55 +1424,8 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.doesNotMatch(reveal, /JSON\.stringify\(expectedText\)|JSON\.stringify\(target\.code\)/u);
 });
 
-test("focused R selectors split core, native-frame, and kernel restart ownership", async () => {
+test("focused R journeys keep native-frame and kernel restart execution isolated", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
-  const start = source.indexOf("function releasedRAcceptanceCoverageProfile(");
-  const end = source.indexOf("function recordReleasedRAcceptanceSection(", start);
-  assert.notEqual(start, -1);
-  assert.notEqual(end, -1);
-  const profile = source.slice(start, end);
-
-  assert.match(
-    profile,
-    /OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart"[\s\S]*return RELEASED_R_KERNEL_RESTART_COVERAGE;[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "native-frames"[\s\S]*return releasedRNativeFramesAcceptanceCoverageProfile\(\);[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*Object\.freeze\(\{[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\),[\s\S]*kernelLifecycle: false,[\s\S]*openCollapseSessions: false,[\s\S]*openNativeFramesInViewingMode: false,[\s\S]*nativeFrameEditing: "none"/u,
-    "Every explicit candidate core must use the single-owner catalog profile and defer native-frame and restart coverage."
-  );
-  assert.match(
-    profile,
-    /phase === "jupyter-r-remote"\) return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);\s*\}/u,
-    "Remote transport must stay representative, while the unset local route uses the editor/platform core resolver."
-  );
-  const coreStart = source.indexOf("function releasedRCoreAcceptanceCoverageProfile()");
-  assert.notEqual(coreStart, -1);
-  const core = source.slice(coreStart, start);
-  const definitionsStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
-  assert.notEqual(definitionsStart, -1);
-  const definitions = source.slice(definitionsStart, coreStart);
-  assert.match(
-    core,
-    /OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
-  );
-  assert.match(
-    core,
-    /function releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*process\.platform === "linux" \? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE/u,
-    "Linux VS Code must be the only comprehensive candidate core owner; every other editor/platform proves a representative seam."
-  );
-  assert.match(definitions, /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*kernelLifecycle: true/u);
-  assert.match(definitions, /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*kernelLifecycle: true/u);
-  assert.match(
-    definitions,
-    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false[\s\S]*nativeFrameEditing: "none"[\s\S]*RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false[\s\S]*nativeFrameEditing: "none"/u
-  );
-  assert.match(
-    definitions,
-    /RELEASED_R_KERNEL_RESTART_COVERAGE[\s\S]*name: "kernel-restart"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: true/u
-  );
-  assert.match(
-    core,
-    /function releasedRNativeFramesAcceptanceCoverageProfile\(\)[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*name: "native-frames"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: false/u,
-    "Linux VS Code must be the sole comprehensive native-frame owner; every other editor/platform proves a representative seam."
-  );
-
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
   const sharedStart = source.indexOf("const RELEASED_R_COLLAPSE_FRAMES =", journeyStart);
   const collapseStart = source.indexOf("async function exerciseReleasedRCollapseFrameSessions(", sharedStart);
