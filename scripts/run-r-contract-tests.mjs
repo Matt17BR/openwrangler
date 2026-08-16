@@ -5,10 +5,9 @@ import { pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
 const FRAME_CONTRACT_TIMEOUT_MS = 120_000;
-const KERNEL_AGENT_TIMEOUT_MS = 480_000;
+const KERNEL_AGENT_TIMEOUT_MS = 360_000;
 const CATALOG_CONTRACT_TIMEOUT_MS = 120_000;
 const SHORT_VITEST_PHASE_TIMEOUT_MS = 60_000;
-const KERNEL_TRANSPORT_VITEST_PHASE_TIMEOUT_MS = 120_000;
 const TRANSPORT_VITEST_PHASE_TIMEOUT_MS = 90_000;
 
 export const R_CONTRACT_SHARDS = Object.freeze([
@@ -107,7 +106,7 @@ export function createRContractPhases({
       "kernel-transport",
       "real-R kernel transport contract",
       ["src/test/rKernelTransport.cross.test.ts"],
-      KERNEL_TRANSPORT_VITEST_PHASE_TIMEOUT_MS,
+      TRANSPORT_VITEST_PHASE_TIMEOUT_MS,
       { environment: vitestEnvironment, node, vitest }
     ),
     vitestPhase(

@@ -24,10 +24,10 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
     configured.map(({ id, label, timeoutMs }) => [id, label, timeoutMs]),
     [
       ["frame", "native frame contract", 120_000],
-      ["kernel-agent", "native kernel-agent contract", 480_000],
+      ["kernel-agent", "native kernel-agent contract", 360_000],
       ["catalog", "complete native catalog contract", 120_000],
       ["typescript-frame", "TypeScript R frame and unit contracts", 60_000],
-      ["kernel-transport", "real-R kernel transport contract", 120_000],
+      ["kernel-transport", "real-R kernel transport contract", 90_000],
       ["process-transport", "real-R process transport contract", 90_000],
       ["interactive-transport", "real-R interactive transport contract", 60_000]
     ]
