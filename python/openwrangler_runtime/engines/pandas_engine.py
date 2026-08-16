@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -122,7 +123,12 @@ class PandasEngine(DataFrameEngine):
             return value.to_frame()
         return value
 
-    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+    def export_data(
+        self,
+        frame: Any,
+        path: str | os.PathLike[str],
+        format_name: Literal["csv", "parquet"],
+    ) -> None:
         df = self._visible_frame(self.normalize(frame))
         if format_name == "csv":
             df.to_csv(path, index=False)

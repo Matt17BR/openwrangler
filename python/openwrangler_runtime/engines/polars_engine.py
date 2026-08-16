@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from decimal import Decimal
 from importlib import import_module
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..export_target import ExportWriterPath
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -161,19 +163,34 @@ class PolarsEngine(DataFrameEngine):
         del source
         return isinstance(frame, pl.LazyFrame)
 
-    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+    def export_data(
+        self,
+        frame: Any,
+        path: str | os.PathLike[str],
+        format_name: Literal["csv", "parquet"],
+    ) -> None:
         import polars as pl
 
         row_id = self._row_id_column(frame)
         if row_id is not None:
             frame = frame.drop(row_id)
         if isinstance(frame, pl.LazyFrame):
-            if format_name == "csv":
-                frame.sink_csv(path)
-                return
-            if format_name == "parquet":
-                frame.sink_parquet(path)
-                return
+            if isinstance(path, ExportWriterPath):
+                with path.open_binary_writer() as writer:
+                    if format_name == "csv":
+                        frame.sink_csv(writer)
+                        return
+                    if format_name == "parquet":
+                        frame.sink_parquet(writer)
+                        return
+            else:
+                destination = os.fspath(path)
+                if format_name == "csv":
+                    frame.sink_csv(destination)
+                    return
+                if format_name == "parquet":
+                    frame.sink_parquet(destination)
+                    return
         else:
             df = self.normalize(frame)
             if format_name == "csv":

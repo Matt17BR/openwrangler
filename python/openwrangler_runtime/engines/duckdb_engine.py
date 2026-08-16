@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -822,7 +823,12 @@ class DuckDBEngine(DataFrameEngine):
         lines.append("    return df")
         return "\n".join(lines) + "\n"
 
-    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+    def export_data(
+        self,
+        frame: Any,
+        path: str | os.PathLike[str],
+        format_name: Literal["csv", "parquet"],
+    ) -> None:
         if format_name not in self.capabilities.export_formats:
             raise EngineError(f"Unsupported DuckDB export format: {format_name}")
         frame = self.normalize(frame)
@@ -830,7 +836,7 @@ class DuckDBEngine(DataFrameEngine):
         query = "SELECT * FROM ow" if row_id is None else f"SELECT * EXCLUDE ({_quote_ident(row_id)}) FROM ow"
         try:
             with self._terminal_connection(frame) as (connection, source_sql):
-                _write_relation_export(connection, _compose_sql(source_sql, query), path, format_name)
+                _write_relation_export(connection, _compose_sql(source_sql, query), os.fspath(path), format_name)
         except EngineError:
             raise
         except Exception as error:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -782,7 +783,12 @@ class PySparkEngine(DataFrameEngine):
         del steps
         raise EngineError("PySpark notebook sessions do not generate cleaning code.")
 
-    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+    def export_data(
+        self,
+        frame: Any,
+        path: str | os.PathLike[str],
+        format_name: Literal["csv", "parquet"],
+    ) -> None:
         del frame, path, format_name
         raise EngineError("PySpark notebook sessions do not export data.")
 

@@ -7,11 +7,50 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 
 class ExportTargetError(RuntimeError):
     """Raised when the host-owned unpublished export target is not intact."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExportWriterPath(os.PathLike[str]):
+    path: Path
+    device: int
+    inode: int
+
+    def __fspath__(self) -> str:
+        return str(self.path)
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    @contextmanager
+    def open_binary_writer(self) -> Iterator[BinaryIO]:
+        descriptor = _open_regular_file(self.path)
+        try:
+            if _descriptor_identity(descriptor) != (self.device, self.inode):
+                raise ExportTargetError("Open Wrangler's host-owned temporary export file changed unexpectedly.")
+            os.ftruncate(descriptor, 0)
+            writer = os.fdopen(descriptor, "wb", closefd=True)
+        except BaseException as error:
+            try:
+                os.close(descriptor)
+            except BaseException as close_error:
+                _raise_with_cleanup(error, close_error, "Export descriptor cleanup")
+            raise
+        try:
+            yield writer
+            writer.flush()
+        except BaseException as error:
+            try:
+                writer.close()
+            except BaseException as close_error:
+                _raise_with_cleanup(error, close_error, "Export writer cleanup")
+            raise
+        else:
+            writer.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,20 +83,66 @@ class ExportTarget:
             raise ExportTargetError("Open Wrangler's host-owned temporary export file changed unexpectedly.")
 
     @contextmanager
-    def pinned_writer_path(self) -> Iterator[str]:
+    def pinned_writer_path(self) -> Iterator[ExportWriterPath]:
+        writer_path = ExportWriterPath(self.path, self.device, self.inode)
+        if sys.platform == "win32":
+            with self._pinned_windows_writer_path():
+                yield writer_path
+            return
+
         descriptor = _open_regular_file(self.path)
         try:
             if _descriptor_identity(descriptor) != (self.device, self.inode):
                 raise ExportTargetError("Open Wrangler's host-owned temporary export file changed unexpectedly.")
             self.assert_unchanged()
-            yield str(self.path)
+            yield writer_path
             if _descriptor_identity(descriptor) != (self.device, self.inode):
                 raise ExportTargetError("Open Wrangler's host-owned temporary export file changed unexpectedly.")
             self.assert_unchanged()
             os.fsync(descriptor)
             self.assert_unchanged()
-        finally:
+        except BaseException as error:
+            try:
+                os.close(descriptor)
+            except BaseException as close_error:
+                _raise_with_cleanup(error, close_error, "Pinned export descriptor cleanup")
+            raise
+        else:
             os.close(descriptor)
+
+    @contextmanager
+    def _pinned_windows_writer_path(self) -> Iterator[None]:
+        from .windows_file_handle import WindowsFileHandleValidationError, WindowsPinnedExportTarget
+
+        try:
+            pinned = WindowsPinnedExportTarget.open(self.path, (self.device, self.inode))
+        except WindowsFileHandleValidationError as error:
+            raise ExportTargetError("Open Wrangler's host-owned temporary export file changed unexpectedly.") from error
+        try:
+            self.assert_unchanged()
+            yield
+            pinned.assert_unchanged()
+            self.assert_unchanged()
+            pinned.sync()
+            pinned.assert_unchanged()
+            self.assert_unchanged()
+        except WindowsFileHandleValidationError as error:
+            validation_error = ExportTargetError(
+                "Open Wrangler's host-owned temporary export file changed unexpectedly."
+            )
+            try:
+                pinned.close()
+            except BaseException as close_error:
+                _add_cleanup_note(validation_error, close_error, "Windows export target pin cleanup")
+            raise validation_error from error
+        except BaseException as error:
+            try:
+                pinned.close()
+            except BaseException as close_error:
+                _raise_with_cleanup(error, close_error, "Windows export target pin cleanup")
+            raise
+        else:
+            pinned.close()
 
 
 def _identity_component(value: Any, label: str) -> int:
@@ -75,18 +160,52 @@ def _open_regular_file(path: Path) -> int:
     details = path.lstat()
     if not stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode) or details.st_nlink != 1:
         raise ExportTargetError("Python data export accepts only the host's singly linked regular temporary file.")
-    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
+    if sys.platform == "win32":
+        from .windows_file_handle import WindowsFileHandleValidationError, open_regular_file_descriptor
+
+        try:
+            descriptor = open_regular_file_descriptor(path)
+        except WindowsFileHandleValidationError as error:
+            raise ExportTargetError(
+                "Python data export accepts only the host's singly linked regular temporary file."
+            ) from error
+    else:
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
     try:
         descriptor_details = os.fstat(descriptor)
         if not stat.S_ISREG(descriptor_details.st_mode) or descriptor_details.st_nlink != 1:
             raise ExportTargetError("Python data export accepts only the host's singly linked regular temporary file.")
         return descriptor
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as error:
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            _raise_with_cleanup(error, close_error, "Export descriptor cleanup")
         raise
+
+
+def _raise_with_cleanup(error: BaseException, cleanup_error: BaseException, label: str) -> None:
+    if error.__cause__ is None:
+        raise error from cleanup_error
+    _add_cleanup_note(error, cleanup_error, label)
+    raise error
+
+
+def _add_cleanup_note(error: BaseException, cleanup_error: BaseException, label: str) -> None:
+    error.add_note(f"{label} also failed: {_bounded_cleanup_detail(cleanup_error)}")
+
+
+def _bounded_cleanup_detail(error: BaseException) -> str:
+    nested = getattr(error, "errors", ())
+    if isinstance(nested, tuple) and nested:
+        children = "; ".join(f"{type(item).__name__}: {item}" for item in nested)
+        detail = f"{type(error).__name__} ({children})"
+    else:
+        detail = f"{type(error).__name__}: {error}"
+    return detail[:512]
 
 
 def _regular_file_identity(path: Path) -> tuple[int, int]:
@@ -108,44 +227,11 @@ def _descriptor_identity(descriptor: int) -> tuple[int, int]:
     if sys.platform != "win32":
         details = os.fstat(descriptor)
         return int(details.st_dev), int(details.st_ino)
+    from .windows_file_handle import WindowsFileHandleValidationError, descriptor_identity
 
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    class FileTime(ctypes.Structure):
-        _fields_ = [
-            ("low_date_time", wintypes.DWORD),
-            ("high_date_time", wintypes.DWORD),
-        ]
-
-    class ByHandleFileInformation(ctypes.Structure):
-        _fields_ = [
-            ("file_attributes", wintypes.DWORD),
-            ("creation_time", FileTime),
-            ("last_access_time", FileTime),
-            ("last_write_time", FileTime),
-            ("volume_serial_number", wintypes.DWORD),
-            ("file_size_high", wintypes.DWORD),
-            ("file_size_low", wintypes.DWORD),
-            ("number_of_links", wintypes.DWORD),
-            ("file_index_high", wintypes.DWORD),
-            ("file_index_low", wintypes.DWORD),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetFileInformationByHandle.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(ByHandleFileInformation),
-    ]
-    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    information = ByHandleFileInformation()
-    handle = wintypes.HANDLE(msvcrt.get_osfhandle(descriptor))
-    if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    if information.number_of_links != 1:
-        raise ExportTargetError("Python data export accepts only the host's singly linked regular temporary file.")
-    return (
-        int(information.volume_serial_number),
-        (int(information.file_index_high) << 32) | int(information.file_index_low),
-    )
+    try:
+        return descriptor_identity(descriptor)
+    except WindowsFileHandleValidationError as error:
+        raise ExportTargetError(
+            "Python data export accepts only the host's singly linked regular temporary file."
+        ) from error

@@ -203,7 +203,7 @@ describe("safe file export transactions", () => {
     const fileSystem = actualFileSystem({
       stat: async (target) => {
         const identity = await base.stat(target);
-        return parentReplaced && target === directory ? { dev: identity.dev, ino: identity.ino + 1n } : identity;
+        return parentReplaced && target === directory ? { ...identity, ino: identity.ino + 1n } : identity;
       }
     });
     const transaction = await beginAtomicFileTransaction({
@@ -349,7 +349,7 @@ describe("safe file export transactions", () => {
     const base = actualFileSystem();
     const fileSystem = actualFileSystem({
       stat: async (target) =>
-        path.basename(target).startsWith(".openwrangler-") ? base.stat(target) : { dev: 0n, ino: 0n }
+        path.basename(target).startsWith(".openwrangler-") ? base.stat(target) : { dev: 0n, ino: 0n, nlink: 1n }
     });
 
     await expect(
@@ -389,7 +389,7 @@ describe("safe file export transactions", () => {
     await writeFile(destination, "old destination");
     const base = actualFileSystem();
     const fileSystem = actualFileSystem({
-      stat: async (target) => (target === destination ? { dev: 0n, ino: 0n } : base.stat(target))
+      stat: async (target) => (target === destination ? { dev: 0n, ino: 0n, nlink: 1n } : base.stat(target))
     });
 
     await expect(
@@ -1050,7 +1050,7 @@ describe("safe file export transactions", () => {
       },
       stat: async (target) => {
         const identity = await base.stat(target);
-        return temporaryClosed && target === directory ? { dev: identity.dev, ino: identity.ino + 1n } : identity;
+        return temporaryClosed && target === directory ? { ...identity, ino: identity.ino + 1n } : identity;
       },
       replace: async () => {
         replaced = true;
@@ -1231,7 +1231,7 @@ function actualFileSystem(overrides: Partial<AtomicExportFileSystem> = {}): Atom
     realpath,
     async stat(target) {
       const details = await stat(target, { bigint: true });
-      return { dev: details.dev, ino: details.ino };
+      return { dev: details.dev, ino: details.ino, nlink: details.nlink };
     },
     async lstat(target) {
       const details = await lstat(target);

@@ -139,6 +139,10 @@ identities immediately before one atomic rename. It then reports the user's requ
 or commit failure leaves the prior destination and source unchanged and removes only the still-identified owned
 temporary file. Native R uses the same host transaction and final validation; its runtime streams bytes without
 receiving either the temporary or final destination path.
+On Windows the retained pins block ordinary rename, unlink, and reparse pathname substitution, but required shared
+write access cannot distinguish the authorized native engine from a malicious same-UID writer or privileged reparse
+mutation; this residual is accepted only for trusted-workspace export execution (invariant 4), not the
+artifact-handoff exclusion (invariant 40).
 
 The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
 without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and

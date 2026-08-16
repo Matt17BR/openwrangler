@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from math import nextafter
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import polars as pl
 import pytest
@@ -12,6 +12,7 @@ import openwrangler_runtime.engines.base as engine_base
 import openwrangler_runtime.engines.polars_engine as polars_engine
 from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
+from openwrangler_runtime.export_target import ExportWriterPath, _regular_file_identity
 from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def reserve_export_target(path: Path) -> dict[str, str]:
     path.touch(exist_ok=False)
-    details = path.stat()
-    return {"device": str(details.st_dev), "inode": str(details.st_ino)}
+    device, inode = _regular_file_identity(path)
+    return {"device": str(device), "inode": str(inode)}
 
 
 def _write_polars_file(path: Path, extension: str, values: list[int]) -> None:
@@ -347,6 +348,55 @@ def test_polars_normalize_keeps_lazyframes_and_converts_series() -> None:
     normalized_series = engine.normalize(pl.Series("value", [1, 2]))
     assert isinstance(normalized_series, pl.DataFrame)
     assert normalized_series.to_dict(as_series=False) == {"value": [1, 2]}
+
+
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+def test_lazy_polars_export_streams_to_the_exact_reserved_file_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    format_name: Literal["csv", "parquet"],
+) -> None:
+    frame = pl.LazyFrame({"value": [1, 2, 3]})
+    destination = tmp_path / f"lazy-stream.{format_name}"
+    destination.touch()
+    identity = _regular_file_identity(destination)
+    writer_path = ExportWriterPath(destination, *identity)
+    observed_writers: list[Any] = []
+    native_sink = pl.LazyFrame.sink_csv if format_name == "csv" else pl.LazyFrame.sink_parquet
+    native_collect = pl.LazyFrame.collect
+    sink_completion_heights: list[int] = []
+
+    def observed_sink(lazy_frame: pl.LazyFrame, writer: Any, *args: Any, **kwargs: Any) -> Any:
+        assert not isinstance(writer, (str, Path))
+        assert callable(getattr(writer, "write", None))
+        observed_writers.append(writer)
+        return native_sink(lazy_frame, writer, *args, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, f"sink_{format_name}", observed_sink)
+
+    def observed_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        result = cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+        sink_completion_heights.append(result.height)
+        assert result.height == 0, "the IO sink must not materialize exported rows"
+        return result
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", observed_collect)
+    monkeypatch.setattr(
+        pl.DataFrame,
+        "to_pandas",
+        lambda *_args, **_kwargs: pytest.fail("Polars export must not convert to Pandas"),
+        raising=False,
+    )
+
+    PolarsEngine().export_data(frame, writer_path, format_name)
+
+    assert len(observed_writers) == 1
+    assert observed_writers[0].closed is True
+    assert sink_completion_heights == [0]
+    assert _regular_file_identity(destination) == identity
+    monkeypatch.setattr(pl.LazyFrame, "collect", native_collect)
+    result = pl.read_csv(destination) if format_name == "csv" else pl.read_parquet(destination)
+    assert result.to_dict(as_series=False) == {"value": [1, 2, 3]}
 
 
 def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_and_close(
