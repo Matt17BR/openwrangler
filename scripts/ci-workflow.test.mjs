@@ -399,6 +399,46 @@ test("product CI covers protected product branches", () => {
   assert.equal(crossPlatform?.on?.push, undefined, "Cross-platform must not repeat the ready-PR matrix after merge.");
 });
 
+test("automation selects the declared exact Node and npm toolchain", () => {
+  const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(nodeVersion, "22.22.0");
+  assert.equal(manifest?.engines?.node, ">=22.22.0 <23");
+  assert.equal(manifest?.packageManager, "npm@10.9.4");
+
+  const workflowDirectory = new URL("../.github/workflows/", import.meta.url);
+  let setupNodeCount = 0;
+  for (const entry of readdirSync(workflowDirectory, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".yml")) continue;
+    const workflow = parseYaml(readFileSync(new URL(entry.name, workflowDirectory), "utf8"));
+    for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+      for (const [stepIndex, step] of (job?.steps ?? []).entries()) {
+        if (typeof step?.uses !== "string" || !step.uses.startsWith("actions/setup-node@")) continue;
+        setupNodeCount += 1;
+        assert.equal(
+          step?.with?.["node-version-file"],
+          ".node-version",
+          `${entry.name}:${jobId}:${stepIndex} must consume the canonical Node pin.`
+        );
+        assert.equal(
+          Object.hasOwn(step?.with ?? {}, "node-version"),
+          false,
+          `${entry.name}:${jobId}:${stepIndex} must not float or duplicate the Node pin.`
+        );
+      }
+    }
+  }
+  assert.ok(setupNodeCount > 0, "At least one hosted workflow must consume the canonical Node pin.");
+
+  const azureSource = readFileSync(new URL("../azure-pipelines-marketplace.yml", import.meta.url), "utf8");
+  assert.equal((azureSource.match(/task: NodeTool@0/gu) ?? []).length, 2);
+  assert.deepEqual(
+    [...azureSource.matchAll(/^\s+versionSpec:\s*(\S+)\s*$/gmu)].map((match) => match[1]),
+    [nodeVersion, nodeVersion],
+    "Historical-tag recovery must duplicate the canonical pin exactly rather than float."
+  );
+});
+
 test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const inventory = readdirSync(new URL(".", import.meta.url), { withFileTypes: true })
@@ -1076,13 +1116,13 @@ test("release-infrastructure classification is an exact fail-closed allowlist wi
   );
 });
 
-test("documentation fast-path roots remain excluded from the VSIX inventory", () => {
+test("repository-only roots remain excluded from the VSIX inventory", () => {
   const ignored = new Set(
     readFileSync(new URL("../.vscodeignore", import.meta.url), "utf8")
       .split(/\r?\n/gu)
       .filter(Boolean)
   );
-  for (const path of ["docs/**", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]) {
+  for (const path of ["docs/**", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md", ".node-version"]) {
     assert.equal(ignored.has(path), true, `${path} must remain outside the packaged extension.`);
   }
   for (const path of ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
@@ -1430,7 +1470,7 @@ test("PR CI gates expensive work behind bounded preflight lanes without removing
       { uses: "actions/checkout@v6" },
       {
         uses: "actions/setup-node@v6",
-        with: { "node-version": 22, cache: "npm" }
+        with: { "node-version-file": ".node-version", cache: "npm" }
       },
       {
         id: "reference_python",
@@ -1593,7 +1633,7 @@ test("release-infrastructure PRs run only the fixed executable release contracts
     "timeout-minutes": 15,
     steps: [
       { uses: "actions/checkout@v6" },
-      { uses: "actions/setup-node@v6", with: { "node-version": 22, cache: "npm" } },
+      { uses: "actions/setup-node@v6", with: { "node-version-file": ".node-version", cache: "npm" } },
       { run: "npm ci" },
       {
         name: "Release transaction contracts",
@@ -2551,7 +2591,7 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
   const python310Only = "matrix.python == '3.10'";
   const node = steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-node@"));
   assert.equal(node?.if, python310Only);
-  assert.equal(node?.with?.["node-version"], 22);
+  assert.equal(node?.with?.["node-version-file"], ".node-version");
   assert.equal(node?.with?.cache, "npm");
 
   const npmInstall = steps.find((step) => step?.run === "npm ci");

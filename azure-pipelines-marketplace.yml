@@ -41,9 +41,9 @@ stages:
             fetchTags: true
             persistCredentials: false
           - task: NodeTool@0
-            displayName: Use Node.js 22
+            displayName: Use pinned Node.js
             inputs:
-              versionSpec: 22.x
+              versionSpec: 22.22.0
               checkLatest: false
           - script: node scripts/marketplace-release-intake.mjs
             name: release_intake
@@ -83,9 +83,9 @@ stages:
                   fetchTags: true
                   persistCredentials: false
                 - task: NodeTool@0
-                  displayName: Use Node.js 22
+                  displayName: Use pinned Node.js
                   inputs:
-                    versionSpec: 22.x
+                    versionSpec: 22.22.0
                     checkLatest: false
                 - script: npm ci --ignore-scripts
                   displayName: Restore the reviewed lockfile

@@ -17,6 +17,7 @@ coverage/**
 .vscode-test/**
 .git/**
 .gitignore
+.node-version
 .prettierignore
 .prettierrc.json
 docs/**

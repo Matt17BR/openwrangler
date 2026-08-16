@@ -11,6 +11,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   identity-aware cleanup. CodeQL also analyzes every push to protected `main`, keeping default-branch security alerts
   current for merge protection.
 
+### Changed
+
+- Development and hosted automation now use exactly Node.js 22.22.0 with npm 10.9.4. The standard check includes a
+  strict dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains
+  Nano ID 3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
+
 ## [1.99.7] - 2026-08-16
 
 ### Changed
