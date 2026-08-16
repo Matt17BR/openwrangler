@@ -168,6 +168,7 @@ import {
   restartReleasedJupyterKernelAndWait as restartReleasedJupyterKernelAndWaitOwner,
   type ReleasedJupyterKernelRestartBoundary
 } from "./releasedJupyterKernelRestart";
+import { createReleasedPythonTerminalFailureObserver } from "./releasedPythonTerminalFailure";
 import {
   bestEffortRendererProvenanceCleanup,
   createRendererProvenanceOrderContract,
@@ -4020,6 +4021,21 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     );
 
     const initialPythonInvocation = testing.pythonInteractiveDiagnostics()?.invocation ?? 0;
+    const terminalFailureSourceDocument = sourceDocument;
+    const observePythonTerminalFailure = createReleasedPythonTerminalFailureObserver({
+      initialInvocation: initialPythonInvocation,
+      checkpoint,
+      recordProgress: recordAcceptanceProgress,
+      terminalError: async (pythonDiagnostics) => {
+        const quickInputDiagnostics = await boundedReleasedJupyterQuickInputDiagnostics(workbench);
+        return new Error(
+          "The Python Quarto action reported a terminal failure. " +
+            `Python Interactive: ${JSON.stringify(pythonDiagnostics)}. ` +
+            `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, terminalFailureSourceDocument)}. ` +
+            `Quick Input: ${JSON.stringify(quickInputDiagnostics)}.`
+        );
+      }
+    });
     recordAcceptanceProgress(`${checkpoint}:title-action`);
     await workbench.bringToFront();
     await activateReleasedRInteractiveTitleAction(workbench, sourceDocument);
@@ -4030,32 +4046,8 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     let targetSelected = false;
     let consentAccepted = false;
     let pickerStage: "not-seen" | "visible" | "route-found" | "target-found" = "not-seen";
-    let observedPythonInvocation = initialPythonInvocation;
-    let lastPythonStage: PythonInteractiveDiagnostics["lastActiveStage"];
     do {
-      const pythonDiagnostics = testing.pythonInteractiveDiagnostics();
-      if (pythonDiagnostics?.invocation !== undefined && pythonDiagnostics.invocation > initialPythonInvocation) {
-        if (pythonDiagnostics.invocation !== observedPythonInvocation) {
-          observedPythonInvocation = pythonDiagnostics.invocation;
-          lastPythonStage = undefined;
-        }
-        if (pythonDiagnostics.lastActiveStage && pythonDiagnostics.lastActiveStage !== lastPythonStage) {
-          lastPythonStage = pythonDiagnostics.lastActiveStage;
-          recordAcceptanceProgress(`${checkpoint}:python-${pythonDiagnostics.lastActiveStage}`);
-        }
-        if (pythonDiagnostics.stage === "failed") {
-          recordAcceptanceProgress(
-            `${checkpoint}:python-${pythonDiagnostics.lastActiveStage ?? "unknown-stage"}:failed`
-          );
-          const quickInputDiagnostics = await boundedReleasedJupyterQuickInputDiagnostics(workbench);
-          throw new Error(
-            "The Python Quarto action reported a terminal failure. " +
-              `Python Interactive: ${JSON.stringify(pythonDiagnostics)}. ` +
-              `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}. ` +
-              `Quick Input: ${JSON.stringify(quickInputDiagnostics)}.`
-          );
-        }
-      }
+      await observePythonTerminalFailure(testing.pythonInteractiveDiagnostics());
       const candidates = vscode.workspace.notebookDocuments.filter(
         (candidate) =>
           !candidate.isClosed &&
@@ -11930,6 +11922,16 @@ async function exerciseReleasedPythonFileEntrypoint(
     assert.equal(await action.count(), 1, "The Python editor must expose one Open in Open Wrangler title action.");
     assert.equal(await action.isEnabled(), true, "The trusted Python editor title action must be enabled.");
     const initialPythonInvocation = testing.pythonInteractiveDiagnostics()?.invocation ?? 0;
+    const observePythonTerminalFailure = createReleasedPythonTerminalFailureObserver({
+      initialInvocation: initialPythonInvocation,
+      checkpoint,
+      recordProgress: recordAcceptanceProgress,
+      terminalError: (pythonDiagnostics) =>
+        new Error(
+          `The Python editor action failed after ${pythonDiagnostics.lastActiveStage ?? "an unknown stage"}. ` +
+            `Python Interactive: ${JSON.stringify(pythonDiagnostics)}.`
+        )
+    });
     await action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 
     const deadline = Date.now() + RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS;
@@ -11937,26 +11939,8 @@ async function exerciseReleasedPythonFileEntrypoint(
     let filterForTarget = false;
     let targetSelected = false;
     let pickerSeen = false;
-    let observedPythonInvocation = initialPythonInvocation;
-    let lastPythonStage: PythonInteractiveDiagnostics["lastActiveStage"];
     do {
-      const pythonDiagnostics = testing.pythonInteractiveDiagnostics();
-      if (pythonDiagnostics?.invocation !== undefined && pythonDiagnostics.invocation > initialPythonInvocation) {
-        if (pythonDiagnostics.invocation !== observedPythonInvocation) {
-          observedPythonInvocation = pythonDiagnostics.invocation;
-          lastPythonStage = undefined;
-        }
-        if (pythonDiagnostics.lastActiveStage && pythonDiagnostics.lastActiveStage !== lastPythonStage) {
-          lastPythonStage = pythonDiagnostics.lastActiveStage;
-          recordAcceptanceProgress(`${checkpoint}:python-${pythonDiagnostics.lastActiveStage}`);
-        }
-        if (pythonDiagnostics.stage === "failed") {
-          throw new Error(
-            `The Python editor action failed after ${pythonDiagnostics.lastActiveStage ?? "an unknown stage"}. ` +
-              `Python Interactive: ${JSON.stringify(pythonDiagnostics)}.`
-          );
-        }
-      }
+      await observePythonTerminalFailure(testing.pythonInteractiveDiagnostics());
       const candidates = vscode.workspace.notebookDocuments.filter(
         (candidate) =>
           !candidate.isClosed &&
