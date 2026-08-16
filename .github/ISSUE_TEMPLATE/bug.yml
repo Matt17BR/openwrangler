@@ -1,0 +1,102 @@
+name: Bug report
+description: Report a reproducible problem with Open Wrangler.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not use a public issue for a security vulnerability. [Report it privately through GitHub](https://github.com/Matt17BR/openwrangler/security/advisories/new).
+
+        Use synthetic or redacted material. Do not attach proprietary data, personal data, credentials, notebook secrets, or full environment dumps.
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: Describe the failure, including any error shown and when it occurs.
+      placeholder: Tell us what Open Wrangler did.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected Open Wrangler to do instead.
+      placeholder: Tell us the expected result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal synthetic reproduction
+      description: Provide numbered steps and the smallest synthetic data or code needed to reproduce the problem. If the problem is intermittent, describe the sequence and frequency without including real data.
+      placeholder: |
+        1. Create a file or variable with this synthetic shape...
+        2. Open it in Open Wrangler...
+        3. Run this action...
+        4. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: List exact versions when available. Write "not applicable" only for components that are not involved.
+      placeholder: |
+        Open Wrangler:
+        Editor (VS Code or Cursor):
+        Operating system:
+        Python:
+        Dataframe engine (Pandas, Polars, DuckDB, PySpark, or R):
+    validations:
+      required: true
+
+  - type: dropdown
+    id: input-format
+    attributes:
+      label: Input format
+      description: Select the format or source involved in the problem.
+      options:
+        - CSV
+        - TSV
+        - Excel
+        - Parquet
+        - JSON Lines
+        - Notebook variable
+        - R script
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: workspace-type
+    attributes:
+      label: Workspace type
+      description: Select where the problem occurred and whether Workspace Trust was enabled.
+      options:
+        - Local workspace, trusted
+        - Local workspace, untrusted
+        - Remote workspace, trusted
+        - Remote workspace, untrusted
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted Open Wrangler diagnostics
+      description: Paste only the smallest relevant excerpt from the Open Wrangler output channel. Replace file paths, host names, user content, and identifiers with placeholders. Do not paste a full environment dump.
+      placeholder: Paste a short, redacted excerpt if one is available.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched open and closed issues for the same problem.
+          required: true
+        - label: I included only synthetic or redacted material and removed proprietary data, personal data, credentials, secrets, and full environment dumps.
+          required: true

@@ -1,0 +1,78 @@
+name: Feature request
+description: Propose a concrete change to an Open Wrangler workflow.
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not use a public issue for a security vulnerability. [Report it privately through GitHub](https://github.com/Matt17BR/openwrangler/security/advisories/new).
+
+        Use synthetic or redacted examples. Do not attach proprietary data, personal data, credentials, notebook secrets, or full environment dumps.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Select the part of Open Wrangler that the request concerns.
+      options:
+        - Workbench and data grid
+        - File import
+        - Python notebooks
+        - R notebooks and scripts
+        - Cleaning operations and generated code
+        - Export
+        - Extension setup and runtime
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the workflow that is difficult or unavailable today.
+      placeholder: Explain the user problem and why it matters.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the behavior you want Open Wrangler to provide.
+      placeholder: Explain what the user should be able to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: example-workflow
+    attributes:
+      label: Example workflow
+      description: Give a concrete example using only synthetic or redacted data.
+      placeholder: Walk through a short example from input to desired result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Relevant formats and engines
+      description: List any input formats, editors, dataframe engines, or R workflows that the request needs to support.
+      placeholder: Optional; include only the compatibility details that affect the request.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or alternatives
+      description: Describe any workaround you use today or another approach you considered.
+      placeholder: Optional.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched open and closed issues for the same request.
+          required: true
+        - label: I included only synthetic or redacted material and removed proprietary data, personal data, credentials, secrets, and full environment dumps.
+          required: true
