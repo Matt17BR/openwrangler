@@ -16,6 +16,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Development and hosted automation now use exactly Node.js 22.22.0 with npm 10.9.4. The standard check includes a
   strict dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains
   Nano ID 3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
+- Successful pull-request checks no longer retain coverage, visual, or VSIX run artifacts. The canonical PR package
+  moves between same-run consumers through a run-, attempt-, commit-, and producer-digest-bound cache key. Cache misses
+  and producer digest or size mismatches fail closed before repeated inventory verification; coverage, visual, and
+  sealed packaged-editor evidence remains available only for failures. Canonical release artifacts and provenance are
+  unchanged.
 
 ## [1.99.7] - 2026-08-16
 

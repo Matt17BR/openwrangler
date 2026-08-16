@@ -117,6 +117,9 @@ jobs:
     needs: [classify, fast-feedback]
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}
     runs-on: ubuntu-latest
+    outputs:
+      vsix-sha256: ${{ steps.canonical_receipt.outputs.sha256 }}
+      vsix-size: ${{ steps.canonical_receipt.outputs.size }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -128,40 +131,47 @@ jobs:
       - run: npm ci
       - run: npm run clean
       - run: npm run build
-      - run: npm run package:prepared -- --out openwrangler.vsix
-      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: mkdir canonical-vsix
+      - run: npm run package:prepared -- --out canonical-vsix/openwrangler.vsix
+      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
       - name: Packaged release-media contracts
         if: ${{ needs.classify.outputs.package_only == 'true' }}
         run: npm run test:scripts:media
-      - name: Create canonical PR checksum
+      - id: canonical_receipt
+        name: Create canonical PR checksum
         shell: node {0}
         run: |
           const { createHash } = require("node:crypto");
-          const { readFileSync, writeFileSync } = require("node:fs");
+          const { appendFileSync, readFileSync, statSync, writeFileSync } = require("node:fs");
 
-          const digest = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
-          writeFileSync("openwrangler.vsix.sha256", `${digest}  openwrangler.vsix\n`);
+          const digest = createHash("sha256")
+            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
+            .digest("hex");
+          const size = statSync("canonical-vsix/openwrangler.vsix").size;
+          if (!Number.isSafeInteger(size) || size <= 0 || size > 128 * 1024 * 1024) {
+            throw new Error("The canonical PR VSIX size is invalid.");
+          }
+          writeFileSync("canonical-vsix/openwrangler.vsix.sha256", `${digest}  openwrangler.vsix\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `sha256=${digest}\nsize=${size}\n`, "utf8");
       - name: Revalidate canonical PR checksum
         shell: node {0}
         run: |
           const { createHash } = require("node:crypto");
           const { readFileSync } = require("node:fs");
 
-          const receipt = readFileSync("openwrangler.vsix.sha256", "utf8");
+          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
           const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
           if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          const actual = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
-          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum changed before upload.");
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+          const actual = createHash("sha256")
+            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
+            .digest("hex");
+          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum changed before caching.");
+      - name: Save canonical PR package for same-run consumers
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          name: openwrangler-vsix
-          path: |
-            openwrangler.vsix
-            openwrangler.vsix.sha256
-          if-no-files-found: error
-          compression-level: 0
-          include-hidden-files: false
-          overwrite: true
+          path: canonical-vsix
+          key: openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ steps.canonical_receipt.outputs.sha256 }}
+          enableCrossOsArchive: false
 
   contract-tests:
     name: Contract tests
@@ -215,7 +225,7 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:webview-acceptance
-      - if: ${{ !cancelled() }}
+      - if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: webview-visual-evidence
@@ -223,6 +233,8 @@ jobs:
             tmp/screenshots-actual/
             tmp/screenshots-diff/
           if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: false
 
   production-audits:
     name: Production dependency audits
@@ -329,7 +341,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Require the canonical PR artifact
+      - name: Require the canonical PR package
         if: ${{ needs.canonical-vsix.result != 'success' }}
         run: exit 1
       - uses: actions/checkout@v6
@@ -344,10 +356,12 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Restore canonical PR package
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          name: openwrangler-vsix
           path: canonical-vsix
+          key: openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ needs.canonical-vsix.outputs.vsix-sha256 }}
+          fail-on-cache-miss: true
       - name: Verify canonical PR checksum
         shell: node {0}
         run: |
@@ -357,10 +371,18 @@ jobs:
           const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
           const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
           if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          const actual = createHash("sha256")
-            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
-            .digest("hex");
-          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
+          if (!/^[0-9a-f]{64}$/u.test(process.env.EXPECTED_SHA256) || match[1] !== process.env.EXPECTED_SHA256) {
+            throw new Error("The canonical PR checksum is not bound to its producer.");
+          }
+          const bytes = readFileSync("canonical-vsix/openwrangler.vsix");
+          const actual = createHash("sha256").update(bytes).digest("hex");
+          if (actual !== process.env.EXPECTED_SHA256) throw new Error("The canonical PR VSIX checksum does not match.");
+          if (String(bytes.byteLength) !== process.env.EXPECTED_SIZE) {
+            throw new Error("The canonical PR VSIX size is not bound to its producer.");
+          }
+        env:
+          EXPECTED_SHA256: ${{ needs.canonical-vsix.outputs.vsix-sha256 }}
+          EXPECTED_SIZE: ${{ needs.canonical-vsix.outputs.vsix-size }}
       - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
       - run: npm run build:test-extension
       - id: packaged_editor
@@ -415,12 +437,16 @@ jobs:
           java -XshowSettings:properties -version 2>&1 |
             grep -Eq '^[[:space:]]*java\.specification\.version = 17$'
       - run: npm run test:coverage
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: coverage-reports
           path: |
             coverage/
             tmp/coverage/python.xml
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: false
 
   python-matrix:
     needs: [classify, fast-feedback, contract-tests]
@@ -532,7 +558,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - name: Require the canonical PR artifact
+      - name: Require the canonical PR package
         if: ${{ needs.canonical-vsix.result != 'success' }}
         run: exit 1
       - uses: actions/checkout@v6
@@ -616,10 +642,12 @@ jobs:
       - run: /usr/bin/python3 -m venv .remote-venv
       - run: .remote-venv/bin/python -m pip install --upgrade pip
       - run: .remote-venv/bin/python -m pip install ./python
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Restore canonical PR package
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          name: openwrangler-vsix
           path: canonical-vsix
+          key: openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ needs.canonical-vsix.outputs.vsix-sha256 }}
+          fail-on-cache-miss: true
       - id: candidate
         name: Verify exact Remote SSH candidate
         shell: node {0}
@@ -632,18 +660,24 @@ jobs:
           const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
           const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
           if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
+          if (!/^[0-9a-f]{64}$/u.test(process.env.EXPECTED_SHA256) || match[1] !== process.env.EXPECTED_SHA256) {
+            throw new Error("The canonical PR checksum is not bound to its producer.");
+          }
           const bytes = readFileSync(candidatePath);
           const sha256 = createHash("sha256").update(bytes).digest("hex");
-          if (sha256 !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
+          if (sha256 !== process.env.EXPECTED_SHA256) throw new Error("The canonical PR VSIX checksum does not match.");
           const size = statSync(candidatePath).size;
-          if (!Number.isSafeInteger(size) || size <= 0) {
-            throw new Error("The canonical PR VSIX size is invalid.");
+          if (!Number.isSafeInteger(size) || size <= 0 || String(size) !== process.env.EXPECTED_SIZE) {
+            throw new Error("The canonical PR VSIX size is not bound to its producer.");
           }
           appendFileSync(
             process.env.GITHUB_OUTPUT,
             `path=${candidatePath}\nsha256=${sha256}\nsize=${size}\n`,
             "utf8"
           );
+        env:
+          EXPECTED_SHA256: ${{ needs.canonical-vsix.outputs.vsix-sha256 }}
+          EXPECTED_SIZE: ${{ needs.canonical-vsix.outputs.vsix-size }}
       - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
       - id: remote_workspace
         name: Test packaged VS Code over Remote SSH
