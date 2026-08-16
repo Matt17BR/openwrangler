@@ -98,7 +98,8 @@ Windows extension host rejects it. IRkernel notebooks work on Windows.
 - Filters and multi-column sorts change only the view. Active typed filters stay above the grid, where each rule can
   be removed, all filters can be cleared without dropping sorts, and the latest confirmed filter change can be
   undone independently of cleaning history. Exports write a separate file.
-- The grid fetches visible rows and columns on demand. Supported file-backed Polars sources use lazy scans.
+- The grid fetches visible rows and columns on demand. Supported file-backed sources and live notebook Polars
+  LazyFrames keep their lazy plans.
 
 ## Workbench
 
@@ -333,7 +334,7 @@ also shows the variable picker, profiles, and generated code inserted into a not
 
 | Engine               | Files                                     | Notebook data                         | How it runs                                                |
 | -------------------- | ----------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
-| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL        |
+| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; LazyFrame sessions stay lazy                       |
 | Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                  |
 | DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only                |
 | PySpark 4.2.x        | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles  |
@@ -341,7 +342,10 @@ also shows the variable picker, profiles, and generated code inserted into a not
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
-PySpark 4.2 Classic/Connect batch DataFrames. Polars LazyFrames collect when opened from a notebook.
+PySpark 4.2 Classic/Connect batch DataFrames. Polars LazyFrames remain lazy when opened from a notebook. Pages and
+profiles collect only bounded results. One-hot encode and Multi-label binarize materialize a lazy result when you
+preview those operations because their output columns depend on the values in the dataframe. Custom Polars code can
+also choose to return an eager DataFrame.
 
 To keep a notebook result native to DuckDB, open the relation itself. For example,
 `orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly creates a Pandas DataFrame, so Open
@@ -357,8 +361,9 @@ for the complete surface.
 ## Performance
 
 Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed
-Polars sessions use lazy scans and push filtering, sorting, and column selection into the source when the format
-supports it. Pandas data stays in Pandas, and DuckDB relations stay in DuckDB.
+Polars sessions use lazy scans, and live notebook LazyFrames keep their existing lazy plan. Filtering, sorting, and
+column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in
+Pandas, and DuckDB relations stay in DuckDB.
 
 The latest reviewed comparison found faster notebook previews and CSV column profiling in Open Wrangler; Parquet
 workbench and profiling times were close. One important difference is how Polars is handled: Open Wrangler keeps it in
