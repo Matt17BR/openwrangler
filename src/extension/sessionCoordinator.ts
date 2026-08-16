@@ -19,7 +19,7 @@ import type {
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
-import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
+import type { GridViewState, PersistedViewingState } from "../shared/viewState";
 import {
   DetachedBridgeRequestError,
   type BridgeRequestOptions,
@@ -28,11 +28,7 @@ import {
 } from "./dataBridge";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
-import {
-  persistedSessionState,
-  type DecodedPersistedSessionState,
-  type PersistedCleaningState
-} from "./sessionPersistence";
+import { persistedSessionState, type DecodedPersistedSessionState } from "./sessionPersistence";
 import { SessionPersistenceStore } from "./sessionPersistenceStore";
 import { responseMismatch, sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
@@ -42,20 +38,16 @@ import {
   type SessionRequestExecutionLane
 } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup, runtimeCleanupOptions } from "./sessionRuntimeCleanup";
+import {
+  gridState,
+  initialViewingState,
+  reconcileViewingState,
+  RuntimeStateRestoreError,
+  SessionRuntimeStateRestorer,
+  type RuntimeSessionState
+} from "./sessionRuntimeStateRestorer";
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
-
-interface RuntimeSessionState {
-  publicId: string;
-  runtimeId: string;
-  runtimeRevision: number;
-  delegate: OpenWranglerBridge;
-  metadata: SessionMetadata;
-  code: string;
-  draftPresentation?: SessionPresentation["draft"];
-  draftBaseFilterModel?: FilterModel;
-  viewState: PersistedViewingState;
-}
 
 interface CoordinatedSession extends RuntimeSessionState {
   publicRevision: number;
@@ -89,9 +81,6 @@ type CoordinatedSessionOrigin =
 type BridgeSessionOrigin = vscode.NotebookDocument | TextDocumentSessionOrigin;
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
-const PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT = 16;
-
-class RuntimeStateRestoreError extends Error {}
 class ReconfigurationCancelledError extends Error {}
 class ReconfigurationSupersededError extends Error {}
 
@@ -145,6 +134,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
   private readonly runtimeCleanup: SessionRuntimeCleanup;
   private readonly persistence: SessionPersistenceStore;
+  private readonly runtimeStateRestorer = new SessionRuntimeStateRestorer();
 
   constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
     this.persistence = new SessionPersistenceStore(workspaceState);
@@ -635,7 +625,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (persisted) {
       let cleaningRestored = false;
       try {
-        await this.restoreCleaningState(
+        await this.runtimeStateRestorer.restoreCleaningState(
           session,
           persisted.cleaning,
           request.columnOffset,
@@ -679,7 +669,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (cleaningRestored) {
         let page: PageResponse;
         try {
-          page = await this.restoreViewingState(
+          page = await this.runtimeStateRestorer.restoreViewingState(
             session,
             persisted.view,
             request.pageSize,
@@ -1080,7 +1070,7 @@ export class SessionCoordinator implements vscode.Disposable {
     let page: PageResponse;
     try {
       assertCandidateCurrent();
-      page = await this.restoreOneViewingState(
+      page = await this.runtimeStateRestorer.restoreOneViewingState(
         candidate,
         session.viewState,
         candidateRequest.pageSize,
@@ -1279,7 +1269,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (!this.isLiveSession(session) || session.closing) throw new ReconfigurationSupersededError();
     };
     try {
-      await this.restoreCleaningState(
+      await this.runtimeStateRestorer.restoreCleaningState(
         candidate,
         persisted.cleaning,
         candidateRequest.columnOffset,
@@ -1288,7 +1278,7 @@ export class SessionCoordinator implements vscode.Disposable {
         assertCandidateCurrent
       );
       assertCandidateCurrent();
-      page = await this.restoreOneViewingState(
+      page = await this.runtimeStateRestorer.restoreOneViewingState(
         candidate,
         persisted.view,
         candidateRequest.pageSize,
@@ -1972,291 +1962,6 @@ export class SessionCoordinator implements vscode.Disposable {
     return this.persistence.commitCurrent(session.openRequest.source, state, isCurrent, commit);
   }
 
-  private async restoreRuntimeState(
-    session: RuntimeSessionState,
-    state: DecodedPersistedSessionState,
-    pageSize: number,
-    columnOffset: number,
-    columnLimit: number,
-    options?: BridgeRequestOptions,
-    requireExactView = false
-  ): Promise<PageResponse> {
-    await this.restoreCleaningState(session, state.cleaning, columnOffset, columnLimit, options);
-    if (requireExactView) {
-      if (!state.view) throw new RuntimeStateRestoreError("Open Wrangler could not recover the confirmed view.");
-      return this.restoreOneViewingState(session, state.view, pageSize, columnOffset, columnLimit, "saved", options);
-    }
-    return this.restoreViewingState(session, state.view, pageSize, columnOffset, columnLimit, options);
-  }
-
-  private async restoreCleaningState(
-    session: RuntimeSessionState,
-    cleaning: PersistedCleaningState,
-    columnOffset: number,
-    columnLimit: number,
-    options?: BridgeRequestOptions,
-    assertCurrent?: () => void
-  ): Promise<void> {
-    session.draftPresentation = undefined;
-    session.draftBaseFilterModel = undefined;
-    for (const step of cleaning.steps) {
-      assertCurrent?.();
-      const previewRequest: SessionBoundRequest = {
-        kind: "previewStep",
-        sessionId: session.runtimeId,
-        revision: session.runtimeRevision,
-        step,
-        offset: 0,
-        limit: 1,
-        columnOffset,
-        columnLimit
-      };
-      const preview = await session.delegate.request(previewRequest, options);
-      assertCurrent?.();
-      if (
-        preview.kind !== "stepPreview" ||
-        responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
-      ) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not replay a cleaning step.");
-      }
-      session.runtimeRevision = preview.revision;
-      session.metadata = preview.metadata;
-      session.code = preview.code;
-      const applyRequest: SessionBoundRequest = {
-        kind: "applyDraft",
-        sessionId: session.runtimeId,
-        revision: session.runtimeRevision,
-        offset: 0,
-        limit: 1,
-        columnOffset,
-        columnLimit
-      };
-      const applied = await session.delegate.request(applyRequest, options);
-      assertCurrent?.();
-      if (applied.kind !== "planUpdated" || responseMismatch(applyRequest, applied, session.runtimeId) !== undefined) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not apply a replayed cleaning step.");
-      }
-      session.runtimeRevision = applied.revision;
-      session.metadata = applied.metadata;
-      session.code = applied.code;
-    }
-
-    if (cleaning.draftStep) {
-      if (cleaning.draftBaseFilterModel) {
-        await this.restoreDraftBaseFilterModel(
-          session,
-          cleaning.draftBaseFilterModel,
-          columnOffset,
-          columnLimit,
-          options,
-          assertCurrent
-        );
-      }
-      assertCurrent?.();
-      const committedSchema = session.metadata.schema;
-      const confirmedDraftBaseFilterModel = session.metadata.filterModel;
-      const previewRequest: SessionBoundRequest = {
-        kind: "previewStep",
-        sessionId: session.runtimeId,
-        revision: session.runtimeRevision,
-        step: cleaning.draftStep,
-        replaceStepId: cleaning.draftReplacesStepId,
-        offset: 0,
-        limit: 1,
-        columnOffset,
-        columnLimit
-      };
-      const preview = await session.delegate.request(previewRequest, options);
-      assertCurrent?.();
-      if (
-        preview.kind !== "stepPreview" ||
-        responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
-      ) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not restore the draft cleaning step.");
-      }
-      session.runtimeRevision = preview.revision;
-      session.metadata = preview.metadata;
-      session.code = preview.code;
-      session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
-      session.draftPresentation = {
-        diff: preview.diff,
-        ...(preview.remainingMissingCells === undefined
-          ? {}
-          : { remainingMissingCells: preview.remainingMissingCells }),
-        warnings: [...(preview.warnings ?? [])],
-        beforeSchema:
-          preview.metadata.draftReplacesStepId === undefined
-            ? committedSchema
-            : (preview.metadata.latestStepInputSchema ?? committedSchema)
-      };
-    }
-  }
-
-  private async restoreDraftBaseFilterModel(
-    session: RuntimeSessionState,
-    filterModel: FilterModel,
-    columnOffset: number,
-    columnLimit: number,
-    options?: BridgeRequestOptions,
-    assertCurrent?: () => void
-  ): Promise<void> {
-    const request: SessionBoundRequest = {
-      kind: "getPage",
-      sessionId: session.runtimeId,
-      revision: session.runtimeRevision,
-      viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}:draft-base`,
-      offset: 0,
-      limit: 1,
-      columnOffset,
-      columnLimit,
-      filterModel
-    };
-    assertCurrent?.();
-    const response = await session.delegate.request(request, options);
-    assertCurrent?.();
-    const mismatch = responseMismatch(request, response, session.runtimeId, session.metadata.schema);
-    if (mismatch) {
-      throw new RuntimeStateRestoreError(`Open Wrangler could not validate the saved draft view: ${mismatch}`);
-    }
-    if (response.kind === "error") return;
-    if (response.kind !== "page") {
-      throw new RuntimeStateRestoreError("Open Wrangler could not restore the saved draft view.");
-    }
-    session.runtimeRevision = response.revision;
-    session.metadata = response.metadata;
-    session.viewState = reconcileViewingState(
-      {
-        filterModel: response.metadata.filterModel,
-        columnWidths: {},
-        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-      },
-      response.metadata
-    );
-  }
-
-  private async restoreViewingState(
-    session: RuntimeSessionState,
-    savedView: PersistedViewingState | undefined,
-    pageSize: number,
-    columnOffset: number,
-    columnLimit: number,
-    options?: BridgeRequestOptions
-  ): Promise<PageResponse> {
-    if (!savedView)
-      return this.restoreOneViewingState(
-        session,
-        emptyConfirmedViewingState(),
-        pageSize,
-        columnOffset,
-        columnLimit,
-        "empty",
-        options
-      );
-    try {
-      return await this.restoreOneViewingState(
-        session,
-        savedView,
-        pageSize,
-        columnOffset,
-        columnLimit,
-        "saved",
-        options
-      );
-    } catch {
-      return this.restoreOneViewingState(
-        session,
-        emptyConfirmedViewingState(),
-        pageSize,
-        columnOffset,
-        columnLimit,
-        "empty",
-        options
-      );
-    }
-  }
-
-  private async restoreOneViewingState(
-    session: RuntimeSessionState,
-    view: PersistedViewingState,
-    pageSize: number,
-    columnOffset: number,
-    columnLimit: number,
-    label: "saved" | "empty",
-    options?: BridgeRequestOptions,
-    assertCurrent?: () => void
-  ): Promise<PageResponse> {
-    const restoredPageSize = Math.max(1, pageSize);
-    let desiredOffset = Math.floor(view.viewport.firstVisibleRow / restoredPageSize) * restoredPageSize;
-    let restoredView = view;
-    const requestPage = async (offset: number, suffix: string = label): Promise<PageResponse> => {
-      const pageRequest: SessionBoundRequest = {
-        kind: "getPage",
-        sessionId: session.runtimeId,
-        revision: session.runtimeRevision,
-        viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}:${suffix}`,
-        offset,
-        limit: restoredPageSize,
-        columnOffset,
-        columnLimit,
-        filterModel: view.filterModel
-      };
-      assertCurrent?.();
-      const response = await session.delegate.request(pageRequest, options);
-      assertCurrent?.();
-      if (
-        response.kind !== "page" ||
-        responseMismatch(pageRequest, response, session.runtimeId, session.metadata.schema) !== undefined
-      ) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not restore the confirmed view.");
-      }
-      return response;
-    };
-    let page: PageResponse;
-    if (session.metadata.backend === "pyspark" && desiredOffset > 0) {
-      // A recreated Spark plan has no predecessor anchors for a saved nonzero
-      // viewport. Re-establish them through bounded contiguous blocks instead
-      // of issuing an unsupported random offset and treating that predictable
-      // failure as a broken confirmed view.
-      page = await requestPage(0, `${label}-progressive-0`);
-      if (desiredOffset / restoredPageSize >= PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT) {
-        // A presentation-only viewport must not turn recovery into thousands
-        // of sequential Spark jobs. Retain the confirmed filter/sort, widths,
-        // and selection, but deliberately restart this far traversal at row 0.
-        desiredOffset = 0;
-        restoredView = {
-          ...view,
-          viewport: { ...view.viewport, firstVisibleRow: 0 }
-        };
-      } else {
-        while (page.page.totalRows === null && page.page.offset < desiredOffset) {
-          const nextOffset = Math.min(desiredOffset, page.page.offset + restoredPageSize);
-          page = await requestPage(nextOffset, `${label}-progressive-${nextOffset}`);
-        }
-      }
-    } else {
-      page = await requestPage(desiredOffset);
-    }
-    const restoredTotal = page.page.totalRows;
-    if (restoredTotal !== null && restoredTotal > 0 && desiredOffset >= restoredTotal) {
-      assertCurrent?.();
-      const finalOffset = Math.floor((restoredTotal - 1) / restoredPageSize) * restoredPageSize;
-      if (finalOffset !== page.page.offset) page = await requestPage(finalOffset, `${label}-bounded`);
-    }
-    if (session.metadata.backend === "pyspark" && page.page.offset !== desiredOffset) {
-      restoredView = {
-        ...restoredView,
-        viewport: { ...restoredView.viewport, firstVisibleRow: page.page.offset }
-      };
-    }
-    session.runtimeRevision = page.revision;
-    session.metadata = page.metadata;
-    session.viewState = reconcileViewingState(
-      { ...restoredView, filterModel: page.metadata.filterModel },
-      page.metadata
-    );
-    return page;
-  }
-
   private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
     return this.serializeSessionEstablishment(session.delegate, () => this.replayExclusive(session, options));
   }
@@ -2340,7 +2045,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (requiredSchema && !isDeepStrictEqual(response.metadata.schema, requiredSchema)) {
         throw new Error("The recreated live dataframe schema no longer matches the confirmed Open Wrangler view.");
       }
-      restoredPage = await this.restoreRuntimeState(
+      restoredPage = await this.runtimeStateRestorer.restoreRuntimeState(
         candidate,
         persisted,
         session.metadata.backend === "pyspark" ? session.openRequest.pageSize : 1,
@@ -2500,43 +2205,6 @@ function recoveryFollowupOptions(options?: BridgeRequestOptions): BridgeRequestO
   if (!options?.requiredKernelSessionId) return options;
   const { requiredKernelSessionId: _requiredKernelSessionId, ...followup } = options;
   return followup;
-}
-
-function initialViewingState(metadata: SessionMetadata): PersistedViewingState {
-  return { ...emptyGridViewState(), filterModel: metadata.filterModel };
-}
-
-function emptyConfirmedViewingState(): PersistedViewingState {
-  return { ...emptyGridViewState(), filterModel: { filters: [], sort: [] } };
-}
-
-function gridState(state: PersistedViewingState): GridViewState {
-  return {
-    columnWidths: { ...state.columnWidths },
-    ...(state.selectedColumnId === undefined ? {} : { selectedColumnId: state.selectedColumnId }),
-    viewport: { ...state.viewport }
-  };
-}
-
-function reconcileViewingState(state: PersistedViewingState, metadata: SessionMetadata): PersistedViewingState {
-  const columnIds = new Set(metadata.schema.map((column) => column.id));
-  const columnWidths = Object.fromEntries(
-    Object.entries(state.columnWidths).filter(([columnId]) => columnIds.has(columnId))
-  );
-  const finalRow =
-    metadata.filteredShape.rows === null
-      ? state.viewport.firstVisibleRow
-      : Math.max(0, metadata.filteredShape.rows - 1);
-  const selectedColumnId = state.selectedColumnId;
-  return {
-    columnWidths,
-    ...(selectedColumnId !== undefined && columnIds.has(selectedColumnId) ? { selectedColumnId } : {}),
-    viewport: {
-      firstVisibleRow: Math.min(state.viewport.firstVisibleRow, finalRow),
-      scrollLeft: state.viewport.scrollLeft
-    },
-    filterModel: metadata.filterModel
-  };
 }
 
 function normalizeFilterModel(model: FilterModel): unknown {
