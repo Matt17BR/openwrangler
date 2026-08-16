@@ -5,10 +5,6 @@ from contextlib import suppress
 from typing import Any, cast
 
 from .base import DataFrameEngine, EngineError
-from .duckdb_engine import DuckDBEngine
-from .pandas_engine import PandasEngine
-from .polars_engine import PolarsEngine
-from .pyspark_engine import PySparkEngine
 
 EngineFactory = Callable[[], DataFrameEngine]
 EngineFactories = Mapping[str, EngineFactory] | Iterable[tuple[str, EngineFactory]]
@@ -100,9 +96,33 @@ def default_engine_registry() -> EngineRegistry:
     """Return the built-in engines in automatic-detection priority order."""
     return EngineRegistry(
         (
-            ("polars", PolarsEngine),
-            ("pyspark", PySparkEngine),
-            ("duckdb", DuckDBEngine),
-            ("pandas", PandasEngine),
+            ("polars", _create_polars_engine),
+            ("pyspark", _create_pyspark_engine),
+            ("duckdb", _create_duckdb_engine),
+            ("pandas", _create_pandas_engine),
         )
     )
+
+
+def _create_polars_engine() -> DataFrameEngine:
+    from .polars_engine import PolarsEngine
+
+    return PolarsEngine()
+
+
+def _create_pyspark_engine() -> DataFrameEngine:
+    from .pyspark_engine import PySparkEngine
+
+    return PySparkEngine()
+
+
+def _create_duckdb_engine() -> DataFrameEngine:
+    from .duckdb_engine import DuckDBEngine
+
+    return DuckDBEngine()
+
+
+def _create_pandas_engine() -> DataFrameEngine:
+    from .pandas_engine import PandasEngine
+
+    return PandasEngine()
