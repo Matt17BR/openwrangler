@@ -814,6 +814,7 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     writeFileSync(child, "export {};\n");
     const descriptor = layout.descriptor;
     writeFileSync(descriptor, "{}\n", { mode: 0o600 });
+    const structuralExecutable = realpathSync("/usr/bin/true");
     const builderInput = {
       root: layout.root,
       descriptor,
@@ -821,23 +822,23 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       // This structural argument test never executes the phase. Use a
       // platform-present regular executable that stays distinct from the
       // staged phase-Node destination on system-Node layouts.
-      systemPython: realpathSync("/usr/bin/true"),
+      systemPython: structuralExecutable,
       systemRuntimeDirectories: ["/usr/lib/x86_64-linux-gnu"],
       immutableMounts: createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT),
       uid: 1001,
       gid: 1001,
       tools: {
-        bash: process.execPath,
-        bwrap: process.execPath,
-        busybox: process.execPath,
-        dynamicLoader: process.execPath,
-        getconf: process.execPath,
-        ip: process.execPath,
-        ldd: process.execPath,
-        printenv: process.execPath,
-        ps: process.execPath,
-        ssh: process.execPath,
-        xkbcomp: process.execPath
+        bash: structuralExecutable,
+        bwrap: structuralExecutable,
+        busybox: structuralExecutable,
+        dynamicLoader: structuralExecutable,
+        getconf: structuralExecutable,
+        ip: structuralExecutable,
+        ldd: structuralExecutable,
+        printenv: structuralExecutable,
+        ps: structuralExecutable,
+        ssh: structuralExecutable,
+        xkbcomp: structuralExecutable
       }
     };
     const args = createRemoteWorkspaceBwrapArguments(builderInput, {
@@ -954,9 +955,7 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     );
     const bashMount = args.findIndex(
       (value, index) =>
-        value === "--ro-bind" &&
-        args[index + 1] === realpathSync(process.execPath) &&
-        args[index + 2] === "/usr/bin/bash"
+        value === "--ro-bind" && args[index + 1] === structuralExecutable && args[index + 2] === "/usr/bin/bash"
     );
     const shellSymlink = args.findIndex(
       (value, index) => value === "--symlink" && args[index + 1] === "bash" && args[index + 2] === "/usr/bin/sh"
