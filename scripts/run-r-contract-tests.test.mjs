@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRContractPhases, runRContractPhase } from "./run-r-contract-tests.mjs";
+import {
+  R_CONTRACT_SHARDS,
+  createRContractPhases,
+  runRContractPhase,
+  selectRContractPhases
+} from "./run-r-contract-tests.mjs";
 
 function phases() {
   return createRContractPhases({
@@ -15,17 +20,21 @@ function phases() {
 test("native R contracts use named per-subsystem deadlines without dropping or duplicating tests", () => {
   const configured = phases();
   assert.deepEqual(
-    configured.map(({ label, timeoutMs }) => [label, timeoutMs]),
+    configured.map(({ id, label, timeoutMs, workloadMs }) => [id, label, timeoutMs, workloadMs]),
     [
-      ["native frame contract", 120_000],
-      ["native kernel-agent contract", 360_000],
-      ["complete native catalog contract", 120_000],
-      ["TypeScript R frame and unit contracts", 60_000],
-      ["real-R kernel transport contract", 90_000],
-      ["real-R process transport contract", 90_000],
-      ["real-R interactive transport contract", 60_000]
+      ["frame", "native frame contract", 120_000, 31_000],
+      ["kernel-agent", "native kernel-agent contract", 360_000, 348_000],
+      ["catalog", "complete native catalog contract", 120_000, 45_000],
+      ["typescript", "TypeScript R frame and unit contracts", 60_000, 11_000],
+      ["kernel-transport", "real-R kernel transport contract", 90_000, 56_000],
+      ["process-transport", "real-R process transport contract", 90_000, 40_000],
+      ["interactive-transport", "real-R interactive transport contract", 60_000, 11_000]
     ]
   );
+  for (const phase of configured) {
+    assert.ok(phase.workloadMs > 0);
+    assert.ok(phase.workloadMs <= phase.timeoutMs);
+  }
 
   const direct = configured.slice(0, 3);
   assert.deepEqual(
@@ -53,6 +62,72 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
     assert.deepEqual(phase.args.slice(-1), ["--maxWorkers=1"]);
     assert.equal(phase.environment.OPEN_WRANGLER_R_CONTRACT_TESTS, "1");
   }
+});
+
+test("native R shards are an exhaustive disjoint workload-aware partition", () => {
+  const configured = phases();
+  const configuredIds = configured.map(({ id }) => id);
+  const shardedIds = R_CONTRACT_SHARDS.flatMap(({ phaseIds }) => phaseIds);
+  assert.equal(new Set(shardedIds).size, shardedIds.length);
+  assert.deepEqual([...shardedIds].sort(), [...configuredIds].sort());
+  assert.deepEqual(
+    R_CONTRACT_SHARDS.map(({ id, phaseIds }) => [
+      id,
+      phaseIds,
+      phaseIds.reduce((total, phaseId) => total + configured.find((phase) => phase.id === phaseId).workloadMs, 0)
+    ]),
+    [
+      ["kernel-agent", ["kernel-agent"], 348_000],
+      ["frame-transport", ["frame", "kernel-transport", "interactive-transport"], 98_000],
+      ["catalog-transport", ["catalog", "typescript", "process-transport"], 96_000]
+    ]
+  );
+});
+
+test("native R phase and shard selection is exact and preserves canonical order", () => {
+  const configured = phases();
+  assert.strictEqual(selectRContractPhases(configured, []), configured);
+  assert.deepEqual(
+    selectRContractPhases(configured, ["--shard=frame-transport"]).map(({ id }) => id),
+    ["frame", "kernel-transport", "interactive-transport"]
+  );
+  assert.deepEqual(
+    selectRContractPhases(configured, ["--phase=process-transport", "--phase=frame"]).map(({ id }) => id),
+    ["frame", "process-transport"]
+  );
+  assert.deepEqual(
+    selectRContractPhases(configured, ["--shard=kernel-agent"]).map(({ command, args }) => [command, ...args]),
+    [["/reviewed/Rscript", "--vanilla", "r/tests/kernel_agent.R"]]
+  );
+  assert.deepEqual(
+    selectRContractPhases(
+      configured,
+      R_CONTRACT_SHARDS.map(({ id }) => `--shard=${id}`)
+    ).map(({ id }) => id),
+    configured.map(({ id }) => id)
+  );
+});
+
+test("native R selection rejects invalid, duplicate, overlapping, and empty selectors", () => {
+  const configured = phases();
+  assert.throws(() => selectRContractPhases(configured, ["--phase="]), /phase selection must not be empty/u);
+  assert.throws(() => selectRContractPhases(configured, ["--shard="]), /shard selection must not be empty/u);
+  assert.throws(() => selectRContractPhases(configured, ["--phase=missing"]), /Unknown R contract phase: missing/u);
+  assert.throws(() => selectRContractPhases(configured, ["--shard=missing"]), /Unknown R contract shard: missing/u);
+  assert.throws(() => selectRContractPhases(configured, ["--phase"]), /Invalid R contract selection/u);
+  assert.throws(() => selectRContractPhases(configured, ["frame"]), /Invalid R contract selection/u);
+  assert.throws(
+    () => selectRContractPhases(configured, ["--phase=frame", "--phase=frame"]),
+    /Duplicate R contract selection/u
+  );
+  assert.throws(
+    () => selectRContractPhases(configured, ["--shard=kernel-agent", "--shard=kernel-agent"]),
+    /Duplicate R contract selection/u
+  );
+  assert.throws(
+    () => selectRContractPhases(configured, ["--shard=frame-transport", "--phase=frame"]),
+    /phase frame was selected more than once/u
+  );
 });
 
 test("native R phase receipts identify success, timeout, and ordinary failure exactly", () => {
