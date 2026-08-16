@@ -18,6 +18,7 @@ from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
+from openwrangler_runtime.export_target import _regular_file_identity
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
@@ -46,6 +47,12 @@ def source_relation() -> Any:
         ) AS source("group", "text", "tags", "value", "other", "date")
         """
     )
+
+
+def reserve_export_target(path: Path) -> dict[str, str]:
+    path.touch(exist_ok=False)
+    device, inode = _regular_file_identity(path)
+    return {"device": str(device), "inode": str(inode)}
 
 
 def rows(frame: Any) -> list[tuple[Any, ...]]:
@@ -510,7 +517,7 @@ def test_duckdb_session_releases_every_temporary_relation_before_connection_clos
         assert isinstance(session.filtered, DuckDBSqlPlan)
         assert_fully_detached()
 
-        manager.export_data(session_id, 2, str(destination), "parquet")
+        manager.export_data(session_id, 2, str(destination), "parquet", reserve_export_target(destination))
         assert rows(duckdb.read_parquet(str(destination))) == [(2,), (3,)]
         assert_fully_detached()
     finally:
@@ -699,7 +706,13 @@ def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(
         assert [row["values"][0]["raw"] for row in filtered["rows"]] == ["other", "match"]
 
         exported_path = tmp_path / "rich-cleaned.parquet"
-        assert manager.export_data(session_id, 0, str(exported_path), "parquet")["shape"] == {
+        assert manager.export_data(
+            session_id,
+            0,
+            str(exported_path),
+            "parquet",
+            reserve_export_target(exported_path),
+        )["shape"] == {
             "rows": 3,
             "columns": 9,
         }
@@ -1468,7 +1481,13 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
     }
 
     destination = tmp_path / "cleaned.parquet"
-    exported = manager.export_data(session_id, 2, str(destination), "parquet")
+    exported = manager.export_data(
+        session_id,
+        2,
+        str(destination),
+        "parquet",
+        reserve_export_target(destination),
+    )
     assert exported["shape"] == {"rows": 3, "columns": 3}
     assert duckdb.read_parquet(str(destination)).fetchall() == [("a", 1, 10), ("a", 2, 20), ("b", 3, 30)]
     assert manager.close_session(session_id, 2) == {"kind": "sessionClosed", "sessionId": session_id}

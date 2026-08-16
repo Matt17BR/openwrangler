@@ -17,6 +17,12 @@ from openwrangler_runtime.session import SessionManager
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def reserve_export_target(path: Path) -> dict[str, str]:
+    path.touch(exist_ok=False)
+    details = path.stat()
+    return {"device": str(details.st_dev), "inode": str(details.st_ino)}
+
+
 def _write_polars_file(path: Path, extension: str, values: list[int]) -> None:
     frame = pl.DataFrame({"value": values, "label": [f"row-{index}" for index in range(len(values))]})
     if extension == "csv":
@@ -489,7 +495,13 @@ def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_
     assert isinstance(runtime.committed, pl.LazyFrame)
 
     export_path = tmp_path / "large-live-cleaned.parquet"
-    exported = manager.export_data(session_id, 2, str(export_path), "parquet")
+    exported = manager.export_data(
+        session_id,
+        2,
+        str(export_path),
+        "parquet",
+        reserve_export_target(export_path),
+    )
     assert exported["shape"] == {"rows": row_count, "columns": 5}
     exported_metrics = (
         pl.scan_parquet(export_path)

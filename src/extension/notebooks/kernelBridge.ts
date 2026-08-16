@@ -26,6 +26,11 @@ import {
   buildPySparkNotebookPreflightCode,
   parsePySparkNotebookPreflightOutput
 } from "./notebookVariableDiscovery";
+import {
+  copySessionSource,
+  exportPythonDataSafely,
+  type SafePythonDataExportOptions
+} from "../files/safePythonDataExport";
 
 const NOTEBOOK_FORMATTER_REPORTING_TIMEOUT_MS = 30_000;
 const NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION = 1;
@@ -52,6 +57,10 @@ export interface ObservedNotebookCellResultKernel extends vscode.Disposable {
   isGenerationValid(): boolean;
 }
 
+export interface KernelBridgeFileOperations {
+  readonly beginTransaction?: SafePythonDataExportOptions["beginTransaction"];
+}
+
 export type NotebookFormatterPreparationSettlement =
   | { readonly kind: "prepared" }
   | { readonly kind: "failed"; readonly error: unknown }
@@ -70,6 +79,7 @@ export class KernelBridge implements OpenWranglerBridge {
   private readonly lifecycle: RestartableKernel<AcquiredKernel>;
   private readonly bootstrapCode: string;
   private readonly sessionKernels = new Map<string, Kernel>();
+  private readonly sessionSources = new Map<string, OpenSessionRequest["source"]>();
   private readonly retiredSessionIds = new Set<string>();
   private cleanupAttempts = new WeakMap<Kernel, Map<string, Promise<boolean>>>();
   private kernelObservation: KernelObservation | undefined;
@@ -84,7 +94,8 @@ export class KernelBridge implements OpenWranglerBridge {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly notebookDocument: vscode.NotebookDocument,
-    private readonly registerNotebookFormatters = true
+    private readonly registerNotebookFormatters = true,
+    private readonly fileOperations: KernelBridgeFileOperations = {}
   ) {
     this.notebookUri = notebookDocument.uri;
     this.lifecycle = new RestartableKernel(() => this.acquireKernel());
@@ -105,6 +116,7 @@ export class KernelBridge implements OpenWranglerBridge {
     if (!this.idleRequested || this.sessionKernels.size > 0 || this.detachedKernelOperations.size > 0) return;
     this.invalidateLifecycle();
     this.sessionKernels.clear();
+    this.sessionSources.clear();
     this.retiredSessionIds.clear();
     this.cleanupAttempts = new WeakMap();
   }
@@ -279,6 +291,51 @@ export class KernelBridge implements OpenWranglerBridge {
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
+    if (request.kind === "exportData") return this.exportData(request, options);
+    return this.requestRuntime(request, options);
+  }
+
+  private async exportData(
+    request: Extract<OpenWranglerRequest, { kind: "exportData" }>,
+    options: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    const source = this.sessionSources.get(request.sessionId);
+    if (!source) {
+      return {
+        kind: "error",
+        code: "unknown_session",
+        message: `Open Wrangler kernel session ${request.sessionId} is not available.`,
+        recoverable: true,
+        sessionId: request.sessionId
+      };
+    }
+    return exportPythonDataSafely({
+      request,
+      source,
+      beginTransaction: this.fileOperations.beginTransaction,
+      dispatch: async (runtimeRequest) => {
+        if (this.sessionSources.get(request.sessionId) !== source) {
+          return {
+            kind: "error",
+            code: "unknown_session",
+            message: `Open Wrangler kernel session ${request.sessionId} is not available.`,
+            recoverable: true,
+            sessionId: request.sessionId
+          };
+        }
+        const response = await this.requestRuntime(runtimeRequest, options);
+        if (response.kind === "dataExported" && this.sessionSources.get(request.sessionId) !== source) {
+          throw new Error("The Python notebook session closed or changed before cleaned data could be published.");
+        }
+        return response;
+      }
+    });
+  }
+
+  private async requestRuntime(
+    request: OpenWranglerRequest,
+    options: BridgeRequestOptions = {}
+  ): Promise<OpenWranglerResponse> {
     this.idleRequested = false;
     const runtimeRequest = withKernelSessionIdentity(request);
     if (runtimeRequest.kind === "closeSession") {
@@ -483,6 +540,8 @@ export class KernelBridge implements OpenWranglerBridge {
           throw new Error(
             "Open Wrangler kernel returned a session identity that did not match the requested identity."
           );
+        } else {
+          this.sessionSources.set(runtimeRequest.requestedSessionId, copySessionSource(runtimeRequest.source));
         }
       }
       return response;
@@ -628,6 +687,7 @@ export class KernelBridge implements OpenWranglerBridge {
   private retireMappedSession(sessionId: string, kernel: Kernel): void {
     if (this.sessionKernels.get(sessionId) !== kernel) return;
     this.sessionKernels.delete(sessionId);
+    this.sessionSources.delete(sessionId);
     this.retiredSessionIds.add(sessionId);
     this.releaseIdleStateIfSafe();
   }

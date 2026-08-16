@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import os
-import tempfile
 import threading
 import uuid
 from collections import OrderedDict
@@ -16,6 +14,7 @@ from typing import Any, Literal
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
 from .engines.base import PageColumnProjection, SummaryColumnProjection, reconcile_view_filter_model
+from .export_target import ExportTarget, ExportTargetError
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 from .protocol import MAX_COLUMN_LIMIT
@@ -992,6 +991,7 @@ class SessionManager:
         revision: int,
         path: str,
         format_name: Literal["csv", "parquet"],
+        target_identity: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._exclusive_session_read(session):
@@ -1004,35 +1004,26 @@ class SessionManager:
             if format_name not in session.engine.capabilities.export_formats:
                 raise EngineError(f"The {session.backend} backend cannot export {format_name} data.")
 
-            destination = Path(path).expanduser().resolve()
             source_path = session.source.get("path")
-            if source_path and destination == Path(str(source_path)).expanduser().resolve():
-                raise EngineError("Choose a new destination. Open Wrangler never overwrites the source file.")
-            if not destination.parent.is_dir():
-                raise EngineError(f"Export directory does not exist: {destination.parent}")
-
-            temporary_path: str | None = None
+            if source_path and Path(path).absolute() == Path(str(source_path)).absolute():
+                raise EngineError("The host-owned export target cannot be the active source file.")
             try:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    prefix=f".{destination.name}.",
-                    suffix=".tmp",
-                    dir=destination.parent,
-                    delete=False,
-                ) as temporary:
-                    temporary_path = temporary.name
-                session.engine.export_data(session.committed, temporary_path, format_name)
-                self._assert_source_unchanged(session)
-                os.replace(temporary_path, destination)
-                temporary_path = None
-            finally:
-                if temporary_path is not None:
-                    Path(temporary_path).unlink(missing_ok=True)
+                target = ExportTarget.from_request(path, target_identity)
+                source_fingerprint = session.source_fingerprint
+                if source_fingerprint and (target.device, target.inode) == (
+                    source_fingerprint.device,
+                    source_fingerprint.inode,
+                ):
+                    raise ExportTargetError("The host-owned export target cannot be the active source file.")
+                with target.pinned_writer_path() as writer_path:
+                    session.engine.export_data(session.committed, writer_path, format_name)
+            except ExportTargetError as error:
+                raise EngineError(str(error)) from error
 
             return {
                 "kind": "dataExported",
                 "revision": session.revision,
-                "path": str(destination),
+                "path": path,
                 "format": format_name,
                 "shape": dict(session.committed_shape),
             }

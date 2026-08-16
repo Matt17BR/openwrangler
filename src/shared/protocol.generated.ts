@@ -1022,6 +1022,11 @@ export interface ExportDataRequest {
   revision: number;
   path: string;
   format: "csv" | "parquet";
+  targetIdentity?: ExportTargetIdentity;
+}
+export interface ExportTargetIdentity {
+  device: string;
+  inode: string;
 }
 export interface CloseSessionRequest {
   kind: "closeSession";

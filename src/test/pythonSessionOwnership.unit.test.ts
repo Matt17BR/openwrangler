@@ -30,11 +30,14 @@ describe("PythonSessionOwnership", () => {
       state: "pending"
     });
     expect(ownership.confirmedOwner("candidate")).toBeUndefined();
+    expect(ownership.confirmedSession("candidate")).toBeUndefined();
 
     const response = ownership.finalizeResponse(pending(request, runtime, "open-1"), opened(request, "candidate"));
     expect(response.kind).toBe("sessionOpened");
     expect(ownership.provisionalClaim("candidate")).toBeUndefined();
     expect(ownership.confirmedOwner("candidate")).toBe(runtime);
+    expect(ownership.confirmedSession("candidate")).toEqual({ runtime, source: request.source });
+    expect(ownership.confirmedSession("candidate")?.source).not.toBe(request.source);
     expect(runtime.provisionalSessionIds).toEqual(new Set());
     expect(runtime.sessionIds).toEqual(new Set(["candidate"]));
     expect(restart).not.toHaveBeenCalled();
@@ -61,6 +64,39 @@ describe("PythonSessionOwnership", () => {
     });
     expect(ownership.confirmedOwner("shared")).toBe(first);
     expect(second.sessionIds).toEqual(new Set());
+  });
+
+  it("pins an immutable copy of only the exact correlated open request source", () => {
+    const ownership = new PythonSessionOwnership<TestRuntime>(vi.fn());
+    const runtime = testRuntime("scope");
+    const request = openRequest("candidate");
+    request.source.importOptions = { delimiter: ",", hasHeader: true };
+    ownership.reserve(request, runtime, "open");
+
+    const response = opened(request, "candidate");
+    response.metadata.source = {
+      kind: "file",
+      label: "runtime-controlled.csv",
+      path: "/runtime-controlled.csv"
+    };
+    ownership.finalizeResponse(pending(request, runtime, "open"), response);
+    const confirmed = ownership.confirmedSession("candidate");
+
+    expect(confirmed).toEqual({
+      runtime,
+      source: {
+        kind: "file",
+        label: "data.csv",
+        path: "/workspace/data.csv",
+        importOptions: { delimiter: ",", hasHeader: true }
+      }
+    });
+    expect(Object.isFrozen(confirmed?.source)).toBe(true);
+    expect(Object.isFrozen(confirmed?.source.importOptions)).toBe(true);
+    request.source.path = "/changed-after-open.csv";
+    request.source.importOptions.delimiter = ";";
+    expect(confirmed?.source.path).toBe("/workspace/data.csv");
+    expect(confirmed?.source.importOptions?.delimiter).toBe(",");
   });
 
   it("releases a reservation on a correlated non-open response", () => {
@@ -216,8 +252,10 @@ describe("PythonSessionOwnership", () => {
     ownership.releaseRuntime(first);
 
     expect(ownership.confirmedOwner("first-confirmed")).toBeUndefined();
+    expect(ownership.confirmedSession("first-confirmed")).toBeUndefined();
     expect(ownership.provisionalClaim("first-pending")).toBeUndefined();
     expect(ownership.confirmedOwner("second-confirmed")).toBe(second);
+    expect(ownership.confirmedSession("second-confirmed")?.source.path).toBe("/workspace/data.csv");
     expect(ownership.provisionalClaim("second-pending")?.runtime).toBe(second);
     expect(ownership.hasClaimsFor(first)).toBe(false);
     expect(ownership.hasClaimsFor(second)).toBe(true);

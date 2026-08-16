@@ -2048,10 +2048,13 @@ def _write_relation_export(
     relation: Any = None
     try:
         relation = connection.sql(sql)
+        # The host has already reserved this exact inode. DuckDB's default
+        # temporary-file publication would replace it before the host can
+        # revalidate and commit the shared export transaction.
         if format_name == "csv":
-            relation.write_csv(path)
+            relation.write_csv(path, use_tmp_file=False)
         else:
-            relation.write_parquet(path)
+            relation.write_parquet(path, use_tmp_file=False)
     finally:
         relation = None
 

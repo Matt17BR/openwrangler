@@ -1,4 +1,7 @@
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1742,6 +1745,61 @@ describe("kernel retry classification", () => {
 
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession", "closeSession"]);
     expect(getExtension).toHaveBeenCalledOnce();
+  });
+});
+
+describe("kernel data export publication", () => {
+  it("sends only the reserved target to the kernel and reports the final destination", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-kernel-export-"));
+    try {
+      const destinationPath = join(directory, "cleaned.parquet");
+      await writeFile(destinationPath, "prior destination");
+      let runtimeExport: Extract<OpenWranglerRequest, { kind: "exportData" }> | undefined;
+      const kernel = fakeKernel(async (request) => {
+        if (request.kind === "openSession") return openedResponse(request.requestedSessionId!, "pandas");
+        if (request.kind === "exportData") {
+          runtimeExport = request;
+          await writeFile(request.path, "PAR1cleanedPAR1");
+          return {
+            kind: "dataExported",
+            revision: request.revision,
+            path: request.path,
+            format: request.format,
+            shape: { rows: 1, columns: 1 }
+          };
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        return initializedResponse;
+      });
+      mockKernel(kernel);
+      const bridge = createKernelBridge();
+      const opened = await bridge.request(openRequest("kernel-export-session", "pandas"));
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the kernel session to open.");
+
+      await expect(
+        bridge.request({
+          kind: "exportData",
+          sessionId: opened.metadata.sessionId,
+          revision: 0,
+          path: destinationPath,
+          format: "parquet"
+        })
+      ).resolves.toMatchObject({ kind: "dataExported", path: destinationPath });
+
+      expect(runtimeExport?.path).not.toBe(destinationPath);
+      expect(runtimeExport?.targetIdentity).toEqual({
+        device: expect.stringMatching(/^(?:0|[1-9][0-9]*)$/u),
+        inode: expect.stringMatching(/^(?:0|[1-9][0-9]*)$/u)
+      });
+      expect(await readFile(destinationPath, "utf8")).toBe("PAR1cleanedPAR1");
+      expect((await readdir(directory)).filter((entry) => entry.startsWith(".openwrangler-"))).toEqual([]);
+      await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toEqual({
+        kind: "sessionClosed",
+        sessionId: opened.metadata.sessionId
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

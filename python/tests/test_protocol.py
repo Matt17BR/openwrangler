@@ -870,11 +870,43 @@ def test_protocol_v2_validates_export_format() -> None:
             "revision": 2,
             "path": "/tmp/cleaned.csv",
             "format": "csv",
+            "targetIdentity": {"device": "7", "inode": "11"},
         },
     }
     assert decode_envelope(envelope)[2]["format"] == "csv"
     envelope["request"]["format"] = "xlsx"
     with pytest.raises(ProtocolError, match="csv or parquet"):
+        decode_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        None,
+        {},
+        {"device": "7"},
+        {"device": "7", "inode": "11", "extra": "1"},
+        {"device": "", "inode": "11"},
+        {"device": "01", "inode": "11"},
+        {"device": "0", "inode": "0"},
+        {"device": str(1 << 128), "inode": "11"},
+    ],
+)
+def test_protocol_v2_requires_the_host_owned_export_target_identity(identity) -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "export-target-1",
+        "priority": "interactive",
+        "request": {
+            "kind": "exportData",
+            "sessionId": "session-1",
+            "revision": 2,
+            "path": "/tmp/.openwrangler-target.tmp",
+            "format": "csv",
+            "targetIdentity": identity,
+        },
+    }
+    with pytest.raises(ProtocolError, match="targetIdentity|unsigned 128-bit|usable"):
         decode_envelope(envelope)
 
 

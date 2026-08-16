@@ -370,6 +370,30 @@ describe("protocol-v2 bounded by-example request validation", () => {
     },
     { kind: "exportData", sessionId: "session-1", revision: 3, path: "", format: "csv" },
     { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", format: "json" },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      format: "csv",
+      targetIdentity: { device: "0", inode: "0" }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      format: "csv",
+      targetIdentity: { device: "01", inode: "11" }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      format: "csv",
+      targetIdentity: { device: "340282366920938463463374607431768211456", inode: "11" }
+    },
     { kind: "closeSession", sessionId: 17, revision: 3 },
     { kind: "closeSession", sessionId: "session-1", revision: -1 },
     { kind: "closeSession", sessionId: "session-1", revision: 3, force: true }

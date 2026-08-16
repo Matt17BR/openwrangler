@@ -45,6 +45,7 @@ import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
 import { discoverExcelSheetNames } from "./files/excelSheetNames";
+import { exportPythonDataSafely, type SafePythonDataExportOptions } from "./files/safePythonDataExport";
 import {
   DependencyGuardCrossIdentityFlightError,
   DetachedDependencyProbeError,
@@ -66,6 +67,10 @@ interface MissingDependencies {
   readonly requirements: readonly string[];
   readonly selection: EnvironmentSelection;
   readonly selectionEpoch: number;
+}
+
+export interface PythonBridgeFileOperations {
+  readonly beginTransaction?: SafePythonDataExportOptions["beginTransaction"];
 }
 
 interface EnvironmentSelection {
@@ -247,7 +252,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly trustedPickleEnvironmentLeases = new Map<string, number>();
   private readonly excelSheetReads = new Set<AbortController>();
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly fileOperations: PythonBridgeFileOperations = {}
+  ) {
     this.runtimeTransport = new PythonRuntimeTransport({
       sessionOwnership: this.sessionOwnership,
       restartRuntime: (runtime, reason) => this.restartRuntime(runtime, reason),
@@ -356,6 +364,41 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
+    if (request.kind === "exportData") return this.exportData(request, options);
+    return this.requestRuntime(request, options);
+  }
+
+  private async exportData(
+    request: Extract<OpenWranglerRequest, { kind: "exportData" }>,
+    options: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    if (this.disposed) throw new Error("Open Wrangler runtime bridge has been disposed.");
+    if (options.cancellation?.isCancellationRequested) {
+      return { kind: "cancelled", targetRequestId: "not-started" };
+    }
+    const session = this.sessionOwnership.confirmedSession(request.sessionId);
+    if (!session) return this.unknownSessionError(request);
+    return exportPythonDataSafely({
+      request,
+      source: session.source,
+      beginTransaction: this.fileOperations.beginTransaction,
+      dispatch: async (runtimeRequest) => {
+        if (this.sessionOwnership.confirmedSession(request.sessionId) !== session) {
+          return this.unknownSessionError(request);
+        }
+        const response = await this.requestRuntime(runtimeRequest, options);
+        if (response.kind === "dataExported" && this.sessionOwnership.confirmedSession(request.sessionId) !== session) {
+          throw new Error("The Python session closed or changed before cleaned data could be published.");
+        }
+        return response;
+      }
+    });
+  }
+
+  private async requestRuntime(
+    request: OpenWranglerRequest,
+    options: BridgeRequestOptions = {}
+  ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
       throw new Error("Open Wrangler runtime bridge has been disposed.");
     }

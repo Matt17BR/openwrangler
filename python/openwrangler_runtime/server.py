@@ -251,6 +251,7 @@ def _dispatch(
             int(request["revision"]),
             request["path"],
             request["format"],
+            request["targetIdentity"],
         )
     if kind == "closeSession":
         return manager.close_session(request["sessionId"], int(request["revision"]))
