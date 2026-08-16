@@ -502,6 +502,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /The active filter matches 14,287 rows\. Column profiles, the grid, and the sidebar show the same filter and Clear\s+action without changing the source\./u
   );
   assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
+  assert.match(readme, /The unpublished 1\.99\.7 candidate contains all 28 native-R cleaning operations/u);
+  assert.doesNotMatch(readme, /Preview 1\.99\.7 packages all 28 native-R cleaning operations/u);
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
   assert.match(
     readme,
