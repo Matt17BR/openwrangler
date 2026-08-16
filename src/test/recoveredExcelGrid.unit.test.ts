@@ -344,6 +344,75 @@ describe("recovered XLSX grid", () => {
     expect(activateElementOnce).toHaveBeenCalledOnce();
   });
 
+  it("rejects receipt drift after activation returns normally", async () => {
+    let currentReceipt = receipt;
+    const findCurrentTarget = vi.fn(async () => "target");
+    const bindExactApp = vi.fn(async () => fakeApp());
+    const activateElementOnce = vi.fn(async (_element, _timeoutMs: number, beforeDispatch: () => void) => {
+      beforeDispatch();
+      currentReceipt = { ...receipt, syncId: "sync-b" };
+    });
+
+    await expect(
+      verifyRecoveredExcelGrid(
+        options({ currentReceipt: () => currentReceipt, findCurrentTarget, bindExactApp, activateElementOnce })
+      )
+    ).rejects.toThrow("The recovered XLSX renderer receipt must not change after its trusted cell activation.");
+
+    expect(findCurrentTarget).toHaveBeenCalledOnce();
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(activateElementOnce).toHaveBeenCalledOnce();
+  });
+
+  it("rejects target retirement after activation returns normally", async () => {
+    let retired = false;
+    const findCurrentTarget = vi.fn(async () => "target");
+    const bindExactApp = vi.fn(async () => fakeApp());
+    const activateElementOnce = vi.fn(async (_element, _timeoutMs: number, beforeDispatch: () => void) => {
+      beforeDispatch();
+      retired = true;
+    });
+
+    await expect(
+      verifyRecoveredExcelGrid(
+        options({ findCurrentTarget, bindExactApp, activateElementOnce, targetIsRetired: () => retired })
+      )
+    ).rejects.toThrow("The recovered XLSX renderer must remain live after its trusted cell activation.");
+
+    expect(findCurrentTarget).toHaveBeenCalledOnce();
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(activateElementOnce).toHaveBeenCalledOnce();
+  });
+
+  it("rejects receipt drift caused by the ArrowRight action", async () => {
+    let currentReceipt = receipt;
+    const findCurrentTarget = vi.fn(async () => "target");
+    const bindExactApp = vi.fn(async () => fakeApp());
+    const activateElementOnce = vi.fn(async (_element, _timeoutMs: number, beforeDispatch: () => void) => {
+      beforeDispatch();
+    });
+    const pressTargetKey = vi.fn(async () => {
+      currentReceipt = { ...receipt, syncId: "sync-b" };
+    });
+
+    await expect(
+      verifyRecoveredExcelGrid(
+        options({
+          currentReceipt: () => currentReceipt,
+          findCurrentTarget,
+          bindExactApp,
+          activateElementOnce,
+          pressTargetKey
+        })
+      )
+    ).rejects.toThrow("The recovered XLSX renderer receipt must not change after ArrowRight.");
+
+    expect(findCurrentTarget).toHaveBeenCalledOnce();
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(activateElementOnce).toHaveBeenCalledOnce();
+    expect(pressTargetKey).toHaveBeenCalledOnce();
+  });
+
   it("checks target lifecycle around grid, activation, keyboard, and neighbor sampling", async () => {
     const assertTargetLifecycle = vi.fn();
 
