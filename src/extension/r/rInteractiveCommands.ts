@@ -20,15 +20,22 @@ import {
   isSupportedLiterateUri,
   type LiterateDocumentOrigin
 } from "../literateDocumentOrigin";
+import {
+  idleRLiveVariableSnapshot,
+  rInteractiveQuickPickItem,
+  rLiveVariableItem,
+  watcherFallbackRLiveVariableSnapshot,
+  type RInteractiveQuickPickItem,
+  type RLiveVariableItem,
+  type RLiveVariableSnapshot
+} from "./rInteractiveVariableModel";
+
+export type { RLiveVariableItem, RLiveVariableSnapshot } from "./rInteractiveVariableModel";
 
 export const OPEN_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openRInteractiveVariable";
 export const OPEN_R_DATAFRAME_COMMAND = "openWrangler.openRDataframe";
 export const REFRESH_R_INTERACTIVE_VARIABLES_COMMAND = "openWrangler.refreshRInteractiveVariables";
 export const OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openCachedRInteractiveVariable";
-
-interface RInteractiveQuickPickItem extends vscode.QuickPickItem {
-  readonly variable: RProcessVariableDescriptor;
-}
 
 interface CachedRInteractiveQuickPickItem extends RInteractiveQuickPickItem {
   readonly handle: string;
@@ -46,27 +53,6 @@ type CachedRInteractivePickerState = CachedRInteractivePickerStateBase &
     | { readonly transport: RInteractiveCommandTransport; readonly watcher?: undefined }
     | { readonly watcher: RVscodeWorkspaceWatcher; readonly transport?: undefined }
   );
-
-export interface RLiveVariableItem {
-  readonly handle: string;
-  readonly label: string;
-  readonly description: string;
-  readonly detail: string;
-}
-
-export type RLiveVariableSnapshot =
-  | {
-      readonly state: "idle" | "loading" | "empty" | "error";
-      readonly terminalLabel: string;
-      readonly message: string;
-      readonly variables: readonly [];
-    }
-  | {
-      readonly state: "ready";
-      readonly terminalLabel: string;
-      readonly message: string;
-      readonly variables: readonly RLiveVariableItem[];
-    };
 
 export interface RLiveVariableProvider extends vscode.Disposable {
   readonly onDidChangeVariables: vscode.Event<void>;
@@ -735,12 +721,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     const items = discovery.variables.map((variable) => {
       const handle = randomUUID();
-      const item = Object.freeze({
-        handle,
-        label: variable.name,
-        description: `R · ${rDataframeFlavorLabel(variable.dataframeFlavor)}`,
-        detail: terminal.name
-      });
+      const item = rLiveVariableItem(variable, handle, terminal.name);
       this.variablesByHandle.set(handle, Object.freeze({ variable, item }));
       return item;
     });
@@ -1087,44 +1068,12 @@ async function settleShutdown(
   if (errors.length > 1) throw new AggregateError(errors, "Open Wrangler could not stop its R session provider.");
 }
 
-function rInteractiveQuickPickItem(variable: RProcessVariableDescriptor): RInteractiveQuickPickItem {
-  return {
-    label: variable.name,
-    description: `R · ${rDataframeFlavorLabel(variable.dataframeFlavor)}`,
-    detail: "Active R session",
-    variable
-  };
-}
-
-function rDataframeFlavorLabel(flavor: RProcessVariableDescriptor["dataframeFlavor"]): string {
-  switch (flavor) {
-    case "r.data.frame":
-      return "data.frame";
-    case "r.tibble":
-      return "tibble";
-    case "r.data.table":
-      return "data.table";
-  }
-}
-
 function idleSnapshot(terminal: vscode.Terminal | undefined): RLiveVariableSnapshot {
-  return {
-    state: "idle",
-    terminalLabel: isOfficialRTerminal(terminal) ? terminal.name : "R session",
-    message: isOfficialRTerminal(terminal)
-      ? "Dataframes appear here after the R prompt returns."
-      : "Select the R terminal that owns the dataframe first.",
-    variables: []
-  };
+  return idleRLiveVariableSnapshot(terminal, isOfficialRTerminal(terminal));
 }
 
 function watcherFallbackSnapshot(terminal: vscode.Terminal): RLiveVariableSnapshot {
-  return {
-    state: "idle",
-    terminalLabel: terminal.name,
-    message: "Choose Refresh R dataframes.",
-    variables: []
-  };
+  return watcherFallbackRLiveVariableSnapshot(terminal);
 }
 
 function isOfficialRTerminal(terminal: vscode.Terminal | undefined): terminal is vscode.Terminal {
