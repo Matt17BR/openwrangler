@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRContractPhases, runRContractPhase } from "./run-r-contract-tests.mjs";
+import {
+  createRContractPhases,
+  parseRContractSelection,
+  R_CONTRACT_SHARDS,
+  runRContractPhase,
+  selectRContractPhases
+} from "./run-r-contract-tests.mjs";
 
 function phases() {
   return createRContractPhases({
@@ -15,15 +21,15 @@ function phases() {
 test("native R contracts use named per-subsystem deadlines without dropping or duplicating tests", () => {
   const configured = phases();
   assert.deepEqual(
-    configured.map(({ label, timeoutMs }) => [label, timeoutMs]),
+    configured.map(({ id, label, timeoutMs }) => [id, label, timeoutMs]),
     [
-      ["native frame contract", 120_000],
-      ["native kernel-agent contract", 360_000],
-      ["complete native catalog contract", 120_000],
-      ["TypeScript R frame and unit contracts", 60_000],
-      ["real-R kernel transport contract", 90_000],
-      ["real-R process transport contract", 90_000],
-      ["real-R interactive transport contract", 60_000]
+      ["frame", "native frame contract", 120_000],
+      ["kernel-agent", "native kernel-agent contract", 480_000],
+      ["catalog", "complete native catalog contract", 120_000],
+      ["typescript-frame", "TypeScript R frame and unit contracts", 60_000],
+      ["kernel-transport", "real-R kernel transport contract", 120_000],
+      ["process-transport", "real-R process transport contract", 90_000],
+      ["interactive-transport", "real-R interactive transport contract", 60_000]
     ]
   );
 
@@ -53,6 +59,65 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
     assert.deepEqual(phase.args.slice(-1), ["--maxWorkers=1"]);
     assert.equal(phase.environment.OPEN_WRANGLER_R_CONTRACT_TESTS, "1");
   }
+});
+
+test("named R contract shards are an exhaustive disjoint phase partition with the kernel agent isolated", () => {
+  const configured = phases();
+  assert.deepEqual(R_CONTRACT_SHARDS, [
+    { id: "kernel-agent", phaseIds: ["kernel-agent"] },
+    {
+      id: "frame-and-interactive-transport",
+      phaseIds: ["frame", "kernel-transport", "interactive-transport"]
+    },
+    {
+      id: "catalog-and-process-transport",
+      phaseIds: ["catalog", "typescript-frame", "process-transport"]
+    }
+  ]);
+
+  const selectedIds = R_CONTRACT_SHARDS.flatMap((shard) =>
+    selectRContractPhases(configured, { kind: "shard", id: shard.id }).map(({ id }) => id)
+  );
+  assert.equal(new Set(selectedIds).size, selectedIds.length);
+  assert.deepEqual(selectedIds.toSorted(), configured.map(({ id }) => id).toSorted());
+  assert.deepEqual(
+    selectRContractPhases(configured, { kind: "shard", id: "kernel-agent" }).map(({ id }) => id),
+    ["kernel-agent"]
+  );
+});
+
+test("R contract phase and shard selectors are exact, mutually exclusive, and fail closed", () => {
+  const configured = phases();
+  assert.deepEqual(parseRContractSelection([]), { kind: "all" });
+  assert.deepEqual(parseRContractSelection(["--phase", "catalog"]), { kind: "phase", id: "catalog" });
+  assert.deepEqual(parseRContractSelection(["--shard", "kernel-agent"]), { kind: "shard", id: "kernel-agent" });
+  assert.deepEqual(
+    selectRContractPhases(configured, parseRContractSelection([])).map(({ id }) => id),
+    configured.map(({ id }) => id)
+  );
+  assert.deepEqual(
+    selectRContractPhases(configured, parseRContractSelection(["--phase", "catalog"])).map(({ id }) => id),
+    ["catalog"]
+  );
+
+  for (const arguments_ of [
+    ["--phase"],
+    ["--phase", "catalog", "--phase", "frame"],
+    ["--phase=catalog"],
+    ["--shard", ""]
+  ]) {
+    assert.throws(() => parseRContractSelection(arguments_), /Usage|non-empty/u);
+  }
+  assert.throws(
+    () => selectRContractPhases(configured, { kind: "phase", id: "Catalog" }),
+    /Unknown R contract phase Catalog/u
+  );
+  assert.throws(() => selectRContractPhases(configured, { kind: "shard", id: "all" }), /Unknown R contract shard all/u);
+  assert.throws(
+    () => selectRContractPhases([...configured, configured[0]], { kind: "all" }),
+    /Duplicate R contract phase ID: frame/u
+  );
+  assert.throws(() => selectRContractPhases(configured, undefined), /selection must be all, phase, or shard/u);
 });
 
 test("native R phase receipts identify success, timeout, and ordinary failure exactly", () => {
