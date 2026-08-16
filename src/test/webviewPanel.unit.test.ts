@@ -274,12 +274,16 @@ describe("OpenWranglerPanel retained view state", () => {
     const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
     await harness.open();
     const script = harness.html.match(/<script type="module" nonce="([A-Za-z0-9]+)" src="([^"]+)"><\/script>/u);
+    const style = harness.html.match(/<link rel="stylesheet" href="([^"]+)">/u);
+    const csp = harness.html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/u)?.[1];
     expect(script).not.toBeNull();
     const nonce = script?.[1];
-    expect(harness.html).toContain(`script-src mock-webview 'nonce-${nonce}';`);
-    expect(harness.html).toContain("font-src mock-webview;");
-    expect(harness.html).not.toContain("script-src 'unsafe-inline'");
+    expect(csp).toBe(
+      `default-src 'none'; img-src mock-webview; style-src mock-webview 'unsafe-inline'; font-src mock-webview; script-src mock-webview 'nonce-${nonce}';`
+    );
+    expect(csp).not.toContain("https:");
     expect(script?.[2].replaceAll("\\", "/")).toBe("file:///extension/media/webview.js");
+    expect(style?.[1].replaceAll("\\", "/")).toBe("file:///extension/media/webview.css");
     expect(harness.html).toContain('data-fetch-column-block-size="16"');
   });
 
