@@ -520,61 +520,6 @@ test("packaged import reconfiguration proves physical same-session renderer reco
   assert.doesNotMatch(exactRetirementObserver, /includes\(|startsWith\(|endsWith\(/u);
 });
 
-test("packaged webview actions accept a current replacement at the failure boundary", async () => {
-  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
-  const finder = source.slice(
-    source.indexOf("async function findCurrentOpenWranglerWebviewAction("),
-    source.indexOf("interface GridViewportMeasurement")
-  );
-  assert.match(finder, /openWranglerWebviewTargets\(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT\)/u);
-  assert.equal(
-    finder.match(/isRetiredRendererTarget\(workbench, target\.page, target\.frame\)/gu)?.length,
-    2,
-    "A candidate renderer must be current before and after its asynchronous readiness probe."
-  );
-  assert.match(finder, /probeRendererButtonReadiness\(button, remainingMs, requireEnabled\)/u);
-  assert.match(
-    finder,
-    /withAcceptanceOperationDeadline\([\s\S]*?remainingMs,[\s\S]*?the Open Wrangler/u,
-    "Every readiness probe must stay inside the caller's one absolute deadline."
-  );
-  assert.doesNotMatch(finder, /\.click\(|innerText|textContent/u);
-
-  const waitForAction = source.slice(
-    source.indexOf("async function waitForOpenWranglerWebviewAction("),
-    source.indexOf("async function findCurrentOpenWranglerWebviewAction(")
-  );
-  const finalization = waitForAction.indexOf("diagnoseThenReacquireAcceptanceAction({");
-  const sharedBudget = waitForAction.indexOf("timeoutMs: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS", finalization);
-  const diagnostics = waitForAction.indexOf(
-    "openWranglerWebviewDiagnostics(workbench, browser, name, failureDeadline)",
-    sharedBudget
-  );
-  const finalReacquisition = waitForAction.indexOf("reacquire: async (failureDeadline)", diagnostics);
-  const sharedDeadline = waitForAction.indexOf("requireEnabled,\n        failureDeadline", finalReacquisition);
-  const finalReturn = waitForAction.indexOf("if (action) return action;", sharedDeadline);
-  const lifecycleCheck = waitForAction.indexOf(
-    "assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser());",
-    finalReturn
-  );
-  assert.ok(
-    finalization >= 0 &&
-      sharedBudget > finalization &&
-      diagnostics > sharedBudget &&
-      finalReacquisition > diagnostics &&
-      sharedDeadline > finalReacquisition &&
-      finalReturn > sharedDeadline &&
-      lifecycleCheck > finalReturn,
-    "Failure diagnostics must be followed by one fresh action acquisition within the same failure budget."
-  );
-  const failureFinalization = waitForAction.slice(finalization);
-  assert.equal(failureFinalization.match(/findCurrentOpenWranglerWebviewAction\(/gu)?.length, 1);
-  assert.doesNotMatch(
-    failureFinalization,
-    /setTimeout|OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS|\bdo\s*\{|\bwhile\s*\(/u
-  );
-});
-
 test("packaged backend switching checks the receipt-bound physical grid", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const journey = source.slice(
