@@ -1,6 +1,4 @@
 import * as assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { type ElementHandle, type Frame, type Locator, type Page } from "playwright-core";
@@ -13,6 +11,12 @@ import {
   recordProgress,
   waitForGenericGridReadiness
 } from "./dataWranglerComparison";
+import {
+  readComparisonRequestFile,
+  writeComparisonResultFile,
+  type ComparisonRequestReadHooks,
+  type ComparisonResultPublicationHooks
+} from "./comparisonTrialFileBoundary";
 import {
   findExactActiveNotebookPreviewButton,
   findExactActiveNotebookRendererButton,
@@ -53,8 +57,6 @@ const SHA256 = /^[0-9a-f]{64}$/u;
 const ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
-const MAX_REQUEST_BYTES = 64 * 1024;
-const MAX_RESULT_BYTES = 64 * 1024;
 const POLL_MS = 25;
 const COMPARISON_KERNEL_LABEL = "Python 3.12 (Comparison)";
 const COMPARISON_BOOTSTRAP_VARIABLE = "aaa_comparison_bootstrap";
@@ -181,6 +183,8 @@ interface MutableEvidence {
   workbench: ComparisonTrialSample["publicUi"]["workbench"];
   profiling: (ActionEvidence & { readonly expectedColumns: number; readonly completedColumns: number }) | null;
 }
+
+export type { ComparisonRequestReadHooks, ComparisonResultPublicationHooks } from "./comparisonTrialFileBoundary";
 
 interface CapturedNotebook {
   readonly notebook: vscode.NotebookDocument;
@@ -567,20 +571,11 @@ class Milestones {
   }
 }
 
-function readRequest(path: string): ComparisonTrialRequest {
-  const metadata = lstatSync(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size < 2n ||
-    metadata.size > BigInt(MAX_REQUEST_BYTES)
-  ) {
-    fail("Comparison request must be one bounded regular file.");
-  }
-  const bytes = readFileSync(path);
-  if (bytes.byteLength !== Number(metadata.size)) fail("Comparison request changed while it was read.");
-  return validateComparisonTrialRequest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+export function readComparisonTrialRequest(
+  path: string,
+  hooks: ComparisonRequestReadHooks = {}
+): ComparisonTrialRequest {
+  return readComparisonRequestFile(path, validateComparisonTrialRequest, hooks);
 }
 
 function requiredEnvironment(name: string): string {
@@ -589,18 +584,13 @@ function requiredEnvironment(name: string): string {
   return absolutePath(value, `Comparison environment ${name}`);
 }
 
-function writeResult(path: string, root: string, result: ComparisonTrialResult): void {
-  containedPath(root, path, "Comparison result path");
-  const serialized = `${JSON.stringify(validateComparisonTrialResult(result), null, 2)}\n`;
-  if (Buffer.byteLength(serialized, "utf8") > MAX_RESULT_BYTES) fail("Comparison result exceeded 64 KiB.");
-  if (existsSync(path)) fail("Comparison result path already exists.");
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    renameSync(temporary, path);
-  } finally {
-    rmSync(temporary, { force: true });
-  }
+export function writeComparisonTrialResult(
+  path: string,
+  root: string,
+  result: ComparisonTrialResult,
+  hooks: ComparisonResultPublicationHooks = {}
+): void {
+  writeComparisonResultFile(path, root, result, validateComparisonTrialResult, hooks);
 }
 
 function notebookCellTags(cell: vscode.NotebookCell): readonly string[] {
@@ -2352,7 +2342,7 @@ async function executeMeasuredIteration(
 export async function run(): Promise<void> {
   const requestPath = requiredEnvironment("OPEN_WRANGLER_COMPARISON_REQUEST_PATH");
   const resultPath = requiredEnvironment("OPEN_WRANGLER_COMPARISON_RESULT_PATH");
-  const request = readRequest(requestPath);
+  const request = readComparisonTrialRequest(requestPath);
   containedPath(request.isolatedRoot, requestPath, "Comparison request path");
   containedPath(request.isolatedRoot, resultPath, "Comparison result path");
   assert.equal(vscode.env.language, "en", "The comparison journey requires VS Code launched with --locale=en.");
@@ -2417,6 +2407,6 @@ export async function run(): Promise<void> {
     order: request.order,
     samples: Object.freeze(samples)
   });
-  writeResult(resultPath, request.isolatedRoot, result);
+  writeComparisonTrialResult(resultPath, request.isolatedRoot, result);
   recordProgress(`comparison:${request.trialId}:result`);
 }
