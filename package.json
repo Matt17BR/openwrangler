@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python (Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)",
+  "description": "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.",
   "version": "1.99.7",
   "publisher": "Matt17BR",
   "license": "MIT",

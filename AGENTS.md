@@ -13,6 +13,7 @@ This repository builds the open-source Open Wrangler extension, its bundled Pyth
 - `docs/decisions/0001-native-r-runtime.md` records the runtime and release boundary for R work in v2.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
 - `docs/performance-comparison.md` defines the Data Wrangler comparison and links its dated evidence.
+- `docs/product-roadmap.md` records product priorities, deferrals, acceptance gates, and audit dispositions.
 - `docs/reference.md` is generated from public interface registries; never edit it by hand.
 - `docs/testing.md` defines required checks and manual editor scenarios.
 - `docs/releasing.md` defines packaging and release rules.

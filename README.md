@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. Work natively with Pandas, Polars, DuckDB, PySpark, and R.</p>
+<p align="center">Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.</p>
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png" width="960"></a>
 
@@ -150,8 +150,8 @@ columns in its row, or the selected range as tab-separated displayed values; Ctr
 ## Transformations
 
 Choose from 28 operations, including filling missing values, engine-native custom Python or R code, and
-transformations inferred from examples. A draft stays separate until you apply it, and applied steps can be inspected,
-edited, or undone.
+transformations inferred from examples. A draft stays separate until you apply it. You can inspect any applied step.
+Edit and cleaning Undo target only the most recent step.
 
 Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
 sort key, or fallback column appear only when the dataframe has a compatible column.
@@ -371,16 +371,16 @@ Polars, while Data Wrangler converts it to Pandas. The benchmark starts after lo
 conversion itself.
 
 See the [dated benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-for the test setup, full results, and raw data.
+for the test setup and reviewed results.
 
 ## Roadmap
 
-- **1.x:** keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks.
-- **1.99 previews:** complete the R operation set, notebook and document workflows, and Parquet export. Progress is
-  tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
-- **2.0:** ship stable R support after release testing and an updated performance comparison. The
-  [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
-  explains the runtime boundary.
+The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) records verified
+support boundaries, acceptance criteria, and the P1-P5 order. The project is in a maintainability-first scope freeze:
+bounded fidelity and daily-use work continues, while new backend, platform, and editor breadth waits for the documented
+approachability gates. Native R preview status remains in
+[#87](https://github.com/Matt17BR/openwrangler/issues/87). Stable 2.0 also requires correcting silent Pandas index loss
+on export.
 
 ## Contributing and support
 
