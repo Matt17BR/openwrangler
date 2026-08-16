@@ -6,7 +6,8 @@ if (length(arguments) != 1L || is.na(arguments[[1L]]) || nchar(arguments[[1L]], 
 case_files <- c(
   full = "r/tests/kernel_agent.R",
   `custom-code` = "r/tests/kernel_agent_custom_code.R",
-  text = "r/tests/kernel_agent_text.R"
+  text = "r/tests/kernel_agent_text.R",
+  rows = "r/tests/kernel_agent_rows.R"
 )
 case_name <- arguments[[1L]]
 case_file <- unname(case_files[case_name])
