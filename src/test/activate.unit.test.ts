@@ -38,6 +38,9 @@ const lifecycle = vi.hoisted(() => ({
     dispose: vi.fn(),
     diagnosticsForTesting: vi.fn()
   },
+  notebookPreviews: {
+    dispose: vi.fn()
+  },
   panels: {
     disposePanelForSession: vi.fn(),
     retireRendererForSessionForTesting: vi.fn()
@@ -76,7 +79,7 @@ vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
 vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
   NotebookPreviewCoordinator: vi.fn(function MockNotebookPreviewCoordinator() {
-    return { dispose: vi.fn() };
+    return lifecycle.notebookPreviews;
   })
 }));
 vi.mock("../extension/runtimeCommands", () => ({ registerRuntimeCommands: vi.fn() }));
@@ -92,6 +95,7 @@ vi.mock("../extension/webviewPanel", () => ({
 import { activate, deactivate, isCursorAppName } from "../extension/activate";
 import { registerNativeViews } from "../extension/nativeViews";
 import { NotebookCellResultTracker, registerNotebookCellResultAction } from "../extension/notebooks/notebookCellResult";
+import { NotebookPreviewCoordinator } from "../extension/notebooks/notebookPreviewCoordinator";
 import { registerRInteractiveCommands } from "../extension/r/rInteractiveCommands";
 
 describe("extension deactivation", () => {
@@ -111,6 +115,7 @@ describe("extension deactivation", () => {
     lifecycle.notebookCellResults.start.mockReset();
     lifecycle.notebookCellResults.dispose.mockReset();
     lifecycle.notebookCellResults.diagnosticsForTesting.mockReset();
+    lifecycle.notebookPreviews.dispose.mockReset();
     lifecycle.pythonVariables.diagnosticsForTesting.mockReset();
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.panels.retireRendererForSessionForTesting.mockReset();
@@ -366,6 +371,7 @@ describe("extension deactivation", () => {
     lifecycle.coordinator.createBridge.mockClear();
     lifecycle.notebookCellResults.start.mockClear();
     vi.mocked(NotebookCellResultTracker).mockClear();
+    vi.mocked(NotebookPreviewCoordinator).mockClear();
     vi.mocked(registerNotebookCellResultAction).mockClear();
     const contextGate = deferred<void>();
     vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
@@ -378,6 +384,7 @@ describe("extension deactivation", () => {
     } as unknown as vscode.ExtensionContext);
     await Promise.resolve();
     expect(NotebookCellResultTracker).toHaveBeenCalledOnce();
+    expect(NotebookPreviewCoordinator).toHaveBeenCalledOnce();
     expect(lifecycle.notebookCellResults.start).toHaveBeenCalledOnce();
     expect(registerNotebookCellResultAction).not.toHaveBeenCalled();
     expect(lifecycle.coordinator.createBridge).not.toHaveBeenCalled();
@@ -402,6 +409,7 @@ describe("extension deactivation", () => {
       activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext)
     ).rejects.toBe(failure);
     expect(lifecycle.coordinator.createBridge).not.toHaveBeenCalled();
+    expect(lifecycle.notebookPreviews.dispose).toHaveBeenCalledOnce();
     expect(lifecycle.notebookCellResults.dispose).toHaveBeenCalledOnce();
   });
 });

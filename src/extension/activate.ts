@@ -84,13 +84,26 @@ export function isCursorAppName(appName: string): boolean {
 
 export async function activate(context: vscode.ExtensionContext): Promise<OpenWranglerExtensionApi | undefined> {
   const notebookCellResults = new NotebookCellResultTracker();
-  notebookCellResults.start();
+  let notebookPreviews: NotebookPreviewCoordinator;
   try {
-    await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
+    // Register formatter preparation before activation's first yield. A first
+    // notebook execution can otherwise enter Jupyter's kernel queue while the
+    // editor-title context is still settling, forcing that result to use the
+    // built-in renderer even though later results use Open Wrangler.
+    notebookPreviews = new NotebookPreviewCoordinator(context);
+    notebookCellResults.start();
   } catch (error) {
     notebookCellResults.dispose();
     throw error;
   }
+  try {
+    await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
+  } catch (error) {
+    notebookPreviews.dispose();
+    notebookCellResults.dispose();
+    throw error;
+  }
+  context.subscriptions.push(notebookPreviews);
 
   const bridge = new PythonBridge(context);
   const coordinator = new SessionCoordinator(context.workspaceState, (message) => bridge.reportDiagnostic(message));
@@ -112,7 +125,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   registerNotebookCommands(context, coordinator);
   registerNotebookCellResultAction(context, coordinator, notebookCellResults);
   registerNotebookRendererMessaging(context, coordinator);
-  context.subscriptions.push(new NotebookPreviewCoordinator(context));
   rInteractive.startAutomaticDiscovery();
 
   if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") {

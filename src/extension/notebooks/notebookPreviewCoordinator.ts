@@ -31,7 +31,19 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   private disposed = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {
+    const executionPreparationProvider: vscode.NotebookCellStatusBarItemProvider = {
+      provideCellStatusBarItems: (cell) => {
+        // VS Code invokes status providers when a cell enters Pending, before
+        // the later notebook-document execution update. Wake preparation here
+        // so a newly started kernel can install the formatter before the first
+        // user result is produced. This provider intentionally renders no item.
+        this.schedule(cell.notebook, 0, true);
+        return undefined;
+      }
+    };
     this.subscriptions.push(
+      vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", executionPreparationProvider),
+      vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", executionPreparationProvider),
       vscode.workspace.onDidOpenNotebookDocument((notebook) => this.schedule(notebook)),
       vscode.workspace.onDidCloseNotebookDocument((notebook) => this.remove(notebook)),
       vscode.window.onDidChangeVisibleNotebookEditors((editors) => this.syncVisibleNotebooks(editors, true)),
@@ -70,6 +82,10 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       clearTimeout(entry.timer);
       entry.timer = undefined;
     }
+    if (delayMs === 0) {
+      this.startPreparation(notebook, entry);
+      return;
+    }
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
       this.startPreparation(notebook, entry);
@@ -96,6 +112,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
 
   private async prepare(notebook: vscode.NotebookDocument, entry: NotebookPreviewEntry): Promise<void> {
     if (!(await this.resolveOpenWranglerProvider())) return;
+    if (this.disposed || this.entries.get(notebook) !== entry) return;
     if (!this.canPrepare(notebook)) {
       this.remove(notebook);
       return;
