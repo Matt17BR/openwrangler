@@ -445,6 +445,51 @@ def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_di
     }
 
 
+def test_pandas_mixed_display_text_summary_streams_metrics_without_shared_length_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_python_reduction(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Mixed-display text profiles must reduce lengths while values stream.")
+
+    monkeypatch.setattr(pd.Series, "tolist", reject_python_reduction)
+    monkeypatch.setattr(pd.Series, "to_list", reject_python_reduction)
+    monkeypatch.setattr(pandas_engine_module, "sum", reject_python_reduction, raising=False)
+    monkeypatch.setattr(pandas_engine_module, "min", reject_python_reduction, raising=False)
+    monkeypatch.setattr(pandas_engine_module, "max", reject_python_reduction, raising=False)
+    values = pd.Categorical([None, 1, 200, 1, 200, None] * 683, categories=[1, 200])
+
+    summary = PandasEngine().summaries(pd.DataFrame({"value": values}), [(0, "c:value")])[0]
+
+    assert summary["type"] == "string"
+    assert (summary["totalCount"], summary["nullCount"], summary["nanCount"]) == (4_098, 0, 1_366)
+    assert summary["distinctCount"] == 2
+    assert {item["value"]: item["count"] for item in summary["topValues"]} == {"1": 1_366, "200": 1_366}
+    assert summary["text"] == {
+        "emptyCount": 0,
+        "minLength": 1,
+        "maxLength": 3,
+        "meanLength": 2.0,
+    }
+
+    object_summary = PandasEngine().summaries(
+        pd.DataFrame({"value": pd.Series([b"\x00", "x", None, float("nan")] * 1_024, dtype="object")}),
+        [(0, "c:object")],
+    )[0]
+
+    assert object_summary["type"] == "string"
+    assert (object_summary["nullCount"], object_summary["nanCount"], object_summary["distinctCount"]) == (
+        1_024,
+        1_024,
+        2,
+    )
+    assert object_summary["text"] == {
+        "emptyCount": 0,
+        "minLength": 1,
+        "maxLength": 4,
+        "meanLength": 2.5,
+    }
+
+
 def test_pandas_summary_omits_non_finite_statistics_but_keeps_finite_histogram_values():
     summary = PandasEngine().summaries(pd.DataFrame({"value": [1.0, float("inf")]}))[0]
 
