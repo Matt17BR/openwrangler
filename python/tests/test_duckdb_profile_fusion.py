@@ -341,3 +341,56 @@ def test_duckdb_fused_profiles_preserve_numeric_and_temporal_payload_bytes(
         assert canonical_json_bytes(actual_temporal) == canonical_json_bytes(expected_temporal)
     finally:
         engine.close()
+
+
+def test_duckdb_native_histogram_preserves_left_closed_internal_edges() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        "SELECT * FROM (VALUES (0.0::DOUBLE), (1.0::DOUBLE), (1.0::DOUBLE), (3.0::DOUBLE)) AS source(value)"
+    )
+    try:
+        summary = engine.summaries(frame)[0]
+
+        assert [(bin_["min"], bin_["max"], bin_["count"]) for bin_ in summary["visualization"]["bins"]] == [
+            (0.0, 1.0, 1),
+            (1.0, 2.0, 2),
+            (2.0, 3.0, 1),
+        ]
+    finally:
+        engine.close()
+
+
+def test_duckdb_histogram_falls_back_when_float_edges_collapse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = DuckDBEngine()
+    frame = engine.normalize(
+        duckdb.sql(
+            """
+            SELECT * FROM (VALUES
+                (1e100::DOUBLE),
+                (nextafter(1e100::DOUBLE, 'Infinity'::DOUBLE)),
+                (nextafter(nextafter(1e100::DOUBLE, 'Infinity'::DOUBLE), 'Infinity'::DOUBLE)),
+                (nextafter(nextafter(nextafter(1e100::DOUBLE, 'Infinity'::DOUBLE),
+                    'Infinity'::DOUBLE), 'Infinity'::DOUBLE))
+            ) AS source(value)
+            """
+        )
+    )
+    queries: list[str] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+
+    def capture_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
+        queries.append(query)
+        return native_execute_rows(connection, source_sql, query)
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_rows)
+
+    try:
+        summary = engine.summaries(frame)[0]
+
+        assert [bin_["count"] for bin_ in summary["visualization"]["bins"]] == [1, 0, 1, 2]
+        assert "histogram(" not in queries[-1]
+        assert queries[-1].count("count(*) FILTER") == 4
+    finally:
+        engine.close()
