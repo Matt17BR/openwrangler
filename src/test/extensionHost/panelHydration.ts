@@ -1,3 +1,5 @@
+import * as assert from "node:assert/strict";
+
 export interface ExactSessionPanelSynchronizationApi {
   synchronizePanel(sessionId: string): Promise<boolean>;
   ensurePanelSynchronized(sessionId: string, deadlineMs: number): Promise<boolean>;
@@ -6,6 +8,60 @@ export interface ExactSessionPanelSynchronizationApi {
   panelSynchronizationReceipt(
     sessionId: string
   ): Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined;
+}
+
+export interface ActiveExactSessionPanelSynchronizationApi extends ExactSessionPanelSynchronizationApi {
+  activeSession(): Readonly<{ sessionId: string; metadata: Readonly<{ revision: number }> }> | undefined;
+}
+
+export interface RequireFreshExactSessionPanelHydrationOptions {
+  readonly timeoutMs: number;
+  readonly pollIntervalMs?: number;
+  readonly diagnosticState?: () => Readonly<Record<string, unknown>>;
+}
+
+export async function requireFreshExactSessionPanelHydration(
+  testing: ActiveExactSessionPanelSynchronizationApi,
+  sessionId: string,
+  expectation: string,
+  {
+    timeoutMs,
+    pollIntervalMs = 25,
+    diagnosticState = () => ({
+      expectedSessionId: sessionId,
+      activeSessionId: testing.activeSession()?.sessionId,
+      activeRevision: testing.activeSession()?.metadata.revision,
+      panelHydrated: testing.panelHydrated(sessionId),
+      panelSynchronizable: testing.panelSynchronizable(sessionId),
+      panelSynchronizationReceipt: testing.panelSynchronizationReceipt(sessionId)
+    })
+  }: RequireFreshExactSessionPanelHydrationOptions
+): Promise<void> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, `${expectation} The exact session must remain active.`);
+  assert.ok(active, `${expectation} The exact session must expose its current revision.`);
+  const expectedRevision = active.metadata.revision;
+  const synchronized = await waitForFreshExactSessionPanelHydration(testing, sessionId, {
+    expectedRevision,
+    timeoutMs,
+    pollIntervalMs
+  });
+  assert.equal(
+    synchronized,
+    true,
+    `${expectation} State: ${JSON.stringify({ expectedRevision, ...diagnosticState() })}`
+  );
+  const acknowledged = testing.activeSession();
+  assert.equal(
+    acknowledged?.sessionId,
+    sessionId,
+    `${expectation} The acknowledged renderer must still belong to the exact active session.`
+  );
+  assert.equal(
+    acknowledged?.metadata.revision,
+    expectedRevision,
+    `${expectation} The active session must not advance while its renderer is being acknowledged.`
+  );
 }
 
 export interface FreshExactSessionPanelHydrationOptions {
