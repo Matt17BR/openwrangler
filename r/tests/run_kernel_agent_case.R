@@ -3,7 +3,10 @@ if (length(arguments) != 1L || is.na(arguments[[1L]]) || nchar(arguments[[1L]], 
   stop("Pass exactly one bounded native R kernel-agent case name", call. = FALSE)
 }
 
-case_files <- c(full = "r/tests/kernel_agent.R")
+case_files <- c(
+  full = "r/tests/kernel_agent.R",
+  `custom-code` = "r/tests/kernel_agent_custom_code.R"
+)
 case_name <- arguments[[1L]]
 case_file <- unname(case_files[case_name])
 if (length(case_file) != 1L || is.na(case_file)) {
@@ -18,4 +21,11 @@ if (
   stop(sprintf("Native R kernel-agent case file is invalid: %s", case_name), call. = FALSE)
 }
 
-source(case_file, local = FALSE)
+if (identical(case_name, "full")) {
+  source(case_file, local = FALSE)
+} else {
+  source("r/tests/kernel_agent_support.R", local = FALSE)
+  source(case_file, local = FALSE)
+  agent$dispose()
+  cat(sprintf("Native R kernel agent %s case passed.\n", case_name))
+}
