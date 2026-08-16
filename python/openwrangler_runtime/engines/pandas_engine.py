@@ -9,6 +9,7 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -657,14 +658,19 @@ class PandasEngine(DataFrameEngine):
             # isolated visible frame so in-place list/dict mutations cannot alter
             # the immutable source, committed plan, or rollback snapshot.
             namespace = {"df": _isolated_object_frame(self._visible_frame(self.normalize(frame))), "pd": pd}
-            try:
-                exec(params["code"], namespace, namespace)
-            except Exception as error:
-                raise EngineError(f"Custom Pandas code failed: {error}") from error
-            result = namespace.get("result")
-            if not self.detect(result):
-                raise EngineError("Custom Pandas code must assign a Pandas DataFrame or Series to result.")
-            return self.normalize(result)
+            with capture_custom_code_output() as output:
+                try:
+                    exec(params["code"], namespace, namespace)
+                except Exception as error:
+                    raise EngineError(custom_code_error_message("Pandas", error, output)) from error
+                result = namespace.get("result")
+                if not self.detect(result):
+                    raise EngineError(
+                        append_custom_code_output(
+                            "Custom Pandas code must assign a Pandas DataFrame or Series to result.", output
+                        )
+                    )
+                return self.normalize(result)
         raise EngineError(f"Pandas does not implement transformation: {kind}")
 
     def _row_id_column(self, frame: Any) -> Any | None:

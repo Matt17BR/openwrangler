@@ -9,6 +9,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 
+from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -1210,14 +1211,19 @@ class PolarsEngine(DataFrameEngine):
         if kind == "customCode":
             row_id = self._row_id_column(df)
             namespace = {"df": df.drop(row_id) if row_id is not None else df, "pl": pl}
-            try:
-                exec(params["code"], namespace, namespace)
-            except Exception as error:
-                raise EngineError(f"Custom Polars code failed: {error}") from error
-            result = namespace.get("result")
-            if not self.detect(result):
-                raise EngineError("Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.")
-            return result.to_frame() if isinstance(result, pl.Series) else result
+            with capture_custom_code_output() as output:
+                try:
+                    exec(params["code"], namespace, namespace)
+                except Exception as error:
+                    raise EngineError(custom_code_error_message("Polars", error, output)) from error
+                result = namespace.get("result")
+                if not self.detect(result):
+                    raise EngineError(
+                        append_custom_code_output(
+                            "Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.", output
+                        )
+                    )
+                return result.to_frame() if isinstance(result, pl.Series) else result
         raise EngineError(f"Polars does not implement transformation: {kind}")
 
     def _row_id_column(self, frame: Any) -> str | None:
