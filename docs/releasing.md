@@ -55,6 +55,13 @@ and stable candidates consume the protected commit and exact VSIX after that mer
 coverage. Their packaged PySpark journey still provisions Java 17 because that is installed-product evidence. An
 optional adapter may skip in an ordinary development test run, but it may not disappear from pull-request coverage.
 
+Repository development and automation use exactly Node.js 22.22.0 from `.node-version`; that release supplies the
+declared npm 10.9.4 package manager. GitHub workflows consume the version file directly. Azure Marketplace recovery
+duplicates the same exact Node value because it may inspect historical tags that predate the file, and workflow
+contracts keep that duplicate synchronized. The development pin remains repository tooling and is excluded from the
+VSIX. `npm run check` includes the strict dependency-only TypeScript graph, and `npm run audit:node` audits the full
+development tree.
+
 The package command derives `--pre-release` from the validated numeric version and explicit `package.json.preview`
 value. Preview metadata receives exactly one prerelease flag; stable metadata rejects any caller-supplied prerelease
 override. `npm run verify:vsix` rejects either channel when its VSIX manifest and packaged `package.json` disagree.

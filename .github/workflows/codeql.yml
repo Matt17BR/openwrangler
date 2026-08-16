@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
       - id: classify
         run: node scripts/ci-path-classification.mjs
         env:
