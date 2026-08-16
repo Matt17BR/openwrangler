@@ -14,6 +14,7 @@ import {
   buildRKernelTeardownCode,
   readRRuntimeFiles
 } from "../extension/r/rKernelRuntimeBundle";
+import { assertReleasedRGeneratedSourceBoundary } from "./extensionHost/releasedRGeneratedCode";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(__dirname, "../..");
@@ -2943,6 +2944,7 @@ ${close.code}
       sessionId: editingSessionId
     });
 
+    assertReleasedRGeneratedSourceBoundary(multiLabelApplied.code, "frame");
     expect(multiLabelApplied.code).toContain(".ow_categorical_encode");
     expect(multiLabelApplied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
     const generated = runR(`
