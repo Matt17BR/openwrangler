@@ -98,13 +98,16 @@ function hasUniqueStepIds(job) {
   return ids.every((id) => typeof id === "string" && id.length > 0) && new Set(ids).size === ids.length;
 }
 
-export function inspectCandidateCaller(workflow, channel) {
+export function inspectCandidateCaller(workflow, channel, expectedIf) {
   const problems = [];
   const candidate = workflow?.jobs?.["candidate-acceptance"];
+  const expectedKeys = ["name", "needs", "uses", "permissions", "with"];
+  if (expectedIf !== undefined) expectedKeys.push("if");
   if (
-    !exactKeys(candidate, ["name", "needs", "uses", "permissions", "with"]) ||
+    !exactKeys(candidate, expectedKeys) ||
     candidate.name !== "Candidate acceptance" ||
     candidate.needs !== "package" ||
+    (expectedIf !== undefined && candidate.if !== expectedIf) ||
     candidate.uses !== CALL_PATH ||
     !exactKeys(candidate.permissions, ["contents"]) ||
     candidate.permissions.contents !== "read" ||

@@ -413,6 +413,13 @@ test("automation selects the declared exact Node and npm toolchain", () => {
     const workflow = parseYaml(readFileSync(new URL(entry.name, workflowDirectory), "utf8"));
     for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
       for (const [stepIndex, step] of (job?.steps ?? []).entries()) {
+        if (typeof step?.uses === "string" && !step.uses.startsWith("./")) {
+          assert.match(
+            step.uses,
+            /^[^@\s]+@[0-9a-f]{40}$/u,
+            `${entry.name}:${jobId}:${stepIndex} must pin its external action to one commit.`
+          );
+        }
         if (typeof step?.uses !== "string" || !step.uses.startsWith("actions/setup-node@")) continue;
         setupNodeCount += 1;
         assert.equal(
@@ -465,7 +472,13 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
   assert.equal(manifest?.scripts?.test, "npm run test:run");
   assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
   assert.equal(manifest?.scripts?.["benchmark:r"], "node scripts/run-r-performance.mjs");
-  assert.deepEqual(groups.workflow, ["scripts/candidate-acceptance-workflow.test.mjs", "scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.workflow, [
+    "scripts/canary-artifact.test.mjs",
+    "scripts/candidate-acceptance-workflow.test.mjs",
+    "scripts/ci-workflow.test.mjs",
+    "scripts/release-candidate-source.test.mjs",
+    "scripts/stable-release-workflow.test.mjs"
+  ]);
   assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
   assert.deepEqual(
@@ -878,6 +891,7 @@ test("release-infrastructure classification is an exact fail-closed allowlist wi
   assert.deepEqual(RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS, [
     "scripts/data-wrangler-comparison-report.mjs",
     "scripts/package-source-manifest.mjs",
+    "scripts/release-train-workflow.mjs",
     "scripts/reproducible-vsix.mjs",
     "scripts/run-installed-performance.mjs",
     "scripts/strict-json.mjs",
@@ -1148,6 +1162,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     assert.deepEqual(candidate, {
       name: "Candidate acceptance",
       needs: "package",
+      if: "${{ inputs.publish == false && needs.package.result == 'success' }}",
       uses: "./.github/workflows/candidate-acceptance.yml",
       permissions: { contents: "read" },
       with: {
@@ -1467,9 +1482,9 @@ test("PR CI gates expensive work behind bounded preflight lanes without removing
   assert.deepEqual(
     fastFeedback?.steps,
     [
-      { uses: "actions/checkout@v6" },
+      { uses: "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" },
       {
-        uses: "actions/setup-node@v6",
+        uses: "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
         with: { "node-version-file": ".node-version", cache: "npm" }
       },
       {
@@ -1632,8 +1647,11 @@ test("release-infrastructure PRs run only the fixed executable release contracts
     "runs-on": "ubuntu-latest",
     "timeout-minutes": 15,
     steps: [
-      { uses: "actions/checkout@v6" },
-      { uses: "actions/setup-node@v6", with: { "node-version-file": ".node-version", cache: "npm" } },
+      { uses: "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" },
+      {
+        uses: "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+        with: { "node-version-file": ".node-version", cache: "npm" }
+      },
       { run: "npm ci" },
       {
         name: "Release transaction contracts",
@@ -1690,7 +1708,9 @@ test("authoritative CI work is independently attributable before the required ag
   assert.equal(visual?.if, FULL_CI_IF);
   assert.equal(
     visual?.steps?.some(
-      (step) => step?.uses === "actions/setup-python@v6" && step?.with?.["python-version"] === "3.12"
+      (step) =>
+        step?.uses === "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" &&
+        step?.with?.["python-version"] === "3.12"
     ),
     true,
     "Runtime-backed production screenshot fixtures need the exact Python test environment."
@@ -1767,9 +1787,12 @@ test("ready substantive PRs run full while push tiers retain their exact owners"
       "${{ steps.classify.outputs.release_infrastructure_only }}"
     );
     assert.equal(job?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
-    assert.deepEqual(job?.steps?.find((step) => step?.uses === "actions/checkout@v6")?.with, {
-      "fetch-depth": 0
-    });
+    assert.deepEqual(
+      job?.steps?.find((step) => step?.uses === "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")?.with,
+      {
+        "fetch-depth": 0
+      }
+    );
     const step = job?.steps?.find((candidate) => candidate?.id === "classify");
     assert.equal(step?.run, "node scripts/ci-path-classification.mjs");
     assert.deepEqual(step?.env, classifierEnvironment);
@@ -1880,9 +1903,9 @@ test("ready substantive PRs run full while push tiers retain their exact owners"
   assert.equal(codeqlSteps?.length, 5, "Each required CodeQL cell must retain one gate/carrier/analysis shape.");
   assert.equal(codeqlSteps?.[0]?.name, "Require exact change classification");
   assert.equal(codeqlSteps?.[1]?.name, "Preserve required non-matrix context");
-  assert.equal(codeqlSteps?.[2]?.uses, "actions/checkout@v6");
-  assert.equal(codeqlSteps?.[3]?.uses, "github/codeql-action/init@v4");
-  assert.equal(codeqlSteps?.[4]?.uses, "github/codeql-action/analyze@v4");
+  assert.equal(codeqlSteps?.[2]?.uses, "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803");
+  assert.equal(codeqlSteps?.[3]?.uses, "github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa");
+  assert.equal(codeqlSteps?.[4]?.uses, "github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa");
   assert.equal(normalizedCommand(codeqlSteps?.[1]?.if), CODEQL_NON_MATRIX_CONTEXT_IF);
   for (const step of codeqlSteps?.slice(2) ?? []) {
     assert.equal(normalizedCommand(step?.if), CODEQL_SUBSTANTIVE_MATRIX_STEP_IF);

@@ -8,10 +8,15 @@ on:
         required: true
         type: string
       publish:
-        description: Publish to GitHub and Open VSX and trigger Marketplace promotion
+        description: Promote a previously accepted candidate run; false creates the candidate
         required: true
         default: false
         type: boolean
+      candidate_run_id:
+        description: Successful first-attempt Preview release run to promote; required only with publish=true
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +27,7 @@ concurrency:
 
 jobs:
   package:
+    if: ${{ inputs.publish == false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -115,6 +121,7 @@ jobs:
   candidate-acceptance:
     name: Candidate acceptance
     needs: package
+    if: ${{ inputs.publish == false && needs.package.result == 'success' }}
     uses: ./.github/workflows/candidate-acceptance.yml
     permissions:
       contents: read
@@ -126,6 +133,7 @@ jobs:
   remote-ssh:
     name: Remote SSH acceptance
     needs: package
+    if: ${{ inputs.publish == false && needs.package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -248,7 +256,7 @@ jobs:
   release:
     name: Publish GitHub preview and registries
     needs: [package, candidate-acceptance, remote-ssh]
-    if: ${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}
+    if: ${{ always() && !cancelled() && inputs.publish == true && needs.package.result == 'skipped' && needs.candidate-acceptance.result == 'skipped' && needs.remote-ssh.result == 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 105
     environment: publishing
@@ -257,6 +265,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -269,11 +278,23 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+      - id: candidate_source
+        name: Require one exact successful candidate run
+        run: node scripts/release-candidate-source.mjs
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          EXPECTED_AUTOMATION_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: preview
+          RELEASE_TAG: ${{ inputs.release_tag }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          artifact-ids: ${{ steps.candidate_source.outputs.artifact_id }}
           path: canonical-release
           merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.candidate_source.outputs.candidate_run_id }}
       - id: canonical
         name: Revalidate the exact artifact before release
         env:

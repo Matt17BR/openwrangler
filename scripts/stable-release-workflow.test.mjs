@@ -27,6 +27,18 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       workflow.jobs.package.steps.find((step) => step.id === "canonical").run = "echo accepted";
     },
     (workflow) => {
+      const setupNode = workflow.jobs.package.steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+      setupNode.with = { "node-version": 22, cache: "npm" };
+    },
+    (workflow) => {
+      const setupNode = workflow.jobs["remote-ssh"].steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+      setupNode.with["node-version-file"] = ".nvmrc";
+    },
+    (workflow) => {
+      const setupNode = workflow.jobs.release.steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+      delete setupNode.with["node-version-file"];
+    },
+    (workflow) => {
       workflow.jobs.package.steps.find(
         (step) => step.run === "npm run verify:vsix -- openwrangler.candidate.vsix"
       ).run = "npm run verify:vsix -- canonical-release/openwrangler.vsix";

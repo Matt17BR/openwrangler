@@ -30,10 +30,10 @@ jobs:
       release_infrastructure_only: ${{ steps.classify.outputs.release_infrastructure_only }}
       full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version-file: .node-version
       - id: classify
@@ -119,14 +119,14 @@ jobs:
       - name: Preserve required non-matrix context
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
         run: echo "Full runtime evidence is deferred; this matrix cell preserves its required check context."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           python-version: ${{ matrix.python }}
@@ -225,9 +225,9 @@ jobs:
       - name: Preserve required non-matrix context
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
         run: echo "Full dependency-guard evidence is deferred; this matrix cell preserves its required check context."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           python-version: ${{ matrix.python }}

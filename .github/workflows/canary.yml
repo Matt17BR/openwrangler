@@ -1,0 +1,180 @@
+name: Daily canary
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "13 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-canary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build protected-main canary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      canary_id: ${{ steps.canary.outputs.canary_id }}
+      candidate_sha256: ${{ steps.canary.outputs.candidate_sha256 }}
+      candidate_bytes: ${{ steps.canary.outputs.candidate_bytes }}
+      extension_version: ${{ steps.canary.outputs.extension_version }}
+      source_version: ${{ steps.canary.outputs.source_version }}
+    steps:
+      - name: Require protected main and a first attempt
+        env:
+          EVENT_REF: ${{ github.ref }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          test "$EVENT_REF" = "refs/heads/main"
+          test "$RUN_ATTEMPT" = "1"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin the exact protected-main source
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+          test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - id: reference_python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - name: Authoritative local and PR contract
+        run: npm run check:pr
+        env:
+          OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
+      - id: canary_source
+        name: Assign a reproducible disposable build identity
+        run: node scripts/canary-artifact.mjs prepare
+      - name: Build and package the disposable canary once
+        run: |
+          node --input-type=module -e 'import { mkdirSync } from "node:fs"; mkdirSync("canary-artifact", { mode: 0o700 });'
+          npm run clean
+          npm run build
+          npm run package:prepared -- --out canary-artifact/openwrangler-canary.vsix
+      - run: npm run verify:vsix -- canary-artifact/openwrangler-canary.vsix
+      - id: canary
+        name: Bind canary checksum, provenance, version, and run identity
+        env:
+          CANARY_SOURCE_VERSION: ${{ steps.canary_source.outputs.source_version }}
+        run: node scripts/canary-artifact.mjs create canary-artifact/openwrangler-canary.vsix
+      - name: Revalidate the canary set before upload
+        run: node scripts/canary-artifact.mjs verify canary-artifact
+      - id: upload
+        name: Upload the disposable canary set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openwrangler-canary-${{ steps.canary.outputs.canary_id }}
+          path: |
+            canary-artifact/openwrangler-canary.vsix
+            canary-artifact/openwrangler-canary.vsix.sha256
+            canary-artifact/openwrangler-canary.vsix.provenance.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          include-hidden-files: false
+
+  representative-editor:
+    name: Representative installed VS Code
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: canary-artifact
+          merge-multiple: true
+      - name: Verify the exact canary before installed acceptance
+        run: node scripts/canary-artifact.mjs verify canary-artifact
+      - run: npm run verify:vsix -- canary-artifact/openwrangler-canary.vsix
+      - run: npm run build:test-extension
+      - name: Reverify the canary for VS Code
+        run: node scripts/canary-artifact.mjs verify canary-artifact
+      - id: vscode
+        name: Test the representative VS Code seam
+        continue-on-error: true
+        run: node scripts/run-packaged-editor-tests.mjs canary-artifact/openwrangler-canary.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+          VSCODE_TEST_VERSION: stable
+      - name: Upload VS Code canary failure diagnostics
+        if: ${{ always() && steps.vscode.outcome == 'failure' && steps.vscode.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canary-vscode-failure-${{ github.run_id }}
+          path: ${{ steps.vscode.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Fail after VS Code canary diagnostics
+        if: ${{ always() && steps.vscode.outcome == 'failure' }}
+        run: exit 1
+
+  result:
+    name: Canary result
+    needs: [build, representative-editor]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Publish the discoverable canary receipt and require success
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          EDITOR_RESULT: ${{ needs.representative-editor.result }}
+          CANARY_ID: ${{ needs.build.outputs.canary_id }}
+          VERSION: ${{ needs.build.outputs.extension_version }}
+          SOURCE_VERSION: ${{ needs.build.outputs.source_version }}
+          SHA256: ${{ needs.build.outputs.candidate_sha256 }}
+          BYTES: ${{ needs.build.outputs.candidate_bytes }}
+        run: |
+          {
+            echo "## Daily canary"
+            echo
+            echo "- ID: \`${CANARY_ID:-unavailable}\`"
+            echo "- Protected-main version: \`${SOURCE_VERSION:-unavailable}\`"
+            echo "- Disposable build version: \`${VERSION:-unavailable}\`"
+            echo "- VSIX SHA-256: \`${SHA256:-unavailable}\`"
+            echo "- VSIX bytes: \`${BYTES:-unavailable}\`"
+            echo "- Build/core result: \`$BUILD_RESULT\`"
+            echo "- Representative editor result: \`$EDITOR_RESULT\`"
+            echo
+            echo "This disposable artifact is not a release candidate and is never registry-promotable."
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$BUILD_RESULT" = "success"
+          test "$EDITOR_RESULT" = "success"
