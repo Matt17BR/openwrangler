@@ -162,6 +162,7 @@ function validatedSubject(value) {
     "kind",
     "sourceCommit",
     "sourceTree",
+    "executedInventorySha256",
     "packageManifestSha256",
     "dependencyLockSha256"
   ]);
@@ -172,7 +173,7 @@ function validatedSubject(value) {
   if (typeof candidate.sourceTree !== "string" || !GIT_OBJECT_ID.test(candidate.sourceTree)) {
     throw new SoakContractError("The source tree is invalid.");
   }
-  for (const field of ["packageManifestSha256", "dependencyLockSha256"]) {
+  for (const field of ["executedInventorySha256", "packageManifestSha256", "dependencyLockSha256"]) {
     if (typeof candidate[field] !== "string" || !SHA256.test(candidate[field])) {
       throw new SoakContractError("A source subject digest is invalid.");
     }
@@ -181,6 +182,7 @@ function validatedSubject(value) {
     kind: "source_tree",
     sourceCommit: candidate.sourceCommit,
     sourceTree: candidate.sourceTree,
+    executedInventorySha256: candidate.executedInventorySha256,
     packageManifestSha256: candidate.packageManifestSha256,
     dependencyLockSha256: candidate.dependencyLockSha256
   });
@@ -377,19 +379,24 @@ export async function writeFailureReceipt(receipt, parentDirectory) {
   if (
     !rootStat.isDirectory() ||
     rootStat.isSymbolicLink() ||
-    (process.platform !== "win32" && rootStat.uid !== process.getuid())
+    (process.platform !== "win32" && (rootStat.uid !== process.getuid() || (rootStat.mode & 0o077) !== 0))
   ) {
     throw new SoakContractError("The failure receipt directory is not privately owned.");
   }
   const path = join(root, "failure.json");
+  const fileText = redacted.endsWith("\n") ? redacted : `${redacted}\n`;
+  const byteLength = Buffer.byteLength(fileText, "utf8");
+  if (byteLength > SOAK_MAX_RECEIPT_BYTES) {
+    throw new SoakContractError("The retained failure receipt exceeds its byte limit.");
+  }
   const handle = await open(path, "wx", 0o600);
   try {
-    await handle.writeFile(redacted.endsWith("\n") ? redacted : `${redacted}\n`, "utf8");
+    await handle.writeFile(fileText, "utf8");
     await handle.sync();
   } finally {
     await handle.close();
   }
-  return Object.freeze({ path, byteLength: Buffer.byteLength(redacted, "utf8") });
+  return Object.freeze({ path, byteLength });
 }
 
 export function maximumCompletedIterations() {
