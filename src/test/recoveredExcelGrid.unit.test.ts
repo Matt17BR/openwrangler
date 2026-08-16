@@ -27,7 +27,17 @@ const rect = (left: number, top: number, width: number, height: number): FakeRec
   height
 });
 
-function gridGeometry(): Readonly<{ grid: unknown; cell: unknown; neighbor: unknown }> {
+interface GridGeometryOptions {
+  readonly hitTested?: boolean;
+  readonly neighborFocused?: boolean;
+  readonly neighborRect?: FakeRect;
+}
+
+function gridGeometry({
+  hitTested = true,
+  neighborFocused = true,
+  neighborRect = rect(180, 60, 80, 20)
+}: GridGeometryOptions = {}): Readonly<{ grid: unknown; cell: unknown; neighbor: unknown }> {
   const documentState: { activeElement?: unknown; hit?: unknown } = {};
   const ownerDocument: {
     activeElement?: unknown;
@@ -65,18 +75,34 @@ function gridGeometry(): Readonly<{ grid: unknown; cell: unknown; neighbor: unkn
       selector === '[role="grid"]' ? grid : selector === ".tableScroller" ? scroller : null,
     getBoundingClientRect: () => rect(100, 60, 80, 20)
   };
-  const neighbor = { ...cell, dataset: { gridRow: "4", gridColumn: "4" } };
-  documentState.hit = cell;
-  ownerDocument.activeElement = neighbor;
+  const neighbor = {
+    ...cell,
+    dataset: { gridRow: "4", gridColumn: "4" },
+    getBoundingClientRect: () => neighborRect
+  };
+  documentState.hit = hitTested ? cell : {};
+  ownerDocument.activeElement = neighborFocused ? neighbor : undefined;
   return { grid, cell, neighbor };
 }
 
 const receipt: RendererSynchronizationReceipt = { syncId: "sync-a", sessionId: "session", revision: 7 };
 
-function fakeApp(): Locator {
+interface FakeAppOptions {
+  readonly activationDispose?: () => Promise<void>;
+  readonly activationEvaluate?: () => Promise<{
+    readonly connected: boolean;
+    readonly documentFocused: boolean;
+    readonly cellFocused: boolean;
+  }>;
+}
+
+function fakeApp({
+  activationDispose = vi.fn(async () => {}),
+  activationEvaluate = async () => ({ connected: true, documentFocused: true, cellFocused: true })
+}: FakeAppOptions = {}): Locator {
   const activationHandle = {
-    evaluate: async () => ({ connected: true, documentFocused: true, cellFocused: true }),
-    dispose: vi.fn(async () => {})
+    evaluate: activationEvaluate,
+    dispose: activationDispose
   };
   const grid = {
     waitFor: vi.fn(async () => {}),
@@ -144,12 +170,33 @@ describe("recovered XLSX grid", () => {
     expect(findRecoveredExcelGridActivationTarget(grid, 4).target).toBeUndefined();
   });
 
+  it("rejects a fully exposed cell when its center is occluded", () => {
+    const { grid } = gridGeometry({ hitTested: false });
+    expect(findRecoveredExcelGridActivationTarget(grid, 6)).toMatchObject({
+      target: undefined,
+      diagnostics: { fullyExposedCellCount: 1, pointerExposedCellCount: 0 }
+    });
+  });
+
   it("measures neighbor focus inside the data viewport below sticky headers", () => {
     const { neighbor } = gridGeometry();
     expect(measureRecoveredExcelNeighborExposure(neighbor)).toMatchObject({
       connected: true,
       focused: true,
       fullyExposed: true,
+      exposedBounds: { left: 50, top: 30, right: 500, bottom: 300 }
+    });
+  });
+
+  it("rejects an unfocused neighbor outside the exposed data viewport", () => {
+    const { neighbor } = gridGeometry({
+      neighborFocused: false,
+      neighborRect: rect(470, 290, 80, 20)
+    });
+    expect(measureRecoveredExcelNeighborExposure(neighbor)).toMatchObject({
+      connected: true,
+      focused: false,
+      fullyExposed: false,
       exposedBounds: { left: 50, top: 30, right: 500, bottom: 300 }
     });
   });
@@ -240,6 +287,96 @@ describe("recovered XLSX grid", () => {
       )
     ).rejects.toThrow("click indeterminate");
     expect(postBoundaryTarget).toHaveBeenCalledOnce();
+  });
+
+  it("reacquires when the receipt changes before dispatch without crossing the stale click", async () => {
+    let currentReceipt = receipt;
+    let activationAttempts = 0;
+    let staleClicks = 0;
+    let currentClicks = 0;
+    const findCurrentTarget = vi.fn(async (observed: RendererSynchronizationReceipt) => `target-${observed.syncId}`);
+    const bindExactApp = vi.fn(async () => fakeApp());
+    const activateElementOnce = vi.fn(async (_element, _timeoutMs: number, beforeDispatch: () => void) => {
+      activationAttempts += 1;
+      if (activationAttempts === 1) {
+        currentReceipt = { ...receipt, syncId: "sync-b" };
+        beforeDispatch();
+        staleClicks += 1;
+        return;
+      }
+      beforeDispatch();
+      currentClicks += 1;
+    });
+
+    await verifyRecoveredExcelGrid(
+      options({ currentReceipt: () => currentReceipt, findCurrentTarget, bindExactApp, activateElementOnce })
+    );
+
+    expect(findCurrentTarget.mock.calls.map(([observed]) => observed.syncId)).toEqual(["sync-a", "sync-b"]);
+    expect(bindExactApp).toHaveBeenCalledTimes(2);
+    expect(activateElementOnce).toHaveBeenCalledTimes(2);
+    expect(staleClicks).toBe(0);
+    expect(currentClicks).toBe(1);
+  });
+
+  it("never retries after receipt drift makes a dispatched click indeterminate", async () => {
+    let currentReceipt = receipt;
+    let activationAttempts = 0;
+    const findCurrentTarget = vi.fn(async () => "target");
+    const bindExactApp = vi.fn(async () => fakeApp());
+    const activateElementOnce = vi.fn(async (_element, _timeoutMs: number, beforeDispatch: () => void) => {
+      activationAttempts += 1;
+      beforeDispatch();
+      if (activationAttempts === 1) {
+        currentReceipt = { ...receipt, syncId: "sync-b" };
+        throw new Error("receipt changed after the trusted click");
+      }
+    });
+
+    await expect(
+      verifyRecoveredExcelGrid(
+        options({ currentReceipt: () => currentReceipt, findCurrentTarget, bindExactApp, activateElementOnce })
+      )
+    ).rejects.toThrow("receipt changed after the trusted click");
+
+    expect(findCurrentTarget).toHaveBeenCalledOnce();
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(activateElementOnce).toHaveBeenCalledOnce();
+  });
+
+  it("checks target lifecycle around grid, activation, keyboard, and neighbor sampling", async () => {
+    const assertTargetLifecycle = vi.fn();
+
+    await verifyRecoveredExcelGrid(options({ assertTargetLifecycle }));
+
+    expect(assertTargetLifecycle).toHaveBeenCalledTimes(5);
+  });
+
+  it("disposes the activation element when its focus sample throws", async () => {
+    const activationDispose = vi.fn(async () => {});
+    const bindExactApp = vi.fn(async () =>
+      fakeApp({
+        activationDispose,
+        activationEvaluate: async () => {
+          throw new Error("focus sample failed");
+        }
+      })
+    );
+
+    await expect(verifyRecoveredExcelGrid(options({ bindExactApp }))).rejects.toThrow("focus sample failed");
+
+    expect(bindExactApp).toHaveBeenCalledOnce();
+    expect(activationDispose).toHaveBeenCalledOnce();
+  });
+
+  it("fails before target discovery when the active session changes", async () => {
+    const findCurrentTarget = vi.fn(async () => "target");
+    await expect(
+      verifyRecoveredExcelGrid(
+        options({ activeSession: () => ({ sessionId: "replacement", metadata: { revision: 7 } }), findCurrentTarget })
+      )
+    ).rejects.toThrow("XLSX renderer recovery must retain the exact active session.");
+    expect(findCurrentTarget).not.toHaveBeenCalled();
   });
 
   it("fails before renderer discovery when the confirmed revision drifts", async () => {
