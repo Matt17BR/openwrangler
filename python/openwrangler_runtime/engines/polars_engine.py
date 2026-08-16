@@ -154,9 +154,13 @@ class PolarsEngine(DataFrameEngine):
 
         if isinstance(value, pl.Series):
             return value.to_frame()
-        if isinstance(value, pl.LazyFrame):
-            return value.collect()
         return value
+
+    def is_lazy(self, frame: Any, source: Mapping[str, Any]) -> bool:
+        import polars as pl
+
+        del source
+        return isinstance(frame, pl.LazyFrame)
 
     def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
         import polars as pl
@@ -1083,6 +1087,9 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             return df.with_columns(pl.col(column).cast(pl.String).str.len_chars().alias(params["newColumn"]))
         if kind == "oneHotEncode":
+            # The generated output columns depend on every observed category.
+            # Previewing this operation is therefore an explicit user-requested
+            # materialization boundary for an otherwise lazy session.
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
             columns = [bound_column_name(column, kind) for column in params["columns"]]
             separator = params.get("prefixSeparator", "_")
@@ -1105,6 +1112,9 @@ class PolarsEngine(DataFrameEngine):
             )
             return base.hstack(encoded)
         if kind == "multiLabelBinarize":
+            # The generated output columns depend on every observed label.
+            # Previewing this operation is therefore an explicit user-requested
+            # materialization boundary for an otherwise lazy session.
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
             column = bound_column_name(params["column"], kind)
             delimiter = params["delimiter"]

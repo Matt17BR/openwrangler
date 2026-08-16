@@ -1550,13 +1550,12 @@ class SessionManager:
 
     def _capabilities(self, session: Session) -> dict[str, bool]:
         source_kind = session.source.get("kind")
-        extension = str(session.source.get("path", "")).lower()
         engine_capabilities = session.engine.capabilities
         source_supports_editing = not (session.backend == "duckdb" and source_kind == "notebookVariable")
         editable = session.mode == "editing" and engine_capabilities.supports_editing and source_supports_editing
         return {
             "editable": editable,
-            "lazy": source_kind == "file" and extension.endswith(tuple(engine_capabilities.lazy_file_extensions)),
+            "lazy": session.engine.is_lazy(session.display_frame, session.source),
             "cancel": engine_capabilities.supports_request_cancellation,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,
             "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
