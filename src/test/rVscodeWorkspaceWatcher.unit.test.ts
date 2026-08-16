@@ -189,6 +189,7 @@ describe("vscode-R workspace metadata adapter", () => {
   });
 
   it("reconciles vscode-R's exported workspace when its change event is missed", async () => {
+    vi.useFakeTimers();
     const fixture = await createFixture(823);
     roots.push(fixture.root);
     const terminal = officialTerminal(fixture, 823);
@@ -218,26 +219,31 @@ describe("vscode-R workspace metadata adapter", () => {
       reconcileMs: 10
     })!;
 
-    await expect(watcher.readInitial()).resolves.toEqual({
-      variables: [{ name: "initial_orders", backend: "r", dataframeFlavor: "r.data.frame" }],
-      truncated: false
-    });
-    const updates: unknown[] = [];
-    watcher.onDidChangeVariables((value) => updates.push(value));
-    workspace.data = {
-      globalenv: {
-        reconciled_orders: { class: ["tbl_df", "tbl", "data.frame"], type: "list", dim: [6, 3] }
-      }
-    };
-
-    await vi.waitFor(() =>
-      expect(updates.at(-1)).toEqual({
-        variables: [{ name: "reconciled_orders", backend: "r", dataframeFlavor: "r.tibble" }],
+    try {
+      await expect(watcher.readInitial()).resolves.toEqual({
+        variables: [{ name: "initial_orders", backend: "r", dataframeFlavor: "r.data.frame" }],
         truncated: false
-      })
-    );
-    expect(terminal.sendText).not.toHaveBeenCalled();
-    watcher.dispose();
+      });
+      const updates: unknown[] = [];
+      watcher.onDidChangeVariables((value) => updates.push(value));
+      workspace.data = {
+        globalenv: {
+          reconciled_orders: { class: ["tbl_df", "tbl", "data.frame"], type: "list", dim: [6, 3] }
+        }
+      };
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(updates).toEqual([
+        {
+          variables: [{ name: "reconciled_orders", backend: "r", dataframeFlavor: "r.tibble" }],
+          truncated: false
+        }
+      ]);
+      expect(terminal.sendText).not.toHaveBeenCalled();
+    } finally {
+      watcher.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("uses authenticated workspace files while vscode-R's exported workspace is not ready", async () => {
@@ -500,6 +506,7 @@ describe("vscode-R workspace metadata adapter", () => {
   });
 
   it("coalesces rapid workspace updates and publishes the newest complete metadata", async () => {
+    vi.useFakeTimers();
     const fixture = await createFixture(810);
     roots.push(fixture.root);
     const terminal = officialTerminal(fixture, 810);
@@ -529,32 +536,36 @@ describe("vscode-R workspace metadata adapter", () => {
       debounceMs: 15,
       retryMs: 5
     })!;
-    await watcher.readInitial();
-    const updates: unknown[] = [];
-    watcher.onDidChangeVariables((value) => updates.push(value));
+    try {
+      await watcher.readInitial();
+      const updates: unknown[] = [];
+      watcher.onDidChangeVariables((value) => updates.push(value));
 
-    workspace.data = {
-      globalenv: {
-        first: { class: ["data.frame"], type: "list", length: 1, dim: [1, 1] }
-      }
-    };
-    for (const listener of listeners) listener();
-    workspace.data = {
-      globalenv: {
-        latest: { class: ["tbl_df", "tbl", "data.frame"], type: "list", length: 1, dim: [4, 1] }
-      }
-    };
-    for (const listener of listeners) listener();
+      workspace.data = {
+        globalenv: {
+          first: { class: ["data.frame"], type: "list", length: 1, dim: [1, 1] }
+        }
+      };
+      for (const listener of listeners) listener();
+      workspace.data = {
+        globalenv: {
+          latest: { class: ["tbl_df", "tbl", "data.frame"], type: "list", length: 1, dim: [4, 1] }
+        }
+      };
+      for (const listener of listeners) listener();
 
-    await vi.waitFor(() =>
-      expect(updates.at(-1)).toEqual({
-        variables: [{ name: "latest", backend: "r", dataframeFlavor: "r.tibble" }],
-        truncated: false
-      })
-    );
-    expect(updates).toHaveLength(1);
-    expect(terminal.sendText).not.toHaveBeenCalled();
-    watcher.dispose();
+      await vi.advanceTimersByTimeAsync(15);
+      expect(updates).toEqual([
+        {
+          variables: [{ name: "latest", backend: "r", dataframeFlavor: "r.tibble" }],
+          truncated: false
+        }
+      ]);
+      expect(terminal.sendText).not.toHaveBeenCalled();
+    } finally {
+      watcher.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("retries a transiently missing workspace file without invalidating the session", async () => {
