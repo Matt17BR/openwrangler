@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from math import isfinite, isinf, isnan
+from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
@@ -463,6 +463,7 @@ class DuckDBEngine(DataFrameEngine):
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         summaries: list[dict[str, Any]] = []
         with self._terminal_connection(frame) as (connection, source_sql):
+            pending_histograms: list[tuple[dict[str, Any], float, float, list[str], int | None]] = []
             for column, column_id in selected:
                 identifier = _quote_ident(column)
                 raw_type = types[column]
@@ -574,9 +575,7 @@ class DuckDBEngine(DataFrameEngine):
                         numeric_summary["exactMin"] = normalize_cell(metrics["minimum"])
                         numeric_summary["exactMax"] = normalize_cell(metrics["maximum"])
                     summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
-                    summary["visualization"] = _numeric_visualization(
-                        connection,
-                        source_sql,
+                    visualization, minimum, maximum, count_expressions, native_bin_count = _numeric_histogram_plan(
                         identifier,
                         raw_type,
                         minimum=metrics["finite_minimum"],
@@ -584,6 +583,10 @@ class DuckDBEngine(DataFrameEngine):
                         finite_count=int(metrics["finite_count"] or 0),
                         distinct_count=int(metrics["finite_distinct_count"] or 0),
                     )
+                    if visualization is not None:
+                        summary["visualization"] = visualization
+                    else:
+                        pending_histograms.append((summary, minimum, maximum, count_expressions, native_bin_count))
                 elif semantic_type == "boolean":
                     summary["visualization"] = {
                         "kind": "boolean",
@@ -597,6 +600,30 @@ class DuckDBEngine(DataFrameEngine):
                         top_values, total_count - null_count - nan_count
                     )
                 summaries.append(summary)
+            if pending_histograms:
+                histogram_expressions = [
+                    expression
+                    for _summary, _minimum, _maximum, expressions, _native_bin_count in pending_histograms
+                    for expression in expressions
+                ]
+                histogram_row = _execute_rows(
+                    connection,
+                    source_sql,
+                    f"SELECT {', '.join(histogram_expressions)} FROM ow",
+                )[0]
+                histogram_offset = 0
+                for summary, minimum, maximum, expressions, native_bin_count in pending_histograms:
+                    histogram_end = histogram_offset + len(expressions)
+                    histogram_counts = _numeric_histogram_counts(
+                        histogram_row[histogram_offset:histogram_end],
+                        native_bin_count,
+                    )
+                    summary["visualization"] = numeric_visualization_from_bin_counts(
+                        minimum,
+                        maximum,
+                        histogram_counts,
+                    )
+                    histogram_offset = histogram_end
         return summaries
 
     def missing_count(self, frame: Any, column_position: int) -> int:
@@ -2258,9 +2285,7 @@ def _duckdb_interpolation_coordinate_projection(
     return projected, f"CAST({projected} AS BIGINT) = {exact}"
 
 
-def _numeric_visualization(
-    connection: Any,
-    source_sql: str,
+def _numeric_histogram_plan(
     identifier: str,
     raw_type: str,
     *,
@@ -2268,22 +2293,47 @@ def _numeric_visualization(
     maximum: Any,
     finite_count: int,
     distinct_count: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any] | None, float, float, list[str], int | None]:
     finite = _finite_predicate(identifier, raw_type)
     bin_count = numeric_histogram_bin_count(finite_count, distinct_count)
     minimum_float = _finite_float(minimum)
     maximum_float = _finite_float(maximum)
     edges = numeric_histogram_edges(minimum_float, maximum_float, bin_count)
-    if not edges:
-        return {"kind": "numeric", "bins": []}
+    if minimum_float is None or maximum_float is None or not edges:
+        return {"kind": "numeric", "bins": []}, 0.0, 0.0, [], None
     if minimum_float == maximum_float:
-        return numeric_visualization_from_bin_counts(
+        return (
+            numeric_visualization_from_bin_counts(
+                minimum_float,
+                maximum_float,
+                [finite_count],
+            ),
             minimum_float,
             maximum_float,
-            [finite_count],
+            [],
+            None,
         )
 
     numeric_value = f"CAST({identifier} AS DOUBLE)"
+    # DuckDB's native histogram uses right-closed upper bounds. Move each
+    # internal edge down by one DuckDB DOUBLE so it matches the existing
+    # left-closed/right-open bins, then read the bounded counts in map order.
+    # Adjacent extreme floats can collapse those boundaries; keep the exact
+    # predicate fallback for that case.
+    boundaries = tuple([nextafter(edge, -inf) for edge in edges[1:-1]] + [maximum_float])
+    if all(left < right for left, right in zip(boundaries, boundaries[1:], strict=False)):
+        boundary_sql = ", ".join(
+            [f"nextafter(CAST({_sql_literal(edge)} AS DOUBLE), CAST('-Infinity' AS DOUBLE))" for edge in edges[1:-1]]
+            + [f"CAST({_sql_literal(maximum_float)} AS DOUBLE)"]
+        )
+        return (
+            None,
+            minimum_float,
+            maximum_float,
+            [f"map_values(histogram({numeric_value}, [{boundary_sql}]) FILTER (WHERE {finite}))"],
+            len(boundaries),
+        )
+
     count_expressions = []
     for bin_index in range(bin_count):
         if bin_index == 0:
@@ -2296,12 +2346,17 @@ def _numeric_visualization(
                 f"AND {numeric_value} < {_sql_literal(edges[bin_index + 1])}"
             )
         count_expressions.append(f"count(*) FILTER (WHERE {finite} AND ({interval}))")
-    counts = _execute_rows(
-        connection,
-        source_sql,
-        f"SELECT {', '.join(count_expressions)} FROM ow",
-    )[0]
-    return numeric_visualization_from_bin_counts(minimum_float, maximum_float, counts)
+    return None, minimum_float, maximum_float, count_expressions, None
+
+
+def _numeric_histogram_counts(values: Sequence[Any], native_bin_count: int | None) -> list[Any]:
+    if native_bin_count is None:
+        return list(values)
+    if len(values) != 1 or not isinstance(values[0], list) or len(values[0]) < native_bin_count:
+        raise EngineError("DuckDB returned an invalid numeric histogram.")
+    counts = [int(count or 0) for count in values[0][:native_bin_count]]
+    counts[-1] += sum(int(count or 0) for count in values[0][native_bin_count:])
+    return counts
 
 
 def _finite_float(value: Any) -> float | None:
