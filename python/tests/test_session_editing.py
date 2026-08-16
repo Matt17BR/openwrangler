@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
+from openwrangler_runtime.export_target import _regular_file_identity
 from openwrangler_runtime.session import SessionManager
 
 
@@ -14,6 +17,12 @@ def transform(step_id: str, kind: str, **params):
 
 def source_ref(position: int, name: str) -> dict[str, str]:
     return {"id": f"c:source:{position}", "name": name}
+
+
+def reserve_export_target(path):
+    path.touch(exist_ok=False)
+    device, inode = _regular_file_identity(path)
+    return {"device": str(device), "inode": str(inode)}
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
@@ -728,14 +737,14 @@ def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
     manager.discard_draft(session_id, 1, 0, 10)
 
     destination = tmp_path / f"{backend}-identity.csv"
-    manager.export_data(session_id, 2, str(destination), "csv")
+    manager.export_data(session_id, 2, str(destination), "csv", reserve_export_target(destination))
     assert destination.read_text(encoding="utf-8").splitlines()[0] == "group,value"
     assert "open_wrangler_internal" not in destination.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("backend", ["pandas", "polars"])
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
-def test_export_is_atomic_native_and_excludes_view_filters(tmp_path, backend, format_name, monkeypatch):
+def test_export_writes_reserved_native_target_and_excludes_view_filters(tmp_path, backend, format_name, monkeypatch):
     source = "group,value\na,1\na,2\nb,3\n"
     source_path = tmp_path / "source.csv"
     source_path.write_text(source, encoding="utf-8")
@@ -782,8 +791,13 @@ def test_export_is_atomic_native_and_excludes_view_filters(tmp_path, backend, fo
     manager.get_page(session_id, 2, 0, 10, view_filter)
 
     destination = tmp_path / f"cleaned.{format_name}"
-    destination.write_text("existing destination", encoding="utf-8")
-    exported = manager.export_data(session_id, 2, str(destination), format_name)
+    exported = manager.export_data(
+        session_id,
+        2,
+        str(destination),
+        format_name,
+        reserve_export_target(destination),
+    )
     result = pl.read_csv(destination) if format_name == "csv" else pl.read_parquet(destination)
 
     assert exported["kind"] == "dataExported"
@@ -816,15 +830,21 @@ def test_export_rejects_pending_drafts_and_source_overwrite(tmp_path):
     with pytest.raises(EngineError, match="Apply or discard"):
         manager.export_data(session_id, 1, str(tmp_path / "cleaned.csv"), "csv")
     manager.discard_draft(session_id, 1, 0, 10)
-    with pytest.raises(EngineError, match="never overwrites"):
-        manager.export_data(session_id, 2, str(source_path), "csv")
+    with pytest.raises(EngineError, match="host-owned export target cannot be the active source"):
+        manager.export_data(
+            session_id,
+            2,
+            str(source_path),
+            "csv",
+            {"device": str(source_path.stat().st_dev), "inode": str(source_path.stat().st_ino)},
+        )
 
 
-def test_failed_export_preserves_existing_destination_and_removes_temporary_file(tmp_path, monkeypatch):
+def test_failed_export_leaves_the_host_owned_target_for_host_cleanup(tmp_path, monkeypatch):
     source_path = tmp_path / "source.csv"
     source_path.write_text("value\n1\n", encoding="utf-8")
     destination = tmp_path / "cleaned.csv"
-    destination.write_text("keep me", encoding="utf-8")
+    target_identity = reserve_export_target(destination)
     manager = SessionManager()
     opened = manager.open_session(
         {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
@@ -838,10 +858,56 @@ def test_failed_export_preserves_existing_destination_and_removes_temporary_file
     session = manager.sessions[opened["metadata"]["sessionId"]]
     monkeypatch.setattr(session.engine, "export_data", fail_export)
     with pytest.raises(EngineError, match="simulated"):
-        manager.export_data(opened["metadata"]["sessionId"], 0, str(destination), "csv")
+        manager.export_data(opened["metadata"]["sessionId"], 0, str(destination), "csv", target_identity)
 
-    assert destination.read_text(encoding="utf-8") == "keep me"
-    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+    assert destination.read_text(encoding="utf-8") == "partial"
+
+
+def test_export_rejects_a_replaced_host_owned_target_after_runtime_write(tmp_path, monkeypatch):
+    source_path = tmp_path / "source.csv"
+    source_path.write_text("value\n1\n", encoding="utf-8")
+    target = tmp_path / "host-target.csv"
+    displaced_target = tmp_path / "displaced-host-target.csv"
+    target_identity = reserve_export_target(target)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
+    )
+
+    def replace_export(_frame, path, _format):
+        Path(path).rename(displaced_target)
+        Path(path).write_text("foreign replacement", encoding="utf-8")
+        displaced_target.write_text("cleaned data", encoding="utf-8")
+
+    session = manager.sessions[opened["metadata"]["sessionId"]]
+    monkeypatch.setattr(session.engine, "export_data", replace_export)
+
+    with pytest.raises(EngineError, match="temporary export file changed"):
+        manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity)
+
+    assert target.read_text(encoding="utf-8") == "foreign replacement"
+    assert displaced_target.read_text(encoding="utf-8") == "cleaned data"
+    assert source_path.read_text(encoding="utf-8") == "value\n1\n"
+
+
+def test_export_rejects_a_hard_link_added_to_the_host_owned_target(tmp_path):
+    source_path = tmp_path / "source.csv"
+    source_path.write_text("value\n1\n", encoding="utf-8")
+    target = tmp_path / "host-target.csv"
+    target_alias = tmp_path / "host-target-alias.csv"
+    target_identity = reserve_export_target(target)
+    target_alias.hardlink_to(target)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
+    )
+
+    with pytest.raises(EngineError, match="singly linked regular temporary file"):
+        manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity)
+
+    assert target.read_bytes() == b""
+    assert target_alias.read_bytes() == b""
+    assert source_path.read_text(encoding="utf-8") == "value\n1\n"
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

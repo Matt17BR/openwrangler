@@ -271,6 +271,14 @@ const requests: OpenWranglerRequest[] = [
     columnLimit: 16
   },
   { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", format: "csv" },
+  {
+    kind: "exportData",
+    sessionId: "session-1",
+    revision: 3,
+    path: "/tmp/.openwrangler-export.tmp",
+    format: "parquet",
+    targetIdentity: { device: "7", inode: "11" }
+  },
   { kind: "closeSession", sessionId: "session-1", revision: 3 },
   { kind: "cancelRequest", targetRequestId: "request-1" }
 ];

@@ -2185,7 +2185,17 @@
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "path": { "type": "string", "minLength": 1 },
-        "format": { "type": "string", "enum": ["csv", "parquet"] }
+        "format": { "type": "string", "enum": ["csv", "parquet"] },
+        "targetIdentity": { "$ref": "#/definitions/ExportTargetIdentity" }
+      }
+    },
+    "ExportTargetIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "inode"],
+      "properties": {
+        "device": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,38})$" },
+        "inode": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,38})$" }
       }
     },
     "CloseSessionRequest": {

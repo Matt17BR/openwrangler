@@ -1,4 +1,4 @@
-import type { ErrorResponse, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
+import type { ErrorResponse, OpenWranglerRequest, OpenWranglerResponse, SessionSource } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
 
 export interface PythonSessionRuntime {
@@ -19,6 +19,11 @@ export interface ProvisionalSessionClaim<Runtime extends PythonSessionRuntime> {
   readonly state: "pending" | "closing";
 }
 
+export interface ConfirmedPythonSession<Runtime extends PythonSessionRuntime> {
+  readonly runtime: Runtime;
+  readonly source: SessionSource;
+}
+
 interface MutableProvisionalSessionClaim<
   Runtime extends PythonSessionRuntime
 > extends ProvisionalSessionClaim<Runtime> {
@@ -35,12 +40,16 @@ type RestartRuntime<Runtime extends PythonSessionRuntime> = (runtime: Runtime, r
  * ambiguous, or cross-scope responses restart only the offending scope.
  */
 export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
-  private readonly confirmed = new Map<string, Runtime>();
+  private readonly confirmed = new Map<string, ConfirmedPythonSession<Runtime>>();
   private readonly provisional = new Map<string, MutableProvisionalSessionClaim<Runtime>>();
 
   constructor(private readonly restartRuntime: RestartRuntime<Runtime>) {}
 
   confirmedOwner(sessionId: string): Runtime | undefined {
+    return this.confirmed.get(sessionId)?.runtime;
+  }
+
+  confirmedSession(sessionId: string): ConfirmedPythonSession<Runtime> | undefined {
     return this.confirmed.get(sessionId);
   }
 
@@ -51,10 +60,10 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
 
   reserve(request: OpenWranglerRequest, runtime: Runtime, openRequestId: string): ErrorResponse | undefined {
     if (request.kind !== "openSession" || !request.requestedSessionId) return undefined;
-    const confirmedOwner = this.confirmed.get(request.requestedSessionId);
+    const confirmedSession = this.confirmed.get(request.requestedSessionId);
     const provisional = this.provisional.get(request.requestedSessionId);
-    if (confirmedOwner || provisional) {
-      const owner = confirmedOwner ?? provisional!.runtime;
+    if (confirmedSession || provisional) {
+      const owner = confirmedSession?.runtime ?? provisional!.runtime;
       return {
         kind: "error",
         code: "duplicate_runtime_session",
@@ -91,7 +100,7 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
   }
 
   releaseConfirmed(sessionId: string, runtime: Runtime): void {
-    if (this.confirmed.get(sessionId) === runtime) this.confirmed.delete(sessionId);
+    if (this.confirmed.get(sessionId)?.runtime === runtime) this.confirmed.delete(sessionId);
     runtime.sessionIds.delete(sessionId);
   }
 
@@ -104,7 +113,7 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
 
   releaseRuntime(runtime: Runtime): void {
     for (const sessionId of runtime.sessionIds) {
-      if (this.confirmed.get(sessionId) === runtime) this.confirmed.delete(sessionId);
+      if (this.confirmed.get(sessionId)?.runtime === runtime) this.confirmed.delete(sessionId);
     }
     runtime.sessionIds.clear();
     for (const sessionId of runtime.provisionalSessionIds) {
@@ -117,8 +126,8 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
     for (const reservation of this.provisional.values()) {
       if (reservation.runtime === runtime) return true;
     }
-    for (const owner of this.confirmed.values()) {
-      if (owner === runtime) return true;
+    for (const session of this.confirmed.values()) {
+      if (session.runtime === runtime) return true;
     }
     return false;
   }
@@ -170,7 +179,7 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
     const expected = request.requestedSessionId;
     if (!expected) {
       if (this.hasOtherSessionClaim(actual, runtime)) return this.duplicateSessionResponse(actual, runtime);
-      this.bindConfirmed(actual, runtime);
+      this.bindConfirmed(actual, runtime, request.source);
       return response;
     }
     if (actual !== expected) {
@@ -191,7 +200,7 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
       this.releaseForRequest(request, pending.requestId, runtime);
       return this.duplicateSessionResponse(expected, runtime);
     }
-    if (!this.promoteProvisional(expected, pending.requestId, runtime)) {
+    if (!this.promoteProvisional(expected, pending.requestId, runtime, request.source)) {
       return this.invalidTerminatedReservationResponse(expected, runtime);
     }
     return response;
@@ -211,16 +220,24 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
     );
   }
 
-  private promoteProvisional(sessionId: string, openRequestId: string, runtime: Runtime): boolean {
+  private promoteProvisional(
+    sessionId: string,
+    openRequestId: string,
+    runtime: Runtime,
+    source: SessionSource
+  ): boolean {
     if (!this.isExactProvisional(sessionId, openRequestId, runtime)) return false;
     this.releaseProvisional(sessionId, openRequestId, runtime);
     if (this.confirmed.has(sessionId)) return false;
-    this.bindConfirmed(sessionId, runtime);
+    this.bindConfirmed(sessionId, runtime, source);
     return true;
   }
 
-  private bindConfirmed(sessionId: string, runtime: Runtime): void {
-    this.confirmed.set(sessionId, runtime);
+  private bindConfirmed(sessionId: string, runtime: Runtime, source: SessionSource): void {
+    this.confirmed.set(sessionId, {
+      runtime,
+      source: copyConfirmedSessionSource(source)
+    });
     runtime.sessionIds.add(sessionId);
   }
 
@@ -254,6 +271,14 @@ export class PythonSessionOwnership<Runtime extends PythonSessionRuntime> {
       sessionId
     );
   }
+}
+
+function copyConfirmedSessionSource(source: SessionSource): SessionSource {
+  const importOptions = source.importOptions ? Object.freeze({ ...source.importOptions }) : undefined;
+  return Object.freeze({
+    ...source,
+    ...(importOptions ? { importOptions } : {})
+  });
 }
 
 function invalidRuntimeSessionResponse(message: string, sessionId?: string): ErrorResponse {

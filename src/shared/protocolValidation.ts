@@ -260,11 +260,12 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       );
     }
     case "exportData": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "path", "format"]);
+      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "path", "format"], ["targetIdentity"]);
       return (
         isSessionRequest(candidate, "exportData") &&
         isNonEmptyString(candidate.path) &&
-        isOneOf(candidate.format, ["csv", "parquet"])
+        isOneOf(candidate.format, ["csv", "parquet"]) &&
+        (candidate.targetIdentity === undefined || isExportTargetIdentity(candidate.targetIdentity))
       );
     }
     case "closeSession": {
@@ -280,6 +281,21 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
     default:
       return false;
   }
+}
+
+function isExportTargetIdentity(value: unknown): boolean {
+  const candidate = exactRecord(value, ["device", "inode"]);
+  return (
+    candidate !== undefined &&
+    isCanonicalUnsigned128BitDecimal(candidate.device) &&
+    isCanonicalUnsigned128BitDecimal(candidate.inode) &&
+    (candidate.device !== "0" || candidate.inode !== "0")
+  );
+}
+
+function isCanonicalUnsigned128BitDecimal(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,38})$/u.test(value)) return false;
+  return BigInt(value) <= (1n << 128n) - 1n;
 }
 
 /** Validates the canonical protocol-v2 response envelope at an untrusted transport boundary. */
