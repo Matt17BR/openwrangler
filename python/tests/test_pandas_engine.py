@@ -575,6 +575,48 @@ def test_pandas_eager_numeric_summaries_never_materialize_python_value_lists(
     assert sum(bin_["count"] for bin_ in floating["visualization"]["bins"]) == 4_093
 
 
+def test_pandas_eager_boolean_summaries_reuse_native_counts_without_materializing_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_list_materialization(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Eager Pandas boolean summaries must reuse native value counts.")
+
+    monkeypatch.setattr(pd.Series, "tolist", reject_list_materialization)
+    monkeypatch.setattr(pd.Series, "to_list", reject_list_materialization)
+    monkeypatch.setattr(engine_base, "boolean_visualization", reject_list_materialization)
+    monkeypatch.setattr(pandas_engine_module, "boolean_visualization", reject_list_materialization, raising=False)
+    frame = pd.DataFrame(
+        {
+            "native": pd.Series([True, False, True, True, False, True], dtype="bool"),
+            "nullable": pd.Series([True, False, True, pd.NA, True, pd.NA], dtype="boolean"),
+            "object": pd.Series([True, False, None, float("nan"), True, pd.NA], dtype="object"),
+            "all_null": pd.Series([pd.NA] * 6, dtype="boolean"),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PandasEngine().summaries(frame)}
+
+    expected = {
+        "native": (0, 0, 2, {"kind": "boolean", "trueCount": 4, "falseCount": 2}),
+        "nullable": (2, 0, 2, {"kind": "boolean", "trueCount": 3, "falseCount": 1}),
+        "object": (2, 1, 2, {"kind": "boolean", "trueCount": 2, "falseCount": 1}),
+        "all_null": (6, 0, 0, {"kind": "boolean", "trueCount": 0, "falseCount": 0}),
+    }
+    for column, (null_count, nan_count, distinct_count, visualization) in expected.items():
+        summary = summaries[column]
+        assert summary["type"] == "boolean"
+        assert summary["totalCount"] == 6
+        assert summary["nullCount"] == null_count
+        assert summary["nanCount"] == nan_count
+        assert summary["distinctCount"] == distinct_count
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == {
+            str(value): count
+            for value, count in ((True, visualization["trueCount"]), (False, visualization["falseCount"]))
+            if count
+        }
+        assert summary["visualization"] == visualization
+
+
 def test_pandas_custom_code_cannot_mutate_nested_source_objects():
     source = pd.DataFrame({"nested": [[1], [2]], "value": [1, 2]})
     engine = PandasEngine()

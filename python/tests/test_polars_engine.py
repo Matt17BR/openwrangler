@@ -777,6 +777,45 @@ def test_polars_eager_numeric_summaries_never_materialize_python_value_lists(
     assert sum(bin_["count"] for bin_ in floating["visualization"]["bins"]) == 4_093
 
 
+def test_polars_eager_boolean_summaries_reuse_native_counts_without_materializing_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_list_materialization(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Eager Polars boolean summaries must reuse native value counts.")
+
+    monkeypatch.setattr(pl.Series, "to_list", reject_list_materialization)
+    monkeypatch.setattr(engine_base, "boolean_visualization", reject_list_materialization)
+    monkeypatch.setattr(polars_engine, "boolean_visualization", reject_list_materialization, raising=False)
+    frame = pl.DataFrame(
+        {
+            "native": pl.Series([True, False, True, True, False, True], dtype=pl.Boolean),
+            "nullable": pl.Series([True, False, True, None, True, None], dtype=pl.Boolean),
+            "all_null": pl.Series([None] * 6, dtype=pl.Boolean),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PolarsEngine().summaries(frame)}
+
+    expected = {
+        "native": (0, 2, {"kind": "boolean", "trueCount": 4, "falseCount": 2}),
+        "nullable": (2, 2, {"kind": "boolean", "trueCount": 3, "falseCount": 1}),
+        "all_null": (6, 0, {"kind": "boolean", "trueCount": 0, "falseCount": 0}),
+    }
+    for column, (null_count, distinct_count, visualization) in expected.items():
+        summary = summaries[column]
+        assert summary["type"] == "boolean"
+        assert summary["totalCount"] == 6
+        assert summary["nullCount"] == null_count
+        assert summary["nanCount"] == 0
+        assert summary["distinctCount"] == distinct_count
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == {
+            str(value): count
+            for value, count in ((True, visualization["trueCount"]), (False, visualization["falseCount"]))
+            if count
+        }
+        assert summary["visualization"] == visualization
+
+
 def test_lazy_polars_header_stats_collect_only_scalar_results(monkeypatch):
     frame = pl.DataFrame(
         {

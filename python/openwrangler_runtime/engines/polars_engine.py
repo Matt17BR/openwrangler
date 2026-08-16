@@ -19,7 +19,6 @@ from .base import (
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
-    boolean_visualization,
     bound_column_name,
     categorical_visualization,
     coerce_typed_view_value,
@@ -390,7 +389,7 @@ class PolarsEngine(DataFrameEngine):
             series = df[column]
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
-            top_values, distinct_count = self._summary_counts(series, column, semantic_type)
+            top_values, distinct_count, boolean_counts = self._summary_counts(series, column, semantic_type)
             summary: dict[str, Any] = {
                 "columnId": column_id,
                 "column": column,
@@ -421,7 +420,9 @@ class PolarsEngine(DataFrameEngine):
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 summary["visualization"] = _polars_numeric_visualization(numeric_series)
             elif semantic_type == "boolean":
-                summary["visualization"] = boolean_visualization(series.drop_nulls().to_list())
+                if boolean_counts is None:  # pragma: no cover - guarded by the semantic type
+                    raise EngineError(f"The boolean profile distribution for {column} is missing.")
+                summary["visualization"] = boolean_counts
             elif semantic_type in {"datetime", "date"}:
                 summary["visualization"] = datetime_visualization(series.min(), series.max())
             else:
@@ -677,14 +678,19 @@ class PolarsEngine(DataFrameEngine):
             collected.append((top_values, int(row["distinct"])))
         return collected
 
-    def _summary_counts(self, series: Any, column: str, semantic_type: str) -> tuple[list[dict[str, Any]], int]:
+    def _summary_counts(
+        self,
+        series: Any,
+        column: str,
+        semantic_type: str,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
         valid = series.drop_nulls()
         if semantic_type == "float":
             valid = valid.drop_nans()
 
         try:
             counts = valid.value_counts(sort=True)
-            rows = counts.head(10).iter_rows(named=True)
+            rows = list(counts.head(10).iter_rows(named=True))
             top_values = [
                 {
                     "value": (
@@ -697,7 +703,14 @@ class PolarsEngine(DataFrameEngine):
                 for row in rows
                 if row[column] is not None
             ]
-            return top_values, counts.height
+            boolean_counts = None
+            if semantic_type == "boolean":
+                boolean_counts = {
+                    "kind": "boolean",
+                    "trueCount": sum(int(row["count"]) for row in rows if row[column] is True),
+                    "falseCount": sum(int(row["count"]) for row in rows if row[column] is False),
+                }
+            return top_values, counts.height, boolean_counts
         except Exception as error:
             raise EngineError(f"Polars could not compute exact summary counts for {column}: {error}") from error
 
