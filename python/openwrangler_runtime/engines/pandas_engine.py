@@ -20,7 +20,6 @@ from .base import (
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
-    boolean_visualization,
     bound_column_name,
     bound_column_position,
     categorical_visualization,
@@ -277,10 +276,8 @@ class PandasEngine(DataFrameEngine):
             raw_type = str(series.dtype)
             semantic_type = _pandas_semantic_type(series)
             null_count, nan_count = _missing_value_counts(series, raw_type)
-            top_values = [
-                {"value": str(index), "count": int(value)}
-                for index, value in series.value_counts(dropna=True).head(10).items()
-            ]
+            value_counts = series.value_counts(dropna=True)
+            top_values = [{"value": str(index), "count": int(value)} for index, value in value_counts.head(10).items()]
             summary: dict[str, Any] = {
                 "columnId": column_id,
                 "column": str(column),
@@ -309,7 +306,11 @@ class PandasEngine(DataFrameEngine):
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 summary["visualization"] = _pandas_numeric_visualization(numeric)
             elif semantic_type == "boolean":
-                summary["visualization"] = boolean_visualization(series.dropna().tolist())
+                summary["visualization"] = {
+                    "kind": "boolean",
+                    "trueCount": int(value_counts.get(True, 0)),
+                    "falseCount": int(value_counts.get(False, 0)),
+                }
             elif semantic_type in {"datetime", "date"}:
                 values = series.dropna()
                 summary["visualization"] = datetime_visualization(
