@@ -726,6 +726,15 @@ class DataFrameEngine(ABC):
         del error
         return None
 
+    def is_lazy(self, frame: Any, source: Mapping[str, Any]) -> bool:
+        """Return whether the retained session frame is evaluated lazily."""
+
+        del frame
+        if source.get("kind") != "file":
+            return False
+        extension = Path(str(source.get("path", ""))).suffix.lower()
+        return extension in self.capabilities.lazy_file_extensions
+
     def internal_row_id_column(self, frame: Any) -> Any | None:
         """Return the one private row-identity column, rejecting ambiguous frames."""
 
