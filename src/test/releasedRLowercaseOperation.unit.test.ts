@@ -57,7 +57,8 @@ describe("released R Lowercase operation", () => {
     });
 
     expect(requests.map((request) => request.kind)).toEqual(["previewStep", "applyDraft", "undoStep"]);
-    expect(requests[0]).toMatchObject({
+    expect(requests[0]).toEqual({
+      kind: "previewStep",
       sessionId: "session-r",
       revision: 7,
       step: {
@@ -70,8 +71,24 @@ describe("released R Lowercase operation", () => {
       columnOffset: 0,
       columnLimit: 8
     });
-    expect(requests[1]).toMatchObject({ revision: 8 });
-    expect(requests[2]).toMatchObject({ revision: 9 });
+    expect(requests[1]).toEqual({
+      kind: "applyDraft",
+      sessionId: "session-r",
+      revision: 8,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(requests[2]).toEqual({
+      kind: "undoStep",
+      sessionId: "session-r",
+      revision: 9,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
     expect(events).toEqual([
       ...(valueOwned ? ["value:start"] : []),
       `progress:${phase}:editing:lowercase-preview-apply-undo`,
@@ -82,18 +99,25 @@ describe("released R Lowercase operation", () => {
     ]);
   });
 
-  it("fails before runtime dispatch for an ineligible phase/catalog owner", async () => {
+  it.each([
+    ["jupyter-r", "core-catalog"],
+    ["jupyter-r-remote", "value-operations"]
+  ] as const)("fails before dispatch or progress for ineligible %s/%s ownership", async (phase, catalog) => {
     let requests = 0;
+    const progress: string[] = [];
+    const boundaries: string[] = [];
     await expect(
       exerciseReleasedRLowercaseOperation({
         testing: { activeSession, request: async () => (requests += 1) as unknown as OpenWranglerResponse },
         sessionId: "session-r",
-        phase: "jupyter-r",
-        catalog: "core-catalog",
-        recordProgress: () => undefined,
-        recordValueOperationBoundary: () => undefined
+        phase,
+        catalog,
+        recordProgress: (checkpoint) => progress.push(checkpoint),
+        recordValueOperationBoundary: (boundary) => boundaries.push(boundary)
       })
     ).rejects.toThrow(/remote-core or local-value owner/u);
     expect(requests).toBe(0);
+    expect(progress).toEqual([]);
+    expect(boundaries).toEqual([]);
   });
 });
