@@ -29,13 +29,11 @@ import {
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
 import {
-  decodePersistedSession,
   persistedSessionState,
-  persistenceKey,
-  SESSION_STORAGE_KEY,
   type DecodedPersistedSessionState,
   type PersistedCleaningState
 } from "./sessionPersistence";
+import { SessionPersistenceStore } from "./sessionPersistenceStore";
 import { responseMismatch, sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
   SessionRequestScheduler,
@@ -143,15 +141,13 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
   private disposed = false;
-  private persistenceTail: Promise<void> = Promise.resolve();
   private shutdownPromise: Promise<void> | undefined;
   private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
   private readonly runtimeCleanup: SessionRuntimeCleanup;
+  private readonly persistence: SessionPersistenceStore;
 
-  constructor(
-    private readonly workspaceState?: vscode.Memento,
-    diagnosticSink?: (message: string) => void
-  ) {
+  constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
+    this.persistence = new SessionPersistenceStore(workspaceState);
     this.runtimeCleanup = new SessionRuntimeCleanup(
       (delegate) =>
         this.pendingOpens.has(delegate) || [...this.sessions.values()].some((session) => session.delegate === delegate),
@@ -1957,25 +1953,12 @@ export class SessionCoordinator implements vscode.Disposable {
     request: OpenSessionRequest,
     backend: SessionMetadata["backend"]
   ): DecodedPersistedSessionState | undefined {
-    if (!isPersistentSession(request.source, backend)) return undefined;
-    const key = persistenceKey(request.source, backend);
-    const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
-    const state = decodePersistedSession(stored?.[key]);
-    return state?.backend === backend ? state : undefined;
+    return this.persistence.load(request.source, backend);
   }
 
   private async persistSession(session: CoordinatedSession): Promise<void> {
-    if (!this.workspaceState || !isPersistentSession(session.openRequest.source, session.metadata.backend)) return;
-    const key = persistenceKey(session.openRequest.source, session.metadata.backend);
     const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
-    const task = this.persistenceTail
-      .catch(() => undefined)
-      .then(async () => {
-        const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
-        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
-      });
-    this.persistenceTail = task.catch(() => undefined);
-    await this.persistenceTail;
+    await this.persistence.save(session.openRequest.source, state);
   }
 
   private async persistCurrentPage(
@@ -1985,52 +1968,8 @@ export class SessionCoordinator implements vscode.Disposable {
     isCurrent: () => boolean,
     commit: () => void
   ): Promise<boolean> {
-    if (!this.workspaceState || !isPersistentSession(session.openRequest.source, metadata.backend)) {
-      if (!isCurrent()) return false;
-      commit();
-      return true;
-    }
-
-    const key = persistenceKey(session.openRequest.source, metadata.backend);
     const state = persistedSessionState(metadata, gridState(viewState), session.draftBaseFilterModel);
-    let committed = false;
-    const task = this.persistenceTail
-      .catch(() => undefined)
-      .then(async () => {
-        if (!isCurrent()) return;
-        const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
-        const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
-        const previousState = stored[key];
-        try {
-          await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
-        } catch {
-          // Persistence is best-effort. A current page may still become the live
-          // session state, matching the existing coordinator behavior.
-          if (isCurrent()) {
-            commit();
-            committed = true;
-          }
-          return;
-        }
-        if (!isCurrent()) {
-          const latest = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
-          const restored = { ...latest };
-          if (hadPreviousState) restored[key] = previousState;
-          else delete restored[key];
-          try {
-            await this.workspaceState?.update(SESSION_STORAGE_KEY, restored);
-          } catch {
-            // The stale page remains rejected even if best-effort persistence rollback fails.
-          }
-          return;
-        }
-        commit();
-        committed = true;
-      });
-    const settled = task.catch(() => undefined);
-    this.persistenceTail = settled;
-    await settled;
-    return committed;
+    return this.persistence.commitCurrent(session.openRequest.source, state, isCurrent, commit);
   }
 
   private async restoreRuntimeState(
@@ -2457,14 +2396,6 @@ export class SessionCoordinator implements vscode.Disposable {
   private isLiveSession(session: CoordinatedSession): boolean {
     return !this.disposed && this.sessions.get(session.publicId) === session;
   }
-}
-
-function isPersistentSession(source: SessionSource, backend: SessionMetadata["backend"]): boolean {
-  // Saved notebook outputs are bounded value snapshots, not reopenable source
-  // data. Their rows and viewing state stay in memory only for the owning panel.
-  // Distributed Spark and native R frames belong to one exact live notebook
-  // kernel, so ordinary workspace replay must never try to reacquire them.
-  return source.kind !== "notebookOutput" && backend !== "pyspark" && backend !== "r";
 }
 
 function sameFileSourceIdentity(current: SessionSource, replacement: SessionSource): boolean {
