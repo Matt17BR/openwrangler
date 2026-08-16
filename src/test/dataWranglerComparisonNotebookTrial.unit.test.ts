@@ -1,3 +1,16 @@
+import {
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   COMPARISON_TRIAL_REQUEST_PROTOCOL,
@@ -12,9 +25,11 @@ import {
   observePointerReady,
   observeVisibleFullShape,
   openWranglerProfileTextReady,
+  readComparisonTrialRequest,
   validateComparisonNotebookLayout,
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
+  writeComparisonTrialResult,
   type ComparisonTrialRequest,
   type ComparisonTrialResult,
   type ComparisonTrialSample
@@ -22,11 +37,19 @@ import {
 
 const SHA = "a".repeat(64);
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+const temporaryRoots: string[] = [];
 
 afterEach(() => {
   if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
   else Reflect.deleteProperty(globalThis, "document");
+  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-boundary-"));
+  temporaryRoots.push(root);
+  return root;
+}
 
 function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTrialRequest {
   return {
@@ -109,6 +132,211 @@ function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrial
     ...overrides
   };
 }
+
+function requestForRoot(root: string, trialId: string): ComparisonTrialRequest {
+  return request({
+    trialId,
+    isolatedRoot: root,
+    notebookPath: join(root, "study.ipynb"),
+    cell: { ...request().cell, source: join(root, "fixtures", "source.csv") }
+  });
+}
+
+function requestBytes(root: string, trialId: string, minimumBytes = 0): Buffer {
+  const serialized = Buffer.from(JSON.stringify(requestForRoot(root, trialId)), "utf8");
+  if (serialized.length >= minimumBytes) return serialized;
+  return Buffer.concat([serialized, Buffer.alloc(minimumBytes - serialized.length, 0x20)]);
+}
+
+describe("comparison request filesystem boundary", () => {
+  it("reads and validates exact bytes through one pinned descriptor", () => {
+    const root = temporaryRoot();
+    const path = join(root, "request.json");
+    writeFileSync(path, requestBytes(root, "pandas-csv-warm-00"), { mode: 0o600 });
+
+    expect(readComparisonTrialRequest(path)).toEqual(requestForRoot(root, "pandas-csv-warm-00"));
+  });
+
+  it("rejects a same-size pathname replacement before reading", () => {
+    const root = temporaryRoot();
+    const path = join(root, "request.json");
+    const retained = join(root, "retained.json");
+    const replacement = join(root, "replacement.json");
+    const originalBytes = requestBytes(root, "pandas-csv-warm-00");
+    const replacementBytes = requestBytes(root, "pandas-csv-warm-01");
+    expect(replacementBytes.length).toBe(originalBytes.length);
+    writeFileSync(path, originalBytes, { mode: 0o600 });
+    writeFileSync(replacement, replacementBytes, { mode: 0o600 });
+
+    expect(() =>
+      readComparisonTrialRequest(path, {
+        afterDescriptorPinned(openedPath) {
+          renameSync(openedPath, retained);
+          renameSync(replacement, openedPath);
+        }
+      })
+    ).toThrow(/changed before its descriptor-bound read/u);
+    expect(readFileSync(path)).toEqual(replacementBytes);
+  });
+
+  it("rejects a same-size pathname replacement during a multi-chunk read", () => {
+    const root = temporaryRoot();
+    const path = join(root, "request.json");
+    const retained = join(root, "retained.json");
+    const replacement = join(root, "replacement.json");
+    const originalBytes = requestBytes(root, "pandas-csv-warm-00", 8192);
+    const replacementBytes = requestBytes(root, "pandas-csv-warm-01", 8192);
+    expect(replacementBytes.length).toBe(originalBytes.length);
+    writeFileSync(path, originalBytes, { mode: 0o600 });
+    writeFileSync(replacement, replacementBytes, { mode: 0o600 });
+    let replaced = false;
+
+    expect(() =>
+      readComparisonTrialRequest(path, {
+        afterReadProgress(openedPath, bytesRead) {
+          if (replaced || bytesRead >= originalBytes.length) return;
+          replaced = true;
+          renameSync(openedPath, retained);
+          renameSync(replacement, openedPath);
+        }
+      })
+    ).toThrow(/changed during its descriptor-bound read/u);
+    expect(replaced).toBe(true);
+    expect(readFileSync(path)).toEqual(replacementBytes);
+  });
+
+  it("rejects a hard-link alias substituted during the descriptor read", () => {
+    const root = temporaryRoot();
+    const path = join(root, "request.json");
+    const retained = join(root, "retained.json");
+    const replacement = join(root, "replacement.json");
+    writeFileSync(path, requestBytes(root, "pandas-csv-warm-00", 8192), { mode: 0o600 });
+    writeFileSync(replacement, requestBytes(root, "pandas-csv-warm-01", 8192), { mode: 0o600 });
+    let replaced = false;
+
+    expect(() =>
+      readComparisonTrialRequest(path, {
+        afterReadProgress(openedPath, bytesRead) {
+          if (replaced || bytesRead >= 8192) return;
+          replaced = true;
+          renameSync(openedPath, retained);
+          linkSync(replacement, openedPath);
+        }
+      })
+    ).toThrow(/single-link regular file/u);
+    expect(replaced).toBe(true);
+  });
+
+  it.runIf(process.platform !== "win32")("rejects a symlink substituted after the descriptor is pinned", () => {
+    const root = temporaryRoot();
+    const path = join(root, "request.json");
+    const retained = join(root, "retained.json");
+    const replacement = join(root, "replacement.json");
+    writeFileSync(path, requestBytes(root, "pandas-csv-warm-00"), { mode: 0o600 });
+    writeFileSync(replacement, requestBytes(root, "pandas-csv-warm-01"), { mode: 0o600 });
+
+    expect(() =>
+      readComparisonTrialRequest(path, {
+        afterDescriptorPinned(openedPath) {
+          renameSync(openedPath, retained);
+          symlinkSync(replacement, openedPath);
+        }
+      })
+    ).toThrow(/single-link regular file/u);
+  });
+});
+
+describe("comparison result filesystem boundary", () => {
+  it("publishes one exclusive single-link result", () => {
+    const root = temporaryRoot();
+    const destination = join(root, "result.json");
+    const value = result();
+
+    writeComparisonTrialResult(destination, root, value);
+
+    expect(JSON.parse(readFileSync(destination, "utf8"))).toEqual(value);
+    expect(lstatSync(destination, { bigint: true }).nlink).toBe(1n);
+    expect(readdirSync(root)).toEqual(["result.json"]);
+  });
+
+  it("does not overwrite a same-size result created before the exclusive commit", () => {
+    const root = temporaryRoot();
+    const destination = join(root, "result.json");
+    const sentinel = Buffer.alloc(Buffer.byteLength(`${JSON.stringify(result(), null, 2)}\n`, "utf8"), 0x78);
+
+    expect(() =>
+      writeComparisonTrialResult(destination, root, result(), {
+        beforeLink(_temporary, published) {
+          writeFileSync(published, sentinel, { flag: "wx", mode: 0o600 });
+        }
+      })
+    ).toThrow(/EEXIST|exist/u);
+    expect(readFileSync(destination)).toEqual(sentinel);
+    expect(readdirSync(root)).toEqual(["result.json"]);
+  });
+
+  it("does not overwrite a hard-link alias created before the exclusive commit", () => {
+    const root = temporaryRoot();
+    const destination = join(root, "result.json");
+    const sentinelPath = join(root, "sentinel.json");
+    const sentinel = Buffer.from("retained sentinel\n", "utf8");
+    writeFileSync(sentinelPath, sentinel, { mode: 0o600 });
+
+    expect(() =>
+      writeComparisonTrialResult(destination, root, result(), {
+        beforeLink(_temporary, published) {
+          linkSync(sentinelPath, published);
+        }
+      })
+    ).toThrow(/EEXIST|exist/u);
+    expect(readFileSync(destination)).toEqual(sentinel);
+    expect(readFileSync(sentinelPath)).toEqual(sentinel);
+    expect(readdirSync(root).sort()).toEqual(["result.json", "sentinel.json"]);
+  });
+
+  it("withholds temporary cleanup when its pathname is replaced before retirement", () => {
+    const root = temporaryRoot();
+    const destination = join(root, "result.json");
+    const retained = join(root, "retained-temporary.json");
+    const replacement = Buffer.from("replacement temporary\n", "utf8");
+    let substitutedTemporary: string | undefined;
+
+    expect(() =>
+      writeComparisonTrialResult(destination, root, result(), {
+        beforeTemporaryRemoval(temporary) {
+          substitutedTemporary = temporary;
+          renameSync(temporary, retained);
+          writeFileSync(temporary, replacement, { flag: "wx", mode: 0o600 });
+        }
+      })
+    ).toThrow(/publication and identified cleanup both failed/u);
+    expect(substitutedTemporary).toBeDefined();
+    expect(readFileSync(substitutedTemporary!)).toEqual(replacement);
+    expect(readFileSync(retained).length).toBeGreaterThan(replacement.length);
+    expect(() => lstatSync(destination)).toThrow(/ENOENT/u);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "withholds cleanup when the published path is replaced before temporary retirement",
+    () => {
+      const root = temporaryRoot();
+      const destination = join(root, "result.json");
+      const retained = join(root, "retained.json");
+      const replacement = Buffer.from("replacement result\n", "utf8");
+
+      expect(() =>
+        writeComparisonTrialResult(destination, root, result(), {
+          afterLink(_temporary, published) {
+            renameSync(published, retained);
+            writeFileSync(published, replacement, { flag: "wx", mode: 0o600 });
+          }
+        })
+      ).toThrow(/publication and identified cleanup both failed/u);
+      expect(readFileSync(destination)).toEqual(replacement);
+      expect(readFileSync(retained).length).toBeGreaterThan(replacement.length);
+    }
+  );
+});
 
 describe("neutral comparison request", () => {
   it("accepts the exact Pandas/CSV smoke contract", () => {
