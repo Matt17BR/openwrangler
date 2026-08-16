@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import traceback
+from collections.abc import Iterator, Mapping
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, wait
 from time import monotonic
 from typing import Any
@@ -20,6 +21,18 @@ from .session import (
 )
 
 SHUTDOWN_GRACE_SECONDS = 1.5
+MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
+MAX_TRANSPORT_ID_BYTES = 256
+MAX_DIAGNOSTIC_BYTES = 4 * 1024
+MAX_DIAGNOSTIC_DETAIL_BYTES = 16 * 1024
+INTERACTIVE_WORKERS = 4
+BACKGROUND_WORKERS = 2
+MAX_INTERACTIVE_LIVE_REQUESTS = 64
+MAX_BACKGROUND_LIVE_REQUESTS = 32
+
+
+class _TerminalTransportError(Exception):
+    """A framing or correlation failure after which stdin cannot be trusted."""
 
 
 def dispatch(
@@ -162,67 +175,67 @@ def _with_view_request_id(response: dict[str, Any], request: dict[str, Any]) -> 
     return correlated
 
 
-def main() -> None:
+def main() -> int:
     manager = SessionManager()
     write_lock = threading.Lock()
     pending_lock = threading.Lock()
     pending: dict[str, Future[dict[str, Any]]] = {}
+    live_priorities: dict[str, str] = {}
+    live_counts = {"interactive": 0, "background": 0}
+    transport_failed = threading.Event()
 
     def write(payload: dict[str, Any]) -> None:
         with write_lock:
+            if transport_failed.is_set():
+                return
             sys.stdout.write(json.dumps(payload, default=str, allow_nan=False) + "\n")
             sys.stdout.flush()
 
     def complete(request_id: str, view_request_id: str | None, future: Future[dict[str, Any]]) -> None:
-        with pending_lock:
-            pending.pop(request_id, None)
-        if future.cancelled():
-            response = {"kind": "cancelled", "targetRequestId": request_id}
-            if view_request_id:
+        try:
+            if future.cancelled():
+                response = {"kind": "cancelled", "targetRequestId": request_id}
+            else:
+                try:
+                    response = future.result()
+                except CancelledError:
+                    response = {"kind": "cancelled", "targetRequestId": request_id}
+                except Exception as error:
+                    response = _response_for_error(error)
+            if response.get("kind") in {"error", "cancelled"} and view_request_id:
                 response["viewRequestId"] = view_request_id
             write(response_envelope(request_id, response))
-            return
-        try:
-            response = future.result()
-        except CancelledError:
-            response = {"kind": "cancelled", "targetRequestId": request_id}
-        except ProtocolError as error:
-            response = error_response(str(error), code="invalid_request", recoverable=False)
-        except UnknownSessionError as error:
-            response = error_response(str(error), code="unknown_session", session_id=error.session_id)
-        except LiveSourceInvalidatedError as error:
-            response = error_response(str(error), code="live_source_invalidated", session_id=error.session_id)
-        except PySparkConnectUnavailableError as error:
-            response = error_response(str(error), code="pyspark_connect_unavailable", session_id=error.session_id)
-        except PySparkConnectStateLostError as error:
-            response = error_response(str(error), code="pyspark_connect_state_lost", session_id=error.session_id)
-        except SessionCleanupError as error:
-            response = error_response(
-                str(error),
-                code="session_cleanup_failed",
-                recoverable=False,
-                session_id=error.session_id,
+        finally:
+            _release_live_request(
+                pending,
+                live_priorities,
+                live_counts,
+                pending_lock,
+                request_id,
             )
-        except AmbiguousViewColumnError as error:
-            response = error_response(str(error), code="ambiguous_view_column")
-        except EngineError as error:
-            response = error_response(str(error), code="engine_error")
-        except Exception as error:
-            response = error_response(str(error), detail=traceback.format_exc())
-        if response.get("kind") in {"error", "cancelled"} and view_request_id:
-            response["viewRequestId"] = view_request_id
-        write(response_envelope(request_id, response))
 
-    interactive_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="openwrangler-interactive")
-    background_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="openwrangler-background")
+    interactive_executor = ThreadPoolExecutor(
+        max_workers=INTERACTIVE_WORKERS,
+        thread_name_prefix="openwrangler-interactive",
+    )
+    background_executor = ThreadPoolExecutor(
+        max_workers=BACKGROUND_WORKERS,
+        thread_name_prefix="openwrangler-background",
+    )
+    terminal_error: _TerminalTransportError | None = None
     try:
-        for line in sys.stdin:
-            if not line.strip():
-                continue
-            request_id = _safe_request_id(line)
-            view_request_id = _safe_view_request_id(line)
+        for payload in _iter_request_payloads(sys.stdin):
+            request_id = _request_id_for_payload(payload)
+            if request_id is None:
+                raise _TerminalTransportError("request frame has no bounded correlation ID")
+            view_request_id = _view_request_id_for_payload(payload)
+            if _is_live_request(live_priorities, pending_lock, request_id):
+                raise _TerminalTransportError("request frame reused a live correlation ID")
+            admitted = False
+            submitted = False
             try:
-                request_id, priority, request = decode_envelope(json.loads(line))
+                request_id, priority, request = decode_envelope(payload)
+                _validate_transport_ids(request_id, request)
                 view_request_id = request.get("viewRequestId")
                 if request["kind"] == "cancelRequest":
                     target = str(request["targetRequestId"])
@@ -230,11 +243,31 @@ def main() -> None:
                         response = {"kind": "cancelled", "targetRequestId": target}
                     else:
                         response = error_response(
-                            f"Request {target} is already running, complete, or unknown and cannot be cancelled.",
+                            "The target request is already running, complete, or unknown and cannot be cancelled.",
                             code="cancellation_unavailable",
                         )
                     write(response_envelope(request_id, response))
                     continue
+                admission = _reserve_live_request(
+                    live_priorities,
+                    live_counts,
+                    pending_lock,
+                    request_id,
+                    priority,
+                )
+                if admission == "duplicate":
+                    raise _TerminalTransportError("request frame reused a live correlation ID")
+                if admission == "capacity":
+                    response = error_response(
+                        f"The runtime has reached its bounded {priority} work limit; "
+                        "retry after an earlier request completes.",
+                        code="server_busy",
+                    )
+                    if view_request_id:
+                        response["viewRequestId"] = view_request_id
+                    write(response_envelope(request_id, response))
+                    continue
+                admitted = True
                 if request["kind"] == "openSession":
                     # CPython imports and native backend initialization must
                     # run on this process-owned thread. In particular, loading
@@ -247,56 +280,27 @@ def main() -> None:
                 future.add_done_callback(
                     lambda done, current=request_id, view=view_request_id: complete(current, view, done)
                 )
-            except ProtocolError as error:
-                response = error_response(str(error), code="invalid_request", recoverable=False)
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except UnknownSessionError as error:
-                response = error_response(str(error), code="unknown_session", session_id=error.session_id)
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except LiveSourceInvalidatedError as error:
-                response = error_response(str(error), code="live_source_invalidated", session_id=error.session_id)
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except PySparkConnectUnavailableError as error:
-                response = error_response(str(error), code="pyspark_connect_unavailable", session_id=error.session_id)
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except PySparkConnectStateLostError as error:
-                response = error_response(str(error), code="pyspark_connect_state_lost", session_id=error.session_id)
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except SessionCleanupError as error:
-                response = error_response(
-                    str(error),
-                    code="session_cleanup_failed",
-                    recoverable=False,
-                    session_id=error.session_id,
-                )
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except AmbiguousViewColumnError as error:
-                response = error_response(str(error), code="ambiguous_view_column")
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
-            except EngineError as error:
-                response = error_response(str(error), code="engine_error")
-                if view_request_id:
-                    response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
+                submitted = True
+            except _TerminalTransportError:
+                raise
             except Exception as error:
-                response = error_response(str(error), detail=traceback.format_exc())
+                response = _response_for_error(error)
                 if view_request_id:
                     response["viewRequestId"] = view_request_id
                 write(response_envelope(request_id, response))
+            finally:
+                if admitted and not submitted:
+                    _release_live_request(
+                        pending,
+                        live_priorities,
+                        live_counts,
+                        pending_lock,
+                        request_id,
+                    )
+    except _TerminalTransportError as error:
+        terminal_error = error
+        transport_failed.set()
+        _report_terminal_transport_error(error)
     finally:
         _shutdown_runtime(
             manager,
@@ -304,6 +308,7 @@ def main() -> None:
             pending,
             pending_lock,
         )
+    return 1 if terminal_error is not None else 0
 
 
 def _shutdown_runtime(
@@ -355,26 +360,171 @@ def _cancel_pending_future(
     return bool(future is not None and future.cancel())
 
 
-def _safe_request_id(line: str) -> str:
-    try:
-        payload = json.loads(line)
-        if isinstance(payload, dict):
-            return str(payload.get("requestId", "unknown"))
-    except Exception:
-        pass
-    return "unknown"
+def _iter_request_payloads(stream: Any) -> Iterator[Any]:
+    source = getattr(stream, "buffer", stream)
+    readline = getattr(source, "readline", None)
+    if callable(readline):
+        while True:
+            frame = readline(MAX_REQUEST_FRAME_BYTES + 1)
+            if frame == b"" or frame == "":
+                return
+            payload = _decode_request_frame(frame)
+            if payload is not None:
+                yield payload
+    else:
+        for frame in source:
+            payload = _decode_request_frame(frame)
+            if payload is not None:
+                yield payload
 
 
-def _safe_view_request_id(line: str) -> str | None:
+def _decode_request_frame(frame: Any) -> Any | None:
+    if isinstance(frame, str):
+        try:
+            encoded = frame.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise _TerminalTransportError("request frame is not valid UTF-8") from error
+    elif isinstance(frame, (bytes, bytearray)):
+        encoded = bytes(frame)
+    else:
+        raise _TerminalTransportError("stdin returned a non-byte request frame")
+    if len(encoded) > MAX_REQUEST_FRAME_BYTES:
+        raise _TerminalTransportError(f"request frame exceeds the {MAX_REQUEST_FRAME_BYTES}-byte limit including LF")
+    if not encoded.endswith(b"\n"):
+        raise _TerminalTransportError("request frame ended before its LF terminator")
     try:
-        payload = json.loads(line)
-        if isinstance(payload, dict) and isinstance(payload.get("request"), dict):
-            view_request_id = payload["request"].get("viewRequestId")
-            return view_request_id if isinstance(view_request_id, str) and view_request_id else None
+        text = encoded.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise _TerminalTransportError("request frame is not valid UTF-8") from error
+    if not text.strip():
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise _TerminalTransportError("request frame is not valid JSON") from error
+
+
+def _request_id_for_payload(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    request_id = payload.get("requestId")
+    return request_id if _is_bounded_transport_id(request_id) else None
+
+
+def _view_request_id_for_payload(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    request = payload.get("request")
+    if not isinstance(request, Mapping):
+        return None
+    view_request_id = request.get("viewRequestId")
+    return view_request_id if _is_bounded_transport_id(view_request_id) else None
+
+
+def _validate_transport_ids(request_id: str, request: Mapping[str, Any]) -> None:
+    if not _is_bounded_transport_id(request_id):
+        raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
+    for field in ("sessionId", "requestedSessionId", "viewRequestId", "targetRequestId"):
+        if field in request and not _is_bounded_transport_id(request[field]):
+            raise ProtocolError(f"{field} must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
+
+
+def _is_bounded_transport_id(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_TRANSPORT_ID_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
+def _is_live_request(
+    live_priorities: Mapping[str, str],
+    pending_lock: threading.Lock,
+    request_id: str,
+) -> bool:
+    with pending_lock:
+        return request_id in live_priorities
+
+
+def _reserve_live_request(
+    live_priorities: dict[str, str],
+    live_counts: dict[str, int],
+    pending_lock: threading.Lock,
+    request_id: str,
+    priority: str,
+) -> str:
+    with pending_lock:
+        if request_id in live_priorities:
+            return "duplicate"
+        limit = MAX_BACKGROUND_LIVE_REQUESTS if priority == "background" else MAX_INTERACTIVE_LIVE_REQUESTS
+        if live_counts[priority] >= limit:
+            return "capacity"
+        live_priorities[request_id] = priority
+        live_counts[priority] += 1
+    return "admitted"
+
+
+def _release_live_request(
+    pending: dict[str, Future[dict[str, Any]]],
+    live_priorities: dict[str, str],
+    live_counts: dict[str, int],
+    pending_lock: threading.Lock,
+    request_id: str,
+) -> None:
+    with pending_lock:
+        pending.pop(request_id, None)
+        priority = live_priorities.pop(request_id, None)
+        if priority is not None:
+            live_counts[priority] -= 1
+
+
+def _response_for_error(error: Exception) -> dict[str, Any]:
+    message = _bounded_diagnostic(str(error), MAX_DIAGNOSTIC_BYTES)
+    if isinstance(error, ProtocolError):
+        return error_response(message, code="invalid_request", recoverable=False)
+    if isinstance(error, UnknownSessionError):
+        return error_response(message, code="unknown_session", session_id=error.session_id)
+    if isinstance(error, LiveSourceInvalidatedError):
+        return error_response(message, code="live_source_invalidated", session_id=error.session_id)
+    if isinstance(error, PySparkConnectUnavailableError):
+        return error_response(message, code="pyspark_connect_unavailable", session_id=error.session_id)
+    if isinstance(error, PySparkConnectStateLostError):
+        return error_response(message, code="pyspark_connect_state_lost", session_id=error.session_id)
+    if isinstance(error, SessionCleanupError):
+        return error_response(
+            message,
+            code="session_cleanup_failed",
+            recoverable=False,
+            session_id=error.session_id,
+        )
+    if isinstance(error, AmbiguousViewColumnError):
+        return error_response(message, code="ambiguous_view_column")
+    if isinstance(error, EngineError):
+        return error_response(message, code="engine_error")
+    return error_response(
+        message,
+        detail=_bounded_diagnostic(traceback.format_exc(), MAX_DIAGNOSTIC_DETAIL_BYTES),
+    )
+
+
+def _bounded_diagnostic(value: str, maximum_bytes: int) -> str:
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= maximum_bytes:
+        return value
+    suffix = b"...[truncated]"
+    prefix = encoded[: maximum_bytes - len(suffix)].decode("utf-8", errors="ignore")
+    return f"{prefix}{suffix.decode('ascii')}"
+
+
+def _report_terminal_transport_error(error: _TerminalTransportError) -> None:
+    diagnostic = _bounded_diagnostic(str(error), MAX_DIAGNOSTIC_BYTES)
+    try:
+        sys.stderr.write(f"Open Wrangler runtime transport error: {diagnostic}\n")
+        sys.stderr.flush()
     except Exception:
-        pass
-    return None
+        return
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
