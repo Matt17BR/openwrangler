@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import { supportsViewPredicate } from "../../shared/filterModel";
+import { operationKinds } from "../../shared/operationCatalog.generated";
 import {
   PROTOCOL_VERSION,
   type ByExampleProgram,
@@ -105,36 +106,6 @@ import {
 const CLOSED_SESSION_LIMIT = 1_024;
 const R_DATA_EXPORT_TIMEOUT_MS = 30 * 60_000;
 const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
-const R_SUPPORTED_OPERATIONS = Object.freeze([
-  "sortRows",
-  "filterRows",
-  "dropMissingRows",
-  "fillMissingValues",
-  "dropDuplicates",
-  "selectColumns",
-  "dropColumns",
-  "renameColumn",
-  "cloneColumn",
-  "castColumn",
-  "formula",
-  "textLength",
-  "oneHotEncode",
-  "multiLabelBinarize",
-  "findReplace",
-  "stripText",
-  "splitText",
-  "capitalizeText",
-  "lowerText",
-  "upperText",
-  "minMaxScale",
-  "roundNumber",
-  "floorNumber",
-  "ceilNumber",
-  "formatDatetime",
-  "groupBy",
-  "byExample",
-  "customCode"
-] as OperationKind[]) as OperationKind[];
 
 type RTransformStepWithoutByExample =
   | SortRowsTransformStep
@@ -188,7 +159,7 @@ const R_BASE_CAPABILITIES = Object.freeze({
   sort: true,
   profile: true,
   columnValues: true,
-  supportedOperations: R_SUPPORTED_OPERATIONS
+  supportedOperations: operationKinds as OperationKind[]
 } satisfies Omit<SourceCapabilities, "notebookInsert" | "documentInsert">);
 
 const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({

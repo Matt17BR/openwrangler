@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RKernelBridgeTransport } from "../extension/r/rKernelBridge";
 import type { ActiveSessionSnapshot, SessionCoordinator } from "../extension/sessionCoordinator";
 import type { OperationKind } from "../shared/protocol";
-import { operationCatalog } from "../shared/operations";
+import { operationCatalog, operationKinds as EXPECTED_NATIVE_R_OPERATIONS } from "../shared/operationCatalog.generated";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -137,37 +137,6 @@ vi.mock("../extension/configuration", () => ({
 import * as vscode from "vscode";
 import { registerNativeViews } from "../extension/nativeViews";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
-
-const EXPECTED_NATIVE_R_OPERATIONS = Object.freeze([
-  "sortRows",
-  "filterRows",
-  "dropMissingRows",
-  "fillMissingValues",
-  "dropDuplicates",
-  "selectColumns",
-  "dropColumns",
-  "renameColumn",
-  "cloneColumn",
-  "castColumn",
-  "formula",
-  "textLength",
-  "oneHotEncode",
-  "multiLabelBinarize",
-  "findReplace",
-  "stripText",
-  "splitText",
-  "capitalizeText",
-  "lowerText",
-  "upperText",
-  "minMaxScale",
-  "roundNumber",
-  "floorNumber",
-  "ceilNumber",
-  "formatDatetime",
-  "groupBy",
-  "byExample",
-  "customCode"
-] satisfies readonly OperationKind[]);
 
 const temporaryDirectories: string[] = [];
 
