@@ -7,7 +7,6 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   DataExportedResponse,
-  ErrorResponse,
   OpenSessionRequest,
   PageResponse,
   SessionMetadata,
@@ -21,7 +20,7 @@ import type { GridViewState, PersistedViewingState } from "../shared/viewState";
 import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresentation } from "./dataBridge";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
-import { persistedSessionState, type DecodedPersistedSessionState } from "./sessionPersistence";
+import type { DecodedPersistedSessionState } from "./sessionPersistence";
 import { SessionPersistenceStore } from "./sessionPersistenceStore";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
@@ -33,6 +32,7 @@ import {
 } from "./sessionResponseCommitter";
 import { SessionRequestScheduler, requestViewId, type SessionRequestExecutionLane } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
+import { SessionRuntimeRecovery, type RuntimeRecoveryHooks } from "./sessionRuntimeRecovery";
 import {
   confirmedReplayOpenRequest,
   publicOpenedResponse,
@@ -41,9 +41,7 @@ import {
   type RuntimeReconfigurationHooks
 } from "./sessionRuntimeReconfigurer";
 import {
-  automaticRecoveryOptions,
   isRuntimeStateMutation,
-  recoveryFollowupOptions,
   runtimeRecoveryOptions,
   SessionRuntimeRequestExecutor
 } from "./sessionRuntimeRequestExecutor";
@@ -51,8 +49,7 @@ import {
   gridState,
   initialViewingState,
   reconcileViewingState,
-  SessionRuntimeStateRestorer,
-  type RuntimeSessionState
+  SessionRuntimeStateRestorer
 } from "./sessionRuntimeStateRestorer";
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
@@ -137,6 +134,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly responseCommitter: SessionResponseCommitter;
   private readonly runtimeRequestExecutor: SessionRuntimeRequestExecutor;
   private readonly runtimeReconfigurer: SessionRuntimeReconfigurer;
+  private readonly runtimeRecovery: SessionRuntimeRecovery;
 
   constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
     this.persistence = new SessionPersistenceStore(workspaceState);
@@ -152,6 +150,7 @@ export class SessionCoordinator implements vscode.Disposable {
       this.runtimeStateRestorer,
       this.responseCommitter
     );
+    this.runtimeRecovery = new SessionRuntimeRecovery(this.runtimeCleanup, this.runtimeStateRestorer);
   }
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
@@ -208,8 +207,6 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
     const session = this.sessions.get(sessionId);
-    const unavailable = (message: string): ErrorResponse =>
-      protocolError("pyspark_connect_state_lost", message, true, sessionId);
     if (
       this.disposed ||
       !session ||
@@ -217,72 +214,14 @@ export class SessionCoordinator implements vscode.Disposable {
       session.metadata.backend !== "pyspark" ||
       session.openRequest.source.kind !== "notebookVariable"
     ) {
-      return unavailable("This live PySpark dataframe is no longer available to reconnect.");
-    }
-    if (revision !== session.publicRevision) {
-      return unavailable(
-        "The Open Wrangler view changed before reconnecting. Try Reconnect again from the current view."
-      );
-    }
-    if (!session.liveReconnectRequired) {
       return protocolError(
-        "pyspark_connect_reconnect_not_required",
-        "This live PySpark dataframe does not need to reconnect.",
+        "pyspark_connect_state_lost",
+        "This live PySpark dataframe is no longer available to reconnect.",
         true,
-        session.publicId
+        sessionId
       );
     }
-    if (session.closing || session.reconfiguring || session.reconnecting) {
-      return unavailable("Open Wrangler is already closing or reconnecting this dataframe.");
-    }
-
-    session.reconnecting = true;
-    session.scheduler.cancelBackground();
-    try {
-      await session.scheduler.waitForIdle();
-      if (
-        !this.isLiveSession(session) ||
-        session.closing ||
-        session.publicRevision !== revision ||
-        !session.liveReconnectRequired
-      ) {
-        return unavailable("The Open Wrangler view changed before the dataframe could reconnect.");
-      }
-
-      const failedRuntimeId = session.runtimeId;
-      let restoredPage: PageResponse | undefined;
-      const recovered = await this.replayAfterRuntimeLoss(
-        session,
-        failedRuntimeId,
-        automaticRecoveryOptions(options, failedRuntimeId),
-        session.metadata.schema,
-        undefined,
-        (page) => {
-          restoredPage = page;
-        }
-      );
-      if (!recovered || !restoredPage) {
-        return unavailable(
-          `Open Wrangler could not reconnect ${session.openRequest.source.variableName}. ` +
-            "Run the cell that creates it, then choose Reconnect again."
-        );
-      }
-
-      session.liveReconnectRequired = false;
-      return {
-        kind: "sessionOpened",
-        metadata: publicMetadata(
-          session.metadata,
-          session.publicId,
-          session.publicRevision,
-          session.openRequest.source
-        ),
-        page: restoredPage.page,
-        summaries: []
-      };
-    } finally {
-      session.reconnecting = false;
-    }
+    return this.runtimeRecovery.reconnect(session, revision, options, this.runtimeRecoveryHooks(session));
   }
 
   setActive(sessionId: string | undefined): void {
@@ -964,7 +903,8 @@ export class SessionCoordinator implements vscode.Disposable {
       isCoordinatorAvailable: () => !this.disposed,
       isCurrent: () => this.isLiveSession(session) && !session.closing,
       originMismatch: (request) => sessionOriginMismatch(request, session.origin),
-      recoverConfirmedRuntime: () => this.replayExclusive(session, runtimeRecoveryOptions(), false),
+      recoverConfirmedRuntime: () =>
+        this.runtimeRecovery.replay(session, runtimeRecoveryOptions(), this.runtimeRecoveryHooks(session), false),
       invalidateStepInspection: () => this.invalidateStepInspection(session)
     };
   }
@@ -1128,7 +1068,9 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
-    return this.serializeSessionEstablishment(session.delegate, () => this.replayExclusive(session, options));
+    return this.serializeSessionEstablishment(session.delegate, () =>
+      this.runtimeRecovery.replay(session, options, this.runtimeRecoveryHooks(session))
+    );
   }
 
   private replayAfterRuntimeLoss(
@@ -1143,7 +1085,15 @@ export class SessionCoordinator implements vscode.Disposable {
       if (!this.isLiveSession(session) || session.closing) return false;
       if (session.runtimeId !== failedRuntimeId) return true;
       if (isStillCurrent && !isStillCurrent()) return false;
-      return this.replayExclusive(session, options, true, requiredSchema, isStillCurrent, onRestoredPage);
+      return this.runtimeRecovery.replay(
+        session,
+        options,
+        this.runtimeRecoveryHooks(session),
+        true,
+        requiredSchema,
+        isStillCurrent,
+        onRestoredPage
+      );
     });
   }
 
@@ -1161,106 +1111,17 @@ export class SessionCoordinator implements vscode.Disposable {
     return result;
   }
 
-  private async replayExclusive(
-    session: CoordinatedSession,
-    options?: BridgeRequestOptions,
-    publishActive = true,
-    requiredSchema?: readonly ColumnSchema[],
-    isStillCurrent?: () => boolean,
-    onRestoredPage?: (page: PageResponse) => void
-  ): Promise<boolean> {
-    if (!this.isLiveSession(session) || session.closing) return false;
-    if (isStillCurrent && !isStillCurrent()) return false;
-    if (session.origin && sessionOriginMismatch(session.openRequest, session.origin)) return false;
-    const persisted = persistedSessionState(
-      session.metadata,
-      gridState(session.viewState),
-      session.draftBaseFilterModel
-    );
-    const previous: RuntimeSessionState = {
-      publicId: session.publicId,
-      runtimeId: session.runtimeId,
-      runtimeRevision: session.runtimeRevision,
-      delegate: session.delegate,
-      metadata: session.metadata,
-      code: session.code,
-      draftBaseFilterModel: session.draftBaseFilterModel,
-      viewState: session.viewState
-    };
-    let candidate: RuntimeSessionState | undefined;
-    let restoredPage: PageResponse | undefined;
-    try {
-      const response = await session.delegate.request(session.openRequest, options);
-      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
-      if (response.kind !== "sessionOpened") return false;
-      candidate = {
-        publicId: session.publicId,
-        runtimeId: response.metadata.sessionId,
-        runtimeRevision: response.metadata.revision,
-        delegate: session.delegate,
-        metadata: response.metadata,
-        code: "",
-        viewState: initialViewingState(response.metadata)
-      };
-      if (session.origin && sessionOriginMismatch(session.openRequest, session.origin)) {
-        throw new Error("The originating source changed while recovery was opening its runtime session.");
-      }
-      const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
-      if (openedMismatch) throw new Error(openedMismatch);
-      if (requiredSchema && !isDeepStrictEqual(response.metadata.schema, requiredSchema)) {
-        throw new Error("The recreated live dataframe schema no longer matches the confirmed Open Wrangler view.");
-      }
-      restoredPage = await this.runtimeStateRestorer.restoreRuntimeState(
-        candidate,
-        persisted,
-        session.metadata.backend === "pyspark" ? session.openRequest.pageSize : 1,
-        session.openRequest.columnOffset,
-        session.openRequest.columnLimit,
-        recoveryFollowupOptions(options),
-        requiredSchema !== undefined
-      );
-      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
-      if (session.origin && sessionOriginMismatch(session.openRequest, session.origin)) {
-        throw new Error("The originating source changed while recovery was restoring its runtime session.");
-      }
-    } catch {
-      if (candidate) await this.runtimeCleanup.close(candidate, "recovery candidate");
-      return false;
-    }
-
-    if (!this.isLiveSession(session) || session.closing || (isStillCurrent && !isStillCurrent())) {
-      await this.runtimeCleanup.close(candidate, "recovery candidate");
-      return false;
-    }
-
-    // Grid-only presentation updates are intentionally not serialized through
-    // the runtime request queue. Preserve the latest user scroll, widths, and
-    // selection rather than overwriting them with the pre-recovery snapshot.
-    const latestGridPresentation = gridState(session.viewState);
-    const restoredPySparkViewportWasBound =
-      candidate.metadata.backend === "pyspark" &&
-      persisted.view !== undefined &&
-      !isDeepStrictEqual(candidate.viewState.viewport, persisted.view.viewport);
-    session.runtimeId = candidate.runtimeId;
-    session.runtimeRevision = candidate.runtimeRevision;
-    session.metadata = candidate.metadata;
-    session.code = candidate.code;
-    session.draftPresentation = candidate.draftPresentation;
-    session.draftBaseFilterModel = candidate.draftBaseFilterModel;
-    session.viewState = reconcileViewingState(
-      {
-        ...latestGridPresentation,
-        ...(restoredPySparkViewportWasBound ? { viewport: candidate.viewState.viewport } : {}),
-        filterModel: candidate.metadata.filterModel
+  private runtimeRecoveryHooks(session: CoordinatedSession): RuntimeRecoveryHooks {
+    return {
+      isCurrent: () => this.isLiveSession(session) && !session.closing,
+      originMismatch: (request) => sessionOriginMismatch(request, session.origin),
+      clearPublishedStepInspection: () => this.clearPublishedStepInspection(session),
+      publishActive: () => {
+        if (this.activeSessionId === session.publicId) this.activeSessionEmitter.fire(activeSnapshot(session));
       },
-      candidate.metadata
-    );
-    this.clearPublishedStepInspection(session);
-    if (publishActive && this.activeSessionId === session.publicId)
-      this.activeSessionEmitter.fire(activeSnapshot(session));
-    if (restoredPage) onRestoredPage?.(restoredPage);
-    this.runtimeCleanup.track(previous, "retired runtime");
-    return true;
+      replayAfterRuntimeLoss: (failedRuntimeId, options, requiredSchema, onRestoredPage) =>
+        this.replayAfterRuntimeLoss(session, failedRuntimeId, options, requiredSchema, undefined, onRestoredPage)
+    };
   }
 
   private isLiveSession(session: CoordinatedSession): boolean {
