@@ -528,6 +528,156 @@ def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native
     assert "captured-stderr-secret" not in output.stderr_tail()
 
 
+def test_stdio_live_page_budget_rejects_cross_engine_text_and_pandas_complex_values_then_recovers(
+    tmp_path: Path,
+) -> None:
+    required_modules = ("pandas", "polars", "duckdb")
+    if any(find_spec(module_name) is None for module_name in required_modules):
+        pytest.skip("The live-page payload regression requires Pandas, Polars, and DuckDB.")
+
+    source_path = tmp_path / "live-page-budget.csv"
+    source_path.write_text("value\n1\n", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+
+    def preview(session_id: str, request_id: str, code: str) -> dict[str, Any]:
+        return _send_server_request(
+            process,
+            output,
+            request_id,
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                "step": {
+                    "id": request_id,
+                    "kind": "customCode",
+                    "params": {"code": code},
+                },
+                "offset": 0,
+                "limit": 1,
+                "columnOffset": 0,
+                "columnLimit": 16,
+            },
+            timeout=30.0,
+        )
+
+    def assert_recovered(session_id: str, request_id: str) -> None:
+        recovered = _send_server_request(
+            process,
+            output,
+            request_id,
+            {
+                "kind": "getPage",
+                "sessionId": session_id,
+                "revision": 0,
+                "viewRequestId": f"view-{request_id}",
+                "offset": 0,
+                "limit": 1,
+                "columnOffset": 0,
+                "columnLimit": 1,
+                "filterModel": {"logic": "and", "filters": [], "sort": []},
+            },
+            timeout=30.0,
+        )
+        assert recovered["kind"] == "page", recovered
+        assert recovered["viewRequestId"] == f"view-{request_id}"
+        assert recovered["page"]["rows"][0]["values"][0]["display"] == "1"
+
+    try:
+        for backend in required_modules:
+            session_id = f"live-page-{backend}"
+            opened = _send_server_request(
+                process,
+                output,
+                f"open-{backend}",
+                {
+                    "kind": "openSession",
+                    "source": {"kind": "file", "label": source_path.name, "path": str(source_path)},
+                    "requestedSessionId": session_id,
+                    "backend": backend,
+                    "mode": "editing",
+                    "pageSize": 1,
+                    "columnOffset": 0,
+                    "columnLimit": 1,
+                },
+                timeout=60.0,
+            )
+            assert opened["kind"] == "sessionOpened", opened
+
+        oversized_code = {
+            "pandas": "result = df.assign(payload='x' * 65537)",
+            "polars": "result = df.with_columns(pl.lit('x' * 65537).alias('payload'))",
+            "duckdb": "result = df.project(\"*, repeat('x', 65537) AS payload\")",
+        }
+        for backend in required_modules:
+            session_id = f"live-page-{backend}"
+            rejected = preview(session_id, f"oversized-{backend}", oversized_code[backend])
+            assert rejected["kind"] == "error", rejected
+            assert rejected["code"] == "page_payload_invalid"
+            assert rejected["recoverable"] is True
+            assert "65,536 Unicode code points" in rejected["message"]
+            assert_recovered(session_id, f"recover-{backend}")
+
+        deep = preview(
+            "live-page-pandas",
+            "deep-pandas",
+            (
+                "nested = None\n"
+                "for _ in range(65):\n"
+                "    nested = [nested]\n"
+                "result = df.copy()\n"
+                "result['payload'] = [nested]"
+            ),
+        )
+        assert deep["kind"] == "error", deep
+        assert deep["code"] == "page_payload_invalid"
+        assert "64 nested levels" in deep["message"]
+        assert_recovered("live-page-pandas", "recover-deep-pandas")
+
+        cyclic = preview(
+            "live-page-pandas",
+            "cyclic-pandas",
+            ("cyclic = []\ncyclic.append(cyclic)\nresult = df.copy()\nresult['payload'] = [cyclic]"),
+        )
+        assert cyclic["kind"] == "error", cyclic
+        assert cyclic["code"] == "page_payload_invalid"
+        assert cyclic["recoverable"] is True
+        assert "must not be cyclic" in cyclic["message"]
+        assert_recovered("live-page-pandas", "recover-cyclic-pandas")
+
+        for backend in required_modules:
+            closed = _send_server_request(
+                process,
+                output,
+                f"close-{backend}",
+                {"kind": "closeSession", "sessionId": f"live-page-{backend}", "revision": 0},
+                timeout=30.0,
+            )
+            assert closed == {"kind": "sessionClosed", "sessionId": f"live-page-{backend}"}
+
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+
+    assert return_code == 0, output.stderr_tail()
+
+
 def test_stdio_server_opens_polars_excel_in_a_fresh_process(tmp_path: Path) -> None:
     required_modules = ("polars", "fastexcel", "openpyxl")
     if any(find_spec(module_name) is None for module_name in required_modules):
@@ -1671,6 +1821,272 @@ def test_queued_cancellation_remains_correlated_and_frees_bounded_admission(
     assert responses["cancel-profile-2"] == {"kind": "cancelled", "targetRequestId": "profile-2"}
     assert responses["profile-3"]["kind"] == "summary"
     assert manager.started == 3
+
+
+def test_single_writer_rejects_a_cyclic_page_before_stdout_and_serves_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cyclic: list[Any] = []
+    cyclic.append(cyclic)
+
+    class CyclicPageManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.page_served = threading.Event()
+            self.initialized = threading.Event()
+
+        def get_page(self, *_args: Any) -> dict[str, Any]:
+            self.page_served.set()
+            return {
+                "kind": "page",
+                "revision": 0,
+                "metadata": {},
+                "page": {
+                    "offset": 0,
+                    "limit": 1,
+                    "totalRows": 1,
+                    "columnIds": ["c:value"],
+                    "rows": [
+                        {
+                            "id": "r:0",
+                            "rowNumber": 0,
+                            "values": [
+                                {
+                                    "kind": "list",
+                                    "raw": cyclic,
+                                    "display": "cyclic",
+                                    "isNull": False,
+                                    "isNaN": False,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+
+        def initialize(self) -> dict[str, Any]:
+            self.initialized.set()
+            return {"kind": "initialized"}
+
+        def close_all(self) -> None:
+            return None
+
+    requests = [
+        {
+            "protocolVersion": 2,
+            "requestId": "cyclic-page",
+            "priority": "interactive",
+            "request": {
+                "kind": "getPage",
+                "sessionId": "session",
+                "revision": 0,
+                "viewRequestId": "view-cyclic",
+                "offset": 0,
+                "limit": 1,
+                "columnOffset": 0,
+                "columnLimit": 1,
+                "filterModel": {"logic": "and", "filters": [], "sort": []},
+            },
+        },
+        {
+            "protocolVersion": 2,
+            "requestId": "after-cyclic-page",
+            "priority": "interactive",
+            "request": {"kind": "initialize"},
+        },
+    ]
+    manager = CyclicPageManager()
+
+    def request_frames():
+        yield f"{json.dumps(requests[0])}\n"
+        assert manager.page_served.wait(1)
+        yield f"{json.dumps(requests[1])}\n"
+        assert manager.initialized.wait(1)
+
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", request_frames())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    responses = {item["requestId"]: item["response"] for item in map(json.loads, output.getvalue().splitlines())}
+    assert responses["cyclic-page"] == {
+        "kind": "error",
+        "code": "page_payload_invalid",
+        "message": "Live page complex values must not contain cyclic containers.",
+        "recoverable": True,
+        "viewRequestId": "view-cyclic",
+    }
+    assert responses["after-cyclic-page"] == {"kind": "initialized"}
+
+
+def test_canonical_non_ascii_page_fits_the_exact_payload_and_response_frame_contract() -> None:
+    text = "é" * 65_536
+    cells = [
+        {
+            "kind": "string",
+            "raw": text,
+            "display": text,
+            "isNull": False,
+            "isNaN": False,
+        }
+        for _ in range(63)
+    ]
+    page = {
+        "offset": 0,
+        "limit": 1,
+        "totalRows": 1,
+        "columnIds": [f"c:{index}" for index in range(len(cells))],
+        "rows": [{"id": "r:0", "rowNumber": 0, "values": cells}],
+    }
+    payload = {
+        "protocolVersion": 2,
+        "requestId": "canonical-non-ascii",
+        "response": {"kind": "page", "revision": 0, "metadata": {}, "page": page},
+    }
+
+    page_size = server.validate_live_page_payload(page)
+    frame = server._prepare_response_frame(payload, allow_recoverable_replacement=True)
+
+    assert 15 * 1024 * 1024 < page_size <= 16 * 1024 * 1024
+    assert len(frame) <= server.MAX_RESPONSE_FRAME_BYTES
+    assert frame.endswith(b"\n")
+    assert b"\\u00e9" not in frame
+    assert json.loads(frame) == payload
+    del frame
+
+    ascii_escaped_size = len((json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8"))
+    assert ascii_escaped_size > server.MAX_RESPONSE_FRAME_BYTES
+
+
+def test_single_writer_replaces_an_oversized_read_only_frame_and_serves_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OversizedSummaryManager(_PassthroughRequestScope):
+        def __init__(self) -> None:
+            self.summary_served = threading.Event()
+            self.initialized = threading.Event()
+
+        def get_summary(self, *_args: Any) -> dict[str, Any]:
+            self.summary_served.set()
+            return {"kind": "summary", "revision": 0, "summaries": [{"value": "x" * 2_048}]}
+
+        def initialize(self) -> dict[str, Any]:
+            self.initialized.set()
+            return {"kind": "initialized"}
+
+        def close_all(self) -> None:
+            return None
+
+    requests = [
+        {
+            "protocolVersion": 2,
+            "requestId": "oversized-summary",
+            "priority": "background",
+            "request": {
+                "kind": "getSummary",
+                "sessionId": "session",
+                "revision": 0,
+                "viewRequestId": "view-summary",
+                "filterModel": {"logic": "and", "filters": [], "sort": []},
+            },
+        },
+        {
+            "protocolVersion": 2,
+            "requestId": "after-oversized-summary",
+            "priority": "interactive",
+            "request": {"kind": "initialize"},
+        },
+    ]
+    manager = OversizedSummaryManager()
+
+    def request_frames():
+        yield f"{json.dumps(requests[0])}\n"
+        assert manager.summary_served.wait(1)
+        yield f"{json.dumps(requests[1])}\n"
+        assert manager.initialized.wait(1)
+
+    output = StringIO()
+    monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", 512)
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", request_frames())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    responses = {item["requestId"]: item["response"] for item in map(json.loads, output.getvalue().splitlines())}
+    assert responses["oversized-summary"] == {
+        "kind": "error",
+        "code": "response_frame_too_large",
+        "message": (
+            "The runtime response exceeds the 512-byte limit including LF. "
+            "Request fewer rows or columns, or shorten large values."
+        ),
+        "recoverable": True,
+        "viewRequestId": "view-summary",
+    }
+    assert responses["after-oversized-summary"] == {"kind": "initialized"}
+
+
+def test_single_writer_closes_transport_instead_of_synthesizing_after_mutation_capable_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InspectableOutput:
+        def __init__(self) -> None:
+            self.parts: list[str] = []
+            self.closed = threading.Event()
+
+        def write(self, value: str) -> int:
+            if self.closed.is_set():
+                raise ValueError("closed")
+            self.parts.append(value)
+            return len(value)
+
+        def flush(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed.set()
+
+    class OversizedPreviewManager(_PassthroughRequestScope):
+        def preview_step(self, *_args: Any) -> dict[str, Any]:
+            return {"kind": "stepPreview", "revision": 1, "code": "x" * 2_048}
+
+        def close_all(self) -> None:
+            return None
+
+    output = InspectableOutput()
+    request = {
+        "protocolVersion": 2,
+        "requestId": "oversized-preview",
+        "priority": "interactive",
+        "request": {
+            "kind": "previewStep",
+            "sessionId": "session",
+            "revision": 0,
+            "step": {"id": "custom", "kind": "customCode", "params": {"code": "result = df"}},
+            "offset": 0,
+            "limit": 1,
+            "columnOffset": 0,
+            "columnLimit": 1,
+        },
+    }
+
+    def request_frames():
+        yield f"{json.dumps(request)}\n"
+        assert output.closed.wait(1)
+
+    diagnostics = StringIO()
+    monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", 512)
+    monkeypatch.setattr(server, "SessionManager", OversizedPreviewManager)
+    monkeypatch.setattr(server.sys, "stdin", request_frames())
+    monkeypatch.setattr(server.sys, "stdout", output)
+    monkeypatch.setattr(server.sys, "stderr", diagnostics)
+
+    assert server.main() == 1
+    assert output.parts == []
+    assert "response frame exceeded its bound after mutation-capable work" in diagnostics.getvalue()
+    assert "response_frame_too_large" not in diagnostics.getvalue()
 
 
 def test_server_bounds_user_controlled_engine_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:

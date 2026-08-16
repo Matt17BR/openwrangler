@@ -11,6 +11,7 @@ from typing import Any
 
 from .custom_code_output import isolate_standalone_protocol_output
 from .engines import AmbiguousViewColumnError, EngineError
+from .engines.base import LivePagePayloadError, validate_live_page_payload
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
 from .session import (
     LiveSourceInvalidatedError,
@@ -23,6 +24,7 @@ from .session import (
 
 SHUTDOWN_GRACE_SECONDS = 1.5
 MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
+MAX_RESPONSE_FRAME_BYTES = 17 * 1024 * 1024
 MAX_TRANSPORT_ID_BYTES = 256
 MAX_DIAGNOSTIC_BYTES = 4 * 1024
 MAX_DIAGNOSTIC_DETAIL_BYTES = 16 * 1024
@@ -30,6 +32,9 @@ INTERACTIVE_WORKERS = 4
 BACKGROUND_WORKERS = 2
 MAX_INTERACTIVE_LIVE_REQUESTS = 64
 MAX_BACKGROUND_LIVE_REQUESTS = 32
+_RECOVERABLE_RESPONSE_REQUEST_KINDS = frozenset(
+    {"initialize", "getPage", "getSummary", "getDatasetStats", "getColumnValues", "inspectStep"}
+)
 
 
 class _TerminalTransportError(Exception):
@@ -185,15 +190,41 @@ def main() -> int:
     live_priorities: dict[str, str] = {}
     live_counts = {"interactive": 0, "background": 0}
     transport_failed = threading.Event()
+    response_transport_errors: list[_TerminalTransportError] = []
 
-    def write(payload: dict[str, Any]) -> None:
+    def fail_response_transport(error: _TerminalTransportError) -> None:
+        transport_failed.set()
+        response_transport_errors.append(error)
+        _report_terminal_transport_error(error)
+        try:
+            protocol_output.close()
+        except Exception:
+            return
+
+    def write(payload: dict[str, Any], request_kind: str | None) -> None:
         with write_lock:
             if transport_failed.is_set():
                 return
-            protocol_output.write(json.dumps(payload, default=str, allow_nan=False) + "\n")
-            protocol_output.flush()
+            try:
+                frame = _prepare_response_frame(
+                    payload,
+                    allow_recoverable_replacement=request_kind in _RECOVERABLE_RESPONSE_REQUEST_KINDS,
+                )
+            except _TerminalTransportError as error:
+                fail_response_transport(error)
+                return
+            try:
+                _write_response_frame(protocol_output, frame)
+                protocol_output.flush()
+            except (OSError, ValueError, UnicodeError):
+                fail_response_transport(_TerminalTransportError("response frame publication failed"))
 
-    def complete(request_id: str, view_request_id: str | None, future: Future[dict[str, Any]]) -> None:
+    def complete(
+        request_id: str,
+        view_request_id: str | None,
+        request_kind: str,
+        future: Future[dict[str, Any]],
+    ) -> None:
         try:
             if future.cancelled():
                 response = {"kind": "cancelled", "targetRequestId": request_id}
@@ -206,7 +237,7 @@ def main() -> int:
                     response = _response_for_error(error)
             if response.get("kind") in {"error", "cancelled"} and view_request_id:
                 response["viewRequestId"] = view_request_id
-            write(response_envelope(request_id, response))
+            write(response_envelope(request_id, response), request_kind)
         finally:
             _release_live_request(
                 pending,
@@ -227,16 +258,20 @@ def main() -> int:
     terminal_error: _TerminalTransportError | None = None
     try:
         for payload in _iter_request_payloads(sys.stdin):
+            if transport_failed.is_set():
+                break
             request_id = _request_id_for_payload(payload)
             if request_id is None:
                 raise _TerminalTransportError("request frame has no bounded correlation ID")
             view_request_id = _view_request_id_for_payload(payload)
+            request_kind: str | None = None
             if _is_live_request(live_priorities, pending_lock, request_id):
                 raise _TerminalTransportError("request frame reused a live correlation ID")
             admitted = False
             submitted = False
             try:
                 request_id, priority, request = decode_envelope(payload)
+                request_kind = str(request["kind"])
                 _validate_transport_ids(request_id, request)
                 view_request_id = request.get("viewRequestId")
                 if request["kind"] == "cancelRequest":
@@ -248,7 +283,7 @@ def main() -> int:
                             "The target request is already running, complete, or unknown and cannot be cancelled.",
                             code="cancellation_unavailable",
                         )
-                    write(response_envelope(request_id, response))
+                    write(response_envelope(request_id, response), request_kind)
                     continue
                 admission = _reserve_live_request(
                     live_priorities,
@@ -267,7 +302,7 @@ def main() -> int:
                     )
                     if view_request_id:
                         response["viewRequestId"] = view_request_id
-                    write(response_envelope(request_id, response))
+                    write(response_envelope(request_id, response), request_kind)
                     continue
                 admitted = True
                 if request["kind"] == "openSession":
@@ -280,7 +315,9 @@ def main() -> int:
                 with pending_lock:
                     pending[request_id] = future
                 future.add_done_callback(
-                    lambda done, current=request_id, view=view_request_id: complete(current, view, done)
+                    lambda done, current=request_id, view=view_request_id, operation=str(request["kind"]): complete(
+                        current, view, operation, done
+                    )
                 )
                 submitted = True
             except _TerminalTransportError:
@@ -289,7 +326,7 @@ def main() -> int:
                 response = _response_for_error(error)
                 if view_request_id:
                     response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
+                write(response_envelope(request_id, response), request_kind)
             finally:
                 if admitted and not submitted:
                     _release_live_request(
@@ -310,7 +347,7 @@ def main() -> int:
             pending,
             pending_lock,
         )
-    return 1 if terminal_error is not None else 0
+    return 1 if terminal_error is not None or response_transport_errors else 0
 
 
 def _shutdown_runtime(
@@ -502,12 +539,116 @@ def _response_for_error(error: Exception) -> dict[str, Any]:
         )
     if isinstance(error, AmbiguousViewColumnError):
         return error_response(message, code="ambiguous_view_column")
+    if isinstance(error, LivePagePayloadError):
+        return error_response(message, code="page_payload_invalid")
     if isinstance(error, EngineError):
         return error_response(message, code="engine_error")
     return error_response(
         message,
         detail=_bounded_diagnostic(traceback.format_exc(), MAX_DIAGNOSTIC_DETAIL_BYTES),
     )
+
+
+def _validate_outgoing_live_pages(payload: Mapping[str, Any]) -> None:
+    response = payload.get("response")
+    if not isinstance(response, Mapping):
+        return
+    for field in ("page", "inputPage", "outputPage"):
+        if field in response:
+            validate_live_page_payload(response[field])
+
+
+def _prepare_response_frame(
+    payload: Mapping[str, Any],
+    *,
+    allow_recoverable_replacement: bool,
+) -> bytes:
+    try:
+        _validate_outgoing_live_pages(payload)
+    except LivePagePayloadError as error:
+        if not allow_recoverable_replacement:
+            raise _TerminalTransportError("response page validation failed after mutation-capable work") from error
+        payload = _page_payload_error_envelope(payload, error)
+
+    try:
+        frame = _serialize_response_frame(payload)
+    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
+        if not allow_recoverable_replacement:
+            raise _TerminalTransportError("response serialization failed after mutation-capable work") from error
+        payload = _response_payload_error_envelope(payload)
+        frame = _serialize_response_frame(payload)
+    if len(frame) <= MAX_RESPONSE_FRAME_BYTES:
+        return frame
+    if not allow_recoverable_replacement:
+        raise _TerminalTransportError("response frame exceeded its bound after mutation-capable work")
+    frame = _serialize_response_frame(_response_frame_error_envelope(payload))
+    if len(frame) > MAX_RESPONSE_FRAME_BYTES:
+        raise _TerminalTransportError("bounded response error exceeded the response-frame limit")
+    return frame
+
+
+def _page_payload_error_envelope(
+    payload: Mapping[str, Any],
+    error: LivePagePayloadError,
+) -> dict[str, Any]:
+    request_id = _request_id_for_payload(payload)
+    if request_id is None:
+        raise _TerminalTransportError("response payload has no bounded correlation ID")
+    failure = _response_for_error(error)
+    _copy_bounded_view_request_id(payload, failure)
+    return response_envelope(request_id, failure)
+
+
+def _response_payload_error_envelope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    request_id = _request_id_for_payload(payload)
+    if request_id is None:
+        raise _TerminalTransportError("response payload has no bounded correlation ID")
+    failure = error_response(
+        "The runtime produced a response that is not strict UTF-8 JSON.",
+        code="response_payload_invalid",
+    )
+    _copy_bounded_view_request_id(payload, failure)
+    return response_envelope(request_id, failure)
+
+
+def _response_frame_error_envelope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    request_id = _request_id_for_payload(payload)
+    if request_id is None:
+        raise _TerminalTransportError("response payload has no bounded correlation ID")
+    failure = error_response(
+        f"The runtime response exceeds the {MAX_RESPONSE_FRAME_BYTES:,}-byte limit including LF. "
+        "Request fewer rows or columns, or shorten large values.",
+        code="response_frame_too_large",
+    )
+    _copy_bounded_view_request_id(payload, failure)
+    return response_envelope(request_id, failure)
+
+
+def _copy_bounded_view_request_id(payload: Mapping[str, Any], failure: dict[str, Any]) -> None:
+    response = payload.get("response")
+    if not isinstance(response, Mapping):
+        return
+    view_request_id = response.get("viewRequestId")
+    if _is_bounded_transport_id(view_request_id):
+        failure["viewRequestId"] = view_request_id
+
+
+def _serialize_response_frame(payload: Mapping[str, Any]) -> bytes:
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return serialized.encode("utf-8") + b"\n"
+
+
+def _write_response_frame(stream: Any, frame: bytes) -> None:
+    binary_stream = getattr(stream, "buffer", None)
+    if binary_stream is not None:
+        written = binary_stream.write(frame)
+        if written != len(frame):
+            raise OSError("response frame publication was incomplete")
+        return
+    text = frame.decode("utf-8")
+    written = stream.write(text)
+    if written != len(text):
+        raise OSError("response frame publication was incomplete")
 
 
 def _bounded_diagnostic(value: str, maximum_bytes: int) -> str:
