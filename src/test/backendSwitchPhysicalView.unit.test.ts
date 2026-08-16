@@ -293,6 +293,67 @@ describe("backend-switch physical grid", () => {
     expect(evaluate).toHaveBeenCalledOnce();
   });
 
+  it("rejects an exact-session drift caused during physical sampling", async () => {
+    let activeSessionId = "session";
+    const evaluate = vi.fn(async () => {
+      activeSessionId = "replacement";
+      return matchingSample("sync-a");
+    });
+
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          activeSession: () => ({ sessionId: activeSessionId, metadata: { revision: 7 } }),
+          bindExactApp: async () => ({ evaluate }) as unknown as Locator
+        })
+      )
+    ).rejects.toThrow("The exact session must remain active.");
+
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a revision drift caused during physical sampling", async () => {
+    let activeRevision = 7;
+    const evaluate = vi.fn(async () => {
+      activeRevision = 8;
+      return matchingSample("sync-a");
+    });
+
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          activeSession: () => ({ sessionId: "session", metadata: { revision: activeRevision } }),
+          bindExactApp: async () => ({ evaluate }) as unknown as Locator
+        })
+      )
+    ).rejects.toThrow("The switched revision must remain unchanged through physical verification.");
+
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
+  it("reruns the lifecycle proof after physical sampling", async () => {
+    let lifecycleValid = true;
+    const assertLifecycle = vi.fn(() => {
+      if (!lifecycleValid) throw new Error("renderer lifecycle drifted during sampling");
+    });
+    const evaluate = vi.fn(async () => {
+      lifecycleValid = false;
+      return matchingSample("sync-a");
+    });
+
+    await expect(
+      verifyBackendSwitchPhysicalView(
+        options({
+          assertLifecycle,
+          bindExactApp: async () => ({ evaluate }) as unknown as Locator
+        })
+      )
+    ).rejects.toThrow("renderer lifecycle drifted during sampling");
+
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(assertLifecycle).toHaveBeenCalledTimes(3);
+  });
+
   it("fails immediately when the exact switched session drifts", async () => {
     const findCurrentTarget = vi.fn(async () => "target");
     await expect(
