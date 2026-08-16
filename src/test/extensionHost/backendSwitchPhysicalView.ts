@@ -210,6 +210,14 @@ export async function verifyBackendSwitchPhysicalView<Target>({
         continue;
       }
 
+      assertLifecycle();
+      const activeAfterSample = activeSession();
+      assert.equal(activeAfterSample?.sessionId, sessionId, `${expectation} The exact session must remain active.`);
+      assert.equal(
+        activeAfterSample?.metadata.revision,
+        expectedRevision,
+        `${expectation} The switched revision must remain unchanged through physical verification.`
+      );
       if (!receiptIsCurrent(boundReceipt) || targetIsRetired(boundTarget)) {
         supersede(boundReceipt);
         continue;
