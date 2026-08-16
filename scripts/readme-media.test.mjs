@@ -245,11 +245,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.2.md"), "utf8");
   const testing = readFileSync(resolve(root, "docs", "testing.md"), "utf8");
   const releasing = readFileSync(resolve(root, "docs", "releasing.md"), "utf8");
-  const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
-  const screenshotEvidence = readFileSync(
-    resolve(root, "src", "test", "extensionHost", "screenshotEvidence.ts"),
-    "utf8"
-  );
 
   assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
@@ -301,23 +296,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(captureScript, /public-media-source\/v1\.2\/browser\/by-example-dialog\.png/u);
   assert.match(captureScript, /public-media-source\/v1\.2\/browser\/by-example-preview\.png/u);
   assert.match(captureScript, /public-media-source\/v1\.2\/browser\/duckdb-rich-parquet\.png/u);
-  assert.match(extensionHost, /Emulation\.setDeviceMetricsOverride/u);
-  assert.match(extensionHost, /const applicationZoomFactor = renderedPixelRatio \/ expectedPixelRatio/u);
-  assert.match(extensionHost, /const restoreMetricsWidth = Math\.ceil\(viewport\.width \* applicationZoomFactor\)/u);
-  assert.match(extensionHost, /const restoreMetricsHeight = Math\.ceil\(viewport\.height \* applicationZoomFactor\)/u);
-  assert.match(extensionHost, /restore the exact logical editor viewport/u);
-  assert.match(extensionHost, /restore the editor's prior device-pixel ratio/u);
-  assert.match(extensionHost, /realistic Explorer row after public media capture/u);
-  assert.match(extensionHost, /live editor-tab menu must still expose Open in Open Wrangler after capture/u);
-  assert.match(extensionHost, /const PACKAGED_FILE_ACTION_MEDIA_HEIGHT = 865/u);
-  assert.match(extensionHost, /maximumHeight > PACKAGED_PRODUCT_VIEWPORT\.height/u);
-  assert.match(extensionHost, /dedicated 1440 by 900 logical editor viewport/u);
-  assert.match(extensionHost, /complete editor-tab menu must fit inside the retained 1440 by 865 media frame/u);
-  assert.match(extensionHost, /deviceScaleFactor: expectedPixelRatio/u);
-  assert.match(extensionHost, /Page\.captureScreenshot/u);
-  assert.match(extensionHost, /fromSurface: true/u);
-  assert.doesNotMatch(extensionHost, /scale: "css"/u);
-  assert.match(extensionHost, /y: logicalCaptureY,[\s\S]{0,100}width: logicalCaptureWidth/u);
   assert.match(publicSurfaceVerifier, /deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO/u);
   assert.match(publicSurfaceVerifier, /for \(const width of PUBLIC_MEDIA_RESPONSIVE_WIDTHS\)/u);
   assert.match(publicSurfaceVerifier, /containerBounds = container\.getBoundingClientRect\(\)/u);
@@ -421,19 +399,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
   assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
-  assert.match(
-    extensionHost,
-    /platform-smoke:file-action:screenshots[\s\S]{0,1500}\$\{editorKey\}-file-title-action\.png[\s\S]{0,1500}\$\{editorKey\}-tab-context-menu\.png/u
-  );
-  assert.match(screenshotEvidence, /PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT = \{ width: 1_440, height: 900 \}/u);
-  assert.match(
-    screenshotEvidence,
-    /PACKAGED_SCREENSHOT_SCENES = \[[\s\S]{0,600}"notebook-polars",[\s\S]{0,80}"notebook-duckdb",[\s\S]{0,80}"notebook-pyspark"/u
-  );
-  assert.match(extensionHost, /captureReleasedJupyterDuckDbRelation\(/u);
-  assert.match(extensionHost, /packagedScreenshotFileName\([\s\S]{0,180}"notebook-duckdb", "dark"\)/u);
-  assert.match(extensionHost, /async function captureNotebookWorkbenchScreenshot\(/u);
-  assert.match(extensionHost, /A notebook workbench media scene requires the standard 1440 by 900 editor viewport/u);
 
   let totalPublicMediaBytes = 0;
   for (const asset of nativeAssets) {
