@@ -147,7 +147,7 @@ describe("host-owned Python data export", () => {
       ...base,
       stat: async (target: string) => {
         const identity = await base.stat(target);
-        return parentChanged && target === directory ? { dev: identity.dev, ino: identity.ino + 1n } : identity;
+        return parentChanged && target === directory ? { ...identity, ino: identity.ino + 1n } : identity;
       }
     };
 
@@ -189,6 +189,31 @@ describe("host-owned Python data export", () => {
     expect(foreignTarget).toBeDefined();
     expect(await readFile(foreignTarget!, "utf8")).toBe("foreign replacement");
     expect(await readFile(displacedOwnedTarget, "utf8")).toBe(EXPORTED_BYTES);
+    expect(await readFile(destinationPath, "utf8")).toBe(PRIOR_DESTINATION_BYTES);
+    expect(await readFile(sourcePath, "utf8")).toBe(SOURCE_BYTES);
+  });
+
+  it("never publishes or removes a runtime target that gained a hard-link alias", async () => {
+    const alias = path.join(directory, "runtime-target-alias.csv");
+    let runtimeTarget: string | undefined;
+    const failure = await captureFailure(() =>
+      exportPythonDataSafely({
+        request: exportRequest(destinationPath),
+        source,
+        dispatch: async (request) => {
+          runtimeTarget = request.path;
+          await writeFile(request.path, EXPORTED_BYTES);
+          await link(request.path, alias);
+          return exportedResponse(request);
+        }
+      })
+    );
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as Error).message).toMatch(/could not be settled safely/u);
+    expect(runtimeTarget).toBeDefined();
+    expect(await readFile(runtimeTarget!, "utf8")).toBe(EXPORTED_BYTES);
+    expect(await readFile(alias, "utf8")).toBe(EXPORTED_BYTES);
     expect(await readFile(destinationPath, "utf8")).toBe(PRIOR_DESTINATION_BYTES);
     expect(await readFile(sourcePath, "utf8")).toBe(SOURCE_BYTES);
   });

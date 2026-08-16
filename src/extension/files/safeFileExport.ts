@@ -7,6 +7,7 @@ const supportedSchemes = new Set(["file", "vscode-remote"]);
 const TEMPORARY_FILE_ATTEMPTS = 16;
 
 type FileIdentity = { dev: bigint; ino: bigint };
+type FileStat = FileIdentity & { nlink: bigint };
 
 interface ProtectedSourceAnchor {
   path: string;
@@ -32,7 +33,7 @@ export interface AtomicExportHandle {
 
 export interface AtomicExportFileSystem {
   realpath(target: string): Promise<string>;
-  stat(target: string): Promise<FileIdentity>;
+  stat(target: string): Promise<FileStat>;
   lstat(target: string): Promise<{ isFile: boolean; isSymbolicLink: boolean }>;
   openExclusive(target: string): Promise<AtomicExportHandle>;
   replace(source: string, destination: string): Promise<void>;
@@ -70,7 +71,7 @@ export function createNodeAtomicExportFileSystem(openFile: typeof open = open): 
     realpath,
     async stat(target) {
       const details = await stat(target, { bigint: true });
-      return { dev: details.dev, ino: details.ino };
+      return { dev: details.dev, ino: details.ino, nlink: details.nlink };
     },
     async lstat(target) {
       const details = await lstat(target);
@@ -489,6 +490,7 @@ async function assertKnownTemporary(
     !entry.isFile ||
     entry.isSymbolicLink ||
     !identity ||
+    identity.nlink !== 1n ||
     identity.dev !== expectedIdentity.dev ||
     identity.ino !== expectedIdentity.ino
   ) {
@@ -512,7 +514,7 @@ async function canonicalPath(fileSystem: AtomicExportFileSystem, target: string)
   }
 }
 
-async function optionalStat(fileSystem: AtomicExportFileSystem, target: string): Promise<FileIdentity | undefined> {
+async function optionalStat(fileSystem: AtomicExportFileSystem, target: string): Promise<FileStat | undefined> {
   try {
     return await fileSystem.stat(target);
   } catch (error) {

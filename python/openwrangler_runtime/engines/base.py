@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from abc import ABC, abstractmethod
 from base64 import b64encode
@@ -867,7 +868,12 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+    def export_data(
+        self,
+        frame: Any,
+        path: str | os.PathLike[str],
+        format_name: Literal["csv", "parquet"],
+    ) -> None:
         raise NotImplementedError
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -23,6 +24,10 @@ def reserve_export_target(path):
     path.touch(exist_ok=False)
     device, inode = _regular_file_identity(path)
     return {"device": str(device), "inode": str(inode)}
+
+
+def assert_windows_sharing_violation(error: OSError) -> None:
+    assert getattr(error, "winerror", None) == 32
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
@@ -875,18 +880,31 @@ def test_export_rejects_a_replaced_host_owned_target_after_runtime_write(tmp_pat
     )
 
     def replace_export(_frame, path, _format):
-        Path(path).rename(displaced_target)
-        Path(path).write_text("foreign replacement", encoding="utf-8")
-        displaced_target.write_text("cleaned data", encoding="utf-8")
+        if sys.platform == "win32":
+            with pytest.raises(OSError) as rename_error:
+                Path(path).rename(displaced_target)
+            assert_windows_sharing_violation(rename_error.value)
+            raise EngineError("Windows prevented export target substitution")
+        else:
+            Path(path).rename(displaced_target)
+            Path(path).write_text("foreign replacement", encoding="utf-8")
+            displaced_target.write_text("cleaned data", encoding="utf-8")
 
     session = manager.sessions[opened["metadata"]["sessionId"]]
     monkeypatch.setattr(session.engine, "export_data", replace_export)
 
-    with pytest.raises(EngineError, match="temporary export file changed"):
+    expected_error = (
+        "prevented export target substitution" if sys.platform == "win32" else "temporary export file changed"
+    )
+    with pytest.raises(EngineError, match=expected_error):
         manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity)
 
-    assert target.read_text(encoding="utf-8") == "foreign replacement"
-    assert displaced_target.read_text(encoding="utf-8") == "cleaned data"
+    if sys.platform == "win32":
+        assert target.read_bytes() == b""
+        assert not displaced_target.exists()
+    else:
+        assert target.read_text(encoding="utf-8") == "foreign replacement"
+        assert displaced_target.read_text(encoding="utf-8") == "cleaned data"
     assert source_path.read_text(encoding="utf-8") == "value\n1\n"
 
 
@@ -907,6 +925,47 @@ def test_export_rejects_a_hard_link_added_to_the_host_owned_target(tmp_path):
 
     assert target.read_bytes() == b""
     assert target_alias.read_bytes() == b""
+    assert source_path.read_text(encoding="utf-8") == "value\n1\n"
+
+
+def test_export_rejects_a_hard_link_added_during_runtime_write(tmp_path, monkeypatch):
+    source_path = tmp_path / "source.csv"
+    source_path.write_text("value\n1\n", encoding="utf-8")
+    target = tmp_path / "host-target.csv"
+    target_alias = tmp_path / "host-target-alias.csv"
+    target_identity = reserve_export_target(target)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
+    )
+    hardlink_created = False
+
+    def export_and_add_hardlink(_frame, path, _format):
+        nonlocal hardlink_created
+        Path(path).write_text("cleaned data", encoding="utf-8")
+        try:
+            target_alias.hardlink_to(Path(path))
+        except OSError as error:
+            if sys.platform != "win32":
+                raise
+            assert_windows_sharing_violation(error)
+            raise EngineError("Windows prevented an export-target hard link") from error
+        hardlink_created = True
+
+    session = manager.sessions[opened["metadata"]["sessionId"]]
+    monkeypatch.setattr(session.engine, "export_data", export_and_add_hardlink)
+
+    expected_error = (
+        "singly linked" if sys.platform != "win32" else "singly linked|prevented an export-target hard link"
+    )
+    with pytest.raises(EngineError, match=expected_error):
+        manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity)
+
+    assert target.read_text(encoding="utf-8") == "cleaned data"
+    if hardlink_created:
+        assert target_alias.read_text(encoding="utf-8") == "cleaned data"
+    else:
+        assert not target_alias.exists()
     assert source_path.read_text(encoding="utf-8") == "value\n1\n"
 
 
