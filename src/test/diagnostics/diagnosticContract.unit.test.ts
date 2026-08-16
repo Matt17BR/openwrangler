@@ -121,4 +121,50 @@ describe("offline diagnostic contract", () => {
       DiagnosticContractError
     );
   });
+
+  it("requires the exact consecutive retained tail before and after capacity", () => {
+    const preCapacity = new DiagnosticLedger();
+    for (let index = 0; index < 3; index += 1) {
+      preCapacity.record({ category: "request", code: "failure", recoverable: true });
+    }
+    const preCapture = preCapacity.snapshot();
+    expect(() =>
+      createOfflineDiagnosticBundle(metadata, {
+        ...preCapture,
+        dropped: 1,
+        events: [preCapture.events[0], preCapture.events[2]]
+      })
+    ).toThrow(DiagnosticContractError);
+
+    const postCapacity = new DiagnosticLedger();
+    for (let index = 0; index < OFFLINE_DIAGNOSTIC_EVENT_CAPACITY + 2; index += 1) {
+      postCapacity.record({ category: "runtime", code: "ready", recoverable: true });
+    }
+    const postCapture = postCapacity.snapshot();
+    const wrongFirst = postCapture.events.map((event) => ({ ...event, sequence: event.sequence - 1 }));
+    const wrongLast = postCapture.events.map((event) => ({ ...event, sequence: event.sequence + 1 }));
+    const gap = postCapture.events.map((event, index) => ({
+      ...event,
+      sequence: index === 0 ? event.sequence - 1 : event.sequence
+    }));
+    for (const events of [wrongFirst, wrongLast, gap]) {
+      expect(() => createOfflineDiagnosticBundle(metadata, { ...postCapture, events })).toThrow(
+        DiagnosticContractError
+      );
+    }
+  });
+
+  it("canonicalizes semantically identical counter arrays before serialization", () => {
+    const ledger = new DiagnosticLedger();
+    ledger.record({ category: "runtime", code: "ready", recoverable: true });
+    ledger.record({ category: "request", code: "failure", recoverable: true });
+    const capture = ledger.snapshot();
+    const canonical = createOfflineDiagnosticBundle(metadata, capture);
+    const reversed = createOfflineDiagnosticBundle(metadata, {
+      ...capture,
+      counters: [...capture.counters].reverse()
+    });
+    expect(reversed.json).toBe(canonical.json);
+    expect(reversed.bundle.capture.counters).toEqual(capture.counters);
+  });
 });
