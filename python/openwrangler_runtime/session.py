@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import tempfile
 import threading
@@ -20,6 +19,7 @@ from .engines.base import PageColumnProjection, SummaryColumnProjection, reconci
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 from .protocol import MAX_COLUMN_LIMIT
+from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
 from .version import __version__
 
 PAGE_CACHE_LIMIT = 8
@@ -83,6 +83,14 @@ class SessionCleanupError(EngineError):
 
     def __init__(self, session_id: str, message: str) -> None:
         self.session_id = session_id
+        super().__init__(message)
+
+
+class ResponsePayloadError(EngineError):
+    """A bounded operation-specific failure produced before response publication."""
+
+    def __init__(self, message: str, code: str) -> None:
+        self.code = code
         super().__init__(message)
 
 
@@ -523,6 +531,11 @@ class SessionManager:
             projection = self._summary_projection(schema, column_ids)
             summaries = session.engine.summaries(filtered, projection)
             self._validate_summary_projection(summaries, schema, projection)
+            self._strict_response_payload_size(
+                summaries,
+                "column profile",
+                "Request fewer columns.",
+            )
             return {
                 "kind": "summary",
                 "revision": revision,
@@ -543,6 +556,11 @@ class SessionManager:
             self._assert_revision(session, revision)
             filtered = self._view_query_frame(session, filter_model)
             values, has_more = session.engine.column_values(filtered, column, search, limit)
+            self._strict_response_payload_size(
+                values,
+                "column-values result",
+                "Request fewer values or narrow the search.",
+            )
             return {
                 "kind": "columnValues",
                 "revision": session.revision,
@@ -560,6 +578,11 @@ class SessionManager:
         session = self._session(session_id)
         with self._profile_view(session, revision, filter_model) as filtered:
             stats = session.engine.header_stats(filtered)
+            self._strict_response_payload_size(
+                stats,
+                "dataset-statistics result",
+                "Reduce the size of the active schema.",
+            )
             return {
                 "kind": "datasetStats",
                 "revision": revision,
@@ -762,7 +785,7 @@ class SessionManager:
             self._validate_page_projection(input_page, input_projection)
             self._validate_page_projection(output_page, output_projection)
 
-            return {
+            response = {
                 "kind": "stepInspection",
                 "revision": session.revision,
                 "stepId": step_id,
@@ -791,6 +814,12 @@ class SessionManager:
                 ),
                 "code": session.engine.compile_plan(session.bound_plan[: step_index + 1]),
             }
+            self._strict_response_payload_size(
+                response,
+                "step-inspection result",
+                "Request fewer rows or columns.",
+            )
+            return response
 
     def apply_draft(
         self,
@@ -1170,7 +1199,11 @@ class SessionManager:
             # metadata so a later cache hit cannot regress that count.
             cls._invalidate_page_cache(session)
             key = (session.view_generation, session.revision, offset, limit, column_ids)
-        page_size = len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+        page_size = cls._strict_response_payload_size(
+            page,
+            "page",
+            "Request fewer rows or columns.",
+        )
         if page_size > PAGE_CACHE_BYTE_LIMIT:
             return page
 
@@ -1181,6 +1214,23 @@ class SessionManager:
             _, evicted = session.page_cache.popitem(last=False)
             session.page_cache_bytes -= evicted.size_bytes
         return page
+
+    @staticmethod
+    def _strict_response_payload_size(value: Any, subject: str, recovery: str) -> int:
+        try:
+            size = strict_json_byte_length(value, MAX_STRICT_RESPONSE_PAYLOAD_BYTES)
+        except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as error:
+            raise ResponsePayloadError(
+                f"The requested {subject} could not be encoded as strict JSON. {recovery}",
+                "response_encoding_failed",
+            ) from error
+        if size > MAX_STRICT_RESPONSE_PAYLOAD_BYTES:
+            raise ResponsePayloadError(
+                f"The requested {subject} exceeds the "
+                f"{MAX_STRICT_RESPONSE_PAYLOAD_BYTES:,}-byte strict response payload limit. {recovery}",
+                "response_too_large",
+            )
+        return size
 
     @staticmethod
     def _active_schema(session: Session) -> list[dict[str, Any]]:

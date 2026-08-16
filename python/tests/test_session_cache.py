@@ -12,7 +12,12 @@ import pytest
 import openwrangler_runtime.session as session_runtime
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine, PolarsEngine, SessionDataShape
 from openwrangler_runtime.engines.base import EngineCapabilities, SummaryColumnProjection
-from openwrangler_runtime.session import PAGE_CACHE_LIMIT, LiveSourceInvalidatedError, SessionManager
+from openwrangler_runtime.session import (
+    PAGE_CACHE_LIMIT,
+    LiveSourceInvalidatedError,
+    ResponsePayloadError,
+    SessionManager,
+)
 
 
 class CountingPandasEngine(PandasEngine):
@@ -468,6 +473,53 @@ def test_page_cache_never_retains_a_single_oversized_block(tmp_path, monkeypatch
     assert len(created[0].page_calls) == 2
     assert session.page_cache == {}
     assert session.page_cache_bytes == 0
+
+
+def test_strict_page_payload_rejection_happens_before_cache_insertion(tmp_path, monkeypatch) -> None:
+    manager, created = counting_manager()
+    opened = manager.open_session(source(write_wide_unicode_values(tmp_path, rows=2)), backend="pandas", page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    session.clear_page_cache()
+    monkeypatch.setattr(session_runtime, "MAX_STRICT_RESPONSE_PAYLOAD_BYTES", 256)
+
+    with pytest.raises(ResponsePayloadError) as caught:
+        manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+
+    assert caught.value.code == "response_too_large"
+    assert str(caught.value) == (
+        "The requested page exceeds the 256-byte strict response payload limit. Request fewer rows or columns."
+    )
+    assert len(created[0].page_calls) == 2
+    assert session.page_cache == {}
+    assert session.page_cache_bytes == 0
+
+
+def test_read_only_profile_payload_rejection_is_bounded_and_releases_the_profile_lease(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    marker = "private-profile-payload-"
+
+    class OversizedSummaryEngine(CountingPandasEngine):
+        def summaries(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            summaries = super().summaries(*args, **kwargs)
+            summaries[0]["private"] = marker + ("x" * 4_096)
+            return summaries
+
+    engine = OversizedSummaryEngine()
+    manager = SessionManager(EngineRegistry((("pandas", lambda: engine),)))
+    opened = manager.open_session(source(write_values(tmp_path, 2)), backend="pandas", page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    monkeypatch.setattr(session_runtime, "MAX_STRICT_RESPONSE_PAYLOAD_BYTES", 512)
+
+    with pytest.raises(ResponsePayloadError) as caught:
+        manager.get_summary(session_id, 0, {"filters": [], "sort": []}, ["c:source:0"])
+
+    assert caught.value.code == "response_too_large"
+    assert marker not in str(caught.value)
+    assert session.active_profiles == 0
 
 
 @pytest.mark.parametrize("invalidation", ["replaced", "missing", "stopped"])

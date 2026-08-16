@@ -4,18 +4,21 @@ import json
 import sys
 import threading
 import traceback
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, wait
+from contextlib import suppress
 from time import monotonic
 from typing import Any
 
 from .custom_code_output import isolate_standalone_protocol_output
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
+from .response_framing import MAX_RESPONSE_FRAME_BYTES, ResponseFrameTooLargeError, encode_response_frame
 from .session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
     PySparkConnectUnavailableError,
+    ResponsePayloadError,
     SessionCleanupError,
     SessionManager,
     UnknownSessionError,
@@ -34,6 +37,90 @@ MAX_BACKGROUND_LIVE_REQUESTS = 32
 
 class _TerminalTransportError(Exception):
     """A framing or correlation failure after which stdin cannot be trusted."""
+
+
+class _ResponsePublisher:
+    """Serialize and publish exact bounded stdout frames through one writer."""
+
+    def __init__(
+        self,
+        stream: Any,
+        write_lock: threading.Lock,
+        transport_failed: threading.Event,
+        on_terminal_failure: Callable[[_TerminalTransportError], None],
+    ) -> None:
+        self._stream = stream
+        self._write_lock = write_lock
+        self._transport_failed = transport_failed
+        self._on_terminal_failure = on_terminal_failure
+
+    def publish(self, payload: dict[str, Any]) -> bool:
+        failure: _TerminalTransportError | None = None
+        with self._write_lock:
+            if self._transport_failed.is_set():
+                return False
+            try:
+                frame = encode_response_frame(payload, MAX_RESPONSE_FRAME_BYTES)
+            except ResponseFrameTooLargeError:
+                failure = _TerminalTransportError(
+                    f"response frame exceeds the {MAX_RESPONSE_FRAME_BYTES}-byte limit including LF"
+                )
+            except Exception:
+                failure = _TerminalTransportError("response frame is not valid strict JSON")
+            else:
+                try:
+                    self._write_exact_frame(frame)
+                except Exception:
+                    failure = _TerminalTransportError("response frame could not be published")
+            if failure is not None:
+                self._transport_failed.set()
+                self._close_real_stream()
+        if failure is not None:
+            self._on_terminal_failure(failure)
+            return False
+        return True
+
+    def fail(self, error: _TerminalTransportError) -> None:
+        should_report = False
+        with self._write_lock:
+            if not self._transport_failed.is_set():
+                self._transport_failed.set()
+                self._close_real_stream()
+                should_report = True
+        if should_report:
+            self._on_terminal_failure(error)
+
+    def _write_exact_frame(self, frame: bytes) -> None:
+        binary_stream = getattr(self._stream, "buffer", None)
+        if binary_stream is not None and callable(getattr(binary_stream, "write", None)):
+            written = binary_stream.write(frame)
+            if written != len(frame):
+                raise OSError("short response-frame write")
+            binary_stream.flush()
+            return
+        text = frame.decode("utf-8")
+        written = self._stream.write(text)
+        if written != len(text):
+            raise OSError("short response-frame write")
+        self._stream.flush()
+
+    def _close_real_stream(self) -> None:
+        try:
+            self._stream.fileno()
+        except (AttributeError, OSError):
+            return
+        binary_stream = getattr(self._stream, "buffer", None)
+        raw_stream = getattr(binary_stream, "raw", None)
+        if raw_stream is not None and callable(getattr(raw_stream, "close", None)):
+            with suppress(Exception):
+                # Closing the raw dedicated descriptor avoids flushing a
+                # buffered partial frame after publication has already failed.
+                raw_stream.close()
+            return
+        try:
+            self._stream.close()
+        except Exception:
+            return
 
 
 def dispatch(
@@ -185,13 +272,23 @@ def main() -> int:
     live_priorities: dict[str, str] = {}
     live_counts = {"interactive": 0, "background": 0}
     transport_failed = threading.Event()
+    terminal_error: _TerminalTransportError | None = None
+    terminal_error_lock = threading.Lock()
 
-    def write(payload: dict[str, Any]) -> None:
-        with write_lock:
-            if transport_failed.is_set():
+    def record_terminal_failure(error: _TerminalTransportError) -> None:
+        nonlocal terminal_error
+        with terminal_error_lock:
+            if terminal_error is not None:
                 return
-            protocol_output.write(json.dumps(payload, default=str, allow_nan=False) + "\n")
-            protocol_output.flush()
+            terminal_error = error
+        _report_terminal_transport_error(error)
+
+    publisher = _ResponsePublisher(
+        protocol_output,
+        write_lock,
+        transport_failed,
+        record_terminal_failure,
+    )
 
     def complete(request_id: str, view_request_id: str | None, future: Future[dict[str, Any]]) -> None:
         try:
@@ -206,7 +303,7 @@ def main() -> int:
                     response = _response_for_error(error)
             if response.get("kind") in {"error", "cancelled"} and view_request_id:
                 response["viewRequestId"] = view_request_id
-            write(response_envelope(request_id, response))
+            publisher.publish(response_envelope(request_id, response))
         finally:
             _release_live_request(
                 pending,
@@ -224,9 +321,10 @@ def main() -> int:
         max_workers=BACKGROUND_WORKERS,
         thread_name_prefix="openwrangler-background",
     )
-    terminal_error: _TerminalTransportError | None = None
     try:
         for payload in _iter_request_payloads(sys.stdin):
+            if transport_failed.is_set():
+                break
             request_id = _request_id_for_payload(payload)
             if request_id is None:
                 raise _TerminalTransportError("request frame has no bounded correlation ID")
@@ -248,7 +346,8 @@ def main() -> int:
                             "The target request is already running, complete, or unknown and cannot be cancelled.",
                             code="cancellation_unavailable",
                         )
-                    write(response_envelope(request_id, response))
+                    if not publisher.publish(response_envelope(request_id, response)):
+                        break
                     continue
                 admission = _reserve_live_request(
                     live_priorities,
@@ -267,7 +366,8 @@ def main() -> int:
                     )
                     if view_request_id:
                         response["viewRequestId"] = view_request_id
-                    write(response_envelope(request_id, response))
+                    if not publisher.publish(response_envelope(request_id, response)):
+                        break
                     continue
                 admitted = True
                 if request["kind"] == "openSession":
@@ -289,7 +389,8 @@ def main() -> int:
                 response = _response_for_error(error)
                 if view_request_id:
                     response["viewRequestId"] = view_request_id
-                write(response_envelope(request_id, response))
+                if not publisher.publish(response_envelope(request_id, response)):
+                    break
             finally:
                 if admitted and not submitted:
                     _release_live_request(
@@ -300,9 +401,7 @@ def main() -> int:
                         request_id,
                     )
     except _TerminalTransportError as error:
-        terminal_error = error
-        transport_failed.set()
-        _report_terminal_transport_error(error)
+        publisher.fail(error)
     finally:
         _shutdown_runtime(
             manager,
@@ -310,7 +409,7 @@ def main() -> int:
             pending,
             pending_lock,
         )
-    return 1 if terminal_error is not None else 0
+    return 1 if transport_failed.is_set() or terminal_error is not None else 0
 
 
 def _shutdown_runtime(
@@ -500,6 +599,8 @@ def _response_for_error(error: Exception) -> dict[str, Any]:
             recoverable=False,
             session_id=error.session_id,
         )
+    if isinstance(error, ResponsePayloadError):
+        return error_response(message, code=error.code)
     if isinstance(error, AmbiguousViewColumnError):
         return error_response(message, code="ambiguous_view_column")
     if isinstance(error, EngineError):
