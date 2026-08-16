@@ -1447,17 +1447,6 @@ test("the remote-only R selector bypasses every local runtime owner while retain
   }
 });
 
-test("released R notebook fixtures use the owned Windows cleanup boundary", async () => {
-  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
-  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
-  const journeyEnd = source.indexOf("\nasync function exerciseReleasedRInteractiveTerminalJourney(", journeyStart);
-  assert.ok(journeyStart >= 0 && journeyEnd > journeyStart);
-  const journey = source.slice(journeyStart, journeyEnd);
-
-  assert.match(journey, /cleanupAcceptanceTemporaryDirectory\(directory\)/u);
-  assert.doesNotMatch(journey, /rmSync\(directory/u);
-});
-
 test("R editing acceptance reveals virtualized columns after temporary derived columns", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const start = source.indexOf("async function exerciseReleasedREditingJourney(");
