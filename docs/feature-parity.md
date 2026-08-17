@@ -15,7 +15,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Notebook variable viewer and toolbar                 |    Yes |    Yes | Done   | Proactive formatter, typed picker, released Jupyter matrix; record:docs/testing.md    |
 | Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done   | Captured expansion, bounded pager, exact editors; record:docs/testing.md              |
 | Virtual grid, column sizing, navigation              |    Yes |    Yes | Done   | Hosted exact-artifact paint/scroll gate green; record:docs/testing.md                 |
-| Dataset summary and quick insights                   |    Yes |    Yes | Done   | Typed profiles/stats plus packaged queries green; record:docs/testing.md              |
+| Dataset summary and quick insights                   |    Yes |    Yes | Done   | Engine-native Sum with lossless integer/decimal values; record:docs/testing.md        |
 | Basic and advanced viewing filters                   |    Yes |    Yes | Done   | AND/OR engine, browser, and packaged green; record:docs/testing.md                    |
 | Multi-column viewing sorts                           |    Yes |    Yes | Done   | Quick and ordered sort journeys green; record:docs/testing.md                         |
 | Editing mode and operation catalog                   |    Yes |    Yes | Done   | Structural duplicate/non-string packaged matrix green; record:docs/testing.md         |

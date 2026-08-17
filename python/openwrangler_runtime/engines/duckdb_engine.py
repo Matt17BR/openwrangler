@@ -41,6 +41,7 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
+    normalized_numeric_sum,
     numeric_histogram_bin_count,
     numeric_histogram_edges,
     numeric_visualization_from_bin_counts,
@@ -495,6 +496,7 @@ class DuckDBEngine(DataFrameEngine):
                             ("mean", f"avg({identifier}) FILTER (WHERE {valid})"),
                             ("median", f"median({identifier}) FILTER (WHERE {valid})"),
                             ("std", f"stddev_samp({identifier}) FILTER (WHERE {valid})"),
+                            ("sum", f"sum({identifier}) FILTER (WHERE {valid})"),
                             ("finite_minimum", f"min({identifier}) FILTER (WHERE {finite})"),
                             ("finite_maximum", f"max({identifier}) FILTER (WHERE {finite})"),
                             ("finite_count", f"count(*) FILTER (WHERE {finite})"),
@@ -571,6 +573,10 @@ class DuckDBEngine(DataFrameEngine):
                         "median": _finite_float(metrics["median"]),
                         "std": _finite_float(metrics["std"]),
                     }
+                    native_sum = metrics["sum"]
+                    if total_count - null_count - nan_count == 0:
+                        native_sum = _duckdb_numeric_zero(semantic_type, raw_type)
+                    numeric_summary.update(normalized_numeric_sum(native_sum, semantic_type))
                     if semantic_type in {"integer", "decimal"} and metrics["minimum"] is not None:
                         numeric_summary["exactMin"] = normalize_cell(metrics["minimum"])
                         numeric_summary["exactMax"] = normalize_cell(metrics["maximum"])
@@ -2365,6 +2371,16 @@ def _finite_float(value: Any) -> float | None:
         return result if result is None or isfinite(result) else None
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _duckdb_numeric_zero(semantic_type: str, raw_type: str) -> int | float | Decimal:
+    if semantic_type == "integer":
+        return 0
+    if semantic_type == "decimal":
+        match = _DUCKDB_DECIMAL_TYPE.fullmatch(raw_type)
+        scale = int(match.group(2)) if match is not None else 0
+        return Decimal((0, (0,), -scale))
+    return 0.0
 
 
 def _unique_internal(existing: Iterable[str], base: str) -> str:

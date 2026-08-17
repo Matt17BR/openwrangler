@@ -1464,6 +1464,14 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
         "mean": 20.0,
         "median": 20.0,
         "std": 10.0,
+        "sum": 60.0,
+        "exactSum": {
+            "kind": "integer",
+            "raw": 60,
+            "display": "60",
+            "isNull": False,
+            "isNaN": False,
+        },
         "exactMin": {
             "kind": "integer",
             "raw": 10,
