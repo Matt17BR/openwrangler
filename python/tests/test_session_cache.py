@@ -9,8 +9,16 @@ import pandas as pd
 import polars as pl
 import pytest
 
+import openwrangler_runtime.live_page_payload as live_page_payload
 import openwrangler_runtime.session as session_runtime
-from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine, PolarsEngine, SessionDataShape
+from openwrangler_runtime.engines import (
+    DuckDBEngine,
+    EngineError,
+    EngineRegistry,
+    PandasEngine,
+    PolarsEngine,
+    SessionDataShape,
+)
 from openwrangler_runtime.engines.base import EngineCapabilities, SummaryColumnProjection
 from openwrangler_runtime.session import (
     PAGE_CACHE_LIMIT,
@@ -493,6 +501,89 @@ def test_strict_page_payload_rejection_happens_before_cache_insertion(tmp_path, 
     assert len(created[0].page_calls) == 2
     assert session.page_cache == {}
     assert session.page_cache_bytes == 0
+
+
+@pytest.mark.parametrize(
+    ("backend", "engine_factory"),
+    [
+        ("pandas", PandasEngine),
+        ("polars", PolarsEngine),
+        ("duckdb", DuckDBEngine),
+    ],
+)
+def test_live_page_text_limit_rejects_before_cross_engine_cache_insertion_and_recovers(
+    tmp_path: Path,
+    backend: str,
+    engine_factory: type[PandasEngine] | type[PolarsEngine] | type[DuckDBEngine],
+) -> None:
+    path = tmp_path / f"{backend}-payload.csv"
+    path.write_text(f"safe,payload\nok,{'x' * 65_537}\n", encoding="utf-8")
+    manager = SessionManager(EngineRegistry(((backend, engine_factory),)))
+    opened = manager.open_session(source(path), backend=backend, page_size=1, column_offset=0, column_limit=1)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    session.clear_page_cache()
+
+    with pytest.raises(ResponsePayloadError, match="65,536 Unicode code points") as caught:
+        manager.get_page(
+            session_id,
+            0,
+            0,
+            1,
+            {"filters": [], "sort": []},
+            column_offset=1,
+            column_limit=1,
+        )
+    assert caught.value.code == "page_payload_invalid"
+    assert session.page_cache == {}
+    assert session.page_cache_bytes == 0
+
+    recovered = manager.get_page(
+        session_id,
+        0,
+        0,
+        1,
+        {"filters": [], "sort": []},
+        column_offset=0,
+        column_limit=1,
+    )
+    assert recovered["page"]["rows"][0]["values"][0]["display"] == "ok"
+    assert len(session.page_cache) == 1
+    assert session.page_cache_bytes > 0
+    manager.close_session(session_id, 0)
+
+
+def test_live_page_validation_covers_current_preview_and_inspection_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = counting_manager()
+    calls: list[dict[str, Any]] = []
+    original = live_page_payload.validate_live_page_payload
+
+    def record(page: dict[str, Any]) -> int:
+        calls.append(page)
+        return original(page)
+
+    monkeypatch.setattr(session_runtime, "validate_live_page_payload", record)
+    opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+    assert len(calls) == 1
+
+    calls.clear()
+    manager.preview_step(session_id, 0, formula_step("double"), 0, 2)
+    assert len(calls) == 2
+
+    calls.clear()
+    manager.apply_draft(session_id, 1, 0, 2)
+    assert len(calls) == 1
+
+    calls.clear()
+    inspected = manager.inspect_step(session_id, 2, "double", 0, 2)
+    assert len(calls) == 2
+    assert inspected["inputPage"]["rows"]
+    assert inspected["outputPage"]["rows"]
+    manager.close_session(session_id, 2)
 
 
 def test_read_only_profile_payload_rejection_is_bounded_and_releases_the_profile_lease(
