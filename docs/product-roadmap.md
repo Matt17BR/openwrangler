@@ -74,8 +74,11 @@ Current implementation evidence closes prerequisites, not the complete approacha
   [f9578df](https://github.com/Matt17BR/openwrangler/commit/f9578dfeded1ae9c72a90a1161ce5ef804e21d4b)
   with tree `32bf650546f7649db807bf4fa7dddf778e031655`. Configurable delimiter, quote, encoding, header,
   import-dialect default, and Pandas index options remain unimplemented P1 work.
-- Operation-catalog consolidation remains open while two hand-maintained 28-entry lists still exist outside the
-  canonical schema. Unlanded restructuring evidence does not satisfy the sole-registry gate.
+- Operation-catalog consolidation is achieved: `protocol/openwrangler.v2.schema.json` is the sole hand-edited
+  registry, and generation supplies the shared TypeScript and Python catalogs consumed by runtime and UI capability
+  owners. The direct Native-R complete-catalog contract retains one independent, mutation-sensitive 28-operation
+  oracle that must remain exactly equal to the generated kinds; it is executable test evidence, not a second runtime
+  registry.
 
 This roadmap links durable checkpoints and dispositions without embedding volatile workflow timing or runner totals.
 

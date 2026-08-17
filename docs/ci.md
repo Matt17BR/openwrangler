@@ -12,7 +12,7 @@ unexpectedly skipped selected job.
 The sole classifier emits exactly four booleans:
 
 - `r_contract_required` selects both R 4.5 owners. `R 4.5 kernel contract` runs the isolated kernel-agent shard;
-  `R 4.5 protocol contracts` runs the two remaining shards concurrently and fail-complete.
+  `R 4.5 protocol contracts` runs the two remaining shards sequentially and fail-complete.
 - `canonical_editor_required` selects the canonical VSIX plus stable extension-host owner for extension, runtime,
   session, protocol, and package changes.
 - `visual_accessibility_required` selects the production-bundle Playwright visual and axe owner for UI/media changes.
