@@ -162,6 +162,7 @@ import {
   releasedRAcceptanceCoverageProfile,
   type ReleasedRAcceptanceCoverageProfile
 } from "./releasedRAcceptanceCoverage";
+import { assertNumericSummarySum, exerciseNumericSummaryPandasJourney } from "./numericSummaryJourney";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -1155,6 +1156,21 @@ export async function run(): Promise<void> {
     recordAcceptanceProgress("verify:runtime-and-file-inputs");
     await exerciseRuntimeSelectionCommands(testing, fixture, testPython);
     await exercisePackagedFileInputs(testing, workspace, testPython);
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      await exerciseNumericSummaryPandasJourney({
+        testing,
+        createTemporaryDirectory: () => mkdtempSync(path.join(tmpdir(), "openwrangler-numeric-summary-")),
+        cleanupTemporaryDirectory: cleanupAcceptanceTemporaryDirectory,
+        sessionApp: async (sessionId, description) =>
+          synchronizedSessionApp(
+            await connectToEditorWorkbench(),
+            testing,
+            sessionId,
+            `${description} must render its confirmed shared-webview state.`
+          ),
+        recordProgress: recordAcceptanceProgress
+      });
+    }
   }
   recordAcceptanceProgress("verify:viewing-queries");
   await exercisePackagedViewingQueries(testing, fixture);
@@ -5378,6 +5394,7 @@ async function exerciseReleasedRGridJourney(
   await assertReleasedProfileStat(columnProfile, "Distinct", "1,205");
   await assertReleasedProfileStat(columnProfile, "Min", "1");
   await assertReleasedProfileStat(columnProfile, "Max", "1,205");
+  await assertNumericSummarySum(columnProfile, { text: "726,615", ariaLabel: "Sum 726,615" });
   await drawer.getByRole("tab", { name: "Dataset", exact: true }).click();
   const datasetProfile = drawer.getByRole("tabpanel");
   await datasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
