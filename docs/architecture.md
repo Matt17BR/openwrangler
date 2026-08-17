@@ -150,7 +150,10 @@ trusted-workspace export execution (invariant 4), not the artifact-handoff exclu
 The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
 without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
 columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
-the isolated contract helper still copies its input for unit-level value tests. The page keeps
+after the user-owned source reader returns, they also revalidate the locked capture, its fixed top-level bindings, and
+the live-state and sort-cache leaves against the pre-call receipt before inspecting the returned frame or materializing
+rows. Telemetry counters are not authorization state. The isolated contract helper still copies its input for
+unit-level value tests. The page keeps
 duplicate and non-syntactic names while using stable source-column IDs for identity. A retained column keeps its ID
 when an editing step changes its position. Its column metadata records factors,
 ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
