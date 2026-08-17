@@ -122,6 +122,7 @@ import {
   writeReleasedJupyterNotebook
 } from "./releasedJupyterNotebookFixture";
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
+import { persistedReplayExportRequest } from "./persistedReplayExport";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
   captureNotebookWorkbenchScreenshot,
@@ -17356,33 +17357,36 @@ async function verifyPersistedReplayAndRecovery(
     for (const target of [
       {
         name: "polars",
+        backend: restoredPage.metadata.backend,
         sessionId: restored.metadata.sessionId,
         revision: restoredPage.revision,
         columns: 5
       },
-      { name: "pandas", sessionId: second.metadata.sessionId, revision: secondPage.revision, columns: 4 },
-      { name: "duckdb", sessionId: third.metadata.sessionId, revision: thirdPage.revision, columns: 5 }
+      {
+        name: "pandas",
+        backend: secondPage.metadata.backend,
+        sessionId: second.metadata.sessionId,
+        revision: secondPage.revision,
+        columns: 4
+      },
+      {
+        name: "duckdb",
+        backend: thirdPage.metadata.backend,
+        sessionId: third.metadata.sessionId,
+        revision: thirdPage.revision,
+        columns: 5
+      }
     ]) {
       const csvDestination = path.join(exportDirectory, `${target.name}.csv`);
-      const csvExported = await testing.request({
-        kind: "exportData",
-        sessionId: target.sessionId,
-        revision: target.revision,
-        path: csvDestination,
-        format: "csv"
-      });
+      const csvExported = await testing.request(persistedReplayExportRequest(target, csvDestination, "csv"));
       assert.equal(csvExported.kind, "dataExported");
       if (csvExported.kind === "dataExported") assert.equal(csvExported.shape.columns, target.columns);
       assert.match(readFileSync(csvDestination, "utf8"), /city,year,sales,active/);
 
       const parquetDestination = path.join(exportDirectory, `${target.name}.parquet`);
-      const parquetExported = await testing.request({
-        kind: "exportData",
-        sessionId: target.sessionId,
-        revision: target.revision,
-        path: parquetDestination,
-        format: "parquet"
-      });
+      const parquetExported = await testing.request(
+        persistedReplayExportRequest(target, parquetDestination, "parquet")
+      );
       assert.equal(parquetExported.kind, "dataExported");
       if (parquetExported.kind === "dataExported") assert.equal(parquetExported.shape.columns, target.columns);
       assert.equal(readFileSync(parquetDestination).subarray(0, 4).toString("ascii"), "PAR1");
