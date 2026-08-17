@@ -2,10 +2,22 @@ import type {
   ByExampleProgram,
   ColumnReference,
   ColumnSchema,
+  ColumnType,
   FillMissingReplacement,
   TransformStep
 } from "../../shared/protocol";
-import { isDirectionalOrderColumn, isGroupedKeyColumn, isInterpolationCoordinateColumn } from "./fillMissingModel";
+import {
+  directionalOrderColumnsForTarget,
+  explicitFillValueKind,
+  fallbackColumnsForTarget,
+  fillModeForReplacement,
+  fillModesForColumn,
+  fillTargetColumns,
+  fillValueKindForColumn,
+  groupedKeyColumnsForTarget,
+  interpolationCoordinateColumnsForTarget
+} from "./fillMissingModel";
+import { aggregationColumnTypes, isAggregationOperation, operationColumnTypes } from "./operationFieldCompatibility";
 
 const recovery = "Cancel editing, then reload the session or undo and recreate this step.";
 
@@ -259,6 +271,181 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
   }
 }
 
+function incompatibleReferenceType(
+  checks: readonly SavedReferenceCheck[],
+  columnsById: ReadonlyMap<string, ColumnSchema>,
+  allowedTypes: ReadonlySet<ColumnType>,
+  requirement: string
+): string | undefined {
+  for (const check of checks) {
+    const column = columnsById.get(check.reference.id);
+    if (column && !allowedTypes.has(column.type)) {
+      return `The saved ${check.label} uses a recorded ${column.type} column, but ${requirement}.`;
+    }
+  }
+  return undefined;
+}
+
+function fillCompatibilityError(
+  step: Extract<TransformStep, { kind: "fillMissingValues" }>,
+  inputSchema: readonly ColumnSchema[],
+  columnsById: ReadonlyMap<string, ColumnSchema>
+): string | undefined {
+  const target = columnsById.get(step.params.column.id);
+  if (!target) return "The saved fill target is absent from the recorded input schema.";
+  if (!fillTargetColumns(inputSchema).some((column) => column.id === target.id)) {
+    return `The saved fill target uses a recorded ${target.type} column that does not support filling.`;
+  }
+
+  const replacement = step.params.replacement;
+  if (replacement.kind === "linearInterpolation" && target.type !== "float") {
+    return "The saved interpolation target is not a floating-point column.";
+  }
+  const mode = fillModeForReplacement(replacement);
+  if (!mode || !fillModesForColumn(target, inputSchema).includes(mode)) {
+    return `The saved ${replacement.kind} fill method is not compatible with the recorded ${target.type} target.`;
+  }
+  if (replacement.kind === "fallbackColumns") {
+    const compatibleIds = new Set(fallbackColumnsForTarget(target, inputSchema).map((column) => column.id));
+    const incompatible = replacement.columns.find((reference) => !compatibleIds.has(reference.id));
+    if (incompatible) {
+      return `The saved fallback column “${incompatible.name}” is not compatible with the recorded ${target.type} target.`;
+    }
+  }
+  if (replacement.kind === "directional") {
+    const compatibleIds = new Set(directionalOrderColumnsForTarget(target, inputSchema).map((column) => column.id));
+    const incompatible = replacement.orderBy.find((rule) => !compatibleIds.has(rule.column.id));
+    if (incompatible) {
+      return `The saved calculation-order column “${incompatible.column.name}” cannot be ordered safely.`;
+    }
+  }
+  if (replacement.kind === "linearInterpolation") {
+    const compatibleIds = new Set(
+      interpolationCoordinateColumnsForTarget(target, inputSchema).map((column) => column.id)
+    );
+    if (!compatibleIds.has(replacement.coordinate.id)) {
+      return "The saved interpolation coordinate cannot be used safely.";
+    }
+  }
+  if (replacement.kind === "groupedStatistic") {
+    const compatibleIds = new Set(groupedKeyColumnsForTarget(target, inputSchema).map((column) => column.id));
+    const incompatible = replacement.keys.find((reference) => !compatibleIds.has(reference.id));
+    if (incompatible) {
+      return `The saved group key “${incompatible.name}” cannot be used for grouped filling.`;
+    }
+  }
+
+  const explicitKind = explicitFillValueKind(replacement);
+  if (explicitKind && target.type !== "unknown" && explicitKind !== fillValueKindForColumn(target.type)) {
+    return `The saved ${explicitKind} replacement value is not compatible with the recorded ${target.type} target.`;
+  }
+  return undefined;
+}
+
+function savedOperationTypeError(
+  step: TransformStep,
+  inputSchema: readonly ColumnSchema[],
+  columnsById: ReadonlyMap<string, ColumnSchema>
+): string | undefined {
+  switch (step.kind) {
+    case "formula":
+      return incompatibleReferenceType(
+        [
+          { label: "left formula column", reference: step.params.leftColumn },
+          ...(step.params.rightColumn ? [{ label: "right formula column", reference: step.params.rightColumn }] : [])
+        ],
+        columnsById,
+        operationColumnTypes(step.kind),
+        "formula inputs must be numeric"
+      );
+    case "textLength":
+    case "multiLabelBinarize":
+    case "findReplace":
+    case "stripText":
+    case "splitText":
+    case "capitalizeText":
+    case "lowerText":
+    case "upperText":
+      return incompatibleReferenceType(
+        [{ label: "input column", reference: step.params.column }],
+        columnsById,
+        operationColumnTypes(step.kind),
+        "this text operation requires a string column"
+      );
+    case "minMaxScale":
+    case "roundNumber":
+    case "floorNumber":
+    case "ceilNumber":
+      return incompatibleReferenceType(
+        [{ label: "input column", reference: step.params.column }],
+        columnsById,
+        operationColumnTypes(step.kind),
+        "this numeric operation requires an integer, float, or decimal column"
+      );
+    case "formatDatetime":
+      return incompatibleReferenceType(
+        [{ label: "input column", reference: step.params.column }],
+        columnsById,
+        operationColumnTypes(step.kind),
+        "datetime formatting requires a date or datetime column"
+      );
+    case "oneHotEncode":
+      return incompatibleReferenceType(
+        step.params.columns.map((reference, index) => ({ label: `column ${index + 1}`, reference })),
+        columnsById,
+        operationColumnTypes(step.kind),
+        "one-hot encoding requires portable scalar columns"
+      );
+    case "groupBy": {
+      const keyError = incompatibleReferenceType(
+        step.params.keys.map((reference, index) => ({ label: `group key ${index + 1}`, reference })),
+        columnsById,
+        operationColumnTypes(step.kind),
+        "group keys must be portable scalar columns"
+      );
+      if (keyError) return keyError;
+      for (const [index, aggregation] of step.params.aggregations.entries()) {
+        if (!isAggregationOperation(aggregation.operation)) {
+          return `The saved aggregation ${index + 1} uses unsupported operation “${String(aggregation.operation)}”.`;
+        }
+        const error = incompatibleReferenceType(
+          [{ label: `aggregation value ${index + 1}`, reference: aggregation.column }],
+          columnsById,
+          aggregationColumnTypes(aggregation.operation),
+          `the ${aggregation.operation} aggregation does not support that column type`
+        );
+        if (error) return error;
+      }
+      return undefined;
+    }
+    case "byExample":
+      return incompatibleReferenceType(
+        step.params.sourceColumns.map((reference, index) => ({
+          label: `by-example source ${index + 1}`,
+          reference
+        })),
+        columnsById,
+        operationColumnTypes(step.kind),
+        "by-example sources must be portable scalar columns"
+      );
+    case "fillMissingValues":
+      return fillCompatibilityError(step, inputSchema, columnsById);
+    case "sortRows":
+    case "filterRows":
+    case "dropMissingRows":
+    case "dropDuplicates":
+    case "selectColumns":
+    case "dropColumns":
+    case "renameColumn":
+    case "cloneColumn":
+    case "castColumn":
+    case "customCode":
+      return undefined;
+    default:
+      return unknownOperationPolicy(step);
+  }
+}
+
 export function savedStepEditError(
   step: TransformStep,
   inputSchema: readonly ColumnSchema[] | undefined
@@ -294,44 +481,8 @@ export function savedStepEditError(
     }
   }
 
-  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns") {
-    const target = columnsById.get(step.params.column.id);
-    if (!target) return `The saved fill target is absent from the recorded input schema. ${recovery}`;
-    const incompatible = step.params.replacement.columns.find(
-      (reference) => columnsById.get(reference.id)?.type !== target.type
-    );
-    if (incompatible) {
-      return `The saved fallback column “${incompatible.name}” is not compatible with the recorded ${target.type} target. ${recovery}`;
-    }
-  }
-  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "directional") {
-    const incompatible = step.params.replacement.orderBy.find((rule) => {
-      const column = columnsById.get(rule.column.id);
-      return !column || !isDirectionalOrderColumn(column);
-    });
-    if (incompatible) {
-      return `The saved calculation-order column “${incompatible.column.name}” cannot be ordered safely. ${recovery}`;
-    }
-  }
-  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "linearInterpolation") {
-    const target = columnsById.get(step.params.column.id);
-    const coordinate = columnsById.get(step.params.replacement.coordinate.id);
-    if (target?.type !== "float") {
-      return `The saved interpolation target is not a floating-point column. ${recovery}`;
-    }
-    if (!coordinate || !isInterpolationCoordinateColumn(coordinate)) {
-      return `The saved interpolation coordinate cannot be used safely. ${recovery}`;
-    }
-  }
-  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "groupedStatistic") {
-    const incompatible = step.params.replacement.keys.find((reference) => {
-      const column = columnsById.get(reference.id);
-      return !column || !isGroupedKeyColumn(column);
-    });
-    if (incompatible) {
-      return `The saved group key “${incompatible.name}” cannot be used for grouped filling. ${recovery}`;
-    }
-  }
+  const typeError = savedOperationTypeError(step, inputSchema, columnsById);
+  if (typeError) return `${typeError} ${recovery}`;
   if (step.kind === "byExample") {
     if (!step.params.program) {
       return `This saved by-example step has no deterministic program. ${recovery}`;
