@@ -89,6 +89,46 @@ def assert_same_relation(left: Any, right: Any) -> None:
                 assert left_value == right_value
 
 
+def reference_header_stats(engine: DuckDBEngine, frame: Any) -> dict[str, Any]:
+    """Preserve the former two-query dataset-statistics semantics for comparison."""
+
+    plan = engine.normalize(frame)
+    visible = engine._visible_columns(plan)
+    types = dict(zip(engine._columns(plan), (str(item) for item in plan.types), strict=True))
+    missing_expressions = [
+        f"({duckdb_runtime._quote_ident(column)} IS NULL OR "
+        f"{duckdb_runtime._nan_predicate(duckdb_runtime._quote_ident(column), types[column])})"
+        for column in visible
+    ]
+    projections = ", ".join(f"count(*) FILTER (WHERE {expression})" for expression in missing_expressions)
+    missing_row_expression = " OR ".join(missing_expressions)
+    group_columns = ", ".join(duckdb_runtime._quote_ident(column) for column in visible)
+    with engine._terminal_connection(plan) as (connection, source_sql):
+        counts = duckdb_runtime._execute_rows(
+            connection,
+            source_sql,
+            f"SELECT {projections}, count(*) FILTER (WHERE {missing_row_expression}) FROM ow",
+        )[0]
+        duplicate_rows = int(
+            duckdb_runtime._execute_scalar(
+                connection,
+                source_sql,
+                "SELECT coalesce(sum(group_count - 1), 0) FROM "
+                f"(SELECT count(*) AS group_count FROM ow GROUP BY {group_columns}) AS groups",
+            )
+            or 0
+        )
+    per_column = [int(value or 0) for value in counts[:-1]]
+    return {
+        "missingCells": sum(per_column),
+        "missingRows": int(counts[-1] or 0),
+        "duplicateRows": duplicate_rows,
+        "missingValuesByColumn": [
+            {"column": column, "count": count} for column, count in zip(visible, per_column, strict=True)
+        ],
+    }
+
+
 def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any]]) -> Any:
     code = engine.compile_plan(plan)
     assert "openwrangler_runtime" not in code
@@ -245,6 +285,253 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
     assert page["columnIds"] == ["stable:text", "stable:other"]
     assert [cell["display"] for cell in page["rows"][0]["values"]] == [" alpha-one ", "2"]
     assert terminal_timezones == ["UTC"]
+
+
+@pytest.mark.parametrize(
+    ("source_sql", "expected_counts"),
+    [
+        pytest.param(
+            """
+            SELECT * FROM (VALUES
+                (1::BIGINT, 1.25::DECIMAL(10, 2), 1.0::DOUBLE),
+                (1::BIGINT, 1.25::DECIMAL(10, 2), 1.0::DOUBLE),
+                (NULL::BIGINT, NULL::DECIMAL(10, 2), NULL::DOUBLE),
+                (2::BIGINT, 2.50::DECIMAL(10, 2), 'NaN'::DOUBLE),
+                (2::BIGINT, 2.50::DECIMAL(10, 2), 'NaN'::DOUBLE)
+            ) AS source(integer_value, decimal_value, float_value)
+            """,
+            {"missingCells": 5, "missingRows": 3, "duplicateRows": 2},
+            id="numeric-null-nan-decimal",
+        ),
+        pytest.param(
+            """
+            SELECT * FROM (VALUES
+                (DATE '2024-03-31', TIMESTAMP '2024-03-31 01:30:00',
+                    TIMESTAMPTZ '2024-03-31 01:30:00+01:00'),
+                (DATE '2024-03-31', TIMESTAMP '2024-03-31 01:30:00',
+                    TIMESTAMPTZ '2024-03-31 00:30:00+00:00'),
+                (NULL::DATE, NULL::TIMESTAMP, NULL::TIMESTAMPTZ),
+                (NULL::DATE, NULL::TIMESTAMP, NULL::TIMESTAMPTZ)
+            ) AS source(date_value, timestamp_value, zoned_value)
+            """,
+            {"missingCells": 6, "missingRows": 2, "duplicateRows": 2},
+            id="date-timestamp-utc-normalization",
+        ),
+    ],
+)
+def test_duckdb_header_stats_use_one_source_execution_with_exact_existing_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    source_sql: str,
+    expected_counts: dict[str, int],
+) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(source_sql)
+    reference = reference_header_stats(engine, frame)
+    row_queries: list[str] = []
+    scalar_queries: list[str] = []
+    terminal_threads: list[int] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+    native_execute_scalar = duckdb_runtime._execute_scalar
+
+    def capture_rows(connection: Any, plan_sql: str, query: str) -> list[tuple[Any, ...]]:
+        row_queries.append(query)
+        terminal_threads.append(int(connection.execute("SELECT current_setting('threads')").fetchone()[0]))
+        return native_execute_rows(connection, plan_sql, query)
+
+    def capture_scalar(connection: Any, plan_sql: str, query: str) -> Any:
+        scalar_queries.append(query)
+        return native_execute_scalar(connection, plan_sql, query)
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_rows)
+    monkeypatch.setattr(duckdb_runtime, "_execute_scalar", capture_scalar)
+    try:
+        actual = engine.header_stats(frame)
+    finally:
+        engine.close()
+
+    assert actual == reference
+    assert {key: actual[key] for key in expected_counts} == expected_counts
+    assert json.dumps(actual, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    ) == json.dumps(reference, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
+    assert len(row_queries) == 1
+    assert scalar_queries == []
+    assert terminal_threads == [1]
+    assert "GROUP BY" in row_queries[0]
+
+
+def test_duckdb_header_stats_thread_pin_is_request_local_and_connection_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = DuckDBEngine()
+    frame = engine.normalize(
+        duckdb.sql("SELECT * FROM (VALUES (1, NULL::DOUBLE), (1, 'NaN'::DOUBLE)) AS source(key, value)")
+    )
+    native_connect = duckdb_runtime._connect
+    connections: list[Any] = []
+    set_queries: list[str] = []
+    observed_threads: list[int] = []
+
+    class TrackedConnection:
+        def __init__(self) -> None:
+            self.inner = native_connect()
+            self.closed = False
+            connections.append(self)
+
+        def execute(self, query: str, *args: Any, **kwargs: Any) -> Any:
+            if query.strip().casefold() == "set threads = 1":
+                set_queries.append(query)
+            result = self.inner.execute(query, *args, **kwargs)
+            if query.strip().casefold() == "set threads = 1":
+                observed_threads.append(int(self.inner.execute("SELECT current_setting('threads')").fetchone()[0]))
+            return result
+
+        def close(self) -> None:
+            self.inner.close()
+            self.closed = True
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.inner, name)
+
+    monkeypatch.setattr(duckdb_runtime, "_connect", TrackedConnection)
+    stats = engine.header_stats(frame)
+
+    assert stats["missingCells"] == 2
+    assert set_queries == ["SET threads = 1"]
+    assert observed_threads == [1]
+    assert len(connections) == 1
+    assert connections[0].closed is True
+    with pytest.raises(duckdb.ConnectionException, match="closed"):
+        connections[0].inner.execute("SELECT 1")
+    with engine._lifecycle_lock:
+        assert engine._active_connections == set()
+    engine.close()
+
+
+def test_duckdb_notebook_header_stats_keep_two_queries_without_mutating_user_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_connection = duckdb.connect()
+    relation = user_connection.sql(
+        "SELECT * FROM (VALUES (1, 1.0::DOUBLE), (1, 1.0::DOUBLE), "
+        "(NULL::BIGINT, 'NaN'::DOUBLE), (NULL::BIGINT, 'NaN'::DOUBLE)) AS source(key, value)"
+    )
+    engine = DuckDBEngine()
+    frame = engine.normalize_notebook_relation(relation)
+    initial_threads = int(user_connection.execute("SELECT current_setting('threads')").fetchone()[0])
+    row_queries: list[str] = []
+    scalar_queries: list[str] = []
+    terminal_statements: list[str] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+    native_execute_scalar = duckdb_runtime._execute_scalar
+    native_terminal_execute = duckdb_runtime._DuckDBNotebookTerminal.execute
+
+    def capture_rows(connection: Any, plan_sql: str, query: str) -> list[tuple[Any, ...]]:
+        row_queries.append(query)
+        return native_execute_rows(connection, plan_sql, query)
+
+    def capture_scalar(connection: Any, plan_sql: str, query: str) -> Any:
+        scalar_queries.append(query)
+        return native_execute_scalar(connection, plan_sql, query)
+
+    def capture_terminal_execute(terminal: Any, query: str) -> Any:
+        terminal_statements.append(query)
+        return native_terminal_execute(terminal, query)
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_rows)
+    monkeypatch.setattr(duckdb_runtime, "_execute_scalar", capture_scalar)
+    monkeypatch.setattr(duckdb_runtime._DuckDBNotebookTerminal, "execute", capture_terminal_execute)
+    try:
+        actual = engine.header_stats(frame)
+        assert actual == {
+            "missingCells": 4,
+            "missingRows": 2,
+            "duplicateRows": 2,
+            "missingValuesByColumn": [
+                {"column": "key", "count": 2},
+                {"column": "value", "count": 2},
+            ],
+        }
+        assert len(row_queries) == 1
+        assert len(scalar_queries) == 1
+        assert len(terminal_statements) == 2
+        assert all("SET threads" not in statement for statement in terminal_statements)
+        assert int(user_connection.execute("SELECT current_setting('threads')").fetchone()[0]) == initial_threads
+    finally:
+        engine.close()
+        relation = None
+        assert user_connection.execute("SELECT 1").fetchone() == (1,)
+        user_connection.close()
+
+
+def test_duckdb_header_stats_keep_unique_wide_groups_inside_one_native_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = DuckDBEngine()
+    wide_columns = ", ".join(
+        f"CASE WHEN i % {modulus} = 0 THEN NULL ELSE i + {modulus} END AS value_{modulus}" for modulus in range(2, 34)
+    )
+    frame = duckdb.sql(
+        f"SELECT i AS unique_key, {wide_columns} FROM range(2048) AS source(i), range(2) AS duplicate(copy)"
+    )
+    reference = reference_header_stats(engine, frame)
+    row_queries: list[str] = []
+    result_sizes: list[int] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+
+    def capture_rows(connection: Any, plan_sql: str, query: str) -> list[tuple[Any, ...]]:
+        row_queries.append(query)
+        result = native_execute_rows(connection, plan_sql, query)
+        result_sizes.append(len(result))
+        return result
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_rows)
+    try:
+        actual = engine.header_stats(frame)
+    finally:
+        engine.close()
+
+    assert actual == reference
+    assert actual["duplicateRows"] == 2048
+    assert json.dumps(actual, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    ) == json.dumps(reference, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
+    assert len(row_queries) == 1
+    assert result_sizes == [1]
+
+
+def test_duckdb_header_stats_zero_visible_columns_use_one_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "empty.csv"
+    source.write_bytes(b"")
+    engine = DuckDBEngine()
+    frame = engine.read_file(str(source))
+    scalar_queries: list[str] = []
+    native_execute_scalar = duckdb_runtime._execute_scalar
+
+    def capture_scalar(connection: Any, plan_sql: str, query: str) -> Any:
+        scalar_queries.append(query)
+        return native_execute_scalar(connection, plan_sql, query)
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_scalar", capture_scalar)
+    try:
+        actual = engine.header_stats(frame)
+    finally:
+        engine.close()
+
+    assert actual == {
+        "missingCells": 0,
+        "missingRows": 0,
+        "duplicateRows": 0,
+        "missingValuesByColumn": [],
+    }
+    assert scalar_queries == ["SELECT count(*) FROM ow"]
 
 
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:

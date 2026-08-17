@@ -658,29 +658,57 @@ class DuckDBEngine(DataFrameEngine):
             f"({_quote_ident(column)} IS NULL OR {_nan_predicate(_quote_ident(column), types[column])})"
             for column in visible
         ]
-        projections = ", ".join(f"count(*) FILTER (WHERE {expression})" for expression in missing_expressions)
         missing_row_expression = " OR ".join(missing_expressions)
         group_columns = ", ".join(_quote_ident(column) for column in visible)
+        group_count_column = _quote_ident(f"{INTERNAL_ROW_ID_PREFIX}header_group_count")
+        # Exact duplicate detection already groups every visible value. Reuse
+        # each group's multiplicity for the missing counts so the source is
+        # executed once and only the final fixed-size aggregate reaches Python.
+        grouped_source = f"SELECT {group_columns}, count(*) AS {group_count_column} FROM ow GROUP BY {group_columns}"
+        projections = ", ".join(
+            f"coalesce(sum({group_count_column}) FILTER (WHERE {expression}), 0)" for expression in missing_expressions
+        )
         with self._terminal_connection(frame) as (connection, source_sql):
-            counts = _execute_rows(
-                connection,
-                source_sql,
-                f"SELECT {projections}, count(*) FILTER (WHERE {missing_row_expression}) FROM ow",
-            )[0]
-            duplicate_rows = int(
-                _execute_scalar(
+            if isinstance(frame, DuckDBSqlPlan):
+                # The fused group can otherwise reserve one wide hash-table
+                # partition per DuckDB worker. This connection is owned only
+                # by the current file read and closes below, so the local pin
+                # cannot change another request or a user's notebook relation.
+                connection.execute("SET threads = 1")
+                counts = _execute_rows(
                     connection,
                     source_sql,
-                    "SELECT coalesce(sum(group_count - 1), 0) FROM "
-                    f"(SELECT count(*) AS group_count FROM ow GROUP BY {group_columns}) AS groups",
+                    f"SELECT {projections}, "
+                    f"coalesce(sum({group_count_column}) FILTER (WHERE {missing_row_expression}), 0), "
+                    f"coalesce(sum({group_count_column} - 1), 0) "
+                    f"FROM ({grouped_source}) AS groups",
+                )[0]
+            else:
+                # Live notebook relations execute on the user's connection.
+                # Retain the two-query shape instead of changing its settings.
+                missing_projections = ", ".join(
+                    f"count(*) FILTER (WHERE {expression})" for expression in missing_expressions
                 )
-                or 0
-            )
-        per_column = [int(value or 0) for value in counts[:-1]]
+                missing_counts = _execute_rows(
+                    connection,
+                    source_sql,
+                    f"SELECT {missing_projections}, count(*) FILTER (WHERE {missing_row_expression}) FROM ow",
+                )[0]
+                duplicate_rows = int(
+                    _execute_scalar(
+                        connection,
+                        source_sql,
+                        "SELECT coalesce(sum(group_count - 1), 0) FROM "
+                        f"(SELECT count(*) AS group_count FROM ow GROUP BY {group_columns}) AS groups",
+                    )
+                    or 0
+                )
+                counts = (*missing_counts, duplicate_rows)
+        per_column = [int(value or 0) for value in counts[:-2]]
         return {
             "missingCells": sum(per_column),
-            "missingRows": int(counts[-1] or 0),
-            "duplicateRows": duplicate_rows,
+            "missingRows": int(counts[-2] or 0),
+            "duplicateRows": int(counts[-1] or 0),
             "missingValuesByColumn": [
                 {"column": column, "count": count} for column, count in zip(visible, per_column, strict=True)
             ],
