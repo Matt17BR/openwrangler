@@ -169,8 +169,9 @@ row names travel separately as row labels and appear in the grid gutter instead 
 and other contiguous row identities are retained as a locked, structurally validated offset and row-count range, so a
 steady-state page or profile does not allocate or rescan one origin per row. Filters and sorts that produce an
 arbitrary derived-frame mapping retain the complete mapping and validate every origin, bound, and duplicate before
-each public read. A page or profile public read validates the capture once before its internal source and page
-materializers run.
+each public read. A page or profile public read validates the capture before its internal source and page
+materializers run; a live read then performs one fixed-size post-callback revalidation without repeating any
+row-scaled origin scan.
 
 This class-based boundary also covers the default frames created by the `collapse` package. `collapse::qDF()` returns a
 base `data.frame`; `qTBL()` and `qDT()` return the already supported tibble and `data.table` class vectors. Open Wrangler
