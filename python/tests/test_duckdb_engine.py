@@ -297,11 +297,17 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
                 (1::BIGINT, 1.25::DECIMAL(10, 2), 1.0::DOUBLE),
                 (NULL::BIGINT, NULL::DECIMAL(10, 2), NULL::DOUBLE),
                 (2::BIGINT, 2.50::DECIMAL(10, 2), 'NaN'::DOUBLE),
-                (2::BIGINT, 2.50::DECIMAL(10, 2), 'NaN'::DOUBLE)
+                (2::BIGINT, 2.50::DECIMAL(10, 2), 'NaN'::DOUBLE),
+                (3::BIGINT, 3.75::DECIMAL(10, 2), 'Infinity'::DOUBLE),
+                (3::BIGINT, 3.75::DECIMAL(10, 2), 'Infinity'::DOUBLE),
+                (4::BIGINT, 4.00::DECIMAL(10, 2), '-Infinity'::DOUBLE),
+                (4::BIGINT, 4.00::DECIMAL(10, 2), '-Infinity'::DOUBLE),
+                (5::BIGINT, 5.00::DECIMAL(10, 2), -0.0::DOUBLE),
+                (5::BIGINT, 5.00::DECIMAL(10, 2), 0.0::DOUBLE)
             ) AS source(integer_value, decimal_value, float_value)
             """,
-            {"missingCells": 5, "missingRows": 3, "duplicateRows": 2},
-            id="numeric-null-nan-decimal",
+            {"missingCells": 5, "missingRows": 3, "duplicateRows": 5},
+            id="numeric-null-nan-infinity-signed-zero-decimal",
         ),
         pytest.param(
             """
