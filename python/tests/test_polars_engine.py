@@ -696,6 +696,14 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
         "mean": pytest.approx(eager.mean()),
         "median": pytest.approx(eager.median()),
         "std": pytest.approx(eager.std()),
+        "sum": pytest.approx(eager.sum()),
+        "exactSum": {
+            "kind": "integer",
+            "raw": 1_614_453,
+            "display": "1614453",
+            "isNull": False,
+            "isNaN": False,
+        },
         "exactMin": {
             "kind": "integer",
             "raw": 0,
@@ -927,6 +935,7 @@ def test_polars_summary_excludes_null_and_nan_from_values_and_numeric_metrics(la
         "mean": 1.0,
         "median": 1.0,
         "std": 0.0,
+        "sum": 2.0,
     }
 
 

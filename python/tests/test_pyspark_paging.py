@@ -321,6 +321,7 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
                 "mean": 1.0,
                 "median": 2.0,
                 "std": 3**0.5,
+                "sum": 3.0,
             }
         )
         assert summary["visualization"]["kind"] == "numeric"
