@@ -1,146 +1,20 @@
-import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-export const ALWAYS_REQUIRED_CI_JOBS = Object.freeze(["classify", "fast-feedback"]);
-
-export const BENCHMARK_HARNESS_CI_JOBS = Object.freeze(["benchmark-harness"]);
-
-export const PACKAGE_CI_JOBS = Object.freeze(["canonical-vsix"]);
-
-export const DEPENDENCY_LOCK_CI_JOBS = Object.freeze(["dependency-lock-validation"]);
-
-export const RELEASE_INFRASTRUCTURE_CI_JOBS = Object.freeze(["release-infrastructure"]);
-
-export const FULL_MATRIX_CI_JOBS = Object.freeze([
-  "contract-tests",
-  "visual-accessibility",
-  "production-audits",
-  "linux-packaged-editor",
-  "coverage",
-  "python-matrix",
-  "native-r-contract",
-  "extension-host"
+export const ALWAYS_REQUIRED_CI_JOBS = Object.freeze(["classify", "invariant-core"]);
+export const CONDITIONAL_CI_JOBS = Object.freeze({
+  rContractRequired: Object.freeze(["r-contract-kernel", "r-contract-protocol", "native-r-contract"]),
+  canonicalEditorRequired: Object.freeze(["canonical-editor"]),
+  visualAccessibilityRequired: Object.freeze(["visual-accessibility"]),
+  windowsUniqueRequired: Object.freeze(["windows-unique"])
+});
+export const REQUIRED_CI_JOBS = Object.freeze([
+  ...ALWAYS_REQUIRED_CI_JOBS,
+  ...Object.values(CONDITIONAL_CI_JOBS).flat()
 ]);
-
-export const PRODUCT_CI_JOBS = Object.freeze([
-  ...BENCHMARK_HARNESS_CI_JOBS,
-  ...FULL_MATRIX_CI_JOBS.slice(0, 3),
-  ...DEPENDENCY_LOCK_CI_JOBS,
-  ...RELEASE_INFRASTRUCTURE_CI_JOBS,
-  ...PACKAGE_CI_JOBS,
-  ...FULL_MATRIX_CI_JOBS.slice(3)
-]);
-
-export const REQUIRED_CI_JOBS = Object.freeze([...ALWAYS_REQUIRED_CI_JOBS, ...PRODUCT_CI_JOBS]);
-
-export const OPTIONAL_CI_JOB = "remote-workspace";
 
 export function resultEnvironmentKey(jobId) {
   return `${jobId.replaceAll("-", "_").toUpperCase()}_RESULT`;
-}
-
-export function requireCiResults({
-  requiredResults,
-  benchmarkHarnessOnly,
-  dependencyLockOnly,
-  documentationOnly,
-  draftPullRequest,
-  lightweightOnly,
-  packageOnly,
-  releaseInfrastructureOnly,
-  fullMatrixRequired,
-  remoteResult,
-  remoteRequired
-}) {
-  const failures = [];
-  if (lightweightOnly !== (documentationOnly || draftPullRequest)) {
-    failures.push("lightweight classifier is inconsistent with documentation and draft state");
-  }
-  if (
-    [benchmarkHarnessOnly, documentationOnly, packageOnly, dependencyLockOnly, releaseInfrastructureOnly].filter(
-      Boolean
-    ).length > 1
-  ) {
-    failures.push(
-      "benchmark-harness-only, documentation-only, package-only, dependency-lock-only, and release-infrastructure-only classifiers are mutually exclusive"
-    );
-  }
-  if (
-    fullMatrixRequired !==
-    (!benchmarkHarnessOnly &&
-      !documentationOnly &&
-      !packageOnly &&
-      !dependencyLockOnly &&
-      !releaseInfrastructureOnly &&
-      !draftPullRequest)
-  ) {
-    failures.push(
-      "full-matrix classifier is inconsistent with benchmark harness, documentation, package, dependency lock, release infrastructure, and draft state"
-    );
-  }
-  for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
-    const result = requiredResults[jobId];
-    if (result !== "success") {
-      failures.push(`${jobId}=${result ?? "missing"}`);
-    }
-  }
-
-  const expectedBenchmarkHarnessResult = benchmarkHarnessOnly ? "success" : "skipped";
-  for (const jobId of BENCHMARK_HARNESS_CI_JOBS) {
-    const result = requiredResults[jobId];
-    if (result !== expectedBenchmarkHarnessResult) {
-      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedBenchmarkHarnessResult})`);
-    }
-  }
-
-  const expectedDependencyLockResult = dependencyLockOnly && !draftPullRequest ? "success" : "skipped";
-  for (const jobId of DEPENDENCY_LOCK_CI_JOBS) {
-    const result = requiredResults[jobId];
-    if (result !== expectedDependencyLockResult) {
-      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedDependencyLockResult})`);
-    }
-  }
-
-  const expectedReleaseInfrastructureResult = releaseInfrastructureOnly ? "success" : "skipped";
-  for (const jobId of RELEASE_INFRASTRUCTURE_CI_JOBS) {
-    const result = requiredResults[jobId];
-    if (result !== expectedReleaseInfrastructureResult) {
-      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedReleaseInfrastructureResult})`);
-    }
-  }
-
-  const expectedPackageResult =
-    !draftPullRequest && (packageOnly || dependencyLockOnly || releaseInfrastructureOnly || fullMatrixRequired)
-      ? "success"
-      : "skipped";
-  for (const jobId of PACKAGE_CI_JOBS) {
-    const result = requiredResults[jobId];
-    if (result !== expectedPackageResult) {
-      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedPackageResult})`);
-    }
-  }
-
-  const expectedFullMatrixResult = fullMatrixRequired ? "success" : "skipped";
-  for (const jobId of FULL_MATRIX_CI_JOBS) {
-    const result = requiredResults[jobId];
-    if (result !== expectedFullMatrixResult) {
-      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedFullMatrixResult})`);
-    }
-  }
-
-  const expectedRemoteResult = fullMatrixRequired && remoteRequired ? "success" : "skipped";
-  if (!fullMatrixRequired && remoteRequired) {
-    failures.push("remote-workspace classifier is inconsistent with full-matrix mode");
-  }
-  if (remoteResult !== expectedRemoteResult) {
-    failures.push(`${OPTIONAL_CI_JOB}=${remoteResult ?? "missing"} (expected ${expectedRemoteResult})`);
-  }
-
-  if (failures.length > 0) {
-    throw new Error(`Required CI did not pass: ${failures.join(", ")}.`);
-  }
-  if (draftPullRequest)
-    process.stdout.write("Draft feedback passed. Mark the pull request ready to start merge checks.\n");
 }
 
 export function parseRequiredFlag(value, environmentName) {
@@ -149,27 +23,47 @@ export function parseRequiredFlag(value, environmentName) {
   throw new Error(`${environmentName} must be exactly true or false.`);
 }
 
+export function requireCiResults({ requiredResults, classificationResult, selections }) {
+  const failures = [];
+  if (classificationResult !== "success") failures.push(`classify=${classificationResult ?? "missing"}`);
+  for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
+    if (requiredResults[jobId] !== "success") {
+      failures.push(`${jobId}=${requiredResults[jobId] ?? "missing"} (expected success)`);
+    }
+  }
+  for (const [selection, jobIds] of Object.entries(CONDITIONAL_CI_JOBS)) {
+    if (typeof selections[selection] !== "boolean") {
+      failures.push(`${selection}=missing`);
+      continue;
+    }
+    const expected = selections[selection] ? "success" : "skipped";
+    for (const jobId of jobIds) {
+      if (requiredResults[jobId] !== expected) {
+        failures.push(`${jobId}=${requiredResults[jobId] ?? "missing"} (expected ${expected})`);
+      }
+    }
+  }
+  if (failures.length > 0) throw new Error(`Required CI did not pass: ${failures.join(", ")}.`);
+}
+
 function main(environment) {
   const requiredResults = Object.fromEntries(
     REQUIRED_CI_JOBS.map((jobId) => [jobId, environment[resultEnvironmentKey(jobId)]])
   );
   requireCiResults({
     requiredResults,
-    benchmarkHarnessOnly: parseRequiredFlag(environment.BENCHMARK_HARNESS_ONLY, "BENCHMARK_HARNESS_ONLY"),
-    dependencyLockOnly: parseRequiredFlag(environment.DEPENDENCY_LOCK_ONLY, "DEPENDENCY_LOCK_ONLY"),
-    documentationOnly: parseRequiredFlag(environment.DOCUMENTATION_ONLY, "DOCUMENTATION_ONLY"),
-    draftPullRequest: parseRequiredFlag(environment.DRAFT_PULL_REQUEST, "DRAFT_PULL_REQUEST"),
-    lightweightOnly: parseRequiredFlag(environment.LIGHTWEIGHT_ONLY, "LIGHTWEIGHT_ONLY"),
-    packageOnly: parseRequiredFlag(environment.PACKAGE_ONLY, "PACKAGE_ONLY"),
-    releaseInfrastructureOnly: parseRequiredFlag(
-      environment.RELEASE_INFRASTRUCTURE_ONLY,
-      "RELEASE_INFRASTRUCTURE_ONLY"
-    ),
-    fullMatrixRequired: parseRequiredFlag(environment.FULL_MATRIX_REQUIRED, "FULL_MATRIX_REQUIRED"),
-    remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],
-    remoteRequired: parseRequiredFlag(environment.REMOTE_WORKSPACE_REQUIRED, "REMOTE_WORKSPACE_REQUIRED")
+    classificationResult: environment.CLASSIFY_RESULT,
+    selections: {
+      rContractRequired: parseRequiredFlag(environment.R_CONTRACT_REQUIRED, "R_CONTRACT_REQUIRED"),
+      canonicalEditorRequired: parseRequiredFlag(environment.CANONICAL_EDITOR_REQUIRED, "CANONICAL_EDITOR_REQUIRED"),
+      visualAccessibilityRequired: parseRequiredFlag(
+        environment.VISUAL_ACCESSIBILITY_REQUIRED,
+        "VISUAL_ACCESSIBILITY_REQUIRED"
+      ),
+      windowsUniqueRequired: parseRequiredFlag(environment.WINDOWS_UNIQUE_REQUIRED, "WINDOWS_UNIQUE_REQUIRED")
+    }
   });
-  process.stdout.write(`Required CI passed ${REQUIRED_CI_JOBS.length} blocking jobs.\n`);
+  process.stdout.write(`Required CI passed ${REQUIRED_CI_JOBS.length} owned job results.\n`);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;

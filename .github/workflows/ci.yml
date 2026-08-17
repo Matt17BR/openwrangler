@@ -16,23 +16,18 @@ concurrency:
 jobs:
   classify:
     name: CI change classification
-    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      benchmark_harness_only: ${{ steps.classify.outputs.benchmark_harness_only }}
-      dependency_lock_only: ${{ steps.classify.outputs.dependency_lock_only }}
-      documentation_only: ${{ steps.classify.outputs.documentation_only }}
-      draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
-      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
-      package_only: ${{ steps.classify.outputs.package_only }}
-      release_infrastructure_only: ${{ steps.classify.outputs.release_infrastructure_only }}
-      full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
+      r_contract_required: ${{ steps.classify.outputs.r_contract_required }}
+      canonical_editor_required: ${{ steps.classify.outputs.canonical_editor_required }}
+      visual_accessibility_required: ${{ steps.classify.outputs.visual_accessibility_required }}
+      windows_unique_required: ${{ steps.classify.outputs.windows_unique_required }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
       - id: classify
@@ -41,187 +36,312 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_PR_DRAFT: ${{ github.event.pull_request.draft }}
 
-  fast-feedback:
-    name: Fast feedback
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  invariant-core:
+    name: Invariant core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           cache: npm
       - id: reference_python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: "3.10"
+          cache: pip
       - run: npm ci
-      - name: Formatting, ESLint, and strict TypeScript
-        run: npm run check:fast-feedback
-      - name: Protocol freshness
-        run: npm run protocol:check
-      - name: Reference freshness
-        run: npm run reference:check
+      - run: python -m pip install -e "python[dev]"
+      - name: Install the exact remote-Jupyter lock compiler
+        run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
+      - name: Portable, TypeScript, Python 3.10, schema, protocol, reference, docs, and license invariants
+        run: npm run check:tier-a
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
-      - name: Documentation freshness
-        run: npm run docs:check
-      - name: Production license inventory
-        run: npm run license:check
-      - name: Workflow contracts
-        run: npm run test:scripts:workflow
+      - name: Remote Jupyter lock reproducibility
+        run: npm run lock:remote-jupyter:check
+      - name: Full development dependency audit
+        run: npm audit
+      - name: Full Python and fixture dependency audits
+        run: npm run audit:python
 
-  benchmark-harness:
-    name: Benchmark harness
-    needs: [classify, fast-feedback]
+  r-contract-kernel:
+    name: R 4.5 kernel contract
+    needs: [classify, invariant-core]
     if: >-
       ${{
         !cancelled() &&
         github.event_name == 'pull_request' &&
-        needs.classify.result == 'success' &&
-        needs.fast-feedback.result == 'success' &&
-        needs.classify.outputs.benchmark_harness_only == 'true' &&
-        needs.classify.outputs.draft_pull_request == 'false'
+        needs.invariant-core.result == 'success' &&
+        (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
       }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - name: Comparison script contracts
-        run: >-
-          node --test
-          scripts/data-wrangler-comparison-study.test.mjs
-          scripts/data-wrangler-comparison-neutral-driver.test.mjs
-          scripts/linux-pss-sampler.test.mjs
-      - name: Comparison notebook trial
-        run: npx vitest run src/test/dataWranglerComparisonNotebookTrial.unit.test.ts
-      - name: Installed fixture contract
-        run: python -m pytest python/tests/test_installed_editor_fixtures.py -q
-      - name: Extension-host build
-        run: npm run build:test-extension
-
-  canonical-vsix:
-    needs: [classify, fast-feedback]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}
-    runs-on: ubuntu-latest
-    outputs:
-      vsix-sha256: ${{ steps.canonical_receipt.outputs.sha256 }}
-      vsix-size: ${{ steps.canonical_receipt.outputs.size }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-      - run: npm run clean
-      - run: npm run build
-      - run: mkdir canonical-vsix
-      - run: npm run package:prepared -- --out canonical-vsix/openwrangler.vsix
-      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
-      - name: Packaged release-media contracts
-        if: ${{ needs.classify.outputs.package_only == 'true' }}
-        run: npm run test:scripts:media
-      - id: canonical_receipt
-        name: Create canonical PR checksum
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { appendFileSync, readFileSync, statSync, writeFileSync } = require("node:fs");
-
-          const digest = createHash("sha256")
-            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
-            .digest("hex");
-          const size = statSync("canonical-vsix/openwrangler.vsix").size;
-          if (!Number.isSafeInteger(size) || size <= 0 || size > 128 * 1024 * 1024) {
-            throw new Error("The canonical PR VSIX size is invalid.");
-          }
-          writeFileSync("canonical-vsix/openwrangler.vsix.sha256", `${digest}  openwrangler.vsix\n`);
-          appendFileSync(process.env.GITHUB_OUTPUT, `sha256=${digest}\nsize=${size}\n`, "utf8");
-      - name: Revalidate canonical PR checksum
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { readFileSync } = require("node:fs");
-
-          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
-          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
-          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          const actual = createHash("sha256")
-            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
-            .digest("hex");
-          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum changed before caching.");
-      - name: Save canonical PR package for same-run consumers
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: canonical-vsix
-          key: openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ steps.canonical_receipt.outputs.sha256 }}
-          enableCrossOsArchive: false
-
-  contract-tests:
-    name: Contract tests
-    needs: [classify, fast-feedback]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@v6
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5"
+          use-public-rspm: false
+      - name: Install the declared system requirement
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libx11-dev
+          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
+      - run: npm ci
+      - id: r_prepare
+        name: Validate the R 4.5 lock before cache or network mutation
+        run: >-
+          node scripts/r-dependency-lock.mjs prepare
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-library"
+          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-receipt.json"
+      - id: r_cache
+        name: Restore the untrusted exact R library cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+          fail-on-cache-miss: false
+      - id: r_install
+        name: Cold-install or reverify the exact R library
+        run: >-
+          node scripts/r-dependency-lock.mjs install
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "${{ steps.r_prepare.outputs.library }}"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-archives"
+          --receipt "${{ steps.r_prepare.outputs.receipt }}"
+          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
+      - name: Save only a newly verified R library
+        if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+      - run: npm run test:r-contract -- --shard kernel-agent
+        env:
+          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
+
+  r-contract-protocol:
+    name: R 4.5 protocol contracts
+    needs: [classify, invariant-core]
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.invariant-core.result == 'success' &&
+        (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5"
+          use-public-rspm: false
+      - name: Install the declared system requirement
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libx11-dev
+          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
+      - run: npm ci
+      - id: r_prepare
+        name: Validate the R 4.5 lock before cache or network mutation
+        run: >-
+          node scripts/r-dependency-lock.mjs prepare
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-library"
+          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-receipt.json"
+      - id: r_cache
+        name: Restore the untrusted exact R library cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+          fail-on-cache-miss: false
+      - name: Cold-install or reverify the exact R library
+        run: >-
+          node scripts/r-dependency-lock.mjs install
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "${{ steps.r_prepare.outputs.library }}"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-archives"
+          --receipt "${{ steps.r_prepare.outputs.receipt }}"
+          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
+      - name: Save only a newly verified R library
+        if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+      - name: Run both independent protocol shards fail-complete
+        run: npm run test:r-contract:protocol
+        env:
+          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
+
+  native-r-contract:
+    name: Native R contract (R 4.4)
+    needs: [classify, invariant-core]
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.invariant-core.result == 'success' &&
+        (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.4"
+          use-public-rspm: false
+      - name: Install the declared system requirement
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libx11-dev
+          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
+      - run: npm ci
+      - id: r_prepare
+        name: Validate the R 4.4 lock before cache or network mutation
+        run: >-
+          node scripts/r-dependency-lock.mjs prepare
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-library"
+          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-receipt.json"
+      - id: r_cache
+        name: Restore the untrusted exact R library cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+          fail-on-cache-miss: false
+      - name: Cold-install or reverify the exact R library
+        run: >-
+          node scripts/r-dependency-lock.mjs install
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "${{ steps.r_prepare.outputs.library }}"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-archives"
+          --receipt "${{ steps.r_prepare.outputs.receipt }}"
+          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
+      - name: Save only a newly verified R library
+        if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+      - run: npm run test:r-contract
+        env:
+          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
+
+  canonical-editor:
+    name: Canonical package and editor
+    needs: [classify, invariant-core]
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.invariant-core.result == 'success' &&
+        (needs.classify.result != 'success' || needs.classify.outputs.canonical_editor_required != 'false')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
       - run: npm ci
-      - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-      - name: Python lint and strict types
-        run: npm run lint:python
-      - name: Brand asset freshness
-        run: npm run brand:check
-      - name: Remote Jupyter lock integrity
-        run: npm run check:remote-jupyter-lock
-      - name: Remote Jupyter lock reproducibility
-        run: npm run lock:remote-jupyter:check
-      - name: Script contracts
-        run: npm run test:scripts:portable
+      - run: npm run clean
+      - run: npm run build
+      - run: npm run package:prepared -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: stable
+      - run: npm run build:test-extension
+      - id: packaged_editor
+        name: Test packaged editor
+        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          VSCODE_TEST_VERSION: stable
+      - name: Upload packaged-editor failure diagnostics
+        if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
 
   visual-accessibility:
     name: Visual and accessibility
-    needs: [classify, fast-feedback, contract-tests]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
+    needs: [classify, invariant-core]
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.invariant-core.result == 'success' &&
+        (needs.classify.result != 'success' || needs.classify.outputs.visual_accessibility_required != 'false')
+      }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
       - run: npm ci
-      - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:webview-acceptance
@@ -236,516 +356,76 @@ jobs:
           retention-days: 7
           include-hidden-files: false
 
-  production-audits:
-    name: Production dependency audits
-    needs: [classify, fast-feedback, contract-tests]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - run: npm audit --omit=dev
-      - run: npm run audit:python
-
-  dependency-lock-validation:
-    name: Dependency lock validation
-    needs: [classify, fast-feedback]
+  windows-unique:
+    name: Windows unique-risk contracts
+    needs: [classify, invariant-core]
     if: >-
       ${{
         !cancelled() &&
         github.event_name == 'pull_request' &&
-        needs.classify.result == 'success' &&
-        needs.fast-feedback.result == 'success' &&
-        needs.classify.outputs.dependency_lock_only == 'true' &&
-        needs.classify.outputs.draft_pull_request == 'false'
+        needs.invariant-core.result == 'success' &&
+        (needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false')
       }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-      - name: Resolved dependency tree
-        run: npm ls
-      - name: Full npm audit
-        run: npm audit
-      - name: TypeScript and webview unit tests
-        run: npm run test:ts -- --exclude src/test/notebookVariableDiscovery.python.test.ts
-
-  release-infrastructure:
-    name: Release infrastructure contracts
-    needs: [classify, fast-feedback]
-    if: >-
-      ${{
-        !cancelled() &&
-        github.event_name == 'pull_request' &&
-        needs.classify.result == 'success' &&
-        needs.fast-feedback.result == 'success' &&
-        needs.classify.outputs.release_infrastructure_only == 'true' &&
-        needs.classify.outputs.draft_pull_request == 'false'
-      }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-      - name: Release transaction contracts
-        run: >-
-          node --test --test-concurrency=4
-          scripts/candidate-acceptance-workflow.test.mjs
-          scripts/create-canonical-release-artifact.test.mjs
-          scripts/download-canonical-github-release.test.mjs
-          scripts/editor-acceptance-artifact.test.mjs
-          scripts/marketplace-identity-profile.test.mjs
-          scripts/marketplace-promotion-workflow.test.mjs
-          scripts/marketplace-release-intake.test.mjs
-          scripts/open-vsx-promotion-workflow.test.mjs
-          scripts/package-current-channel.test.mjs
-          scripts/prepare-stable-candidate-tag.test.mjs
-          scripts/public-repository-metadata.test.mjs
-          scripts/publish-github-stable-release.test.mjs
-          scripts/push-stable-release-tag.test.mjs
-          scripts/registry-release-source.test.mjs
-          scripts/release-readiness.test.mjs
-          scripts/remote-jupyter-lock.test.mjs
-          scripts/stable-release-workflow.test.mjs
-          scripts/verify-canonical-release-artifact.test.mjs
-          scripts/verify-marketplace-publication.test.mjs
-          scripts/verify-open-vsx-release.test.mjs
-          scripts/verify-registry-release-artifact.test.mjs
-      - name: Immutable release-media contracts
-        run: npm run test:scripts:media
-
-  linux-packaged-editor:
-    name: Packaged VS Code (Linux)
-    needs: [classify, fast-feedback, contract-tests, canonical-vsix]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - name: Require the canonical PR package
-        if: ${{ needs.canonical-vsix.result != 'success' }}
-        run: exit 1
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - name: Restore canonical PR package
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: canonical-vsix
-          key: openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ needs.canonical-vsix.outputs.vsix-sha256 }}
-          fail-on-cache-miss: true
-      - name: Verify canonical PR checksum
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { readFileSync } = require("node:fs");
-
-          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
-          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
-          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          if (!/^[0-9a-f]{64}$/u.test(process.env.EXPECTED_SHA256) || match[1] !== process.env.EXPECTED_SHA256) {
-            throw new Error("The canonical PR checksum is not bound to its producer.");
-          }
-          const bytes = readFileSync("canonical-vsix/openwrangler.vsix");
-          const actual = createHash("sha256").update(bytes).digest("hex");
-          if (actual !== process.env.EXPECTED_SHA256) throw new Error("The canonical PR VSIX checksum does not match.");
-          if (String(bytes.byteLength) !== process.env.EXPECTED_SIZE) {
-            throw new Error("The canonical PR VSIX size is not bound to its producer.");
-          }
-        env:
-          EXPECTED_SHA256: ${{ needs.canonical-vsix.outputs.vsix-sha256 }}
-          EXPECTED_SIZE: ${{ needs.canonical-vsix.outputs.vsix-size }}
-      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
-      - run: npm run build:test-extension
-      - id: packaged_editor
-        name: Test packaged editor
-        run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
-        env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
-          VSCODE_TEST_VERSION: stable
-      - name: Upload packaged-editor failure diagnostics
-        if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-
-  coverage:
-    needs: [classify, fast-feedback, contract-tests]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - run: npm ci
-      - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
-      - name: Verify exact coverage runtimes
-        shell: bash
-        run: |
-          python - <<'PY'
-          import pandas
-          import pyspark
-          from packaging.version import Version
-
-          assert pyspark.__version__ == "4.2.0", pyspark.__version__
-          assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
-          PY
-          java -XshowSettings:properties -version 2>&1 |
-            grep -Eq '^[[:space:]]*java\.specification\.version = 17$'
-      - run: npm run test:coverage
-      - if: ${{ failure() && !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: coverage-reports
-          path: |
-            coverage/
-            tmp/coverage/python.xml
-          if-no-files-found: ignore
-          retention-days: 7
-          include-hidden-files: false
-
-  python-matrix:
-    needs: [classify, fast-feedback, contract-tests]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.10", "3.14"]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-      - uses: actions/setup-node@v6
-        if: matrix.python == '3.10'
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-        if: matrix.python == '3.10'
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - name: Pin the declared DuckDB minimum
-        if: matrix.python == '3.14'
-        run: python -m pip install --force-reinstall --no-deps "duckdb==1.5.4"
-      - run: npm run test:python-environment-smoke
-        if: matrix.python == '3.10'
-      - run: python -m pytest python/tests -q
-
-  native-r-contract:
-    name: Native R contract (R ${{ matrix.r }})
-    needs: [classify, fast-feedback]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        r: ["4.4", "4.5"]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          r-version: ${{ matrix.r }}
-          use-public-rspm: true
-      - run: npm ci
-      - name: Restore R contract packages
-        uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          packages: ""
-          extra-packages: |-
-            any::jsonlite
-            any::tibble
-            any::readr
-            any::dplyr
-            any::data.table
-            any::bit64
-            any::collapse
-            any::nanoparquet
-          dependencies: '"hard"'
-          cache: true
-          cache-version: native-r-contract-v1
-          install-pandoc: false
-          install-quarto: false
-      - run: npm run test:r-contract
-
-  extension-host:
-    needs: [classify, fast-feedback, contract-tests]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        vscode: ["1.106.0", "stable"]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
       - run: npm ci
       - run: python -m pip install -e "python[dev]"
-      - run: npm run test:extension-host
-        env:
-          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
-
-  remote-workspace:
-    name: Remote SSH acceptance
-    needs: [classify, fast-feedback, contract-tests, canonical-vsix]
-    if: >-
-      ${{
-        !cancelled() &&
-        needs.fast-feedback.result == 'success' &&
-        needs.contract-tests.result == 'success' &&
-        needs.classify.outputs.full_matrix_required == 'true' &&
-        github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
-      }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - name: Require the canonical PR package
-        if: ${{ needs.canonical-vsix.result != 'success' }}
-        run: exit 1
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Prepare namespace-capable acceptance host
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            bubblewrap \
-            busybox-static \
-            coreutils \
-            iproute2 \
-            libtomcrypt1 \
-            libtommath1 \
-            openssh-client \
-            procps \
-            python3-venv \
-            x11-xkb-utils
-          system_runtime_ancestors=(
-            /usr
-            /etc
-          )
-          runner_uid="$(id -u)"
-          for directory in "${system_runtime_ancestors[@]}"; do
-            test -d "$directory"
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            owner="$(stat --format='%u' "$directory")"
-            test "$owner" = "0" || test "$owner" = "$runner_uid"
-          done
-          sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"
-          sudo chmod go-w -- "${system_runtime_ancestors[@]}"
-          for directory in / "${system_runtime_ancestors[@]}"; do
-            test -d "$directory"
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u:%g' "$directory")" = "0:0"
-            test -z "$(find "$directory" -maxdepth 0 -perm /022 -print -quit)"
-            test ! -w "$directory"
-          done
-          system_runtime_roots=(
-            /usr/share/fontconfig
-            /usr/share/fonts
-            /usr/share/glib-2.0
-            /usr/share/icons
-            /usr/share/mime
-            /usr/share/X11
-            /usr/share/zoneinfo
-          )
-          test ! -L /usr/share
-          test "$(realpath /usr/share)" = "/usr/share"
-          test "$(stat --format='%u' /usr/share)" = "0"
-          sudo chmod go-w -- /usr/share
-          test ! -w /usr/share
-          for directory in "${system_runtime_roots[@]}"; do
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u' "$directory")" = "0"
-          done
-          sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"
-          for directory in "${system_runtime_roots[@]}"; do
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u' "$directory")" = "0"
-            unsafe_owner="$(find "$directory" -xdev ! -user root -print -quit)"
-            unsafe_mode="$(find "$directory" -xdev \( -type d -o -type f \) -perm /022 -print -quit)"
-            unsafe_type="$(find "$directory" -xdev ! -type d ! -type f ! -type l -print -quit)"
-            test -z "$unsafe_owner"
-            test -z "$unsafe_mode"
-            test -z "$unsafe_type"
-          done
-          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
-          sudo sysctl --write kernel.unprivileged_userns_clone=1
-          test "$(sysctl --values kernel.apparmor_restrict_unprivileged_userns)" = "0"
-          test "$(sysctl --values kernel.unprivileged_userns_clone)" = "1"
-          test "$(sysctl --values user.max_user_namespaces)" -gt 0
-      - run: npm ci
-      - run: /usr/bin/python3 -m venv .remote-venv
-      - run: .remote-venv/bin/python -m pip install --upgrade pip
-      - run: .remote-venv/bin/python -m pip install ./python
-      - name: Restore canonical PR package
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: canonical-vsix
-          key: openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ needs.canonical-vsix.outputs.vsix-sha256 }}
-          fail-on-cache-miss: true
-      - id: candidate
-        name: Verify exact Remote SSH candidate
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { appendFileSync, readFileSync, statSync } = require("node:fs");
-          const { resolve } = require("node:path");
-
-          const candidatePath = resolve("canonical-vsix/openwrangler.vsix");
-          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
-          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
-          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          if (!/^[0-9a-f]{64}$/u.test(process.env.EXPECTED_SHA256) || match[1] !== process.env.EXPECTED_SHA256) {
-            throw new Error("The canonical PR checksum is not bound to its producer.");
-          }
-          const bytes = readFileSync(candidatePath);
-          const sha256 = createHash("sha256").update(bytes).digest("hex");
-          if (sha256 !== process.env.EXPECTED_SHA256) throw new Error("The canonical PR VSIX checksum does not match.");
-          const size = statSync(candidatePath).size;
-          if (!Number.isSafeInteger(size) || size <= 0 || String(size) !== process.env.EXPECTED_SIZE) {
-            throw new Error("The canonical PR VSIX size is not bound to its producer.");
-          }
-          appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            `path=${candidatePath}\nsha256=${sha256}\nsize=${size}\n`,
-            "utf8"
-          );
-        env:
-          EXPECTED_SHA256: ${{ needs.canonical-vsix.outputs.vsix-sha256 }}
-          EXPECTED_SIZE: ${{ needs.canonical-vsix.outputs.vsix-size }}
-      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
-      - id: remote_workspace
-        name: Test packaged VS Code over Remote SSH
+      - name: Windows publication, identity, dependency, and cleanup contracts
         run: >-
-          npm run test:remote-workspace --
-          ${{ steps.candidate.outputs.path }}
-          ${{ steps.candidate.outputs.sha256 }}
-          ${{ steps.candidate.outputs.size }}
-        env:
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
-          OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
+          python -m pytest -q
+          python/tests/test_export_target.py
+          python/tests/test_duckdb_export_filesystem.py
+          python/tests/test_dependency_guard.py
+          python/tests/test_dependency_guard_exact_version.py
+          python/tests/test_session_editing.py
+      - run: npm run test:scripts:native
+      - run: >-
+          npx vitest run
+          src/test/dependencyInstaller.unit.test.ts
+          src/test/processShutdown.unit.test.ts
+          src/test/pythonEnvironment.unit.test.ts
 
   validate:
-    name: ${{ github.event.pull_request.draft && 'Draft feedback' || 'validate' }}
+    name: validate
     needs:
       - classify
-      - fast-feedback
-      - benchmark-harness
-      - contract-tests
-      - visual-accessibility
-      - production-audits
-      - dependency-lock-validation
-      - release-infrastructure
-      - canonical-vsix
-      - linux-packaged-editor
-      - coverage
-      - python-matrix
+      - invariant-core
+      - r-contract-kernel
+      - r-contract-protocol
       - native-r-contract
-      - extension-host
-      - remote-workspace
+      - canonical-editor
+      - visual-accessibility
+      - windows-unique
     if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
-      - name: Require every blocking CI result
+      - name: Require every owned CI result
         run: node scripts/require-ci-results.mjs
         env:
-          DEPENDENCY_LOCK_ONLY: ${{ needs.classify.outputs.dependency_lock_only }}
-          BENCHMARK_HARNESS_ONLY: ${{ needs.classify.outputs.benchmark_harness_only }}
-          DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
-          DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
-          LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
-          PACKAGE_ONLY: ${{ needs.classify.outputs.package_only }}
-          RELEASE_INFRASTRUCTURE_ONLY: ${{ needs.classify.outputs.release_infrastructure_only }}
-          FULL_MATRIX_REQUIRED: ${{ needs.classify.outputs.full_matrix_required }}
+          R_CONTRACT_REQUIRED: ${{ needs.classify.outputs.r_contract_required }}
+          CANONICAL_EDITOR_REQUIRED: ${{ needs.classify.outputs.canonical_editor_required }}
+          VISUAL_ACCESSIBILITY_REQUIRED: ${{ needs.classify.outputs.visual_accessibility_required }}
+          WINDOWS_UNIQUE_REQUIRED: ${{ needs.classify.outputs.windows_unique_required }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
-          FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
-          BENCHMARK_HARNESS_RESULT: ${{ needs.benchmark-harness.result }}
-          CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
-          VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
-          PRODUCTION_AUDITS_RESULT: ${{ needs.production-audits.result }}
-          DEPENDENCY_LOCK_VALIDATION_RESULT: ${{ needs.dependency-lock-validation.result }}
-          RELEASE_INFRASTRUCTURE_RESULT: ${{ needs.release-infrastructure.result }}
-          CANONICAL_VSIX_RESULT: ${{ needs.canonical-vsix.result }}
-          LINUX_PACKAGED_EDITOR_RESULT: ${{ needs.linux-packaged-editor.result }}
-          COVERAGE_RESULT: ${{ needs.coverage.result }}
-          PYTHON_MATRIX_RESULT: ${{ needs.python-matrix.result }}
+          INVARIANT_CORE_RESULT: ${{ needs.invariant-core.result }}
+          R_CONTRACT_KERNEL_RESULT: ${{ needs.r-contract-kernel.result }}
+          R_CONTRACT_PROTOCOL_RESULT: ${{ needs.r-contract-protocol.result }}
           NATIVE_R_CONTRACT_RESULT: ${{ needs.native-r-contract.result }}
-          EXTENSION_HOST_RESULT: ${{ needs.extension-host.result }}
-          REMOTE_WORKSPACE_RESULT: ${{ needs.remote-workspace.result }}
-          REMOTE_WORKSPACE_REQUIRED: >-
-            ${{
-              github.event_name == 'pull_request' &&
-              needs.classify.outputs.full_matrix_required == 'true' &&
-              contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
-            }}
+          CANONICAL_EDITOR_RESULT: ${{ needs.canonical-editor.result }}
+          VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
+          WINDOWS_UNIQUE_RESULT: ${{ needs.windows-unique.result }}

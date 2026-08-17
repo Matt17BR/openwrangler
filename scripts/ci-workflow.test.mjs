@@ -4,452 +4,594 @@ import { posix } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
-import ts from "typescript";
 import { loadConfigFromFile } from "vite";
-import {
-  BENCHMARK_HARNESS_PATHS,
-  RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
-  RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
-  RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
-  RELEASE_INFRASTRUCTURE_TEST_PATHS,
-  classifyCiChange,
-  isBenchmarkHarnessOnlyChangeSet,
-  isDependencyLockOnlyChangeSet,
-  isDocumentationOnlyChangeSet,
-  isPackageOnlyChangeSet,
-  isReleaseInfrastructureOnlyChangeSet,
-  parseChangedPathBuffer,
-  parsePullRequestDraft
-} from "./ci-path-classification.mjs";
+import { CI_CLASSIFIER_OUTPUTS, classifyCiChange, parseChangedPathBuffer } from "./ci-path-classification.mjs";
 import {
   ALWAYS_REQUIRED_CI_JOBS,
-  BENCHMARK_HARNESS_CI_JOBS,
-  DEPENDENCY_LOCK_CI_JOBS,
-  FULL_MATRIX_CI_JOBS,
-  OPTIONAL_CI_JOB,
-  PACKAGE_CI_JOBS,
-  PRODUCT_CI_JOBS,
+  CONDITIONAL_CI_JOBS,
   REQUIRED_CI_JOBS,
-  RELEASE_INFRASTRUCTURE_CI_JOBS,
   parseRequiredFlag,
   requireCiResults,
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
-import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
+import { readLock, sha256 } from "./r-dependency-lock.mjs";
 
-const replaceablePullRequestWorkflows = [
-  [".github/workflows/ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
-  [".github/workflows/cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
-  [".github/workflows/codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
-];
+const workflowPath = (name) => posix.join(".github", "workflows", name);
+const workflow = (name) => parseYaml(readFileSync(workflowPath(name), "utf8"));
+const ci = workflow("ci.yml");
+const cross = workflow("cross-platform.yml");
+const codeql = workflow("codeql.yml");
+const performance = workflow("performance.yml");
+const releasedJupyter = workflow("released-jupyter.yml");
+const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 
-const requiredPullRequestWorkflows = [
-  ".github/workflows/ci.yml",
-  ".github/workflows/cross-platform.yml",
-  ".github/workflows/codeql.yml"
-];
-const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
-  "classify",
-  "fast-feedback",
-  "benchmark-harness",
-  "contract-tests",
-  "visual-accessibility",
-  "production-audits",
-  "dependency-lock-validation",
-  "release-infrastructure",
-  "canonical-vsix",
-  "linux-packaged-editor",
-  "coverage",
-  "python-matrix",
-  "native-r-contract",
-  "extension-host"
-]);
-const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
-const SETUP_R_DEPENDENCIES_ACTION = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
-const PINNED_SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
-const PINNED_PR_CACHE_SAVE_ACTION = "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809";
-const PINNED_PR_CACHE_RESTORE_ACTION = "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809";
-const PINNED_UPLOAD_ACTION = "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f";
-const PR_VSIX_CACHE_SAVE_KEY =
-  "openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ steps.canonical_receipt.outputs.sha256 }}";
-const PR_VSIX_CACHE_RESTORE_KEY =
-  "openwrangler-pr-vsix-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ needs.canonical-vsix.outputs.vsix-sha256 }}";
-const FAILURE_ONLY_ARTIFACT_IF = "${{ failure() && !cancelled() }}";
-const REFERENCE_PYTHON_OUTPUT = "${{ steps.reference_python.outputs.python-path }}";
-const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
-const CANONICAL_CI_IF =
-  "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}";
-const CONTRACT_CI_IF =
-  "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
-const FULL_CI_IF =
-  "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
-const RELEASE_INFRASTRUCTURE_CI_IF =
-  "${{ !cancelled() && github.event_name == 'pull_request' && needs.classify.result == 'success' && needs.fast-feedback.result == 'success' && needs.classify.outputs.release_infrastructure_only == 'true' && needs.classify.outputs.draft_pull_request == 'false' }}";
-const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
-const NON_MATRIX_CONTEXT_IF =
-  "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}";
-const SUBSTANTIVE_MATRIX_STEP_IF =
-  "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
-const CODEQL_NON_MATRIX_CONTEXT_IF =
-  "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' && (needs.classify.outputs.release_infrastructure_only != 'true' || matrix.language == 'python') }}";
-const CODEQL_SUBSTANTIVE_MATRIX_STEP_IF =
-  "${{ needs.classify.result == 'success' && (needs.classify.outputs.full_matrix_required == 'true' || (needs.classify.outputs.release_infrastructure_only == 'true' && matrix.language == 'javascript-typescript')) }}";
-const CLASSIFICATION_GATE_IF =
-  "${{ needs.classify.result != 'success' || (needs.classify.outputs.benchmark_harness_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'false') || (needs.classify.outputs.dependency_lock_only != 'true' && needs.classify.outputs.dependency_lock_only != 'false') || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.release_infrastructure_only != 'true' && needs.classify.outputs.release_infrastructure_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.benchmark_harness_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.dependency_lock_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true')) || (needs.classify.outputs.release_infrastructure_only == 'true' && (needs.classify.outputs.benchmark_harness_only == 'true' || needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.benchmark_harness_only == 'true' || needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.release_infrastructure_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.benchmark_harness_only == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.dependency_lock_only == 'false' && needs.classify.outputs.release_infrastructure_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
-const PRODUCT_PUSH_BRANCHES = ["main"];
-const PROTECTED_PULL_REQUEST_BRANCHES = ["main"];
-const PULL_REQUEST_ACTIVITY_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"];
-
-const RELEASE_INFRASTRUCTURE_TEST_OWNER = Object.freeze({
-  "scripts/candidate-acceptance-workflow.mjs": "scripts/candidate-acceptance-workflow.test.mjs",
-  "scripts/canonical-release-assets.mjs": "scripts/verify-canonical-release-artifact.test.mjs",
-  "scripts/create-canonical-release-artifact.mjs": "scripts/create-canonical-release-artifact.test.mjs",
-  "scripts/download-canonical-github-release.mjs": "scripts/download-canonical-github-release.test.mjs",
-  "scripts/github-release-publisher.mjs": "scripts/publish-github-stable-release.test.mjs",
-  "scripts/marketplace-identity-profile.mjs": "scripts/marketplace-identity-profile.test.mjs",
-  "scripts/marketplace-promotion-workflow.mjs": "scripts/marketplace-promotion-workflow.test.mjs",
-  "scripts/marketplace-release-intake.mjs": "scripts/marketplace-release-intake.test.mjs",
-  "scripts/open-vsx-promotion-workflow.mjs": "scripts/open-vsx-promotion-workflow.test.mjs",
-  "scripts/package-current-channel.mjs": "scripts/package-current-channel.test.mjs",
-  "scripts/prepare-stable-candidate-tag.mjs": "scripts/prepare-stable-candidate-tag.test.mjs",
-  "scripts/preview-release-workflow.mjs": "scripts/release-readiness.test.mjs",
-  "scripts/public-media-contract.mjs": "scripts/public-media-surfaces.test.mjs",
-  "scripts/public-media-inventory.mjs": "scripts/public-media-surfaces.test.mjs",
-  "scripts/public-media-surface-contract.mjs": "scripts/public-media-surfaces.test.mjs",
-  "scripts/public-repository-metadata.mjs": "scripts/public-repository-metadata.test.mjs",
-  "scripts/publish-github-preview-release.mjs": "scripts/verify-registry-release-artifact.test.mjs",
-  "scripts/publish-github-stable-release.mjs": "scripts/publish-github-stable-release.test.mjs",
-  "scripts/push-stable-release-tag.mjs": "scripts/push-stable-release-tag.test.mjs",
-  "scripts/registry-release-source.mjs": "scripts/registry-release-source.test.mjs",
-  "scripts/release-diagnostic-order.mjs": "scripts/candidate-acceptance-workflow.test.mjs",
-  "scripts/release-documents.mjs": "scripts/release-readiness.test.mjs",
-  "scripts/release-metadata.mjs": "scripts/release-readiness.test.mjs",
-  "scripts/release-notes.mjs": "scripts/publish-github-stable-release.test.mjs",
-  "scripts/release-readiness.mjs": "scripts/release-readiness.test.mjs",
-  "scripts/release-tag-publisher.mjs": "scripts/push-stable-release-tag.test.mjs",
-  "scripts/stable-release-workflow.mjs": "scripts/stable-release-workflow.test.mjs",
-  "scripts/verify-canonical-release-artifact.mjs": "scripts/verify-canonical-release-artifact.test.mjs",
-  "scripts/verify-marketplace-publication.mjs": "scripts/verify-marketplace-publication.test.mjs",
-  "scripts/verify-open-vsx-release.mjs": "scripts/verify-open-vsx-release.test.mjs",
-  "scripts/verify-preview-release-artifact.mjs": "scripts/verify-registry-release-artifact.test.mjs",
-  "scripts/verify-public-media-surfaces.mjs": "scripts/public-media-surfaces.test.mjs",
-  "scripts/verify-registry-release-artifact.mjs": "scripts/verify-registry-release-artifact.test.mjs"
+const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
+const SETUP_PYTHON = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SETUP_JAVA = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
+const CODEQL = "github/codeql-action";
+const CODEQL_SHA = "ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd";
+const SETUP_R = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
+const CACHE_RESTORE = "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809";
+const CACHE_SAVE = "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809";
+const BOOLEAN_OUTPUTS = Object.freeze({
+  rContractRequired: true,
+  canonicalEditorRequired: true,
+  visualAccessibilityRequired: true,
+  windowsUniqueRequired: true
 });
-const RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS = Object.freeze([
-  "scripts/editor-acceptance-artifact.test.mjs",
-  "scripts/remote-jupyter-lock.test.mjs"
+const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
+const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
+  ["ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
+  ["cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
+  ["codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ]);
+
+function stepsUsing(job, prefix) {
+  return (job?.steps ?? []).filter((step) => typeof step?.uses === "string" && step.uses.startsWith(prefix));
+}
+
+function stepRunning(job, command) {
+  return (job?.steps ?? []).find((step) => step?.run === command);
+}
+
+function allExternalUses(value, path = "$", results = []) {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => allExternalUses(entry, `${path}[${index}]`, results));
+    return results;
+  }
+  if (value === null || typeof value !== "object") return results;
+  for (const [key, entry] of Object.entries(value)) {
+    const next = `${path}.${key}`;
+    if (key === "uses" && typeof entry === "string" && !entry.startsWith("./")) results.push([next, entry]);
+    allExternalUses(entry, next, results);
+  }
+  return results;
+}
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
 }
 
-function exactObjectKeys(value, expected) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
-}
-
-function inspectFastFeedbackReferencePython(workflow) {
-  const problems = [];
-  const steps = workflow?.jobs?.["fast-feedback"]?.steps;
-  if (!Array.isArray(steps)) return ["Fast feedback must expose an ordered reference prerequisite."];
-  const pythonSetups = steps.filter(
-    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-python@")
-  );
-  const setup = pythonSetups[0];
-  const references = steps.filter((step) => step?.name === "Reference freshness");
-  const reference = references[0];
-  if (
-    pythonSetups.length !== 1 ||
-    !exactObjectKeys(setup, ["id", "uses", "with"]) ||
-    setup?.id !== "reference_python" ||
-    setup?.uses !== PINNED_SETUP_PYTHON_ACTION ||
-    !exactObjectKeys(setup?.with, ["python-version"]) ||
-    setup?.with?.["python-version"] !== "3.12" ||
-    steps.indexOf(setup) < 0 ||
-    steps.indexOf(reference) < 0 ||
-    steps.indexOf(setup) >= steps.indexOf(reference)
-  ) {
-    problems.push("Reference freshness requires one pinned setup-python prerequisite ordered before generation.");
-  }
-  if (
-    references.length !== 1 ||
-    reference?.run !== "npm run reference:check" ||
-    !exactObjectKeys(reference?.env, ["OPEN_WRANGLER_PYTHON"]) ||
-    reference?.env?.OPEN_WRANGLER_PYTHON !== REFERENCE_PYTHON_OUTPUT
-  ) {
-    problems.push(
-      "Reference freshness must pass setup-python's authoritative absolute python-path to OPEN_WRANGLER_PYTHON."
-    );
-  }
-  return problems;
-}
-
-function assertStandaloneReleasedJupyterRTriples(workflow) {
-  const steps = workflow?.jobs?.vscode?.steps;
-  assert.ok(Array.isArray(steps), "Standalone Released-Jupyter acceptance must retain its Linux job steps.");
-  const triples = [
-    {
-      verifier: {
-        id: "canonical_r_jupyter",
-        name: "Reverify the VSIX for core R operations",
-        run: "npm run verify:vsix -- openwrangler.vsix"
-      },
-      runnerId: "packaged_editor_r",
-      uploadName: "Upload packaged-editor R failure diagnostics"
-    },
-    {
-      verifier: {
-        id: "canonical_r_values",
-        name: "Reverify the VSIX for value R operations",
-        run: "npm run verify:vsix -- openwrangler.vsix"
-      },
-      runnerId: "packaged_editor_r_values",
-      uploadName: "Upload value R-Jupyter failure diagnostics"
-    },
-    {
-      verifier: {
-        id: "canonical_r_categorical",
-        name: "Reverify the VSIX for categorical R operations",
-        run: "npm run verify:vsix -- openwrangler.vsix"
-      },
-      runnerId: "packaged_editor_r_categorical",
-      uploadName: "Upload categorical R-Jupyter failure diagnostics"
-    },
-    {
-      verifier: {
-        id: "canonical_r_interactive",
-        name: "Reverify the VSIX for the active R terminal",
-        run: "npm run verify:vsix -- openwrangler.vsix"
-      },
-      runnerId: "packaged_editor_r_interactive",
-      uploadName: "Upload active R terminal failure diagnostics"
-    }
-  ];
-
-  for (const { verifier, runnerId, uploadName } of triples) {
-    const verifierIndices = steps.flatMap((step, index) => (step?.id === verifier.id ? [index] : []));
-    const runnerIndices = steps.flatMap((step, index) => (step?.id === runnerId ? [index] : []));
-    const uploadIndices = steps.flatMap((step, index) => (step?.name === uploadName ? [index] : []));
-    assert.equal(verifierIndices.length, 1, `Expected exactly one ${verifier.id} verifier.`);
-    assert.equal(runnerIndices.length, 1, `Expected exactly one ${runnerId} runner.`);
-    assert.equal(uploadIndices.length, 1, `Expected exactly one ${uploadName} upload.`);
-    const verifierIndex = verifierIndices[0];
-    const runnerIndex = runnerIndices[0];
-    const uploadIndex = uploadIndices[0];
-    assert.deepEqual(steps[verifierIndex], verifier, `${verifier.id} must stay an exact fresh canonical verifier.`);
-    assert.equal(runnerIndex, verifierIndex + 1, `${runnerId} must immediately follow ${verifier.id}.`);
-    assert.equal(uploadIndex, runnerIndex + 1, `${uploadName} must immediately follow ${runnerId}.`);
-  }
-}
-
 function nodeTestFiles(command, group) {
   const segments = normalizedCommand(command)?.split(" && ") ?? [];
   const parts = segments[0]?.split(" ") ?? [];
-  assert.deepEqual(
-    segments.slice(1),
-    group === "portable" ? ["npm run test:scripts:media"] : [],
-    `${group} must not hide unrelated commands in its script contract.`
-  );
+  assert.deepEqual(segments.slice(1), group === "portable" ? ["npm run test:scripts:media"] : []);
   const prefix =
     group === "portable"
       ? ["node", "--test", "--test-concurrency=4"]
-      : group === "release"
-        ? ["node", "--test", "--test-concurrency=4"]
-        : group === "media"
-          ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
-          : ["node", "--test"];
+      : group === "media"
+        ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
+        : ["node", "--test"];
   assert.deepEqual(parts.slice(0, prefix.length), prefix, `${group} must invoke Node's test runner directly.`);
   const files = parts.slice(prefix.length);
   assert.ok(files.length > 0, `${group} must own at least one script contract.`);
-  for (const file of files) assert.match(file, /^scripts\/[a-z0-9.-]+\.test\.mjs$/u);
   assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
+  for (const file of files) assert.match(file, /^scripts\/[a-z0-9.-]+\.test\.mjs$/u);
   return files;
 }
 
-function parseJavaScriptModuleSpecifiers(sourceLabel, source) {
-  const sourceFile = ts.createSourceFile(sourceLabel, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  assert.equal(sourceFile.parseDiagnostics.length, 0, `${sourceLabel} must be syntactically valid JavaScript.`);
-  const specifiers = [];
-  const visit = (node) => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined) {
-      assert.equal(
-        ts.isStringLiteral(node.moduleSpecifier),
-        true,
-        `${sourceLabel} must use a literal static module specifier.`
-      );
-      specifiers.push({
-        kind: ts.isImportDeclaration(node) ? "static-import" : "static-export",
-        specifier: node.moduleSpecifier.text
-      });
-    }
-    if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        assert.equal(
-          node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0]),
-          true,
-          `${sourceLabel} must use one literal dynamic-import specifier.`
-        );
-        specifiers.push({ kind: "dynamic-import", specifier: node.arguments[0].text });
-      }
-      if (
-        ts.isIdentifier(node.expression) &&
-        (node.expression.text === "require" || node.expression.text === "createRequire")
-      ) {
-        assert.fail(`${sourceLabel} must not use ${node.expression.text} as a module-loading surface.`);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-
-  for (const { specifier } of specifiers) {
-    assert.equal(
-      specifier === "node:module" || specifier === "module",
-      false,
-      `${sourceLabel} must not import a module-loader constructor.`
-    );
+function assertStandaloneReleasedJupyterRTriples(document) {
+  const steps = document?.jobs?.vscode?.steps;
+  assert.ok(Array.isArray(steps));
+  for (const [verifierId, verifierName, runnerId, uploadName] of [
+    [
+      "canonical_r_jupyter",
+      "Reverify the VSIX for core R operations",
+      "packaged_editor_r",
+      "Upload packaged-editor R failure diagnostics"
+    ],
+    [
+      "canonical_r_values",
+      "Reverify the VSIX for value R operations",
+      "packaged_editor_r_values",
+      "Upload value R-Jupyter failure diagnostics"
+    ],
+    [
+      "canonical_r_categorical",
+      "Reverify the VSIX for categorical R operations",
+      "packaged_editor_r_categorical",
+      "Upload categorical R-Jupyter failure diagnostics"
+    ],
+    [
+      "canonical_r_interactive",
+      "Reverify the VSIX for the active R terminal",
+      "packaged_editor_r_interactive",
+      "Upload active R terminal failure diagnostics"
+    ]
+  ]) {
+    const verifierIndices = steps.flatMap((step, index) => (step?.id === verifierId ? [index] : []));
+    const runnerIndices = steps.flatMap((step, index) => (step?.id === runnerId ? [index] : []));
+    const uploadIndices = steps.flatMap((step, index) => (step?.name === uploadName ? [index] : []));
+    assert.equal(verifierIndices.length, 1, `Expected exactly one ${verifierId} verifier.`);
+    assert.equal(runnerIndices.length, 1, `Expected exactly one ${runnerId} runner.`);
+    assert.equal(uploadIndices.length, 1, `Expected exactly one ${uploadName} upload.`);
+    assert.deepEqual(steps[verifierIndices[0]], {
+      id: verifierId,
+      name: verifierName,
+      run: "npm run verify:vsix -- openwrangler.vsix"
+    });
+    assert.equal(runnerIndices[0], verifierIndices[0] + 1, `${runnerId} must immediately follow ${verifierId}.`);
+    assert.equal(uploadIndices[0], runnerIndices[0] + 1, `${uploadName} must immediately follow ${runnerId}.`);
   }
-  return specifiers;
 }
 
-function parseReleaseModuleDependencies(entryPath, source) {
-  const specifiers = parseJavaScriptModuleSpecifiers(entryPath, source).map((specifier) => ({
-    ...specifier,
-    repositoryRoot: false
-  }));
-  const embeddedCommandTokenCount = [...source.matchAll(/node --input-type=module -e\b/gu)].length;
-  const embeddedCommands = [...source.matchAll(/node --input-type=module -e '(?<source>[^'\n]*)'/gu)];
-  assert.equal(
-    embeddedCommands.length,
-    embeddedCommandTokenCount,
-    `${entryPath} may use embedded module mode only with an exact single-quoted JavaScript snippet.`
-  );
-  const embeddedRootImports = embeddedCommands.map((command, index) => {
-    const commandSource = command.groups?.source;
-    assert.ok(commandSource, `${entryPath} embedded module command ${index + 1} must not be empty.`);
-    const commandSpecifiers = parseJavaScriptModuleSpecifiers(
-      `${entryPath} embedded module command ${index + 1}`,
-      commandSource
-    );
-    assert.equal(
-      commandSpecifiers.length,
-      1,
-      `${entryPath} embedded module command ${index + 1} must contain exactly one reviewed import.`
-    );
-    const [commandSpecifier] = commandSpecifiers;
-    assert.equal(
-      commandSpecifier.kind,
-      "static-import",
-      `${entryPath} embedded module command ${index + 1} must use one static import.`
-    );
-    assert.match(
-      commandSpecifier.specifier,
-      /^\.\/scripts\/[A-Za-z0-9_./-]+\.mjs$/u,
-      `${entryPath} embedded module command ${index + 1} must import one literal repository-root script.`
-    );
-    return { ...commandSpecifier, repositoryRoot: true };
+function expectedResults(selections = BOOLEAN_OUTPUTS) {
+  const results = Object.fromEntries(ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
+  for (const [selection, jobIds] of Object.entries(CONDITIONAL_CI_JOBS)) {
+    for (const jobId of jobIds) results[jobId] = selections[selection] ? "success" : "skipped";
+  }
+  return results;
+}
+
+test("sole classifier emits exactly four conservative Tier-B owner outputs", () => {
+  assert.deepEqual(CI_CLASSIFIER_OUTPUTS, [
+    "r_contract_required",
+    "canonical_editor_required",
+    "visual_accessibility_required",
+    "windows_unique_required"
+  ]);
+  assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: ["docs/architecture.md"] }), {
+    rContractRequired: false,
+    canonicalEditorRequired: false,
+    visualAccessibilityRequired: false,
+    windowsUniqueRequired: false
   });
-  return [...specifiers, ...embeddedRootImports];
-}
-
-function localReleaseModuleDependencies(entryPath, productionPaths, visited = new Set(), sourceOverride) {
-  if (visited.has(entryPath)) return new Set();
-  visited.add(entryPath);
-  const source = sourceOverride ?? readFileSync(new URL(`../${entryPath}`, import.meta.url), "utf8");
-  const dependencies = new Set();
-  for (const { repositoryRoot, specifier } of parseReleaseModuleDependencies(entryPath, source)) {
-    assert.ok(specifier, `${entryPath} contains an unparseable relative import.`);
-    assert.equal(
-      specifier.startsWith("/") ||
-        specifier.includes("\\") ||
-        (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(specifier) && !specifier.startsWith("node:")),
-      false,
-      `${entryPath} must not load an absolute, backslash, or URL-scheme module specifier.`
-    );
-    if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
-    const dependencyPath = repositoryRoot
-      ? posix.normalize(specifier.slice(2))
-      : posix.normalize(posix.join(posix.dirname(entryPath), specifier));
-    assert.equal(
-      dependencyPath.startsWith("../") || dependencyPath.startsWith("/"),
-      false,
-      `${entryPath} must not import outside the repository.`
-    );
-    dependencies.add(dependencyPath);
-    if (productionPaths.has(dependencyPath) && dependencyPath.endsWith(".mjs")) {
-      for (const transitivePath of localReleaseModuleDependencies(dependencyPath, productionPaths, visited)) {
-        dependencies.add(transitivePath);
-      }
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: ["r/openwrangler_runtime/kernel_agent.R"] }),
+    {
+      rContractRequired: true,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: false
     }
-  }
-  return dependencies;
-}
-
-test("product CI covers protected product branches", () => {
-  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
-  assert.deepEqual(ci?.on?.push?.branches, PRODUCT_PUSH_BRANCHES);
-  assert.deepEqual(ci?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
-
-  const codeql = parseYaml(readFileSync(new URL("../.github/workflows/codeql.yml", import.meta.url), "utf8"));
-  assert.deepEqual(codeql?.on?.push?.branches, PRODUCT_PUSH_BRANCHES);
-  assert.deepEqual(codeql?.on?.pull_request?.branches, PROTECTED_PULL_REQUEST_BRANCHES);
-  assert.deepEqual(codeql?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
-  assert.deepEqual(codeql?.on?.schedule, [{ cron: "23 4 * * 2" }]);
-
-  const crossPlatform = parseYaml(
-    readFileSync(new URL("../.github/workflows/cross-platform.yml", import.meta.url), "utf8")
   );
-  assert.deepEqual(crossPlatform?.on?.pull_request?.branches, PROTECTED_PULL_REQUEST_BRANCHES);
-  assert.deepEqual(crossPlatform?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
-  assert.equal(crossPlatform?.on?.push, undefined, "Cross-platform must not repeat the ready-PR matrix after merge.");
+  for (const path of [
+    "src/extension/r/rKernelBridge.ts",
+    "src/test/rKernelBridge.unit.test.ts",
+    "src/test/releasedRAcceptanceCoverage.unit.test.ts",
+    "schemas/operation-catalog.v1.json",
+    "src/shared/operationCatalog.generated.ts"
+  ]) {
+    const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
+    assert.equal(result.rContractRequired, true, `${path} must select the R contract owner`);
+    assert.equal(result.canonicalEditorRequired, true, `${path} must select the canonical editor owner`);
+  }
+  assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: ["src/webviews/App.tsx"] }), {
+    rContractRequired: false,
+    canonicalEditorRequired: true,
+    visualAccessibilityRequired: true,
+    windowsUniqueRequired: false
+  });
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: ["python/openwrangler_runtime/export_target.py"] }),
+    {
+      rContractRequired: false,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: true
+    }
+  );
+  for (const path of [
+    "python/pyproject.toml",
+    "src/extension/files/safeFileExport.ts",
+    "src/extension/files/safePythonDataExport.ts",
+    "src/test/safeFileExportHardlink.unit.test.ts"
+  ]) {
+    const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
+    assert.equal(result.windowsUniqueRequired, true, `${path} must select the Windows unique-risk owner`);
+    if (path === "python/pyproject.toml") assert.deepEqual(result, BOOLEAN_OUTPUTS);
+  }
+  assert.deepEqual(
+    classifyCiChange({
+      eventName: "pull_request",
+      changedPaths: ["src/extension/sessionCoordinator.ts", "docs/architecture.md"]
+    }),
+    {
+      rContractRequired: false,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: false
+    }
+  );
 });
 
-test("automation selects the declared exact Node and npm toolchain", () => {
-  const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(nodeVersion, "22.22.0");
-  assert.equal(manifest?.engines?.node, ">=22.22.0 <23");
-  assert.equal(manifest?.packageManager, "npm@10.9.4");
+test("classifier self-selects and fails open for control-plane, malformed, empty, and unmatched changes", () => {
+  for (const changedPaths of [
+    [".github/workflows/ci.yml"],
+    ["scripts/ci-path-classification.mjs"],
+    ["scripts/ci-workflow.test.mjs"],
+    ["package.json"],
+    ["r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json"],
+    ["unknown/substantive.owner"],
+    [],
+    ["../escape"]
+  ]) {
+    assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths }), BOOLEAN_OUTPUTS);
+  }
+  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+    assert.deepEqual(classifyCiChange({ eventName, changedPaths: [] }), BOOLEAN_OUTPUTS);
+  }
+  assert.throws(() => classifyCiChange({ eventName: "pull_request", changedPaths: "not-an-array" }), /array/u);
+  assert.throws(() => classifyCiChange({ eventName: "unknown", changedPaths: [] }), /Unsupported/u);
+});
 
-  const workflowDirectory = new URL("../.github/workflows/", import.meta.url);
+test("changed path transport remains NUL-safe and fatal UTF-8", () => {
+  assert.deepEqual(parseChangedPathBuffer(Buffer.from("a\0docs/b.md\0")), ["a", "docs/b.md"]);
+  assert.deepEqual(parseChangedPathBuffer(Buffer.alloc(0)), []);
+  assert.throws(() => parseChangedPathBuffer(Buffer.from("missing terminator")), /NUL terminated/u);
+  assert.throws(() => parseChangedPathBuffer(Buffer.from("a\0\0")), /empty path/u);
+  assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
+});
+
+test("CI exposes the Stage-A owners plus the temporary R 4.4 compatibility carrier", () => {
+  assert.deepEqual(Object.keys(ci.jobs), [
+    "classify",
+    "invariant-core",
+    "r-contract-kernel",
+    "r-contract-protocol",
+    "native-r-contract",
+    "canonical-editor",
+    "visual-accessibility",
+    "windows-unique",
+    "validate"
+  ]);
+  assert.deepEqual(Object.keys(ci.jobs.classify.outputs), CI_CLASSIFIER_OUTPUTS);
+  assert.equal(ci.jobs["native-r-contract"].name, "Native R contract (R 4.4)");
+  assert.match(ci.jobs["native-r-contract"].if, /r_contract_required != 'false'/u);
+  assert.match(ci.jobs["native-r-contract"].if, /classify\.result != 'success'/u);
+  assert.equal(ci.jobs["r-contract-kernel"].name, "R 4.5 kernel contract");
+  assert.equal(ci.jobs["r-contract-protocol"].name, "R 4.5 protocol contracts");
+  assert.equal(ci.jobs["canonical-editor"].name, "Canonical package and editor");
+  assert.equal(ci.jobs["windows-unique"].name, "Windows unique-risk contracts");
+});
+
+test("invariant core is unconditional and owns full portable, TypeScript, Python 3.10, audit, schema, and docs evidence", () => {
+  const job = ci.jobs["invariant-core"];
+  assert.equal(job.if, undefined);
+  assert.equal(job["runs-on"], "ubuntu-24.04");
+  const python = stepsUsing(job, "actions/setup-python@");
+  assert.equal(python.length, 1);
+  assert.equal(python[0].uses, SETUP_PYTHON);
+  assert.equal(python[0].with["python-version"], "3.10");
+  assert.ok(stepRunning(job, 'python -m pip install -e "python[dev]"'));
+  assert.ok(stepRunning(job, "npm run check:tier-a"));
+  assert.ok(stepRunning(job, "npm audit"));
+  assert.ok(stepRunning(job, "npm run audit:python"));
+  assert.equal(
+    stepRunning(job, "npm run check:tier-a").env.OPEN_WRANGLER_PYTHON,
+    "${{ steps.reference_python.outputs.python-path }}"
+  );
+});
+
+test("both R 4.5 owners and the retained R 4.4 PR carrier consume exact locks without repository fallback", () => {
+  const owners = [
+    ["r-contract-kernel", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"],
+    ["r-contract-protocol", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"],
+    ["native-r-contract", "4.4", "ubuntu-24.04-x86_64-r-4.4.lock.json"]
+  ];
+  for (const [jobId, version, lockName] of owners) {
+    const job = ci.jobs[jobId];
+    assert.match(job.if, /classify\.result != 'success'/u);
+    assert.match(job.if, /r_contract_required != 'false'/u);
+    const setup = stepsUsing(job, "r-lib/actions/setup-r@");
+    assert.equal(setup.length, 1);
+    assert.equal(setup[0].uses, SETUP_R);
+    assert.equal(setup[0].with["r-version"], version);
+    assert.equal(setup[0].with["use-public-rspm"], false);
+    const source = JSON.stringify(job);
+    assert.match(source, new RegExp(lockName.replaceAll(".", "\\."), "u"));
+    assert.match(source, /r-dependency-lock\.mjs prepare/u);
+    assert.match(source, /r-dependency-lock\.mjs install/u);
+    assert.match(source, /cache-hit/u);
+    assert.doesNotMatch(source, /setup-r-dependencies/u);
+    assert.doesNotMatch(source, /\/latest\//u);
+    assert.equal(stepsUsing(job, "actions/cache/restore@")[0].uses, CACHE_RESTORE);
+    assert.equal(stepsUsing(job, "actions/cache/save@")[0].uses, CACHE_SAVE);
+    assert.equal(stepsUsing(job, "actions/cache/restore@")[0].with["restore-keys"], undefined);
+  }
+  assert.ok(stepRunning(ci.jobs["r-contract-kernel"], "npm run test:r-contract -- --shard kernel-agent"));
+  assert.ok(stepRunning(ci.jobs["r-contract-protocol"], "npm run test:r-contract:protocol"));
+  assert.ok(stepRunning(ci.jobs["native-r-contract"], "npm run test:r-contract"));
+});
+
+test("conditional owners fail open to run while sole validate owner requires exact selected outcomes", () => {
+  for (const jobId of [
+    "r-contract-kernel",
+    "r-contract-protocol",
+    "native-r-contract",
+    "canonical-editor",
+    "visual-accessibility",
+    "windows-unique"
+  ]) {
+    assert.match(ci.jobs[jobId].if, /classify\.result != 'success'/u);
+    assert.match(ci.jobs[jobId].if, /!= 'false'/u);
+  }
+  assert.deepEqual(ci.jobs.validate.needs, [
+    "classify",
+    "invariant-core",
+    "r-contract-kernel",
+    "r-contract-protocol",
+    "native-r-contract",
+    "canonical-editor",
+    "visual-accessibility",
+    "windows-unique"
+  ]);
+  const gate = stepRunning(ci.jobs.validate, "node scripts/require-ci-results.mjs");
+  assert.deepEqual(Object.keys(gate.env).sort(), [
+    "CANONICAL_EDITOR_REQUIRED",
+    "CANONICAL_EDITOR_RESULT",
+    "CLASSIFY_RESULT",
+    "INVARIANT_CORE_RESULT",
+    "NATIVE_R_CONTRACT_RESULT",
+    "R_CONTRACT_KERNEL_RESULT",
+    "R_CONTRACT_PROTOCOL_RESULT",
+    "R_CONTRACT_REQUIRED",
+    "VISUAL_ACCESSIBILITY_REQUIRED",
+    "VISUAL_ACCESSIBILITY_RESULT",
+    "WINDOWS_UNIQUE_REQUIRED",
+    "WINDOWS_UNIQUE_RESULT"
+  ]);
+});
+
+test("required result owner rejects missing, skipped, cancelled, failed, and selection drift", () => {
+  assert.deepEqual(ALWAYS_REQUIRED_CI_JOBS, ["classify", "invariant-core"]);
+  assert.deepEqual(REQUIRED_CI_JOBS, [
+    "classify",
+    "invariant-core",
+    "r-contract-kernel",
+    "r-contract-protocol",
+    "native-r-contract",
+    "canonical-editor",
+    "visual-accessibility",
+    "windows-unique"
+  ]);
+  assert.doesNotThrow(() =>
+    requireCiResults({
+      requiredResults: expectedResults(),
+      classificationResult: "success",
+      selections: BOOLEAN_OUTPUTS
+    })
+  );
+  const none = Object.fromEntries(Object.keys(BOOLEAN_OUTPUTS).map((key) => [key, false]));
+  assert.doesNotThrow(() =>
+    requireCiResults({
+      requiredResults: expectedResults(none),
+      classificationResult: "success",
+      selections: none
+    })
+  );
+  for (const result of [undefined, "skipped", "cancelled", "failure"]) {
+    const requiredResults = expectedResults();
+    requiredResults["canonical-editor"] = result;
+    assert.throws(
+      () => requireCiResults({ requiredResults, classificationResult: "success", selections: BOOLEAN_OUTPUTS }),
+      /canonical-editor/u
+    );
+  }
+  assert.throws(
+    () =>
+      requireCiResults({
+        requiredResults: expectedResults(),
+        classificationResult: "failure",
+        selections: BOOLEAN_OUTPUTS
+      }),
+    /classify/u
+  );
+  assert.equal(parseRequiredFlag("true", "FLAG"), true);
+  assert.equal(parseRequiredFlag("false", "FLAG"), false);
+  assert.throws(() => parseRequiredFlag("", "FLAG"), /exactly true or false/u);
+  assert.equal(resultEnvironmentKey("native-r-contract"), "NATIVE_R_CONTRACT_RESULT");
+});
+
+test("Cross preserves every legacy context, reuses only the four-output classifier, and adds scheduled R 4.4", () => {
+  assert.deepEqual(Object.keys(cross.jobs), [
+    "classify",
+    "runtime",
+    "dependency-guard-windows",
+    "r-4-4-scheduled-qualification"
+  ]);
+  assert.deepEqual(Object.keys(cross.jobs.classify.outputs), CI_CLASSIFIER_OUTPUTS);
+  assert.deepEqual(cross.jobs.runtime.strategy.matrix.include, [
+    { os: "macos-latest", python: "3.12" },
+    { os: "windows-latest", python: "3.14" }
+  ]);
+  assert.equal(cross.jobs["dependency-guard-windows"].name, "Dependency guard (Windows, Python ${{ matrix.python }})");
+  assert.deepEqual(cross.jobs["dependency-guard-windows"].strategy.matrix.python, ["3.10", "3.12"]);
+  assert.match(JSON.stringify(cross.jobs.runtime), /canonical_editor_required/u);
+  assert.match(JSON.stringify(cross.jobs.runtime), /windows_unique_required/u);
+  assert.match(JSON.stringify(cross.jobs.runtime), /classify\.result != 'success'/u);
+  assert.match(JSON.stringify(cross.jobs["dependency-guard-windows"]), /windows_unique_required/u);
+  const scheduled = cross.jobs["r-4-4-scheduled-qualification"];
+  assert.equal(scheduled.name, "Scheduled R 4.4 lock qualification");
+  assert.match(scheduled.if, /event_name != 'pull_request'/u);
+  assert.match(JSON.stringify(scheduled), /ubuntu-24\.04-x86_64-r-4\.4\.lock\.json/u);
+  assert.match(JSON.stringify(scheduled), /r-dependency-lock\.mjs install/u);
+  assert.ok(stepRunning(scheduled, "npm run test:r-contract"));
+});
+
+test("CodeQL has two always-on explicit analyzers, preserves required names, and fails closed through one gate", () => {
+  assert.deepEqual(Object.keys(codeql.jobs), ["analyze-javascript-typescript", "analyze-python", "codeql-gate"]);
+  assert.equal(codeql.jobs["analyze-javascript-typescript"].name, "Analyze (javascript-typescript)");
+  assert.equal(codeql.jobs["analyze-python"].name, "Analyze (python)");
+  for (const [jobId, language] of [
+    ["analyze-javascript-typescript", "javascript-typescript"],
+    ["analyze-python", "python"]
+  ]) {
+    const job = codeql.jobs[jobId];
+    assert.equal(job.if, undefined);
+    assert.equal(stepsUsing(job, "github/codeql-action/init@")[0].uses, `${CODEQL}/init@${CODEQL_SHA}`);
+    assert.equal(stepsUsing(job, "github/codeql-action/init@")[0].with.languages, language);
+    assert.equal(stepsUsing(job, "github/codeql-action/analyze@")[0].uses, `${CODEQL}/analyze@${CODEQL_SHA}`);
+  }
+  const gate = codeql.jobs["codeql-gate"];
+  assert.equal(gate.if, "${{ always() }}");
+  assert.deepEqual(gate.needs, ["analyze-javascript-typescript", "analyze-python"]);
+  assert.match(gate.steps[0].run, /JAVASCRIPT_TYPESCRIPT_RESULT/u);
+  assert.match(gate.steps[0].run, /PYTHON_RESULT/u);
+  assert.equal(codeql.jobs.classify, undefined);
+});
+
+test("every non-local workflow action is recursively pinned to an immutable 40-hex revision", () => {
+  const problems = [];
+  for (const name of readdirSync(".github/workflows")
+    .filter((entry) => entry.endsWith(".yml"))
+    .sort()) {
+    const document = workflow(name);
+    for (const [path, uses] of allExternalUses(document)) {
+      if (!/^[^@\s]+@[0-9a-f]{40}$/u.test(uses)) problems.push(`${name}:${path}=${uses}`);
+    }
+  }
+  assert.deepEqual(problems, []);
+  const sources = readdirSync(".github/workflows")
+    .filter((entry) => entry.endsWith(".yml"))
+    .map((entry) => readFileSync(workflowPath(entry), "utf8"))
+    .join("\n");
+  assert.doesNotMatch(sources, /@(v[0-9]+|main|master)(?:\s|$)/u);
+  const rejectedSetupJava = ["f2beeba1d6a0d932", "cac8325f70a8ce911775ff96"].join("");
+  assert.equal(sources.includes(rejectedSetupJava), false);
+  assert.ok(sources.includes(SETUP_JAVA));
+});
+
+test("dated R locks are distinct, canonical, complete 31-package binary graphs", () => {
+  const paths = [
+    "r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json",
+    "r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json"
+  ];
+  const records = paths.map((path) => readLock(path));
+  assert.notEqual(records[0].digest, records[1].digest);
+  for (const [index, record] of records.entries()) {
+    assert.equal(record.lock.qualification.rMinor, index === 0 ? "4.4" : "4.5");
+    assert.equal(record.lock.packages.length, 31);
+    assert.equal(record.lock.roots.length, 8);
+    assert.deepEqual(record.lock.systemRequirements.packages, ["libx11-dev"]);
+    assert.ok(record.lock.packages.every((entry) => entry.source.kind === "binary"));
+    assert.ok(record.lock.packages.every((entry) => entry.source.repositorySnapshotUrl.includes("/2026-08-14/")));
+    assert.equal(sha256(record.bytes), record.digest);
+  }
+});
+
+test("package scripts bind lock checks and fail-complete named R protocol shards", () => {
+  assert.match(packageJson.scripts.check, /check:r-dependency-lock/u);
+  assert.match(packageJson.scripts["check:r-dependency-lock"], /r-dependency-lock\.mjs check/u);
+  assert.equal(
+    packageJson.scripts["test:r-contract:frame-and-interactive-transport"],
+    "node scripts/run-r-contract-tests.mjs --shard frame-and-interactive-transport"
+  );
+  assert.equal(
+    packageJson.scripts["test:r-contract:catalog-and-process-transport"],
+    "node scripts/run-r-contract-tests.mjs --shard catalog-and-process-transport"
+  );
+  assert.equal(
+    packageJson.scripts["test:r-contract:protocol"],
+    "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label test:r-contract:frame-and-interactive-transport test:r-contract:catalog-and-process-transport"
+  );
+  assert.match(packageJson.scripts["test:scripts:portable:run"], /scripts\/r-dependency-lock\.test\.mjs/u);
+});
+
+test("CI retains failure-only ordinary artifacts and no success artifact producer", () => {
+  const uploads = allExternalUses(ci).filter(([, uses]) => uses.startsWith("actions/upload-artifact@"));
+  assert.equal(uploads.length, 2);
+  const visualUpload = ci.jobs["visual-accessibility"].steps.find(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
+  );
+  assert.equal(visualUpload.if, "${{ failure() && !cancelled() }}");
+  const packagedUpload = ci.jobs["canonical-editor"].steps.find(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
+  );
+  assert.equal(
+    packagedUpload.if,
+    "${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(packagedUpload.with.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
+});
+
+test("performance and standalone released-Jupyter retain triggers and semantics while using exact action pins", () => {
+  assert.ok(performance.on.schedule);
+  assert.ok(performance.on.workflow_dispatch);
+  assert.deepEqual(Object.keys(performance.jobs), ["polars-runtime", "pyspark-profile"]);
+  assert.ok(releasedJupyter.on.workflow_dispatch);
+  assert.equal(releasedJupyter.on.pull_request, undefined);
+  assert.equal(releasedJupyter.on.push, undefined);
+  for (const document of [performance, releasedJupyter]) {
+    for (const [, uses] of allExternalUses(document)) assert.match(uses, /@[0-9a-f]{40}$/u);
+  }
+  assert.ok(allExternalUses(performance).some(([, uses]) => uses === CHECKOUT));
+  assert.ok(allExternalUses(performance).some(([, uses]) => uses === SETUP_PYTHON));
+  assert.ok(allExternalUses(performance).some(([, uses]) => uses === SETUP_JAVA));
+  assert.ok(allExternalUses(releasedJupyter).some(([, uses]) => uses === SETUP_NODE));
+});
+
+test("protected branch triggers and obsolete classifier vocabulary are absent from Stage-A owners", () => {
+  for (const document of [ci, cross, codeql]) {
+    assert.deepEqual(document.on.pull_request.branches ?? ["main"], ["main"]);
+    assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+  }
+  assert.deepEqual(ci.on.push.branches, ["main"]);
+  assert.deepEqual(codeql.on.push.branches, ["main"]);
+  const owned = [ci, cross, codeql].map((value) => JSON.stringify(value)).join("\n");
+  for (const legacy of [
+    "documentation_only",
+    "benchmark_harness_only",
+    "dependency_lock_only",
+    "draft_pull_request",
+    "lightweight_only",
+    "package_only",
+    "release_infrastructure_only",
+    "full_matrix_required"
+  ]) {
+    assert.doesNotMatch(owned, new RegExp(legacy, "u"));
+  }
+});
+
+test("automation retains the exact Node and npm toolchain authority", () => {
+  const nodeVersion = readFileSync(".node-version", "utf8").trim();
+  assert.equal(nodeVersion, "22.22.0");
+  assert.equal(packageJson.engines.node, ">=22.22.0 <23");
+  assert.equal(packageJson.packageManager, "npm@10.9.4");
   let setupNodeCount = 0;
-  for (const entry of readdirSync(workflowDirectory, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".yml")) continue;
-    const workflow = parseYaml(readFileSync(new URL(entry.name, workflowDirectory), "utf8"));
-    for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
-      for (const [stepIndex, step] of (job?.steps ?? []).entries()) {
+  for (const name of readdirSync(".github/workflows").filter((entry) => entry.endsWith(".yml"))) {
+    const document = workflow(name);
+    for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
+      for (const [stepIndex, step] of (job.steps ?? []).entries()) {
         if (typeof step?.uses !== "string" || !step.uses.startsWith("actions/setup-node@")) continue;
         setupNodeCount += 1;
-        assert.equal(
-          step?.with?.["node-version-file"],
-          ".node-version",
-          `${entry.name}:${jobId}:${stepIndex} must consume the canonical Node pin.`
-        );
-        assert.equal(
-          Object.hasOwn(step?.with ?? {}, "node-version"),
-          false,
-          `${entry.name}:${jobId}:${stepIndex} must not float or duplicate the Node pin.`
-        );
+        assert.equal(step.with?.["node-version-file"], ".node-version", `${name}:${jobId}:${stepIndex}`);
+        assert.equal(Object.hasOwn(step.with ?? {}, "node-version"), false, `${name}:${jobId}:${stepIndex}`);
       }
     }
   }
-  assert.ok(setupNodeCount > 0, "At least one hosted workflow must consume the canonical Node pin.");
-
-  const azureSource = readFileSync(new URL("../azure-pipelines-marketplace.yml", import.meta.url), "utf8");
-  assert.equal((azureSource.match(/task: NodeTool@0/gu) ?? []).length, 2);
+  assert.ok(setupNodeCount > 0);
+  const azure = readFileSync("azure-pipelines-marketplace.yml", "utf8");
+  assert.equal((azure.match(/task: NodeTool@0/gu) ?? []).length, 2);
   assert.deepEqual(
-    [...azureSource.matchAll(/^\s+versionSpec:\s*(\S+)\s*$/gmu)].map((match) => match[1]),
-    [nodeVersion, nodeVersion],
-    "Historical-tag recovery must duplicate the canonical pin exactly rather than float."
+    [...azure.matchAll(/^\s+versionSpec:\s*(\S+)\s*$/gmu)].map((match) => match[1]),
+    [nodeVersion, nodeVersion]
   );
 });
 
-test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const inventory = readdirSync(new URL(".", import.meta.url), { withFileTypes: true })
+test("script groups remain pairwise disjoint and exactly cover the script-test inventory", () => {
+  const inventory = readdirSync("scripts", { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
     .map((entry) => `scripts/${entry.name}`)
     .sort();
@@ -457,2808 +599,123 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
     SCRIPT_TEST_GROUPS.map((group) => [
       group,
       nodeTestFiles(
-        manifest?.scripts?.[`test:scripts:${group}${["portable", "media"].includes(group) ? ":run" : ""}`],
+        packageJson.scripts[`test:scripts:${group}${["portable", "media"].includes(group) ? ":run" : ""}`],
         group
       )
     ])
   );
-
-  assert.equal(manifest?.scripts?.["test:scripts"], "npm run test:scripts:run");
-  assert.equal(
-    manifest?.scripts?.["test:scripts:run"],
-    "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
-  );
-  assert.equal(manifest?.scripts?.["test:scripts:portable"], "npm run test:scripts:portable:run");
-  assert.equal(manifest?.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
-  assert.equal(manifest?.scripts?.test, "npm run test:run");
-  assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
-  assert.equal(manifest?.scripts?.["benchmark:r"], "node scripts/run-r-performance.mjs");
   assert.deepEqual(groups.workflow, ["scripts/candidate-acceptance-workflow.test.mjs", "scripts/ci-workflow.test.mjs"]);
   assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
-  assert.deepEqual(
-    groups.portable,
-    inventory.filter((file) =>
-      SCRIPT_TEST_GROUPS.filter((group) => group !== "portable").every((group) => !groups[group].includes(file))
-    )
-  );
-
   for (let left = 0; left < SCRIPT_TEST_GROUPS.length; left += 1) {
     for (let right = left + 1; right < SCRIPT_TEST_GROUPS.length; right += 1) {
-      const leftGroup = SCRIPT_TEST_GROUPS[left];
-      const rightGroup = SCRIPT_TEST_GROUPS[right];
       assert.deepEqual(
-        groups[leftGroup].filter((file) => groups[rightGroup].includes(file)),
-        [],
-        `${leftGroup} and ${rightGroup} script ownership must remain disjoint.`
+        groups[SCRIPT_TEST_GROUPS[left]].filter((file) => groups[SCRIPT_TEST_GROUPS[right]].includes(file)),
+        []
       );
     }
   }
   assert.deepEqual([...new Set(SCRIPT_TEST_GROUPS.flatMap((group) => groups[group]))].sort(), inventory);
 });
 
-test("every Vitest run has an effective worker ceiling", async () => {
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+test("every Vitest entry point retains an effective worker ceiling", async () => {
   const config = await loadConfigFromFile(
     { command: "serve", mode: "test" },
     fileURLToPath(new URL("../vite.config.ts", import.meta.url))
   );
-  const smokeConfig = await loadConfigFromFile(
+  const smoke = await loadConfigFromFile(
     { command: "serve", mode: "test" },
     fileURLToPath(new URL("../vite.python-environment-smoke.config.ts", import.meta.url))
   );
-  const vitestScripts = Object.entries(manifest?.scripts ?? {})
+  const vitestScripts = Object.entries(packageJson.scripts)
     .filter(([, command]) => typeof command === "string" && command.startsWith("vitest run"))
     .sort(([left], [right]) => left.localeCompare(right));
-
   assert.deepEqual(vitestScripts, [
     ["test:coverage:ts", "vitest run --coverage"],
     ["test:python-environment-smoke", "vitest run --config vite.python-environment-smoke.config.ts"],
     ["test:ts", "vitest run"]
   ]);
-  assert.ok(config, "The ordinary Vitest configuration must load.");
-  assert.ok(smokeConfig, "The Python-environment smoke Vitest configuration must load.");
+  assert.ok(config);
+  assert.ok(smoke);
   assert.equal(config.config.test?.maxWorkers, 4);
   assert.equal(config.config.test?.coverage?.processingConcurrency, 4);
-  assert.equal(smokeConfig.config.test?.maxWorkers, 1);
-  assert.equal(smokeConfig.config.test?.fileParallelism, false);
+  assert.equal(smoke.config.test?.maxWorkers, 1);
+  assert.equal(smoke.config.test?.fileParallelism, false);
 });
 
-test("PR workflows cancel only obsolete pull-request heads", () => {
-  for (const [relativePath, expectedGroup] of replaceablePullRequestWorkflows) {
-    const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
-    const workflow = parseYaml(source);
-    assert.equal(workflow?.concurrency?.group, expectedGroup, `${relativePath} must retain its ref-scoped group.`);
-    assert.equal(
-      workflow?.concurrency?.["cancel-in-progress"],
-      "${{ github.event_name == 'pull_request' }}",
-      `${relativePath} may cancel only an obsolete pull-request run.`
-    );
-    assert.ok(workflow?.on?.pull_request !== undefined, `${relativePath} must still run for pull requests.`);
-    assert.ok(
-      Object.keys(workflow?.on ?? {}).some((eventName) => eventName !== "pull_request"),
-      `${relativePath} must retain non-PR evidence that the cancellation expression leaves uninterrupted.`
-    );
-    for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
-      assert.equal(
-        String(job?.if ?? "").includes("always()"),
-        false,
-        `${relativePath}:${jobId} must not resist cancellation with always().`
-      );
-      for (const [stepIndex, step] of (job?.steps ?? []).entries()) {
-        assert.equal(
-          String(step?.if ?? "").includes("always()"),
-          false,
-          `${relativePath}:${jobId}:step-${stepIndex + 1} must not resist cancellation with always().`
-        );
+test("pull-request workflows cancel only obsolete heads while the CodeQL result gate remains fail-complete", () => {
+  for (const [name, group] of REPLACEABLE_PULL_REQUEST_WORKFLOWS) {
+    const document = workflow(name);
+    assert.equal(document.concurrency.group, group);
+    assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+    assert.ok(document.on.pull_request);
+    assert.ok(Object.keys(document.on).some((eventName) => eventName !== "pull_request"));
+    for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
+      if (String(job.if ?? "").includes("always()")) {
+        assert.equal(`${name}:${jobId}`, "codeql.yml:codeql-gate");
       }
+      for (const step of job.steps ?? []) assert.equal(String(step.if ?? "").includes("always()"), false);
     }
   }
-});
-
-test("NUL-safe path classification fast-paths only explicit non-packaged documentation", () => {
-  assert.deepEqual(
-    parseChangedPathBuffer(Buffer.from("docs/testing.md\0AGENTS.md\0docs/images/über.png\0docs/a\nfile.md\0", "utf8")),
-    ["docs/testing.md", "AGENTS.md", "docs/images/über.png", "docs/a\nfile.md"]
-  );
-  assert.throws(() => parseChangedPathBuffer(Buffer.from("src/extension/activate.ts", "utf8")), /NUL terminated/u);
-  assert.throws(() => parseChangedPathBuffer(Buffer.from("README.md\0\0", "utf8")), /empty path/u);
-  assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
-  assert.throws(() => parseChangedPathBuffer("AGENTS.md\0"), /provided as a Buffer/u);
-
-  const documentationOnly = (eventName, changedPaths) => isDocumentationOnlyChangeSet({ eventName, changedPaths });
-  const benchmarkHarnessOnly = (eventName, changedPaths) =>
-    isBenchmarkHarnessOnlyChangeSet({ eventName, changedPaths });
-  const packageOnly = (eventName, changedPaths) => isPackageOnlyChangeSet({ eventName, changedPaths });
-  const dependencyLockOnly = (eventName, changedPaths) => isDependencyLockOnlyChangeSet({ eventName, changedPaths });
-  const allowed = [
-    "AGENTS.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "SUPPORT.md",
-    "docs/testing.md",
-    "docs/a\nfile.md",
-    ".github/ISSUE_TEMPLATE/bug.yml",
-    ".github/PULL_REQUEST_TEMPLATE/docs.md",
-    ".github/PULL_REQUEST_TEMPLATE.md",
-    ".github/pull_request_template.md"
-  ];
-  assert.equal(documentationOnly("pull_request", allowed), true);
-  assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: allowed, pullRequestDraft: "false" }), {
-    benchmarkHarnessOnly: false,
-    dependencyLockOnly: false,
-    documentationOnly: true,
-    draftPullRequest: false,
-    lightweightOnly: true,
-    packageOnly: false,
-    releaseInfrastructureOnly: false,
-    fullMatrixRequired: false
-  });
-  const packagedDocuments = ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"];
-  assert.equal(packageOnly("pull_request", packagedDocuments), true);
-  assert.deepEqual(
-    classifyCiChange({ eventName: "pull_request", changedPaths: packagedDocuments, pullRequestDraft: "false" }),
-    {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: false,
-      documentationOnly: false,
-      draftPullRequest: false,
-      lightweightOnly: false,
-      packageOnly: true,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  assert.deepEqual(
-    classifyCiChange({ eventName: "pull_request", changedPaths: packagedDocuments, pullRequestDraft: "true" }),
-    {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: false,
-      documentationOnly: false,
-      draftPullRequest: true,
-      lightweightOnly: true,
-      packageOnly: true,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  assert.equal(dependencyLockOnly("pull_request", ["package-lock.json"]), true);
-  assert.deepEqual(
-    classifyCiChange({ eventName: "pull_request", changedPaths: ["package-lock.json"], pullRequestDraft: "false" }),
-    {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: true,
-      documentationOnly: false,
-      draftPullRequest: false,
-      lightweightOnly: false,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  assert.deepEqual(
-    classifyCiChange({ eventName: "pull_request", changedPaths: ["package-lock.json"], pullRequestDraft: "true" }),
-    {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: true,
-      documentationOnly: false,
-      draftPullRequest: true,
-      lightweightOnly: true,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  const benchmarkHarnessPaths = [
-    "docs/performance-comparison.md",
-    "docs/testing.md",
-    "python/benchmarks/local_mixed_parquet.py",
-    "python/tests/test_installed_editor_fixtures.py",
-    "scripts/data-wrangler-comparison-neutral-driver.mjs",
-    "scripts/data-wrangler-comparison-neutral-driver.test.mjs",
-    "scripts/data-wrangler-comparison-study.mjs",
-    "scripts/data-wrangler-comparison-study.test.mjs",
-    "scripts/linux-pss-sampler.mjs",
-    "scripts/linux-pss-sampler.test.mjs",
-    "src/test/dataWranglerComparisonNotebookTrial.unit.test.ts",
-    "src/test/extensionHost/dataWranglerComparisonNotebookTrial.ts"
-  ];
-  assert.deepEqual(BENCHMARK_HARNESS_PATHS, benchmarkHarnessPaths);
-  assert.equal(Object.isFrozen(BENCHMARK_HARNESS_PATHS), true);
-  assert.equal(benchmarkHarnessOnly("pull_request", benchmarkHarnessPaths), true);
-  assert.deepEqual(
-    classifyCiChange({
-      eventName: "pull_request",
-      changedPaths: benchmarkHarnessPaths,
-      pullRequestDraft: "false"
-    }),
-    {
-      benchmarkHarnessOnly: true,
-      dependencyLockOnly: false,
-      documentationOnly: false,
-      draftPullRequest: false,
-      lightweightOnly: false,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  assert.deepEqual(
-    classifyCiChange({
-      eventName: "pull_request",
-      changedPaths: benchmarkHarnessPaths,
-      pullRequestDraft: "true"
-    }),
-    {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: false,
-      documentationOnly: false,
-      draftPullRequest: true,
-      lightweightOnly: true,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  for (const unexpectedPath of [
-    ".github/workflows/ci.yml",
-    "package.json",
-    "python/benchmarks/runtime_performance.py",
-    "python/openwrangler_runtime/session.py",
-    "src/extension/sessionCoordinator.ts",
-    "src/test/unrelated.unit.test.ts"
-  ]) {
-    const changedPaths = ["scripts/data-wrangler-comparison-study.mjs", unexpectedPath];
-    assert.equal(
-      benchmarkHarnessOnly("pull_request", changedPaths),
-      false,
-      `${unexpectedPath} must fall back to the full matrix.`
-    );
-    assert.equal(
-      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
-      true,
-      `${unexpectedPath} must require the full matrix.`
-    );
-  }
-  for (const changedPaths of [
-    [],
-    ["package.json"],
-    ["package-lock.json", "package.json"],
-    ["package-lock.json", "README.md"],
-    ["./package-lock.json"],
-    ["Package-lock.json"]
-  ]) {
-    assert.equal(
-      dependencyLockOnly("pull_request", changedPaths),
-      false,
-      JSON.stringify(changedPaths) + " must not select dependency-lock-only CI."
-    );
-  }
-  for (const path of [
-    ".github/workflows/ci.yml",
-    ".vscodeignore",
-    "assets/openwrangler.png",
-    "package.json",
-    "protocol/openwrangler.v2.schema.json",
-    "python/openwrangler_runtime/notebook.py",
-    "scripts/build-webviews.mjs",
-    "src/extension/notebooks/jupyterBridge.ts",
-    "src/webviews/notebookRenderer.ts",
-    "docs/images/acceptance/grid-dark-1920.png",
-    "docs/images/editor-acceptance/vscode-hero-dark.png",
-    "docs/images/readme/v1.2/explore.png",
-    "docs/images/legacy.png",
-    "docs/media-gallery.md",
-    "docs/media-spec-v1.2.md",
-    "docs/../src/extension/activate.ts",
-    "/docs/testing.md",
-    "docs//testing.md",
-    "docs\\testing.md",
-    "Docs/testing.md",
-    ".github/ISSUE_TEMPLATE",
-    ".github/PULL_REQUEST_TEMPLATE",
-    "unknown/future-package-surface"
-  ]) {
-    assert.equal(documentationOnly("pull_request", [path]), false, `${path} must require the complete PR matrix.`);
-    assert.equal(packageOnly("pull_request", [path]), false, `${path} must not select package-only CI.`);
-  }
-  for (const path of packagedDocuments) {
-    assert.equal(documentationOnly("pull_request", [path]), false, `${path} is shipped, not documentation-only.`);
-    assert.equal(packageOnly("pull_request", [path]), true, `${path} must select package-only CI.`);
-  }
-  assert.equal(packageOnly("pull_request", ["README.md", "docs/testing.md"]), false);
-  assert.equal(packageOnly("pull_request", ["README.md", "src/shared/notebookOutput.ts"]), false);
-  assert.equal(documentationOnly("pull_request", ["docs/testing.md", "src/shared/notebookOutput.ts"]), false);
-  assert.deepEqual(
-    classifyCiChange({
-      eventName: "pull_request",
-      changedPaths: ["src/shared/notebookOutput.ts"],
-      pullRequestDraft: "true"
-    }),
-    {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: false,
-      documentationOnly: false,
-      draftPullRequest: true,
-      lightweightOnly: true,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: false
-    }
-  );
-  assert.equal(documentationOnly("pull_request", []), false, "an empty PR diff must fail closed");
-  assert.equal(packageOnly("pull_request", []), false, "an empty PR diff must fail closed");
-  assert.equal(dependencyLockOnly("pull_request", []), false, "an empty PR diff must fail closed");
-  assert.equal(benchmarkHarnessOnly("pull_request", []), false, "an empty PR diff must fail closed");
-  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
-    assert.equal(documentationOnly(eventName, allowed), false, `${eventName} must always use the complete workflow.`);
-    assert.equal(
-      packageOnly(eventName, packagedDocuments),
-      false,
-      `${eventName} must always use the complete workflow.`
-    );
-    assert.equal(dependencyLockOnly(eventName, ["package-lock.json"]), false, `${eventName} must use full CI.`);
-    assert.equal(benchmarkHarnessOnly(eventName, benchmarkHarnessPaths), false, `${eventName} must use full CI.`);
-    assert.deepEqual(classifyCiChange({ eventName, changedPaths: [], pullRequestDraft: "" }), {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: false,
-      documentationOnly: false,
-      draftPullRequest: false,
-      lightweightOnly: false,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      fullMatrixRequired: true
-    });
-  }
-  assert.equal(documentationOnly("pull_request", [undefined]), false);
-  assert.equal(documentationOnly("pull_request", ["docs/testing.md", 42]), false);
-  assert.throws(() => documentationOnly("pull_request", undefined), /changedPaths must be an array/u);
-  assert.throws(() => benchmarkHarnessOnly("pull_request", undefined), /changedPaths must be an array/u);
-  assert.throws(() => packageOnly("pull_request", undefined), /changedPaths must be an array/u);
-  assert.throws(() => dependencyLockOnly("pull_request", undefined), /changedPaths must be an array/u);
-  assert.equal(parsePullRequestDraft({ eventName: "pull_request", value: "true" }), true);
-  assert.equal(parsePullRequestDraft({ eventName: "pull_request", value: "false" }), false);
-  for (const value of [undefined, "", "TRUE", "0", true, false]) {
-    assert.throws(
-      () => parsePullRequestDraft({ eventName: "pull_request", value }),
-      /draft state must be exactly true or false/u
-    );
-  }
-  assert.equal(parsePullRequestDraft({ eventName: "push", value: "" }), false);
-  assert.equal(parsePullRequestDraft({ eventName: "schedule", value: undefined }), false);
-  assert.throws(
-    () => parsePullRequestDraft({ eventName: "push", value: "false" }),
-    /must not carry pull-request draft state/u
-  );
-});
-
-test("release-infrastructure classification is an exact fail-closed allowlist with closed dependencies", () => {
-  const primaryPaths = [...RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS, ...RELEASE_INFRASTRUCTURE_TEST_PATHS];
-  const productionPaths = new Set(RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS);
-  const baselinePath = "scripts/download-canonical-github-release.mjs";
-  const releaseRegistries = {
-    adjunct: RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
-    "classification-test": RELEASE_INFRASTRUCTURE_TEST_PATHS,
-    "extra-focused-test": RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS,
-    production: RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
-    "shared-dependency": RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS
-  };
-
-  for (const paths of [
-    RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
-    RELEASE_INFRASTRUCTURE_TEST_PATHS,
-    RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
-    RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
-    RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS
-  ]) {
-    assert.equal(Object.isFrozen(paths), true);
-    assert.deepEqual(paths, [...paths].sort(), "Release-infrastructure registries must stay canonical and sorted.");
-    assert.equal(new Set(paths).size, paths.length, "Release-infrastructure registries must not contain duplicates.");
-    for (const path of paths) {
-      assert.doesNotThrow(() => readFileSync(new URL(`../${path}`, import.meta.url)));
-    }
-  }
-  const registryEntries = Object.entries(releaseRegistries);
-  for (let left = 0; left < registryEntries.length; left += 1) {
-    for (let right = left + 1; right < registryEntries.length; right += 1) {
-      const [leftName, leftPaths] = registryEntries[left];
-      const [rightName, rightPaths] = registryEntries[right];
-      assert.deepEqual(
-        leftPaths.filter((path) => rightPaths.includes(path)),
-        [],
-        `${leftName} and ${rightName} release registries must remain disjoint.`
-      );
-    }
-  }
-  assert.deepEqual(
-    RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
-    [
-      "CHANGELOG.md",
-      "README.md",
-      "docs/ci.md",
-      "docs/media-gallery.md",
-      "docs/media-spec-v1.2.md",
-      "docs/releasing.md",
-      "docs/testing.md"
-    ],
-    "Only exact release-adjacent documents may accompany a primary release-infrastructure change."
-  );
-  assert.deepEqual(RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS, [
-    "scripts/data-wrangler-comparison-report.mjs",
-    "scripts/package-source-manifest.mjs",
-    "scripts/reproducible-vsix.mjs",
-    "scripts/run-installed-performance.mjs",
-    "scripts/strict-json.mjs",
-    "scripts/vsix-archive.mjs",
-    "scripts/vsix-contents.mjs"
-  ]);
-  assert.deepEqual(
-    Object.keys(RELEASE_INFRASTRUCTURE_TEST_OWNER),
-    RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
-    "Every production allowlist entry needs an explicitly reviewed focused-test owner."
-  );
-
-  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
-  const releaseJob = ci?.jobs?.[RELEASE_INFRASTRUCTURE_CI_JOBS[0]];
-  const transactionFiles = nodeTestFiles(
-    releaseJob?.steps?.find((step) => step?.name === "Release transaction contracts")?.run,
-    "release"
-  );
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const mediaFiles = nodeTestFiles(manifest?.scripts?.["test:scripts:media:run"], "media");
-  const focusedTestFiles = [...transactionFiles, ...mediaFiles].sort();
-  assert.deepEqual(
-    focusedTestFiles.filter((path) => !RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS.includes(path)),
-    RELEASE_INFRASTRUCTURE_TEST_PATHS,
-    "The executable release job and media command must exactly own every classification-allowed test."
-  );
-  assert.deepEqual(
-    focusedTestFiles.filter((path) => !RELEASE_INFRASTRUCTURE_TEST_PATHS.includes(path)),
-    RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS,
-    "Candidate-boundary tests run in the focused job but must remain outside the path-classification allowlist."
-  );
-  for (const [productionPath, ownerPath] of Object.entries(RELEASE_INFRASTRUCTURE_TEST_OWNER)) {
-    assert.equal(
-      focusedTestFiles.includes(ownerPath),
-      true,
-      `${productionPath} must retain executable evidence from ${ownerPath}.`
-    );
-    if (productionPath.endsWith(".mjs")) {
-      assert.equal(
-        localReleaseModuleDependencies(ownerPath, productionPaths).has(productionPath),
-        true,
-        `${ownerPath} must import ${productionPath} through the reviewed release module graph.`
-      );
-    } else {
-      assert.equal(
-        readFileSync(new URL(`../${ownerPath}`, import.meta.url), "utf8").includes(productionPath),
-        true,
-        `${ownerPath} must inspect ${productionPath} explicitly.`
-      );
-    }
-  }
-
-  const dependencies = new Set();
-  for (const productionPath of RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS.filter((path) => path.endsWith(".mjs"))) {
-    for (const dependencyPath of localReleaseModuleDependencies(productionPath, productionPaths)) {
-      dependencies.add(dependencyPath);
-    }
-  }
-  const outOfTierDependencies = [...dependencies].filter((path) => !productionPaths.has(path)).sort();
-  assert.deepEqual(
-    outOfTierDependencies,
-    RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
-    "Every transitive local module dependency outside the tier must be explicitly registered to force full CI."
-  );
-  assert.deepEqual(
-    primaryPaths.filter((path) => RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS.includes(path)),
-    [],
-    "Shared release dependencies must never enter the narrow primary allowlist."
-  );
-  assert.deepEqual(
-    [
-      ...localReleaseModuleDependencies(
-        "scripts/synthetic-release.mjs",
-        productionPaths,
-        new Set(),
-        'import("./strict-json.mjs");'
-      )
-    ],
-    ["scripts/strict-json.mjs"],
-    "Literal dynamic imports must enter the dependency closure."
-  );
-  assert.deepEqual(
-    [
-      ...localReleaseModuleDependencies(
-        "scripts/synthetic-release.mjs",
-        productionPaths,
-        new Set(),
-        "const command = `node --input-type=module -e 'import { x } from \"./scripts/strict-json.mjs\"; x();'`;"
-      )
-    ],
-    ["scripts/strict-json.mjs"],
-    "Only the reviewed embedded node-module command form may resolve from the repository root."
-  );
-  for (const [label, source, message] of [
-    ["computed dynamic import", "import(modulePath);", /literal dynamic-import/u],
-    [
-      "computed embedded import",
-      "const command = `node --input-type=module -e 'import(modulePath);'`;",
-      /literal dynamic-import/u
-    ],
-    [
-      "second embedded import",
-      'const command = `node --input-type=module -e \'import "./scripts/strict-json.mjs"; import { x } from "./scripts/release-metadata.mjs"; x();\'`;',
-      /exactly one reviewed import/u
-    ],
-    ["require", 'require("./strict-json.mjs");', /must not use require/u],
-    ["createRequire", "createRequire(import.meta.url);", /must not use createRequire/u],
-    ["POSIX absolute import", 'import("/tmp/local.mjs");', /absolute, backslash, or URL-scheme/u],
-    ["file URL import", 'import("file:///tmp/local.mjs");', /absolute, backslash, or URL-scheme/u],
-    ["data URL import", 'import("data:text/javascript,export default 1");', /URL-scheme/u],
-    ["HTTP URL import", 'import("https://example.com/local.mjs");', /URL-scheme/u],
-    ["Windows drive import", 'import("C:\\\\temp\\\\local.mjs");', /absolute, backslash, or URL-scheme/u],
-    ["Windows UNC import", 'import("\\\\\\\\server\\\\share\\\\local.mjs");', /backslash/u],
-    [
-      "aliased createRequire",
-      'import { createRequire as loader } from "node:module"; loader(import.meta.url);',
-      /module-loader constructor/u
-    ],
-    [
-      "namespace createRequire",
-      'import * as moduleApi from "module"; moduleApi.createRequire(import.meta.url);',
-      /module-loader constructor/u
-    ]
-  ]) {
-    assert.throws(
-      () => localReleaseModuleDependencies("scripts/synthetic-release.mjs", productionPaths, new Set(), source),
-      message,
-      `${label} must fail the release dependency inspector closed.`
-    );
-  }
-
-  for (const primaryPath of primaryPaths) {
-    assert.equal(
-      isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths: [primaryPath] }),
-      true,
-      `${primaryPath} must select the focused release-infrastructure tier.`
-    );
-    assert.deepEqual(
-      classifyCiChange({ eventName: "pull_request", changedPaths: [primaryPath], pullRequestDraft: "false" }),
-      {
-        benchmarkHarnessOnly: false,
-        dependencyLockOnly: false,
-        documentationOnly: false,
-        draftPullRequest: false,
-        lightweightOnly: false,
-        packageOnly: false,
-        releaseInfrastructureOnly: true,
-        fullMatrixRequired: false
-      }
-    );
-  }
-  assert.equal(
-    isReleaseInfrastructureOnlyChangeSet({
-      eventName: "pull_request",
-      changedPaths: [...primaryPaths, ...RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS]
-    }),
-    true
-  );
-  assert.equal(
-    isReleaseInfrastructureOnlyChangeSet({
-      eventName: "pull_request",
-      changedPaths: RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS
-    }),
-    false,
-    "Adjunct documents cannot select this tier without primary code or a focused test."
-  );
-
-  for (const unexpectedPath of [
-    ...RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
-    ...RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS,
-    ".github/workflows/candidate-acceptance.yml",
-    ".github/workflows/open-vsx-promotion.yml",
-    ".github/workflows/release.yml",
-    ".github/workflows/stable-release.yml",
-    "azure-pipelines-marketplace.yml",
-    ".github/workflows/ci.yml",
-    ".github/workflows/codeql.yml",
-    ".github/workflows/cross-platform.yml",
-    "package.json",
-    "scripts/ci-path-classification.mjs",
-    "scripts/ci-workflow.test.mjs",
-    "scripts/push-release-tag.mjs",
-    "scripts/require-ci-results.mjs",
-    "scripts/verify-open-vsx-github-release.mjs",
-    "src/extension/activate.ts",
-    "python/openwrangler_runtime/session.py"
-  ]) {
-    const changedPaths = [baselinePath, unexpectedPath];
-    assert.equal(
-      isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths }),
-      false,
-      `${unexpectedPath} must force full CI when mixed with release infrastructure.`
-    );
-    assert.equal(
-      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
-      true,
-      `${unexpectedPath} must fail closed to full CI.`
-    );
-  }
-  for (const changedPaths of [
-    ["azure-pipelines-marketplace.yml"],
-    ["azure-pipelines-marketplace.yml", "scripts/marketplace-promotion-workflow.mjs"]
-  ]) {
-    assert.equal(
-      isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths }),
-      false,
-      "The Azure pipeline must force full CI alone and with its allowlisted hash-owning inspector."
-    );
-    assert.equal(
-      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
-      true
-    );
-  }
-  for (const malformedPath of ["./scripts/download-canonical-github-release.mjs", "scripts//x.mjs", "../x.mjs", 42]) {
-    const changedPaths = [baselinePath, malformedPath];
-    assert.equal(isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths }), false);
-    assert.equal(
-      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
-      true
-    );
-  }
-  assert.equal(
-    classifyCiChange({ eventName: "pull_request", changedPaths: [baselinePath], pullRequestDraft: "true" })
-      .releaseInfrastructureOnly,
-    false,
-    "Draft PRs retain lightweight feedback until they become ready."
-  );
-  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
-    const classification = classifyCiChange({ eventName, changedPaths: [baselinePath], pullRequestDraft: "" });
-    assert.equal(classification.releaseInfrastructureOnly, false);
-    assert.equal(classification.fullMatrixRequired, true);
-  }
-  assert.throws(
-    () => isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths: undefined }),
-    /changedPaths must be an array/u
-  );
 });
 
 test("repository-only roots remain excluded from the VSIX inventory", () => {
-  const ignored = new Set(
-    readFileSync(new URL("../.vscodeignore", import.meta.url), "utf8")
-      .split(/\r?\n/gu)
-      .filter(Boolean)
-  );
+  const ignored = new Set(readFileSync(".vscodeignore", "utf8").split(/\r?\n/gu).filter(Boolean));
   for (const path of ["docs/**", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md", ".node-version"]) {
-    assert.equal(ignored.has(path), true, `${path} must remain outside the packaged extension.`);
+    assert.equal(ignored.has(path), true, `${path} must stay outside the extension package.`);
   }
   for (const path of ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
-    assert.equal(ignored.has(path), false, `${path} changes shipped extension bytes and must keep packaging CI.`);
+    assert.equal(ignored.has(path), false, `${path} must remain in the extension package.`);
   }
 });
 
-test("native packaged-editor and released-Jupyter journeys stay at the release boundary", () => {
-  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
-  for (const jobId of [
-    "released-jupyter",
-    "native-script-portability",
-    "native-extension-host",
-    "native-editor-matrix",
-    "native-cursor-smoke"
-  ]) {
-    assert.equal(ci?.jobs?.[jobId], undefined, `${jobId} must not run on every pull request.`);
-  }
-
-  for (const relativePath of [".github/workflows/release.yml", ".github/workflows/stable-release.yml"]) {
-    const workflow = parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
-    const candidate = workflow?.jobs?.["candidate-acceptance"];
-    assert.deepEqual(candidate, {
-      name: "Candidate acceptance",
-      needs: "package",
-      uses: "./.github/workflows/candidate-acceptance.yml",
-      permissions: { contents: "read" },
-      with: {
-        artifact_id: "${{ needs.package.outputs.artifact-id }}",
-        channel: relativePath.endsWith("/release.yml") ? "preview" : "stable",
-        expected_sha: "${{ github.sha }}",
-        release_tag: "${{ inputs.release_tag }}"
-      }
-    });
-    const producerRuns = workflow.jobs.package.steps.map((step) => step.run).filter((run) => typeof run === "string");
-    assert.equal(
-      producerRuns.filter((run) => run === "npm run lock:remote-jupyter:check").length,
-      1,
-      `${relativePath} must retain the producer-owned remote-lock proof.`
-    );
-    assert.equal(
-      producerRuns.filter((run) => run.includes("uv-0.11.32-py3-none-manylinux")).length,
-      1,
-      `${relativePath} must retain the uv prerequisite for its remote-lock proof.`
-    );
-    assert.equal(
-      producerRuns.filter((run) => run === "npm run verify:vsix -- openwrangler.candidate.vsix").length,
-      1,
-      `${relativePath} must retain the producer-owned full VSIX verification.`
-    );
-    for (const consumerJob of ["remote-ssh", "release"]) {
-      const consumerRuns = workflow.jobs[consumerJob].steps
-        .map((step) => step.run)
-        .filter((run) => typeof run === "string");
-      assert.equal(
-        consumerRuns.some((run) => run.includes("npm run verify:vsix")),
-        false,
-        `${relativePath} ${consumerJob} must use canonical semantic verification instead of repeating the full VSIX verifier.`
-      );
-    }
-  }
-
-  const acceptance = parseYaml(
-    readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8")
-  );
-  assert.deepEqual(Object.keys(acceptance.on.workflow_call.inputs), [
-    "artifact_id",
-    "channel",
-    "expected_sha",
-    "release_tag"
-  ]);
-  assert.equal(acceptance.on.workflow_call.outputs, undefined);
-  assert.deepEqual(Object.keys(acceptance.jobs), [
-    "contract",
-    "platform",
-    "r_platform",
-    "linux",
-    "performance",
-    "jupyter",
-    "r_local",
-    "acceptance"
-  ]);
-  const candidateSteps = Object.values(acceptance.jobs).flatMap((job) => job.steps ?? []);
-  assert.equal(
-    candidateSteps.some((step) => step.run === "npm run verify:vsix -- canonical-release/openwrangler.vsix"),
-    false,
-    "Candidate consumers must not repeat the producer-owned full VSIX verification."
-  );
-  for (const [jobName, job] of Object.entries(acceptance.jobs)) {
-    for (const [index, runner] of (job.steps ?? []).entries()) {
-      if (!runner.id?.startsWith("packaged_")) continue;
-      assert.match(
-        job.steps[index - 1]?.id ?? "",
-        /^canonical/u,
-        `${jobName}/${runner.id} must retain its canonical checksum/provenance verifier.`
-      );
-    }
-  }
-
-  const platform = acceptance.jobs.platform;
-  assert.deepEqual(platform.strategy, {
-    "fail-fast": false,
-    "max-parallel": 2,
-    matrix: {
-      include: [
-        { os: "macos-latest", python: "3.12" },
-        { os: "windows-latest", python: "3.14" }
-      ]
-    }
-  });
-  assert.equal(platform["runs-on"], "${{ matrix.os }}");
-  const platformRunner = platform.steps.find((step) => step.id === "packaged_editor");
-  assert.equal(
-    platformRunner.env.OPEN_WRANGLER_PACKAGED_MODE,
-    "platform-smoke",
-    "VS Code must stay on the unique cross-platform integration seam."
-  );
-  assert.equal(
-    platform.steps.some((step) => step.env?.OPEN_WRANGLER_PACKAGED_EDITORS?.includes("cursor")),
-    false,
-    "The single Linux Cursor smoke owns generic fork compatibility."
-  );
-  assert.equal(
-    platform.steps.some(
-      (step) =>
-        step.uses?.startsWith("r-lib/actions/setup-r@") ||
-        step.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" ||
-        step.env?.OPEN_WRANGLER_PACKAGED_R_JOURNEY !== undefined
-    ),
-    false
-  );
-  for (const omitted of ["npm run test:python-environment-smoke", "npm run test:extension-host"]) {
-    assert.equal(
-      platform.steps.some((step) => step.run?.includes(omitted)),
-      false,
-      `${omitted} must stay in pull-request CI instead of generic candidate acceptance.`
-    );
-  }
-
-  const linux = acceptance.jobs.linux;
-  for (const retained of [
-    "npm run repository:check-live",
-    "npm audit --omit=dev",
-    "npm run audit:python",
-    "npm run benchmark:runtime",
-    "npm run build:test-extension"
-  ]) {
-    assert.equal(
-      linux.steps.some((step) => step.run === retained),
-      true,
-      `${retained} must remain release-candidate evidence.`
-    );
-  }
-  for (const omitted of [
-    "npm run check",
-    "npm run test:scripts",
-    "npm run test:webview-acceptance",
-    "npm run test:coverage",
-    "npx playwright-core install --with-deps chromium",
-    'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"',
-    "uv-0.11.32-py3-none-manylinux"
-  ]) {
-    assert.equal(
-      linux.steps.some((step) => step.run?.includes(omitted)),
-      false,
-      `${omitted} must stay in pull-request CI instead of Linux candidate acceptance.`
-    );
-  }
-  assert.equal(
-    linux.steps.some((step) => step.name === "Verify exact coverage runtimes"),
-    false,
-    "Linux candidate acceptance must not retain coverage-only runtime setup."
-  );
-  assert.equal(
-    linux.steps.some((step) => step.uses?.startsWith("actions/setup-java@")),
-    false,
-    "Linux candidate acceptance must not repeat the Jupyter-owned Java prerequisite."
-  );
-  const linuxVscode = linux.steps.find((step) => step.id === "packaged_vscode");
-  const linuxCursor = linux.steps.find((step) => step.id === "packaged_cursor");
-  assert.equal(linuxVscode.env.OPEN_WRANGLER_PACKAGED_MODE, undefined);
-  assert.equal(linuxCursor.env.OPEN_WRANGLER_PACKAGED_MODE, "platform-smoke");
-  assert.equal(linuxCursor.name, "Test the pinned Cursor compatibility smoke seam");
-  const linuxCursorIndex = linux.steps.indexOf(linuxCursor);
-  assert.equal(linux.steps[linuxCursorIndex + 1].name, "Upload pinned Cursor compatibility failure diagnostics");
-  assert.equal(linux.steps[linuxCursorIndex + 2].name, "Fail after pinned Cursor compatibility diagnostics");
-  const genericEditorRunners = [
-    ...platform.steps.map((step) => ({ jobName: "platform", step })),
-    ...linux.steps.map((step) => ({ jobName: "linux", step }))
-  ].filter(({ step }) =>
-    step.run?.includes("node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix")
-  );
-  assert.equal(genericEditorRunners.length, 3);
+test("routine Dependabot updates remain grouped, bounded, staggered, and security-independent", () => {
+  const dependabot = parseYaml(readFileSync(".github/dependabot.yml", "utf8"));
+  assert.equal(dependabot.version, 2);
   assert.deepEqual(
-    genericEditorRunners
-      .filter(({ step }) => step.env?.OPEN_WRANGLER_PACKAGED_MODE === undefined)
-      .map(({ jobName, step }) => [jobName, step.id]),
-    [["linux", "packaged_vscode"]]
-  );
-  assert.equal(
-    genericEditorRunners
-      .filter(({ jobName, step }) => jobName !== "linux" || step.id !== "packaged_vscode")
-      .every(({ step }) => step.env.OPEN_WRANGLER_PACKAGED_MODE === "platform-smoke"),
-    true
-  );
-
-  const rPlatform = acceptance.jobs.r_platform;
-  assert.deepEqual(rPlatform.strategy, {
-    "fail-fast": false,
-    "max-parallel": 2,
-    matrix: {
-      include: [
-        { os: "macos-latest", python: "3.12" },
-        { os: "windows-latest", python: "3.14" }
-      ]
-    }
-  });
-  assert.equal(rPlatform["runs-on"], "${{ matrix.os }}");
-  assert.deepEqual(
-    rPlatform.steps
-      .filter((step) => step.id?.startsWith("packaged_editor_r_"))
-      .map((step) => [step.id, step.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY]),
+    dependabot.updates.map((entry) => [
+      entry["package-ecosystem"],
+      entry.schedule.day,
+      entry["open-pull-requests-limit"]
+    ]),
     [
-      ["packaged_editor_r_core", "core-operations"],
-      ["packaged_editor_r_native", "native-frames"],
-      ["packaged_editor_r_restart", "kernel-restart"]
+      ["npm", "monday", 4],
+      ["pip", "tuesday", 4],
+      ["github-actions", "wednesday", 3]
     ]
   );
-  for (const runner of rPlatform.steps.filter((step) => step.id?.startsWith("packaged_editor_r_"))) {
-    assert.equal(runner["continue-on-error"], true);
-    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode");
-    const index = rPlatform.steps.indexOf(runner);
-    assert.match(rPlatform.steps[index - 1].id, /^canonical_r_/u);
-    assert.equal(rPlatform.steps[index + 1].uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
-  }
-  assert.equal(rPlatform.steps.at(-1).name, "Require successful platform R outcomes");
-  assert.equal(rPlatform.steps.at(-1).if, "${{ always() }}");
-  assert.equal(rPlatform.steps.at(-1).shell, "bash");
-  assert.equal(rPlatform.steps.at(-1).env.NATIVE_OUTCOME, "${{ steps.packaged_editor_r_native.outcome }}");
-  assert.match(rPlatform.steps.at(-1).run, /test "\$NATIVE_OUTCOME" = "success"/u);
-
-  const releasedJupyter = acceptance.jobs.jupyter;
-  assert.deepEqual(releasedJupyter.strategy, {
-    "fail-fast": false,
-    "max-parallel": 2,
-    matrix: { phase: ["python", "r-remote"] }
-  });
-  assert.equal(
-    releasedJupyter.steps.some((step) => step.run === "npm run test:r-contract"),
-    false
-  );
-  for (const producerOwned of [
-    "npm run lock:remote-jupyter:check",
-    "npm run audit:remote-jupyter",
-    "uv-0.11.32-py3-none-manylinux"
-  ]) {
-    assert.equal(
-      releasedJupyter.steps.some((step) => step.run?.includes(producerOwned)),
-      false,
-      `${producerOwned} must stay out of candidate Jupyter acceptance.`
-    );
-  }
-  assert.equal(
-    releasedJupyter.steps.find((step) => step.id === "packaged_editor_r_remote")?.env?.OPEN_WRANGLER_PACKAGED_R_JOURNEY,
-    "remote-r-jupyter"
-  );
-
-  const rLocal = acceptance.jobs.r_local;
-  assert.equal(acceptance.jobs.r_contract, undefined);
-  assert.equal(
-    Object.values(acceptance.jobs).some((job) =>
-      (job.steps ?? []).some((step) => step.run === "npm run test:r-contract")
-    ),
-    false,
-    "Protected PR CI must remain the only source-level native R contract owner."
-  );
-  assert.equal(rLocal.needs, "contract");
-  assert.deepEqual(rLocal.strategy, {
-    "fail-fast": false,
-    "max-parallel": 2,
-    matrix: { shard: ["lifecycle", "editing"] }
-  });
-  assert.deepEqual(
-    rLocal.steps
-      .filter((step) => step.id?.startsWith("packaged_editor_r_"))
-      .map((step) => [step.id, step.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY]),
-    [
-      ["packaged_editor_r_core", "core-operations"],
-      ["packaged_editor_r_restart", "kernel-restart"],
-      ["packaged_editor_r_interactive", "interactive-terminal"],
-      ["packaged_editor_r_literate", "literate-documents"],
-      ["packaged_editor_r_native", "native-frames"],
-      ["packaged_editor_r_values", "value-operations"],
-      ["packaged_editor_r_categorical", "categorical-operations"]
-    ]
-  );
-  const localEditors = new Map([
-    ["packaged_editor_r_core", "vscode,cursor"],
-    ["packaged_editor_r_restart", "vscode,cursor"],
-    ["packaged_editor_r_interactive", "vscode,cursor"],
-    ["packaged_editor_r_literate", "vscode,cursor"],
-    ["packaged_editor_r_native", "vscode,cursor"],
-    ["packaged_editor_r_values", "vscode"],
-    ["packaged_editor_r_categorical", "vscode"]
-  ]);
-  for (const runner of rLocal.steps.filter((step) => step.id?.startsWith("packaged_editor_r_"))) {
-    assert.equal(runner["continue-on-error"], true);
-    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, localEditors.get(runner.id));
-    const index = rLocal.steps.indexOf(runner);
-    assert.match(rLocal.steps[index - 1].id, /^canonical_r_/u);
-    assert.equal(rLocal.steps[index + 1].uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
-  }
-  assert.equal(rLocal.steps.at(-1).name, "Require successful local R shard outcomes");
-  assert.equal(rLocal.steps.at(-1).if, "${{ always() }}");
-  assert.equal(rLocal.steps.at(-1).env.RESTART_OUTCOME, "${{ steps.packaged_editor_r_restart.outcome }}");
-  assert.equal(rLocal.steps.at(-1).env.NATIVE_OUTCOME, "${{ steps.packaged_editor_r_native.outcome }}");
-  assert.match(rLocal.steps.at(-1).run, /test "\$RESTART_OUTCOME" = "success"/u);
-  assert.match(rLocal.steps.at(-1).run, /test "\$NATIVE_OUTCOME" = "success"/u);
-
-  assert.deepEqual(acceptance.jobs.acceptance.needs, [
-    "contract",
-    "platform",
-    "r_platform",
-    "linux",
-    "performance",
-    "jupyter",
-    "r_local"
-  ]);
-  assert.equal(acceptance.jobs.acceptance.if, "${{ always() }}");
-});
-
-test("PR CI gates expensive work behind bounded preflight lanes without removing checks", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const fastFeedback = workflow?.jobs?.["fast-feedback"];
-  assert.equal(fastFeedback?.name, "Fast feedback");
-  assert.equal(fastFeedback?.["runs-on"], "ubuntu-latest");
-  assert.equal(fastFeedback?.["timeout-minutes"], 15);
-  assert.equal(fastFeedback?.needs, undefined, "Fast feedback must not wait for the canonical VSIX.");
-  assert.equal(fastFeedback?.if, undefined, "Fast feedback must run on every CI event.");
-
-  assert.deepEqual(
-    fastFeedback?.steps,
-    [
-      { uses: "actions/checkout@v6" },
-      {
-        uses: "actions/setup-node@v6",
-        with: { "node-version-file": ".node-version", cache: "npm" }
-      },
-      {
-        id: "reference_python",
-        uses: PINNED_SETUP_PYTHON_ACTION,
-        with: { "python-version": "3.12" }
-      },
-      { run: "npm ci" },
-      { name: "Formatting, ESLint, and strict TypeScript", run: "npm run check:fast-feedback" },
-      { name: "Protocol freshness", run: "npm run protocol:check" },
-      {
-        name: "Reference freshness",
-        run: "npm run reference:check",
-        env: { OPEN_WRANGLER_PYTHON: REFERENCE_PYTHON_OUTPUT }
-      },
-      { name: "Documentation freshness", run: "npm run docs:check" },
-      { name: "Production license inventory", run: "npm run license:check" },
-      { name: "Workflow contracts", run: "npm run test:scripts:workflow" }
-    ],
-    "The early lane must remain bounded source validation, named, and independently attributable."
-  );
-  assert.deepEqual(inspectFastFeedbackReferencePython(workflow), []);
-
-  const contractSteps = workflow?.jobs?.["contract-tests"]?.steps;
-  assert.ok(Array.isArray(contractSteps));
-  for (const command of [
-    "npm run lint:python",
-    "npm run brand:check",
-    "npm run check:remote-jupyter-lock",
-    "npm run lock:remote-jupyter:check",
-    "npm run test:scripts:portable"
-  ]) {
-    assert.equal(
-      contractSteps.some((step) => step?.run === command),
-      true,
-      `${command} must remain an authoritative contract gate.`
-    );
-  }
-  for (const duplicate of ["npm run test:ts", "npm run test:python"]) {
-    assert.equal(
-      contractSteps.some((step) => step?.run === duplicate),
-      false,
-      `${duplicate} belongs to the stronger coverage lane and must not be repeated by contract-tests.`
-    );
-  }
-  assert.deepEqual(workflow?.jobs?.["canonical-vsix"]?.needs, ["classify", "fast-feedback"]);
-  assert.deepEqual(workflow?.jobs?.["contract-tests"]?.needs, ["classify", "fast-feedback"]);
-  assert.equal(workflow?.jobs?.["contract-tests"]?.if, CONTRACT_CI_IF);
-});
-
-test("PR reference freshness rejects ambient, unpinned, duplicated, and late interpreter authority", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const base = parseYaml(source);
-  const expectReferencePrerequisiteRejected = (mutate, pattern) => {
-    const workflow = structuredClone(base);
-    mutate(workflow.jobs["fast-feedback"].steps);
-    const problems = inspectFastFeedbackReferencePython(workflow);
-    assert.ok(problems.length > 0, "The adversarial reference prerequisite must be rejected.");
-    assert.match(problems.join("\n"), pattern);
-  };
-
-  expectReferencePrerequisiteRejected((steps) => {
-    const setup = steps.find((step) => step.id === "reference_python");
-    setup.uses = "actions/setup-python@v6";
-  }, /pinned setup-python prerequisite/u);
-  expectReferencePrerequisiteRejected((steps) => {
-    const reference = steps.find((step) => step.name === "Reference freshness");
-    reference.env.OPEN_WRANGLER_PYTHON = "python3";
-  }, /authoritative absolute python-path/u);
-  expectReferencePrerequisiteRejected((steps) => {
-    const reference = steps.find((step) => step.name === "Reference freshness");
-    delete reference.env;
-  }, /authoritative absolute python-path/u);
-  expectReferencePrerequisiteRejected((steps) => {
-    const setupIndex = steps.findIndex((step) => step.id === "reference_python");
-    const [setup] = steps.splice(setupIndex, 1);
-    const referenceIndex = steps.findIndex((step) => step.name === "Reference freshness");
-    steps.splice(referenceIndex + 1, 0, setup);
-  }, /ordered before generation/u);
-  expectReferencePrerequisiteRejected((steps) => {
-    const setupIndex = steps.findIndex((step) => step.id === "reference_python");
-    steps.splice(setupIndex + 1, 0, structuredClone(steps[setupIndex]));
-  }, /one pinned setup-python prerequisite/u);
-});
-
-test("benchmark-only PRs run one focused harness lane without launching the benchmark", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const job = workflow?.jobs?.[BENCHMARK_HARNESS_CI_JOBS[0]];
-
-  assert.equal(job?.name, "Benchmark harness");
-  assert.deepEqual(job?.needs, ["classify", "fast-feedback"]);
-  assert.equal(job?.["runs-on"], "ubuntu-latest");
-  assert.equal(job?.["timeout-minutes"], 15);
-  assert.equal(
-    normalizedCommand(job?.if),
-    "${{ !cancelled() && github.event_name == 'pull_request' && needs.classify.result == 'success' && needs.fast-feedback.result == 'success' && needs.classify.outputs.benchmark_harness_only == 'true' && needs.classify.outputs.draft_pull_request == 'false' }}"
-  );
-
-  const commands = (job?.steps ?? [])
-    .filter((step) => typeof step?.run === "string")
-    .map((step) => normalizedCommand(step.run));
-  assert.deepEqual(commands, [
-    "npm ci",
-    "python -m pip install --upgrade pip",
-    'python -m pip install -e "python[dev]"',
-    "node --test scripts/data-wrangler-comparison-study.test.mjs scripts/data-wrangler-comparison-neutral-driver.test.mjs scripts/linux-pss-sampler.test.mjs",
-    "npx vitest run src/test/dataWranglerComparisonNotebookTrial.unit.test.ts",
-    "python -m pytest python/tests/test_installed_editor_fixtures.py -q",
-    "npm run build:test-extension"
-  ]);
-  assert.equal(
-    commands.some((command) => command?.includes("data-wrangler-comparison-study.mjs --")),
-    false,
-    "CI validates the harness without running the proprietary comparison."
-  );
-  for (const omitted of [
-    "npm run build",
-    "npm run package",
-    "npm run test:webview-acceptance",
-    "npm run test:coverage",
-    "npm run test:extension-host",
-    "npm run test:python",
-    "npm run test:r-contract"
-  ]) {
-    assert.equal(commands.includes(omitted), false, `${omitted} must stay out.`);
+  for (const entry of dependabot.updates) {
+    const group = Object.values(entry.groups)[0];
+    assert.equal(group["applies-to"], "version-updates");
+    assert.deepEqual(group["update-types"], ["minor", "patch"]);
   }
 });
 
-test("release-infrastructure PRs run only the fixed executable release contracts and canonical package", () => {
-  const workflow = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
-  const job = workflow?.jobs?.[RELEASE_INFRASTRUCTURE_CI_JOBS[0]];
-  const transactionFiles = [
-    "scripts/candidate-acceptance-workflow.test.mjs",
-    "scripts/create-canonical-release-artifact.test.mjs",
-    "scripts/download-canonical-github-release.test.mjs",
-    "scripts/editor-acceptance-artifact.test.mjs",
-    "scripts/marketplace-identity-profile.test.mjs",
-    "scripts/marketplace-promotion-workflow.test.mjs",
-    "scripts/marketplace-release-intake.test.mjs",
-    "scripts/open-vsx-promotion-workflow.test.mjs",
-    "scripts/package-current-channel.test.mjs",
-    "scripts/prepare-stable-candidate-tag.test.mjs",
-    "scripts/public-repository-metadata.test.mjs",
-    "scripts/publish-github-stable-release.test.mjs",
-    "scripts/push-stable-release-tag.test.mjs",
-    "scripts/registry-release-source.test.mjs",
-    "scripts/release-readiness.test.mjs",
-    "scripts/remote-jupyter-lock.test.mjs",
-    "scripts/stable-release-workflow.test.mjs",
-    "scripts/verify-canonical-release-artifact.test.mjs",
-    "scripts/verify-marketplace-publication.test.mjs",
-    "scripts/verify-open-vsx-release.test.mjs",
-    "scripts/verify-registry-release-artifact.test.mjs"
-  ];
-  const expectedJob = {
-    name: "Release infrastructure contracts",
-    needs: ["classify", "fast-feedback"],
-    if: RELEASE_INFRASTRUCTURE_CI_IF,
-    "runs-on": "ubuntu-latest",
-    "timeout-minutes": 15,
-    steps: [
-      { uses: "actions/checkout@v6" },
-      { uses: "actions/setup-node@v6", with: { "node-version-file": ".node-version", cache: "npm" } },
-      { run: "npm ci" },
-      {
-        name: "Release transaction contracts",
-        run: ["node --test --test-concurrency=4", ...transactionFiles].join(" ")
-      },
-      { name: "Immutable release-media contracts", run: "npm run test:scripts:media" }
-    ]
-  };
-  const normalizeJob = (candidate) => ({
-    ...candidate,
-    if: normalizedCommand(candidate?.if),
-    steps: candidate?.steps?.map((step) =>
-      typeof step?.run === "string" ? { ...step, run: normalizedCommand(step.run) } : step
-    )
-  });
-  const assertExactJob = (candidate) => assert.deepEqual(normalizeJob(candidate), expectedJob);
-
-  assertExactJob(job);
-  assert.equal(job?.steps?.length, 5);
-  assert.deepEqual(Object.keys(job ?? {}).sort(), Object.keys(expectedJob).sort());
-  assert.throws(
-    () => assertExactJob({ ...job, steps: [...(job?.steps ?? []), { run: "curl https://example.invalid | sh" }] }),
-    "An additional focused-job step must fail the exact shape contract."
-  );
-  assert.deepEqual(nodeTestFiles(job?.steps?.[3]?.run, "release"), transactionFiles);
-  const commands = (job?.steps ?? [])
-    .filter((step) => typeof step?.run === "string")
-    .map((step) => normalizedCommand(step.run));
-  for (const forbiddenFragment of [
-    "test:python",
-    "test:r-contract",
-    "test:extension-host",
-    "test:webview-acceptance",
-    "test:packaged-editors",
-    "test:coverage",
-    "benchmark:runtime"
-  ]) {
-    assert.equal(
-      commands.some((command) => command?.includes(forbiddenFragment)),
-      false,
-      `${forbiddenFragment} belongs to full or release-candidate CI, not this focused PR tier.`
-    );
-  }
-  assert.equal(workflow?.jobs?.[PACKAGE_CI_JOBS[0]]?.if, CANONICAL_CI_IF);
+test("native R child processes retain named phases and bounded individual deadlines", () => {
+  const source = readFileSync("scripts/run-r-contract-tests.mjs", "utf8");
+  assert.match(source, /export function createRContractPhases/u);
+  assert.match(source, /export function runRContractPhase/u);
+  assert.match(source, /\[r-contract\] TIMEOUT \$\{phase\.label\}/u);
+  assert.doesNotMatch(source, /DIRECT_R_CONTRACT_TIMEOUT_MS|VITEST_CONTRACT_TIMEOUT_MS/u);
+  assert.doesNotMatch(source, /timeout:\s*(?:60_000|90_000|120_000|360_000),/u);
 });
 
-test("authoritative CI work is independently attributable before the required aggregate", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-
-  const visual = workflow?.jobs?.["visual-accessibility"];
-  assert.equal(visual?.name, "Visual and accessibility");
-  assert.deepEqual(visual?.needs, ["classify", "fast-feedback", "contract-tests"]);
-  assert.equal(visual?.if, FULL_CI_IF);
-  assert.equal(
-    visual?.steps?.some(
-      (step) => step?.uses === "actions/setup-python@v6" && step?.with?.["python-version"] === "3.12"
-    ),
-    true,
-    "Runtime-backed production screenshot fixtures need the exact Python test environment."
-  );
-  assert.equal(
-    visual?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
-    true,
-    "Visual acceptance must install the Pandas, Polars, DuckDB, and notebook fixture dependencies."
-  );
-  assert.equal(
-    visual?.steps?.some((step) => step?.run === "npm run test:webview-acceptance"),
-    true
-  );
-
-  const audits = workflow?.jobs?.["production-audits"];
-  assert.equal(audits?.name, "Production dependency audits");
-  assert.equal(
-    audits?.steps?.some((step) => step?.run === "npm audit --omit=dev"),
-    true
-  );
-  assert.equal(
-    audits?.steps?.some((step) => step?.run === "npm run audit:python"),
-    true
-  );
-
-  const linuxPackaged = workflow?.jobs?.["linux-packaged-editor"];
-  assert.deepEqual(linuxPackaged?.needs, ["classify", "fast-feedback", "contract-tests", "canonical-vsix"]);
-  assert.equal(linuxPackaged?.if, FULL_CI_IF);
-  assert.match(
-    linuxPackaged?.steps?.find((step) => step?.name === "Require the canonical PR package")?.if ?? "",
-    /needs\.canonical-vsix\.result != 'success'/u
-  );
-  assert.equal(
-    linuxPackaged?.steps?.some((step) => step?.id === "packaged_editor"),
-    true
-  );
-
-  const ownersByCommand = new Map();
-  for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
-    for (const step of job?.steps ?? []) {
-      if (step?.run === "npm run test:scripts:workflow" || step?.run === "npm run test:scripts:portable") {
-        const owners = ownersByCommand.get(step.run) ?? [];
-        owners.push(jobId);
-        ownersByCommand.set(step.run, owners);
-      }
-    }
-  }
-  assert.deepEqual(ownersByCommand.get("npm run test:scripts:workflow"), ["fast-feedback"]);
-  assert.deepEqual(ownersByCommand.get("npm run test:scripts:portable"), ["contract-tests"]);
-});
-
-test("successful PR validation retains no ordinary run artifacts", () => {
-  const allowedUploadNames = new Map([
-    [
-      ".github/workflows/ci.yml",
-      [
-        "coverage-reports",
-        "packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}",
-        "webview-visual-evidence"
-      ]
-    ],
-    [".github/workflows/cross-platform.yml", []],
-    [".github/workflows/codeql.yml", []]
-  ]);
-  const uploadInventories = new Map();
-  for (const relativePath of requiredPullRequestWorkflows) {
-    const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
-    const workflow = parseYaml(source);
-    const rawUploadReferences = [
-      ...source.matchAll(/^\s*(?:-\s*)?uses:\s*["']?(actions\/upload-artifact@[^\s"'#]+)["']?(?:\s+#.*)?$/gmu)
-    ].map((match) => match[1]);
-    const uploads = Object.entries(workflow?.jobs ?? {}).flatMap(([jobId, job]) =>
-      (job?.steps ?? [])
-        .filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
-        .map((step) => ({ jobId, step }))
-    );
-    assert.deepEqual(
-      uploads.map(({ step }) => step.uses),
-      rawUploadReferences,
-      `${relativePath} raw and parsed artifact-upload inventories must agree.`
-    );
-    for (const reference of rawUploadReferences) {
-      assert.equal(reference, PINNED_UPLOAD_ACTION, `${relativePath} must use the approved pinned artifact uploader.`);
-    }
-    assert.deepEqual(
-      uploads.map(({ step }) => step?.with?.name).sort(),
-      allowedUploadNames.get(relativePath),
-      `${relativePath} must retain only its approved failure-evidence uploads.`
-    );
-    uploadInventories.set(relativePath, { uploads, workflow });
-  }
-
-  const ciInventory = uploadInventories.get(".github/workflows/ci.yml");
-  assert.ok(ciInventory);
-  const { uploads, workflow } = ciInventory;
-  const canonicalJob = workflow?.jobs?.["canonical-vsix"];
-  const canonicalSteps = canonicalJob?.steps;
-  assert.ok(Array.isArray(canonicalSteps), "CI must retain one canonical PR package owner.");
-  assert.deepEqual(canonicalJob?.outputs, {
-    "vsix-sha256": "${{ steps.canonical_receipt.outputs.sha256 }}",
-    "vsix-size": "${{ steps.canonical_receipt.outputs.size }}"
-  });
-  assert.ok(canonicalSteps.some((step) => step?.run === "mkdir canonical-vsix"));
-  assert.ok(
-    canonicalSteps.some((step) => step?.run === "npm run package:prepared -- --out canonical-vsix/openwrangler.vsix")
-  );
-  assert.ok(canonicalSteps.some((step) => step?.run === "npm run verify:vsix -- canonical-vsix/openwrangler.vsix"));
-  const canonicalReceipt = canonicalSteps.find((step) => step?.id === "canonical_receipt");
-  assert.equal(canonicalReceipt?.name, "Create canonical PR checksum");
-  assert.match(canonicalReceipt?.run ?? "", /appendFileSync\(process\.env\.GITHUB_OUTPUT/u);
-  assert.match(canonicalReceipt?.run ?? "", /sha256=\$\{digest\}\\nsize=\$\{size\}\\n/u);
-  const cacheSaves = canonicalSteps.filter(
-    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/cache/save@")
-  );
-  assert.equal(cacheSaves.length, 1, "The canonical producer must own exactly one cache save.");
-  const [cacheSave] = cacheSaves;
-  assert.deepEqual(cacheSave, {
-    name: "Save canonical PR package for same-run consumers",
-    uses: PINNED_PR_CACHE_SAVE_ACTION,
-    with: {
-      path: "canonical-vsix",
-      key: PR_VSIX_CACHE_SAVE_KEY,
-      enableCrossOsArchive: false
-    }
-  });
-  assert.equal(canonicalSteps[canonicalSteps.indexOf(cacheSave) - 1]?.name, "Revalidate canonical PR checksum");
-
-  for (const jobId of ["linux-packaged-editor", "remote-workspace"]) {
-    const steps = workflow?.jobs?.[jobId]?.steps;
-    assert.ok(Array.isArray(steps), `${jobId} must remain an exact-package consumer.`);
-    const restores = steps.filter(
-      (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/cache/restore@")
-    );
-    assert.deepEqual(restores, [
-      {
-        name: "Restore canonical PR package",
-        uses: PINNED_PR_CACHE_RESTORE_ACTION,
-        with: {
-          path: "canonical-vsix",
-          key: PR_VSIX_CACHE_RESTORE_KEY,
-          "fail-on-cache-miss": true
-        }
-      }
-    ]);
-    const verifier = steps.find((step) =>
-      jobId === "linux-packaged-editor" ? step?.name === "Verify canonical PR checksum" : step?.id === "candidate"
-    );
-    assert.equal(verifier?.env?.EXPECTED_SHA256, "${{ needs.canonical-vsix.outputs.vsix-sha256 }}");
-    assert.equal(verifier?.env?.EXPECTED_SIZE, "${{ needs.canonical-vsix.outputs.vsix-size }}");
-    assert.match(verifier?.run ?? "", /checksum is not bound to its producer/u);
-    assert.match(verifier?.run ?? "", /size is not bound to its producer/u);
-    assert.equal(
-      steps.some((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/download-artifact@")),
-      false,
-      `${jobId} must not create a retained run artifact merely to transfer the PR package.`
-    );
-    assert.ok(
-      steps.indexOf(restores[0]) < steps.findIndex((step) => String(step?.run ?? "").includes("openwrangler.vsix")),
-      `${jobId} must restore the package before its first checksum or inventory consumer.`
-    );
-  }
-
-  assert.deepEqual(
-    uploads.map(({ step }) => step?.with?.name).sort(),
-    [
-      "coverage-reports",
-      "packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}",
-      "webview-visual-evidence"
-    ],
-    "PR CI may retain only bounded failure evidence."
-  );
-  for (const name of ["coverage-reports", "webview-visual-evidence"]) {
-    const upload = uploads.find(({ step }) => step?.with?.name === name)?.step;
-    assert.equal(upload?.if, FAILURE_ONLY_ARTIFACT_IF);
-    assert.equal(upload?.with?.["if-no-files-found"], "ignore");
-    assert.equal(upload?.with?.["retention-days"], 7);
-    assert.equal(upload?.with?.["include-hidden-files"], false);
-  }
-  const editorUpload = uploads.find(({ jobId }) => jobId === "linux-packaged-editor")?.step;
-  const editorSteps = workflow?.jobs?.["linux-packaged-editor"]?.steps;
-  assert.ok(Array.isArray(editorSteps));
-  const editorProducer = editorSteps.find((step) => step?.id === "packaged_editor");
-  assert.equal(
-    editorSteps.indexOf(editorUpload),
-    editorSteps.indexOf(editorProducer) + 1,
-    "Sealed editor diagnostics must upload immediately after their exact producer."
-  );
-  assert.equal(
-    editorUpload?.if,
-    "${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}"
-  );
-  assert.equal(editorUpload?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
-  assert.equal(editorUpload?.with?.["if-no-files-found"], "error");
-  assert.equal(editorUpload?.with?.["retention-days"], 7);
-  assert.equal(editorUpload?.with?.["include-hidden-files"], false);
-
-  for (const relativePath of [".github/workflows/release.yml", ".github/workflows/stable-release.yml"]) {
-    const release = parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
-    const packageSteps = release?.jobs?.package?.steps;
-    assert.ok(Array.isArray(packageSteps), `${relativePath} must retain its canonical release-package owner.`);
-    assert.equal(
-      packageSteps.some((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/cache/")),
-      false,
-      `${relativePath} must not substitute a PR cache for its canonical release artifact.`
-    );
-    const canonicalUpload = packageSteps.find((step) => step?.id === "canonical_artifact");
-    assert.match(canonicalUpload?.uses ?? "", /^actions\/upload-artifact@[0-9a-f]{40}$/u);
-    assert.equal(
-      release?.jobs?.package?.outputs?.["artifact-id"],
-      "${{ steps.canonical_artifact.outputs.artifact-id }}"
-    );
-  }
-});
-
-test("ready substantive PRs run full while push tiers retain their exact owners", () => {
-  const classifierEnvironment = {
-    CI_EVENT_NAME: "${{ github.event_name }}",
-    CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
-    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
-    CI_PR_DRAFT: "${{ github.event.pull_request.draft }}"
-  };
-  const loadWorkflow = (relativePath) =>
-    parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
-  const assertClassifier = (workflow, name) => {
-    const job = workflow?.jobs?.classify;
-    assert.equal(job?.name, name);
-    assert.equal(job?.["runs-on"], "ubuntu-latest");
-    assert.equal(job?.["timeout-minutes"], 5);
-    assert.equal(job?.outputs?.benchmark_harness_only, "${{ steps.classify.outputs.benchmark_harness_only }}");
-    assert.equal(job?.outputs?.dependency_lock_only, "${{ steps.classify.outputs.dependency_lock_only }}");
-    assert.equal(job?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
-    assert.equal(job?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
-    assert.equal(job?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
-    assert.equal(job?.outputs?.package_only, "${{ steps.classify.outputs.package_only }}");
-    assert.equal(
-      job?.outputs?.release_infrastructure_only,
-      "${{ steps.classify.outputs.release_infrastructure_only }}"
-    );
-    assert.equal(job?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
-    assert.deepEqual(job?.steps?.find((step) => step?.uses === "actions/checkout@v6")?.with, {
-      "fetch-depth": 0
-    });
-    const step = job?.steps?.find((candidate) => candidate?.id === "classify");
-    assert.equal(step?.run, "node scripts/ci-path-classification.mjs");
-    assert.deepEqual(step?.env, classifierEnvironment);
-  };
-
-  const ci = loadWorkflow(".github/workflows/ci.yml");
-  assertClassifier(ci, "CI change classification");
-  assert.equal(ci?.jobs?.classify?.if, "${{ github.event_name == 'pull_request' }}");
-  for (const jobId of FULL_MATRIX_CI_JOBS) {
-    const job = ci?.jobs?.[jobId];
-    const needs = Array.isArray(job?.needs) ? job.needs : [job?.needs];
-    assert.equal(needs.includes("classify"), true, `${jobId} must consume the exact classifier result.`);
-    assert.equal(needs.includes("fast-feedback"), true, `${jobId} must wait for static preflight.`);
-    if (jobId === "contract-tests" || jobId === "native-r-contract") {
-      assert.equal(job?.if, CONTRACT_CI_IF, `${jobId} must start after static preflight.`);
-    } else {
-      assert.equal(needs.includes("contract-tests"), true, `${jobId} must wait for contract preflight.`);
-      assert.equal(job?.if, FULL_CI_IF, `${jobId} must start only after both preflight lanes pass.`);
-    }
-    assert.equal(
-      (job?.steps ?? []).some((step) => String(step?.if ?? "").includes("documentation_only")),
-      false,
-      `${jobId} must not duplicate documentation classification across individual steps.`
-    );
-  }
-  const canonical = ci?.jobs?.[PACKAGE_CI_JOBS[0]];
-  assert.equal(canonical?.if, CANONICAL_CI_IF);
-  const packagedMedia = canonical?.steps?.find((step) => step?.name === "Packaged release-media contracts");
-  assert.equal(packagedMedia?.if, "${{ needs.classify.outputs.package_only == 'true' }}");
-  assert.equal(packagedMedia?.run, "npm run test:scripts:media");
-  assert.equal(ci?.jobs?.["fast-feedback"]?.needs, undefined);
-  assert.equal(ci?.jobs?.["fast-feedback"]?.if, undefined);
-
-  const lockValidation = ci?.jobs?.[DEPENDENCY_LOCK_CI_JOBS[0]];
-  assert.equal(lockValidation?.name, "Dependency lock validation");
-  assert.deepEqual(lockValidation?.needs, ["classify", "fast-feedback"]);
-  assert.match(lockValidation?.if ?? "", /dependency_lock_only == 'true'/u);
-  assert.match(lockValidation?.if ?? "", /draft_pull_request == 'false'/u);
-  assert.deepEqual(
-    lockValidation?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
-    ["npm ci", "npm ls", "npm audit", "npm run test:ts -- --exclude src/test/notebookVariableDiscovery.python.test.ts"]
-  );
-
-  for (const [relativePath, classifierName, expectedJobs] of [
-    [
-      ".github/workflows/cross-platform.yml",
-      "Cross-platform change classification",
-      {
-        runtime: {
-          name: undefined,
-          matrix: {
-            include: [
-              { os: "macos-latest", python: "3.12" },
-              { os: "windows-latest", python: "3.14" }
-            ]
-          }
-        },
-        "dependency-guard-windows": {
-          name: "Dependency guard (Windows, Python ${{ matrix.python }})",
-          matrix: { python: ["3.10", "3.12"] }
-        }
-      }
-    ],
-    [
-      ".github/workflows/codeql.yml",
-      "CodeQL change classification",
-      {
-        analyze: {
-          name: "Analyze (${{ matrix.language }})",
-          matrix: { language: ["javascript-typescript", "python"] }
-        }
-      }
-    ]
-  ]) {
-    const workflow = loadWorkflow(relativePath);
-    assertClassifier(workflow, classifierName);
-    for (const [jobId, expected] of Object.entries(expectedJobs)) {
-      const job = workflow?.jobs?.[jobId];
-      assert.equal(job?.needs, "classify");
-      assert.equal(job?.if, MATRIX_CONTEXT_IF);
-      assert.equal(job?.name, expected.name);
-      assert.deepEqual(job?.strategy?.matrix, expected.matrix);
-      const gate = job?.steps?.[0];
-      assert.equal(gate?.name, "Require exact change classification");
-      assert.equal(normalizedCommand(gate?.if), CLASSIFICATION_GATE_IF);
-      assert.equal(gate?.run, "exit 1");
-      const contextCarrier = job?.steps?.[1];
-      assert.equal(contextCarrier?.name, "Preserve required non-matrix context");
-      assert.equal(
-        normalizedCommand(contextCarrier?.if),
-        relativePath === ".github/workflows/codeql.yml" ? CODEQL_NON_MATRIX_CONTEXT_IF : NON_MATRIX_CONTEXT_IF
-      );
-      assert.match(contextCarrier?.run ?? "", /preserves? (?:its|this) required check context/u);
-      for (const step of job?.steps?.slice(2) ?? []) {
-        if (relativePath === ".github/workflows/codeql.yml") {
-          assert.equal(normalizedCommand(step?.if), CODEQL_SUBSTANTIVE_MATRIX_STEP_IF);
-        } else if (step?.run === "npm run test:scripts:native") {
-          assert.match(normalizedCommand(step?.if) ?? "", /runner\.os == 'Windows'/u);
-          assert.match(normalizedCommand(step?.if) ?? "", /full_matrix_required == 'true'/u);
-        } else {
-          assert.equal(normalizedCommand(step?.if), SUBSTANTIVE_MATRIX_STEP_IF);
-        }
-      }
-    }
-  }
-
-  const codeqlSteps = loadWorkflow(".github/workflows/codeql.yml")?.jobs?.analyze?.steps;
-  assert.equal(codeqlSteps?.length, 5, "Each required CodeQL cell must retain one gate/carrier/analysis shape.");
-  assert.equal(codeqlSteps?.[0]?.name, "Require exact change classification");
-  assert.equal(codeqlSteps?.[1]?.name, "Preserve required non-matrix context");
-  assert.equal(codeqlSteps?.[2]?.uses, "actions/checkout@v6");
-  assert.equal(codeqlSteps?.[3]?.uses, "github/codeql-action/init@v4");
-  assert.equal(codeqlSteps?.[4]?.uses, "github/codeql-action/analyze@v4");
-  assert.equal(normalizedCommand(codeqlSteps?.[1]?.if), CODEQL_NON_MATRIX_CONTEXT_IF);
-  for (const step of codeqlSteps?.slice(2) ?? []) {
-    assert.equal(normalizedCommand(step?.if), CODEQL_SUBSTANTIVE_MATRIX_STEP_IF);
-  }
-  assert.deepEqual(codeqlSteps?.[3]?.with, {
-    "config-file": "./.github/codeql-config.yml",
-    languages: "${{ matrix.language }}",
-    queries: "security-extended"
-  });
-  assert.deepEqual(codeqlSteps?.[4]?.with, { category: "/language:${{ matrix.language }}" });
-
-  const nativeRuntime = loadWorkflow(".github/workflows/cross-platform.yml")?.jobs?.runtime;
-  assert.equal(nativeRuntime?.["timeout-minutes"], 60);
-  assert.equal(
-    nativeRuntime?.steps?.some((step) => step?.run === "npm run test:extension-host"),
-    true,
-    "The existing macOS/Windows runtime cells must also own native extension-host coverage."
-  );
-  assert.equal(
-    nativeRuntime?.steps?.find((step) => step?.run === "npm run test:extension-host")?.env?.VSCODE_TEST_VERSION,
-    "stable",
-    "Cross-platform extension-host coverage must pin the current stable VS Code build."
-  );
-  assert.equal(
-    nativeRuntime?.steps?.filter((step) => step?.run === "npm run test:scripts:native").length,
-    1,
-    "Windows native script contracts must run once in the existing Windows cell."
-  );
-});
-
-test("ready validation stays fail-closed while drafts report separate feedback", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const aggregate = workflow?.jobs?.validate;
-
-  assert.equal(
-    aggregate?.name,
-    "${{ github.event.pull_request.draft && 'Draft feedback' || 'validate' }}",
-    "A draft must not publish the protected validate context at the same commit."
-  );
-  assert.deepEqual(REQUIRED_CI_JOBS, EXPECTED_BLOCKING_CI_JOBS);
-  assert.deepEqual(aggregate?.needs, [...EXPECTED_BLOCKING_CI_JOBS, OPTIONAL_CI_JOB]);
-  assert.equal(aggregate?.if, "${{ !cancelled() && github.event_name == 'pull_request' }}");
-  assert.equal(aggregate?.["runs-on"], "ubuntu-latest");
-  assert.equal(aggregate?.["timeout-minutes"], 5);
-  assert.equal(aggregate?.["continue-on-error"], undefined);
-
-  const resultStep = aggregate?.steps?.find((step) => step?.run === "node scripts/require-ci-results.mjs");
-  assert.ok(resultStep);
-  assert.equal(resultStep?.["continue-on-error"], undefined);
-  for (const jobId of EXPECTED_BLOCKING_CI_JOBS) {
-    assert.equal(resultStep?.env?.[resultEnvironmentKey(jobId)], `\${{ needs.${jobId}.result }}`);
-  }
-  assert.equal(resultStep?.env?.BENCHMARK_HARNESS_ONLY, "${{ needs.classify.outputs.benchmark_harness_only }}");
-  assert.equal(resultStep?.env?.DOCUMENTATION_ONLY, "${{ needs.classify.outputs.documentation_only }}");
-  assert.equal(resultStep?.env?.DEPENDENCY_LOCK_ONLY, "${{ needs.classify.outputs.dependency_lock_only }}");
-  assert.equal(resultStep?.env?.DRAFT_PULL_REQUEST, "${{ needs.classify.outputs.draft_pull_request }}");
-  assert.equal(resultStep?.env?.LIGHTWEIGHT_ONLY, "${{ needs.classify.outputs.lightweight_only }}");
-  assert.equal(resultStep?.env?.PACKAGE_ONLY, "${{ needs.classify.outputs.package_only }}");
-  assert.equal(
-    resultStep?.env?.RELEASE_INFRASTRUCTURE_ONLY,
-    "${{ needs.classify.outputs.release_infrastructure_only }}"
-  );
-  assert.equal(resultStep?.env?.FULL_MATRIX_REQUIRED, "${{ needs.classify.outputs.full_matrix_required }}");
-  assert.equal(resultStep?.env?.[resultEnvironmentKey(OPTIONAL_CI_JOB)], "${{ needs.remote-workspace.result }}");
-  assert.match(resultStep?.env?.REMOTE_WORKSPACE_REQUIRED ?? "", /acceptance:remote-ssh/u);
-});
-
-test("required CI result validation rejects every absent or non-success blocking result", () => {
-  const fullMatrixResults = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "success"])
-  ]);
-  const documentationResults = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
-  ]);
-  const packageResults = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
-  ]);
-  const dependencyLockResults = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
-  ]);
-  const benchmarkHarnessResults = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
-  ]);
-  const releaseInfrastructureResults = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
-    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
-  ]);
-  const validateResults = (configuration) => {
-    const normalized = {
-      benchmarkHarnessOnly: false,
-      dependencyLockOnly: false,
-      draftPullRequest: false,
-      packageOnly: false,
-      releaseInfrastructureOnly: false,
-      ...configuration
-    };
-    normalized.lightweightOnly ??= normalized.documentationOnly || normalized.draftPullRequest;
-    normalized.fullMatrixRequired ??=
-      !normalized.benchmarkHarnessOnly &&
-      !normalized.documentationOnly &&
-      !normalized.packageOnly &&
-      !normalized.dependencyLockOnly &&
-      !normalized.releaseInfrastructureOnly &&
-      !normalized.draftPullRequest;
-    return requireCiResults(normalized);
-  };
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: benchmarkHarnessResults,
-      benchmarkHarnessOnly: true,
-      documentationOnly: false,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: fullMatrixResults,
-      documentationOnly: false,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: documentationResults,
-      documentationOnly: true,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: packageResults,
-      documentationOnly: false,
-      packageOnly: true,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: dependencyLockResults,
-      dependencyLockOnly: true,
-      documentationOnly: false,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: releaseInfrastructureResults,
-      documentationOnly: false,
-      releaseInfrastructureOnly: true,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: fullMatrixResults,
-      documentationOnly: false,
-      remoteResult: "success",
-      remoteRequired: true
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: documentationResults,
-      documentationOnly: false,
-      draftPullRequest: true,
-      lightweightOnly: true,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  assert.doesNotThrow(() =>
-    validateResults({
-      requiredResults: documentationResults,
-      documentationOnly: false,
-      draftPullRequest: true,
-      packageOnly: true,
-      remoteResult: "skipped",
-      remoteRequired: false
-    })
-  );
-  for (const [documentationOnly, draftPullRequest, lightweightOnly] of [
-    [false, false, true],
-    [true, false, false],
-    [false, true, false],
-    [true, true, false]
-  ]) {
-    assert.throws(
-      () =>
-        validateResults({
-          requiredResults: documentationResults,
-          documentationOnly,
-          draftPullRequest,
-          lightweightOnly,
-          remoteResult: "skipped",
-          remoteRequired: false
-        }),
-      /lightweight classifier is inconsistent/u
-    );
-  }
-  for (const configuration of [
-    {
-      benchmarkHarnessOnly: true,
-      documentationOnly: false,
-      packageOnly: true,
-      fullMatrixRequired: false,
-      message: /classifiers are mutually exclusive/u
-    },
-    {
-      documentationOnly: true,
-      packageOnly: true,
-      fullMatrixRequired: false,
-      message: /classifiers are mutually exclusive/u
-    },
-    {
-      dependencyLockOnly: true,
-      documentationOnly: false,
-      packageOnly: true,
-      fullMatrixRequired: false,
-      message: /classifiers are mutually exclusive/u
-    },
-    {
-      documentationOnly: false,
-      packageOnly: true,
-      releaseInfrastructureOnly: true,
-      fullMatrixRequired: false,
-      message: /classifiers are mutually exclusive/u
-    },
-    {
-      documentationOnly: false,
-      releaseInfrastructureOnly: true,
-      fullMatrixRequired: true,
-      message: /full-matrix classifier is inconsistent/u
-    },
-    {
-      documentationOnly: false,
-      packageOnly: true,
-      fullMatrixRequired: true,
-      message: /full-matrix classifier is inconsistent/u
-    },
-    {
-      documentationOnly: false,
-      packageOnly: false,
-      fullMatrixRequired: false,
-      message: /full-matrix classifier is inconsistent/u
-    }
-  ]) {
-    assert.throws(
-      () =>
-        validateResults({
-          requiredResults: documentationResults,
-          benchmarkHarnessOnly: configuration.benchmarkHarnessOnly ?? false,
-          dependencyLockOnly: configuration.dependencyLockOnly ?? false,
-          documentationOnly: configuration.documentationOnly,
-          packageOnly: configuration.packageOnly,
-          releaseInfrastructureOnly: configuration.releaseInfrastructureOnly ?? false,
-          fullMatrixRequired: configuration.fullMatrixRequired,
-          remoteResult: "skipped",
-          remoteRequired: false
-        }),
-      configuration.message
-    );
-  }
-
-  for (const jobId of BENCHMARK_HARNESS_CI_JOBS) {
-    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
-      const candidate = { ...benchmarkHarnessResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            benchmarkHarnessOnly: true,
-            documentationOnly: false,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
-      );
-    }
-  }
-
-  for (const jobId of [...ALWAYS_REQUIRED_CI_JOBS, ...PACKAGE_CI_JOBS, ...FULL_MATRIX_CI_JOBS]) {
-    for (const result of [undefined, "failure", "cancelled", "skipped"]) {
-      const candidate = { ...fullMatrixResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: false,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"}`, "u")
-      );
-    }
-  }
-
-  for (const jobId of DEPENDENCY_LOCK_CI_JOBS) {
-    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
-      const candidate = { ...dependencyLockResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            dependencyLockOnly: true,
-            documentationOnly: false,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
-      );
-    }
-  }
-
-  for (const jobId of RELEASE_INFRASTRUCTURE_CI_JOBS) {
-    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
-      const candidate = { ...releaseInfrastructureResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: false,
-            releaseInfrastructureOnly: true,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
-      );
-    }
-  }
-  for (const jobId of [...BENCHMARK_HARNESS_CI_JOBS, ...DEPENDENCY_LOCK_CI_JOBS, ...FULL_MATRIX_CI_JOBS]) {
-    for (const result of [undefined, "success", "failure", "cancelled"]) {
-      const candidate = { ...releaseInfrastructureResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: false,
-            releaseInfrastructureOnly: true,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected skipped\\)`, "u")
-      );
-    }
-  }
-  for (const jobId of [...ALWAYS_REQUIRED_CI_JOBS, ...PACKAGE_CI_JOBS]) {
-    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
-      const candidate = { ...releaseInfrastructureResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: false,
-            releaseInfrastructureOnly: true,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"}`, "u")
-      );
-    }
-  }
-
-  for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
-    const candidate = { ...documentationResults, [jobId]: "skipped" };
-    assert.throws(
-      () =>
-        validateResults({
-          requiredResults: candidate,
-          documentationOnly: true,
-          remoteResult: "skipped",
-          remoteRequired: false
-        }),
-      new RegExp(`${jobId}=skipped`, "u")
-    );
-  }
-  for (const jobId of PRODUCT_CI_JOBS) {
-    for (const result of [undefined, "success", "failure", "cancelled"]) {
-      const candidate = { ...documentationResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: true,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected skipped\\)`, "u")
-      );
-    }
-  }
-  for (const jobId of PACKAGE_CI_JOBS) {
-    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
-      const candidate = { ...packageResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: false,
-            packageOnly: true,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
-      );
-    }
-  }
-  for (const jobId of FULL_MATRIX_CI_JOBS) {
-    for (const result of [undefined, "success", "failure", "cancelled"]) {
-      const candidate = { ...packageResults };
-      if (result === undefined) delete candidate[jobId];
-      else candidate[jobId] = result;
-      assert.throws(
-        () =>
-          validateResults({
-            requiredResults: candidate,
-            documentationOnly: false,
-            packageOnly: true,
-            remoteResult: "skipped",
-            remoteRequired: false
-          }),
-        new RegExp(`${jobId}=${result ?? "missing"} \\(expected skipped\\)`, "u")
-      );
-    }
-  }
-  for (const inconsistent of [{ remoteRequired: true, message: /remote-workspace classifier is inconsistent/u }]) {
-    assert.throws(
-      () =>
-        validateResults({
-          requiredResults: documentationResults,
-          documentationOnly: true,
-          remoteResult: "skipped",
-          remoteRequired: inconsistent.remoteRequired
-        }),
-      inconsistent.message
-    );
-  }
-
-  assert.throws(
-    () =>
-      validateResults({
-        requiredResults: fullMatrixResults,
-        documentationOnly: false,
-        remoteResult: "skipped",
-        remoteRequired: true
-      }),
-    /remote-workspace=skipped \(expected success\)/u
-  );
-  assert.throws(
-    () =>
-      validateResults({
-        requiredResults: fullMatrixResults,
-        documentationOnly: false,
-        remoteResult: "success",
-        remoteRequired: false
-      }),
-    /remote-workspace=success \(expected skipped\)/u
-  );
-  assert.equal(parseRequiredFlag("true", "TEST_REQUIRED"), true);
-  assert.equal(parseRequiredFlag("false", "TEST_REQUIRED"), false);
-  for (const value of [undefined, "", "TRUE", "False", "0", "1"]) {
-    assert.throws(() => parseRequiredFlag(value, "TEST_REQUIRED"), /TEST_REQUIRED must be exactly true or false/u);
-  }
-});
-
-test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const job = workflow?.jobs?.["remote-workspace"];
-  assert.deepEqual(job?.needs, ["classify", "fast-feedback", "contract-tests", "canonical-vsix"]);
-  assert.equal(job?.["runs-on"], "ubuntu-24.04");
-  assert.equal(job?.["timeout-minutes"], 90);
-  assert.match(job?.if ?? "", /!cancelled\(\)/u);
-  assert.match(job?.if ?? "", /needs\.fast-feedback\.result == 'success'/u);
-  assert.match(job?.if ?? "", /needs\.contract-tests\.result == 'success'/u);
-  assert.match(job?.if ?? "", /needs\.classify\.outputs\.full_matrix_required == 'true'/u);
-  assert.match(job?.if ?? "", /github\.event_name == 'pull_request'/u);
-  assert.match(job?.if ?? "", /contains\(github\.event\.pull_request\.labels\.\*\.name, 'acceptance:remote-ssh'\)/u);
-
-  const steps = job?.steps;
-  assert.ok(Array.isArray(steps), "CI must retain the opt-in Remote SSH acceptance job.");
-  const prerequisite = steps.find((step) => step?.name === "Require the canonical PR package");
-  assert.match(prerequisite?.if ?? "", /needs\.canonical-vsix\.result != 'success'/u);
-  assert.equal(prerequisite?.run, "exit 1");
-
-  const host = steps.find((step) => step?.name === "Prepare namespace-capable acceptance host");
-  assert.match(host?.run ?? "", /kernel\.apparmor_restrict_unprivileged_userns=0/u);
-  assert.match(host?.run ?? "", /kernel\.unprivileged_userns_clone=1/u);
-  assert.match(host?.run ?? "", /user\.max_user_namespaces/u);
-  assert.match(host?.run ?? "", /coreutils/u);
-  assert.match(host?.run ?? "", /libtomcrypt1/u);
-  assert.match(host?.run ?? "", /libtommath1/u);
-  assert.match(host?.run ?? "", /procps/u);
-  assert.equal((host?.run ?? "").includes('runner_uid="$(id -u)"'), true);
-  assert.equal((host?.run ?? "").includes('test "$owner" = "0" || test "$owner" = "$runner_uid"'), true);
-  assert.equal(
-    (host?.run ?? "").includes('sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"'),
-    true
-  );
-  assert.equal((host?.run ?? "").includes('sudo chmod go-w -- "${system_runtime_ancestors[@]}"'), true);
-  assert.equal((host?.run ?? "").includes('for directory in / "${system_runtime_ancestors[@]}"; do'), true);
-  assert.equal((host?.run ?? "").includes(`test "$(stat --format='%u:%g' "$directory")" = "0:0"`), true);
-  assert.equal((host?.run ?? "").includes(`find "$directory" -maxdepth 0 -perm /022 -print -quit`), true);
-  assert.equal((host?.run ?? "").includes('test ! -w "$directory"'), true);
-  const ancestors = /system_runtime_ancestors=\(\n(?<ancestors>(?: {2}\/[^\n]+\n)+)\)\n/u.exec(host?.run ?? "");
-  assert.ok(ancestors?.groups?.ancestors, "Remote SSH CI must retain one explicit system-ancestor array.");
-  assert.deepEqual(
-    ancestors.groups.ancestors
-      .trim()
-      .split("\n")
-      .map((line) => line.trim()),
-    ["/usr", "/etc"]
-  );
-  assert.equal((host?.run ?? "").includes("sudo chmod go-w -- /usr/share"), true);
-  assert.equal((host?.run ?? "").includes("test ! -w /usr/share"), true);
-  assert.equal((host?.run ?? "").includes('sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"'), true);
-  assert.equal((host?.run ?? "").includes('find "$directory" -xdev'), true);
-  assert.equal((host?.run ?? "").includes("! -user root -print -quit"), true);
-  assert.equal((host?.run ?? "").includes("-perm /022 -print -quit"), true);
-  assert.equal((host?.run ?? "").includes("! -type d ! -type f ! -type l -print -quit"), true);
-  const roots = /system_runtime_roots=\(\n(?<roots>(?: {2}\/[^\n]+\n)+)\)\n/u.exec(host?.run ?? "");
-  assert.ok(roots?.groups?.roots, "Remote SSH CI must retain one explicit system-runtime root array.");
-  assert.deepEqual(
-    roots.groups.roots
-      .trim()
-      .split("\n")
-      .map((line) => line.trim()),
-    [
-      "/usr/share/fontconfig",
-      "/usr/share/fonts",
-      "/usr/share/glib-2.0",
-      "/usr/share/icons",
-      "/usr/share/mime",
-      "/usr/share/X11",
-      "/usr/share/zoneinfo"
-    ]
-  );
-  assert.ok(
-    steps.some((step) => step?.run === ".remote-venv/bin/python -m pip install ./python"),
-    "Remote SSH CI must install one self-contained runtime environment."
-  );
-
-  const restore = steps.find((step) => step?.uses === PINNED_PR_CACHE_RESTORE_ACTION);
-  assert.deepEqual(restore?.with, {
-    path: "canonical-vsix",
-    key: PR_VSIX_CACHE_RESTORE_KEY,
-    "fail-on-cache-miss": true
-  });
-
-  const candidate = steps.find((step) => step?.id === "candidate");
-  assert.match(candidate?.run ?? "", /resolve\("canonical-vsix\/openwrangler\.vsix"\)/u);
-  assert.match(candidate?.run ?? "", /path=\$\{candidatePath\}/u);
-  assert.match(candidate?.run ?? "", /openwrangler\.vsix\.sha256/u);
-  assert.match(candidate?.run ?? "", /GITHUB_OUTPUT/u);
-  assert.equal(candidate?.env?.EXPECTED_SHA256, "${{ needs.canonical-vsix.outputs.vsix-sha256 }}");
-  assert.equal(candidate?.env?.EXPECTED_SIZE, "${{ needs.canonical-vsix.outputs.vsix-size }}");
-
-  const acceptance = steps.find((step) => step?.id === "remote_workspace");
-  assert.match(acceptance?.run ?? "", /^npm run test:remote-workspace --/u);
-  assert.match(acceptance?.run ?? "", /steps\.candidate\.outputs\.path/u);
-  assert.equal(acceptance?.env?.OPEN_WRANGLER_EDITOR_DISPLAY, "xvfb");
-  assert.equal(
-    acceptance?.env?.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON,
-    "${{ github.workspace }}/.remote-venv/bin/python"
-  );
-  assert.equal(acceptance?.env?.OPEN_WRANGLER_REMOTE_PYTHON, "${{ github.workspace }}/.remote-venv/bin/python");
-  assert.equal(steps.filter((step) => String(step?.run ?? "").includes("npm run test:remote-workspace --")).length, 1);
-});
-
-test("draft feedback uses a different context before same-SHA ready validation", () => {
-  for (const relativePath of requiredPullRequestWorkflows) {
-    const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
-    const workflow = parseYaml(source);
-    assert.match(source, /\n {2}pull_request:\n/u, `${relativePath} must retain its pull-request trigger.`);
-    assert.deepEqual(
-      workflow?.on?.pull_request?.types,
-      PULL_REQUEST_ACTIVITY_TYPES,
-      `${relativePath} must rerun when the same head becomes ready or returns to draft.`
-    );
-    const classify = workflow?.jobs?.classify?.steps?.find((step) => step?.id === "classify");
-    assert.equal(classify?.env?.CI_PR_DRAFT, "${{ github.event.pull_request.draft }}");
-  }
-  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
-  assert.equal(ci?.jobs?.validate?.name, "${{ github.event.pull_request.draft && 'Draft feedback' || 'validate' }}");
-  const aggregateSource = readFileSync(new URL("./require-ci-results.mjs", import.meta.url), "utf8");
-  assert.match(aggregateSource, /Draft feedback passed/u);
-});
-
-test("routine Dependabot work is grouped, bounded, and staggered without grouping security updates", () => {
-  const source = readFileSync(new URL("../.github/dependabot.yml", import.meta.url), "utf8");
-  assert.equal(
-    source,
-    `version: 2
-updates:
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-      time: "03:17"
-      timezone: Etc/UTC
-    open-pull-requests-limit: 4
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        exclude-patterns:
-          - "@types/vscode"
-          - "playwright-core"
-        update-types:
-          - minor
-          - patch
-    ignore:
-      - dependency-name: "@types/vscode"
-  - package-ecosystem: pip
-    directory: /python
-    schedule:
-      interval: weekly
-      day: tuesday
-      time: "03:17"
-      timezone: Etc/UTC
-    open-pull-requests-limit: 4
-    groups:
-      python-minor-patch:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-      day: wednesday
-      time: "03:17"
-      timezone: Etc/UTC
-    open-pull-requests-limit: 3
-    groups:
-      actions-minor-patch:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-`
-  );
-});
-
-test("required Linux Python 3.10 owns real discovery while cross-platform keeps distinct native cells", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const job = workflow?.jobs?.["python-matrix"];
-  assert.equal(job?.["runs-on"], "ubuntu-latest");
-  assert.deepEqual(job?.strategy?.matrix?.python, ["3.10", "3.14"]);
-  assert.equal(job?.env, undefined, "The real-discovery job must not inject an interpreter override.");
-
-  const steps = job?.steps;
-  assert.ok(Array.isArray(steps), "CI must retain the required Python compatibility matrix.");
-  const python310Only = "matrix.python == '3.10'";
-  const node = steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-node@"));
-  assert.equal(node?.if, python310Only);
-  assert.equal(node?.with?.["node-version-file"], ".node-version");
-  assert.equal(node?.with?.cache, "npm");
-
-  const npmInstall = steps.find((step) => step?.run === "npm ci");
-  assert.equal(npmInstall?.if, python310Only);
-  assert.equal(npmInstall?.env, undefined);
-  const environmentSmoke = steps.find((step) => step?.run === "npm run test:python-environment-smoke");
-  assert.equal(environmentSmoke?.if, python310Only);
-  assert.equal(environmentSmoke?.env, undefined);
-
-  const duckdbMinimum = steps.find(
-    (step) => step?.run === 'python -m pip install --force-reinstall --no-deps "duckdb==1.5.4"'
-  );
-  assert.equal(duckdbMinimum?.name, "Pin the declared DuckDB minimum");
-  assert.equal(duckdbMinimum?.if, "matrix.python == '3.14'");
-
-  const runtimeSuite = steps.filter((step) => step?.run === "python -m pytest python/tests -q");
-  assert.equal(runtimeSuite.length, 1);
-  assert.equal(runtimeSuite[0]?.if, undefined, "The runtime suite must execute on both matrix cells.");
-
-  const crossPlatformSource = readFileSync(new URL("../.github/workflows/cross-platform.yml", import.meta.url), "utf8");
-  const crossPlatform = parseYaml(crossPlatformSource);
-  assert.deepEqual(crossPlatform?.jobs?.runtime?.strategy?.matrix?.include, [
-    { os: "macos-latest", python: "3.12" },
-    { os: "windows-latest", python: "3.14" }
-  ]);
-});
-
-test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const job = workflow?.jobs?.["native-r-contract"];
-
-  assert.equal(job?.name, "Native R contract (R ${{ matrix.r }})");
-  assert.deepEqual(job?.needs, ["classify", "fast-feedback"]);
-  assert.equal(job?.if, CONTRACT_CI_IF);
-  assert.equal(job?.["runs-on"], "ubuntu-latest");
-  assert.equal(job?.["timeout-minutes"], 20);
-  assert.deepEqual(job?.strategy, { "fail-fast": false, matrix: { r: ["4.4", "4.5"] } });
-
-  const setup = job?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
-  assert.deepEqual(setup?.with, { "r-version": "${{ matrix.r }}", "use-public-rspm": true });
-  const dependencies = job?.steps?.filter((step) => step?.uses === SETUP_R_DEPENDENCIES_ACTION);
-  assert.equal(dependencies?.length, 1, "The focused R matrix must restore its contract packages once.");
-  assert.equal(dependencies[0]?.name, "Restore R contract packages");
-  assert.deepEqual(dependencies[0]?.with, {
-    packages: "",
-    "extra-packages": [
-      "any::jsonlite",
-      "any::tibble",
-      "any::readr",
-      "any::dplyr",
-      "any::data.table",
-      "any::bit64",
-      "any::collapse",
-      "any::nanoparquet"
-    ].join("\n"),
-    dependencies: '"hard"',
-    cache: true,
-    "cache-version": "native-r-contract-v1",
-    "install-pandoc": false,
-    "install-quarto": false
-  });
-  assert.equal(
-    job?.steps?.filter((step) => step?.run === "npm run test:r-contract").length,
-    1,
-    "The focused R matrix must own the cross-language contract exactly once."
-  );
-  for (const [jobId, candidate] of Object.entries(workflow?.jobs ?? {})) {
-    if (jobId === "native-r-contract") continue;
-    assert.equal(
-      candidate?.steps?.some(
-        (step) =>
-          step?.uses === SETUP_R_ACTION ||
-          step?.uses === SETUP_R_DEPENDENCIES_ACTION ||
-          step?.run === "npm run test:r-contract"
-      ),
-      false,
-      `${jobId} must not install or execute R contract tooling.`
-    );
-  }
-});
-
-test("native R contract child budgets use named phases instead of aggregate timeout cliffs", () => {
-  const runnerSource = readFileSync(new URL("./run-r-contract-tests.mjs", import.meta.url), "utf8");
-
-  assert.match(runnerSource, /export function createRContractPhases/u);
-  assert.match(runnerSource, /export function runRContractPhase/u);
-  assert.match(runnerSource, /\[r-contract\] TIMEOUT \$\{phase\.label\}/u);
-  assert.doesNotMatch(runnerSource, /DIRECT_R_CONTRACT_TIMEOUT_MS|VITEST_CONTRACT_TIMEOUT_MS/u);
-  assert.doesNotMatch(runnerSource, /timeout:\s*(?:60_000|90_000|120_000|360_000),/u);
-});
-
-test("coverage provisions the exact PySpark runtime before enforcing the unchanged floor", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const workflow = parseYaml(source);
-  const steps = workflow?.jobs?.coverage?.steps;
-  assert.ok(Array.isArray(steps), "CI must retain the required coverage job.");
-
-  const java = steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"));
-  assert.deepEqual(java?.with, {
-    distribution: "temurin",
-    "java-version": "17"
-  });
-  const install = steps.find(
-    (step) => step?.run === 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"'
-  );
-  assert.ok(install);
-  const verification = steps.find((step) => step?.name === "Verify exact coverage runtimes");
-  assert.equal(verification?.shell, "bash");
-  assert.match(verification?.run ?? "", /pyspark\.__version__ == "4\.2\.0"/u);
-  assert.match(verification?.run ?? "", /Version\("2\.2"\).*Version\("3"\)/u);
-  assert.match(verification?.run ?? "", /java\\\.specification\\\.version = 17/u);
-
-  const coverage = steps.find((step) => step?.run === "npm run test:coverage");
-  assert.ok(coverage);
-  assert.ok(steps.indexOf(java) < steps.indexOf(coverage));
-  assert.ok(steps.indexOf(install) < steps.indexOf(coverage));
-  assert.ok(steps.indexOf(verification) < steps.indexOf(coverage));
-  assert.equal(manifest?.scripts?.["test:coverage"], "npm run test:coverage:run");
-  assert.equal(
-    manifest?.scripts?.["test:coverage:run"],
-    "npm run test:coverage:ts && npm run test:coverage:python",
-    "Coverage must continue to own both complete instrumented suites."
-  );
-  assert.equal(manifest?.scripts?.["test:coverage:ts"], "vitest run --coverage");
-  assert.match(manifest?.scripts?.["test:coverage:python"] ?? "", /pytest python\/tests .*--cov=openwrangler_runtime/u);
-});
-
-test("standalone released-Jupyter acceptance is manual-only and self-packages", () => {
-  const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  assert.deepEqual(
-    inspectDeferredDiagnosticFailures(workflow, "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"),
-    []
-  );
-  assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch"]);
-  assert.equal(workflow?.on?.pull_request, undefined);
-  assert.deepEqual(workflow?.on?.workflow_dispatch?.inputs?.target, {
-    description: "Acceptance lane to run",
-    required: true,
-    default: "linux-all",
-    type: "choice",
-    options: ["linux-all", "macos-r", "windows-r"]
-  });
-  assert.deepEqual(workflow?.concurrency, {
-    group: "released-jupyter-${{ github.ref }}-${{ inputs.target }}",
-    "cancel-in-progress": true
-  });
-  const job = workflow?.jobs?.vscode;
-  assert.equal(job?.name, "Released Jupyter in VS Code and Cursor");
-  assert.equal(job?.if, "${{ inputs.target == 'linux-all' }}");
-  assert.equal(job?.["timeout-minutes"], 90);
-  assertStandaloneReleasedJupyterRTriples(workflow);
-  const linuxPackageCommand = "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix";
-  const linuxPackageIndex = job?.steps?.findIndex((step) => step?.run === linuxPackageCommand) ?? -1;
-  const linuxVerifyIndex =
-    job?.steps?.findIndex((step) => step?.run === "npm run verify:vsix -- openwrangler.vsix") ?? -1;
-  const linuxTestExtensionIndex = job?.steps?.findIndex((step) => step?.run === "npm run build:test-extension") ?? -1;
-  assert.ok(linuxPackageIndex >= 0, "Released-Jupyter acceptance must package the explicit clean production build.");
-  assert.ok(linuxVerifyIndex > linuxPackageIndex, "Released-Jupyter acceptance must verify the freshly packaged VSIX.");
-  assert.ok(
-    linuxTestExtensionIndex > linuxVerifyIndex,
-    "Released-Jupyter acceptance must build its test driver only after VSIX verification."
-  );
-  assert.doesNotMatch(
-    source,
-    /npm run package -- --out openwrangler\.vsix/u,
-    "The focused Released-Jupyter workflow must not rerun the full source suite through npm run package."
-  );
-  assert.doesNotMatch(source, /npm run package -- --pre-release/u);
-  assert.equal(
-    job?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
-    true
-  );
-  assert.deepEqual(
-    job?.steps?.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"))?.with,
-    {
-      distribution: "temurin",
-      "java-version": "17"
-    }
-  );
-  assert.deepEqual(job?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
-    "r-version": "4.5.2",
-    "use-public-rspm": true
-  });
-  const rscript = job?.steps?.find((step) => step?.id === "rscript");
-  assert.equal(rscript?.name, "Locate hosted Rscript");
-  assert.equal(rscript?.shell, "bash");
-  assert.match(rscript?.run ?? "", /rscript="\$\(command -v Rscript\)"/u);
-  assert.match(rscript?.run ?? "", /printf 'executable=%s\\n' "\$rscript" >> "\$GITHUB_OUTPUT"/u);
-  assert.match(rscript?.run ?? "", /r_version="\$\(Rscript --vanilla -e 'cat\(as\.character\(getRversion\(\)\)\)'\)"/u);
-  assert.match(rscript?.run ?? "", /printf 'version=%s\\n' "\$r_version" >> "\$GITHUB_OUTPUT"/u);
-  const packaged = job?.steps?.find((step) => step?.id === "packaged_editor");
-  assert.equal(packaged?.name, "Test remote Python Jupyter in packaged VS Code");
-  assert.equal(
-    packaged?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
-  );
-  assert.deepEqual(packaged?.env, {
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  const diagnostics = job?.steps?.find((step) => step?.name === "Upload packaged-editor failure diagnostics");
-  assert.equal(
-    diagnostics?.with?.name,
-    "released-jupyter-python-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(diagnostics?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
-
-  const coreRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_jupyter");
-  const packagedR = job?.steps?.find((step) => step?.id === "packaged_editor_r");
-  assert.deepEqual(coreRVerifier, {
-    id: "canonical_r_jupyter",
-    name: "Reverify the VSIX for core R operations",
-    run: "npm run verify:vsix -- openwrangler.vsix"
-  });
-  assert.equal(packagedR?.name, "Test released R Jupyter in packaged VS Code and Cursor");
-  assert.equal(packagedR?.["continue-on-error"], true);
-  assert.equal(
-    packagedR?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
-  );
-  assert.deepEqual(packagedR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  assert.equal(
-    Object.hasOwn(packagedR?.env ?? {}, "OPEN_WRANGLER_PACKAGED_R_JOURNEY"),
-    false,
-    "The manual default route must retain comprehensive core and restart coverage."
-  );
-  const rDiagnostics = job?.steps?.find((step) => step?.name === "Upload packaged-editor R failure diagnostics");
-  assert.equal(
-    rDiagnostics?.if,
-    "${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}"
-  );
-  assert.equal(
-    rDiagnostics?.with?.name,
-    "released-jupyter-r-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(rDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
-  const coreRVerifierIndex = job?.steps?.indexOf(coreRVerifier) ?? -1;
-  const packagedRIndex = job?.steps?.indexOf(packagedR) ?? -1;
-  const rDiagnosticsIndex = job?.steps?.indexOf(rDiagnostics) ?? -1;
-  const valueRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_values");
-  const valueRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_values");
-  const valueRDiagnostics = job?.steps?.find((step) => step?.name === "Upload value R-Jupyter failure diagnostics");
-  const valueRVerifierIndex = job?.steps?.indexOf(valueRVerifier) ?? -1;
-  const valueRRunnerIndex = job?.steps?.indexOf(valueRRunner) ?? -1;
-  const valueRDiagnosticsIndex = job?.steps?.indexOf(valueRDiagnostics) ?? -1;
-  const categoricalRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_categorical");
-  const categoricalRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_categorical");
-  const categoricalRDiagnostics = job?.steps?.find(
-    (step) => step?.name === "Upload categorical R-Jupyter failure diagnostics"
-  );
-  const categoricalRVerifierIndex = job?.steps?.indexOf(categoricalRVerifier) ?? -1;
-  const categoricalRRunnerIndex = job?.steps?.indexOf(categoricalRRunner) ?? -1;
-  const categoricalRDiagnosticsIndex = job?.steps?.indexOf(categoricalRDiagnostics) ?? -1;
-  assert.equal(
-    valueRVerifier?.run,
-    "npm run verify:vsix -- openwrangler.vsix",
-    "Focused value acceptance must freshly reverify the packaged VSIX."
-  );
-  assert.equal(packagedRIndex, coreRVerifierIndex + 1);
-  assert.equal(rDiagnosticsIndex, packagedRIndex + 1);
-  assert.equal(valueRVerifierIndex, rDiagnosticsIndex + 1);
-  assert.equal(valueRRunnerIndex, valueRVerifierIndex + 1);
-  assert.equal(valueRDiagnosticsIndex, valueRRunnerIndex + 1);
-  assert.equal(valueRRunner?.["continue-on-error"], true);
-  assert.equal(
-    valueRRunner?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
-  );
-  assert.deepEqual(valueRRunner?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "value-operations",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  assert.equal(
-    valueRDiagnostics?.if,
-    "${{ always() && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}"
-  );
-  assert.equal(
-    valueRDiagnostics?.with?.name,
-    "released-jupyter-r-values-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(valueRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_values.outputs.evidence_path }}");
-  assert.equal(
-    categoricalRVerifier?.run,
-    "npm run verify:vsix -- openwrangler.vsix",
-    "Focused categorical acceptance must freshly reverify the packaged VSIX."
-  );
-  assert.equal(categoricalRVerifierIndex, valueRDiagnosticsIndex + 1);
-  assert.equal(categoricalRRunnerIndex, categoricalRVerifierIndex + 1);
-  assert.equal(categoricalRDiagnosticsIndex, categoricalRRunnerIndex + 1);
-  assert.equal(categoricalRRunner?.["continue-on-error"], true);
-  assert.equal(
-    categoricalRRunner?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
-  );
-  assert.deepEqual(categoricalRRunner?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "categorical-operations",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  assert.equal(
-    categoricalRDiagnostics?.if,
-    "${{ always() && steps.packaged_editor_r_categorical.outcome == 'failure' && steps.packaged_editor_r_categorical.outputs.evidence_ready == 'true' }}"
-  );
-  assert.equal(
-    categoricalRDiagnostics?.with?.name,
-    "released-jupyter-r-categorical-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(categoricalRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}");
-  const interactiveRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_interactive");
-  const interactiveRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_interactive");
-  const interactiveRVerifierIndex = job?.steps?.indexOf(interactiveRVerifier) ?? -1;
-  const interactiveRRunnerIndex = job?.steps?.indexOf(interactiveRRunner) ?? -1;
-  assert.equal(interactiveRVerifierIndex, categoricalRDiagnosticsIndex + 1);
-  assert.equal(
-    interactiveRVerifier?.run,
-    "npm run verify:vsix -- openwrangler.vsix",
-    "Focused active-R acceptance must freshly reverify the packaged VSIX."
-  );
-  assert.equal(
-    interactiveRRunnerIndex,
-    interactiveRVerifierIndex + 1,
-    "Focused active-R acceptance must immediately follow its exact VSIX reverification."
-  );
-  assert.equal(
-    interactiveRRunner?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
-  );
-  assert.equal(interactiveRRunner?.["continue-on-error"], true);
-  assert.deepEqual(interactiveRRunner?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "interactive-terminal",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  const interactiveDiagnostics = job?.steps?.find(
-    (step) => step?.name === "Upload active R terminal failure diagnostics"
-  );
-  assert.equal(
-    interactiveDiagnostics?.if,
-    "${{ always() && steps.packaged_editor_r_interactive.outcome == 'failure' && steps.packaged_editor_r_interactive.outputs.evidence_ready == 'true' }}"
-  );
-  assert.equal(
-    interactiveDiagnostics?.with?.name,
-    "released-jupyter-r-interactive-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(interactiveDiagnostics?.with?.path, "${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}");
-  assert.equal(job?.steps?.indexOf(interactiveDiagnostics), interactiveRRunnerIndex + 1);
-  const localRFailure = job?.steps?.find((step) => step?.name === "Fail after local R acceptance diagnostics");
-  assert.equal(
-    localRFailure?.if,
-    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure') }}"
-  );
-  assert.equal(localRFailure?.run, "exit 1");
-  assert.equal(job?.steps?.indexOf(localRFailure), (job?.steps?.indexOf(interactiveDiagnostics) ?? -2) + 1);
-  const linuxDiagnosticArtifactNames = job?.steps
-    ?.filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
-    .map((step) => step?.with?.name);
-  assert.equal(linuxDiagnosticArtifactNames?.length, 5);
-  assert.equal(new Set(linuxDiagnosticArtifactNames).size, linuxDiagnosticArtifactNames?.length);
-
-  const macosR = workflow?.jobs?.["macos-r"];
-  assert.equal(macosR?.name, "Released R Jupyter in macOS VS Code");
-  assert.equal(macosR?.if, "${{ inputs.target == 'macos-r' }}");
-  assert.equal(macosR?.["runs-on"], "macos-latest");
-  assert.equal(macosR?.["timeout-minutes"], 45);
-  assert.deepEqual(macosR?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
-    "r-version": "4.5.2",
-    "use-public-rspm": true
-  });
-  assert.equal(
-    macosR?.steps?.some(
-      (step) => step?.run === "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix"
-    ),
-    true
-  );
-  assert.equal(
-    macosR?.steps?.some((step) => step?.run === "npm run verify:vsix -- openwrangler.vsix"),
-    true
-  );
-  const macosPackagedR = macosR?.steps?.find((step) => step?.id === "packaged_editor_r");
-  assert.equal(macosPackagedR?.name, "Test local R Jupyter in packaged VS Code");
-  assert.equal(macosPackagedR?.run, "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
-  assert.deepEqual(macosPackagedR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  const macosDiagnostics = macosR?.steps?.find((step) => step?.name === "Upload macOS R-Jupyter failure diagnostics");
-  assert.equal(
-    macosDiagnostics?.with?.name,
-    "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(macosDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
-
-  const windowsR = workflow?.jobs?.["windows-r"];
-  assert.equal(windowsR?.name, "Released R Jupyter in Windows VS Code");
-  assert.equal(windowsR?.if, "${{ inputs.target == 'windows-r' }}");
-  assert.equal(windowsR?.["runs-on"], "windows-latest");
-  assert.equal(windowsR?.["timeout-minutes"], 45);
-  assert.deepEqual(windowsR?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
-    "r-version": "4.5.2",
-    "use-public-rspm": true
-  });
-  const windowsRscript = windowsR?.steps?.find((step) => step?.id === "rscript");
-  assert.equal(windowsRscript?.shell, "Rscript {0}");
-  assert.match(windowsRscript?.run ?? "", /file\.path\(R\.home\("bin"\), "Rscript\.exe"\)/u);
-  assert.equal(
-    windowsR?.steps?.some(
-      (step) => step?.run === "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix"
-    ),
-    true
-  );
-  const windowsPackagedR = windowsR?.steps?.find((step) => step?.id === "packaged_editor_r");
-  assert.equal(windowsPackagedR?.name, "Test local R Jupyter in packaged VS Code");
-  assert.equal(windowsPackagedR?.run, "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
-  assert.deepEqual(windowsPackagedR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  const windowsDiagnostics = windowsR?.steps?.find(
-    (step) => step?.name === "Upload Windows R-Jupyter failure diagnostics"
-  );
-  assert.equal(
-    windowsDiagnostics?.with?.name,
-    "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(windowsDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
-});
-
-test("standalone released-Jupyter rejects a missing or interposed core R verifier", () => {
-  const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
-
-  const missingVerifier = parseYaml(source);
-  const missingSteps = missingVerifier.jobs.vscode.steps;
-  missingSteps.splice(
-    missingSteps.findIndex((step) => step?.id === "canonical_r_jupyter"),
+test("standalone Released-Jupyter retains fresh VSIX verification immediately around every R journey", () => {
+  assertStandaloneReleasedJupyterRTriples(releasedJupyter);
+  const missing = structuredClone(releasedJupyter);
+  missing.jobs.vscode.steps.splice(
+    missing.jobs.vscode.steps.findIndex((step) => step?.id === "canonical_r_jupyter"),
     1
   );
-  assert.throws(
-    () => assertStandaloneReleasedJupyterRTriples(missingVerifier),
-    /exactly one canonical_r_jupyter verifier/u
-  );
-
-  const interposedStep = parseYaml(source);
-  const interposedSteps = interposedStep.jobs.vscode.steps;
-  interposedSteps.splice(
-    interposedSteps.findIndex((step) => step?.id === "packaged_editor_r"),
+  assert.throws(() => assertStandaloneReleasedJupyterRTriples(missing), /exactly one canonical_r_jupyter/u);
+  const interposed = structuredClone(releasedJupyter);
+  interposed.jobs.vscode.steps.splice(
+    interposed.jobs.vscode.steps.findIndex((step) => step?.id === "packaged_editor_r"),
     0,
     { run: "echo interposed" }
   );
   assert.throws(
-    () => assertStandaloneReleasedJupyterRTriples(interposedStep),
+    () => assertStandaloneReleasedJupyterRTriples(interposed),
     /packaged_editor_r must immediately follow canonical_r_jupyter/u
   );
 });
