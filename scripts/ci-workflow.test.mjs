@@ -518,8 +518,10 @@ test("CI exposes only the current pull-request owners", () => {
   assert.equal(ci.jobs["windows-unique"].name, "Windows unique-risk contracts");
 });
 
-test("invariant core is unconditional and owns full portable, TypeScript, Python 3.10, audit, schema, and docs evidence", () => {
-  const job = ci.jobs["invariant-core"];
+function assertInvariantCoreTopology(document) {
+  const job = document.jobs["invariant-core"];
+  const pullRequestCommand =
+    "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python";
   assert.equal(
     packageJson.scripts["check:pr"],
     "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test"
@@ -535,13 +537,65 @@ test("invariant core is unconditional and owns full portable, TypeScript, Python
   assert.equal(python[0].uses, SETUP_PYTHON);
   assert.equal(python[0].with["python-version"], "3.10");
   assert.ok(stepRunning(job, 'python -m pip install -e "python[dev]"'));
-  assert.ok(stepRunning(job, "npm run check:pr"));
-  assert.ok(stepRunning(job, "npm audit"));
-  assert.ok(stepRunning(job, "npm run audit:python"));
+  assert.equal(stepRunning(job, pullRequestCommand).if, "${{ github.event_name == 'pull_request' }}");
+  assert.equal(
+    stepRunning(job, pullRequestCommand).env.OPEN_WRANGLER_PYTHON,
+    "${{ steps.reference_python.outputs.python-path }}"
+  );
+  assert.equal(stepRunning(job, "npm run check:pr").if, "${{ github.event_name == 'push' }}");
   assert.equal(
     stepRunning(job, "npm run check:pr").env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
   );
+  assert.equal(stepRunning(job, "npm run test:ts"), undefined);
+  assert.ok(stepRunning(job, "npm audit"));
+  assert.ok(stepRunning(job, "npm run audit:python"));
+  const canonical = document.jobs["canonical-editor"];
+  const canonicalPython = stepsUsing(canonical, "actions/setup-python@");
+  assert.equal(canonicalPython.length, 1);
+  assert.equal(canonicalPython[0].id, "canonical_python");
+  assert.equal(canonicalPython[0].with["python-version"], "3.12");
+  const typescript = stepRunning(canonical, "npm run test:ts");
+  assert.equal(typescript.if, "${{ !cancelled() }}");
+  assert.equal(typescript.env.OPEN_WRANGLER_PYTHON, "${{ steps.canonical_python.outputs.python-path }}");
+}
+
+test("invariant core keeps the portable and Python floor while the selected canonical owner runs TypeScript", () => {
+  assertInvariantCoreTopology(ci);
+  const mutations = [
+    (document) => {
+      stepRunning(
+        document.jobs["invariant-core"],
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python"
+      ).run = "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts";
+    },
+    (document) => {
+      stepRunning(
+        document.jobs["invariant-core"],
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python"
+      ).run += " test:ts";
+    },
+    (document) => {
+      stepRunning(
+        document.jobs["invariant-core"],
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python"
+      ).if = "${{ !cancelled() && github.event_name == 'pull_request' }}";
+    },
+    (document) => {
+      stepRunning(document.jobs["invariant-core"], "npm run check:pr").if =
+        "${{ github.event_name == 'pull_request' }}";
+    },
+    (document) => {
+      document.jobs["canonical-editor"].steps = document.jobs["canonical-editor"].steps.filter(
+        (step) => step.run !== "npm run test:ts"
+      );
+    }
+  ];
+  for (const mutate of mutations) {
+    const document = structuredClone(ci);
+    mutate(document);
+    assert.throws(() => assertInvariantCoreTopology(document));
+  }
 });
 
 test("Python build and development metadata retain the setuptools security floor and exact fsspec pin", () => {

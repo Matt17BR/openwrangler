@@ -1642,8 +1642,10 @@ release-infrastructure/package/full-matrix classifier mode: the sole classifier 
 `r_contract_required`, `canonical_editor_required`, `visual_accessibility_required`, and `windows_unique_required`.
 Control-plane changes, malformed or missing output, unmatched substantive paths, and non-pull-request events select
 the complete four-owner union. Documentation-only changes may select no conditional owner, while the unconditional
-`invariant-core` still runs the complete portable, TypeScript, Python 3.10, audit, schema, documentation, and license
-boundary. The selected R owners are the two lock-backed R 4.5 pull-request jobs. Cross has no pull-request trigger; its
+`invariant-core` still runs the complete static, portable-script, Python 3.10, audit, schema, documentation, and license
+boundary. The selected canonical owner runs the complete TypeScript unit/component inventory; every tracked
+TypeScript product, protocol, fixture, package, or configuration path selects that owner. Protected-main pushes run
+the complete `npm run check:pr` source gate. The selected R owners are the two lock-backed R 4.5 pull-request jobs. Cross has no pull-request trigger; its
 manual dispatch and weekly schedule retain the macOS/Windows runtime matrix, Windows dependency guards, and lock-backed
 R 4.4 qualification. Missing, failed, cancelled, or unexpectedly skipped selected results block the sole `validate`
 owner. CodeQL independently runs the always-on JavaScript/TypeScript and Python analyzers and requires both through

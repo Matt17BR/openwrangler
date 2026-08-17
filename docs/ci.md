@@ -4,11 +4,15 @@ Open Wrangler uses three test levels. The everyday pull-request checks should fi
 
 ## Pull requests
 
-The current PR workflow runs the invariant core for every pull-request head, including drafts. The core is the
-complete portable, TypeScript, and Python 3.10 public-boundary inventory: `npm run check:pr`, the full development audit, and the
-Python plus hashed-fixture audits. After classification, every selected changed-area owner starts independently beside
-the invariant core instead of waiting for it. `validate` remains the sole CI outcome owner: it waits for the core and
-every changed-area owner, then rejects a missing, failed, cancelled, or unexpectedly skipped selected job.
+The current PR workflow runs the invariant core for every pull-request head, including drafts. The core runs the
+complete static, portable-script, Python 3.10, schema, protocol, reference, documentation, license, and development-
+audit boundaries. TypeScript unit/component contracts run in the selected canonical package/editor owner: every
+tracked TypeScript product, protocol, fixture, package, or configuration path selects that owner, while documentation-
+only and media-only changes do not pay for an unrelated TypeScript inventory. Protected-main pushes still run the
+complete authoritative `npm run check:pr` command. After classification, every selected changed-area owner starts
+independently beside the invariant core instead of waiting for it. `validate` remains the sole CI outcome owner: it
+waits for the core and every changed-area owner, then rejects a missing, failed, cancelled, or unexpectedly skipped
+selected job.
 
 The sole classifier emits exactly four booleans:
 
