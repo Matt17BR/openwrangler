@@ -426,7 +426,9 @@ def test_duckdb_notebook_header_stats_keep_two_queries_without_mutating_user_con
     )
     engine = DuckDBEngine()
     frame = engine.normalize_notebook_relation(relation)
-    initial_threads = int(user_connection.execute("SELECT current_setting('threads')").fetchone()[0])
+    initial_thread_row = user_connection.execute("SELECT current_setting('threads')").fetchone()
+    assert initial_thread_row is not None
+    initial_threads = int(initial_thread_row[0])
     row_queries: list[str] = []
     scalar_queries: list[str] = []
     terminal_statements: list[str] = []
@@ -464,7 +466,9 @@ def test_duckdb_notebook_header_stats_keep_two_queries_without_mutating_user_con
         assert len(scalar_queries) == 1
         assert len(terminal_statements) == 2
         assert all("SET threads" not in statement for statement in terminal_statements)
-        assert int(user_connection.execute("SELECT current_setting('threads')").fetchone()[0]) == initial_threads
+        current_thread_row = user_connection.execute("SELECT current_setting('threads')").fetchone()
+        assert current_thread_row is not None
+        assert int(current_thread_row[0]) == initial_threads
     finally:
         engine.close()
         relation = None
