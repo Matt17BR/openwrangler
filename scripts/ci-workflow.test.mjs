@@ -469,6 +469,26 @@ test("sole classifier emits exactly four conservative changed-area owner outputs
       windowsUniqueRequired: false
     }
   );
+  for (const path of [
+    "tsconfig.json",
+    "tsconfig.dependencies.json",
+    "tsconfig.extension.json",
+    "tsconfig.extension-test.json",
+    "tsconfig.webview.json"
+  ]) {
+    assert.equal(existsSync(path), true, `${path} must remain a real TypeScript configuration path`);
+    assert.equal(
+      classifyCiChange({ eventName: "pull_request", changedPaths: [path] }).canonicalEditorRequired,
+      true,
+      `${path} must select the TypeScript owner`
+    );
+  }
+  assert.equal(
+    classifyCiChange({ eventName: "pull_request", changedPaths: ["docs/tsconfig.example.json"] })
+      .canonicalEditorRequired,
+    false,
+    "documentation examples must not broaden the TypeScript owner"
+  );
 });
 
 test("classifier self-selects and fails open for control-plane, malformed, empty, and unmatched changes", () => {

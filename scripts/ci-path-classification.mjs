@@ -144,8 +144,7 @@ function canonicalEditorPath(path) {
     path.startsWith("scripts/packaged-") ||
     path.startsWith("scripts/editor-") ||
     path.startsWith("scripts/run-extension-") ||
-    path === "tsconfig.extension.json" ||
-    path === "tsconfig.extension-test.json"
+    /^tsconfig(?:\.[a-z0-9-]+)?\.json$/u.test(path)
   );
 }
 
