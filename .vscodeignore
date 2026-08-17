@@ -7,6 +7,7 @@ python/tests/**
 python/benchmarks/**
 python/build/**
 r/tests/**
+r/dependencies/**
 protocol/**
 fixtures/**
 tmp/**

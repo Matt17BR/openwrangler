@@ -828,6 +828,32 @@ test("repository-only roots remain excluded from the VSIX inventory", () => {
   for (const path of ["docs/**", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md", ".node-version"]) {
     assert.equal(ignored.has(path), true, `${path} must stay outside the extension package.`);
   }
+  const rSubtreeExclusions = [...ignored].filter((path) => path.startsWith("r/"));
+  assert.deepEqual(rSubtreeExclusions, ["r/tests/**", "r/dependencies/**"]);
+  const excludedRRoots = rSubtreeExclusions.map((path) => path.slice(0, -3));
+  for (const path of [
+    "r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json",
+    "r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json"
+  ]) {
+    assert.equal(
+      excludedRRoots.some((root) => path.startsWith(`${root}/`)),
+      true,
+      `${path} must stay outside the extension package.`
+    );
+  }
+  for (const path of [
+    "r/openwrangler_runtime/frame_contract.R",
+    "r/openwrangler_runtime/interactive_agent.R",
+    "r/openwrangler_runtime/kernel_agent.R",
+    "r/openwrangler_runtime/process_agent.R"
+  ]) {
+    assert.equal(existsSync(path), true, `${path} must remain a real package input.`);
+    assert.equal(
+      excludedRRoots.some((root) => path.startsWith(`${root}/`)),
+      false,
+      `${path} must remain in the extension package.`
+    );
+  }
   for (const path of ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
     assert.equal(ignored.has(path), false, `${path} must remain in the extension package.`);
   }
