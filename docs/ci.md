@@ -6,8 +6,9 @@ Open Wrangler uses three test levels. The everyday pull-request checks should fi
 
 The current PR workflow runs the invariant core for every pull-request head, including drafts. The core is the
 complete portable, TypeScript, and Python 3.10 public-boundary inventory: `npm run check:pr`, the full development audit, and the
-Python plus hashed-fixture audits. `validate` is the sole CI outcome owner and rejects a missing, failed, cancelled, or
-unexpectedly skipped selected job.
+Python plus hashed-fixture audits. After classification, every selected changed-area owner starts independently beside
+the invariant core instead of waiting for it. `validate` remains the sole CI outcome owner: it waits for the core and
+every changed-area owner, then rejects a missing, failed, cancelled, or unexpectedly skipped selected job.
 
 The sole classifier emits exactly four booleans:
 
@@ -45,8 +46,11 @@ All non-local workflow actions are pinned to reviewed 40-hex revisions. The recu
 `scripts/ci-workflow.test.mjs` rejects a moving tag anywhere in `.github/workflows` and rejects a missing or malformed
 changed-area classifier/result edge.
 
-The ruleset requires only integration-bound `validate` and `CodeQL gate`. The carrier retirement records topology;
-job-count, runner-compute, and wall-time changes require separate hosted measurements before they are credited.
+The ruleset requires only integration-bound `validate` and `CodeQL gate`. The exact attempt-1 comparison in
+[the 2026-08-17 topology measurement](ci-topology-measurement-2026-08-17.md) records 23 to 11 executed jobs and
+4,042 to 1,880 summed runner seconds between the pre-selection and path-selected cohorts. That is a 52.2% job-count
+and 53.5% observed runner-time reduction. It is one controlled exact-head comparison, not a p95 or reliability claim;
+the rolling wall-time and first-attempt reliability gates remain open.
 
 Superseded pull-request runs are cancelled. Release jobs are never cancelled this way.
 
