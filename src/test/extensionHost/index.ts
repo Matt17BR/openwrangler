@@ -12121,7 +12121,9 @@ async function capturePackagedHistogramInteractionScene(
   assert.equal(await counts.getAttribute("aria-pressed"), "true");
   assert.equal(await percent.getAttribute("aria-pressed"), "false");
   const histogramControl = profiles.locator(".numericHistogramHitTarget");
+  const histogramStatus = profiles.locator(".summaryDistributionChart .miniChartCaption");
   assert.equal(await histogramControl.count(), 1, "The product histogram must expose one full-chart control.");
+  const restingStatus = (await histogramStatus.innerText()).trim();
   await histogramControl.focus();
   await histogramControl.press("Home");
   for (let index = 0; index < 17; index += 1) await histogramControl.press("ArrowRight");
@@ -12131,15 +12133,15 @@ async function capturePackagedHistogramInteractionScene(
     "20,174-21,357: 398 rows (0.4%); lower bound included, upper bound excluded",
     "The focused histogram bin must expose its interval, row count, and percentage."
   );
-  const tooltip = profiles.getByRole("tooltip");
-  await tooltip.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  assert.equal((await tooltip.innerText()).trim(), label);
+  assert.equal((await histogramStatus.innerText()).trim(), "20,174-21,357: 398 rows");
+  assert.ok(label?.startsWith(`${(await histogramStatus.innerText()).trim()} (`));
+  assert.equal(await profiles.getByRole("tooltip").count(), 0);
   mkdirSync(outputDirectory, { recursive: true });
   await captureWorkbenchScreenshot(workbench, path.resolve(outputDirectory, `${editor}-histogram-hover-dark.png`));
   await histogramControl.evaluate((element) => {
     (element as unknown as { blur(): void }).blur();
   });
-  await tooltip.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  assert.equal((await histogramStatus.innerText()).trim(), restingStatus);
 }
 
 async function capturePackagedFilterResultScene(

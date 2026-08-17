@@ -1132,12 +1132,16 @@ describe("DataGrid", () => {
       configurable: true,
       value: () => ({ left: 0, right: 160, top: 0, bottom: 36, width: 160, height: 36, x: 0, y: 0 })
     });
+    const numericStatus = numericHeader.querySelector<HTMLElement>(".miniChartCaption");
     fireEvent.pointerMove(distribution, { clientX: 40 });
-    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
+    expect(numericStatus).toHaveTextContent("1-2.5: 100 rows");
+    expect(numericHeader.querySelectorAll(".numericHistogramBar")).toHaveLength(2);
+    expect(numericHeader.querySelectorAll(".numericHistogramBin.active")).toHaveLength(1);
     fireEvent.pointerMove(distribution, { clientX: 120 });
-    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("2.5-4: 1 row");
-    fireEvent.pointerLeave(distribution);
+    expect(numericStatus).toHaveTextContent("2.5-4: 1 row");
     expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
+    fireEvent.pointerLeave(distribution);
+    expect(numericStatus).toHaveTextContent("1 to 4 · 2 bins");
     expect(screen.getByRole("img", { name: "boolean distribution: True: 3 (75%), False: 1 (25%)." })).toHaveTextContent(
       "True 3False 1"
     );
