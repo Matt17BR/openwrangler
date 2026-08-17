@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { vi } from "vitest";
 import type {
+  ByExampleProgram,
+  ByExampleTransformStep,
   ColumnSummary,
   DataDiff,
   DatasetStats,
@@ -496,4 +498,207 @@ export function rKernelGroupDiff(
 
 export function rKernelRowDiff(removedRows = 0): DataDiff {
   return { ...rKernelRenameDiff(), removedRows };
+}
+
+export function rKernelByExampleTransformStep(): ByExampleTransformStep {
+  return {
+    id: "by-example-step",
+    kind: "byExample",
+    params: {
+      sourceColumns: [{ id: "r:c:1", name: "count" }],
+      newColumn: "count copy",
+      examples: [
+        { inputs: [1], output: 1 },
+        { inputs: [2], output: 2 }
+      ]
+    }
+  };
+}
+
+export function rKernelRetainedByExampleTransformStep(
+  step: ByExampleTransformStep,
+  program?: ByExampleProgram
+): NonNullable<RKernelStepPreviewResult["retainedStep"]> {
+  const sourceColumn = step.params.sourceColumns[0];
+  if (!sourceColumn) throw new Error("Fake retained by-example step requires one source column.");
+  return {
+    id: step.id,
+    kind: "byExample",
+    params: {
+      sourceColumns: step.params.sourceColumns.map((column) => ({
+        ...column
+      })) as ByExampleTransformStep["params"]["sourceColumns"],
+      newColumn: step.params.newColumn,
+      examples: step.params.examples.map((example) => ({
+        inputs: [...example.inputs],
+        output: example.output
+      })) as ByExampleTransformStep["params"]["examples"],
+      program: program ?? { kind: "column", column: { ...sourceColumn } },
+      warnings: ["2 programs match; Open Wrangler selected the simplest deterministic program."],
+      candidateCount: 2
+    }
+  };
+}
+
+export function rKernelCloneContract(
+  source: RFramePageContract,
+  columnId: string,
+  newName: string,
+  stepId: string
+): RFramePageContract {
+  const sourceColumn = source.schema.find((column) => column.id === columnId);
+  if (!sourceColumn) throw new Error(`Unknown fake R clone column ${columnId}.`);
+  const clonedId = `c:step:${stepId}:0`;
+  return {
+    ...source,
+    shape: { ...source.shape, columns: source.schema.length + 1 },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds: [...source.frameSemantics.keyColumnIds] },
+    schema: [
+      ...source.schema.map((column) => ({ ...column })),
+      { ...sourceColumn, id: clonedId, name: newName, position: source.schema.length }
+    ],
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
+export function rKernelReplaceContractCell(
+  source: RFramePageContract,
+  columnId: string,
+  value: RFrameCell
+): RFramePageContract {
+  const pagePosition = source.page.columnIds.indexOf(columnId);
+  if (pagePosition < 0) throw new Error(`Fake R page does not contain ${columnId}.`);
+  return {
+    ...source,
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((candidate, index) => ({ ...(index === pagePosition ? value : candidate) }))
+      }))
+    }
+  };
+}
+
+export function rKernelWithColumnNullable(
+  source: RFramePageContract,
+  columnId: string,
+  nullable: boolean
+): RFramePageContract {
+  return {
+    ...source,
+    schema: source.schema.map((column) => (column.id === columnId ? { ...column, nullable } : { ...column })),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
+export function rKernelCastContract(
+  source: RFramePageContract,
+  columnId: string,
+  rawType: string,
+  type: RColumnSchema["type"],
+  value: RFrameCell,
+  nullable: boolean
+): RFramePageContract {
+  const sourceColumn = source.schema.find((column) => column.id === columnId);
+  if (!sourceColumn) throw new Error(`Unknown fake R cast column ${columnId}.`);
+  const semantics: RColumnSchema["semantics"] =
+    rawType === "integer"
+      ? { kind: "integer", storageMode: "integer", classes: ["integer"] }
+      : rawType === "integer64"
+        ? { kind: "integer64", storageMode: "double", classes: ["integer64"] }
+        : rawType === "double"
+          ? { kind: "double", storageMode: "double", classes: ["numeric"] }
+          : rawType === "logical"
+            ? { kind: "logical", storageMode: "logical", classes: ["logical"] }
+            : rawType === "Date"
+              ? { kind: "date", storageMode: "double", classes: ["Date"] }
+              : rawType === "POSIXct"
+                ? { kind: "datetime", storageMode: "double", classes: ["POSIXct", "POSIXt"], timezone: "UTC" }
+                : { kind: "character", storageMode: "character", classes: ["character"] };
+  const pagePosition = source.page.columnIds.indexOf(columnId);
+  if (pagePosition < 0) throw new Error(`Fake R cast page does not contain ${columnId}.`);
+  return {
+    ...source,
+    schema: source.schema.map((column) =>
+      column.id === columnId ? { ...column, rawType, type, nullable, semantics } : { ...column }
+    ),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((candidate, index) => ({ ...(index === pagePosition ? value : candidate) }))
+      }))
+    }
+  };
+}
+
+export function rKernelFactorContract(
+  source: RFramePageContract,
+  columnId: string,
+  levels: readonly string[]
+): RFramePageContract {
+  return {
+    ...source,
+    schema: source.schema.map((column) =>
+      column.id === columnId
+        ? {
+            ...column,
+            rawType: "factor",
+            type: "string" as const,
+            semantics: {
+              kind: "factor" as const,
+              storageMode: "integer" as const,
+              classes: ["factor"],
+              levels: [...levels],
+              ordered: false
+            }
+          }
+        : { ...column }
+    ),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({ ...row, values: row.values.map((value) => ({ ...value })) }))
+    }
+  };
+}
+
+export function rKernelReplaceColumnSemantics(
+  source: RFramePageContract,
+  columnId: string,
+  semantics: RColumnSchema["semantics"]
+): RFramePageContract {
+  if (!source.schema.some((column) => column.id === columnId)) {
+    throw new Error(`Unknown fake R semantics column ${columnId}.`);
+  }
+  return {
+    ...source,
+    schema: source.schema.map((column) => (column.id === columnId ? { ...column, semantics } : { ...column })),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({ ...row, values: row.values.map((value) => ({ ...value })) }))
+    }
+  };
+}
+
+export function rKernelCloneDiff(newName: string): DataDiff {
+  return { ...rKernelRenameDiff(), addedColumns: [newName] };
 }
