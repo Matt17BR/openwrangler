@@ -5,48 +5,26 @@ import * as vscode from "vscode";
 import {
   PROTOCOL_VERSION,
   type ColumnSchema,
-  type ColumnSummary,
-  type DatasetStatsRequest,
   type ExportDataRequest,
   type FilterModel,
   type InspectStepRequest,
   type OpenSessionRequest,
   type OpenWranglerRequest,
   type OpenWranglerResponse,
-  type PageRequest,
   type PreviewStepRequest,
   type RetainedTransformStep,
-  type RowAxis,
-  type SummaryRequest,
-  type ValueCount,
-  type ValuesRequest
+  type RowAxis
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
 import { beginAtomicFileTransaction, type AtomicFileTransaction } from "../files/safeFileExport";
-import {
-  RKernelDiagnosticError,
-  RKernelSessionTransport,
-  type RKernelOpenResult,
-  type RKernelRequestOptions
-} from "./rKernelTransport";
-import {
-  type RKernelColumnReference,
-  type RKernelDataExportResult,
-  type RKernelDatasetStatsResult,
-  type RKernelExportFormat,
-  type RKernelPageWindow,
-  type RKernelPlanUpdatedResult,
-  type RKernelTransformStep,
-  type RKernelStepInspectionResult,
-  type RKernelStepPreviewResult,
-  type RKernelViewQuery
-} from "./rKernelProtocol";
-import { R_FRAME_CONTRACT_LIMITS, type RColumnSchema, type RFramePageContract } from "./rFrameContract";
+import { RKernelDiagnosticError, RKernelSessionTransport } from "./rKernelTransport";
+import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
+import { type RKernelTransformStep, type RKernelViewQuery } from "./rKernelProtocol";
+import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
 import {
   R_BRIDGE_CAPABILITIES,
   assertMutationContract,
   assertRExportResult,
-  assertSessionContract,
   clearDraft,
   copyFilterModel,
   diagnosticResponse,
@@ -63,7 +41,6 @@ import {
   unsupportedRequest,
   validateMutationRequest,
   validateOpenRequest,
-  validateProfileRequest,
   withHostSessionIdentity,
   type RBridgeSession
 } from "./rKernelBridgeContract";
@@ -100,14 +77,8 @@ import {
   type RCustomRowIdentityConstraint
 } from "./rKernelMutationSchema";
 import { copyRTransformStep } from "./rKernelTransformState";
-import {
-  assertRColumnValuesContract as assertColumnValuesContract,
-  assertRDatasetStatsContract as assertDatasetStatsContract,
-  assertRSummaryContract as assertSummaryContract,
-  resolveNamedRColumn as resolveNamedColumn,
-  resolveRProfileColumns as resolveProfileColumns,
-  resolveRViewQuery as resolveViewQuery
-} from "./rKernelViewContract";
+import { RKernelReadQueries } from "./rKernelReadQueries";
+import { resolveRViewQuery as resolveViewQuery } from "./rKernelViewContract";
 import {
   claimVerifiedRNotebookVariableSelection,
   type RNotebookVariableDescriptor,
@@ -121,84 +92,13 @@ export interface RKernelBridgeFileOperations {
   readonly beginTransaction?: typeof beginAtomicFileTransaction;
 }
 
-/** Narrow transport surface used by the canonical bridge and its contract tests. */
-export interface RKernelBridgeTransport {
-  readonly onDidInvalidateKernel: vscode.Event<void>;
-  open(variableName: string, page: RKernelPageWindow, options?: RKernelRequestOptions): Promise<RKernelOpenResult>;
-  getPage(sessionId: string, page: RKernelPageWindow, options?: RKernelRequestOptions): Promise<RFramePageContract>;
-  getSummary(
-    sessionId: string,
-    columns: readonly RKernelColumnReference[],
-    view: RKernelViewQuery,
-    options?: RKernelRequestOptions
-  ): Promise<readonly ColumnSummary[]>;
-  getDatasetStats(
-    sessionId: string,
-    view: RKernelViewQuery,
-    options?: RKernelRequestOptions
-  ): Promise<RKernelDatasetStatsResult>;
-  getColumnValues(
-    sessionId: string,
-    column: RKernelColumnReference,
-    view: RKernelViewQuery,
-    search: string | undefined,
-    limit: number,
-    options?: RKernelRequestOptions
-  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>>;
-  previewStep(
-    sessionId: string,
-    revision: number,
-    step: RKernelTransformStep,
-    page: RKernelPageWindow,
-    inputSchema: readonly RColumnSchema[],
-    replaceStepId?: string,
-    options?: RKernelRequestOptions
-  ): Promise<RKernelStepPreviewResult>;
-  applyDraft(
-    sessionId: string,
-    revision: number,
-    page: RKernelPageWindow,
-    options?: RKernelRequestOptions
-  ): Promise<RKernelPlanUpdatedResult>;
-  discardDraft(
-    sessionId: string,
-    revision: number,
-    page: RKernelPageWindow,
-    options?: RKernelRequestOptions
-  ): Promise<RKernelPlanUpdatedResult>;
-  undoStep(
-    sessionId: string,
-    revision: number,
-    page: RKernelPageWindow,
-    options?: RKernelRequestOptions
-  ): Promise<RKernelPlanUpdatedResult>;
-  inspectStep(
-    sessionId: string,
-    revision: number,
-    stepId: string,
-    page: RKernelPageWindow,
-    inputSchema: readonly RColumnSchema[],
-    outputSchema: readonly RColumnSchema[],
-    options?: RKernelRequestOptions
-  ): Promise<RKernelStepInspectionResult>;
-  exportData?(
-    sessionId: string,
-    revision: number,
-    format: RKernelExportFormat,
-    writeChunk: (chunk: Uint8Array) => Promise<void>,
-    options?: RKernelRequestOptions
-  ): Promise<RKernelDataExportResult>;
-  close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
-  isSessionMapped(sessionId: string): boolean;
-  dispose(): Promise<void>;
-}
-
 /**
  * Adapts the native-R kernel contract to protocol v2 without converting the
  * dataframe through Python.
  */
 export class RKernelBridge implements OpenWranglerBridge {
   private readonly transport: RKernelBridgeTransport;
+  private readonly readQueries: RKernelReadQueries;
   private readonly invalidationSubscription: vscode.Disposable;
   private readonly sessions = new Map<string, RBridgeSession>();
   private readonly openingSessionIds = new Set<string>();
@@ -237,6 +137,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     fileOperations: RKernelBridgeFileOperations = {}
   ) {
     this.transport = transport;
+    this.readQueries = new RKernelReadQueries(transport, this.sessions);
     this.diagnosticSink = diagnosticSink ?? ((message) => appendRDiagnostic(context, message));
     const version = context.extension?.packageJSON?.version;
     this.runtimeVersion = typeof version === "string" && version.length > 0 ? version : "0.0.0";
@@ -262,13 +163,13 @@ export class RKernelBridge implements OpenWranglerBridge {
       case "openSession":
         return this.openSession(withHostSessionIdentity(request, this.createSessionId), options);
       case "getPage":
-        return this.getPage(request, options);
+        return this.readQueries.getPage(request, options);
       case "getSummary":
-        return this.getSummary(request, options);
+        return this.readQueries.getSummary(request, options);
       case "getDatasetStats":
-        return this.getDatasetStats(request, options);
+        return this.readQueries.getDatasetStats(request, options);
       case "getColumnValues":
-        return this.getColumnValues(request, options);
+        return this.readQueries.getColumnValues(request, options);
       case "previewStep":
         return this.previewStep(request, options);
       case "applyDraft":
@@ -366,231 +267,6 @@ export class RKernelBridge implements OpenWranglerBridge {
       throw error;
     } finally {
       this.openingSessionIds.delete(sessionId);
-    }
-  }
-
-  private async getPage(request: PageRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
-    const session = this.sessions.get(request.sessionId);
-    if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
-    if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-    const stale = staleRevisionError(session, request.revision, request.viewRequestId);
-    if (stale) return stale;
-    const expectedRevision = session.revision;
-    const expectedSchema = session.schema;
-    let view: RKernelViewQuery;
-    try {
-      view = resolveViewQuery(request.filterModel, session.schema);
-      validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
-    } catch (error) {
-      return errorResponse(
-        "invalid_view",
-        error instanceof Error ? error.message : String(error),
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
-
-    try {
-      const contract = await this.transport.getPage(
-        request.sessionId,
-        pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view),
-        transportOptions(options)
-      );
-      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
-        return staleResponseError(request.sessionId, request.viewRequestId);
-      }
-      assertSessionContract(
-        session,
-        contract,
-        request,
-        expectedSchema,
-        session.rows,
-        session.identityRows,
-        session.keyColumnIds,
-        session.rowNames,
-        view
-      );
-      assertCustomDerivedRowIdentities(contract, session.customRowIdentities, view);
-      const nextFilterModel = copyFilterModel(request.filterModel);
-      if (!isDeepStrictEqual(session.filterModel, nextFilterModel)) session.viewChangeEpoch += 1;
-      session.filterModel = nextFilterModel;
-      return {
-        kind: "page",
-        revision: session.revision,
-        viewRequestId: request.viewRequestId,
-        page: gridPageFromContract(contract),
-        metadata: metadataFor(session, contract.page.totalRows)
-      };
-    } catch (error) {
-      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (error instanceof RKernelDiagnosticError) {
-        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
-      }
-      throw error;
-    }
-  }
-
-  private async getSummary(request: SummaryRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
-    const session = this.sessions.get(request.sessionId);
-    const invalid = validateProfileRequest(request, session);
-    if (invalid) return invalid;
-    const confirmed = session as RBridgeSession;
-    const expectedRevision = confirmed.revision;
-    const expectedSchema = confirmed.schema;
-    const requestedIds = request.columnIds ?? confirmed.schema.map((column) => column.id);
-    if (requestedIds.length === 0) {
-      return { kind: "summary", revision: confirmed.revision, viewRequestId: request.viewRequestId, summaries: [] };
-    }
-    if (requestedIds.length > R_FRAME_CONTRACT_LIMITS.profileColumns) {
-      return errorResponse(
-        "profile_too_large",
-        `R profile requests may contain at most ${R_FRAME_CONTRACT_LIMITS.profileColumns} columns.`,
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
-
-    let columns: readonly RKernelColumnReference[];
-    let view: RKernelViewQuery;
-    try {
-      columns = resolveProfileColumns(requestedIds, confirmed.schema);
-      view = resolveViewQuery(request.filterModel, confirmed.schema);
-    } catch (error) {
-      return errorResponse(
-        "invalid_view",
-        error instanceof Error ? error.message : String(error),
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
-
-    try {
-      const summaries = await this.transport.getSummary(request.sessionId, columns, view, transportOptions(options));
-      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
-        return staleResponseError(request.sessionId, request.viewRequestId);
-      }
-      assertSummaryContract(confirmed, columns, summaries, view);
-      return {
-        kind: "summary",
-        revision: confirmed.revision,
-        viewRequestId: request.viewRequestId,
-        summaries: summaries.map((summary) => ({ ...summary }))
-      };
-    } catch (error) {
-      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (error instanceof RKernelDiagnosticError) {
-        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
-      }
-      throw error;
-    }
-  }
-
-  private async getDatasetStats(
-    request: DatasetStatsRequest,
-    options: BridgeRequestOptions
-  ): Promise<OpenWranglerResponse> {
-    const session = this.sessions.get(request.sessionId);
-    const invalid = validateProfileRequest(request, session);
-    if (invalid) return invalid;
-    const confirmed = session as RBridgeSession;
-    const expectedRevision = confirmed.revision;
-    const expectedSchema = confirmed.schema;
-    let view: RKernelViewQuery;
-    try {
-      view = resolveViewQuery(request.filterModel, confirmed.schema);
-    } catch (error) {
-      return errorResponse(
-        "invalid_view",
-        error instanceof Error ? error.message : String(error),
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
-
-    try {
-      const result = await this.transport.getDatasetStats(request.sessionId, view, transportOptions(options));
-      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
-        return staleResponseError(request.sessionId, request.viewRequestId);
-      }
-      assertDatasetStatsContract(confirmed, result, view);
-      return {
-        kind: "datasetStats",
-        revision: confirmed.revision,
-        viewRequestId: request.viewRequestId,
-        stats: {
-          ...result.stats,
-          missingValuesByColumn: result.stats.missingValuesByColumn.map((entry) => ({ ...entry }))
-        }
-      };
-    } catch (error) {
-      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (error instanceof RKernelDiagnosticError) {
-        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
-      }
-      throw error;
-    }
-  }
-
-  private async getColumnValues(request: ValuesRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
-    const session = this.sessions.get(request.sessionId);
-    if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
-    if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-    const stale = staleRevisionError(session, request.revision, request.viewRequestId);
-    if (stale) return stale;
-    const expectedRevision = session.revision;
-    const expectedSchema = session.schema;
-
-    let column: RKernelColumnReference;
-    let view: RKernelViewQuery;
-    try {
-      column = resolveNamedColumn(request.column, session.schema, "values");
-      view = resolveViewQuery(request.filterModel, session.schema);
-    } catch (error) {
-      return errorResponse(
-        "invalid_view",
-        error instanceof Error ? error.message : String(error),
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
-
-    try {
-      const result = await this.transport.getColumnValues(
-        request.sessionId,
-        column,
-        view,
-        request.search,
-        request.limit,
-        transportOptions(options)
-      );
-      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
-        return staleResponseError(request.sessionId, request.viewRequestId);
-      }
-      assertColumnValuesContract(session, column, result, request.limit, request.search);
-      return {
-        kind: "columnValues",
-        revision: session.revision,
-        viewRequestId: request.viewRequestId,
-        column: result.column,
-        values: result.values.map((entry) => ({ ...entry })),
-        hasMore: result.hasMore,
-        ...(result.sampleSize === undefined ? {} : { sampleSize: result.sampleSize })
-      };
-    } catch (error) {
-      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      if (error instanceof RKernelDiagnosticError) {
-        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
-      }
-      throw error;
     }
   }
 
