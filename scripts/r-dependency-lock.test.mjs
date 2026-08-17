@@ -384,12 +384,19 @@ test("installed tree hashing accepts bounded empty files and rejects descriptor-
     const filled = join(directory, "filled");
     writeFileSync(empty, Buffer.alloc(0), { mode: 0o600 });
     writeFileSync(filled, "trusted installed bytes", { mode: 0o600 });
-    const emptyStat = lstatSync(empty);
-    const filledStat = lstatSync(filled);
+    const emptyVerified = readOwnedRegularFile(empty, "empty expected installed file", {
+      minimumBytes: 0,
+      maximumBytes: 0,
+      root: directory
+    });
+    const filledVerified = readOwnedRegularFile(filled, "filled expected installed file", {
+      maximumBytes: 1024,
+      root: directory
+    });
     const expected = sha256(
       [
-        `empty\0file\0${emptyStat.mode & 0o777}\0${0}\0${sha256(Buffer.alloc(0))}`,
-        `filled\0file\0${filledStat.mode & 0o777}\0${filledStat.size}\0${sha256(readFileSync(filled))}`
+        `empty\0file\0${emptyVerified.snapshot.mode & 0o777}\0${emptyVerified.snapshot.size}\0${sha256(emptyVerified.bytes)}`,
+        `filled\0file\0${filledVerified.snapshot.mode & 0o777}\0${filledVerified.snapshot.size}\0${sha256(filledVerified.bytes)}`
       ].join("\n") + "\n"
     );
     assert.equal(treeDigest(directory), expected);
