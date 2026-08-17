@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 
 export const ALWAYS_REQUIRED_CI_JOBS = Object.freeze(["classify", "invariant-core"]);
 export const CONDITIONAL_CI_JOBS = Object.freeze({
-  rContractRequired: Object.freeze(["r-contract-kernel", "r-contract-protocol", "native-r-contract"]),
+  rContractRequired: Object.freeze(["r-contract-kernel", "r-contract-protocol"]),
   canonicalEditorRequired: Object.freeze(["canonical-editor"]),
   visualAccessibilityRequired: Object.freeze(["visual-accessibility"]),
   windowsUniqueRequired: Object.freeze(["windows-unique"])

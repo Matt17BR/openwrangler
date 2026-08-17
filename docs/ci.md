@@ -4,8 +4,8 @@ Open Wrangler uses three test levels. The everyday pull-request checks should fi
 
 ## Pull requests
 
-Stage A runs the invariant core for every pull-request head, including drafts. The core is the complete portable,
-TypeScript, and Python 3.10 public-boundary inventory: `npm run check:tier-a`, the full development audit, and the
+The current PR workflow runs the invariant core for every pull-request head, including drafts. The core is the
+complete portable, TypeScript, and Python 3.10 public-boundary inventory: `npm run check:pr`, the full development audit, and the
 Python plus hashed-fixture audits. `validate` is the sole CI outcome owner and rejects a missing, failed, cancelled, or
 unexpectedly skipped selected job.
 
@@ -35,21 +35,18 @@ archives. Both a hit and a miss authenticate the complete archive inventory, des
 SHA-256 values, then install those archives into a fresh empty private library before namespace verification. No
 installed library, package/tree receipt, or executable package state is restored from cache.
 
-Stage A is a compatibility phase, not the final topology claim. It retains the `Native R contract (R 4.4)` PR carrier,
-lock-backed and selected by `r_contract_required`, while both new R owners use R 4.5. The scheduled Cross R 4.4 owner
-is additive. Cross still emits the existing macOS, Windows, and Windows dependency-guard contexts; the same classifier
-causes those carriers to run their substantive evidence conservatively and to fail open on classifier trouble. CodeQL
-retains the required `Analyze (javascript-typescript)` and `Analyze (python)` names as two always-on jobs and adds a
-gate that requires both exact results.
+Pull requests retain both selected R 4.5 owners without the temporary pull-request R 4.4 compatibility carrier.
+Cross no longer has a pull-request trigger or classifier carriers; its manual dispatch and weekly schedule run the
+macOS/Windows runtime matrix, Windows dependency guards, and the lock-backed R 4.4 qualification. CodeQL retains the
+`Analyze (javascript-typescript)` and `Analyze (python)` jobs as two always-on analyzers and requires both exact results
+through `CodeQL gate`.
 
 All non-local workflow actions are pinned to reviewed 40-hex revisions. The recursive contract in
 `scripts/ci-workflow.test.mjs` rejects a moving tag anywhere in `.github/workflows` and rejects a missing or malformed
-Stage-A classifier/result edge.
+changed-area classifier/result edge.
 
-No job-count, runner-compute, wall-time, or required-context reduction is credited in Stage A. Existing triggers and
-legacy contexts remain until the exact Stage-A head and its protected-main landing are green, the repository ruleset
-is mechanically migrated to `validate` plus `CodeQL gate`, and the replacement outcomes are independently checked.
-Only the following Stage-B change may retire compatibility carriers.
+The ruleset requires only integration-bound `validate` and `CodeQL gate`. The carrier retirement records topology;
+job-count, runner-compute, and wall-time changes require separate hosted measurements before they are credited.
 
 Superseded pull-request runs are cancelled. Release jobs are never cancelled this way.
 
@@ -98,8 +95,8 @@ The release tier adds the expensive product checks that no longer run on every p
   and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations
   for core, native-frame, restart, the active R terminal, and R Markdown/Quarto, with the complete value and
   categorical catalogs owned once by Linux VS Code;
-- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI remains the
-  sole direct R-contract owner;
+- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI owns the R 4.5
+  source contracts, while scheduled/manual Cross owns the R 4.4 source qualification;
 - Remote SSH;
 - installed performance in pinned VS Code and Cursor, gated on first-grid timing, cache residency, scrolling,
   outstanding-work responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling;
@@ -129,7 +126,8 @@ publish.
 
 Python, remote R, the generic platform matrix, the native-R `r_platform` matrix, and the two Linux local-R shard cells
 are independent siblings. Every candidate job proves the exact artifact or a live external release invariant; the
-direct R 4.4/4.5 source contract remains solely in protected pull-request CI. Generic macOS/Windows platform cells own
+direct R 4.5 source contract remains in protected pull-request CI, while the direct R 4.4 source contract remains in
+scheduled/manual Cross. Generic macOS/Windows platform cells own
 only the packaged VS Code `platform-smoke` OS seam without rerunning the pull request's extension-host suite or
 preparing R. Linux VS Code is the sole full generic packaged owner; one pinned Linux Cursor run owns the focused fork-
 compatibility smoke rather than multiplying it across operating systems. Each `r_platform` cell prepares R once, then runs freshly
@@ -159,7 +157,7 @@ Value and categorical ownership is unchanged, and Cursor, macOS, and Windows ret
 core/editor/platform and native-frame seams.
 
 The Native R performance runner's unit contracts and report validators are portable script contracts owned by
-`npm run test:scripts:portable`, which the unconditional Stage-A `invariant-core` job runs through `check:tier-a`.
+`npm run test:scripts:portable`, which the unconditional PR workflow's `invariant-core` job runs through `check:pr`.
 Those tests exercise
 exact-candidate/source/executable binding, the 250,000×20 fixture and fixed 5/20 workload schedules, response
 accounting, bounded path-free reporting, atomic output, resource proofs, and cleanup failures without running the
@@ -280,8 +278,9 @@ correction lands on protected `main` and a fresh preview proves that public-medi
 Each release local-R shard and `r_platform` cell uses the same commit-pinned dependency action, explicit package set, and
 resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their
 merge refs, so a release dispatch cannot restore them. Later candidate dispatches may reuse a compatible cache created
-on `main`; the first matching `main` dispatch performs a valid cold install. The source-only R contract stays in
-protected pull-request CI rather than running inside or beside either packaged-editor shard.
+on `main`; the first matching `main` dispatch performs a valid cold install. The R 4.5 source contract stays in
+protected pull-request CI and the R 4.4 source contract stays in scheduled/manual Cross rather than running inside or
+beside either packaged-editor shard.
 
 Remote R fixture preparation also keeps those bounds local to the work being proved. `Dockerfile.r.base` builds the
 snapshot-pinned base, `Dockerfile.r` builds the R runtime from that exact owned image, and the existing

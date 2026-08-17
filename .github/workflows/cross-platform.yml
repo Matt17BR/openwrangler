@@ -1,9 +1,6 @@
 name: Cross-platform runtime
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
   schedule:
     - cron: "17 4 * * 1"
@@ -13,35 +10,10 @@ permissions:
 
 concurrency:
   group: cross-platform-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
-  classify:
-    name: Cross-platform change classification
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      r_contract_required: ${{ steps.classify.outputs.r_contract_required }}
-      canonical_editor_required: ${{ steps.classify.outputs.canonical_editor_required }}
-      visual_accessibility_required: ${{ steps.classify.outputs.visual_accessibility_required }}
-      windows_unique_required: ${{ steps.classify.outputs.windows_unique_required }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-      - id: classify
-        run: node scripts/ci-path-classification.mjs
-        env:
-          CI_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-
   runtime:
-    needs: classify
-    if: ${{ !cancelled() }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -53,103 +25,27 @@ jobs:
             python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Preserve the required context when its owner is not selected
-        if: >-
-          ${{
-            needs.classify.result == 'success' &&
-            needs.classify.outputs.canonical_editor_required == 'false' &&
-            (runner.os != 'Windows' || needs.classify.outputs.windows_unique_required == 'false')
-          }}
-        run: echo "The conservative classifier did not select this legacy compatibility carrier."
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
         with:
           node-version-file: .node-version
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: npm ci
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
       - run: python -m pip install -e "python[dev]"
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
       - run: npm run test:python-environment-smoke
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
       - run: python -m pytest python/tests -q
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
       - run: npm run test:extension-host
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            needs.classify.outputs.canonical_editor_required != 'false' ||
-            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
-          }}
         env:
           VSCODE_TEST_VERSION: stable
       - run: npm run test:scripts:native
-        if: >-
-          ${{
-            runner.os == 'Windows' &&
-            (needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false')
-          }}
-      - name: Reject a missing or malformed classifier result
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            (needs.classify.outputs.r_contract_required != 'true' &&
-             needs.classify.outputs.r_contract_required != 'false') ||
-            (needs.classify.outputs.canonical_editor_required != 'true' &&
-             needs.classify.outputs.canonical_editor_required != 'false') ||
-            (needs.classify.outputs.visual_accessibility_required != 'true' &&
-             needs.classify.outputs.visual_accessibility_required != 'false') ||
-            (needs.classify.outputs.windows_unique_required != 'true' &&
-             needs.classify.outputs.windows_unique_required != 'false')
-          }}
-        run: exit 1
+        if: ${{ runner.os == 'Windows' }}
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
-    needs: classify
-    if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -157,37 +53,16 @@ jobs:
       matrix:
         python: ["3.10", "3.12"]
     steps:
-      - name: Preserve the required context when its owner is not selected
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.windows_unique_required == 'false' }}
-        run: echo "The conservative classifier did not select the Windows dependency carrier."
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest
-        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
       - run: python -m pytest python/tests/test_dependency_guard.py -q
-        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
-      - name: Reject a missing or malformed classifier result
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            (needs.classify.outputs.r_contract_required != 'true' &&
-             needs.classify.outputs.r_contract_required != 'false') ||
-            (needs.classify.outputs.canonical_editor_required != 'true' &&
-             needs.classify.outputs.canonical_editor_required != 'false') ||
-            (needs.classify.outputs.visual_accessibility_required != 'true' &&
-             needs.classify.outputs.visual_accessibility_required != 'false') ||
-            (needs.classify.outputs.windows_unique_required != 'true' &&
-             needs.classify.outputs.windows_unique_required != 'false')
-          }}
-        run: exit 1
 
   r-4-4-scheduled-qualification:
     name: Scheduled R 4.4 lock qualification
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
