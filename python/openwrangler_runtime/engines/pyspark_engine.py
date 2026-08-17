@@ -775,7 +775,7 @@ class PySparkEngine(DataFrameEngine):
                 )
             remaining_transport_bytes -= consumed_transport_bytes
             if len(batch) == 1:
-                plan["topValues"] = [
+                batch[0]["topValues"] = [
                     {
                         "value": normalize_cell(_spark_python_value(row["__ow_value"]))["display"],
                         "count": int(row["count"]),
