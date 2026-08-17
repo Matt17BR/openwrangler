@@ -117,6 +117,11 @@ def _read_frame() -> dict[str, Any]:
     return decoded
 
 
+def _require_input_end() -> None:
+    if sys.stdin.buffer.read(1):
+        _fail("invalid_request")
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -2274,6 +2279,7 @@ def _run_install(request: dict[str, Any]) -> int:
             _emit({"kind": "ready", "protocol": PROTOCOL, "token": token})
             ready_sent = True
             go = _read_frame()
+            _require_input_end()
             if set(go) != {"protocol", "kind", "token"}:
                 _fail("invalid_request")
             if go["protocol"] != PROTOCOL or go["kind"] != "go" or go["token"] != token:
@@ -2383,7 +2389,10 @@ def main() -> int:
         return EXIT_INVALID_REQUEST
     mode = sys.argv[1]
     try:
-        request = _normalize_request(mode, _read_frame())
+        raw_request = _read_frame()
+        if mode != "install":
+            _require_input_end()
+        request = _normalize_request(mode, raw_request)
         if mode == "install":
             return _run_install(request)
         if mode == "status":
