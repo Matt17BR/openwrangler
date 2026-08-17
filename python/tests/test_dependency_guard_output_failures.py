@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from test_dependency_guard_install_frames import (
@@ -28,6 +29,8 @@ from test_dependency_guard_install_frames import (
     shared_guard_runtime as shared_guard_runtime_fixture,  # noqa: F401
 )
 
+from openwrangler_runtime import dependency_guard
+
 PAYLOAD_SECRET = b"ow-output-failure-payload-must-not-leak"
 
 
@@ -42,8 +45,55 @@ def guard_runtime(request: pytest.FixtureRequest) -> Iterator[GuardRuntime]:
     runtime.pip_sentinel.unlink(missing_ok=True)
 
 
+@pytest.mark.parametrize(
+    ("replacement", "expected_duplication", "expected_close"),
+    [
+        (1, [], []),
+        (7, [(7, 1)], [7]),
+    ],
+    ids=["reused-stdout", "distinct-replacement"],
+)
+def test_stdout_discard_closes_only_a_distinct_replacement_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: int,
+    expected_duplication: list[tuple[int, int]],
+    expected_close: list[int],
+) -> None:
+    closed: list[int] = []
+    duplicated: list[tuple[int, int]] = []
+    stdout = SimpleNamespace(buffer=SimpleNamespace(fileno=lambda: 1))
+    monkeypatch.setattr(dependency_guard.sys, "stdout", stdout)
+    monkeypatch.setattr(dependency_guard.os, "open", lambda _path, _flags: replacement)
+    monkeypatch.setattr(dependency_guard.os, "close", closed.append)
+    monkeypatch.setattr(dependency_guard.os, "dup2", lambda source, target: duplicated.append((source, target)))
+
+    dependency_guard._discard_failed_stdout()
+
+    assert duplicated == expected_duplication
+    assert closed == expected_close
+
+
 def test_lost_error_frame_preserves_exit_without_payload_leak_and_recovers(guard_runtime: GuardRuntime) -> None:
     process = _start_with_closed_stdout(guard_runtime, "status", PAYLOAD_SECRET + b"\n")
+
+    code, stderr = _finish_without_stdout(process)
+
+    assert code == 10
+    assert stderr == b""
+    assert PAYLOAD_SECRET not in stderr
+    assert not guard_runtime.journal.exists()
+    _assert_clean_status(guard_runtime)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-descriptor reuse contract")
+def test_closed_stdout_descriptor_reuse_preserves_protocol_exit_and_recovers(
+    guard_runtime: GuardRuntime,
+) -> None:
+    process = _start_after_closing_stdout_descriptor(
+        guard_runtime,
+        "status",
+        PAYLOAD_SECRET + b"\n",
+    )
 
     code, stderr = _finish_without_stdout(process)
 
@@ -142,6 +192,38 @@ def _start_with_closed_stdout(
     finally:
         os.close(write_descriptor)
     os.close(read_descriptor)
+    try:
+        _write_bytes(process, request)
+    except BaseException:
+        process.kill()
+        process.wait(timeout=PROCESS_TIMEOUT_SECONDS)
+        raise
+    return process
+
+
+def _start_after_closing_stdout_descriptor(
+    runtime: GuardRuntime,
+    mode: str,
+    request: bytes,
+) -> subprocess.Popen[bytes]:
+    program = "\n".join(
+        [
+            "import os, runpy, sys",
+            "helper, mode = sys.argv[1:]",
+            "os.close(1)",
+            "sys.argv = [helper, mode]",
+            "runpy.run_path(helper, run_name='__main__')",
+        ]
+    )
+    environment = os.environ.copy()
+    environment["OW_GUARD_TEST_PIP_SENTINEL"] = str(runtime.pip_sentinel)
+    process = subprocess.Popen(
+        [str(runtime.executable), "-I", "-c", program, str(HELPER), mode],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
     try:
         _write_bytes(process, request)
     except BaseException:
