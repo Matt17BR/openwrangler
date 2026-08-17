@@ -341,3 +341,58 @@ export function rKernelTestCell(
 ): RFrameCell {
   return { kind, raw, display, isNull: false, isNaN: false } as RFrameCell;
 }
+export function rKernelPlanRequest(
+  kind: "applyDraft" | "discardDraft" | "undoStep",
+  revision: number
+): Extract<OpenWranglerRequest, { kind: "applyDraft" | "discardDraft" | "undoStep" }> {
+  return {
+    kind,
+    sessionId: rKernelBridgeSessionId,
+    revision,
+    offset: 0,
+    limit: 20,
+    columnOffset: 0,
+    columnLimit: 8
+  };
+}
+
+export function rKernelDataTableContract(
+  source: RFramePageContract,
+  keyColumnIds: readonly string[]
+): RFramePageContract {
+  return {
+    ...source,
+    dataframeFlavor: "r.data.table",
+    frameSemantics: {
+      ...source.frameSemantics,
+      classes: ["data.table", "data.frame"],
+      keyColumnIds: [...keyColumnIds]
+    }
+  };
+}
+
+export function rKernelRowOrderContract(
+  source: RFramePageContract,
+  rowIds: readonly string[],
+  totalRows: number
+): RFramePageContract {
+  const template = source.page.rows[0];
+  if (!template) throw new Error("Fake R row contract requires one template row.");
+  return {
+    ...source,
+    page: {
+      ...source.page,
+      totalRows,
+      rows: rowIds.map((id, rowNumber) => ({
+        ...template,
+        id,
+        rowNumber,
+        values: template.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
+export function rKernelRowDiff(removedRows = 0): DataDiff {
+  return { ...rKernelRenameDiff(), removedRows };
+}
