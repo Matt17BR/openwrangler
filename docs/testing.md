@@ -36,8 +36,12 @@ matrix for release candidates or changes that cross those boundaries.
   covers stable-reference compound filters and multi-column sorts, AND/OR logic, typed predicates and selections,
   value search, per-key direction and missing-value placement, exact integer64 ordering, duplicate-name references,
   filtered and sorted pagination, source immutability, malformed or stale rules, and source row IDs in logical view
-  order. Filter Rows and Sort Rows tests cover stable source-row identities, current-view conversion, `NA` versus
-  `NaN`, compound sort priority, stable ties, missing-value placement, history, diffs, and data-table key behavior.
+  order. Row-origin regressions require zero per-row origin storage for a contiguous live capture, reject extra or
+  active bindings, unlocked fields, duplicate mappings, and a sequential-state transfer over a mapped capture, and
+  compare exact page bytes plus numeric, temporal, factor, and `integer64` profile structures with the materialized
+  identity representation. Filter Rows and Sort Rows tests cover stable source-row identities, current-view
+  conversion, `NA` versus `NaN`, compound sort priority, stable ties, missing-value placement, history, diffs, and
+  data-table key behavior.
   Drop Missing Rows tests cover the Any and All modes, `NA` and `NaN`, empty results, explicit row names, zero-column
   frames, and stable source-row identities. Drop Duplicates tests cover first/last/none retention, selected-column and
   whole-row comparison, source order, stable row identities, and R's treatment of `NA` and `NaN`. Both cover duplicate and
