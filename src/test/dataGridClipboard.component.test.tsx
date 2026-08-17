@@ -79,7 +79,7 @@ describe("DataGrid clipboard interactions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5"));
-    expect(screen.getByText("Copied row.")).toBeTruthy();
+    expect(await screen.findByText("Copied row.")).toBeTruthy();
   });
 
   it("extends a rectangular pointer selection and copies its exact displayed values", async () => {
