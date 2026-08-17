@@ -39,7 +39,8 @@ precise touch-assisted selection.
 accessible description states these rules, and the footer reports the selected dimensions. **Copy range** or
 `Ctrl/Cmd+C` copies the displayed values in the rectangle as tab-separated rows. **Copy cell** copies the focused
 cell. **Copy row** copies the loaded columns in the focused row and says when the row is only a projected set of
-columns.
+columns. A keyboard rectangle can cross a fetched block and remains selected, but **Copy range** and `Ctrl/Cmd+C`
+report that every selected row and column must be loaded before copying. They do not copy a partial rectangle.
 
 PySpark traversal remains contiguous even after the total becomes exact. In that backend, `Ctrl/Cmd+End` advances
 only to the next permitted block instead of skipping directly to the final row.
