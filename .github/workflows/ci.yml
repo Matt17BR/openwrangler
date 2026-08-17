@@ -397,7 +397,7 @@ jobs:
       - canonical-editor
       - visual-accessibility
       - windows-unique
-    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
