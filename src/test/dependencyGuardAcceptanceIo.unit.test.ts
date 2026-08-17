@@ -42,6 +42,7 @@ function fixture(root: string): DependencyGuardRecoveryFixture {
       importModule: "fixture",
       distribution: "fixture",
       installSpec: "fixture==1",
+      exactVersion: null,
       minimumVersion: "1",
       maximumVersionExclusive: "2"
     },
