@@ -78,6 +78,40 @@ def test_named_index_metadata_and_labels_follow_the_exact_filtered_sorted_slice(
     manager.close_session(session_id, 0)
 
 
+def test_positional_index_stays_positional_after_a_filtered_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = pd.DataFrame({"score": [10, 30, 20], "city": ["Oslo", "Rome", "Lima"]})
+    manager = SessionManager()
+    opened = open_frame(manager, monkeypatch, frame)
+    session_id = str(opened["metadata"]["sessionId"])
+
+    filtered = manager.get_page(
+        session_id,
+        0,
+        0,
+        20,
+        {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "score",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gt", "value": 10}],
+                }
+            ],
+            "sort": [{"column": "score", "direction": "desc", "nulls": "last"}],
+        },
+    )
+
+    assert filtered["metadata"]["rowAxis"] == {"kind": "positional", "levelNames": []}
+    assert [row["values"][0]["display"] for row in filtered["page"]["rows"]] == ["30", "20"]
+    assert all("rowLabel" not in row for row in filtered["page"]["rows"])
+    assert isinstance(frame.index, pd.RangeIndex)
+    assert frame.index.tolist() == [0, 1, 2]
+    manager.close_session(session_id, 0)
+
+
 def test_multiindex_survives_preview_inspection_apply_and_undo_without_becoming_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

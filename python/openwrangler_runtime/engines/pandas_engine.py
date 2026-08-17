@@ -200,6 +200,7 @@ class PandasEngine(DataFrameEngine):
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         df = self.normalize(frame)
+        positional_row_axis = self.row_axis(df)["kind"] == "positional"
         column_masks = []
         for column_filter in model.get("filters", []):
             position = self._resolve_visible_position(df, column_filter.get("column"), "filter")
@@ -263,6 +264,8 @@ class PandasEngine(DataFrameEngine):
                         na_position=rule.get("nulls", "last"),
                         kind="stable",
                     )
+        if positional_row_axis and filtered is not df:
+            filtered = filtered.reset_index(drop=True)
         return filtered
 
     def page(

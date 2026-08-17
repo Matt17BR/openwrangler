@@ -104,6 +104,35 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
       "The second ordinary column must retain its full-schema coordinate."
     );
 
+    options.recordProgress("verify:notebook:pandas-index:export-preserve-csv");
+    await exportCleanedDataThroughWorkbench(app, options.workbench, preservedCsvPath, "csv", {
+      rowAxisPolicy: "preserve"
+    });
+    const csvText = readFileSync(preservedCsvPath, "utf8").replace(/\r\n/gu, "\n");
+    assert.equal(
+      csvText,
+      ["region,account,amount,city", "north,acct-b,10,Oslo", "south,acct-a,30,Rome", "north,acct-c,20,Lima", ""].join(
+        "\n"
+      ),
+      "Preserving the Pandas index must serialize its exact named levels before ordinary columns."
+    );
+
+    options.recordProgress("verify:notebook:pandas-index:export-omit-parquet");
+    await exportCleanedDataThroughWorkbench(app, options.workbench, omittedParquetPath, "parquet", {
+      rowAxisPolicy: "omit"
+    });
+    const exportVerification = await options.executeNotebook(
+      [
+        `index_omitted_export = pd.read_parquet(${JSON.stringify(omittedParquetPath)})`,
+        "assert list(index_omitted_export.columns) == ['amount', 'city']",
+        "assert isinstance(index_omitted_export.index, pd.RangeIndex)",
+        "assert index_omitted_export.index.tolist() == [0, 1, 2]",
+        "assert index_omitted_export.to_dict(orient='list') == {'amount': [10, 30, 20], 'city': ['Oslo', 'Rome', 'Lima']}",
+        "print('PANDAS_INDEX_EXPORT_OK')"
+      ].join("\n")
+    );
+    assert.match(exportVerification, /PANDAS_INDEX_EXPORT_OK/u);
+
     const amountColumn = active.metadata.schema.find((column) => column.name === "amount");
     assert.ok(amountColumn, "The Pandas index fixture must expose amount.");
     const filteredView: FilterModel = {
@@ -224,36 +253,6 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
       undone.page.rows.map((row) => row.rowLabel),
       ["north · acct-b", "south · acct-a", "north · acct-c"]
     );
-
-    const exportApp = await options.sessionApp(sessionId, "the restored named-MultiIndex Pandas session");
-    options.recordProgress("verify:notebook:pandas-index:export-preserve-csv");
-    await exportCleanedDataThroughWorkbench(exportApp, options.workbench, preservedCsvPath, "csv", {
-      rowAxisPolicy: "preserve"
-    });
-    const csvText = readFileSync(preservedCsvPath, "utf8").replace(/\r\n/gu, "\n");
-    assert.equal(
-      csvText,
-      ["region,account,amount,city", "north,acct-b,10,Oslo", "south,acct-a,30,Rome", "north,acct-c,20,Lima", ""].join(
-        "\n"
-      ),
-      "Preserving the Pandas index must serialize its exact named levels before ordinary columns."
-    );
-
-    options.recordProgress("verify:notebook:pandas-index:export-omit-parquet");
-    await exportCleanedDataThroughWorkbench(exportApp, options.workbench, omittedParquetPath, "parquet", {
-      rowAxisPolicy: "omit"
-    });
-    const exportVerification = await options.executeNotebook(
-      [
-        `index_omitted_export = pd.read_parquet(${JSON.stringify(omittedParquetPath)})`,
-        "assert list(index_omitted_export.columns) == ['amount', 'city']",
-        "assert isinstance(index_omitted_export.index, pd.RangeIndex)",
-        "assert index_omitted_export.index.tolist() == [0, 1, 2]",
-        "assert index_omitted_export.to_dict(orient='list') == {'amount': [10, 30, 20], 'city': ['Oslo', 'Rome', 'Lima']}",
-        "print('PANDAS_INDEX_EXPORT_OK')"
-      ].join("\n")
-    );
-    assert.match(exportVerification, /PANDAS_INDEX_EXPORT_OK/u);
 
     const sourceVerification = await options.executeNotebook(
       [
