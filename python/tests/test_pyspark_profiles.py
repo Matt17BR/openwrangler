@@ -25,7 +25,7 @@ spark_session = _shared_spark_session
 
 
 def test_summary_batch_ranges_bound_exact_work_and_action_formula() -> None:
-    numeric_shape = (2, 13)
+    numeric_shape = (2, 14)
     mixed_shapes = [
         numeric_shape,
         numeric_shape,
@@ -447,10 +447,49 @@ def test_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema(
             "isNull": False,
             "isNaN": False,
         }
+        assert summaries[0]["numeric"]["sum"] == 2.0
+        assert summaries[0]["numeric"]["exactSum"] == {
+            "kind": "integer",
+            "raw": 2,
+            "display": "2",
+            "isNull": False,
+            "isNaN": False,
+        }
         assert summaries[1]["numeric"]["exactMin"]["display"] == "-123456789012345.123456789012345678"
         assert summaries[1]["numeric"]["exactMax"]["display"] == "987654321098765.987654321098765432"
         assert summaries[1]["numeric"]["exactMin"]["kind"] == "decimal"
         assert summaries[1]["numeric"]["exactMax"]["kind"] == "decimal"
+        assert summaries[1]["numeric"]["exactSum"]["display"] == "864197532086420.864197532086419754"
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_numeric_summaries_publish_typed_zero_for_all_missing_domains(spark_session: Any) -> None:
+    frame = spark_session.createDataFrame(
+        [(None, None, None), (None, None, None)],
+        "whole long, amount decimal(18,4), floating double",
+    )
+    engine, indexed = _open_engine(frame, "empty-numeric-summary")
+    try:
+        summaries = engine.summaries(indexed, [(0, "whole-id"), (1, "amount-id"), (2, "floating-id")])
+
+        assert summaries[0]["numeric"] == {
+            "sum": 0.0,
+            "exactSum": {"kind": "integer", "raw": 0, "display": "0", "isNull": False, "isNaN": False},
+        }
+        assert summaries[1]["numeric"] == {
+            "sum": 0.0,
+            "exactSum": {
+                "kind": "decimal",
+                "raw": "0.0000",
+                "display": "0.0000",
+                "isNull": False,
+                "isNaN": False,
+            },
+        }
+        assert summaries[2]["numeric"] == {"sum": 0.0}
     finally:
         engine.close()
 

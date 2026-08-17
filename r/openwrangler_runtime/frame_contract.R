@@ -1954,6 +1954,14 @@ openwrangler_r_frame_contract <- local({
   numeric_profile <- function(column, semantics, present_indices, value_keys, budget, label) {
     values <- numeric_profile_values(column, semantics, present_indices)
     numeric <- list()
+    if (semantics$kind %in% c("integer", "integer64")) {
+      exact_sum <- exact_integer_sum_text(column[present_indices], semantics$kind)
+      numeric$exactSum <- exact_profile_integer_text_cell(exact_sum, budget, paste0(label, " sum"))
+      sum_value <- finite_statistic(suppressWarnings(as.double(exact_sum)))
+    } else {
+      sum_value <- finite_statistic(suppressWarnings(sum(values)))
+    }
+    if (!is.null(sum_value)) numeric$sum <- sum_value
     candidates <- list(
       min = if (length(values) == 0L) NULL else suppressWarnings(min(values)),
       max = if (length(values) == 0L) NULL else suppressWarnings(max(values)),
@@ -2164,7 +2172,9 @@ openwrangler_r_frame_contract <- local({
     numeric_finite_count <- 0
     numeric_mean <- 0
     numeric_m2 <- 0
+    numeric_sum <- 0
     numeric_has_nonfinite <- FALSE
+    exact_sum <- "0"
     exact_minimum <- NULL
     exact_maximum <- NULL
     datetime_minimum <- NULL
@@ -2231,6 +2241,7 @@ openwrangler_r_frame_contract <- local({
           finite_values <- values[is.finite(values)]
           numeric_has_nonfinite <- numeric_has_nonfinite || length(finite_values) != length(values)
           if (length(finite_values) != 0L) {
+            numeric_sum <- numeric_sum + sum(finite_values)
             chunk_finite_count <- length(finite_values)
             chunk_mean <- mean(finite_values)
             chunk_m2 <- sum((finite_values - chunk_mean)^2)
@@ -2246,6 +2257,7 @@ openwrangler_r_frame_contract <- local({
             numeric_finite_count <- numeric_finite_count + chunk_finite_count
           }
           if (kind %in% c("integer", "integer64")) {
+            exact_sum <- add_signed_decimal(exact_sum, exact_integer_sum_text(present, kind))
             if (kind == "integer64") {
               ascending <- order_integer64(present, FALSE)
               candidate_minimum <- as.character(unname(present[ascending[[1L]]]))
@@ -2346,6 +2358,15 @@ openwrangler_r_frame_contract <- local({
 
     if (kind %in% c("integer", "integer64", "double", "difftime")) {
       numeric <- list()
+      if (kind %in% c("integer", "integer64")) {
+        numeric$exactSum <- exact_profile_integer_text_cell(exact_sum, budget, paste0(label, " sum"))
+        sum_value <- finite_statistic(suppressWarnings(as.double(exact_sum)))
+      } else if (!numeric_has_nonfinite) {
+        sum_value <- finite_statistic(numeric_sum)
+      } else {
+        sum_value <- NULL
+      }
+      if (!is.null(sum_value)) numeric$sum <- sum_value
       minimum <- finite_statistic(numeric_minimum)
       maximum <- finite_statistic(numeric_maximum)
       if (!is.null(minimum)) numeric$min <- minimum
@@ -7130,6 +7151,7 @@ openwrangler_r_frame_contract <- local({
 
   exact_integer_sum_text <- function(values, kind) {
     total <- "0"
+    if (length(values) == 0L) return(total)
     if (identical(kind, "integer")) {
       # Each batch stays below 2^53, so its double sum is still an exact
       # integer. Only the small set of batch totals needs decimal folding.

@@ -30,6 +30,7 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
+    normalized_numeric_sum,
     numeric_histogram_bin_count,
     numeric_histogram_edges,
     numeric_visualization_from_bin_counts,
@@ -542,6 +543,7 @@ class PySparkEngine(DataFrameEngine):
                 for metric_name, metric_expression in (
                     ("__ow_min", functions.min(valid_column)),
                     ("__ow_max", functions.max(valid_column)),
+                    ("__ow_sum", _spark_numeric_sum(functions, valid_column, column_type)),
                     ("__ow_mean", functions.avg(valid_column)),
                     ("__ow_median", functions.median(valid_column)),
                     ("__ow_std", functions.stddev_samp(valid_column)),
@@ -690,6 +692,12 @@ class PySparkEngine(DataFrameEngine):
                     "median": _finite_float(metrics["__ow_median"]),
                     "std": _finite_float(metrics["__ow_std"]),
                 }
+                native_sum = _spark_python_value(metrics["__ow_sum"])
+                if valid_count == 0:
+                    native_sum = _spark_numeric_zero(column_type, plan["dataType"])
+                if column_type == "integer" and isinstance(native_sum, Decimal):
+                    native_sum = int(native_sum)
+                numeric.update(normalized_numeric_sum(native_sum, column_type))
                 if column_type in {"integer", "decimal"} and metrics["__ow_min"] is not None:
                     numeric["exactMin"] = normalize_cell(_spark_python_value(metrics["__ow_min"]))
                     numeric["exactMax"] = normalize_cell(_spark_python_value(metrics["__ow_max"]))
@@ -1878,3 +1886,20 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return result if isfinite(result) else None
+
+
+def _spark_numeric_sum(functions: Any, valid_column: Any, column_type: str) -> Any:
+    if column_type == "integer":
+        return functions.try_sum(valid_column.cast("decimal(38,0)"))
+    if column_type == "decimal":
+        return functions.try_sum(valid_column)
+    return functions.sum(valid_column)
+
+
+def _spark_numeric_zero(column_type: str, data_type: Any) -> int | float | Decimal:
+    if column_type == "integer":
+        return 0
+    if column_type == "decimal":
+        scale = int(getattr(data_type, "scale", 0))
+        return Decimal((0, (0,), -scale))
+    return 0.0

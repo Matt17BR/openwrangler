@@ -11,7 +11,7 @@ import {
   viewNumericBinFilter,
   viewValueSelectionFilter
 } from "../../shared/filterModel";
-import { formatNumericSummaryNumber, numericExtremumDisplay } from "../numericSummary";
+import { formatNumericSummaryNumber, numericExtremumDisplay, numericSumDisplay } from "../numericSummary";
 import { ProfileValueToggle } from "../ProfileValueToggle";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 import {
@@ -44,7 +44,7 @@ interface SummaryPanelProps {
 }
 
 const summaryViews: readonly SummaryPanelView[] = ["column", "dataset", "filters"];
-const MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS = 96;
+const MAX_VISIBLE_EXACT_NUMERIC_CHARACTERS = 96;
 
 export function SummaryPanel({
   metadata,
@@ -358,12 +358,15 @@ function TypeSpecificStats({
   if (summary.numeric) {
     const minimum = numericExtremumDisplay(summary.numeric, "min");
     const maximum = numericExtremumDisplay(summary.numeric, "max");
+    const sum = numericSumDisplay(summary.numeric);
     return (
       <>
         <dt>Min</dt>
-        <NumericExtremumValue label="Minimum" value={minimum} />
+        <ExactNumericValue label="Minimum" value={minimum} />
         <dt>Max</dt>
-        <NumericExtremumValue label="Maximum" value={maximum} />
+        <ExactNumericValue label="Maximum" value={maximum} />
+        <dt>Sum</dt>
+        <ExactNumericValue label="Sum" value={sum} />
         <dt>Mean</dt>
         <dd>{formatNumber(summary.numeric.mean)}</dd>
         <dt>Median</dt>
@@ -461,15 +464,15 @@ function ProfileCountValue({
   );
 }
 
-function NumericExtremumValue({
+function ExactNumericValue({
   label,
   value
 }: {
-  label: "Minimum" | "Maximum";
+  label: "Minimum" | "Maximum" | "Sum";
   value: ReturnType<typeof numericExtremumDisplay>;
 }) {
   if (!value) return <dd>n/a</dd>;
-  const visibleValue = value.exact ? boundedExactExtremumText(value.display) : value.display;
+  const visibleValue = value.exact ? boundedExactNumericText(value.display) : value.display;
   return (
     <dd
       className={value.exact ? "exactNumericExtremum" : undefined}
@@ -481,10 +484,10 @@ function NumericExtremumValue({
   );
 }
 
-function boundedExactExtremumText(value: string): string {
-  if (value.length <= MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS) return value;
-  const leadingCharacters = Math.ceil((MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS - 1) / 2);
-  const trailingCharacters = MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS - leadingCharacters - 1;
+function boundedExactNumericText(value: string): string {
+  if (value.length <= MAX_VISIBLE_EXACT_NUMERIC_CHARACTERS) return value;
+  const leadingCharacters = Math.ceil((MAX_VISIBLE_EXACT_NUMERIC_CHARACTERS - 1) / 2);
+  const trailingCharacters = MAX_VISIBLE_EXACT_NUMERIC_CHARACTERS - leadingCharacters - 1;
   return `${value.slice(0, leadingCharacters)}…${value.slice(-trailingCharacters)}`;
 }
 

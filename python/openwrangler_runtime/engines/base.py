@@ -1036,6 +1036,23 @@ def normalize_cell(value: Any) -> dict[str, Any]:
     return cell
 
 
+def normalized_numeric_sum(value: Any, semantic_type: str) -> dict[str, Any]:
+    """Return the finite approximate and lossless typed forms of a profile sum."""
+    if value is None:
+        return {}
+    if isinstance(value, Decimal) and not value.is_finite():
+        return {}
+    approximate = _maybe_float(value)
+    result: dict[str, Any] = {}
+    if approximate is not None and isfinite(approximate):
+        result["sum"] = approximate
+    if semantic_type in {"integer", "decimal"}:
+        exact = normalize_cell(value)
+        if exact["kind"] == semantic_type and not exact["isNull"] and not exact["isNaN"]:
+            result["exactSum"] = exact
+    return result
+
+
 def infer_semantic_type(raw_type: str) -> ColumnType:
     lowered = raw_type.lower()
     # Container dtypes include their children (for example ``List(Int64)``), so

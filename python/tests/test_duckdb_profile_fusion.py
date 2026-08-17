@@ -185,6 +185,14 @@ def test_duckdb_fused_profiles_preserve_numeric_and_temporal_payload_bytes(
                 "median": 0.0,
                 "min": -1.0,
                 "std": 1.0,
+                "sum": 0.0,
+                "exactSum": {
+                    "display": "0",
+                    "isNaN": False,
+                    "isNull": False,
+                    "kind": "integer",
+                    "raw": 0,
+                },
             },
             "rawType": "HUGEINT",
             "topValues": [
@@ -229,6 +237,14 @@ def test_duckdb_fused_profiles_preserve_numeric_and_temporal_payload_bytes(
                 "median": 0.0,
                 "min": -1.0,
                 "std": 1.0,
+                "sum": 0.0,
+                "exactSum": {
+                    "display": "0.0000",
+                    "isNaN": False,
+                    "isNull": False,
+                    "kind": "decimal",
+                    "raw": "0.0000",
+                },
             },
             "rawType": "DECIMAL(18,4)",
             "topValues": [
@@ -253,7 +269,7 @@ def test_duckdb_fused_profiles_preserve_numeric_and_temporal_payload_bytes(
             "distinctCount": 3,
             "nanCount": 1,
             "nullCount": 1,
-            "numeric": {"max": 1.0, "mean": 0.0, "median": 0.0, "min": -1.0, "std": 1.0},
+            "numeric": {"max": 1.0, "mean": 0.0, "median": 0.0, "min": -1.0, "std": 1.0, "sum": 0.0},
             "rawType": "DOUBLE",
             "topValues": [
                 {"count": 1, "value": "-1.0"},
