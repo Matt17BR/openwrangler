@@ -140,15 +140,19 @@ def _emit(payload: dict[str, Any]) -> None:
 
 def _discard_failed_stdout() -> None:
     try:
-        descriptor = os.open(os.devnull, os.O_WRONLY)
-    except OSError:
+        stdout_descriptor = sys.stdout.buffer.fileno()
+        replacement_descriptor = os.open(os.devnull, os.O_WRONLY)
+    except (OSError, ValueError):
         return
     try:
-        os.dup2(descriptor, sys.stdout.buffer.fileno())
+        if replacement_descriptor != stdout_descriptor:
+            os.dup2(replacement_descriptor, stdout_descriptor)
     except (OSError, ValueError):
         pass
     finally:
-        os.close(descriptor)
+        if replacement_descriptor != stdout_descriptor:
+            with contextlib.suppress(OSError):
+                os.close(replacement_descriptor)
 
 
 def _emit_error(code: str) -> None:
