@@ -180,9 +180,10 @@ import { createReleasedRTextOperations } from "./releasedRTextOperations";
 import { createReleasedRVariableDiscovery } from "./releasedRVariableDiscovery";
 import { createReleasedRNotebookMedia } from "./releasedRNotebookMedia";
 import { createReleasedREditingModeTransition } from "./releasedREditingModeTransition";
+import { createReleasedREditingCoverage } from "./releasedREditingCoverage";
+import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
 import { exerciseReleasedRLowercaseOperation } from "./releasedRLowercaseOperation";
 import { exerciseReleasedRCastOperation } from "./releasedRCastOperation";
-import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
 import { exerciseReleasedRGroupByOperation } from "./releasedRGroupByOperation";
 import { createReleasedRFormulaDatetimeOperations } from "./releasedRFormulaDatetimeOperations";
 import { createReleasedRRepresentativeEditingJourney } from "./releasedRRepresentativeEditing";
@@ -1647,53 +1648,17 @@ async function exerciseReleasedRJupyterExtension(
     recordReleasedRAcceptanceSection(phase, coverage, "grid", "complete");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await exerciseReleasedREditingModeTransition(testing, workbench, notebook, base, phase);
-    recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");
-    if (coverage.editing === "core-catalog" || coverage.editing === "clone-lifecycle") {
-      await exerciseReleasedREditingJourney(
-        testing,
-        workbench,
-        base.sessionId,
-        notebook,
-        notebookPath,
-        directory,
-        phase,
-        screenshotOutput,
-        coverage.editing
-      );
-    } else {
-      await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, notebook, phase);
-      if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {
-        await exerciseReleasedRCategoricalEditingJourney(
-          { testing, workbench, sessionId: base.sessionId },
-          {
-            openReleasedROperationPicker,
-            reacquireAcknowledgedSessionApp,
-            recordAcceptanceProgress,
-            releasedRSessionApp,
-            requireFreshExactSessionPanelHydration,
-            waitFor,
-            waitForLocatorText,
-            QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
-            WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
-          }
-        );
-      }
-      if (phase === "jupyter-r" && coverage.focusedEditing === "value-operations") {
-        await exerciseReleasedRValueOperationsJourney(
-          testing,
-          workbench,
-          base.sessionId,
-          notebook,
-          notebookPath,
-          directory,
-          phase,
-          screenshotOutput
-        );
-      }
-    }
-    recordReleasedRAcceptanceSection(phase, coverage, "editing", "complete");
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
-    await disposePackagedSessionPanel(testing, base.sessionId, "the editable orders R data.frame session");
+    await exerciseReleasedREditingCoverage(
+      testing,
+      workbench,
+      base,
+      notebook,
+      notebookPath,
+      directory,
+      phase,
+      coverage,
+      screenshotOutput
+    );
 
     await exerciseReleasedRCollapseFrameSessions(testing, workbench, notebook, phase, coverage);
 
@@ -2160,6 +2125,27 @@ const releasedRValueOperationDependencies = {
   waitFor,
   waitForLocatorText
 } as const;
+
+const exerciseReleasedREditingCoverage = createReleasedREditingCoverage({
+  assertReleasedRRuntimeBinding,
+  categoricalDependencies: {
+    openReleasedROperationPicker,
+    reacquireAcknowledgedSessionApp,
+    recordAcceptanceProgress,
+    releasedRSessionApp,
+    requireFreshExactSessionPanelHydration,
+    waitFor,
+    waitForLocatorText,
+    QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
+    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
+  },
+  disposePackagedSessionPanel,
+  exerciseReleasedREditingJourney,
+  exerciseReleasedRCategoricalEditingJourney,
+  exerciseReleasedRRepresentativeEditingJourney,
+  exerciseReleasedRValueOperationsJourney,
+  recordReleasedRAcceptanceSection
+});
 
 async function exerciseReleasedREditingJourney(
   testing: TestApi,
