@@ -6453,6 +6453,168 @@ assert_error(
 )
 assert_true(!active_mode_called, "capture validation evaluated an attacker-controlled active binding")
 
+active_source_reader_called <- FALSE
+active_source_reader_capture <- new.env(parent = emptyenv())
+for (field in setdiff(ls(envir = large_capture, all.names = TRUE), "sourceReader")) {
+  assign(field, get(field, envir = large_capture, inherits = FALSE), envir = active_source_reader_capture)
+}
+makeActiveBinding("sourceReader", function(value) {
+  active_source_reader_called <<- TRUE
+  function() large_source$frame
+}, active_source_reader_capture)
+class(active_source_reader_capture) <- "openwrangler_r_frame_capture"
+lockEnvironment(active_source_reader_capture, bindings = TRUE)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    active_source_reader_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+assert_true(
+  !active_source_reader_called,
+  "capture validation evaluated an attacker-controlled source-reader binding"
+)
+
+replace_capture_binding <- function(capture, field, value) {
+  unlockBinding(field, capture)
+  assign(field, value, envir = capture)
+  lockBinding(field, capture)
+  invisible(NULL)
+}
+
+origin_attack_frame <- data.frame(value = 1:3)
+origin_attack_reads <- 0L
+origin_attack_capture <- NULL
+origin_attack_reader <- function() {
+  origin_attack_reads <<- origin_attack_reads + 1L
+  if (origin_attack_reads == 2L) {
+    replace_capture_binding(origin_attack_capture, "rowOriginKind", "mapped")
+    replace_capture_binding(origin_attack_capture, "rowOrigins", c(1L, 1L, 3L))
+  }
+  origin_attack_frame
+}
+origin_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(origin_attack_reader)
+invisible(openwrangler_r_frame_contract$materialize_page(origin_attack_capture, row_limit = 1L, column_limit = 1L))
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    origin_attack_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+descriptor_attack_initial_frame <- data.frame(value = 1:3)
+descriptor_attack_replacement_frame <- data.frame(value = 1:2)
+descriptor_attack_replacement_capture <- openwrangler_r_frame_contract$capture_live_frame(
+  function() descriptor_attack_replacement_frame
+)
+descriptor_attack_reads <- 0L
+descriptor_attack_capture <- NULL
+descriptor_attack_reader <- function() {
+  descriptor_attack_reads <<- descriptor_attack_reads + 1L
+  if (descriptor_attack_reads == 2L) {
+    replace_capture_binding(
+      descriptor_attack_capture,
+      "descriptor",
+      descriptor_attack_replacement_capture$descriptor
+    )
+    replace_capture_binding(descriptor_attack_capture, "rowIdentityDomain", 2L)
+    return(descriptor_attack_replacement_frame)
+  }
+  descriptor_attack_initial_frame
+}
+descriptor_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(descriptor_attack_reader)
+invisible(openwrangler_r_frame_contract$materialize_page(descriptor_attack_capture, row_limit = 1L, column_limit = 1L))
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    descriptor_attack_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+reader_attack_frame <- data.frame(value = 1:3)
+reader_attack_reads <- 0L
+reader_attack_capture <- NULL
+reader_attack_reader <- function() {
+  reader_attack_reads <<- reader_attack_reads + 1L
+  if (reader_attack_reads == 2L) {
+    replace_capture_binding(reader_attack_capture, "sourceReader", function() reader_attack_frame)
+  }
+  reader_attack_frame
+}
+reader_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(reader_attack_reader)
+invisible(openwrangler_r_frame_contract$materialize_page(reader_attack_capture, row_limit = 1L, column_limit = 1L))
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    reader_attack_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+sort_cache_attack_frame <- data.frame(value = c(30L, 10L, 20L))
+sort_cache_attack_reads <- 0L
+sort_cache_attack_capture <- NULL
+sort_cache_attack_reader <- function() {
+  sort_cache_attack_reads <<- sort_cache_attack_reads + 1L
+  if (sort_cache_attack_reads == 2L) {
+    sort_cache <- sort_cache_attack_capture$sortCache
+    sort_cache$rowPositions <- c(2L, 2L, 1L)
+  }
+  sort_cache_attack_frame
+}
+sort_cache_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(sort_cache_attack_reader)
+sort_cache_attack_view <- view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last")))
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  sort_cache_attack_capture,
+  sort_cache_attack_view,
+  row_limit = 3L,
+  column_limit = 1L
+))
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_cache_attack_capture,
+    sort_cache_attack_view,
+    row_limit = 3L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+live_state_attack_frame <- data.frame(value = 1:3)
+live_state_attack_replacement <- data.frame(value = c(99L, 99L, 99L))
+live_state_attack_reads <- 0L
+live_state_attack_capture <- NULL
+live_state_attack_reader <- function() {
+  live_state_attack_reads <<- live_state_attack_reads + 1L
+  if (live_state_attack_reads == 2L) {
+    live_state <- live_state_attack_capture$liveState
+    live_state$hasInitialFrame <- TRUE
+    live_state$initialFrame <- live_state_attack_replacement
+  }
+  live_state_attack_frame
+}
+live_state_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(live_state_attack_reader)
+invisible(openwrangler_r_frame_contract$materialize_page(
+  live_state_attack_capture,
+  row_limit = 3L,
+  column_limit = 1L
+))
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    live_state_attack_capture,
+    row_limit = 3L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
 unlocked_large_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_source$frame)
 unlockBinding("rowOrigins", unlocked_large_capture)
 assert_error(
@@ -6505,7 +6667,7 @@ assert_error(
   "invalid-capture"
 )
 
-transferred_sequential_capture <- clone_capture(
+inconsistent_sequential_capture <- clone_capture(
   mapped_identity_capture,
   replacements = list(
     rowOriginKind = large_capture$rowOriginKind,
@@ -6514,7 +6676,7 @@ transferred_sequential_capture <- clone_capture(
 )
 assert_error(
   openwrangler_r_frame_contract$materialize_page(
-    transferred_sequential_capture,
+    inconsistent_sequential_capture,
     row_limit = 1L,
     column_limit = 1L
   ),

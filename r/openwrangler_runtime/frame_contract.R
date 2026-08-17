@@ -8184,6 +8184,87 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
+  live_capture_receipt <- function(capture) {
+    binding_fields <- c(
+      "descriptor",
+      "liveState",
+      "metadataBytes",
+      "metrics",
+      "mode",
+      "rowIdentityDomain",
+      "rowOriginKind",
+      "rowOriginOffset",
+      "rowOrigins",
+      "snapshot",
+      "sortCache",
+      "sourceReader"
+    )
+    environment_receipt <- function(environment, fields) {
+      if (!is.environment(environment)) {
+        abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+      }
+      actual_fields <- base::sort.int(ls(envir = environment, all.names = TRUE), method = "radix")
+      expected_fields <- base::sort.int(fields, method = "radix")
+      if (
+        !identical(parent.env(environment), emptyenv()) ||
+          !identical(actual_fields, expected_fields) ||
+          any(vapply(actual_fields, bindingIsActive, logical(1L), env = environment))
+      ) {
+        abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+      }
+      values <- lapply(fields, function(field) get(field, envir = environment, inherits = FALSE))
+      names(values) <- fields
+      values
+    }
+    bindings <- lapply(
+      binding_fields,
+      function(field) get(field, envir = capture, inherits = FALSE)
+    )
+    names(bindings) <- binding_fields
+    list(
+      bindings = bindings,
+      liveState = environment_receipt(capture$liveState, c("hasInitialFrame", "initialFrame")),
+      sortCache = environment_receipt(
+        capture$sortCache,
+        c("valid", "rules", "rowPositions", "columns", "bytes")
+      )
+    )
+  }
+
+  validate_live_capture_receipt <- function(capture, receipt) {
+    validate_capture(capture)
+    bindings_unchanged <- vapply(
+      names(receipt$bindings),
+      function(field) identical(get(field, envir = capture, inherits = FALSE), receipt$bindings[[field]]),
+      logical(1L)
+    )
+    environment_unchanged <- function(environment, expected) {
+      if (!is.environment(environment)) return(FALSE)
+      actual_fields <- base::sort.int(ls(envir = environment, all.names = TRUE), method = "radix")
+      expected_fields <- base::sort.int(names(expected), method = "radix")
+      if (
+        !identical(parent.env(environment), emptyenv()) ||
+          !identical(actual_fields, expected_fields) ||
+          any(vapply(actual_fields, bindingIsActive, logical(1L), env = environment))
+      ) {
+        return(FALSE)
+      }
+      all(vapply(
+        names(expected),
+        function(field) identical(get(field, envir = environment, inherits = FALSE), expected[[field]]),
+        logical(1L)
+      ))
+    }
+    if (
+      !all(bindings_unchanged) ||
+        !environment_unchanged(capture$liveState, receipt$liveState) ||
+        !environment_unchanged(capture$sortCache, receipt$sortCache)
+    ) {
+      abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+    }
+    invisible(NULL)
+  }
+
   read_capture_frame <- function(capture, validated = FALSE) {
     if (!isTRUE(validated)) validate_capture(capture)
     if (identical(capture$mode, "isolated")) return(capture$snapshot)
@@ -8197,10 +8278,10 @@ openwrangler_r_frame_contract <- local({
     }
 
     add_metric(capture$metrics, "sourceReads")
-    value <- tryCatch(
-      normalize_supported_frame(capture$sourceReader()),
-      error = function(error) source_changed()
-    )
+    receipt <- live_capture_receipt(capture)
+    value <- tryCatch(receipt$bindings$sourceReader(), error = function(error) source_changed())
+    validate_live_capture_receipt(capture, receipt)
+    value <- tryCatch(normalize_supported_frame(value), error = function(error) source_changed())
     inspected <- tryCatch(
       inspect_frame(
         value,
