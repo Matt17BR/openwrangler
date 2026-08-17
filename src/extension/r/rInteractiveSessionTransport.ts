@@ -36,9 +36,12 @@ import type { RColumnSchema, RDataframeFlavor, RFramePageContract } from "./rFra
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
 import { buildRInteractiveDispatchCode, rInteractiveRuntimeBundleId } from "./rInteractiveRuntime";
 import {
+  captureRPrivateArtifactReceipt,
   createNodeRPrivateArtifactOperations,
   readRPrivateArtifact,
+  removeIdentifiedRPrivateArtifact,
   rPrivateArtifactFailureRequiresContainerPreservation,
+  type RPrivateArtifactReceipt,
   type RPrivateArtifactOperations
 } from "./rPrivateArtifactBoundary";
 
@@ -115,7 +118,6 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private readonly dispatchSelection: (code: string) => unknown;
   private readonly terminalCloseSubscription: vscode.Disposable | undefined;
   private readonly temporaryParent: string;
-  private readonly removeFile: (filePath: string) => Promise<void>;
   private readonly artifactOperations: RPrivateArtifactOperations;
   private readonly disposalSettlementMs: number;
   private readonly dataExportCleanupTimeoutMs: number;
@@ -160,8 +162,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     this.notificationRequestId = this.createId();
     this.attachmentNonce = this.createId();
     this.temporaryParent = options.temporaryParent ?? tmpdir();
-    this.removeFile = options.removeFile ?? unlink;
-    this.artifactOperations = createNodeRPrivateArtifactOperations(this.removeFile);
+    this.artifactOperations = createNodeRPrivateArtifactOperations(options.removeFile ?? unlink);
     this.disposalSettlementMs = options.disposalSettlementMs ?? DISPOSAL_SETTLEMENT_MS;
     this.dataExportCleanupTimeoutMs = options.dataExportCleanupTimeoutMs ?? DATA_EXPORT_CLEANUP_TIMEOUT_MS;
     this.terminalMode = options.terminalMode ?? "activeOrCreate";
@@ -734,10 +735,24 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       const requestPath = path.join(mailbox.requests, `${requestId}.json`);
       const responsePath = path.join(mailbox.responses, `${requestId}.json`);
       let requestCreated = false;
+      let requestReceipt: RPrivateArtifactReceipt | undefined;
       try {
         await writeFile(requestPath, payload, { encoding: "utf8", flag: "wx", mode: 0o600 });
         requestCreated = true;
         await chmod(requestPath, 0o600);
+        try {
+          requestReceipt = await captureRPrivateArtifactReceipt({
+            filePath: requestPath,
+            maximumBytes: R_KERNEL_MAX_REQUEST_BYTES,
+            expectedBytes: Buffer.byteLength(payload, "utf8"),
+            label: "interactive R request",
+            operations: this.artifactOperations
+          });
+        } catch (error) {
+          this.mailboxCleanupSafe = false;
+          this.recordArtifactCleanupFailure(requestPath, "request", error);
+          throw error;
+        }
         const expectedProcessId = await this.prepareSelectionTarget();
         if (state.abandonBeforeDispatch) throw new KernelRequestCancelledError();
         if (!allowStopping) this.assertActive();
@@ -790,7 +805,8 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         this.attachmentVerified = true;
         return decoded;
       } finally {
-        if (requestCreated) await this.cleanupArtifact(requestPath, "request");
+        if (requestReceipt) await this.cleanupArtifact(requestReceipt, "request");
+        else if (requestCreated) this.mailboxCleanupSafe = false;
       }
     })();
     void completion.catch(() => undefined);
@@ -1164,11 +1180,12 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     }
   }
 
-  private async cleanupArtifact(filePath: string, label: "request" | "response"): Promise<void> {
+  private async cleanupArtifact(receipt: RPrivateArtifactReceipt, label: "request" | "response"): Promise<void> {
     try {
-      await removeIfPresent(filePath, this.removeFile);
+      await removeIdentifiedRPrivateArtifact(receipt, this.artifactOperations);
     } catch (error) {
-      this.recordArtifactCleanupFailure(filePath, label, error);
+      if (label === "request") this.mailboxCleanupSafe = false;
+      this.recordArtifactCleanupFailure(receipt.path, label, error);
     }
   }
 
@@ -1566,14 +1583,6 @@ function delay(milliseconds: number): Promise<void> {
   });
 }
 
-async function removeIfPresent(filePath: string, removeFile: (filePath: string) => Promise<void>): Promise<void> {
-  try {
-    await removeFile(filePath);
-  } catch (error) {
-    if (!isMissingFile(error)) throw error;
-  }
-}
-
 function isMutationRequest(request: RKernelRequest): boolean {
   return (
     request.kind === "previewStep" ||
@@ -1581,10 +1590,6 @@ function isMutationRequest(request: RKernelRequest): boolean {
     request.kind === "discardDraft" ||
     request.kind === "undoStep"
   );
-}
-
-function isMissingFile(error: unknown): boolean {
-  return isRecord(error) && error.code === "ENOENT";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,4 +1,4 @@
-import { lstat, link, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, link, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -75,6 +75,77 @@ describe("R private artifact boundary", () => {
     expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
     expect(await readFile(artifactPath, "utf8")).toBe("other");
     expect(await readFile(displacedPath, "utf8")).toBe("owned");
+  });
+
+  it("quarantines without deleting a replacement swapped after the initial identity check", async () => {
+    const artifactPath = resolve(directory, "response.json");
+    const displacedPath = resolve(directory, "owned-response.json");
+    let quarantinePath: string | undefined;
+    await writeFile(artifactPath, "owned", { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async rename(sourcePath, destinationPath) {
+        await rename(sourcePath, displacedPath);
+        await writeFile(sourcePath, "other", { mode: 0o600 });
+        quarantinePath = destinationPath;
+        await rename(sourcePath, destinationPath);
+      }
+    };
+
+    const error = await captureFailure(() =>
+      readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        expectedBytes: 5,
+        label: "test R response",
+        removeAfterRead: "success",
+        operations
+      })
+    );
+
+    expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
+    expect(quarantinePath).toBeDefined();
+    expect(await readFile(displacedPath, "utf8")).toBe("owned");
+    expect(await readFile(quarantinePath!, "utf8")).toBe("other");
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never unlinks the public pathname where a successful swap could remove a replacement", async () => {
+    const artifactPath = resolve(directory, "response.json");
+    const displacedPath = resolve(directory, "displaced-owned-response.json");
+    let attackedPublicPath = false;
+    await writeFile(artifactPath, "owned", { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async remove(filePath) {
+        if (filePath === artifactPath) {
+          attackedPublicPath = true;
+          await rename(filePath, displacedPath);
+          await writeFile(filePath, "other", { mode: 0o600 });
+          await unlink(filePath);
+          return;
+        }
+        await base.remove(filePath);
+      }
+    };
+
+    await expect(
+      readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        expectedBytes: 5,
+        label: "test R response",
+        removeAfterRead: "success",
+        operations
+      })
+    ).resolves.toEqual(Buffer.from("owned"));
+
+    expect(attackedPublicPath).toBe(false);
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(displacedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(directory)).toEqual([]);
   });
 
   it.skipIf(process.platform === "win32")("does not follow or remove a substituted symlink", async () => {
