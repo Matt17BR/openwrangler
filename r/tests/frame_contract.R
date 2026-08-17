@@ -714,9 +714,19 @@ assert_identical(
   "a grouped capture lost its actual row count"
 )
 assert_identical(
-  group_identity_capture$rowOrigins,
-  c(4L, 5L),
+  group_identity_capture$rowOriginKind,
+  "sequential",
+  "grouped rows did not retain a compact sequential identity generation"
+)
+assert_identical(
+  group_identity_capture$rowOriginOffset,
+  3,
   "grouped rows reused identities from their source capture"
+)
+assert_identical(
+  group_identity_capture$rowOrigins,
+  numeric(),
+  "grouped rows retained an unnecessary row-origin vector"
 )
 assert_identical(
   group_identity_capture$rowIdentityDomain,
@@ -729,6 +739,11 @@ assert_identical(
   "a grouped page did not publish the expanded identity domain"
 )
 assert_identical(group_identity_page$page$totalRows, 2L, "a grouped page lost its actual visible row count")
+assert_identical(
+  vapply(group_identity_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:3", "r:r:4"),
+  "grouped rows published identities from their source capture"
+)
 assert_identical(
   group_identity_page$frameSemantics$rowNames,
   "positional",
@@ -6371,10 +6386,221 @@ large_source$frame <- data.frame(
 large_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_source$frame)
 large_open_metrics <- openwrangler_r_frame_contract$capture_metrics(large_capture)
 assert_true(is.null(large_capture$snapshot), "a live capture retained an isolated dataframe snapshot")
+assert_identical(
+  large_capture$rowOriginKind,
+  "sequential",
+  "a live capture did not use implicit positional row identities"
+)
+assert_identical(
+  large_capture$rowOrigins,
+  numeric(),
+  "a live capture allocated one row-origin value per source row"
+)
+assert_identical(large_capture$rowOriginOffset, 0L, "a live capture shifted its source row identities")
+assert_true(
+  !any(c("guard", "validated", "rowOriginsValidated") %in% ls(envir = large_capture, all.names = TRUE)),
+  "a live capture exposed a transferable validation capability"
+)
 assert_identical(large_open_metrics$nullableScans, 0, "live capture scanned columns for missing values")
 assert_true(
   all(vapply(large_capture$descriptor$schema, `[[`, logical(1L), "nullable")),
   "live capture metadata was not conservatively nullable"
+)
+
+clone_capture <- function(capture, replacements = list(), additions = list()) {
+  result <- new.env(parent = emptyenv())
+  for (field in ls(envir = capture, all.names = TRUE)) {
+    assign(field, get(field, envir = capture, inherits = FALSE), envir = result)
+  }
+  for (field in names(replacements)) assign(field, replacements[[field]], envir = result)
+  for (field in names(additions)) assign(field, additions[[field]], envir = result)
+  class(result) <- "openwrangler_r_frame_capture"
+  lockEnvironment(result, bindings = TRUE)
+  result
+}
+
+forged_extra_capability_capture <- clone_capture(
+  large_capture,
+  additions = list(guard = new.env(parent = emptyenv()))
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    forged_extra_capability_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+active_mode_called <- FALSE
+active_mode_capture <- new.env(parent = emptyenv())
+for (field in setdiff(ls(envir = large_capture, all.names = TRUE), "mode")) {
+  assign(field, get(field, envir = large_capture, inherits = FALSE), envir = active_mode_capture)
+}
+makeActiveBinding("mode", function(value) {
+  active_mode_called <<- TRUE
+  "live"
+}, active_mode_capture)
+class(active_mode_capture) <- "openwrangler_r_frame_capture"
+lockEnvironment(active_mode_capture, bindings = TRUE)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    active_mode_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+assert_true(!active_mode_called, "capture validation evaluated an attacker-controlled active binding")
+
+unlocked_large_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_source$frame)
+unlockBinding("rowOrigins", unlocked_large_capture)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    unlocked_large_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+mapped_identity_source <- data.frame(value = c(40L, 20L, 30L, 10L), label = letters[1:4])
+mapped_identity_source_capture <- openwrangler_r_frame_contract$capture_frame(mapped_identity_source)
+mapped_identity_result <- openwrangler_r_frame_contract$transform_rows(
+  mapped_identity_source_capture,
+  view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last")))
+)
+mapped_identity_capture <- openwrangler_r_frame_contract$capture_frame(
+  mapped_identity_result$frame,
+  nullability_source = mapped_identity_source_capture,
+  source_row_positions = mapped_identity_result$sourcePositions
+)
+assert_identical(mapped_identity_capture$rowOriginKind, "mapped", "a reordered capture lost its row mapping")
+assert_identical(
+  mapped_identity_capture$rowOrigins,
+  c(4L, 2L, 3L, 1L),
+  "a reordered capture changed its stable row identities"
+)
+mapped_identity_page <- openwrangler_r_frame_contract$materialize_page(
+  mapped_identity_capture,
+  row_limit = 4L,
+  column_limit = 2L
+)
+assert_identical(
+  vapply(mapped_identity_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:3", "r:r:1", "r:r:2", "r:r:0"),
+  "a reordered capture published the wrong stable row identities"
+)
+
+forged_mapped_capture <- clone_capture(
+  mapped_identity_capture,
+  replacements = list(rowOrigins = c(4L, 2L, 2L, 1L))
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    forged_mapped_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+transferred_sequential_capture <- clone_capture(
+  mapped_identity_capture,
+  replacements = list(
+    rowOriginKind = large_capture$rowOriginKind,
+    rowOriginOffset = large_capture$rowOriginOffset
+  )
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    transferred_sequential_capture,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "invalid-capture"
+)
+
+row_origin_equivalence_frame <- data.frame(
+  number = c(NA_real_, NaN, -Inf, -0, 0, 1.5, Inf),
+  day = as.Date(c("2024-01-01", NA, "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-06", "2024-01-07")),
+  instant = as.POSIXct(
+    c("2024-01-01 00:00:00", NA, "2024-01-03 02:00:00", "2024-01-04 03:00:00", "2024-01-05 04:00:00", "2024-01-06 05:00:00", "2024-01-07 06:00:00"),
+    tz = "UTC"
+  ),
+  category = factor(c("b", "a", NA, "b", "", "a", "b"), levels = c("", "a", "b")),
+  wide = bit64::as.integer64(c("9007199254740993", "2", NA, "-2", "0", "5", "9007199254740994")),
+  check.names = FALSE
+)
+row_origin_sequential_capture <- openwrangler_r_frame_contract$capture_frame(row_origin_equivalence_frame)
+row_origin_materialized_capture <- clone_capture(
+  row_origin_sequential_capture,
+  replacements = list(
+    rowOriginKind = "mapped",
+    rowOriginOffset = 0,
+    rowOrigins = seq_len(nrow(row_origin_equivalence_frame))
+  )
+)
+assert_identical(
+  openwrangler_r_frame_contract$encode_page(
+    row_origin_sequential_capture,
+    row_limit = 7L,
+    column_limit = 5L
+  ),
+  openwrangler_r_frame_contract$encode_page(
+    row_origin_materialized_capture,
+    row_limit = 7L,
+    column_limit = 5L
+  ),
+  "implicit row identities changed numeric or temporal page bytes"
+)
+row_origin_equivalence_references <- lapply(
+  seq_along(row_origin_equivalence_frame),
+  function(position) list(
+    id = sprintf("r:c:%d", position - 1L),
+    name = names(row_origin_equivalence_frame)[[position]]
+  )
+)
+assert_identical(
+  openwrangler_r_frame_contract$materialize_summaries(
+    row_origin_sequential_capture,
+    row_origin_equivalence_references,
+    view_query()
+  ),
+  openwrangler_r_frame_contract$materialize_summaries(
+    row_origin_materialized_capture,
+    row_origin_equivalence_references,
+    view_query()
+  ),
+  "implicit row identities changed numeric or temporal profile structure"
+)
+assert_identical(
+  openwrangler_r_frame_contract$materialize_dataset_stats(
+    row_origin_sequential_capture,
+    view_query()
+  ),
+  openwrangler_r_frame_contract$materialize_dataset_stats(
+    row_origin_materialized_capture,
+    view_query()
+  ),
+  "implicit row identities changed dataset statistics"
+)
+assert_identical(
+  openwrangler_r_frame_contract$materialize_column_values(
+    row_origin_sequential_capture,
+    list(id = "r:c:0", name = "number"),
+    view_query(),
+    NULL,
+    10L
+  ),
+  openwrangler_r_frame_contract$materialize_column_values(
+    row_origin_materialized_capture,
+    list(id = "r:c:0", name = "number"),
+    view_query(),
+    NULL,
+    10L
+  ),
+  "implicit row identities changed numeric value counts"
 )
 
 large_direct_page <- openwrangler_r_frame_contract$materialize_view_page(

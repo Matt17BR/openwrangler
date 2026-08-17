@@ -2524,6 +2524,82 @@ openwrangler_r_frame_contract <- local({
     invisible(NULL)
   }
 
+  set_sequential_row_origins <- function(capture, row_count, row_identity_domain, offset = 0L) {
+    if (
+      !is.numeric(row_count) || !is.null(attributes(row_count)) ||
+        length(row_count) != 1L || is.na(row_count) ||
+        !is.finite(row_count) || row_count < 0 || row_count != floor(row_count) ||
+        !is.numeric(row_identity_domain) || length(row_identity_domain) != 1L ||
+        !is.null(attributes(row_identity_domain)) ||
+        is.na(row_identity_domain) || !is.finite(row_identity_domain) ||
+        row_identity_domain < row_count || row_identity_domain != floor(row_identity_domain) ||
+        !is.numeric(offset) || !is.null(attributes(offset)) ||
+        length(offset) != 1L || is.na(offset) ||
+        !is.finite(offset) || offset < 0 || offset != floor(offset) ||
+        as.double(offset) + as.double(row_count) > as.double(row_identity_domain)
+    ) {
+      abort("internal-error", "an R capture has invalid sequential row identities")
+    }
+    capture$rowOriginKind <- "sequential"
+    capture$rowOriginOffset <- offset
+    capture$rowOrigins <- numeric()
+    capture$rowIdentityDomain <- row_identity_domain
+    invisible(NULL)
+  }
+
+  set_row_origins <- function(capture, row_origins, row_identity_domain, row_count) {
+    if (
+      !is.numeric(row_count) || !is.null(attributes(row_count)) ||
+        length(row_count) != 1L || is.na(row_count) || !is.finite(row_count) ||
+        row_count < 0 || row_count != floor(row_count) ||
+        !is.numeric(row_origins) || !is.null(attributes(row_origins)) ||
+        !is.numeric(row_identity_domain) || length(row_identity_domain) != 1L ||
+        !is.null(attributes(row_identity_domain)) ||
+        is.na(row_identity_domain) || !is.finite(row_identity_domain) ||
+        row_identity_domain < row_count || row_identity_domain != floor(row_identity_domain) ||
+        length(row_origins) != row_count || anyNA(row_origins) ||
+        any(!is.finite(row_origins)) || any(row_origins != floor(row_origins)) ||
+        any(row_origins < 1L) || any(row_origins > row_identity_domain) ||
+        anyDuplicated(row_origins)
+    ) {
+      abort("internal-error", "an R capture has invalid stable row identities")
+    }
+    if (row_count == 0L) {
+      set_sequential_row_origins(capture, row_count, row_identity_domain)
+      return(invisible(NULL))
+    }
+    offset <- if (is.integer(row_origins)) row_origins[[1L]] - 1L else row_origins[[1L]] - 1
+    expected <- seq.int(offset + 1, length.out = row_count)
+    sequential <- if (is.integer(row_origins)) {
+      identical(row_origins, expected)
+    } else {
+      identical(row_origins, as.double(expected))
+    }
+    if (sequential) {
+      set_sequential_row_origins(capture, row_count, row_identity_domain, offset)
+      return(invisible(NULL))
+    }
+    capture$rowOriginKind <- "mapped"
+    capture$rowOriginOffset <- 0
+    capture$rowOrigins <- row_origins
+    capture$rowIdentityDomain <- row_identity_domain
+    invisible(NULL)
+  }
+
+  capture_row_origins_at <- function(capture, positions) {
+    if (identical(capture$rowOriginKind, "sequential")) {
+      return(capture$rowOriginOffset + positions)
+    }
+    capture$rowOrigins[positions]
+  }
+
+  capture_row_origin_at <- function(capture, position) {
+    if (identical(capture$rowOriginKind, "sequential")) {
+      return(capture$rowOriginOffset + position)
+    }
+    capture$rowOrigins[[position]]
+  }
+
   finish_capture <- function(capture) {
     class(capture) <- "openwrangler_r_frame_capture"
     lockEnvironment(capture, bindings = TRUE)
@@ -2675,7 +2751,7 @@ openwrangler_r_frame_contract <- local({
       nullability_source$rowIdentityDomain
     }
     row_origins <- if (is.null(nullability_source)) {
-      seq_len(row_count)
+      NULL
     } else {
       source_row_count <- nullability_source$descriptor$shape$rows
       if (is.null(source_row_positions)) {
@@ -2696,19 +2772,7 @@ openwrangler_r_frame_contract <- local({
       ) {
         abort("internal-error", "a derived R frame has an invalid source-row mapping")
       }
-      nullability_source$rowOrigins[as.integer(source_row_positions)]
-    }
-    if (
-      !is.numeric(row_origins) ||
-        anyNA(row_origins) ||
-        any(!is.finite(row_origins)) ||
-        any(row_origins != floor(row_origins)) ||
-        length(row_origins) != row_count ||
-        any(row_origins < 1L) ||
-        any(row_origins > row_identity_domain) ||
-        anyDuplicated(row_origins)
-    ) {
-      abort("internal-error", "an R capture has invalid stable row identities")
+      capture_row_origins_at(nullability_source, as.integer(source_row_positions))
     }
     if (!is.null(nullability_source)) {
       source_schema <- plain_metadata_storage(nullability_source$descriptor$schema)
@@ -3042,7 +3106,7 @@ openwrangler_r_frame_contract <- local({
           } else {
             source_schema[[formula_right_position]]
           }
-          source_frame <- read_capture_frame(nullability_source)
+          source_frame <- read_capture_frame(nullability_source, validated = TRUE)
           left_values <- source_frame[[source_positions[[index]]]]
           right_values <- if (formula_right_position == 0L) NULL else source_frame[[formula_right_position]]
           output_values <- snapshot[[index]]
@@ -3269,8 +3333,11 @@ openwrangler_r_frame_contract <- local({
     capture$snapshot <- snapshot
     capture$sourceReader <- NULL
     capture$descriptor <- inspected$descriptor
-    capture$rowOrigins <- row_origins
-    capture$rowIdentityDomain <- row_identity_domain
+    if (is.null(row_origins)) {
+      set_sequential_row_origins(capture, row_count, row_identity_domain)
+    } else {
+      set_row_origins(capture, row_origins, row_identity_domain, row_count)
+    }
     capture$metadataBytes <- inspected$metadataBytes
     capture$metrics <- metrics
     capture$sortCache <- new_sort_cache()
@@ -3413,8 +3480,11 @@ openwrangler_r_frame_contract <- local({
     capture$liveState$hasInitialFrame <- TRUE
     capture$liveState$initialFrame <- value
     capture$descriptor <- inspected$descriptor
-    capture$rowOrigins <- seq_len(inspected$descriptor$shape$rows)
-    capture$rowIdentityDomain <- inspected$descriptor$shape$rows
+    set_sequential_row_origins(
+      capture,
+      inspected$descriptor$shape$rows,
+      inspected$descriptor$shape$rows
+    )
     capture$metadataBytes <- inspected$metadataBytes
     capture$metrics <- metrics
     capture$sortCache <- new_sort_cache()
@@ -3431,7 +3501,7 @@ openwrangler_r_frame_contract <- local({
 
   isolate_custom_code_input <- function(capture) {
     validate_capture(capture)
-    source <- read_capture_frame(capture)
+    source <- read_capture_frame(capture, validated = TRUE)
     flavor <- capture$descriptor$dataframeFlavor
     element_names <- if (identical(flavor, "r.data.table")) {
       lapply(seq_len(storage_length(source)), function(position) {
@@ -7538,19 +7608,12 @@ openwrangler_r_frame_contract <- local({
         sprintf("Group By cannot expand the R row-identity domain beyond %s rows", format(maximum_rows))
       )
     }
-    row_origins <- if (group_count == 0) {
-      numeric()
-    } else {
-      seq.int(source_identity_domain + 1, length.out = as.integer(group_count))
-    }
-
     result <- new.env(parent = emptyenv())
     result$mode <- "isolated"
     result$snapshot <- captured$snapshot
     result$sourceReader <- NULL
     result$descriptor <- descriptor
-    result$rowOrigins <- row_origins
-    result$rowIdentityDomain <- row_identity_domain
+    set_sequential_row_origins(result, group_count, row_identity_domain, source_identity_domain)
     result$metadataBytes <- metadata_bytes
     result$metrics <- captured$metrics
     result$sortCache <- new_sort_cache()
@@ -7923,19 +7986,12 @@ openwrangler_r_frame_contract <- local({
         sprintf("Custom Code cannot expand the R row-identity domain beyond %s rows", format(maximum_rows))
       )
     }
-    row_origins <- if (output_rows == 0) {
-      numeric()
-    } else {
-      seq.int(source_domain + 1, length.out = as.integer(output_rows))
-    }
-
     result <- new.env(parent = emptyenv())
     result$mode <- "isolated"
     result$snapshot <- captured$snapshot
     result$sourceReader <- NULL
     result$descriptor <- descriptor
-    result$rowOrigins <- row_origins
-    result$rowIdentityDomain <- row_identity_domain
+    set_sequential_row_origins(result, output_rows, row_identity_domain, source_domain)
     result$metadataBytes <- metadata_bytes
     result$metrics <- captured$metrics
     result$sortCache <- new_sort_cache()
@@ -8037,25 +8093,85 @@ openwrangler_r_frame_contract <- local({
   }
 
   validate_capture <- function(capture) {
+    if (!is.environment(capture) || !identical(class(capture), "openwrangler_r_frame_capture")) {
+      abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+    }
+    actual_fields <- base::sort.int(ls(envir = capture, all.names = TRUE), method = "radix")
     if (
-      !inherits(capture, "openwrangler_r_frame_capture") ||
-        !is.environment(capture) ||
-        !environmentIsLocked(capture) ||
-        !capture$mode %in% c("isolated", "live") ||
-        !is.numeric(capture$rowOrigins) ||
+      !environmentIsLocked(capture) ||
+        !identical(parent.env(capture), emptyenv()) ||
+        length(actual_fields) < 11L || length(actual_fields) > 12L ||
+        any(vapply(actual_fields, bindingIsActive, logical(1L), env = capture)) ||
+        !all(vapply(actual_fields, bindingIsLocked, logical(1L), env = capture))
+    ) {
+      abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+    }
+    mode <- if ("mode" %in% actual_fields) capture$mode else NULL
+    expected_fields <- c(
+      "descriptor",
+      if (identical(mode, "live")) "liveState",
+      "metadataBytes",
+      "metrics",
+      "mode",
+      "rowIdentityDomain",
+      "rowOriginKind",
+      "rowOriginOffset",
+      "rowOrigins",
+      "snapshot",
+      "sortCache",
+      "sourceReader"
+    )
+    if (
+      !identical(actual_fields, base::sort.int(expected_fields, method = "radix")) ||
+        !(identical(mode, "isolated") || identical(mode, "live")) ||
+        !is.list(capture$descriptor) || !is.list(capture$descriptor$shape) ||
+        !is.numeric(capture$descriptor$shape$rows) ||
+        !is.null(attributes(capture$descriptor$shape$rows)) ||
+        length(capture$descriptor$shape$rows) != 1L ||
+        is.na(capture$descriptor$shape$rows) ||
+        !is.finite(capture$descriptor$shape$rows) ||
+        capture$descriptor$shape$rows < 0 ||
+        capture$descriptor$shape$rows != floor(capture$descriptor$shape$rows) ||
+        !is.numeric(capture$rowOrigins) || !is.null(attributes(capture$rowOrigins)) ||
         !is.numeric(capture$rowIdentityDomain) ||
+        !is.null(attributes(capture$rowIdentityDomain)) ||
         length(capture$rowIdentityDomain) != 1L ||
         is.na(capture$rowIdentityDomain) ||
         !is.finite(capture$rowIdentityDomain) ||
         capture$rowIdentityDomain < capture$descriptor$shape$rows ||
         capture$rowIdentityDomain != floor(capture$rowIdentityDomain) ||
-        length(capture$rowOrigins) != capture$descriptor$shape$rows ||
+        !is.numeric(capture$rowOriginOffset) ||
+        !is.null(attributes(capture$rowOriginOffset)) ||
+        length(capture$rowOriginOffset) != 1L ||
+        is.na(capture$rowOriginOffset) ||
+        !is.finite(capture$rowOriginOffset) ||
+        capture$rowOriginOffset < 0 ||
+        capture$rowOriginOffset != floor(capture$rowOriginOffset) ||
+        !(identical(capture$rowOriginKind, "sequential") || identical(capture$rowOriginKind, "mapped"))
+    ) {
+      abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+    }
+    row_count <- capture$descriptor$shape$rows
+    if (identical(capture$rowOriginKind, "sequential")) {
+      if (
+        length(capture$rowOrigins) != 0L ||
+          as.double(capture$rowOriginOffset) + as.double(row_count) >
+            as.double(capture$rowIdentityDomain) ||
+          (identical(mode, "live") &&
+            (capture$rowOriginOffset != 0 || capture$rowIdentityDomain != row_count))
+      ) {
+        abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+      }
+    } else if (
+      capture$rowOriginOffset != 0 ||
+        length(capture$rowOrigins) != row_count ||
         anyNA(capture$rowOrigins) ||
         any(!is.finite(capture$rowOrigins)) ||
         any(capture$rowOrigins != floor(capture$rowOrigins)) ||
         any(capture$rowOrigins < 1L) ||
         any(capture$rowOrigins > capture$rowIdentityDomain) ||
-        anyDuplicated(capture$rowOrigins)
+        anyDuplicated(capture$rowOrigins) ||
+        identical(mode, "live")
     ) {
       abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
     }
@@ -8068,8 +8184,8 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  read_capture_frame <- function(capture) {
-    validate_capture(capture)
+  read_capture_frame <- function(capture, validated = FALSE) {
+    if (!isTRUE(validated)) validate_capture(capture)
     if (identical(capture$mode, "isolated")) return(capture$snapshot)
 
     live_state <- capture$liveState
@@ -8151,7 +8267,7 @@ openwrangler_r_frame_contract <- local({
     }
     target_path <- validate_export_target(target_path)
 
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     connection <- NULL
     created <- FALSE
     completed <- FALSE
@@ -8185,7 +8301,7 @@ openwrangler_r_frame_contract <- local({
       }
     )
 
-    invisible(read_capture_frame(capture))
+    invisible(read_capture_frame(capture, validated = TRUE))
     details <- file.info(target_path)
     if (
       nrow(details) != 1L ||
@@ -8214,7 +8330,7 @@ openwrangler_r_frame_contract <- local({
       )
     }
 
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     completed <- FALSE
     connection <- NULL
     on.exit({
@@ -8229,7 +8345,7 @@ openwrangler_r_frame_contract <- local({
       }
     )
 
-    invisible(read_capture_frame(capture))
+    invisible(read_capture_frame(capture, validated = TRUE))
     details <- file.info(target_path)
     if (
       nrow(details) != 1L ||
@@ -8423,7 +8539,7 @@ openwrangler_r_frame_contract <- local({
 
   transform_rows <- function(capture, view_query) {
     validate_capture(capture)
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE)
     source_positions <- if (is.null(view$rows)) seq_len(capture$descriptor$shape$rows) else view$rows
     result <- if (identical(capture$descriptor$dataframeFlavor, "r.data.table")) {
@@ -8445,9 +8561,10 @@ openwrangler_r_frame_contract <- local({
     frame,
     row_positions,
     window,
-    total_rows = capture$descriptor$shape$rows
+    total_rows = capture$descriptor$shape$rows,
+    validated = FALSE
   ) {
-    validate_capture(capture)
+    if (!isTRUE(validated)) validate_capture(capture)
     descriptor <- capture$descriptor
     plain_schema <- plain_metadata_storage(descriptor$schema)
     source_rows <- descriptor$shape$rows
@@ -8499,7 +8616,7 @@ openwrangler_r_frame_contract <- local({
         )
       })
       row <- list(
-        id = sprintf("r:r:%.0f", capture$rowOrigins[[source_row]] - 1),
+        id = sprintf("r:r:%.0f", capture_row_origin_at(capture, source_row) - 1),
         rowNumber = as.integer(window$rowOffset) + row_index - 1L,
         values = json_array(values)
       )
@@ -8543,7 +8660,7 @@ openwrangler_r_frame_contract <- local({
     if (!identical(capture$descriptor$schema[[position]]$name, expected_name)) {
       abort("stale-column", "the missing-count column name no longer matches the R dataframe")
     }
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     as.integer(sum(is.na(frame[[position]])))
   }
 
@@ -8554,7 +8671,7 @@ openwrangler_r_frame_contract <- local({
   ) {
     validate_capture(capture)
     resolved <- resolve_profile_columns(column_references, capture$descriptor)
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
     add_metric(capture$metrics, "profileColumns", length(resolved))
     budget <- new_payload_budget(capture$metadataBytes)
@@ -8577,7 +8694,7 @@ openwrangler_r_frame_contract <- local({
     validate_capture(capture)
     descriptor <- capture$descriptor
     column_count <- descriptor$shape$columns
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
     row_count <- view$totalRows
     add_metric(capture$metrics, "datasetProfiles")
@@ -8655,7 +8772,7 @@ openwrangler_r_frame_contract <- local({
     limit <- whole_number(limit, "limit", maximum_selected_values_per_filter)
     if (limit < 1L) abort("invalid-view-query", "limit must be positive")
     if (!is.null(search)) search <- bounded_utf8(search, "search", maximum_text_bytes)
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
     source_column <- frame[[resolved_column$position]]
     column_descriptor <- descriptor$schema[[resolved_column$position]]
@@ -8745,7 +8862,7 @@ openwrangler_r_frame_contract <- local({
     column_limit = 100L
   ) {
     validate_capture(capture)
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     window <- resolve_page_window(
       capture$descriptor,
       row_offset,
@@ -8753,7 +8870,13 @@ openwrangler_r_frame_contract <- local({
       column_offset,
       column_limit
     )
-    materialize_rows(capture, frame, direct_row_positions(capture, window), window)
+    materialize_rows(
+      capture,
+      frame,
+      direct_row_positions(capture, window),
+      window,
+      validated = TRUE
+    )
   }
 
   materialize_view_page <- function(
@@ -8765,7 +8888,7 @@ openwrangler_r_frame_contract <- local({
     column_limit = 100L
   ) {
     validate_capture(capture)
-    frame <- read_capture_frame(capture)
+    frame <- read_capture_frame(capture, validated = TRUE)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE)
     total_rows <- view$totalRows
     window <- resolve_page_window(
@@ -8784,7 +8907,7 @@ openwrangler_r_frame_contract <- local({
       logical_rows <- seq.int(as.integer(window$rowOffset) + 1L, length.out = window$rowCount)
       view$rows[logical_rows]
     }
-    materialize_rows(capture, frame, row_positions, window, total_rows)
+    materialize_rows(capture, frame, row_positions, window, total_rows, validated = TRUE)
   }
 
   capture_metrics <- function(capture) {

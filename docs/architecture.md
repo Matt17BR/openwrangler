@@ -162,7 +162,12 @@ sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matri
 unrecognized attributes fail instead of losing R semantics. A plain `names` attribute is accepted on an atomic or
 classed column only when it is an unclassed character vector aligned to that column; those element labels never
 replace positional row or column identity. Source positions provide stable row identity. Explicit R
-row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
+row names travel separately as row labels and appear in the grid gutter instead of becoming a data column. Original
+and other contiguous row identities are retained as a locked, structurally validated offset and row-count range, so a
+steady-state page or profile does not allocate or rescan one origin per row. Filters and sorts that produce an
+arbitrary derived-frame mapping retain the complete mapping and validate every origin, bound, and duplicate before
+each public read. A page or profile public read validates the capture once before its internal source and page
+materializers run.
 
 This class-based boundary also covers the default frames created by the `collapse` package. `collapse::qDF()` returns a
 base `data.frame`; `qTBL()` and `qDT()` return the already supported tibble and `data.table` class vectors. Open Wrangler
