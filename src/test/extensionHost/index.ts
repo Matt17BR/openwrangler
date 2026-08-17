@@ -255,6 +255,7 @@ import {
 import { createFocusedReleasedRAcceptanceHandlers } from "./focusedReleasedRAcceptance";
 import { releasedRAcceptanceCoverageProfile } from "./releasedRAcceptanceCoverage";
 import type { ExtensionApi, TestApi } from "./extensionHostTestApi";
+import { assertNumericSummarySum, exerciseNumericSummaryPandasJourney } from "./numericSummaryJourney";
 
 interface ReleasedJupyterVariableAction {
   readonly action: Locator;
@@ -1074,6 +1075,21 @@ export async function run(): Promise<void> {
     recordAcceptanceProgress("verify:runtime-and-file-inputs");
     await exerciseRuntimeSelectionCommands(testing, fixture, testPython);
     await exercisePackagedFileInputs(testing, workspace, testPython);
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      await exerciseNumericSummaryPandasJourney({
+        testing,
+        createTemporaryDirectory: () => mkdtempSync(path.join(tmpdir(), "openwrangler-numeric-summary-")),
+        cleanupTemporaryDirectory: cleanupAcceptanceTemporaryDirectory,
+        sessionApp: async (sessionId, description) =>
+          synchronizedSessionApp(
+            await connectToEditorWorkbench(),
+            testing,
+            sessionId,
+            `${description} must render its confirmed shared-webview state.`
+          ),
+        recordProgress: recordAcceptanceProgress
+      });
+    }
   }
   recordAcceptanceProgress("verify:viewing-queries");
   await exercisePackagedViewingQueries(testing, fixture);
@@ -1914,6 +1930,7 @@ function textDocumentTab(uri: vscode.Uri): vscode.Tab | undefined {
 const exerciseReleasedRGridJourney = createReleasedRGridJourney({
   GRID_COLUMN_WINDOW,
   applyReleasedRQuickSort,
+  assertNumericSummarySum,
   assertReleasedProfileStat,
   columnReference,
   openWorkbenchContextMenu,
