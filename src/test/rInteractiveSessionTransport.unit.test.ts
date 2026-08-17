@@ -197,58 +197,89 @@ describe("interactive R session transport", () => {
     }
   });
 
-  it("waits for a timed-out export close before giving the exact session-close recovery its own budget", async () => {
-    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-export-close-timeout-unit-"));
-    const sessionId = "88888888-8888-4888-8888-888888888888";
-    const exportId = testId(4);
-    let releaseArtifactClose!: () => void;
-    let artifactCloseStarted!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      releaseArtifactClose = resolve;
-    });
-    const started = new Promise<void>((resolve) => {
-      artifactCloseStarted = resolve;
-    });
-    const requestKinds: string[] = [];
-    const invalidated = vi.fn();
-    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
-      temporaryParent,
-      dataExportCleanupTimeoutMs: 20,
-      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8),
-      runSelection: async (code) => {
-        const { requestPath, responsePath } = mailboxPaths(code);
-        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
-        requestKinds.push(request.kind);
-        if (request.kind === "closeDataExport") {
-          artifactCloseStarted();
-          await blocked;
+  it.each(Array.from({ length: 8 }, (_value, index) => index + 1))(
+    "repeatedly waits for a timed-out export close before giving session recovery its own budget (%i)",
+    async () => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-export-close-timeout-unit-"));
+      const sessionId = "88888888-8888-4888-8888-888888888888";
+      const exportId = testId(4);
+      let releaseArtifactClose!: () => void;
+      let artifactCloseStarted!: () => void;
+      let releaseSessionClose!: () => void;
+      let sessionCloseStarted!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        releaseArtifactClose = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        artifactCloseStarted = resolve;
+      });
+      const sessionBlocked = new Promise<void>((resolve) => {
+        releaseSessionClose = resolve;
+      });
+      const sessionStarted = new Promise<void>((resolve) => {
+        sessionCloseStarted = resolve;
+      });
+      const requestKinds: string[] = [];
+      const invalidated = vi.fn();
+      const timeouts = new DeterministicRequestTimeouts();
+      const nextId = sequenceIds(1, 2, 3, 4, 5, 6, 7, 8);
+      const createId = vi.fn(() => nextId());
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        dataExportCleanupTimeoutMs: 20,
+        createId,
+        waitWithTimeout: timeouts.wait,
+        runSelection: async (code) => {
+          const { requestPath, responsePath } = mailboxPaths(code);
+          const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+          requestKinds.push(request.kind);
+          if (request.kind === "closeDataExport") {
+            artifactCloseStarted();
+            await blocked;
+          }
+          if (request.kind === "closeSession") {
+            sessionCloseStarted();
+            await sessionBlocked;
+          }
+          await writeFile(responsePath, exportTransportResponse(request, sessionId, exportId, "csv", true, 0), {
+            flag: "wx",
+            mode: 0o600
+          });
         }
-        await writeFile(responsePath, exportTransportResponse(request, sessionId, exportId, "csv", true, 0), {
-          flag: "wx",
-          mode: 0o600
-        });
+      });
+      const subscription = transport.onDidInvalidateKernel(invalidated);
+      try {
+        await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+        const exporting = transport.exportData(sessionId, 0, "csv", async () => undefined);
+        await started;
+        expect(timeouts.activeBudgets).toEqual([20]);
+        const scheduledRequestCount = createId.mock.calls.length;
+        timeouts.expireOnlyBudget(20);
+        await applyEventLoopPressure();
+        expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport"]);
+        expect(createId).toHaveBeenCalledTimes(scheduledRequestCount);
+        expect(timeouts.activeBudgets).toEqual([]);
+        releaseArtifactClose();
+        await sessionStarted;
+        expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport", "closeSession"]);
+        expect(createId).toHaveBeenCalledTimes(scheduledRequestCount + 1);
+        expect(timeouts.activeBudgets).toEqual([20]);
+        releaseSessionClose();
+        await expect(exporting).rejects.toMatchObject({ reason: "timeout", dispatched: true });
+        expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport", "closeSession"]);
+        expect(timeouts.startedBudgets.filter((budget) => budget === 20)).toEqual([20, 20]);
+        expect(invalidated).toHaveBeenCalledOnce();
+        expect(transport.isSessionMapped(sessionId)).toBe(false);
+      } finally {
+        releaseArtifactClose();
+        releaseSessionClose();
+        subscription.dispose();
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+        await rm(temporaryParent, { recursive: true, force: true });
       }
-    });
-    const subscription = transport.onDidInvalidateKernel(invalidated);
-    try {
-      await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
-      const exporting = transport.exportData(sessionId, 0, "csv", async () => undefined);
-      await started;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-      expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport"]);
-      releaseArtifactClose();
-      await expect(exporting).rejects.toMatchObject({ reason: "timeout", dispatched: true });
-      expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport", "closeSession"]);
-      expect(invalidated).toHaveBeenCalledOnce();
-      expect(transport.isSessionMapped(sessionId)).toBe(false);
-    } finally {
-      releaseArtifactClose();
-      subscription.dispose();
-      await transport.dispose();
-      expect(await readdir(temporaryParent)).toEqual([]);
-      await rm(temporaryParent, { recursive: true, force: true });
     }
-  });
+  );
 
   it("retains an unrecovered export-cleanup failure through invalidation and disposal", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-export-cleanup-failure-unit-"));
@@ -1563,6 +1594,82 @@ function sequenceIds(...values: readonly number[]): () => string {
     index += 1;
     return testId(value);
   };
+}
+
+interface DeterministicTimeoutRecord {
+  readonly timeoutMs: number;
+  readonly expire: () => void;
+}
+
+class DeterministicRequestTimeouts {
+  readonly startedBudgets: number[] = [];
+  private readonly active = new Set<DeterministicTimeoutRecord>();
+
+  readonly wait = async <TResult>(
+    work: Promise<TResult>,
+    timeoutMs: number,
+    onTimeout: () => void,
+    cancellation?: {
+      readonly isCancellationRequested: boolean;
+      onCancellationRequested(listener: () => void): { dispose(): void };
+    },
+    onCancellation: () => void = () => undefined
+  ): Promise<TResult> => {
+    let rejectTimeout!: (error: Error) => void;
+    let rejectCancellation!: (error: Error) => void;
+    let aborted = false;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      rejectTimeout = reject;
+    });
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
+    const record: DeterministicTimeoutRecord = {
+      timeoutMs,
+      expire: () => {
+        if (aborted) return;
+        aborted = true;
+        onTimeout();
+        rejectTimeout(new Error(`Open Wrangler kernel request timed out after ${timeoutMs} ms.`));
+      }
+    };
+    this.startedBudgets.push(timeoutMs);
+    this.active.add(record);
+    const subscription = cancellation?.onCancellationRequested(() => {
+      if (aborted) return;
+      aborted = true;
+      onCancellation();
+      rejectCancellation(new KernelRequestCancelledError());
+    });
+    if (!aborted && cancellation?.isCancellationRequested) {
+      aborted = true;
+      onCancellation();
+      rejectCancellation(new KernelRequestCancelledError());
+    }
+    try {
+      return await Promise.race([work, timeout, cancelled]);
+    } finally {
+      this.active.delete(record);
+      subscription?.dispose();
+    }
+  };
+
+  get activeBudgets(): readonly number[] {
+    return [...this.active].map(({ timeoutMs }) => timeoutMs);
+  }
+
+  expireOnlyBudget(expectedTimeoutMs: number): void {
+    expect(this.activeBudgets).toEqual([expectedTimeoutMs]);
+    [...this.active][0]!.expire();
+  }
+}
+
+async function applyEventLoopPressure(): Promise<void> {
+  const chains = Array.from({ length: 32 }, async () => {
+    for (let index = 0; index < 32; index += 1) await Promise.resolve();
+  });
+  await Promise.all(chains);
+  await new Promise<void>((resolvePressure) => setImmediate(resolvePressure));
 }
 
 function exportTransportResponse(
