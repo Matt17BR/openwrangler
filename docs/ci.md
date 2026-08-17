@@ -30,8 +30,10 @@ The R dependency consumer validates one canonical per-minor Ubuntu 24.04 x86_64 
 mutation. It downloads only the dated binary archives recorded by byte size and SHA-256, installs verified local
 archives into an empty private library with repository resolution disabled, verifies the exact package set and loaded
 namespaces, and seals deterministic package/tree receipts. Cache keys bind the runner image, architecture, exact R
-runtime/platform, lock digest, and installer digest, with no restore keys. A hit is untrusted and passes the same
-package/tree/receipt verifier; only a true miss may install.
+runtime/platform, lock digest, and installer digest, with no restore keys. The cache contains only the lock-pinned
+archives. Both a hit and a miss authenticate the complete archive inventory, descriptor identities, sizes, and
+SHA-256 values, then install those archives into a fresh empty private library before namespace verification. No
+installed library, package/tree receipt, or executable package state is restored from cache.
 
 Stage A is a compatibility phase, not the final topology claim. It retains the `Native R contract (R 4.4)` PR carrier,
 lock-backed and selected by `r_contract_required`, while both new R owners use R 4.5. The scheduled Cross R 4.4 owner

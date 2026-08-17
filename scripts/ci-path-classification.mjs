@@ -25,6 +25,8 @@ const SELF_SELECTING_PATHS = new Set([
 const DOCUMENTATION_ROOTS = new Set(["AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]);
 const R_CONTRACT_PATHS = new Set([
   "protocol/openwrangler.v2.schema.json",
+  "python/openwrangler_runtime/protocol.py",
+  "python/openwrangler_runtime/server.py",
   "python/openwrangler_runtime/session.py",
   "schemas/operation-catalog.v1.json",
   "src/shared/operationCatalog.generated.ts",
@@ -38,6 +40,9 @@ const WINDOWS_UNIQUE_PATHS = new Set([
   "python/openwrangler_runtime/error_causality.py",
   "python/openwrangler_runtime/export_target.py",
   "python/openwrangler_runtime/process_supervision.py",
+  "python/openwrangler_runtime/protocol.py",
+  "python/openwrangler_runtime/server.py",
+  "python/openwrangler_runtime/session.py",
   "python/openwrangler_runtime/windows_file_handle.py",
   "python/tests/test_dependency_guard.py",
   "python/tests/test_dependency_guard_exact_version.py",
