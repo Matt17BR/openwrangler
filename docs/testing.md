@@ -407,6 +407,19 @@ Polars 1.42.1, median elapsed time fell from 911.523 ms to 151.679 ms (83.4% low
 from 196,968,448 to 46,419,968 bytes (76.4% lower). These are focused runtime diagnostics, not editor or release
 thresholds.
 
+`python/benchmarks/eager_mixed_text_profile.py` applies the same fresh-process bounds to one Pandas categorical
+column whose numeric categories use the grid's mixed-display text fallback. The probe validates missing, distinct,
+top-value, categorical-chart, and Unicode-code-point length outcomes before reporting elapsed time and incremental
+current and peak RSS. A matching baseline report makes time and peak-RSS regressions fail the run. The direct test
+also requires categorical text reduction to normalize each observed category once rather than once per row:
+
+```bash
+PYTHONPATH=python .venv/bin/python python/benchmarks/eager_mixed_text_profile.py \
+  --rows 2000000 --samples 3 --timeout-seconds 120
+```
+
+This is a focused Pandas runtime diagnostic. It does not measure editor rendering and has no release threshold.
+
 Custom Code output isolation is a real-stdio transport contract, not only an adapter unit test. One standalone subprocess must open editing sessions for Pandas, Polars, and DuckDB, run simultaneous custom previews that emit forged protocol-looking lines plus oversized no-newline text through `print()`, text writes, buffered writes, and stderr, and receive exactly the three correlated preview envelopes. Focused failures must return bounded redacted engine diagnostics without exposing the seeded credentials. Discard must restore the original source frame, a later correlated page must succeed for every engine, and close plus EOF must leave no malformed host-visible protocol line. Direct engine tests separately preserve normal stdout/stderr behavior for executable generated code.
 
 Runtime-selection acceptance must use a dependency-isolated interpreter that is directly executable by Node without a command shell and records every probe invocation. Every platform creates a no-pip virtual environment and installs only an isolated `.pth` invocation recorder in that environment; a shell wrapper is invalid because production resolution must pin through it to the interpreter reported by `sys.executable`. The fixture must prove exact Polars, DuckDB, lossy-Pandas, and legacy-Excel missing-dependency diagnostics, no runtime process or generation change after declining the real modal, an unchanged invocation log, and restoration of the configured fallback interpreter. Focused bridge tests additionally inject a superseded pre-dispatch selection, require one successful fresh-selection retry, require repeated churn to fail boundedly, and prove that an already-dispatched open is never reissued; session-bound mutations remain outside this retry path. Automatic Excel failure must retain and display only the preferred backend's exact requirements; panel and React tests require the structured **Install required dependency** action to be visible and enabled after the terminal error regardless of stale generic grid-loading state, disable it during an import change or dependency request, prove decline remains retryable, and permit a reopen only after the existing zero-argument command returns confirmed success. Native-editor failure evidence records bounded button enabled/busy state and persisted-replay state so a renderer race cannot collapse into an unclassified timeout.
