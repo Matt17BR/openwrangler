@@ -21,19 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      benchmark_harness_only: ${{ steps.classify.outputs.benchmark_harness_only }}
-      dependency_lock_only: ${{ steps.classify.outputs.dependency_lock_only }}
-      documentation_only: ${{ steps.classify.outputs.documentation_only }}
-      draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
-      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
-      package_only: ${{ steps.classify.outputs.package_only }}
-      release_infrastructure_only: ${{ steps.classify.outputs.release_infrastructure_only }}
-      full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
+      r_contract_required: ${{ steps.classify.outputs.r_contract_required }}
+      canonical_editor_required: ${{ steps.classify.outputs.canonical_editor_required }}
+      visual_accessibility_required: ${{ steps.classify.outputs.visual_accessibility_required }}
+      windows_unique_required: ${{ steps.classify.outputs.windows_unique_required }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
       - id: classify
@@ -42,7 +38,6 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_PR_DRAFT: ${{ github.event.pull_request.draft }}
 
   runtime:
     needs: classify
@@ -58,100 +53,98 @@ jobs:
             python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Require exact change classification
+      - name: Preserve the required context when its owner is not selected
+        if: >-
+          ${{
+            needs.classify.result == 'success' &&
+            needs.classify.outputs.canonical_editor_required == 'false' &&
+            (runner.os != 'Windows' || needs.classify.outputs.windows_unique_required == 'false')
+          }}
+        run: echo "The conservative classifier did not select this legacy compatibility carrier."
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: >-
           ${{
             needs.classify.result != 'success' ||
-            (needs.classify.outputs.benchmark_harness_only != 'true' &&
-             needs.classify.outputs.benchmark_harness_only != 'false') ||
-            (needs.classify.outputs.dependency_lock_only != 'true' &&
-             needs.classify.outputs.dependency_lock_only != 'false') ||
-            (needs.classify.outputs.documentation_only != 'true' &&
-             needs.classify.outputs.documentation_only != 'false') ||
-            (needs.classify.outputs.draft_pull_request != 'true' &&
-             needs.classify.outputs.draft_pull_request != 'false') ||
-            (needs.classify.outputs.lightweight_only != 'true' &&
-             needs.classify.outputs.lightweight_only != 'false') ||
-            (needs.classify.outputs.package_only != 'true' &&
-             needs.classify.outputs.package_only != 'false') ||
-            (needs.classify.outputs.release_infrastructure_only != 'true' &&
-             needs.classify.outputs.release_infrastructure_only != 'false') ||
-            (needs.classify.outputs.full_matrix_required != 'true' &&
-             needs.classify.outputs.full_matrix_required != 'false') ||
-            (needs.classify.outputs.lightweight_only == 'true' &&
-             needs.classify.outputs.documentation_only == 'false' &&
-             needs.classify.outputs.draft_pull_request == 'false') ||
-            (needs.classify.outputs.lightweight_only == 'false' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.documentation_only == 'true' &&
-             needs.classify.outputs.package_only == 'true') ||
-            (needs.classify.outputs.benchmark_harness_only == 'true' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.dependency_lock_only == 'true' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true')) ||
-            (needs.classify.outputs.release_infrastructure_only == 'true' &&
-             (needs.classify.outputs.benchmark_harness_only == 'true' ||
-              needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.full_matrix_required == 'true' &&
-             (needs.classify.outputs.benchmark_harness_only == 'true' ||
-              needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.release_infrastructure_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.full_matrix_required == 'false' &&
-             needs.classify.outputs.benchmark_harness_only == 'false' &&
-             needs.classify.outputs.documentation_only == 'false' &&
-             needs.classify.outputs.package_only == 'false' &&
-             needs.classify.outputs.dependency_lock_only == 'false' &&
-             needs.classify.outputs.release_infrastructure_only == 'false' &&
-             needs.classify.outputs.draft_pull_request == 'false')
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
           }}
-        run: exit 1
-      - name: Preserve required non-matrix context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
-        run: echo "Full runtime evidence is deferred; this matrix cell preserves its required check context."
-      - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
-      - uses: actions/setup-node@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: npm ci
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
-      - run: python -m pip install --upgrade pip
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
       - run: python -m pip install -e "python[dev]"
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
       - run: npm run test:python-environment-smoke
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
       - run: python -m pytest python/tests -q
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
       - run: npm run test:extension-host
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            needs.classify.outputs.canonical_editor_required != 'false' ||
+            (runner.os == 'Windows' && needs.classify.outputs.windows_unique_required != 'false')
+          }}
         env:
           VSCODE_TEST_VERSION: stable
       - run: npm run test:scripts:native
         if: >-
           ${{
-            needs.classify.result == 'success' &&
-            needs.classify.outputs.full_matrix_required == 'true' &&
-            runner.os == 'Windows'
+            runner.os == 'Windows' &&
+            (needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false')
           }}
+      - name: Reject a missing or malformed classifier result
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            (needs.classify.outputs.r_contract_required != 'true' &&
+             needs.classify.outputs.r_contract_required != 'false') ||
+            (needs.classify.outputs.canonical_editor_required != 'true' &&
+             needs.classify.outputs.canonical_editor_required != 'false') ||
+            (needs.classify.outputs.visual_accessibility_required != 'true' &&
+             needs.classify.outputs.visual_accessibility_required != 'false') ||
+            (needs.classify.outputs.windows_unique_required != 'true' &&
+             needs.classify.outputs.windows_unique_required != 'false')
+          }}
+        run: exit 1
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
@@ -164,74 +157,85 @@ jobs:
       matrix:
         python: ["3.10", "3.12"]
     steps:
-      - name: Require exact change classification
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            (needs.classify.outputs.benchmark_harness_only != 'true' &&
-             needs.classify.outputs.benchmark_harness_only != 'false') ||
-            (needs.classify.outputs.dependency_lock_only != 'true' &&
-             needs.classify.outputs.dependency_lock_only != 'false') ||
-            (needs.classify.outputs.documentation_only != 'true' &&
-             needs.classify.outputs.documentation_only != 'false') ||
-            (needs.classify.outputs.draft_pull_request != 'true' &&
-             needs.classify.outputs.draft_pull_request != 'false') ||
-            (needs.classify.outputs.lightweight_only != 'true' &&
-             needs.classify.outputs.lightweight_only != 'false') ||
-            (needs.classify.outputs.package_only != 'true' &&
-             needs.classify.outputs.package_only != 'false') ||
-            (needs.classify.outputs.release_infrastructure_only != 'true' &&
-             needs.classify.outputs.release_infrastructure_only != 'false') ||
-            (needs.classify.outputs.full_matrix_required != 'true' &&
-             needs.classify.outputs.full_matrix_required != 'false') ||
-            (needs.classify.outputs.lightweight_only == 'true' &&
-             needs.classify.outputs.documentation_only == 'false' &&
-             needs.classify.outputs.draft_pull_request == 'false') ||
-            (needs.classify.outputs.lightweight_only == 'false' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.documentation_only == 'true' &&
-             needs.classify.outputs.package_only == 'true') ||
-            (needs.classify.outputs.benchmark_harness_only == 'true' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.dependency_lock_only == 'true' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true')) ||
-            (needs.classify.outputs.release_infrastructure_only == 'true' &&
-             (needs.classify.outputs.benchmark_harness_only == 'true' ||
-              needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.full_matrix_required == 'true' &&
-             (needs.classify.outputs.benchmark_harness_only == 'true' ||
-              needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.release_infrastructure_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.full_matrix_required == 'false' &&
-             needs.classify.outputs.benchmark_harness_only == 'false' &&
-             needs.classify.outputs.documentation_only == 'false' &&
-             needs.classify.outputs.package_only == 'false' &&
-             needs.classify.outputs.dependency_lock_only == 'false' &&
-             needs.classify.outputs.release_infrastructure_only == 'false' &&
-             needs.classify.outputs.draft_pull_request == 'false')
-          }}
-        run: exit 1
-      - name: Preserve required non-matrix context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
-        run: echo "Full dependency-guard evidence is deferred; this matrix cell preserves its required check context."
-      - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
-      - uses: actions/setup-python@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+      - name: Preserve the required context when its owner is not selected
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.windows_unique_required == 'false' }}
+        run: echo "The conservative classifier did not select the Windows dependency carrier."
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
       - run: python -m pytest python/tests/test_dependency_guard.py -q
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        if: ${{ needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false' }}
+      - name: Reject a missing or malformed classifier result
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            (needs.classify.outputs.r_contract_required != 'true' &&
+             needs.classify.outputs.r_contract_required != 'false') ||
+            (needs.classify.outputs.canonical_editor_required != 'true' &&
+             needs.classify.outputs.canonical_editor_required != 'false') ||
+            (needs.classify.outputs.visual_accessibility_required != 'true' &&
+             needs.classify.outputs.visual_accessibility_required != 'false') ||
+            (needs.classify.outputs.windows_unique_required != 'true' &&
+             needs.classify.outputs.windows_unique_required != 'false')
+          }}
+        run: exit 1
+
+  r-4-4-scheduled-qualification:
+    name: Scheduled R 4.4 lock qualification
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.4"
+          use-public-rspm: false
+      - name: Install the declared system requirement
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libx11-dev
+          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
+      - run: npm ci
+      - id: r_prepare
+        run: >-
+          node scripts/r-dependency-lock.mjs prepare
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-library"
+          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-receipt.json"
+      - id: r_cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+          fail-on-cache-miss: false
+      - run: >-
+          node scripts/r-dependency-lock.mjs install
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "${{ steps.r_prepare.outputs.library }}"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-archives"
+          --receipt "${{ steps.r_prepare.outputs.receipt }}"
+          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
+      - if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.r_prepare.outputs.library }}
+            ${{ steps.r_prepare.outputs.receipt }}
+          key: ${{ steps.r_prepare.outputs.cache-key }}
+      - run: npm run test:r-contract
+        env:
+          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}

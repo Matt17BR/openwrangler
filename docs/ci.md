@@ -4,67 +4,50 @@ Open Wrangler uses three test levels. The everyday pull-request checks should fi
 
 ## Pull requests
 
-Draft pull requests run `Fast feedback`: formatting, linting, TypeScript, generated files, licenses, and workflow tests. A healthy draft reports `Draft feedback`, not a fake failure. The protected `validate` check is deliberately absent until the pull request is marked ready. The `ready_for_review` event starts the merge checks on the same commit.
+Stage A runs the invariant core for every pull-request head, including drafts. The core is the complete portable,
+TypeScript, and Python 3.10 public-boundary inventory: `npm run check:tier-a`, the full development audit, and the
+Python plus hashed-fixture audits. `validate` is the sole CI outcome owner and rejects a missing, failed, cancelled, or
+unexpectedly skipped selected job.
 
-Ready code changes run:
+The sole classifier emits exactly four booleans:
 
-| Area             | Checks                                                                                        |
-| ---------------- | --------------------------------------------------------------------------------------------- |
-| Source           | TypeScript and Python tests, type checking, linting, coverage, generated-file checks          |
-| UI               | production webview tests, visual baselines, and accessibility                                 |
-| Runtime          | Python 3.10, 3.12, and 3.14; native Pandas, Polars, and DuckDB; R 4.4/4.5 transport contracts |
-| VS Code          | minimum and current VS Code extension-host tests on Linux                                     |
-| Native platforms | runtime and extension-host tests on macOS and Windows; Windows process-supervisor tests       |
-| Package          | one VSIX build, package inspection, and a packaged VS Code journey on Linux                   |
-| Security         | production dependency audits and CodeQL                                                       |
-| Optional         | Remote SSH when the pull request has the `acceptance:remote-ssh` label                        |
+- `r_contract_required` selects both R 4.5 owners. `R 4.5 kernel contract` runs the isolated kernel-agent shard;
+  `R 4.5 protocol contracts` runs the two remaining shards concurrently and fail-complete.
+- `canonical_editor_required` selects the canonical VSIX plus stable extension-host owner for extension, runtime,
+  session, protocol, and package changes.
+- `visual_accessibility_required` selects the production-bundle Playwright visual and axe owner for UI/media changes.
+- `windows_unique_required` selects Windows publication, filesystem identity/reparse/hard-link, process supervision,
+  dependency-install, and cleanup evidence.
 
-`Fast feedback` checks formatting, ESLint, and TypeScript concurrently before it checks generated files, licenses,
-and workflow contracts. The latency-critical R 4.4/4.5 matrix starts after that static preflight and overlaps
-`Contract tests`; the protected `validate` fan-in still requires both. The remaining UI, coverage, engine, package,
-and editor jobs start only after `Fast feedback` and `Contract tests` pass, so an early preflight failure still avoids
-their cost without removing any check from a green pull request.
+Classifier/workflow/toolchain/result-owner/R-lock changes select the complete union. Missing or malformed classifier
+output, an invalid path, and every unmatched substantive path also fail open to that union. Documentation cannot
+classify a product, package, runtime, protocol, or workflow change away when it accompanies that change.
 
-A successful pull-request run retains no ordinary artifacts. The canonical PR package and checksum move only between
-same-run consumers through a run-, attempt-, commit-, and producer-digest-bound cache key. The producer publishes its
-exact digest and size as job outputs; consumers treat restored cache contents as untrusted, fail closed on a cache miss
-or receipt mismatch, and repeat checksum, size, and inventory verification before use. Pull-request merge-ref cache
-scope prevents these entries from becoming protected-main inputs. Visual and coverage reports upload for seven days
-only when their owning check fails. Packaged-editor diagnostics keep their stricter producer receipt, exact emitted
-non-glob path, immediate failure-only upload, and seven-day retention. Release workflows continue to publish their
-canonical artifact triples; the PR cache is never release input.
+A successful pull-request run retains no ordinary artifact. Visual actual/diff evidence is uploaded for seven days
+only on failure. Release workflows retain their separately reviewed artifact contracts.
 
-The R 4.4 and 4.5 jobs run the same native contract. Their explicit package set is resolved into a lockfile and
-restored from a versioned cache, so an unchanged dependency set does not compile from scratch on every pull request.
-The runner reports and bounds the frame, kernel-agent, catalog, and real-R transport phases independently. A slow or
-hung subsystem therefore identifies itself directly instead of failing at one aggregate deadline after earlier
-subsystems already passed.
+The R dependency consumer validates one canonical per-minor Ubuntu 24.04 x86_64 lock before filesystem or network
+mutation. It downloads only the dated binary archives recorded by byte size and SHA-256, installs verified local
+archives into an empty private library with repository resolution disabled, verifies the exact package set and loaded
+namespaces, and seals deterministic package/tree receipts. Cache keys bind the runner image, architecture, exact R
+runtime/platform, lock digest, and installer digest, with no restore keys. A hit is untrusted and passes the same
+package/tree/receipt verifier; only a true miss may install.
 
-Documentation-only changes run just the source checks. Changes limited to shipped documents such as the README also build the VSIX so the Marketplace package can be checked.
+Stage A is a compatibility phase, not the final topology claim. It retains the `Native R contract (R 4.4)` PR carrier,
+lock-backed and selected by `r_contract_required`, while both new R owners use R 4.5. The scheduled Cross R 4.4 owner
+is additive. Cross still emits the existing macOS, Windows, and Windows dependency-guard contexts; the same classifier
+causes those carriers to run their substantive evidence conservatively and to fail open on classifier trouble. CodeQL
+retains the required `Analyze (javascript-typescript)` and `Analyze (python)` names as two always-on jobs and adds a
+gate that requires both exact results.
 
-Ready pull requests limited to release infrastructure use a separate fail-closed tier. The pull request must change at
-least one registered release script or focused release test exported by
-`scripts/ci-path-classification.mjs`. It may additionally change only `CHANGELOG.md`, `README.md`, `docs/ci.md`,
-`docs/media-gallery.md`, `docs/media-spec-v1.2.md`, `docs/releasing.md`, or `docs/testing.md`. Documentation by itself
-cannot select this tier. An unlisted path, a classifier or shared workflow change, a product/runtime path, or one of
-the registered shared script dependencies falls back to the complete matrix.
-In particular, `.github/workflows/candidate-acceptance.yml` forces full CI until its semantic inspector owns an exact
-per-job step inventory; `.github/workflows/release.yml` and `.github/workflows/stable-release.yml` likewise force full
-CI while publication-permissioned jobs lack exact step inventories. Their inspectors and focused tests remain eligible
-and run in the narrow job.
-`.github/workflows/open-vsx-promotion.yml` also forces full CI until its inspector rejects unknown steps; its parser and
-focused tests still run in the narrow job. `azure-pipelines-marketplace.yml` likewise forces full CI because changing
-it together with its hash-owning inspector could otherwise bless a new baseline. No workflow or pipeline YAML is
-eligible until an exact inventory is enforced independently of every allowlisted hash owner.
+All non-local workflow actions are pinned to reviewed 40-hex revisions. The recursive contract in
+`scripts/ci-workflow.test.mjs` rejects a moving tag anywhere in `.github/workflows` and rejects a missing or malformed
+Stage-A classifier/result edge.
 
-That focused tier still runs `Fast feedback`, a canonical VSIX build and inspection, the exact release transaction
-and immutable-media tests, and real JavaScript/TypeScript CodeQL analysis. The required Python CodeQL, macOS/Windows
-runtime, and Windows dependency-guard check names remain present through no-work carrier cells. Python, R, UI,
-extension-host, and native editor execution remains reserved for a product change or the release-candidate boundary.
-The focused job also executes the remote-Jupyter lock and editor-diagnostic artifact contracts because release
-workflows depend on those boundaries; changing either test itself remains a full-matrix change.
-
-The `validate` job reads the result of every required job. Missing, cancelled, failed, or unexpectedly skipped work keeps the pull request blocked. Cross-platform and CodeQL checks keep their stable names because the repository ruleset requires them directly.
+No job-count, runner-compute, wall-time, or required-context reduction is credited in Stage A. Existing triggers and
+legacy contexts remain until the exact Stage-A head and its protected-main landing are green, the repository ruleset
+is mechanically migrated to `validate` plus `CodeQL gate`, and the replacement outcomes are independently checked.
+Only the following Stage-B change may retire compatibility carriers.
 
 Superseded pull-request runs are cancelled. Release jobs are never cancelled this way.
 

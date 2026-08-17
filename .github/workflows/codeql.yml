@@ -19,138 +19,48 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  classify:
-    name: CodeQL change classification
+  analyze-javascript-typescript:
+    name: Analyze (javascript-typescript)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      benchmark_harness_only: ${{ steps.classify.outputs.benchmark_harness_only }}
-      dependency_lock_only: ${{ steps.classify.outputs.dependency_lock_only }}
-      documentation_only: ${{ steps.classify.outputs.documentation_only }}
-      draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
-      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
-      package_only: ${{ steps.classify.outputs.package_only }}
-      release_infrastructure_only: ${{ steps.classify.outputs.release_infrastructure_only }}
-      full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-      - id: classify
-        run: node scripts/ci-path-classification.mjs
-        env:
-          CI_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_PR_DRAFT: ${{ github.event.pull_request.draft }}
-
-  analyze:
-    name: Analyze (${{ matrix.language }})
-    needs: classify
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [javascript-typescript, python]
-    steps:
-      - name: Require exact change classification
-        if: >-
-          ${{
-            needs.classify.result != 'success' ||
-            (needs.classify.outputs.benchmark_harness_only != 'true' &&
-             needs.classify.outputs.benchmark_harness_only != 'false') ||
-            (needs.classify.outputs.dependency_lock_only != 'true' &&
-             needs.classify.outputs.dependency_lock_only != 'false') ||
-            (needs.classify.outputs.documentation_only != 'true' &&
-             needs.classify.outputs.documentation_only != 'false') ||
-            (needs.classify.outputs.draft_pull_request != 'true' &&
-             needs.classify.outputs.draft_pull_request != 'false') ||
-            (needs.classify.outputs.lightweight_only != 'true' &&
-             needs.classify.outputs.lightweight_only != 'false') ||
-            (needs.classify.outputs.package_only != 'true' &&
-             needs.classify.outputs.package_only != 'false') ||
-            (needs.classify.outputs.release_infrastructure_only != 'true' &&
-             needs.classify.outputs.release_infrastructure_only != 'false') ||
-            (needs.classify.outputs.full_matrix_required != 'true' &&
-             needs.classify.outputs.full_matrix_required != 'false') ||
-            (needs.classify.outputs.lightweight_only == 'true' &&
-             needs.classify.outputs.documentation_only == 'false' &&
-             needs.classify.outputs.draft_pull_request == 'false') ||
-            (needs.classify.outputs.lightweight_only == 'false' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.documentation_only == 'true' &&
-             needs.classify.outputs.package_only == 'true') ||
-            (needs.classify.outputs.benchmark_harness_only == 'true' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.dependency_lock_only == 'true' &&
-             (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true')) ||
-            (needs.classify.outputs.release_infrastructure_only == 'true' &&
-             (needs.classify.outputs.benchmark_harness_only == 'true' ||
-              needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.full_matrix_required == 'true' &&
-             (needs.classify.outputs.benchmark_harness_only == 'true' ||
-              needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.package_only == 'true' ||
-              needs.classify.outputs.dependency_lock_only == 'true' ||
-              needs.classify.outputs.release_infrastructure_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true')) ||
-            (needs.classify.outputs.full_matrix_required == 'false' &&
-             needs.classify.outputs.benchmark_harness_only == 'false' &&
-             needs.classify.outputs.documentation_only == 'false' &&
-             needs.classify.outputs.package_only == 'false' &&
-             needs.classify.outputs.dependency_lock_only == 'false' &&
-             needs.classify.outputs.release_infrastructure_only == 'false' &&
-             needs.classify.outputs.draft_pull_request == 'false')
-          }}
-        run: exit 1
-      - name: Preserve required non-matrix context
-        if: >-
-          ${{
-            needs.classify.result == 'success' &&
-            needs.classify.outputs.full_matrix_required == 'false' &&
-            (needs.classify.outputs.release_infrastructure_only != 'true' ||
-             matrix.language == 'python')
-          }}
-        run: echo "Full CodeQL analysis is deferred; this language cell preserves its required check context."
-      - uses: actions/checkout@v6
-        if: >-
-          ${{
-            needs.classify.result == 'success' &&
-            (needs.classify.outputs.full_matrix_required == 'true' ||
-             (needs.classify.outputs.release_infrastructure_only == 'true' &&
-              matrix.language == 'javascript-typescript'))
-          }}
-      - uses: github/codeql-action/init@v4
-        if: >-
-          ${{
-            needs.classify.result == 'success' &&
-            (needs.classify.outputs.full_matrix_required == 'true' ||
-             (needs.classify.outputs.release_infrastructure_only == 'true' &&
-              matrix.language == 'javascript-typescript'))
-          }}
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           config-file: ./.github/codeql-config.yml
-          languages: ${{ matrix.language }}
+          languages: javascript-typescript
           queries: security-extended
-      - uses: github/codeql-action/analyze@v4
-        if: >-
-          ${{
-            needs.classify.result == 'success' &&
-            (needs.classify.outputs.full_matrix_required == 'true' ||
-             (needs.classify.outputs.release_infrastructure_only == 'true' &&
-              matrix.language == 'javascript-typescript'))
-          }}
+      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
-          category: "/language:${{ matrix.language }}"
+          category: /language:javascript-typescript
+
+  analyze-python:
+    name: Analyze (python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          config-file: ./.github/codeql-config.yml
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: /language:python
+
+  codeql-gate:
+    name: CodeQL gate
+    needs: [analyze-javascript-typescript, analyze-python]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both language analyzers
+        shell: bash
+        run: |
+          test "$JAVASCRIPT_TYPESCRIPT_RESULT" = success
+          test "$PYTHON_RESULT" = success
+        env:
+          JAVASCRIPT_TYPESCRIPT_RESULT: ${{ needs.analyze-javascript-typescript.result }}
+          PYTHON_RESULT: ${{ needs.analyze-python.result }}

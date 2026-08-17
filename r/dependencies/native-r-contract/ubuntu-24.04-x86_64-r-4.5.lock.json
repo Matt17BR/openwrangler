@@ -1,0 +1,718 @@
+{
+  "protocol": "openwrangler-native-r-dependency-lock-v1",
+  "purpose": "native-r-contract",
+  "qualification": {
+    "rMinor": "4.5",
+    "generatedWithRVersion": "4.5.3",
+    "os": "linux",
+    "distribution": "ubuntu",
+    "distributionVersion": "24.04",
+    "architecture": "x86_64",
+    "rPlatform": "x86_64-pc-linux-gnu"
+  },
+  "resolver": {
+    "name": "openwrangler-r-dependency-lock",
+    "exactVersion": "1",
+    "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+    "snapshotDate": "2026-08-14"
+  },
+  "roots": [
+    "jsonlite",
+    "tibble",
+    "readr",
+    "dplyr",
+    "data.table",
+    "bit64",
+    "collapse",
+    "nanoparquet"
+  ],
+  "packages": [
+    {
+      "name": "R6",
+      "version": "2.6.1",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/R6_2.6.1.tar.gz",
+        "bytes": 86760,
+        "sha256": "bd282642269493eb79326777263565750d5c81ce290a12f407faf462a7829e96"
+      }
+    },
+    {
+      "name": "Rcpp",
+      "version": "1.1.2",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "GPL (>= 2)",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/Rcpp_1.1.2.tar.gz",
+        "bytes": 2222737,
+        "sha256": "474262ff312d06764eb9535ddc8197e0e0a210edcb5caaefcd9e33a3a6bf78fc"
+      }
+    },
+    {
+      "name": "bit",
+      "version": "4.6.0",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "GPL-2 | GPL-3",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/bit_4.6.0.tar.gz",
+        "bytes": 627353,
+        "sha256": "354c05b637b948efea3b255fcbd8fc57f5262ebe705e56f18fa4bfd49bd38374"
+      }
+    },
+    {
+      "name": "bit64",
+      "version": "4.8.2",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "GPL-2 | GPL-3",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "bit"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/bit64_4.8.2.tar.gz",
+        "bytes": 564021,
+        "sha256": "82b6c0b1b2084f4c10a625ac60637d65364d611e6dc13d686f0a5ddcd467c354"
+      }
+    },
+    {
+      "name": "cli",
+      "version": "3.6.6",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/cli_3.6.6.tar.gz",
+        "bytes": 1343907,
+        "sha256": "6aca02910ca306a160c2a5a5b089f4b9b2fd5b8721269c60b7eadfb523924898"
+      }
+    },
+    {
+      "name": "clipr",
+      "version": "0.8.1",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "GPL-3",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/clipr_0.8.1.tar.gz",
+        "bytes": 53298,
+        "sha256": "935f320f24c418f62f9099d1b8f3fb7ec3f30736d93580d04694412ef395199f"
+      }
+    },
+    {
+      "name": "collapse",
+      "version": "2.1.7",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "GPL (>= 2) | file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "Rcpp"
+        ],
+        "linkingTo": [
+          "Rcpp"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/collapse_2.1.7.tar.gz",
+        "bytes": 5566622,
+        "sha256": "e69451864fd3e5a74bfa073fa3c35a91ab46db7f22499c34828b0d64b33c557e"
+      }
+    },
+    {
+      "name": "cpp11",
+      "version": "0.5.5",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/cpp11_0.5.5.tar.gz",
+        "bytes": 303037,
+        "sha256": "d432c914cfe4ed4b199fb1ea76f929a8276047325fa367b08c1e9b495b39c4e2"
+      }
+    },
+    {
+      "name": "crayon",
+      "version": "1.5.3",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/crayon_1.5.3.tar.gz",
+        "bytes": 163853,
+        "sha256": "c1ccf25206dcd0da0781b1c760715f72e6360d30357fe21690e121044f4065d9"
+      }
+    },
+    {
+      "name": "data.table",
+      "version": "1.18.4",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MPL-2.0 | file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/data.table_1.18.4.tar.gz",
+        "bytes": 2964261,
+        "sha256": "820a0d0e039e61453672091e494ae64e1bd071a34c1c9976f6c91acf3bc29119"
+      }
+    },
+    {
+      "name": "dplyr",
+      "version": "1.2.1",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "R6",
+          "cli",
+          "generics",
+          "glue",
+          "lifecycle",
+          "magrittr",
+          "pillar",
+          "rlang",
+          "tibble",
+          "tidyselect",
+          "vctrs"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/dplyr_1.2.1.tar.gz",
+        "bytes": 1521675,
+        "sha256": "c2209b0720c94cdcbe20efd70181042184df8f03137ed9045badeed76fb327ad"
+      }
+    },
+    {
+      "name": "generics",
+      "version": "0.1.4",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/generics_0.1.4.tar.gz",
+        "bytes": 80167,
+        "sha256": "201e4749f99b72391d1869273a8a059701843b3c26b034d815879a2a893c3733"
+      }
+    },
+    {
+      "name": "glue",
+      "version": "1.8.1",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/glue_1.8.1.tar.gz",
+        "bytes": 173651,
+        "sha256": "5c2539dd65c5b524ced7d025fdab2ad257868011787c8fc21489174dad7dee2b"
+      }
+    },
+    {
+      "name": "hms",
+      "version": "1.1.4",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "lifecycle",
+          "pkgconfig",
+          "rlang",
+          "vctrs"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/hms_1.1.4.tar.gz",
+        "bytes": 103527,
+        "sha256": "f5a5a7c39c73f5c28ea42872f24ca04ca90162ba6b2db1fe1b8ad58477b81480"
+      }
+    },
+    {
+      "name": "jsonlite",
+      "version": "2.0.0",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/jsonlite_2.0.0.tar.gz",
+        "bytes": 1090998,
+        "sha256": "5bbde36ca66305810927c9d514031a2f103882fbcfcccd90f3478b083e24bd45"
+      }
+    },
+    {
+      "name": "lifecycle",
+      "version": "1.0.5",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "rlang"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/lifecycle_1.0.5.tar.gz",
+        "bytes": 131770,
+        "sha256": "413d2043d2e7aa0019b20cf6f70327e457a5fb0f80f605e90742a0ddcb4bf06c"
+      }
+    },
+    {
+      "name": "magrittr",
+      "version": "2.0.5",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/magrittr_2.0.5.tar.gz",
+        "bytes": 221789,
+        "sha256": "42fabc6bc306ae114436ff6fe795f553fba31e6787b4c5755e786e3085515047"
+      }
+    },
+    {
+      "name": "nanoparquet",
+      "version": "0.5.1",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/nanoparquet_0.5.1.tar.gz",
+        "bytes": 7579113,
+        "sha256": "856ce18f903b4439b204f90c842da3ffa78310563c18da9f3a47d2ea4c7d81da"
+      }
+    },
+    {
+      "name": "pillar",
+      "version": "1.11.1",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "glue",
+          "lifecycle",
+          "rlang",
+          "utf8",
+          "vctrs"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/pillar_1.11.1.tar.gz",
+        "bytes": 659853,
+        "sha256": "c7494c39ae355c9e617a1b2894afc4973cd3375bae68cb913c7e5a44ea0d0b54"
+      }
+    },
+    {
+      "name": "pkgconfig",
+      "version": "2.0.3",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/pkgconfig_2.0.3.tar.gz",
+        "bytes": 18108,
+        "sha256": "1ccc78baf70e79895a16ee42767639baabfe7dbf4448d91f9339a54d91554bb4"
+      }
+    },
+    {
+      "name": "prettyunits",
+      "version": "1.2.0",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/prettyunits_1.2.0.tar.gz",
+        "bytes": 152814,
+        "sha256": "08c61a9cdb8bbf9f90076d2784cd4cf19048254b3ce7556ade3da8e81cd78b8d"
+      }
+    },
+    {
+      "name": "progress",
+      "version": "1.2.3",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "R6",
+          "crayon",
+          "hms",
+          "prettyunits"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/progress_1.2.3.tar.gz",
+        "bytes": 86958,
+        "sha256": "6a9df760a5aee1da167e4410af452807b275dd02b96286fb9d68926f55018079"
+      }
+    },
+    {
+      "name": "readr",
+      "version": "2.2.0",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "R6",
+          "cli",
+          "clipr",
+          "crayon",
+          "glue",
+          "hms",
+          "lifecycle",
+          "rlang",
+          "tibble",
+          "vroom",
+          "withr"
+        ],
+        "linkingTo": [
+          "cpp11",
+          "tzdb"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/readr_2.2.0.tar.gz",
+        "bytes": 836630,
+        "sha256": "9919381c99899d27470dc6d2f5e01c087985785564b863eb8ce3d8edead1769b"
+      }
+    },
+    {
+      "name": "rlang",
+      "version": "1.3.0",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/rlang_1.3.0.tar.gz",
+        "bytes": 1614059,
+        "sha256": "2c8eb60f28ca18026f94b9d6040446b60739a840961ba2d3880d3b322b0e37a9"
+      }
+    },
+    {
+      "name": "tibble",
+      "version": "3.3.1",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "lifecycle",
+          "magrittr",
+          "pillar",
+          "pkgconfig",
+          "rlang",
+          "vctrs"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/tibble_3.3.1.tar.gz",
+        "bytes": 647776,
+        "sha256": "353b0ae13ba1800e9866031815c1d53f705f51bbb3e83a873b0a1a97251942e9"
+      }
+    },
+    {
+      "name": "tidyselect",
+      "version": "1.2.1",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "glue",
+          "lifecycle",
+          "rlang",
+          "vctrs",
+          "withr"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/tidyselect_1.2.1.tar.gz",
+        "bytes": 225336,
+        "sha256": "6952b309397e57c2923b74f70feb91fbb865202a82b7fbe89ab91a8905a38a65"
+      }
+    },
+    {
+      "name": "tzdb",
+      "version": "0.5.0",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": [
+          "cpp11"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/tzdb_0.5.0.tar.gz",
+        "bytes": 666580,
+        "sha256": "483011a93b95c2014747f795c95d1ea38048e0c67b927bdd953bcd6f0fcb9f3e"
+      }
+    },
+    {
+      "name": "utf8",
+      "version": "1.2.6",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "Apache License (== 2.0) | file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/utf8_1.2.6.tar.gz",
+        "bytes": 151805,
+        "sha256": "45b11897ddcd5e257a7913d622f0ac0b4e484e26d7a45a115a8d59b0a17d014d"
+      }
+    },
+    {
+      "name": "vctrs",
+      "version": "0.7.3",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "glue",
+          "lifecycle",
+          "rlang"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/vctrs_0.7.3.tar.gz",
+        "bytes": 1862550,
+        "sha256": "621d088337dd905ba39272e9eece69e0b913773b9dd73909200d7fdae5022a95"
+      }
+    },
+    {
+      "name": "vroom",
+      "version": "1.7.1",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "bit64",
+          "cli",
+          "crayon",
+          "glue",
+          "hms",
+          "lifecycle",
+          "rlang",
+          "tibble",
+          "tidyselect",
+          "tzdb",
+          "vctrs",
+          "withr"
+        ],
+        "linkingTo": [
+          "cpp11",
+          "progress",
+          "tzdb"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/vroom_1.7.1.tar.gz",
+        "bytes": 1012841,
+        "sha256": "9738d80792388e1c27299b4b68b55ec57df28ccb8a155106c328980c6a11c617"
+      }
+    },
+    {
+      "name": "withr",
+      "version": "3.0.3",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/withr_3.0.3.tar.gz",
+        "bytes": 223873,
+        "sha256": "7f262092a7e796a861086b20f0333491bb55af07f347d1bd2ebd5e176cc65049"
+      }
+    }
+  ],
+  "systemRequirements": {
+    "packages": [
+      "libx11-dev"
+    ]
+  }
+}
