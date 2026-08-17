@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -11,6 +11,7 @@ import {
   BoundedLfFramer,
   createSourceAttestation,
   executeRuntimeSoak,
+  PythonRuntimeSoakAdapter,
   runRuntimeSoakCli,
   RuntimeServer
 } from "./runtime-soak.mjs";
@@ -356,6 +357,102 @@ test("stop timeout retains ownership through one kill and exact late-or-never ex
   never.stderr.end();
 });
 
+test("only pre-spawn failure or actual exit and close attest process settlement", async () => {
+  class SettlementChild extends EventEmitter {
+    constructor({ killResult = false, errorOnKill = false } = {}) {
+      super();
+      this.exitCode = null;
+      this.signalCode = null;
+      this.stdin = new PassThrough();
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.killResult = killResult;
+      this.errorOnKill = errorOnKill;
+      this.killCalls = 0;
+    }
+
+    kill() {
+      this.killCalls += 1;
+      if (this.errorOnKill) queueMicrotask(() => this.emit("error", new Error("kill failed")));
+      return this.killResult;
+    }
+
+    finish() {
+      this.stdout.end();
+      this.stderr.end();
+    }
+  }
+
+  const preSpawn = new SettlementChild();
+  const preSpawnServer = new RuntimeServer("python", tmpdir(), tmpdir(), undefined, {
+    spawnProcess: () => preSpawn,
+    stopTimeoutMs: 10
+  });
+  preSpawn.emit("error", new Error("spawn failed"));
+  assert.equal(await preSpawnServer.forceStop(), true);
+  assert.equal(preSpawn.killCalls, 0);
+  preSpawn.finish();
+
+  const delayedExit = new SettlementChild({ errorOnKill: true });
+  const delayedServer = new RuntimeServer("python", tmpdir(), tmpdir(), undefined, {
+    spawnProcess: () => delayedExit,
+    stopTimeoutMs: 20
+  });
+  delayedExit.emit("spawn");
+  let delayedSettled = false;
+  const delayedSettlement = delayedServer.forceStop().then((value) => {
+    delayedSettled = true;
+    return value;
+  });
+  await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
+  assert.equal(delayedSettled, false);
+  delayedExit.signalCode = "SIGKILL";
+  delayedExit.emit("close", null, "SIGKILL");
+  assert.equal(await delayedSettlement, true);
+  assert.equal(delayedExit.killCalls, 1);
+  delayedExit.finish();
+
+  const failedKill = new SettlementChild({ errorOnKill: true });
+  const failedKillServer = new RuntimeServer("python", tmpdir(), tmpdir(), undefined, {
+    spawnProcess: () => failedKill,
+    stopTimeoutMs: 5
+  });
+  failedKill.emit("spawn");
+  assert.equal(await failedKillServer.forceStop(), false);
+  assert.equal(failedKill.killCalls, 1);
+  failedKill.finish();
+});
+
+test("one absolute deadline is recomputed before every multi-step scenario request", async () => {
+  let monotonicMs = 100;
+  const timeouts = [];
+  const adapter = new PythonRuntimeSoakAdapter({
+    executable: "python",
+    workingRoot: tmpdir(),
+    runtimePythonRoot: tmpdir(),
+    sourcePath: join(tmpdir(), "soak.csv"),
+    seed: 123,
+    signal: undefined
+  });
+  adapter.server = {
+    async request(request, _phase, timeoutMs) {
+      timeouts.push(timeoutMs);
+      monotonicMs += 250;
+      if (request.kind === "openSession") {
+        return {
+          kind: "sessionOpened",
+          metadata: { sessionId: request.requestedSessionId, backend: "pandas", revision: 0 }
+        };
+      }
+      if (request.kind === "getPage") return { kind: "page" };
+      if (request.kind === "closeSession") return { kind: "sessionClosed" };
+      throw new Error("unexpected request");
+    }
+  };
+  await adapter.runScenario("open_page_close", 1, () => 1_000 - monotonicMs);
+  assert.deepEqual(timeouts, [900, 650, 400]);
+});
+
 test("receipt serialization is deterministic, bounded, checksummed, and rejects free-form containers", () => {
   const first = createSoakReceipt(receiptValue());
   const second = createSoakReceipt(receiptValue());
@@ -494,8 +591,49 @@ test("cleanup uncertainty prevents failure-receipt retention and does not retry"
   });
   assert.equal(result.failure?.code, "cleanup_failed");
   assert.equal(result.retentionAllowed, false);
+  assert.equal(result.receipt, undefined);
   assert.equal(adapter.forceCloseCalls, 1);
   assert.equal(adapter.calls.length, 1);
+});
+
+test("cleanup uncertainty transfers live-root ownership before attestation can throw", async () => {
+  const liveRoot = await mkdtemp(join(tmpdir(), "openwrangler-soak-live-root-"));
+  let ownsRoot = true;
+  let deletedLiveRoot = false;
+  let revalidations = 0;
+  try {
+    let result;
+    try {
+      const adapter = new FakeAdapter({ failAt: 1, cleanupConfirmed: false });
+      result = await executeRuntimeSoak({
+        options: { seed: 123, iterations: 4, durationSeconds: 0, wallSeconds: 60 },
+        subject,
+        tools,
+        identifiers,
+        adapter,
+        clock: { epochMs: () => 1_776_470_400_000, monotonicMs: () => 0 },
+        beforeReceipt: async () => {
+          revalidations += 1;
+          throw new SoakContractError("must not run");
+        },
+        onCleanupUncertain: () => {
+          ownsRoot = false;
+        }
+      });
+    } finally {
+      if (ownsRoot) {
+        deletedLiveRoot = true;
+        await rm(liveRoot, { recursive: true, force: true });
+      }
+    }
+    assert.equal(result.retentionAllowed, false);
+    assert.equal(result.receipt, undefined);
+    assert.equal(revalidations, 0);
+    assert.equal(deletedLiveRoot, false);
+    assert.equal((await lstat(liveRoot)).isDirectory(), true);
+  } finally {
+    await rm(liveRoot, { recursive: true, force: true });
+  }
 });
 
 test("the run continues past its minimum iterations until the requested duration is satisfied", async () => {
