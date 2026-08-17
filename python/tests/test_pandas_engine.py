@@ -601,6 +601,7 @@ def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_di
             "all_null": pd.Series([None, None, None, None, None, None], dtype="string"),
             "mixed_display": pd.Series([b"\x00", "x", None, None, None, None], dtype="object"),
             "numeric_category": pd.Series(pd.Categorical([1, 200, None, None, None, None])),
+            "all_null_category": pd.Series(pd.Categorical([None] * 6, categories=[1, 200])),
             "bytes_category": pd.Series(pd.Categorical([b"\xff", b"\x00", None, None, None, None])),
         }
     )
@@ -628,6 +629,7 @@ def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_di
         "maxLength": 3,
         "meanLength": 2.0,
     }
+    assert summaries["all_null_category"]["text"] == {"emptyCount": 0}
     assert summaries["bytes_category"]["type"] == "string"
     assert summaries["bytes_category"]["text"] == {
         "emptyCount": 0,
@@ -635,6 +637,42 @@ def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_di
         "maxLength": 4,
         "meanLength": 4.0,
     }
+
+
+def test_pandas_mixed_display_text_summary_streams_without_changing_profile_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_python_reduction(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Mixed-display text profiles must reduce lengths while values stream.")
+
+    monkeypatch.setattr(pd.Series, "tolist", reject_python_reduction)
+    monkeypatch.setattr(pd.Series, "to_list", reject_python_reduction)
+    monkeypatch.setattr(pandas_engine_module, "sum", reject_python_reduction, raising=False)
+    monkeypatch.setattr(pandas_engine_module, "min", reject_python_reduction, raising=False)
+    monkeypatch.setattr(pandas_engine_module, "max", reject_python_reduction, raising=False)
+    frame = pd.DataFrame(
+        {
+            "category": pd.Series(pd.Categorical([None, 1, 200, 1, 200, 1], categories=[1, 200])),
+            "object": pd.Series([b"\x00", "x", None, float("nan"), b"\x00", b"\x00"], dtype="object"),
+        }
+    )
+
+    summaries = PandasEngine().summaries(frame, [(0, "c:category"), (1, "c:object")])
+    encoded = json.dumps(summaries, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+
+    assert encoded == (
+        b'[{"columnId":"c:category","column":"category","type":"string","rawType":"category",'
+        b'"totalCount":6,"nullCount":0,"nanCount":1,"distinctCount":2,"topValues":'
+        b'[{"value":"1","count":3},{"value":"200","count":2}],"text":'
+        b'{"emptyCount":0,"minLength":1,"maxLength":3,"meanLength":1.8},"visualization":'
+        b'{"kind":"categorical","categories":[{"value":"1","count":3},{"value":"200","count":2}],'
+        b'"otherCount":0}},{"columnId":"c:object","column":"object","type":"string",'
+        b'"rawType":"object","totalCount":6,"nullCount":1,"nanCount":1,"distinctCount":2,"topValues":'
+        b'[{"value":"b\'\\\\x00\'","count":3},{"value":"x","count":1}],"text":'
+        b'{"emptyCount":0,"minLength":1,"maxLength":4,"meanLength":3.25},"visualization":'
+        b'{"kind":"categorical","categories":[{"value":"b\'\\\\x00\'","count":3},'
+        b'{"value":"x","count":1}],"otherCount":0}}]'
+    )
 
 
 def test_pandas_summary_omits_non_finite_statistics_but_keeps_finite_histogram_values():
