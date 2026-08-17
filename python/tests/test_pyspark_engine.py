@@ -46,7 +46,6 @@ def test_strict_pyspark_version_contract() -> None:
 
 
 def test_summary_batch_ranges_bound_exact_work_and_action_formula() -> None:
-    data_types = import_module("pyspark.sql.types")
     numeric_shape = (2, 13)
     mixed_shapes = [
         numeric_shape,
@@ -84,6 +83,12 @@ def test_summary_batch_ranges_bound_exact_work_and_action_formula() -> None:
     assert all(
         end - start <= pyspark_engine_module.PYSPARK_SUMMARY_TERMINAL_BRANCH_LIMIT for start, end in numeric_top_batches
     )
+
+
+def test_profile_display_decoder_keeps_unsupported_types_on_singleton_plans() -> None:
+    pytest.importorskip("pyspark")
+    data_types = import_module("pyspark.sql.types")
+
     assert pyspark_engine_module._profile_display_decoder(data_types.StringType()) == "string"
     assert pyspark_engine_module._profile_display_decoder(data_types.StringType("UTF8_LCASE")) is None
     assert pyspark_engine_module._profile_display_decoder(data_types.CharType(8)) is None
