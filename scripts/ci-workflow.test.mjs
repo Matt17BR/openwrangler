@@ -821,6 +821,13 @@ test("dated R locks are distinct, canonical, complete 31-package binary graphs",
 });
 
 test("package scripts bind lock checks and fail-complete named R protocol shards", () => {
+  const expectedProtocolCommand =
+    "npm-run-all --continue-on-error --print-label test:r-contract:frame-and-interactive-transport test:r-contract:catalog-and-process-transport";
+  const assertSequentialProtocolCommand = (command) => {
+    assert.equal(command, expectedProtocolCommand);
+    assert.doesNotMatch(command, /(?:^|\s)--parallel(?:\s|$)/u);
+    assert.doesNotMatch(command, /(?:^|\s)--max-parallel(?:\s|$)/u);
+  };
   assert.match(packageJson.scripts.check, /check:r-dependency-lock/u);
   assert.match(packageJson.scripts["check:r-dependency-lock"], /r-dependency-lock\.mjs check/u);
   assert.equal(
@@ -831,10 +838,19 @@ test("package scripts bind lock checks and fail-complete named R protocol shards
     packageJson.scripts["test:r-contract:catalog-and-process-transport"],
     "node scripts/run-r-contract-tests.mjs --shard catalog-and-process-transport"
   );
-  assert.equal(
-    packageJson.scripts["test:r-contract:protocol"],
-    "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label test:r-contract:frame-and-interactive-transport test:r-contract:catalog-and-process-transport"
-  );
+  assertSequentialProtocolCommand(packageJson.scripts["test:r-contract:protocol"]);
+  for (const mutation of [
+    expectedProtocolCommand.replace("npm-run-all", "npm-run-all --parallel --max-parallel 2"),
+    expectedProtocolCommand.replace(" --continue-on-error", ""),
+    expectedProtocolCommand.replace(
+      "test:r-contract:frame-and-interactive-transport test:r-contract:catalog-and-process-transport",
+      "test:r-contract:catalog-and-process-transport test:r-contract:frame-and-interactive-transport"
+    ),
+    expectedProtocolCommand.replace(" test:r-contract:frame-and-interactive-transport", ""),
+    expectedProtocolCommand.replace(" test:r-contract:catalog-and-process-transport", "")
+  ]) {
+    assert.throws(() => assertSequentialProtocolCommand(mutation));
+  }
   assert.match(packageJson.scripts["test:scripts:portable:run"], /scripts\/r-dependency-lock\.test\.mjs/u);
 });
 
