@@ -178,6 +178,7 @@ import {
 } from "./releasedRValueOperations";
 import { createReleasedRTextOperations } from "./releasedRTextOperations";
 import { createReleasedRVariableDiscovery } from "./releasedRVariableDiscovery";
+import { createReleasedRNotebookMedia } from "./releasedRNotebookMedia";
 import { exerciseReleasedRLowercaseOperation } from "./releasedRLowercaseOperation";
 import { exerciseReleasedRCastOperation } from "./releasedRCastOperation";
 import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
@@ -1629,58 +1630,7 @@ async function exerciseReleasedRJupyterExtension(
       screenshotOutput
     );
     if (screenshotOutput) {
-      await disposePackagedSessionPanel(testing, base.sessionId, "the initial R data.frame before media capture");
-      const mediaEditor = await showExactReleasedNotebook(notebook);
-      await executeReleasedNotebookCell(
-        notebook,
-        RELEASED_JUPYTER_R_MEDIA_CELL,
-        RELEASED_JUPYTER_R_MEDIA_RESULT,
-        `${phase}:media-setup`,
-        mediaEditor
-      );
-      const mediaSetup = releasedNotebookJsonResult(
-        notebook.cellAt(RELEASED_JUPYTER_R_MEDIA_CELL),
-        RELEASED_JUPYTER_R_MEDIA_RESULT,
-        "R media setup"
-      );
-      assert.deepEqual({ rows: mediaSetup.rows, columns: mediaSetup.columns }, { rows: 2_400, columns: 24 });
-      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "regional_orders");
-      const mediaSession = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        {
-          name: "regional_orders",
-          type: "data.frame",
-          backend: "r",
-          rDataframeFlavor: "r.data.frame",
-          firstValue: "2400001",
-          notebookInsert: true
-        },
-        "the representative R orders session"
-      );
-      await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
-      await captureReleasedRNotebookGroupByDraft(workbench, testing, mediaSession.sessionId, screenshotOutput);
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
-      await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
-
-      await showExactReleasedNotebook(notebook);
-      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
-      base = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        {
-          name: "orders_frame",
-          type: "data.frame",
-          backend: "r",
-          rDataframeFlavor: "r.data.frame",
-          firstValue: "1",
-          notebookInsert: true
-        },
-        "the orders R data.frame reopened after media capture"
-      );
-      await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page-after-media`);
+      base = await exerciseReleasedRNotebookMedia(testing, workbench, notebook, base, phase, screenshotOutput);
     }
     recordReleasedRAcceptanceSection(phase, coverage, "grid", "start");
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId, coverage.gridPaging);
@@ -2458,6 +2408,20 @@ const captureReleasedRJupyterWorkbench = createReleasedRWorkbenchMediaCapture({
   releasedRSessionApp,
   waitFor,
   waitForOpenWranglerGridTarget
+});
+
+const exerciseReleasedRNotebookMedia = createReleasedRNotebookMedia({
+  RELEASED_JUPYTER_R_MEDIA_CELL,
+  assertReleasedRRuntimeBinding,
+  assertReleasedSessionPage,
+  captureReleasedRJupyterWorkbench,
+  captureReleasedRNotebookGroupByDraft,
+  disposePackagedSessionPanel,
+  executeReleasedNotebookCell,
+  invokeReleasedNotebookToolbarVariable,
+  releasedNotebookJsonResult,
+  showExactReleasedNotebook,
+  waitForReleasedVariableSession
 });
 
 async function exerciseReleasedJupyterExtension(
