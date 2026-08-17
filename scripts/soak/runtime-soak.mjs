@@ -19,6 +19,7 @@ import {
   SOAK_SCENARIO_SET_SHA256,
   SoakContractError,
   SoakRunError,
+  assertFailureReceiptForEmission,
   writeFailureReceipt
 } from "./soak-contract.mjs";
 
@@ -30,6 +31,7 @@ const STOP_TIMEOUT_MS = 5_000;
 const PROGRESS_INTERVAL = 100;
 const SOURCE_FILE_LIMIT = 512;
 const SOURCE_TOTAL_BYTES = 64 * 1024 * 1024;
+const PORTABLE_OWNER_TEST = "scripts/soak/runtime-soak.test.mjs";
 const EXECUTED_WORKTREE_PATHS = Object.freeze([
   "scripts/soak/runtime-soak.mjs",
   "scripts/soak/soak-contract.mjs",
@@ -715,6 +717,22 @@ function assertLocalImportClosure(entries, expectedBytes) {
   }
 }
 
+function assertPortableOwnerRegistration(manifestBytes) {
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestBytes.toString("utf8"));
+  } catch {
+    throw new SoakContractError("The package manifest is not valid JSON.");
+  }
+  const command = manifest?.scripts?.["test:scripts:portable"];
+  if (
+    typeof command !== "string" ||
+    command.split(/\s+/u).filter((token) => token === PORTABLE_OWNER_TEST).length !== 1
+  ) {
+    throw new SoakContractError("The soak owner test is not registered exactly once in the portable inventory.");
+  }
+}
+
 async function walkRegularFiles(root, relativeRoot) {
   const files = [];
   const visit = async (relativeDirectory) => {
@@ -792,6 +810,7 @@ export async function createSourceAttestation(root, privateRoot) {
   const manifest = expectedBytes.get("package.json");
   const lock = expectedBytes.get("package-lock.json");
   if (!manifest || !lock) throw new SoakContractError("The source inventory is missing package metadata.");
+  assertPortableOwnerRegistration(manifest.bytes);
 
   const revalidate = async () => {
     if (
@@ -969,6 +988,7 @@ export async function runRuntimeSoakCli(args, dependencies = {}) {
       return 0;
     }
     const retained = await writeFailureReceipt(result.receipt, tmpdir());
+    await assertFailureReceiptForEmission(retained);
     stderr(
       `OW_SOAK_FAILED code=${result.failure.code} phase=${result.failure.phase} seed=${options.seed} receipt=${retained.path}`
     );

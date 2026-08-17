@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { redactEditorAcceptanceJson } from "../editor-acceptance-evidence.mjs";
 import {
   BoundedLfFramer,
@@ -27,6 +28,7 @@ import {
   SOAK_SCENARIO_SET_SHA256,
   SoakContractError,
   SoakRunError,
+  assertFailureReceiptForEmission,
   writeFailureReceipt
 } from "./soak-contract.mjs";
 
@@ -118,7 +120,10 @@ async function writeFixture(root, relativePath, contents = "fixture\n") {
 async function createAttestationFixture() {
   const root = await mkdtemp(join(tmpdir(), "openwrangler-soak-source-"));
   const fixtures = new Map([
-    ["package.json", "{}\n"],
+    [
+      "package.json",
+      `${JSON.stringify({ scripts: { "test:scripts:portable": "node --test scripts/soak/runtime-soak.test.mjs" } })}\n`
+    ],
     ["package-lock.json", "{}\n"],
     ["scripts/editor-acceptance-evidence.mjs", 'import "./strict-json.mjs";\n'],
     ["scripts/packaged-python-preflight.mjs", "export const preflight = true;\n"],
@@ -303,6 +308,24 @@ test("source attestation rejects a future relative import outside its exact exec
     );
     execFileSync("git", ["-C", root, "add", "."]);
     execFileSync("git", ["-C", root, "commit", "-q", "-m", "add unbound import"]);
+    await assert.rejects(() => createSourceAttestation(root, privateRoot), SoakContractError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(privateRoot, { recursive: true, force: true });
+  }
+});
+
+test("source attestation freezes the exact portable owner-test registration", async () => {
+  const root = await createAttestationFixture();
+  const privateRoot = await mkdtemp(join(tmpdir(), "openwrangler-soak-materialized-"));
+  try {
+    await writeFixture(
+      root,
+      "package.json",
+      `${JSON.stringify({ scripts: { "test:scripts:portable": "node --test scripts/soak/runtime-soak-mutant.test.mjs" } })}\n`
+    );
+    execFileSync("git", ["-C", root, "add", "package.json"]);
+    execFileSync("git", ["-C", root, "commit", "-q", "-m", "mutate portable owner"]);
     await assert.rejects(() => createSourceAttestation(root, privateRoot), SoakContractError);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -498,10 +521,59 @@ test("one failure receipt is private, schema-valid, re-redacted, bounded, and se
     const parsed = JSON.parse(text);
     assert.equal(parsed.schema, SOAK_RECEIPT_SCHEMA);
     assert.equal(parsed.payloadSha256, sha256Hex(JSON.stringify(parsed.payload)));
+    assert.equal(retained.sha256, sha256Hex(text));
+    assert.equal(retained.file.nlink, 1n);
+    await assertFailureReceiptForEmission(retained);
     await assert.rejects(() => writeFailureReceipt(createSoakReceipt(receiptValue()), parent), SoakContractError);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
+});
+
+test("failure-receipt seal rejects content, link, path, and parent mutations before emission", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "openwrangler-soak-seal-test-"));
+  const createRetained = () => writeFailureReceipt(createSoakReceipt(receiptValue("failure")), parent);
+  try {
+    const contentMutation = await createRetained();
+    const original = await readFile(contentMutation.path, "utf8");
+    await writeFile(contentMutation.path, original.replace("scenario_failed", "iteration_limit"), "utf8");
+    await assert.rejects(() => assertFailureReceiptForEmission(contentMutation), SoakContractError);
+
+    const linkMutation = await createRetained();
+    await link(linkMutation.path, `${linkMutation.path}.linked`);
+    await assert.rejects(() => assertFailureReceiptForEmission(linkMutation), SoakContractError);
+
+    const pathMutation = await createRetained();
+    const parkedPath = `${pathMutation.path}.parked`;
+    const pathContents = await readFile(pathMutation.path);
+    await rename(pathMutation.path, parkedPath);
+    await writeFile(pathMutation.path, pathContents, { mode: 0o600 });
+    await assert.rejects(() => assertFailureReceiptForEmission(pathMutation), SoakContractError);
+
+    if (process.platform !== "win32") {
+      const symlinkMutation = await createRetained();
+      const symlinkTarget = `${symlinkMutation.path}.target`;
+      await rename(symlinkMutation.path, symlinkTarget);
+      await symlink(symlinkTarget, symlinkMutation.path);
+      await assert.rejects(() => assertFailureReceiptForEmission(symlinkMutation), SoakContractError);
+    }
+
+    const parentMutation = await createRetained();
+    const root = dirname(parentMutation.path);
+    const parkedRoot = `${root}.parked`;
+    await rename(root, parkedRoot);
+    await mkdir(root, { mode: 0o700 });
+    await assert.rejects(() => assertFailureReceiptForEmission(parentMutation), SoakContractError);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the portable owner inventory names this exact test once", async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const command = manifest.scripts?.["test:scripts:portable"];
+  assert.equal(command.split(/\s+/u).filter((token) => token === "scripts/soak/runtime-soak.test.mjs").length, 1);
 });
 
 test("a successful run exercises every branch without a success artifact or retry", async () => {
