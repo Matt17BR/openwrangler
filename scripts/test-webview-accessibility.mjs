@@ -77,6 +77,7 @@ try {
   await verifyInsightsDrawerWorkflow(browser);
   await verifyRProfileAccessibility(browser);
   await verifyGridStatusBar(browser);
+  await verifySessionModeDisclosure(browser);
   await verifyShortGridProfileResponsiveness(browser);
   await verifyGridClipboardBrowserAcceptance(browser, harnessDir);
   await verifyGridKeyboardWorkflow(browser);
@@ -1266,8 +1267,102 @@ async function verifyGridStatusBar(browser) {
   ) {
     throw new Error(`Forced colors did not preserve the grid status controls: ${JSON.stringify(forcedStyles)}.`);
   }
+
   await forcedPage.close();
   console.log("Bottom grid status, narrow/200%-zoom range visibility, Codicon navigation, and forced colors verified.");
+}
+
+async function verifySessionModeDisclosure(browser) {
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 700, height: 760 });
+  await page.emulateMedia({ forcedColors: "active" });
+  await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+  await page.getByText("wide.csv", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    const payload = globalThis.openWranglerSessionPayload;
+    if (!payload || payload.kind !== "sessionOpened") {
+      throw new Error("The live Editing disclosure fixture did not expose its source session payload.");
+    }
+    const firstColumn = payload.metadata.schema[0];
+    if (!firstColumn) throw new Error("The live Editing disclosure fixture requires one column.");
+    const metadata = {
+      ...payload.metadata,
+      backend: "pandas",
+      mode: "editing",
+      source: {
+        kind: "notebookVariable",
+        label: "live_orders",
+        variableName: "live_orders",
+        uri: "file:///workspace/live-orders.ipynb"
+      },
+      capabilities: { ...payload.metadata.capabilities, editable: true, notebookInsert: true },
+      steps: [
+        {
+          id: "accepted-sort",
+          kind: "sortRows",
+          params: {
+            rules: [
+              {
+                column: { id: firstColumn.id, name: firstColumn.name },
+                direction: "asc",
+                nulls: "last"
+              }
+            ]
+          }
+        }
+      ]
+    };
+    globalThis.dispatchEvent(
+      new MessageEvent("message", {
+        data: { ...payload, metadata },
+        origin: globalThis.location.origin
+      })
+    );
+  });
+
+  const reverseAction = page.getByRole("button", { name: "Switch to Viewing", exact: true });
+  await reverseAction.waitFor();
+  if (
+    !(await reverseAction.isDisabled()) ||
+    !(await reverseAction.getAttribute("title"))?.includes("Undo the applied step")
+  ) {
+    throw new Error("The live Editing disclosure fixture did not expose its blocked reverse transition.");
+  }
+
+  await page.locator('[data-session-badge="mode"]').click();
+  const modeHelp = page.locator(".sessionModeHelpText");
+  await modeHelp.waitFor({ state: "visible" });
+  const layout = await modeHelp.evaluate((help) => {
+    const bounds = help.getBoundingClientRect();
+    const toolbar = help.closest(".toolbarActions")?.getBoundingClientRect();
+    return {
+      left: bounds.left,
+      right: bounds.right,
+      width: bounds.width,
+      viewportWidth: window.innerWidth,
+      withinToolbar: Boolean(toolbar && bounds.left >= toolbar.left - 1 && bounds.right <= toolbar.right + 1),
+      documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      text: help.textContent?.trim() ?? ""
+    };
+  });
+  if (
+    layout.left < -1 ||
+    layout.right > layout.viewportWidth + 1 ||
+    layout.width <= 0 ||
+    !layout.withinToolbar ||
+    layout.documentOverflow > 1 ||
+    !layout.text.includes("Open Wrangler keeps the source unchanged") ||
+    !layout.text.includes("Undo the applied step")
+  ) {
+    throw new Error(
+      `The opened live Editing explanation escaped the 700px forced-colors toolbar: ${JSON.stringify(layout)}.`
+    );
+  }
+  await page.emulateMedia({ forcedColors: "none" });
+  await page.addScriptTag({ path: axePath });
+  await scanPageAccessibility(page, "wide-view.html (700px blocked reverse-mode explanation)");
+  await page.close();
+  console.log("Live Editing blocked reverse action, compact opened explanation, forced colors, and axe verified.");
 }
 
 async function verifyShortGridProfileResponsiveness(browser) {

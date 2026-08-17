@@ -21,6 +21,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   and producer digest or size mismatches fail closed before repeated inventory verification; coverage, visual, and
   sealed packaged-editor evidence remains available only for failures. Canonical release artifacts and provenance are
   unchanged.
+- Supported live dataframes can return from Editing to Viewing while the cleaning plan is empty and no draft is open. The
+  mode control now explains what Viewing preserves, why PySpark, live DuckDB relations, and saved notebook snapshots
+  do not offer cleaning, and how to enable cleaning when an Editing transition is available.
 
 ## [1.99.7] - 2026-08-16
 

@@ -193,6 +193,10 @@ dataframe from that same kernel. Unassigned results such as `orders.tail(20)` al
 still available in the kernel. If the first result appears before Open Wrangler's formatter is ready, use **Open in
 Open Wrangler** below that cell. It opens the executed result without running the cell again.
 
+Supported live dataframes open in Viewing mode by default. Viewing filters and sorts only the grid; it does not build
+a cleaning plan or change the source. Use **Switch to Editing** to build a plan. You can return with **Switch to
+Viewing** while the plan is empty and no draft is open. DuckDB notebook relations remain view-only.
+
 Python files have the same action in the editor toolbar and tab menu. For an ordinary `.py` file, Open Wrangler runs
 the file in Python Interactive and opens the live dataframe you choose. If the file uses `# %%` cells, it runs only
 the cell under the cursor. Once the Interactive window is open, its own **Open in Open Wrangler** action lists the
@@ -253,14 +257,16 @@ The entry point determines which process owns the session:
 
 - In an IRkernel notebook, open a loaded dataframe from Operations, the notebook toolbar, or Jupyter Variables.
   Operations refreshes after a cell finishes. The dataframe opens in Viewing mode; use **Switch to Editing** when you
-  want to build a cleaning plan. Generated R can be inserted into that exact notebook.
+  want to build a cleaning plan. You can return to Viewing while the plan is empty and no draft is open. Generated R
+  can be inserted into that exact notebook.
 - For an interactive session from the official R extension, select its terminal. Operations reads the dataframe
   names already maintained by vscode-R; it does not run anything in R just to fill the sidebar. If that metadata is
   unavailable, use **Refresh R dataframes**. Opening a dataframe or refreshing explicitly connects Open Wrangler to
   that exact R process. **Start R and show dataframes…** opens a session when none is running. The list and every
   opened dataframe stay tied to that terminal. These dataframes open in Viewing mode and can switch to Editing.
-  The **Open in Open Wrangler** title action uses this session while it is active. Generated R can be copied or saved,
-  but it cannot be inserted because the terminal has no source document.
+  They can return to Viewing while the cleaning plan is empty and no draft is open. The **Open in Open Wrangler**
+  title action uses this session while it is active. Generated R can be copied or saved, but it cannot be inserted
+  because the terminal has no source document.
 - In an `.Rmd` or `.qmd` editor, the primary **Open in Open Wrangler** action detects the fenced chunk at the exact
   cursor. It runs only that enabled chunk in its existing R or Python session and then opens a dataframe from that
   session. R Markdown and knitr/reticulate Quarto Python chunks stay in the selected R terminal;

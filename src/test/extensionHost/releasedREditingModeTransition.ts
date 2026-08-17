@@ -81,6 +81,94 @@ export function createReleasedREditingModeTransition({
     editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the switched R session");
     assert.equal(await editingApp.getByRole("button", { name: "Switch to Editing", exact: true }).count(), 0);
     assert.equal((await editingApp.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+    assert.deepEqual(
+      testing.activeSession()?.metadata.source,
+      base.metadata.source,
+      "Switching to Editing must retain the exact live R source."
+    );
+    assert.deepEqual(
+      testing.activeSession()?.viewState,
+      viewingStateBeforeEditing,
+      "Switching to Editing must retain the complete confirmed view."
+    );
+
+    const editingRevision = testing.activeSession()?.metadata.revision;
+    assert.ok(editingRevision !== undefined);
+    const switchToViewing = editingApp.getByRole("button", { name: "Switch to Viewing", exact: true });
+    await switchToViewing.waitFor({ state: "visible", timeout: 10_000 });
+    recordAcceptanceProgress(`${phase}:viewing:return`);
+    await switchToViewing.click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === base.sessionId &&
+          active.metadata.mode === "viewing" &&
+          active.metadata.revision > editingRevision &&
+          active.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "group,score"
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the exact live R session to return to Viewing mode with its view intact",
+      () => JSON.stringify(testing.diagnostics())
+    );
+    assertExactOpenNotebookDocument(notebook, "after returning the live R variable to Viewing mode");
+    assert.deepEqual(
+      testing.activeSession()?.metadata.source,
+      base.metadata.source,
+      "Returning to Viewing must retain the exact live R source."
+    );
+    assert.deepEqual(
+      testing.activeSession()?.viewState,
+      viewingStateBeforeEditing,
+      "Returning to Viewing must retain the complete confirmed view."
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      base.sessionId,
+      "The returned Viewing-mode R session must acknowledge its atomically replaced runtime."
+    );
+
+    const returnedViewingRevision = testing.activeSession()?.metadata.revision;
+    assert.ok(returnedViewingRevision !== undefined);
+    const viewingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the returned R viewing session");
+    assert.equal((await viewingApp.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
+    const returnToEditing = viewingApp.getByRole("button", { name: "Switch to Editing", exact: true });
+    await returnToEditing.waitFor({ state: "visible", timeout: 10_000 });
+    recordAcceptanceProgress(`${phase}:editing:return`);
+    await returnToEditing.click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === base.sessionId &&
+          active.metadata.mode === "editing" &&
+          active.metadata.revision > returnedViewingRevision &&
+          active.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "group,score"
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the exact live R session to reopen in Editing mode after the Viewing round trip",
+      () => JSON.stringify(testing.diagnostics())
+    );
+    assertExactOpenNotebookDocument(notebook, "after reopening the live R variable in Editing mode");
+    assert.deepEqual(
+      testing.activeSession()?.metadata.source,
+      base.metadata.source,
+      "The Viewing round trip must retain the exact live R source."
+    );
+    assert.deepEqual(
+      testing.activeSession()?.viewState,
+      viewingStateBeforeEditing,
+      "The Viewing round trip must retain the complete confirmed view."
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      base.sessionId,
+      "The round-tripped Editing-mode R session must acknowledge its atomically replaced runtime."
+    );
+
+    editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the round-tripped R editing session");
     await editingApp.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
     const editingDrawer = editingApp.getByRole("complementary", {
       name: "Column profiles and filters",

@@ -126,9 +126,11 @@ the separately reviewed performance record, the installed all-28 matrix passes, 
 change resolves that record's source/candidate ordering.
 
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
-object. R documents follow the file start-mode setting, which defaults to Editing. Generated R can be copied or saved
-from any editing session. Insertion is available only for an exact originating IRkernel notebook or Open
-Wrangler-managed R document; an active terminal has no source document to edit.
+object. An Editing session can return to Viewing while its cleaning plan is empty and no draft is open. Open Wrangler
+keeps the confirmed filters, sorts, widths, selection, and grid position in either direction. R documents follow the
+file start-mode setting, which defaults to Editing. Generated R can be copied or saved from any editing session.
+Insertion is available only for an exact originating IRkernel notebook or Open Wrangler-managed R document; an active
+terminal has no source document to edit.
 
 A trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an Open Wrangler-owned R process,
 after which the user chooses one of the dataframes it created. That explicit R-document action uses supported
@@ -156,7 +158,8 @@ viewing filter or sort can be copied into a cleaning draft. Filters keep the typ
 `NaN`; sorts keep their compound priority, and both keep stable source-row identities through history and diffs.
 Notebook variables open in Viewing mode by default. **Switch to Editing** in the dataframe toolbar atomically opens
 the same live variable through its captured notebook and keeps the confirmed filters, sorts, widths, selection, and
-grid position. A closed or replaced notebook fails the mode change without replacing the working Viewing session.
+grid position. **Switch to Viewing** performs the same replacement in reverse while the cleaning plan is empty and no
+draft is open. A closed or replaced notebook fails either mode change without replacing the working session.
 Drop Missing Rows treats `NA` and `NaN` as missing and can drop
 rows when any or all selected columns are missing. Drop Duplicates compares selected columns, or all columns by
 default, and can keep the first, last, or no row in each repeated group without changing source order. Select Columns

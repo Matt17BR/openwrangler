@@ -4,6 +4,7 @@ import type {
   DataDiff,
   OpenWranglerRequest,
   OpenWranglerResponse,
+  SessionMode,
   SessionSource
 } from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
@@ -99,13 +100,14 @@ export interface OpenWranglerBridge {
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse>;
   /**
-   * Atomically replaces a supported live-variable runtime with an Editing-mode
-   * runtime bound to the same live source. This is a host-only lifecycle
+   * Atomically replaces a supported live-variable runtime in the requested mode
+   * while remaining bound to the same live source. This is a host-only lifecycle
    * operation and is intentionally absent from protocol v2.
    */
-  reconfigureNotebookSessionForEditing?(
+  reconfigureLiveSessionMode?(
     sessionId: string,
     revision: number,
+    mode: SessionMode,
     viewState: GridViewState,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse>;

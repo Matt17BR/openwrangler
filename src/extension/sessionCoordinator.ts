@@ -10,16 +10,18 @@ import type {
   PageResponse,
   RowAxisExportPolicy,
   SessionMetadata,
+  SessionMode,
   SessionSource,
   SessionBoundRequest,
   StepInspectionResponse
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
+import { sessionModeAction } from "../shared/sessionMode";
 import type { GridViewState, PersistedViewingState } from "../shared/viewState";
 import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresentation } from "./dataBridge";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import {
-  canReopenLiveSessionForEditing,
+  canReopenLiveSessionInMode,
   normalizeSessionOrigin,
   sameFileSourceIdentity,
   sessionOriginMismatch,
@@ -142,8 +144,8 @@ export class SessionCoordinator implements vscode.Disposable {
         this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
         this.reconfigureFileSession(delegate, sessionId, revision, source, options),
-      reconfigureNotebookSessionForEditing: (sessionId, revision, viewState, options) =>
-        this.reconfigureNotebookSessionForEditing(delegate, sessionId, revision, viewState, options),
+      reconfigureLiveSessionMode: (sessionId, revision, mode, viewState, options) =>
+        this.reconfigureLiveSessionMode(delegate, sessionId, revision, mode, viewState, options),
       reconnectLiveSession: (sessionId, revision, options) =>
         this.reconnectLiveSession(delegate, sessionId, revision, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
@@ -642,10 +644,11 @@ export class SessionCoordinator implements vscode.Disposable {
     }
   }
 
-  private async reconfigureNotebookSessionForEditing(
+  private async reconfigureLiveSessionMode(
     delegate: OpenWranglerBridge,
     sessionId: string,
     revision: number,
+    mode: SessionMode,
     viewState: GridViewState,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
@@ -664,7 +667,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
-        `Editing mode was not opened because the session advanced to revision ${session.publicRevision}.`,
+        `${modeName(mode)} mode was not opened because the session advanced to revision ${session.publicRevision}.`,
         true,
         session.publicId
       );
@@ -685,10 +688,13 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId
       );
     }
-    if (!canReopenLiveSessionForEditing(session)) {
+    if (!canReopenLiveSessionInMode(session, mode)) {
+      const action = sessionModeAction(session.metadata);
       return protocolError(
-        "editing_mode_unavailable",
-        "This session cannot be reopened in Editing mode.",
+        `${mode}_mode_unavailable`,
+        action?.target === mode && action.disabledReason
+          ? action.disabledReason
+          : `This session cannot be reopened in ${modeName(mode)} mode.`,
         true,
         session.publicId
       );
@@ -714,8 +720,8 @@ export class SessionCoordinator implements vscode.Disposable {
         return protocolError(
           this.disposed ? "coordinator_disposed" : "session_closing",
           this.disposed
-            ? "The Open Wrangler session coordinator was disposed while Editing mode was opening."
-            : `Open Wrangler session ${session.publicId} closed while Editing mode was opening.`,
+            ? `The Open Wrangler session coordinator was disposed while ${modeName(mode)} mode was opening.`
+            : `Open Wrangler session ${session.publicId} closed while ${modeName(mode)} mode was opening.`,
           false,
           session.publicId
         );
@@ -723,7 +729,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (revision !== session.publicRevision) {
         return protocolError(
           "stale_request",
-          `Editing mode was not opened because the session advanced to revision ${session.publicRevision}.`,
+          `${modeName(mode)} mode was not opened because the session advanced to revision ${session.publicRevision}.`,
           true,
           session.publicId
         );
@@ -731,7 +737,12 @@ export class SessionCoordinator implements vscode.Disposable {
       const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
       if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
       const response = await this.serializeSessionEstablishment(delegate, () =>
-        this.runtimeReconfigurer.reopenNotebookForEditing(session, options, this.runtimeReconfigurationHooks(session))
+        this.runtimeReconfigurer.reopenLiveSessionInMode(
+          session,
+          mode,
+          options,
+          this.runtimeReconfigurationHooks(session)
+        )
       );
       replacementPublished = response.kind === "sessionOpened";
       return response;
@@ -987,4 +998,8 @@ function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
     ...(session.latestStepInspectionKey ? { stepInspectionActive: true } : {}),
     ...(stepInspection ? { stepInspection } : {})
   };
+}
+
+function modeName(mode: SessionMode): "Editing" | "Viewing" {
+  return mode === "editing" ? "Editing" : "Viewing";
 }

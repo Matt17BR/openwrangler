@@ -10,6 +10,7 @@ export type RuntimeCleanupRole =
   | "saved-plan fallback runtime"
   | "failed saved-state runtime"
   | "editing candidate"
+  | "viewing candidate"
   | "invalid open runtime"
   | "late-open runtime"
   | "terminal runtime";
