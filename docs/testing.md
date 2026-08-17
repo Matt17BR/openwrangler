@@ -104,8 +104,8 @@ matrix for release candidates or changes that cross those boundaries.
   timeout/failure receipts; there are no retries. The existing frame-contract process also parses the exact tracked
   `scripts/r-performance-harness.R` and requires a nonempty expression on both hosted R versions; this adds no fourth
   direct R subprocess. These runner bounds do not change editor phase, editor inactivity, or runtime-operation
-  deadlines. The current PR workflow runs two selected R 4.5 owners after the invariant core: the kernel-agent shard and a fail-complete
-  parallel pair containing the remaining protocol shards. The temporary R 4.4 pull-request carrier is retired; the
+  deadlines. The current PR workflow starts two selected R 4.5 owners after classification and beside the invariant
+  core: the kernel-agent shard and a fail-complete serial pair containing the remaining protocol shards. The temporary R 4.4 pull-request carrier is retired; the
   manual and scheduled Cross workflow owns the lock-backed R 4.4 qualification. Every owner consumes its exact dated
   lock through the strict private-library path above. The contract also
   runs the native kernel agent through open, filtered and sorted

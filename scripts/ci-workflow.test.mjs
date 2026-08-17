@@ -53,6 +53,13 @@ const VALIDATE_NEEDS = Object.freeze([
   "visual-accessibility",
   "windows-unique"
 ]);
+const CHANGED_AREA_OWNER_OUTPUTS = Object.freeze({
+  "r-contract-kernel": "r_contract_required",
+  "r-contract-protocol": "r_contract_required",
+  "canonical-editor": "canonical_editor_required",
+  "visual-accessibility": "visual_accessibility_required",
+  "windows-unique": "windows_unique_required"
+});
 const VALIDATE_ENV = Object.freeze({
   R_CONTRACT_REQUIRED: "${{ needs.classify.outputs.r_contract_required }}",
   CANONICAL_EDITOR_REQUIRED: "${{ needs.classify.outputs.canonical_editor_required }}",
@@ -245,6 +252,28 @@ function assertValidateOwner(document) {
   const gate = stepRunning(validate, "node scripts/require-ci-results.mjs");
   assert.ok(gate, "validate must invoke the sole result owner");
   assert.deepEqual(gate.env, VALIDATE_ENV);
+}
+
+function normalizeWorkflowExpression(value) {
+  return typeof value === "string" ? value.replaceAll(/\s+/gu, " ").trim() : value;
+}
+
+function assertChangedAreaOwnersStartAfterClassification(document) {
+  for (const [jobId, output] of Object.entries(CHANGED_AREA_OWNER_OUTPUTS)) {
+    const job = document?.jobs?.[jobId];
+    assert.deepEqual(job?.needs, ["classify"], `${jobId} must start after classification only`);
+    assert.equal(
+      normalizeWorkflowExpression(job?.if),
+      "${{ !cancelled() && github.event_name == 'pull_request' && " +
+        `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`,
+      `${jobId} must retain its exact PR-only fail-open selection condition`
+    );
+    assert.doesNotMatch(
+      JSON.stringify(job),
+      /needs\.invariant-core/u,
+      `${jobId} must not wait for or inspect invariant-core before starting`
+    );
+  }
 }
 
 function assertCrossScheduledOwners(document) {
@@ -575,7 +604,31 @@ test("conditional owners fail open to run while sole validate owner requires exa
     assert.match(ci.jobs[jobId].if, /classify\.result != 'success'/u);
     assert.match(ci.jobs[jobId].if, /!= 'false'/u);
   }
+  assertChangedAreaOwnersStartAfterClassification(ci);
   assertValidateOwner(ci);
+});
+
+test("changed-area owners start beside the invariant core and reject a restored serial dependency", () => {
+  for (const jobId of Object.keys(CHANGED_AREA_OWNER_OUTPUTS)) {
+    const serialDependency = structuredClone(ci);
+    serialDependency.jobs[jobId].needs = ["classify", "invariant-core"];
+    assert.throws(() => assertChangedAreaOwnersStartAfterClassification(serialDependency));
+
+    const serialCondition = structuredClone(ci);
+    serialCondition.jobs[jobId].if = serialCondition.jobs[jobId].if.replace(
+      "github.event_name == 'pull_request' &&",
+      "github.event_name == 'pull_request' && needs.invariant-core.result == 'success' &&"
+    );
+    assert.throws(() => assertChangedAreaOwnersStartAfterClassification(serialCondition));
+
+    const missingClassifier = structuredClone(ci);
+    missingClassifier.jobs[jobId].needs = [];
+    assert.throws(() => assertChangedAreaOwnersStartAfterClassification(missingClassifier));
+
+    const changedSelection = structuredClone(ci);
+    changedSelection.jobs[jobId].if = changedSelection.jobs[jobId].if.replace("!= 'false'", "== 'true'");
+    assert.throws(() => assertChangedAreaOwnersStartAfterClassification(changedSelection));
+  }
 });
 
 test("validate always evaluates the exact PR-only result fan-in", () => {
