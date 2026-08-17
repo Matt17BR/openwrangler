@@ -637,9 +637,9 @@ The browser acceptance records keyboard cell navigation and resizing, Page Up/Do
 Grid clipboard component acceptance selects and extends cells through pointer and keyboard paths, then exercises
 **Copy cell**, **Copy row**, **Copy range**, and Ctrl/Cmd+C against the platform clipboard boundary. The pure owner
 requires full displayed values, TSV quoting for tabs, quotes, and newlines, schema-ordered loaded row columns, exposed
-row labels, logical-view scoping, and fixed 100,000-cell and 4 MiB bounds. Projected row copy must say when it copied
-only the loaded columns. Range copy must reject any stale or unloaded cell instead of reconstructing data from DOM
-text or requesting an unbounded page.
+row labels, string formula neutralization after leading whitespace/control/BOM, typed-negative preservation, view
+scoping, and 100,000-cell/4 MiB UTF-8 caps budgeted by field before joining rows. Rejections carry no data; projected
+rows identify loaded-only copies, and stale/unloaded ranges fail without DOM reconstruction or unbounded requests.
 
 A 100,000,000-row terminal fixture additionally retains the exact
 `Rows 99,999,801\u2013100,000,000 of 100,000,000` status on one visual line at 320 and 400 CSS pixels, including

@@ -1258,13 +1258,17 @@ Grid clipboard selection, 2026-08-16:
 - Pointer and keyboard users can select one cell or extend an inclusive rectangular range with Shift+click or
   Shift+Arrow. The footer exposes **Copy cell**, **Copy row**, and **Copy range**; Ctrl/Cmd+C copies the current
   cell selection.
-- Copy uses full displayed cell values and spreadsheet-safe TSV quoting. A row copy follows the current bounded
-  column projection and includes an exposed row label. It reports when only the loaded columns were copied rather
-  than implying an unbounded full-row fetch.
+- Copy uses full displayed cell values and spreadsheet-safe TSV quoting. String-typed cells and row labels whose
+  first active character after whitespace, control characters, or a BOM is `=`, `+`, `-`, or `@` receive a leading
+  apostrophe; typed numeric negatives remain unchanged. A row copy follows the current bounded column projection and
+  includes an exposed row label. It reports when only the loaded columns were copied rather than implying an
+  unbounded full-row fetch.
 - Selection is scoped to the opaque logical view. Stale views and unloaded range cells fail closed, and the copy
-  contract caps one action at 100,000 cells and 4 MiB of displayed text.
-- Focused pure and React owners cover TSV escaping, row labels, projected rows, stale and oversized selections,
-  pointer and keyboard range extension, the platform copy shortcut, view replacement, and clipboard denial.
+  contract caps one action at 100,000 cells and 4 MiB of UTF-8 text, budgeted field by field before a row or output is
+  joined.
+- Focused pure and React owners cover TSV escaping, formula neutralization, typed negatives, row labels, projected
+  rows, exact UTF-8 boundaries, payload-free rejection, stale and oversized selections, pointer and keyboard range
+  extension, the platform copy shortcut, view replacement, and clipboard denial.
 
 Shared cleaned-data publication, 2026-08-16:
 
