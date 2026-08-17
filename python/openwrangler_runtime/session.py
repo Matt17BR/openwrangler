@@ -21,6 +21,11 @@ from .engines.base import (
 )
 from .export_target import ExportTarget, ExportTargetError
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
+from .live_page_payload import (
+    LIVE_PAGE_COMPLEX_DEPTH_LIMIT,
+    LivePagePayloadError,
+    validate_live_page_payload,
+)
 from .operations import OperationError, validate_step
 from .protocol import MAX_COLUMN_LIMIT
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
@@ -681,14 +686,14 @@ class SessionManager:
                 column_offset,
                 column_limit,
             )
-            before_page = session.engine.page(
+            before_page, _before_page_size = self._read_live_page(
+                session,
                 diff_base_view,
                 offset,
                 limit,
                 total_rows=diff_base_view_shape["rows"],
                 column_projection=before_projection,
             )
-            self._validate_page_projection(before_page, before_projection)
             return {
                 "kind": "stepPreview",
                 "revision": session.revision,
@@ -772,22 +777,22 @@ class SessionManager:
                 raise EngineError("The applied cleaning-step history is inconsistent.") from error
             input_projection = self._column_window(input_schema, column_offset, column_limit)
             output_projection = self._column_window(output_schema, column_offset, column_limit)
-            input_page = session.engine.page(
+            input_page, _input_page_size = self._read_live_page(
+                session,
                 before,
                 offset,
                 limit,
                 total_rows=before_shape["rows"],
                 column_projection=input_projection,
             )
-            output_page = session.engine.page(
+            output_page, _output_page_size = self._read_live_page(
+                session,
                 after,
                 offset,
                 limit,
                 total_rows=after_shape["rows"],
                 column_projection=output_projection,
             )
-            self._validate_page_projection(input_page, input_projection)
-            self._validate_page_projection(output_page, output_projection)
 
             response = {
                 "kind": "stepInspection",
@@ -1188,14 +1193,14 @@ class SessionManager:
             session.page_cache.move_to_end(key)
             return cached.payload
 
-        page = session.engine.page(
+        page, page_size = cls._read_live_page(
+            session,
             session.filtered,
             offset,
             limit,
             total_rows=session.filtered_shape["rows"],
             column_projection=projection,
         )
-        cls._validate_page_projection(page, projection)
         reported_total = page.get("totalRows")
         if session.filtered_shape["rows"] is None and type(reported_total) is int and reported_total >= 0:
             session.filtered_shape = {**session.filtered_shape, "rows": reported_total}
@@ -1208,8 +1213,8 @@ class SessionManager:
             # metadata so a later cache hit cannot regress that count.
             cls._invalidate_page_cache(session)
             key = (session.view_generation, session.revision, offset, limit, column_ids)
-        page_size = cls._strict_response_payload_size(
-            page,
+        cls._assert_strict_response_payload_size(
+            page_size,
             "page",
             "Request fewer rows or columns.",
         )
@@ -1224,6 +1229,37 @@ class SessionManager:
             session.page_cache_bytes -= evicted.size_bytes
         return page
 
+    @classmethod
+    def _read_live_page(
+        cls,
+        session: Session,
+        frame: Any,
+        offset: int,
+        limit: int,
+        *,
+        total_rows: int | None,
+        column_projection: PageColumnProjection,
+    ) -> tuple[dict[str, Any], int]:
+        try:
+            page = session.engine.page(
+                frame,
+                offset,
+                limit,
+                total_rows=total_rows,
+                column_projection=column_projection,
+            )
+        except RecursionError as error:
+            raise ResponsePayloadError(
+                "Live page complex values must not be cyclic and may contain at most "
+                f"{LIVE_PAGE_COMPLEX_DEPTH_LIMIT} nested levels.",
+                "page_payload_invalid",
+            ) from error
+        cls._validate_page_projection(page, column_projection)
+        try:
+            return page, validate_live_page_payload(page)
+        except LivePagePayloadError as error:
+            raise ResponsePayloadError(str(error), "page_payload_invalid") from error
+
     @staticmethod
     def _strict_response_payload_size(value: Any, subject: str, recovery: str) -> int:
         try:
@@ -1233,13 +1269,17 @@ class SessionManager:
                 f"The requested {subject} could not be encoded as strict JSON. {recovery}",
                 "response_encoding_failed",
             ) from error
+        SessionManager._assert_strict_response_payload_size(size, subject, recovery)
+        return size
+
+    @staticmethod
+    def _assert_strict_response_payload_size(size: int, subject: str, recovery: str) -> None:
         if size > MAX_STRICT_RESPONSE_PAYLOAD_BYTES:
             raise ResponsePayloadError(
                 f"The requested {subject} exceeds the "
                 f"{MAX_STRICT_RESPONSE_PAYLOAD_BYTES:,}-byte strict response payload limit. {recovery}",
                 "response_too_large",
             )
-        return size
 
     @staticmethod
     def _active_schema(session: Session) -> list[dict[str, Any]]:
@@ -1506,7 +1546,8 @@ class SessionManager:
         before_projection = self._column_window(before_schema, column_offset, column_limit)
         after_projection = self._column_window(after_schema, column_offset, column_limit)
         if before_page is None:
-            before_page = session.engine.page(
+            before_page, _before_page_size = self._read_live_page(
+                session,
                 before,
                 offset,
                 limit,
@@ -1514,7 +1555,8 @@ class SessionManager:
                 column_projection=before_projection,
             )
         if after_page is None:
-            after_page = session.engine.page(
+            after_page, _after_page_size = self._read_live_page(
+                session,
                 after,
                 offset,
                 limit,
