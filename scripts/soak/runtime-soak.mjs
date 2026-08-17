@@ -221,9 +221,25 @@ export class RuntimeServer {
     this.process.stderr.on("data", (chunk) => {
       this.stderrBytes = Math.min(STDERR_COUNT_LIMIT, this.stderrBytes + chunk.length);
     });
-    this.exit = new Promise((resolveExit) => {
-      this.process.once("error", () => resolveExit({ code: null, signal: "spawn_error" }));
-      this.process.once("exit", (code, exitSignal) => resolveExit({ code, signal: exitSignal }));
+    this.spawnState = Number.isSafeInteger(this.process.pid) && this.process.pid > 0 ? "spawned" : "pending";
+    this.terminationObserved = false;
+    this.termination = new Promise((resolveTermination) => {
+      const settle = (value) => {
+        if (this.terminationObserved) return;
+        this.terminationObserved = true;
+        resolveTermination(Object.freeze(value));
+      };
+      this.process.once("spawn", () => {
+        if (this.spawnState === "pending") this.spawnState = "spawned";
+      });
+      this.process.on("error", () => {
+        if (this.spawnState === "pending") {
+          this.spawnState = "failed";
+          settle({ kind: "pre_spawn_error", code: null, signal: null });
+        }
+      });
+      this.process.once("exit", (code, exitSignal) => settle({ kind: "exit", code, signal: exitSignal }));
+      this.process.once("close", (code, closeSignal) => settle({ kind: "close", code, signal: closeSignal }));
     });
   }
 
@@ -240,7 +256,7 @@ export class RuntimeServer {
 
   async requestEnvelope(envelope, requestId, phase, timeoutMs) {
     if (this.signal?.aborted) throw new SoakRunError("interrupted", phase);
-    if (this.process.exitCode !== null || this.process.signalCode !== null) {
+    if (this.terminationObserved || this.process.exitCode !== null || this.process.signalCode !== null) {
       throw new SoakRunError("runtime_exit", phase);
     }
     const frame = `${JSON.stringify(envelope)}\n`;
@@ -277,38 +293,62 @@ export class RuntimeServer {
     return envelopeResponse.response;
   }
 
-  async crash(phase) {
+  requestKill() {
+    if (this.terminationObserved || this.killAttempted) return false;
     this.killAttempted = true;
-    if (!this.process.kill("SIGKILL")) throw new SoakRunError("scenario_failed", phase);
-    await waitWithBound(this.exit, this.stopTimeoutMs, "runtime_exit", phase, this.signal);
+    try {
+      return this.process.kill("SIGKILL") === true;
+    } catch {
+      return false;
+    }
   }
 
-  async stop(phase) {
-    if (this.process.exitCode === null && this.process.signalCode === null) this.process.stdin.end();
-    let exit;
+  async crash(phase, remaining) {
+    if (!this.requestKill()) throw new SoakRunError("scenario_failed", phase);
+    const timeoutMs = Math.min(this.stopTimeoutMs, requestDeadline(remaining()));
+    await waitWithBound(this.termination, timeoutMs, "runtime_exit", phase, this.signal);
+  }
+
+  async stop(phase, remaining = () => this.stopTimeoutMs) {
+    if (!this.terminationObserved && this.process.exitCode === null && this.process.signalCode === null) {
+      this.process.stdin.end();
+    }
+    let termination;
     try {
-      exit = await waitWithBound(this.exit, this.stopTimeoutMs, "cleanup_failed", phase, undefined);
+      termination = await waitWithBound(
+        this.termination,
+        Math.min(this.stopTimeoutMs, requestDeadline(remaining())),
+        "cleanup_failed",
+        phase,
+        undefined
+      );
     } catch {
-      if (!this.killAttempted) {
-        this.killAttempted = true;
-        this.process.kill("SIGKILL");
-      }
+      this.requestKill();
       try {
-        exit = await waitWithBound(this.exit, this.stopTimeoutMs, "cleanup_failed", phase, undefined);
+        termination = await waitWithBound(
+          this.termination,
+          Math.min(this.stopTimeoutMs, requestDeadline(remaining())),
+          "cleanup_failed",
+          phase,
+          undefined
+        );
       } catch {
         return Object.freeze({ settled: false, clean: false });
       }
     }
-    return Object.freeze({ settled: true, clean: exit.code === 0 && exit.signal === null });
+    return Object.freeze({
+      settled: true,
+      clean:
+        (termination.kind === "exit" || termination.kind === "close") &&
+        termination.code === 0 &&
+        termination.signal === null
+    });
   }
 
   async forceStop() {
-    if (this.process.exitCode === null && this.process.signalCode === null && !this.killAttempted) {
-      this.killAttempted = true;
-      this.process.kill("SIGKILL");
-    }
+    this.requestKill();
     try {
-      await waitWithBound(this.exit, this.stopTimeoutMs, "cleanup_failed", "cleanup", undefined);
+      await waitWithBound(this.termination, this.stopTimeoutMs, "cleanup_failed", "cleanup", undefined);
       return true;
     } catch {
       return false;
@@ -361,11 +401,11 @@ export class PythonRuntimeSoakAdapter {
     this.runtimeVersion = response.runtimeVersion;
   }
 
-  async runScenario(scenario, iteration, remainingMs) {
+  async runScenario(scenario, iteration, remaining) {
     if (!this.server) throw new SoakRunError("runtime_start_failed", scenario);
-    const timeoutMs = requestDeadline(remainingMs);
+    const timeout = () => requestDeadline(remaining());
     if (scenario === "open_page_close") {
-      const { sessionId, revision } = await this.openSession(iteration, scenario, timeoutMs);
+      const { sessionId, revision } = await this.openSession(iteration, scenario, remaining);
       const page = await this.server.request(
         {
           kind: "getPage",
@@ -379,15 +419,15 @@ export class PythonRuntimeSoakAdapter {
           filterModel: { logic: "and", filters: [], sort: [] }
         },
         scenario,
-        timeoutMs
+        timeout()
       );
       expectKind(page, "page", scenario);
-      const closed = await this.server.request({ kind: "closeSession", sessionId, revision }, scenario, timeoutMs);
+      const closed = await this.server.request({ kind: "closeSession", sessionId, revision }, scenario, timeout());
       expectKind(closed, "sessionClosed", scenario);
       return;
     }
     if (scenario === "invalid_protocol") {
-      const response = await this.server.request({ kind: "initialize" }, scenario, timeoutMs, 1);
+      const response = await this.server.request({ kind: "initialize" }, scenario, timeout(), 1);
       expectErrorCode(response, "invalid_request", scenario);
       return;
     }
@@ -405,16 +445,16 @@ export class PythonRuntimeSoakAdapter {
           filterModel: { logic: "and", filters: [], sort: [] }
         },
         scenario,
-        timeoutMs
+        timeout()
       );
       expectErrorCode(response, "unknown_session", scenario);
       return;
     }
     if (scenario === "crash_restart") {
-      const { sessionId } = await this.openSession(iteration, scenario, timeoutMs);
-      await this.server.crash(scenario);
+      const { sessionId } = await this.openSession(iteration, scenario, remaining);
+      await this.server.crash(scenario, remaining);
       this.server = new RuntimeServer(this.executable, this.workingRoot, this.runtimePythonRoot, this.signal);
-      const initialized = await this.server.request({ kind: "initialize" }, scenario, timeoutMs);
+      const initialized = await this.server.request({ kind: "initialize" }, scenario, timeout());
       expectKind(initialized, "initialized", scenario);
       if (initialized.runtimeVersion !== this.runtimeVersion) throw new SoakRunError("scenario_failed", scenario);
       const response = await this.server.request(
@@ -430,7 +470,7 @@ export class PythonRuntimeSoakAdapter {
           filterModel: { logic: "and", filters: [], sort: [] }
         },
         scenario,
-        timeoutMs
+        timeout()
       );
       expectErrorCode(response, "unknown_session", scenario);
       return;
@@ -438,7 +478,7 @@ export class PythonRuntimeSoakAdapter {
     throw new SoakRunError("scenario_failed", "prepare");
   }
 
-  async openSession(iteration, phase, timeoutMs) {
+  async openSession(iteration, phase, remaining) {
     if (!this.server) throw new SoakRunError("runtime_start_failed", phase);
     const sessionId = canonicalUuid(this.seed, iteration, phase);
     const response = await this.server.request(
@@ -453,7 +493,7 @@ export class PythonRuntimeSoakAdapter {
         columnLimit: 8
       },
       phase,
-      timeoutMs
+      requestDeadline(remaining())
     );
     expectKind(response, "sessionOpened", phase);
     if (
@@ -468,10 +508,10 @@ export class PythonRuntimeSoakAdapter {
     return { sessionId, revision: response.metadata.revision };
   }
 
-  async close() {
+  async close(remaining = () => STOP_TIMEOUT_MS) {
     if (!this.server) return;
     const current = this.server;
-    const exit = await current.stop("cleanup");
+    const exit = await current.stop("cleanup", remaining);
     if (!exit.settled) throw new SoakRunError("cleanup_failed", "cleanup");
     if (this.server === current) this.server = undefined;
     if (!exit.clean) throw new SoakRunError("runtime_exit", "cleanup");
@@ -502,7 +542,8 @@ export async function executeRuntimeSoak({
     monotonicMs: () => performance.now()
   },
   onProgress = () => undefined,
-  beforeReceipt = async () => undefined
+  beforeReceipt = async () => undefined,
+  onCleanupUncertain = () => undefined
 }) {
   const selector = createScenarioSelector(options.seed);
   const counts = new Map(SOAK_SCENARIOS.map((scenario) => [scenario, 0]));
@@ -530,7 +571,7 @@ export async function executeRuntimeSoak({
       }
       const scenario = selector.next();
       phase = scenario;
-      await adapter.runScenario(scenario, completedIterations + 1, remaining());
+      await adapter.runScenario(scenario, completedIterations + 1, remaining);
       counts.set(scenario, counts.get(scenario) + 1);
       completedIterations += 1;
       if (completedIterations % PROGRESS_INTERVAL === 0) {
@@ -543,7 +584,7 @@ export async function executeRuntimeSoak({
       }
     }
     phase = "cleanup";
-    await adapter.close();
+    await adapter.close(remaining);
     if (clock.monotonicMs() > deadlineMs) throw new SoakRunError("deadline_exceeded", phase);
   } catch (error) {
     const classified = error instanceof SoakRunError ? error : new SoakRunError("scenario_failed", phase);
@@ -552,6 +593,8 @@ export async function executeRuntimeSoak({
     retentionAllowed = cleanupConfirmed;
     if (!cleanupConfirmed) {
       failure = { code: "cleanup_failed", phase: "cleanup", iteration: completedIterations };
+      onCleanupUncertain();
+      return Object.freeze({ receipt: undefined, failure, retentionAllowed: false });
     }
   }
 
@@ -903,6 +946,9 @@ export async function runRuntimeSoakCli(args, dependencies = {}) {
       adapter,
       signal: signalController.signal,
       beforeReceipt: attestation.revalidate,
+      onCleanupUncertain: () => {
+        workingRootReceipt = undefined;
+      },
       onProgress: (progress) =>
         stderr(
           `OW_SOAK_PROGRESS seed=${progress.seed} completed=${progress.completedIterations} elapsedMs=${progress.elapsedMs} branches=${progress.branches.map((entry) => `${entry.scenario}:${entry.count}`).join(",")}`
