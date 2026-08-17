@@ -5098,8 +5098,11 @@ assert_identical(
 )
 assert_identical(base_summaries[[1L]]$visualization$trueCount, 1L, "logical TRUE counts changed")
 assert_identical(base_summaries[[1L]]$visualization$falseCount, 1L, "logical FALSE counts changed")
+assert_identical(base_summaries[[2L]]$numeric$sum, -1, "integer profile sum changed")
+assert_identical(base_summaries[[2L]]$numeric$exactSum$raw, -1, "integer profile sum lost its typed value")
 assert_identical(base_summaries[[3L]]$nullCount, 0L, "double NA was miscounted")
 assert_identical(base_summaries[[3L]]$nanCount, 1L, "double NaN was not counted separately")
+assert_true(is.null(base_summaries[[3L]]$numeric$sum), "a non-finite double profile published an exact sum")
 assert_identical(base_summaries[[4L]]$text$minLength, 4L, "UTF-8 text minimum length changed")
 assert_identical(base_summaries[[4L]]$text$maxLength, 5L, "UTF-8 text maximum length changed")
 assert_identical(base_summaries[[6L]]$rawType, "ordered factor", "ordered-factor profile metadata changed")
@@ -5112,6 +5115,7 @@ assert_identical(
 )
 assert_identical(base_summaries[[9L]]$numeric$min, 1, "difftime profile minimum changed")
 assert_identical(base_summaries[[9L]]$numeric$max, 3, "difftime profile maximum changed")
+assert_identical(base_summaries[[9L]]$numeric$sum, 4, "difftime profile sum changed")
 assert_identical(
   base_summaries[[10L]]$numeric$exactMin$raw,
   "-9223372036854775807",
@@ -5121,6 +5125,20 @@ assert_identical(
   base_summaries[[10L]]$numeric$exactMax$raw,
   "9223372036854775806",
   "integer64 profile maximum lost precision"
+)
+assert_identical(base_summaries[[10L]]$numeric$sum, -1, "integer64 profile sum changed")
+assert_identical(base_summaries[[10L]]$numeric$exactSum$display, "-1", "integer64 profile sum lost precision")
+wide_sum_capture <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(value = bit64::as.integer64(c("9007199254740993", "2")), check.names = FALSE)
+)
+wide_sum_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  wide_sum_capture,
+  list(profile_reference(wide_sum_capture, 1L))
+)[[1L]]
+assert_identical(
+  wide_sum_summary$numeric$exactSum$display,
+  "9007199254740995",
+  "integer64 profile Sum did not preserve a value outside JSON's safe-integer range"
 )
 assert_identical(base_frame, profile_source_before, "profiling mutated the source data.frame")
 
@@ -5160,6 +5178,20 @@ empty_summaries <- openwrangler_r_frame_contract$materialize_summaries(
 )
 assert_identical(empty_summaries[[1L]]$text, list(emptyCount = 0L), "empty text profile invented bounds")
 assert_identical(empty_summaries[[2L]]$topValues, I(list()), "empty numeric profile invented values")
+assert_identical(empty_summaries[[2L]]$numeric, list(sum = 0), "empty numeric profile did not normalize Sum to zero")
+all_missing_integer_capture <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(value = c(NA_integer_, NA_integer_))
+)
+all_missing_integer_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  all_missing_integer_capture,
+  list(profile_reference(all_missing_integer_capture, 1L))
+)[[1L]]
+assert_identical(all_missing_integer_summary$numeric$sum, 0, "all-missing integer Sum was not zero")
+assert_identical(
+  all_missing_integer_summary$numeric$exactSum,
+  list(kind = "integer", raw = 0, display = "0", isNull = FALSE, isNaN = FALSE),
+  "all-missing integer Sum lost its typed zero"
+)
 
 duplicate_profile_frame <- data.frame(value = c(1L, 1L, NA_integer_), flag = c(TRUE, TRUE, NA))
 duplicate_profile_capture <- openwrangler_r_frame_contract$capture_frame(duplicate_profile_frame)
@@ -5378,6 +5410,23 @@ too_tall_summary <- openwrangler_r_frame_contract$materialize_summaries(
 )[[1L]]
 assert_identical(too_tall_summary$totalCount, as.double(former_row_limit), "the former R profile row cap remained")
 assert_identical(too_tall_summary$visualization$falseCount, former_row_limit, "large exact boolean count changed")
+large_sum_frame <- data.frame(value = rep.int(1L, former_row_limit))
+large_sum_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_sum_frame)
+large_sum_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  large_sum_capture,
+  list(profile_reference(large_sum_capture, 1L))
+)[[1L]]
+assert_identical(
+  large_sum_summary$numeric$sum,
+  as.double(former_row_limit),
+  "large sampled-distribution profile did not sum the complete domain"
+)
+assert_identical(
+  large_sum_summary$numeric$exactSum$display,
+  as.character(former_row_limit),
+  "large sampled-distribution profile lost its exact integer Sum"
+)
+assert_identical(large_sum_summary$visualization$sampled, TRUE, "large Sum regression did not exercise sampling")
 too_tall_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(too_tall_capture)$stats
 assert_identical(
   too_tall_stats$duplicateRowsSampleSize,

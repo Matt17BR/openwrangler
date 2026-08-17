@@ -38,6 +38,7 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
+    normalized_numeric_sum,
     numeric_histogram_bin_count,
     numeric_histogram_edges,
     numeric_visualization_from_bin_counts,
@@ -425,6 +426,15 @@ class PolarsEngine(DataFrameEngine):
                     numeric_series = numeric_series.drop_nans()
                 minimum = numeric_series.min()
                 maximum = numeric_series.max()
+                numeric_sum = (
+                    numeric_series.to_frame()
+                    .select(
+                        _polars_profile_sum_expression(pl.col(column), numeric_series.dtype, semantic_type).alias(
+                            "__open_wrangler_sum"
+                        )
+                    )
+                    .item()
+                )
                 numeric_summary: dict[str, Any] = {
                     "min": _maybe_float(minimum),
                     "max": _maybe_float(maximum),
@@ -432,6 +442,7 @@ class PolarsEngine(DataFrameEngine):
                     "median": _maybe_float(numeric_series.median()),
                     "std": _maybe_float(numeric_series.std()),
                 }
+                numeric_summary.update(normalized_numeric_sum(numeric_sum, semantic_type))
                 if semantic_type in {"integer", "decimal"} and numeric_series.len() > 0:
                     numeric_summary["exactMin"] = normalize_cell(minimum)
                     numeric_summary["exactMax"] = normalize_cell(maximum)
@@ -490,6 +501,9 @@ class PolarsEngine(DataFrameEngine):
                         valid_expression.mean().alias(f"{prefix}mean"),
                         valid_expression.median().alias(f"{prefix}median"),
                         valid_expression.std().alias(f"{prefix}std"),
+                        _polars_profile_sum_expression(valid_expression, schema[column], semantic_type).alias(
+                            f"{prefix}sum"
+                        ),
                         finite_expression.min().alias(f"{prefix}hist_min"),
                         finite_expression.max().alias(f"{prefix}hist_max"),
                         finite_expression.len().alias(f"{prefix}hist_count"),
@@ -621,6 +635,7 @@ class PolarsEngine(DataFrameEngine):
                     "median": _maybe_float(metrics[f"{prefix}median"]),
                     "std": _maybe_float(metrics[f"{prefix}std"]),
                 }
+                numeric_summary.update(normalized_numeric_sum(metrics[f"{prefix}sum"], semantic_type))
                 if semantic_type in {"integer", "decimal"} and metrics[f"{prefix}min"] is not None:
                     numeric_summary["exactMin"] = normalize_cell(metrics[f"{prefix}min"])
                     numeric_summary["exactMax"] = normalize_cell(metrics[f"{prefix}max"])
@@ -3375,6 +3390,12 @@ def _polars_checked_integer_sum(expression: Any, dtype: Any) -> Any:
         return_dtype=pl.Int128,
         skip_nulls=False,
     )
+
+
+def _polars_profile_sum_expression(expression: Any, dtype: Any, semantic_type: str) -> Any:
+    if semantic_type == "integer":
+        return _polars_checked_integer_sum(expression, dtype)
+    return expression.sum()
 
 
 def _polars_checked_integer_value(left: Any, right: Any, operator: str) -> int | None:

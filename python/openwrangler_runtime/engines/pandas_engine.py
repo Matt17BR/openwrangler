@@ -4,7 +4,7 @@ import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from datetime import date, datetime, timedelta
-from decimal import MAX_EMAX, MIN_EMIN, Decimal, localcontext
+from decimal import MAX_EMAX, MIN_EMIN, Decimal, DecimalException, localcontext
 from math import isfinite, isnan
 from numbers import Integral, Real
 from pathlib import Path
@@ -40,6 +40,7 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
+    normalized_numeric_sum,
     numeric_histogram_bin_count,
     numeric_histogram_edges,
     numeric_visualization_from_bin_counts,
@@ -305,6 +306,7 @@ class PandasEngine(DataFrameEngine):
                 minimum = numeric.min()
                 maximum = numeric.max()
                 statistics = _pandas_decimal_profile_statistics(numeric) if semantic_type == "decimal" else None
+                numeric_sum = _pandas_profile_numeric_sum(numeric, semantic_type)
                 numeric_summary: dict[str, Any] = {
                     "min": _maybe_float(minimum),
                     "max": _maybe_float(maximum),
@@ -312,6 +314,7 @@ class PandasEngine(DataFrameEngine):
                     "median": _maybe_float(statistics["median"] if statistics is not None else numeric.median()),
                     "std": _maybe_float(statistics["std"] if statistics is not None else numeric.std()),
                 }
+                numeric_summary.update(normalized_numeric_sum(numeric_sum, semantic_type))
                 if semantic_type in {"integer", "decimal"} and not numeric.empty:
                     numeric_summary.update(_pandas_exact_numeric_extrema(minimum, maximum, semantic_type))
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
@@ -2061,13 +2064,28 @@ def _pandas_exact_decimal_sum(series: Any) -> Decimal:
         return sum(values, Decimal(0))
 
 
+def _pandas_profile_numeric_sum(series: Any, semantic_type: str) -> Any:
+    if semantic_type == "integer":
+        return _pandas_widen_integer(series).sum()
+    if semantic_type != "decimal":
+        return series.sum()
+    if any(isinstance(item, Decimal) and not item.is_finite() for item in series.array):
+        return None
+    try:
+        return _pandas_exact_decimal_sum(series) + _pandas_decimal_zero(series)
+    except (DecimalException, ValueError):
+        return None
+
+
 def _pandas_decimal_zero(series: Any) -> Decimal:
     values = [
         item
         for item in series.array
         if not _pandas_is_missing_scalar(item) and isinstance(item, Decimal) and item.is_finite()
     ]
-    exponent = min([int(item.as_tuple().exponent) for item in values] or [0])
+    declared_scale = getattr(getattr(series.dtype, "pyarrow_dtype", None), "scale", None)
+    declared_exponent = -int(declared_scale) if isinstance(declared_scale, int) and declared_scale >= 0 else 0
+    exponent = min([int(item.as_tuple().exponent) for item in values] or [declared_exponent])
     return Decimal((0, (0,), exponent))
 
 

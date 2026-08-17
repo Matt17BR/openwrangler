@@ -599,8 +599,10 @@
         "mean": { "type": "number" },
         "median": { "type": "number" },
         "std": { "type": "number" },
+        "sum": { "type": "number" },
         "exactMin": { "$ref": "#/definitions/CellValue" },
-        "exactMax": { "$ref": "#/definitions/CellValue" }
+        "exactMax": { "$ref": "#/definitions/CellValue" },
+        "exactSum": { "$ref": "#/definitions/CellValue" }
       }
     },
     "TextSummary": {

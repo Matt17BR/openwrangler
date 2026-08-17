@@ -15,6 +15,7 @@ import type {
   TransformStep
 } from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
+import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationKinds } from "./operationCatalog.generated";
 import { PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
@@ -1622,10 +1623,24 @@ function isColumnSummary(value: unknown): boolean {
     isNonNegativeInteger(candidate.nullCount) &&
     isNonNegativeInteger(candidate.nanCount) &&
     optional(candidate, "distinctCount", isNonNegativeInteger) &&
-    optional(candidate, "numeric", (numeric) => isNumericSummary(numeric, candidate.type)) &&
+    optional(candidate, "numeric", (numeric) =>
+      isNumericSummary(
+        numeric,
+        candidate.type,
+        (candidate.totalCount as number) - (candidate.nullCount as number) - (candidate.nanCount as number)
+      )
+    ) &&
     optional(candidate, "visualization", isColumnVisualization) &&
     isArrayOf(candidate.topValues, isValueCount)
   )) {
+    return false;
+  }
+  if ((candidate.nullCount as number) + (candidate.nanCount as number) > (candidate.totalCount as number)) {
+    return false;
+  }
+  const hasNumeric = Object.prototype.hasOwnProperty.call(candidate, "numeric");
+  const requiresNumeric = candidate.type === "integer" || candidate.type === "float" || candidate.type === "decimal";
+  if ((requiresNumeric && !hasNumeric) || (hasNumeric && !requiresNumeric && candidate.type !== "duration")) {
     return false;
   }
   if (!Object.prototype.hasOwnProperty.call(candidate, "text")) {
@@ -1655,17 +1670,34 @@ function isColumnSummaryArray(value: unknown, schema?: readonly ColumnSchema[]):
   });
 }
 
-function isNumericSummary(value: unknown, columnType: unknown): boolean {
-  const candidate = exactRecord(value, [], ["min", "max", "mean", "median", "std", "exactMin", "exactMax"]);
+function isNumericSummary(value: unknown, columnType: unknown, valueCount: number): boolean {
+  const candidate = exactRecord(
+    value,
+    [],
+    ["min", "max", "mean", "median", "std", "sum", "exactMin", "exactMax", "exactSum"]
+  );
   if (
     candidate === undefined ||
+    !Number.isInteger(valueCount) ||
+    valueCount < 0 ||
     !optional(candidate, "min", isFiniteNumber) ||
     !optional(candidate, "max", isFiniteNumber) ||
     !optional(candidate, "mean", isFiniteNumber) ||
     !optional(candidate, "median", isFiniteNumber) ||
-    !optional(candidate, "std", isFiniteNumber)
+    !optional(candidate, "std", isFiniteNumber) ||
+    !optional(candidate, "sum", isFiniteNumber)
   ) {
     return false;
+  }
+
+  const exactType = columnType === "integer" || columnType === "decimal" ? columnType : undefined;
+  const hasExactSum = Object.prototype.hasOwnProperty.call(candidate, "exactSum");
+  if (hasExactSum && (!exactType || !isExactNumericSummaryCell(candidate.exactSum, exactType))) return false;
+  if (valueCount === 0) {
+    if (candidate.sum !== 0) return false;
+    if (exactType && (!hasExactSum || !isExactNumericZeroCell(candidate.exactSum as CellValue, exactType))) {
+      return false;
+    }
   }
 
   const hasExactMin = Object.prototype.hasOwnProperty.call(candidate, "exactMin");
