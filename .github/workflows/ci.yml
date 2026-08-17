@@ -62,7 +62,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         run: >-
           npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
-          check test:scripts test:python
+          check:invariants test:scripts test:python
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
       - name: Complete protected-main source gate
@@ -254,7 +254,9 @@ jobs:
           compression-level: 9
       - name: TypeScript owner contracts
         if: ${{ !cancelled() }}
-        run: npm run test:ts
+        run: >-
+          npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
+          typecheck typecheck:dependencies test:ts
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.canonical_python.outputs.python-path }}
 

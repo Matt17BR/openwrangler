@@ -6,7 +6,7 @@ Open Wrangler uses three test levels. The everyday pull-request checks should fi
 
 The current PR workflow runs the invariant core for every pull-request head, including drafts. The core runs the
 complete static, portable-script, Python 3.10, schema, protocol, reference, documentation, license, and development-
-audit boundaries. TypeScript unit/component contracts run in the selected canonical package/editor owner: every
+audit boundaries. TypeScript typechecks and unit/component contracts run in the selected canonical package/editor owner: every
 tracked TypeScript product, protocol, fixture, package, or configuration path selects that owner, while documentation-
 only and media-only changes do not pay for an unrelated TypeScript inventory. Protected-main pushes still run the
 complete authoritative `npm run check:pr` command. After classification, every selected changed-area owner starts
@@ -166,7 +166,8 @@ Value and categorical ownership is unchanged, and Cursor, macOS, and Windows ret
 core/editor/platform and native-frame seams.
 
 The Native R performance runner's unit contracts and report validators are portable script contracts owned by
-`npm run test:scripts:portable`, which the unconditional PR workflow's `invariant-core` job runs through `check:pr`.
+`npm run test:scripts:portable`, which the unconditional PR workflow's `invariant-core` job runs directly alongside
+the non-TypeScript `check:invariants` boundary.
 Those tests exercise
 exact-candidate/source/executable binding, the 250,000×20 fixture and fixed 5/20 workload schedules, response
 accounting, bounded path-free reporting, atomic output, resource proofs, and cleanup failures without running the
