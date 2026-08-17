@@ -32,7 +32,8 @@ import type {
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import type { AtomicFileTransaction } from "../extension/files/safeFileExport";
-import { RKernelBridge, type RKernelBridgeFileOperations } from "../extension/r/rKernelBridge";
+import { RKernelBridge } from "../extension/r/rKernelBridge";
+import type { RKernelBridgeFileOperations } from "../extension/r/rKernelDataExport";
 import type { RKernelBridgeTransport } from "../extension/r/rKernelBridgeTransport";
 import type { RKernelStepPreviewResult, RKernelTransformStep } from "../extension/r/rKernelProtocol";
 import {
