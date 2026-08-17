@@ -20,6 +20,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
@@ -169,9 +170,13 @@ class PolarsEngine(DataFrameEngine):
         frame: Any,
         path: str | os.PathLike[str],
         format_name: Literal["csv", "parquet"],
+        *,
+        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> None:
         import polars as pl
 
+        if row_axis_policy is not None:
+            raise EngineError("Polars export does not accept a Pandas row-axis policy.")
         row_id = self._row_id_column(frame)
         if row_id is not None:
             frame = frame.drop(row_id)

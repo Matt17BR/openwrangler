@@ -92,6 +92,8 @@ function inspection(offset = 0): StepInspectionResponse {
     stepIndex: 0,
     inputPage,
     outputPage,
+    inputRowAxis: { kind: "positional", levelNames: [] },
+    outputRowAxis: { kind: "positional", levelNames: [] },
     inputSchema: metadata.schema,
     outputSchema: metadata.schema,
     diff: {

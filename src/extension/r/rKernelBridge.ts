@@ -46,6 +46,7 @@ import {
   type PreviewStepRequest,
   type RenameColumnTransformStep,
   type RetainedTransformStep,
+  type RowAxis,
   type RoundNumberTransformStep,
   type SelectColumnsTransformStep,
   type SessionMetadata,
@@ -1408,6 +1409,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         outputPage: gridPageFromContract(result.outputPage),
         inputSchema: copySchema(inputSchema),
         outputSchema: copySchema(outputSchema),
+        inputRowAxis: rowAxisFromRRowNames(inputRowNames),
+        outputRowAxis: rowAxisFromRRowNames(outputRowNames),
         diff: copyDiff(diff),
         code: result.code
       };
@@ -1422,6 +1425,14 @@ export class RKernelBridge implements OpenWranglerBridge {
     const session = this.sessions.get(request.sessionId);
     if (!session) return unknownSessionError(request.sessionId);
     if (session.invalidated) return kernelChangedError(request.sessionId);
+    if (request.rowAxisPolicy !== undefined) {
+      return errorResponse(
+        "invalid_request",
+        "R export does not accept a Pandas row-axis policy.",
+        true,
+        request.sessionId
+      );
+    }
     const writer = this.transport.exportData;
     const supportsFormat = request.format === "csv" ? session.exportCsv : session.exportParquet;
     if (!supportsFormat || !writer) {
@@ -5361,6 +5372,10 @@ function copySource(source: SessionSource): SessionSource {
 
 function emptyFilterModel(): FilterModel {
   return { filters: [], sort: [] };
+}
+
+function rowAxisFromRRowNames(rowNames: RFramePageContract["frameSemantics"]["rowNames"]): RowAxis {
+  return rowNames === "explicit" ? { kind: "index", levelNames: [null] } : { kind: "positional", levelNames: [] };
 }
 
 function copyFilterModel(model: FilterModel): FilterModel {

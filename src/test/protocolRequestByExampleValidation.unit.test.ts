@@ -376,6 +376,14 @@ describe("protocol-v2 bounded by-example request validation", () => {
       revision: 3,
       path: "/tmp/out.csv",
       format: "csv",
+      rowAxisPolicy: "automatic"
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      format: "csv",
       targetIdentity: { device: "0", inode: "0" }
     },
     {

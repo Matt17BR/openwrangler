@@ -99,7 +99,15 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
     "applyDraft": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
     "discardDraft": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
     "undoStep": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
-    "exportData": {"kind", "sessionId", "revision", "path", "format", "targetIdentity"},
+    "exportData": {
+        "kind",
+        "sessionId",
+        "revision",
+        "path",
+        "format",
+        "rowAxisPolicy",
+        "targetIdentity",
+    },
     "closeSession": {"kind", "sessionId", "revision"},
     "cancelRequest": {"kind", "targetRequestId"},
 }
@@ -214,6 +222,8 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("path must be a non-empty string.")
         if request["format"] not in {"csv", "parquet"}:
             raise ProtocolError("format must be csv or parquet.")
+        if "rowAxisPolicy" in request and request["rowAxisPolicy"] not in {"preserve", "omit"}:
+            raise ProtocolError("rowAxisPolicy must be preserve or omit.")
         target_identity = _mapping(request.get("targetIdentity"), "targetIdentity")
         unexpected_identity = set(target_identity) - {"device", "inode"}
         if unexpected_identity or set(target_identity) != {"device", "inode"}:

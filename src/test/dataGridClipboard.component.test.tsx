@@ -21,6 +21,7 @@ const metadata: SessionMetadata = {
   },
   shape: { rows: 2, columns: 2 },
   filteredShape: { rows: 2, columns: 2 },
+  rowAxis: { kind: "positional", levelNames: [] },
   filterModel: { filters: [], sort: [] },
   steps: [],
   schema: [
@@ -94,7 +95,7 @@ describe("DataGrid clipboard interactions", () => {
         page.rows[1]
       ]
     };
-    renderGrid("view-a", formulaPage);
+    renderGrid("view-a", formulaPage, { ...metadata, rowAxis: { kind: "index", levelNames: ["account"] } });
     focusCell(screen.getByRole("cell", { name: "=2+2" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
@@ -117,6 +118,28 @@ describe("DataGrid clipboard interactions", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5\nParis\t"));
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("presents named MultiIndex labels as an accessible row axis without adding data columns", () => {
+    const indexedPage: GridPage = {
+      ...page,
+      rows: [
+        { ...page.rows[0], rowLabel: "north · acct-a" },
+        { ...page.rows[1], rowLabel: "south · acct-b" }
+      ]
+    };
+    renderGrid("view-a", indexedPage, {
+      ...metadata,
+      rowAxis: { kind: "multiIndex", levelNames: ["region", "account"] }
+    });
+
+    expect(screen.getByRole("columnheader", { name: "region / account row labels" })).toHaveTextContent(
+      "region / account"
+    );
+    expect(screen.getByRole("rowheader", { name: "Row 1, region / account north · acct-a" })).toHaveTextContent(
+      "north · acct-a"
+    );
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3);
   });
 
   it("extends with Shift+Arrow and supports the platform copy shortcut", async () => {
@@ -178,14 +201,14 @@ describe("DataGrid clipboard interactions", () => {
   });
 });
 
-function renderGrid(viewContextId = "view-a", activePage = page) {
-  return render(grid(viewContextId, activePage));
+function renderGrid(viewContextId = "view-a", activePage = page, activeMetadata = metadata) {
+  return render(grid(viewContextId, activePage, activeMetadata));
 }
 
-function grid(viewContextId: string, activePage = page) {
+function grid(viewContextId: string, activePage = page, activeMetadata = metadata) {
   return (
     <DataGrid
-      metadata={metadata}
+      metadata={activeMetadata}
       page={activePage}
       summaries={[]}
       pageSize={2}

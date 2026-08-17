@@ -3,7 +3,17 @@ import type { Locator, Page } from "playwright-core";
 import { describe, expect, it } from "vitest";
 import { exportCleanedDataThroughWorkbench, type CleanedDataExportTiming } from "./extensionHost/cleanedDataExport";
 
-type LocatorKind = "dialog" | "export" | "format" | "hover" | "input" | "options" | "progress";
+type LocatorKind =
+  | "dialog"
+  | "export"
+  | "format"
+  | "hover"
+  | "input"
+  | "options"
+  | "policy"
+  | "policy-dialog"
+  | "policy-options"
+  | "progress";
 
 interface FakeExportSurfaceOptions {
   readonly formatAvailable?: boolean;
@@ -14,11 +24,13 @@ interface FakeExportSurfaceOptions {
 class FakeExportSurface {
   readonly events: string[] = [];
   readonly options: string[] = [" CSV ", " Parquet "];
+  readonly policyOptions: string[] = [" Preserve index ", " Omit index "];
   readonly formatAvailable: boolean;
   readonly hoverCount: number;
   readonly progressCount: number;
   input = "destination.cleaned.csv";
   selectedFormat: "csv" | "parquet" = "csv";
+  selectedPolicy: "preserve" | "omit" = "preserve";
 
   readonly app = new FakeLocator(this, "export") as unknown as Locator;
   readonly page = {
@@ -60,14 +72,24 @@ class FakeLocator {
       return this;
     }
     if (this.kind === "dialog" && role === "option") return new FakeLocator(this.surface, "options");
+    if (this.kind === "policy-dialog" && role === "option") {
+      return new FakeLocator(this.surface, "policy-options");
+    }
     throw new Error(`Unexpected role locator: ${this.kind}:${role}:${JSON.stringify(options)}`);
   }
 
   filter({ hasText }: Readonly<{ hasText: string | RegExp }>): FakeLocator {
     if (this.kind === "dialog" && hasText === "Export Cleaned Data") return this;
+    if (this.kind === "dialog" && hasText === "Export Pandas Index") {
+      return new FakeLocator(this.surface, "policy-dialog");
+    }
     if (this.kind === "options" && hasText instanceof RegExp) {
       this.surface.selectedFormat = hasText.test("Parquet") ? "parquet" : "csv";
       return new FakeLocator(this.surface, "format");
+    }
+    if (this.kind === "policy-options" && hasText instanceof RegExp) {
+      this.surface.selectedPolicy = hasText.test("Preserve index") ? "preserve" : "omit";
+      return new FakeLocator(this.surface, "policy");
     }
     if (this.kind === "progress" && hasText === "Exporting cleaned data…") return this;
     throw new Error(`Unexpected filtered locator: ${this.kind}:${String(hasText)}`);
@@ -94,7 +116,9 @@ class FakeLocator {
   }
 
   async click(): Promise<void> {
-    this.surface.events.push(`${this.kind}:click`);
+    this.surface.events.push(
+      this.kind === "policy" ? `policy:${this.surface.selectedPolicy}:click` : `${this.kind}:click`
+    );
     if (this.kind === "format") {
       this.surface.input = `destination.cleaned.${this.surface.selectedFormat}`;
     }
@@ -123,8 +147,9 @@ class FakeLocator {
   }
 
   async allInnerTexts(): Promise<string[]> {
-    if (this.kind !== "options") throw new Error(`Unexpected option inventory: ${this.kind}`);
-    return this.surface.options;
+    if (this.kind === "options") return this.surface.options;
+    if (this.kind === "policy-options") return this.surface.policyOptions;
+    throw new Error(`Unexpected option inventory: ${this.kind}`);
   }
 }
 
@@ -165,6 +190,34 @@ describe("cleaned-data workbench export", () => {
       { timeoutMs: 3_000, intervalMs: 50 },
       { timeoutMs: 10_000, intervalMs: 50 },
       { timeoutMs: 30_000, intervalMs: 50 }
+    ]);
+  });
+
+  it.each(["preserve", "omit"] as const)("selects the explicit Pandas %s-index policy before Save", async (policy) => {
+    const surface = new FakeExportSurface();
+    const destination = `tmp/result-${policy}.csv`;
+
+    await exportCleanedDataThroughWorkbench(surface.app, surface.page, destination, "csv", {
+      ...immediateTiming([]),
+      rowAxisPolicy: policy
+    });
+
+    expect(surface.events).toEqual([
+      "keyboard:Escape",
+      "mouse:1,1",
+      "hover:count",
+      "export:click",
+      "dialog:wait:visible:10000",
+      "format:wait:visible:10000",
+      "format:click",
+      "policy-dialog:wait:visible:10000",
+      "policy:wait:visible:10000",
+      `policy:${policy}:click`,
+      "input:value",
+      `input:fill:${path.resolve(destination)}`,
+      "input:press:Enter",
+      "dialog:wait:hidden:30000",
+      "progress:count"
     ]);
   });
 

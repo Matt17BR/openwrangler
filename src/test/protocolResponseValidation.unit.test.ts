@@ -151,6 +151,68 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("binds Pandas row-axis metadata to every published page", () => {
+    const pandasMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "pandas",
+      rowAxis: { kind: "index", levelNames: ["account"] }
+    };
+    const indexedPage = {
+      ...page,
+      rows: page.rows.map((row) => ({ ...row, rowLabel: "account-1" }))
+    };
+    const opened = { kind: "sessionOpened", metadata: pandasMetadata, page: indexedPage, summaries };
+
+    expect(isOpenWranglerResponse(opened)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "pandas-index", response: opened })).toBe(true);
+
+    const { rowAxis: _rowAxis, ...pandasWithoutAxis } = pandasMetadata;
+    expect(isOpenWranglerResponse({ ...opened, metadata: pandasWithoutAxis })).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "pandas-missing-index",
+        response: { ...opened, metadata: pandasWithoutAxis }
+      })
+    ).toBe(false);
+    expect(isOpenWranglerResponse({ ...opened, metadata: { ...metadata, rowAxis: pandasMetadata.rowAxis } })).toBe(
+      false
+    );
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "non-pandas-index",
+        response: { ...opened, metadata: { ...metadata, rowAxis: pandasMetadata.rowAxis } }
+      })
+    ).toBe(false);
+
+    for (const rowAxis of [
+      { kind: "positional", levelNames: ["unexpected"] },
+      { kind: "index", levelNames: [] },
+      { kind: "index", levelNames: ["first", "second"] },
+      { kind: "multiIndex", levelNames: ["only-one"] },
+      { kind: "multiIndex", levelNames: Array.from({ length: 65 }, () => null) },
+      { kind: "index", levelNames: ["x".repeat(1_025)] }
+    ]) {
+      expect(isOpenWranglerResponse({ ...opened, metadata: { ...pandasMetadata, rowAxis } })).toBe(false);
+    }
+
+    expect(isOpenWranglerResponse({ ...opened, page })).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...opened,
+        metadata: { ...pandasMetadata, rowAxis: { kind: "positional", levelNames: [] } }
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...opened,
+        metadata: { ...pandasMetadata, rowAxis: { kind: "positional", levelNames: [] } },
+        page
+      })
+    ).toBe(true);
+  });
+
   it("accepts optional viewing capabilities and rejects malformed flags", () => {
     const opened = responses[1];
     if (opened?.kind !== "sessionOpened") throw new Error("Expected the session-opened fixture.");
@@ -779,6 +841,8 @@ describe("protocol-v2 response validation", () => {
         stepIndex: 0,
         inputPage: page,
         outputPage: page,
+        inputRowAxis: { kind: "positional", levelNames: [] },
+        outputRowAxis: { kind: "positional", levelNames: [] },
         inputSchema: metadata.schema,
         outputSchema: [{ ...metadata.schema[0], position: -1 }],
         diff: {

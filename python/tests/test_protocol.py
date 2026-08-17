@@ -870,12 +870,18 @@ def test_protocol_v2_validates_export_format() -> None:
             "revision": 2,
             "path": "/tmp/cleaned.csv",
             "format": "csv",
+            "rowAxisPolicy": "preserve",
             "targetIdentity": {"device": "7", "inode": "11"},
         },
     }
     assert decode_envelope(envelope)[2]["format"] == "csv"
+    assert decode_envelope(envelope)[2]["rowAxisPolicy"] == "preserve"
     envelope["request"]["format"] = "xlsx"
     with pytest.raises(ProtocolError, match="csv or parquet"):
+        decode_envelope(envelope)
+    envelope["request"]["format"] = "csv"
+    envelope["request"]["rowAxisPolicy"] = "automatic"
+    with pytest.raises(ProtocolError, match="rowAxisPolicy must be preserve or omit"):
         decode_envelope(envelope)
 
 

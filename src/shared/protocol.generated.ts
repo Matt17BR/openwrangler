@@ -386,6 +386,10 @@ export type CustomCodeTransformStep = TransformStepTemplate & {
   params: CustomCodeParams;
   [k: string]: unknown;
 };
+/**
+ * Explicit Pandas CSV/Parquet export treatment for the dataframe index.
+ */
+export type RowAxisExportPolicy = "preserve" | "omit";
 export type OpenWranglerResponse =
   | InitializedResponse
   | SessionOpenedResponse
@@ -400,6 +404,10 @@ export type OpenWranglerResponse =
   | SessionClosedResponse
   | CancelledResponse
   | ErrorResponse;
+/**
+ * How a dataframe's row axis is presented without exposing it as ordinary columns.
+ */
+export type RowAxisKind = "positional" | "index" | "multiIndex";
 export type RetainedTransformStep = TransformStep & {
   [k: string]: unknown;
 };
@@ -1022,6 +1030,7 @@ export interface ExportDataRequest {
   revision: number;
   path: string;
   format: "csv" | "parquet";
+  rowAxisPolicy?: RowAxisExportPolicy;
   targetIdentity?: ExportTargetIdentity;
 }
 export interface ExportTargetIdentity {
@@ -1083,6 +1092,7 @@ export interface SessionMetadata {
   shape: SessionDataShape;
   filteredShape: SessionDataShape;
   schema: ColumnSchema[];
+  rowAxis?: RowAxis;
   filterModel: FilterModel;
   steps: RetainedTransformStep[];
   latestStepInputSchema?: ColumnSchema[];
@@ -1104,6 +1114,15 @@ export interface ColumnSchema {
   rawType: string;
   type: ColumnType;
   nullable: boolean;
+}
+export interface RowAxis {
+  kind: RowAxisKind;
+  /**
+   * Ordered row-axis level names. Null represents an unnamed level.
+   *
+   * @maxItems 64
+   */
+  levelNames: (string | null)[];
 }
 export interface DatasetStats {
   missingCells: number;
@@ -1269,6 +1288,8 @@ export interface StepInspectionResponse {
   outputPage: GridPage;
   inputSchema: ColumnSchema[];
   outputSchema: ColumnSchema[];
+  inputRowAxis: RowAxis;
+  outputRowAxis: RowAxis;
   diff: DataDiff;
   code: string;
 }

@@ -8,6 +8,7 @@ import type {
   DataExportedResponse,
   OpenSessionRequest,
   PageResponse,
+  RowAxisExportPolicy,
   SessionMetadata,
   SessionSource,
   SessionBoundRequest,
@@ -317,26 +318,38 @@ export class SessionCoordinator implements vscode.Disposable {
     return { sessionId, ...session.scheduler.snapshot() };
   }
 
-  async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
+  async exportActiveData(
+    path: string,
+    format: "csv" | "parquet",
+    rowAxisPolicy?: RowAxisExportPolicy
+  ): Promise<DataExportedResponse> {
     const snapshot = this.activeSession();
     if (!snapshot) throw new Error("Open a dataframe in Open Wrangler before exporting cleaned data.");
-    return this.exportData(snapshot.sessionId, snapshot.metadata.revision, path, format);
+    return this.exportData(snapshot.sessionId, snapshot.metadata.revision, path, format, rowAxisPolicy);
   }
 
   async exportData(
     sessionId: string,
     revision: number,
     path: string,
-    format: "csv" | "parquet"
+    format: "csv" | "parquet",
+    rowAxisPolicy?: RowAxisExportPolicy
   ): Promise<DataExportedResponse> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("The dataframe that started this export is no longer open.");
+    if (session.metadata.backend === "pandas" && rowAxisPolicy === undefined) {
+      throw new Error("Pandas export requires an explicit preserve-or-omit index choice.");
+    }
+    if (session.metadata.backend !== "pandas" && rowAxisPolicy !== undefined) {
+      throw new Error(`The ${session.metadata.backend} backend does not accept a Pandas row-axis policy.`);
+    }
     const response = await this.request(session.delegate, {
       kind: "exportData",
       sessionId: session.publicId,
       revision,
       path,
-      format
+      format,
+      ...(rowAxisPolicy === undefined ? {} : { rowAxisPolicy })
     });
     if (response.kind === "error") throw new Error(response.message);
     if (response.kind !== "dataExported") throw new Error("The runtime returned an unexpected export response.");

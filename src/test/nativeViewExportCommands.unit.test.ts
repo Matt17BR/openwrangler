@@ -8,6 +8,7 @@ import {
   exportableSnapshot,
   nativeMocks,
   noDraftSnapshot,
+  pandasExportableSnapshot,
   register,
   resetNativeViewMocks,
   resourceUri,
@@ -88,6 +89,109 @@ describe("native export commands", () => {
       3,
       "/workspace/orders.cleaned.parquet",
       "parquet"
+    );
+  });
+
+  it.each([
+    {
+      rowAxis: { kind: "positional" as const, levelNames: [] },
+      expectedOrder: ["omit", "preserve"],
+      expectedPolicy: "omit"
+    },
+    {
+      rowAxis: { kind: "index" as const, levelNames: ["account"] },
+      expectedOrder: ["preserve", "omit"],
+      expectedPolicy: "preserve"
+    },
+    {
+      rowAxis: { kind: "multiIndex" as const, levelNames: ["region", "account"] },
+      expectedOrder: ["preserve", "omit"],
+      expectedPolicy: "preserve"
+    }
+  ])(
+    "requires an explicit Pandas index choice with the row-axis-derived default order",
+    async ({ rowAxis, expectedOrder, expectedPolicy }) => {
+      const registered = register(pandasExportableSnapshot("pandas-session", "orders.csv", 3, rowAxis));
+      nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
+      nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+      await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+      const policyItems = nativeMocks.showQuickPick.mock.calls[1]?.[0] as Array<{ policy: string }>;
+      expect(policyItems.map(({ policy }) => policy)).toEqual(expectedOrder);
+      expect(nativeMocks.showQuickPick.mock.calls[1]?.[1]).toEqual({
+        title: "Export Pandas Index",
+        placeHolder: "Choose whether to preserve the dataframe index"
+      });
+      expect(registered.exportData).toHaveBeenCalledWith(
+        "pandas-session",
+        3,
+        "/workspace/orders.cleaned.csv",
+        "csv",
+        expectedPolicy
+      );
+    }
+  );
+
+  it("honors an explicit non-default Pandas index choice", async () => {
+    const registered = register(
+      pandasExportableSnapshot("pandas-session", "orders.csv", 3, {
+        kind: "index",
+        levelNames: ["account"]
+      })
+    );
+    nativeMocks.showQuickPick
+      .mockImplementationOnce(async (items) => (items as unknown[])[0])
+      .mockImplementationOnce(async (items) => (items as unknown[])[1]);
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "pandas-session",
+      3,
+      "/workspace/orders.cleaned.csv",
+      "csv",
+      "omit"
+    );
+  });
+
+  it("does not open the Save dialog when the explicit Pandas index choice is cancelled", async () => {
+    const registered = register(
+      pandasExportableSnapshot("pandas-session", "orders.csv", 3, {
+        kind: "index",
+        levelNames: ["account"]
+      })
+    );
+    nativeMocks.showQuickPick
+      .mockImplementationOnce(async (items) => (items as unknown[])[0])
+      .mockResolvedValueOnce(undefined);
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(registered.exportData).not.toHaveBeenCalled();
+  });
+
+  it("rejects a backend change made while the Pandas index choice is open", async () => {
+    const origin = pandasExportableSnapshot("pandas-session", "orders.csv", 3, {
+      kind: "index",
+      levelNames: ["account"]
+    });
+    const registered = register(origin);
+    nativeMocks.showQuickPick
+      .mockImplementationOnce(async (items) => (items as unknown[])[0])
+      .mockImplementationOnce(async (items) => {
+        registered.setSession(exportableSnapshot("pandas-session", "orders.csv", 3));
+        return (items as unknown[])[0];
+      });
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(registered.exportData).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The dataframe backend changed while export was open. Review the current data and try again."
     );
   });
 
