@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { watch, type BigIntStats, type FSWatcher } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, watch, type BigIntStats, type FSWatcher } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -36,7 +36,7 @@ import type { RColumnSchema, RDataframeFlavor, RFramePageContract } from "./rFra
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
 import { buildRInteractiveDispatchCode, rInteractiveRuntimeBundleId } from "./rInteractiveRuntime";
 import {
-  captureRPrivateArtifactReceipt,
+  captureOpenedRPrivateArtifactReceipt,
   createNodeRPrivateArtifactOperations,
   readRPrivateArtifact,
   removeIdentifiedRPrivateArtifact,
@@ -56,6 +56,11 @@ const MAX_RETIRED_SESSION_IDS = 1_024;
 const DISPOSAL_SETTLEMENT_MS = 5_000;
 const DATA_EXPORT_CLEANUP_TIMEOUT_MS = 5_000;
 const TERMINAL_CHANGED_MESSAGE = "The active R terminal changed.";
+const PRIVATE_REQUEST_CREATE_FLAGS =
+  fsConstants.O_WRONLY |
+  fsConstants.O_CREAT |
+  fsConstants.O_EXCL |
+  (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0);
 
 export interface RInteractiveSessionTransportOptions {
   readonly temporaryParent?: string;
@@ -64,8 +69,8 @@ export interface RInteractiveSessionTransportOptions {
   readonly runSelection?: (code: string) => Promise<unknown>;
   /** Test seam for exercising the production process handshake against a real child R process. */
   readonly testProcessId?: number;
-  /** Test seam for deterministic cleanup-failure coverage. */
-  readonly removeFile?: (filePath: string) => Promise<void>;
+  /** Test seam for deterministic private-artifact race and cleanup coverage. */
+  readonly artifactOperations?: RPrivateArtifactOperations;
   /** Test seam for bounded disposal coverage. */
   readonly disposalSettlementMs?: number;
   /** Test seam for bounded data-export cleanup coverage. */
@@ -162,7 +167,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     this.notificationRequestId = this.createId();
     this.attachmentNonce = this.createId();
     this.temporaryParent = options.temporaryParent ?? tmpdir();
-    this.artifactOperations = createNodeRPrivateArtifactOperations(options.removeFile ?? unlink);
+    this.artifactOperations = options.artifactOperations ?? createNodeRPrivateArtifactOperations();
     this.disposalSettlementMs = options.disposalSettlementMs ?? DISPOSAL_SETTLEMENT_MS;
     this.dataExportCleanupTimeoutMs = options.dataExportCleanupTimeoutMs ?? DATA_EXPORT_CLEANUP_TIMEOUT_MS;
     this.terminalMode = options.terminalMode ?? "activeOrCreate";
@@ -737,19 +742,39 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       let requestCreated = false;
       let requestReceipt: RPrivateArtifactReceipt | undefined;
       try {
-        await writeFile(requestPath, payload, { encoding: "utf8", flag: "wx", mode: 0o600 });
+        const requestHandle = await open(requestPath, PRIVATE_REQUEST_CREATE_FLAGS, 0o600);
         requestCreated = true;
-        await chmod(requestPath, 0o600);
+        let requestPreparationError: unknown;
         try {
-          requestReceipt = await captureRPrivateArtifactReceipt({
+          await requestHandle.writeFile(payload, { encoding: "utf8" });
+          await requestHandle.chmod(0o600);
+          await requestHandle.sync();
+          requestReceipt = await captureOpenedRPrivateArtifactReceipt({
             filePath: requestPath,
             maximumBytes: R_KERNEL_MAX_REQUEST_BYTES,
             expectedBytes: Buffer.byteLength(payload, "utf8"),
             label: "interactive R request",
+            handle: requestHandle,
             operations: this.artifactOperations
           });
         } catch (error) {
+          requestPreparationError = error;
+        }
+        let requestCloseError: unknown;
+        try {
+          await requestHandle.close();
+        } catch (error) {
+          requestCloseError = error;
+        }
+        if (requestPreparationError !== undefined || requestCloseError !== undefined) {
           this.mailboxCleanupSafe = false;
+          const error =
+            requestPreparationError !== undefined && requestCloseError !== undefined
+              ? new AggregateError(
+                  [requestPreparationError, requestCloseError],
+                  "Open Wrangler could not create its private interactive R request artifact."
+                )
+              : (requestPreparationError ?? requestCloseError);
           this.recordArtifactCleanupFailure(requestPath, "request", error);
           throw error;
         }

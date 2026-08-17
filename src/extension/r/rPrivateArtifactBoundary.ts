@@ -1,9 +1,14 @@
 import { constants as fsConstants, type BigIntStats } from "node:fs";
-import { chmod, lstat, mkdtemp, open, rename, rmdir, unlink, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, rename, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const PRIVATE_READ_FLAGS =
   fsConstants.O_RDONLY |
+  (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0) |
+  (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0);
+
+const PRIVATE_CLEANUP_FLAGS =
+  fsConstants.O_RDWR |
   (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0) |
   (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0);
 
@@ -20,19 +25,19 @@ export interface RPrivateArtifactSnapshot {
   readonly birthtimeNs: bigint;
 }
 
-interface RPrivateArtifactHandle {
+export interface RPrivateArtifactHandle {
   stat(options: { bigint: true }): Promise<BigIntStats>;
   read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+  truncate(length: number): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface RPrivateArtifactOperations {
+  readonly platform?: NodeJS.Platform;
   open(filePath: string, flags: number): Promise<RPrivateArtifactHandle>;
   lstat(filePath: string): Promise<BigIntStats>;
   createCleanupDirectory(parentPath: string): Promise<string>;
   rename(sourcePath: string, destinationPath: string): Promise<void>;
-  remove(filePath: string): Promise<void>;
-  removeDirectory(directoryPath: string): Promise<void>;
 }
 
 export interface RPrivateArtifactOptions {
@@ -69,11 +74,9 @@ class RPrivateArtifactOwnershipError extends Error {
   }
 }
 
-export function createNodeRPrivateArtifactOperations(
-  removeFile: (filePath: string) => Promise<void> = unlink,
-  openFile: typeof open = open
-): RPrivateArtifactOperations {
+export function createNodeRPrivateArtifactOperations(openFile: typeof open = open): RPrivateArtifactOperations {
   return Object.freeze({
+    platform: process.platform,
     async open(filePath: string, flags: number) {
       return (await openFile(filePath, flags)) as FileHandle;
     },
@@ -85,9 +88,7 @@ export function createNodeRPrivateArtifactOperations(
       await chmod(directoryPath, 0o700);
       return directoryPath;
     },
-    rename,
-    remove: removeFile,
-    removeDirectory: rmdir
+    rename
   });
 }
 
@@ -105,6 +106,38 @@ export async function captureRPrivateArtifactReceipt(
   options: Omit<RPrivateArtifactOptions, "removeAfterRead" | "onCleanupFailure">
 ): Promise<RPrivateArtifactReceipt | undefined> {
   return withRPrivateArtifact({ ...options, removeAfterRead: "never" }, async (_handle, receipt) => receipt);
+}
+
+export async function captureOpenedRPrivateArtifactReceipt(options: {
+  readonly filePath: string;
+  readonly maximumBytes: number;
+  readonly expectedBytes?: number;
+  readonly label: string;
+  readonly handle: RPrivateArtifactHandle;
+  readonly operations?: RPrivateArtifactOperations;
+}): Promise<RPrivateArtifactReceipt> {
+  const normalized = normalizeOptions({
+    filePath: options.filePath,
+    maximumBytes: options.maximumBytes,
+    expectedBytes: options.expectedBytes,
+    label: options.label,
+    operations: options.operations,
+    removeAfterRead: "never"
+  });
+  const opened = artifactSnapshot(
+    await options.handle.stat({ bigint: true }),
+    normalized.maximumBytes,
+    normalized.label,
+    normalized.expectedBytes
+  );
+  const named = artifactSnapshot(
+    await normalized.operations.lstat(normalized.filePath),
+    normalized.maximumBytes,
+    normalized.label,
+    normalized.expectedBytes
+  );
+  if (!sameArtifactSnapshot(opened, named)) throw changingArtifactError(normalized.label, opened, named);
+  return Object.freeze({ path: normalized.filePath, label: normalized.label, snapshot: opened });
 }
 
 export async function removeIdentifiedRPrivateArtifact(
@@ -154,6 +187,13 @@ export function rPrivateArtifactFailureRequiresContainerPreservation(error: unkn
     return error.errors.some((nested) => rPrivateArtifactFailureRequiresContainerPreservation(nested));
   }
   return false;
+}
+
+export function rPrivateCleanupDirectoryModeIsPrivate(
+  mode: bigint,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  return platform === "win32" || (mode & 0o077n) === 0n;
 }
 
 async function withRPrivateArtifact<T>(
@@ -290,7 +330,8 @@ async function removeIdentifiedArtifact(
       cleanupDirectory,
       parentPath,
       await operations.lstat(cleanupDirectory),
-      receipt
+      receipt,
+      operations.platform
     );
   } catch (error) {
     throw new RPrivateArtifactOwnershipError(
@@ -305,25 +346,6 @@ async function removeIdentifiedArtifact(
   try {
     await operations.rename(receipt.path, quarantinePath);
   } catch (error) {
-    if (isMissingFile(error)) {
-      let cleanupError: unknown;
-      try {
-        await removeEmptyCleanupDirectory(cleanupDirectory, cleanupIdentity, parentPath, receipt, operations);
-      } catch (failure) {
-        cleanupError = failure;
-      }
-      const ownershipError = new RPrivateArtifactOwnershipError(
-        `Open Wrangler could not prove removal of its identified ${receipt.label} artifact.`,
-        { cause: error }
-      );
-      if (cleanupError !== undefined) {
-        throw new AggregateError(
-          [ownershipError, cleanupError],
-          `Open Wrangler could not finish private cleanup of its ${receipt.label} artifact.`
-        );
-      }
-      throw ownershipError;
-    }
     throw new RPrivateArtifactOwnershipError(`Open Wrangler could not quarantine its ${receipt.label} artifact.`, {
       cause: error
     });
@@ -336,10 +358,11 @@ async function removeIdentifiedArtifact(
       cleanupIdentity,
       parentPath,
       await operations.lstat(cleanupDirectory),
-      receipt
+      receipt,
+      operations.platform
     );
     await requireMissingNamedArtifact(receipt.path, receipt.label, operations);
-    handle = await operations.open(quarantinePath, PRIVATE_READ_FLAGS);
+    handle = await operations.open(quarantinePath, PRIVATE_CLEANUP_FLAGS);
   } catch (error) {
     throw new RPrivateArtifactOwnershipError(
       `Open Wrangler refused ambiguous cleanup of its ${receipt.label} artifact.`,
@@ -361,47 +384,33 @@ async function removeIdentifiedArtifact(
       cleanupIdentity,
       parentPath,
       await operations.lstat(cleanupDirectory),
-      receipt
+      receipt,
+      operations.platform
     );
     await requireMissingNamedArtifact(receipt.path, receipt.label, operations);
-    try {
-      await operations.remove(quarantinePath);
-    } catch (error) {
-      let ownershipFailure: unknown;
-      try {
-        const openedAfterFailure = removalSnapshot(await handle.stat({ bigint: true }), receipt.label);
-        const namedAfterFailure = removalSnapshot(await operations.lstat(quarantinePath), receipt.label);
-        if (
-          !sameArtifactIdentity(receipt.snapshot, openedAfterFailure) ||
-          !sameArtifactIdentity(receipt.snapshot, namedAfterFailure)
-        ) {
-          ownershipFailure = new RPrivateArtifactOwnershipError(
-            `Open Wrangler refused to remove a replaced ${receipt.label} artifact.`
-          );
-        }
-      } catch (inspectionError) {
-        if (!isMissingFile(inspectionError)) {
-          ownershipFailure = new RPrivateArtifactOwnershipError(
-            `Open Wrangler could not verify its ${receipt.label} artifact after removal failed.`,
-            { cause: inspectionError }
-          );
-        }
-      }
-      if (ownershipFailure !== undefined) {
-        throw new AggregateError(
-          [error, ownershipFailure],
-          `Open Wrangler could not remove its identified ${receipt.label} artifact.`
-        );
-      }
-      throw error;
-    }
-    const removed = snapshotFromMetadata(await handle.stat({ bigint: true }));
-    if (!sameArtifactObject(receipt.snapshot, removed) || removed.nlink !== 0n) {
+    await handle.truncate(0);
+    const scrubbed = snapshotFromMetadata(await handle.stat({ bigint: true }));
+    const namedScrubbed = removalSnapshot(await operations.lstat(quarantinePath), receipt.label);
+    if (
+      !sameArtifactObject(receipt.snapshot, scrubbed) ||
+      !sameArtifactObject(receipt.snapshot, namedScrubbed) ||
+      scrubbed.nlink !== 1n ||
+      namedScrubbed.nlink !== 1n ||
+      scrubbed.size !== 0n ||
+      namedScrubbed.size !== 0n
+    ) {
       throw new RPrivateArtifactOwnershipError(
-        `Open Wrangler could not prove removal of its identified ${receipt.label} artifact.`
+        `Open Wrangler could not prove descriptor cleanup of its identified ${receipt.label} artifact.`
       );
     }
-    await requireMissingNamedArtifact(quarantinePath, receipt.label, operations);
+    assertPrivateCleanupDirectory(
+      cleanupDirectory,
+      cleanupIdentity,
+      parentPath,
+      await operations.lstat(cleanupDirectory),
+      receipt,
+      operations.platform
+    );
     await requireMissingNamedArtifact(receipt.path, receipt.label, operations);
   } catch (error) {
     primaryError = error;
@@ -422,8 +431,6 @@ async function removeIdentifiedArtifact(
     }
     throw primaryError ?? closeError;
   }
-
-  await removeEmptyCleanupDirectory(cleanupDirectory, cleanupIdentity, parentPath, receipt, operations);
 }
 
 interface RPrivateDirectorySnapshot {
@@ -439,7 +446,8 @@ function privateCleanupDirectorySnapshot(
   directoryPath: string,
   parentPath: string,
   metadata: BigIntStats,
-  receipt: RPrivateArtifactReceipt
+  receipt: RPrivateArtifactReceipt,
+  platform: NodeJS.Platform = process.platform
 ): RPrivateDirectorySnapshot {
   if (
     dirname(directoryPath) !== parentPath ||
@@ -448,7 +456,7 @@ function privateCleanupDirectorySnapshot(
     metadata.dev !== receipt.snapshot.dev ||
     metadata.uid !== receipt.snapshot.uid ||
     metadata.gid !== receipt.snapshot.gid ||
-    (metadata.mode & 0o077n) !== 0n
+    !rPrivateCleanupDirectoryModeIsPrivate(metadata.mode, platform)
   ) {
     throw new Error(`Open Wrangler rejected an invalid ${receipt.label} cleanup directory.`);
   }
@@ -467,9 +475,10 @@ function assertPrivateCleanupDirectory(
   expected: RPrivateDirectorySnapshot,
   parentPath: string,
   metadata: BigIntStats,
-  receipt: RPrivateArtifactReceipt
+  receipt: RPrivateArtifactReceipt,
+  platform: NodeJS.Platform = process.platform
 ): void {
-  const current = privateCleanupDirectorySnapshot(directoryPath, parentPath, metadata, receipt);
+  const current = privateCleanupDirectorySnapshot(directoryPath, parentPath, metadata, receipt, platform);
   if (
     current.dev !== expected.dev ||
     current.ino !== expected.ino ||
@@ -494,24 +503,6 @@ async function requireMissingNamedArtifact(
     throw error;
   }
   throw new RPrivateArtifactOwnershipError(`Open Wrangler refused to remove a replaced ${label} artifact.`);
-}
-
-async function removeEmptyCleanupDirectory(
-  directoryPath: string,
-  expected: RPrivateDirectorySnapshot,
-  parentPath: string,
-  receipt: RPrivateArtifactReceipt,
-  operations: RPrivateArtifactOperations
-): Promise<void> {
-  try {
-    assertPrivateCleanupDirectory(directoryPath, expected, parentPath, await operations.lstat(directoryPath), receipt);
-    await operations.removeDirectory(directoryPath);
-  } catch (error) {
-    throw new RPrivateArtifactOwnershipError(
-      `Open Wrangler could not finish private cleanup of its ${receipt.label} artifact.`,
-      { cause: error }
-    );
-  }
 }
 
 function removalSnapshot(metadata: BigIntStats, label: string): RPrivateArtifactSnapshot {
