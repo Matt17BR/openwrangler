@@ -183,7 +183,8 @@ matrix for release candidates or changes that cross those boundaries.
   CodeQL gate, immutable recursive action pins, and both R lock consumers.
 - `npm run test:scripts:portable` runs the remaining general or Linux-owned `scripts/*.test.mjs`, including GitHub
   publication and R-lock adversarial contracts, with at most four Node test files active at once, then invokes the
-  isolated media contract below. It is also owned by the invariant core through `npm run check:pr`.
+  isolated media contract below. It is owned directly by the invariant core alongside the non-TypeScript
+  `check:invariants` boundary.
   Failure-evidence credential patterns receive at most 8 KiB per logical line. Longer lines containing a quote,
   URI user-info marker, or credential marker are omitted fail-closed; longer marker-free lines bypass the complex
   patterns. The maximum admitted 16 MiB hostile quoted and assignment cases also run in a child process capped to a
@@ -292,8 +293,9 @@ The remote scenario and public **Open in Open Wrangler** command both open CSV/T
 
 If the editor reaches the result wait but never publishes a terminal result, diagnostics remain metadata-only. After the editor, SSH daemon, and display are proven stopped, the phase revalidates its private namespaces and zero capabilities, then reduces either the fixed private log topology or one strictly allowlisted correlated checkpoint to a fixed controller stage. A checkpoint can distinguish only harness bootstrap, activation, packaged preflight, scenario setup, file open, filter, session cleanup, or completed-harness publication; its raw text never crosses the controller boundary. Log contents are never read, and raw paths, names, user data, or caught errors are never emitted or persisted by the diagnostic. Unsafe, duplicated, malformed, unknown, or over-budget observations keep the generic result-wait failure.
 
-The selected `canonical-editor` owner performs one clean production build, packages and verifies the VSIX, and runs
-the stable extension-host acceptance against the same checkout. Release workflows still create and distribute their
+The selected `canonical-editor` owner performs both TypeScript typechecks and the complete TypeScript unit/component
+inventory, then performs one clean production build, packages and verifies the VSIX, and runs the stable extension-host
+acceptance against the same checkout. Release workflows still create and distribute their
 own receipt-bound candidate artifact; the current PR workflow does not alter that authority. Remote SSH remains a release/candidate
 boundary rather than a default PR job. Scheduled/manual Cross owns its existing macOS/Windows seams without a
 pull-request trigger. CI and CodeQL cancel only superseded pull-request heads; scheduled and default-branch evidence
@@ -1642,8 +1644,9 @@ release-infrastructure/package/full-matrix classifier mode: the sole classifier 
 `r_contract_required`, `canonical_editor_required`, `visual_accessibility_required`, and `windows_unique_required`.
 Control-plane changes, malformed or missing output, unmatched substantive paths, and non-pull-request events select
 the complete four-owner union. Documentation-only changes may select no conditional owner, while the unconditional
-`invariant-core` still runs the complete static, portable-script, Python 3.10, audit, schema, documentation, and license
-boundary. The selected canonical owner runs the complete TypeScript unit/component inventory; every tracked
+`invariant-core` still runs the complete non-TypeScript static, portable-script, Python 3.10, audit, schema,
+documentation, and license boundary. The selected canonical owner runs both TypeScript typechecks and the complete
+TypeScript unit/component inventory; every tracked
 TypeScript product, protocol, fixture, package, or configuration path selects that owner. Protected-main pushes run
 the complete `npm run check:pr` source gate. The selected R owners are the two lock-backed R 4.5 pull-request jobs. Cross has no pull-request trigger; its
 manual dispatch and weekly schedule retain the macOS/Windows runtime matrix, Windows dependency guards, and lock-backed

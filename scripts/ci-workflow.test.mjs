@@ -110,6 +110,32 @@ function stepRunning(job, command) {
   return (job?.steps ?? []).find((step) => step?.run === command);
 }
 
+function referencedPackageScripts(command, scripts) {
+  const references = new Set();
+  for (const match of command.matchAll(/\bnpm run ([A-Za-z0-9:_-]+)/gu)) {
+    if (Object.hasOwn(scripts, match[1])) references.add(match[1]);
+  }
+  for (const match of command.matchAll(/\bnpm-run-all\b([^;&|]*)/gu)) {
+    for (const token of match[1].trim().split(/\s+/u)) {
+      const name = token.replace(/^["']|["']$/gu, "");
+      if (Object.hasOwn(scripts, name)) references.add(name);
+    }
+  }
+  return references;
+}
+
+function packageScriptClosure(root, scripts) {
+  const visited = new Set();
+  const visit = (name) => {
+    if (visited.has(name)) return;
+    assert.equal(typeof scripts[name], "string", `missing package script ${name}`);
+    visited.add(name);
+    for (const reference of referencedPackageScripts(scripts[name], scripts)) visit(reference);
+  };
+  visit(root);
+  return visited;
+}
+
 function allWorkflowUses(value, path = "$", results = []) {
   if (Array.isArray(value)) {
     value.forEach((entry, index) => allWorkflowUses(entry, `${path}[${index}]`, results));
@@ -538,18 +564,36 @@ test("CI exposes only the current pull-request owners", () => {
   assert.equal(ci.jobs["windows-unique"].name, "Windows unique-risk contracts");
 });
 
-function assertInvariantCoreTopology(document) {
+function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   const job = document.jobs["invariant-core"];
   const pullRequestCommand =
-    "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python";
+    "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python";
+  const typescriptCommand =
+    "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label typecheck typecheck:dependencies test:ts";
   assert.equal(
-    packageJson.scripts["check:pr"],
+    scripts["check:pr"],
     "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test"
   );
   assert.deepEqual(
-    Object.keys(packageJson.scripts).filter((name) => /^check:(?:pr|tier)/u.test(name)),
+    Object.keys(scripts).filter((name) => /^check:(?:pr|tier)/u.test(name)),
     ["check:pr"]
   );
+  assert.deepEqual([...packageScriptClosure("check:invariants", scripts)].sort(), [
+    "brand:check",
+    "check:invariants",
+    "check:r-dependency-lock",
+    "check:remote-jupyter-lock",
+    "docs:check",
+    "format:check",
+    "license:check",
+    "lint",
+    "lint:python",
+    "protocol:check",
+    "reference:check"
+  ]);
+  for (const forbidden of ["typecheck", "typecheck:dependencies", "test:ts"]) {
+    assert.equal(packageScriptClosure("check:invariants", scripts).has(forbidden), false);
+  }
   assert.equal(job.if, undefined);
   assert.equal(job["runs-on"], "ubuntu-24.04");
   const python = stepsUsing(job, "actions/setup-python@");
@@ -567,7 +611,12 @@ function assertInvariantCoreTopology(document) {
     stepRunning(job, "npm run check:pr").env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
   );
-  assert.equal(stepRunning(job, "npm run test:ts"), undefined);
+  assert.equal(
+    job.steps.some(
+      (step) => typeof step.run === "string" && /\b(?:typecheck(?::dependencies)?|test:ts)\b/u.test(step.run)
+    ),
+    false
+  );
   assert.ok(stepRunning(job, "npm audit"));
   assert.ok(stepRunning(job, "npm run audit:python"));
   const canonical = document.jobs["canonical-editor"];
@@ -575,7 +624,7 @@ function assertInvariantCoreTopology(document) {
   assert.equal(canonicalPython.length, 1);
   assert.equal(canonicalPython[0].id, "canonical_python");
   assert.equal(canonicalPython[0].with["python-version"], "3.12");
-  const typescript = stepRunning(canonical, "npm run test:ts");
+  const typescript = stepRunning(canonical, typescriptCommand);
   assert.equal(typescript.if, "${{ !cancelled() }}");
   assert.equal(typescript.env.OPEN_WRANGLER_PYTHON, "${{ steps.canonical_python.outputs.python-path }}");
 }
@@ -586,19 +635,21 @@ test("invariant core keeps the portable and Python floor while the selected cano
     (document) => {
       stepRunning(
         document.jobs["invariant-core"],
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python"
-      ).run = "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts";
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
+      ).run =
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts";
     },
     (document) => {
       stepRunning(
         document.jobs["invariant-core"],
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python"
-      ).run += " test:ts";
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
+      ).run =
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python";
     },
     (document) => {
       stepRunning(
         document.jobs["invariant-core"],
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python"
+        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
       ).if = "${{ !cancelled() && github.event_name == 'pull_request' }}";
     },
     (document) => {
@@ -607,7 +658,9 @@ test("invariant core keeps the portable and Python floor while the selected cano
     },
     (document) => {
       document.jobs["canonical-editor"].steps = document.jobs["canonical-editor"].steps.filter(
-        (step) => step.run !== "npm run test:ts"
+        (step) =>
+          step.run !==
+          "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label typecheck typecheck:dependencies test:ts"
       );
     }
   ];
@@ -615,6 +668,16 @@ test("invariant core keeps the portable and Python floor while the selected cano
     const document = structuredClone(ci);
     mutate(document);
     assert.throws(() => assertInvariantCoreTopology(document));
+  }
+  for (const scripts of [
+    { ...packageJson.scripts, "check:invariants": `${packageJson.scripts["check:invariants"]} && npm run typecheck` },
+    {
+      ...packageJson.scripts,
+      "check:invariants": `${packageJson.scripts["check:invariants"]} && npm run check:no-typescript`,
+      "check:no-typescript": "npm run typecheck:dependencies"
+    }
+  ]) {
+    assert.throws(() => assertInvariantCoreTopology(ci, scripts));
   }
 });
 

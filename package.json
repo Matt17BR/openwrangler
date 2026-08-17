@@ -93,6 +93,7 @@
     "audit:python": "node scripts/run-python.mjs -m pip_audit && npm run audit:remote-jupyter",
     "audit:node": "npm audit --audit-level=high",
     "audit:remote-jupyter": "node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.txt --disable-pip --require-hashes --progress-spinner off --strict && node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.r.txt --disable-pip --require-hashes --progress-spinner off --strict",
+    "check:invariants": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run docs:check && npm run brand:check && npm run check:remote-jupyter-lock && npm run check:r-dependency-lock && npm run license:check",
     "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run typecheck:dependencies && npm run docs:check && npm run brand:check && npm run check:remote-jupyter-lock && npm run check:r-dependency-lock && npm run license:check",
     "check:fast-feedback": "npm-run-all --parallel --continue-on-error format:check lint typecheck",
     "check:pr": "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test",
