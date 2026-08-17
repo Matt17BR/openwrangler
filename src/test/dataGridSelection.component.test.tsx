@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
+import type { GridViewState } from "../shared/viewState";
 import { DataGrid } from "../webviews/grid/DataGrid";
 import { gridRowHeight } from "../webviews/grid/rowScrollModel";
 
@@ -45,6 +46,25 @@ const page: GridPage = {
       id: "r:1",
       rowNumber: 1,
       values: [cell("Paris"), { kind: "null", raw: null, display: "", isNull: true, isNaN: false }]
+    }
+  ]
+};
+
+const secondPage: GridPage = {
+  offset: 2,
+  limit: 2,
+  totalRows: 4,
+  columnIds: ["c:0", "c:1"],
+  rows: [
+    {
+      id: "r:2",
+      rowNumber: 2,
+      values: [cell("Rome"), numberCell(20.5)]
+    },
+    {
+      id: "r:3",
+      rowNumber: 3,
+      values: [cell("Berlin"), numberCell(30.5)]
     }
   ]
 };
@@ -103,6 +123,38 @@ describe("DataGrid rectangular selection", () => {
     );
   });
 
+  it("exposes only the clipboard rectangle as an ARIA multiselection and announces its dimensions once", () => {
+    renderGrid({
+      viewState: {
+        selectedColumnId: "c:1",
+        columnWidths: {},
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    });
+    const city = screen.getByRole("cell", { name: "Milan" });
+    const sales = screen.getByRole("cell", { name: "10.5" });
+    const paris = screen.getByRole("cell", { name: "Paris" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+
+    pointerDrag(city, sales, 9);
+
+    expect(screen.getByRole("grid", { name: "Data grid for selection.csv" })).toHaveAttribute(
+      "aria-multiselectable",
+      "true"
+    );
+    expect(city).toHaveAttribute("aria-selected", "true");
+    expect(sales).toHaveAttribute("aria-selected", "true");
+    expect(paris).toHaveAttribute("aria-selected", "false");
+    expect(emptySales).toHaveClass("selectedColumn");
+    expect(emptySales).toHaveAttribute("aria-selected", "false");
+    const status = screen.getByRole("status", { name: "Grid selection" });
+    expect(status).toHaveTextContent("1 row by 2 columns selected");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toHaveAttribute("aria-atomic", "true");
+    expect(document.querySelectorAll('[role="status"][aria-label="Grid selection"]')).toHaveLength(1);
+    expect(screen.queryByRole("status", { name: "Grid selection result" })).not.toBeInTheDocument();
+  });
+
   it("keeps Shift+Arrow range extension and its roving focus behavior", async () => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
@@ -131,8 +183,114 @@ describe("DataGrid rectangular selection", () => {
 
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
     expect(paris).toHaveAttribute("data-clipboard-selected", "true");
-    expect(screen.getByRole("status", { name: "Grid selection result" })).toHaveTextContent(
-      "Ctrl/Cmd+click started a new selection."
+    expect(screen.getByRole("status", { name: "Grid selection" })).toHaveTextContent("1 cell selected");
+  });
+
+  it("preserves the original anchor and final rectangle across a drag-triggered page transition", async () => {
+    const onPage = vi.fn();
+    const pagedMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 2 },
+      filteredShape: { rows: 4, columns: 2 }
+    };
+    const firstPage = { ...page, totalRows: 4 };
+    const view = renderGrid({ metadata: pagedMetadata, page: firstPage, onPage });
+    const city = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    const scroller = screen.getByTestId("data-grid-scroller");
+    defineDimension(scroller, "clientWidth", 400);
+    defineDimension(scroller, "clientHeight", gridRowHeight);
+    defineDimension(scroller, "scrollWidth", 400);
+    defineDimension(scroller, "scrollHeight", gridRowHeight * 4);
+    vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 400,
+      top: 0,
+      width: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    });
+
+    fireEvent.pointerDown(city, pointerEvent(15, { clientX: 200, clientY: 50 }));
+    fireEvent.pointerMove(emptySales, pointerEvent(15, { clientX: 200, clientY: 99 }));
+    fireEvent.scroll(scroller);
+    fireEvent.pointerMove(emptySales, pointerEvent(15, { clientX: 200, clientY: 99 }));
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => expect(onPage).toHaveBeenCalledWith(2));
+    view.rerender(gridElement({ metadata: pagedMetadata, page: secondPage, onPage }));
+    const endpoint = await screen.findByRole("cell", { name: "20.5" });
+    fireEvent.pointerMove(endpoint, pointerEvent(15, { clientX: 200, clientY: 50 }));
+    fireEvent.pointerUp(endpoint, pointerEvent(15, { buttons: 0, clientX: 200, clientY: 50 }));
+
+    expect(screen.getByRole("status", { name: "Grid selection" })).toHaveTextContent("3 rows by 2 columns selected");
+    expect(screen.getByRole("cell", { name: "Rome" })).toHaveAttribute("aria-selected", "true");
+    expect(endpoint).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("cell", { name: "Berlin" })).toHaveAttribute("aria-selected", "false");
+    expect(document.activeElement).toBe(endpoint);
+    expect(endpoint).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("button", { name: "Copy range" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy range" })).toHaveAttribute(
+      "title",
+      "Wait for every selected row to load before copying."
+    );
+  });
+
+  it("does not collapse a dragged rectangle when the pointer is released before the next page arrives", async () => {
+    const onPage = vi.fn();
+    const pagedMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 2 },
+      filteredShape: { rows: 4, columns: 2 }
+    };
+    const firstPage = { ...page, totalRows: 4 };
+    const view = renderGrid({ metadata: pagedMetadata, page: firstPage, onPage });
+    const city = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    const scroller = screen.getByTestId("data-grid-scroller");
+    defineDimension(scroller, "clientWidth", 400);
+    defineDimension(scroller, "clientHeight", gridRowHeight);
+    defineDimension(scroller, "scrollWidth", 400);
+    defineDimension(scroller, "scrollHeight", gridRowHeight * 4);
+    vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 400,
+      top: 0,
+      width: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    });
+
+    fireEvent.pointerDown(city, pointerEvent(16, { clientX: 200, clientY: 50 }));
+    fireEvent.pointerMove(emptySales, pointerEvent(16, { clientX: 200, clientY: 99 }));
+    fireEvent.scroll(scroller);
+    fireEvent.pointerMove(emptySales, pointerEvent(16, { clientX: 200, clientY: 99 }));
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(onPage).toHaveBeenCalledWith(2));
+
+    fireEvent.pointerUp(emptySales, pointerEvent(16, { buttons: 0, clientX: 200, clientY: 99 }));
+    expect(screen.getByRole("status", { name: "Grid selection" })).toHaveTextContent("3 rows by 2 columns selected");
+
+    view.rerender(gridElement({ metadata: pagedMetadata, page: secondPage, onPage }));
+    const restoredFocus = await screen.findByRole("cell", { name: "20.5" });
+    await waitFor(() => expect(document.activeElement).toBe(restoredFocus));
+
+    expect(screen.getByRole("status", { name: "Grid selection" })).toHaveTextContent("3 rows by 2 columns selected");
+    expect(screen.getByRole("cell", { name: "Rome" })).toHaveAttribute("aria-selected", "true");
+    expect(restoredFocus).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("cell", { name: "Berlin" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("button", { name: "Copy cell" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Copy row" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Copy range" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy range" })).toHaveAttribute(
+      "title",
+      "Wait for every selected row to load before copying."
     );
   });
 
@@ -183,22 +341,34 @@ describe("DataGrid rectangular selection", () => {
   });
 });
 
-function renderGrid() {
-  return render(
+interface GridRenderOptions {
+  metadata?: SessionMetadata;
+  page?: GridPage;
+  onPage?(offset: number): void;
+  viewState?: GridViewState;
+}
+
+function gridElement(options: GridRenderOptions = {}) {
+  return (
     <DataGrid
-      metadata={metadata}
-      page={page}
+      metadata={options.metadata ?? metadata}
+      page={options.page ?? page}
       summaries={[]}
       pageSize={2}
       defaultColumnWidth={190}
       insightsOnOpen={false}
       viewContextId="selection-view"
-      onPage={() => undefined}
+      viewState={options.viewState}
+      onPage={options.onPage ?? (() => undefined)}
       onSortColumn={() => undefined}
       onOpenFilter={() => undefined}
       onVisibleSummaryColumnsChange={() => undefined}
     />
   );
+}
+
+function renderGrid(options: GridRenderOptions = {}) {
+  return render(gridElement(options));
 }
 
 function pointerDrag(

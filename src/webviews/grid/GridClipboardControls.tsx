@@ -117,7 +117,15 @@ export function useGridClipboard({
 export function GridClipboardControls({ controller }: { controller: GridClipboardController }) {
   return (
     <div className="gridClipboardControls" role="group" aria-label="Copy grid selection">
-      <span className="gridClipboardSelectionStatus">{controller.selectionDescription}</span>
+      <span
+        className="gridClipboardSelectionStatus"
+        role="status"
+        aria-label="Grid selection"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {controller.selectionDescription}
+      </span>
       {(["cell", "row", "range"] as const).map((mode) => {
         const result = controller.results[mode];
         const label = mode === "cell" ? "Copy cell" : mode === "row" ? "Copy row" : "Copy range";

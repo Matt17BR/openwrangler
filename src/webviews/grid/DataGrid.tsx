@@ -137,8 +137,6 @@ const compactHeaderProfilesDescription =
 const restoredHeaderProfilesDescription = "Header profile distributions are visible again.";
 const gridSelectionInstructions =
   "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
-const gridModifierSelectionNotice =
-  "Ctrl/Cmd+click started a new selection. Drag or use Shift+click or Shift+Arrow to extend the rectangular range.";
 const pointerAutoScrollEdge = 32;
 const maximumPointerAutoScrollStep = gridRowHeight;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
@@ -269,6 +267,7 @@ export function DataGrid({
   const previousViewContext = useRef(logicalViewContext);
   const appliedViewStateRestoreVersion = useRef<number | undefined>(undefined);
   const focusRequested = useRef(false);
+  const pointerSelectionFocusRequest = useRef<{ row: number; column: number } | undefined>(undefined);
   const preserveGridFocusAfterScroll = useRef(false);
   const programmaticViewportTarget = useRef<ProgrammaticViewportTarget | undefined>(undefined);
   const programmaticViewportWriteInProgress = useRef(false);
@@ -326,8 +325,8 @@ export function DataGrid({
     initialCoordinate: focusedCell
   });
   const resetGridClipboardSelection = gridClipboard.resetSelection;
+  const selectGridClipboardCell = gridClipboard.selectCell;
   const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
-  const [pointerSelectionNotice, setPointerSelectionNotice] = useState("");
 
   useLayoutEffect(() => {
     if (!cellFilterMenuTarget) return;
@@ -446,10 +445,10 @@ export function DataGrid({
     if (previousViewContext.current === logicalViewContext) return;
     previousViewContext.current = logicalViewContext;
     finishPointerSelection(undefined, false);
-    setPointerSelectionNotice("");
     setCellFilterMenuTarget(undefined);
     requestedOffset.current = page.offset;
     focusRequested.current = false;
+    pointerSelectionFocusRequest.current = undefined;
     preserveGridFocusAfterScroll.current = false;
     const column = selectedColumnPosition(metadata.schema, viewStateRef.current.selectedColumnId);
     const selectedColumnId = metadata.schema[column]?.id;
@@ -515,9 +514,9 @@ export function DataGrid({
     const column = selectedColumnPosition(restoration.metadata.schema, restoration.viewState.selectedColumnId);
     requestedOffset.current = restoration.page.offset;
     focusRequested.current = false;
+    pointerSelectionFocusRequest.current = undefined;
     preserveGridFocusAfterScroll.current = false;
     finishPointerSelection(undefined, false);
-    setPointerSelectionNotice("");
     setFocusedCell({ row, column });
     resetGridClipboardSelection({ row, column });
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
@@ -591,7 +590,17 @@ export function DataGrid({
       requestedOffset.current = offset;
       preserveGridFocusAfterScroll.current = false;
       focusRequested.current = gridOwnsFocus;
-      setFocusedCell((current) => ({ row, column: current.column }));
+      const activePointerSelection = pointerSelection.current;
+      if (activePointerSelection && gridOwnsFocus) {
+        const nextFocus = { row, column: activePointerSelection.focus.column };
+        activePointerSelection.focus = nextFocus;
+        pointerSelectionFocusRequest.current = nextFocus;
+        selectGridClipboardCell(nextFocus, true);
+        setFocusedCell(nextFocus);
+      } else {
+        pointerSelectionFocusRequest.current = undefined;
+        setFocusedCell((current) => ({ row, column: current.column }));
+      }
       requestPage(offset);
     };
     let targetStillQuantized =
@@ -709,7 +718,7 @@ export function DataGrid({
       });
     }
     requestBlockForRow(row);
-  }, [setFocusedCell, setViewport, writeProgrammaticViewport]);
+  }, [selectGridClipboardCell, setFocusedCell, setViewport, writeProgrammaticViewport]);
 
   const interruptColumnReveal = useCallback(() => {
     stopColumnRevealWakeSources.current();
@@ -1217,6 +1226,7 @@ export function DataGrid({
     if (!focusRequested.current) return;
     if (!document.hasFocus()) {
       focusRequested.current = false;
+      pointerSelectionFocusRequest.current = undefined;
       return;
     }
     const selector = `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`;
@@ -1224,6 +1234,7 @@ export function DataGrid({
     if (!target) return;
     focusRequested.current = false;
     target.focus({ preventScroll: true });
+    pointerSelectionFocusRequest.current = undefined;
   }, [focusedCell, page.offset, visibleColumnRange.start, localStart]);
 
   const goToPage = (offset: number, restoreFocus = false) => {
@@ -1312,6 +1323,7 @@ export function DataGrid({
           aria-busy={busy || projecting}
           aria-label={`Data grid for ${metadata.source.label}`}
           aria-describedby={gridSelectionInstructionsId}
+          aria-multiselectable="true"
           aria-rowcount={page.totalRows === null ? -1 : page.totalRows + 1}
           aria-colcount={metadata.schema.length + 1}
           title={gridSelectionInstructions}
@@ -1474,7 +1486,7 @@ export function DataGrid({
                       data-grid-row={row.rowNumber}
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
-                      aria-selected={viewState.selectedColumnId === column.id || clipboardSelected}
+                      aria-selected={clipboardSelected}
                       aria-label={accessibleLabel ?? renderedCell ?? ""}
                       data-diff-state={cellDiff ? "changed" : addedColumn ? "added" : undefined}
                       data-clipboard-selected={clipboardSelected ? "true" : undefined}
@@ -1492,20 +1504,28 @@ export function DataGrid({
                         .join(" ")}
                       title={accessibleLabel ?? displayCell.title ?? renderedCell}
                       onFocus={() => {
+                        const pointerFocusRequest = pointerSelectionFocusRequest.current;
+                        const preserveClipboardSelection =
+                          pointerSelection.current !== undefined ||
+                          (pointerFocusRequest?.row === row.rowNumber &&
+                            pointerFocusRequest.column === column.position);
                         focusRequested.current = false;
+                        pointerSelectionFocusRequest.current = undefined;
                         setFocusedCell({ row: row.rowNumber, column: column.position });
-                        gridClipboard.focusCell({ row: row.rowNumber, column: column.position });
+                        if (!preserveClipboardSelection) {
+                          gridClipboard.focusCell({ row: row.rowNumber, column: column.position });
+                        }
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
                       onPointerDown={(event) => {
                         if (event.button !== 0 || gridCellControlTarget(event.target, event.currentTarget)) return;
                         finishPointerSelection(undefined, false);
+                        pointerSelectionFocusRequest.current = undefined;
                         const start = { row: row.rowNumber, column: column.position };
                         const modifierStartsNewSelection = event.ctrlKey || event.metaKey;
                         gridClipboard.selectCell(start, event.shiftKey && !modifierStartsNewSelection);
                         setFocusedCell(start);
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
-                        setPointerSelectionNotice(modifierStartsNewSelection ? gridModifierSelectionNotice : "");
                         if (event.pointerType === "touch") return;
 
                         event.preventDefault();
@@ -1533,7 +1553,6 @@ export function DataGrid({
                             active.focus = coordinate;
                             gridClipboard.selectCell(coordinate, true);
                             setFocusedCell(coordinate);
-                            setPointerSelectionNotice("");
                             const selectedColumnId = metadata.schema[coordinate.column]?.id;
                             if (selectedColumnId) {
                               reportViewState({ ...viewStateRef.current, selectedColumnId });
@@ -1726,15 +1745,6 @@ export function DataGrid({
         </span>
         <span id={gridSelectionInstructionsId} className="gridClipboardAnnouncement">
           {gridSelectionInstructions}
-        </span>
-        <span
-          className="gridClipboardAnnouncement"
-          role="status"
-          aria-label="Grid selection result"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          {pointerSelectionNotice}
         </span>
         <GridClipboardControls controller={gridClipboard} />
         <div className="gridProfileControls">
