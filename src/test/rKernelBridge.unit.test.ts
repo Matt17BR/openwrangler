@@ -1,4 +1,3 @@
-import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import { operationKinds } from "../shared/operationCatalog.generated";
 import type {
@@ -8,10 +7,8 @@ import type {
   CastColumnTransformStep,
   CeilNumberTransformStep,
   CloneColumnTransformStep,
-  ColumnSummary,
   CustomCodeTransformStep,
   DataDiff,
-  DatasetStats,
   FillMissingValuesTransformStep,
   FormulaTransformStep,
   FormatDatetimeTransformStep,
@@ -31,10 +28,6 @@ import type {
   TransformStep
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
-import type { AtomicFileTransaction } from "../extension/files/safeFileExport";
-import { RKernelBridge } from "../extension/r/rKernelBridge";
-import type { RKernelBridgeFileOperations } from "../extension/r/rKernelDataExport";
-import type { RKernelBridgeTransport } from "../extension/r/rKernelBridgeTransport";
 import type { RKernelStepPreviewResult, RKernelTransformStep } from "../extension/r/rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
@@ -43,8 +36,21 @@ import {
   type RFramePageContract
 } from "../extension/r/rFrameContract";
 import type { RNotebookVariableDescriptor } from "../extension/r/rNotebookVariableDiscovery";
-
-const sessionId = "11111111-1111-4111-8111-111111111111";
+import {
+  createRKernelBridge as createBridge,
+  deferred,
+  fakeRKernelTransport as fakeTransport,
+  rKernelBridgeSessionId as sessionId,
+  rKernelDatasetStatsFor as datasetStatsFor,
+  rKernelFrameContract as frameContract,
+  rKernelOpenRequest as openRequest,
+  rKernelRenameContract as renameContract,
+  rKernelRenameDiff as renameDiff,
+  rKernelRenamePreviewRequest as renamePreviewRequest,
+  rKernelSummaryFor as summaryFor,
+  rKernelTestCell as rCell,
+  rKernelTestColumn as column
+} from "./rKernelBridgeTestFixtures";
 
 describe("canonical R kernel bridge", () => {
   it("checks the opened frame flavor against the verified picker selection", async () => {
@@ -708,412 +714,6 @@ describe("canonical R kernel bridge", () => {
     expect(transport.open).toHaveBeenCalledTimes(1);
   });
 
-  it("exports the committed result of an editing R document through an extension-owned atomic CSV transaction", async () => {
-    const contract = frameContract();
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
-      await args[3](new TextEncoder().encode("value,count\n"));
-      await args[3](new TextEncoder().encode("12.5,9223372036854775807\n"));
-      return {
-        sessionId: args[0],
-        revision: args[1],
-        format: "csv",
-        rows: contract.shape.rows,
-        columns: contract.shape.columns
-      };
-    });
-    const transport = { ...fakeTransport(contract), exportData };
-    const atomic = fakeAtomicTransaction();
-    const beginTransaction = vi.fn(async () => atomic.transaction);
-    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
-
-    await expect(bridge.request(documentOpenRequest("editing"))).resolves.toMatchObject({
-      kind: "sessionOpened",
-      metadata: { capabilities: { exportCsv: true, exportParquet: false } }
-    });
-    await expect(
-      bridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/rejected.csv",
-        format: "csv",
-        rowAxisPolicy: "preserve"
-      })
-    ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
-    expect(beginTransaction).not.toHaveBeenCalled();
-    await expect(
-      bridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/orders.cleaned.csv",
-        format: "csv"
-      })
-    ).resolves.toEqual({
-      kind: "dataExported",
-      revision: 0,
-      path: "/workspace/orders.cleaned.csv",
-      format: "csv",
-      shape: { rows: 1, columns: 8 }
-    });
-
-    expect(beginTransaction).toHaveBeenCalledWith({
-      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.cleaned.csv" }),
-      protectedSources: [expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.R" })]
-    });
-    expect(exportData).toHaveBeenCalledWith(
-      sessionId,
-      0,
-      "csv",
-      expect.any(Function),
-      expect.objectContaining({ timeoutMs: 30 * 60_000 })
-    );
-    expect(atomic.write).toHaveBeenNthCalledWith(1, new TextEncoder().encode("value,count\n"));
-    expect(atomic.write).toHaveBeenNthCalledWith(2, new TextEncoder().encode("12.5,9223372036854775807\n"));
-    expect(atomic.prepareExternalWriter).not.toHaveBeenCalled();
-    expect(atomic.commit).toHaveBeenCalledOnce();
-    expect(atomic.rollback).not.toHaveBeenCalled();
-    expect(atomic.abandon).not.toHaveBeenCalled();
-  });
-
-  it("exports an active R-session dataframe without inventing a protected source file", async () => {
-    const contract = frameContract();
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
-      await args[3](new TextEncoder().encode("value,count\n"));
-      return {
-        sessionId: args[0],
-        revision: args[1],
-        format: "csv",
-        rows: contract.shape.rows,
-        columns: contract.shape.columns
-      };
-    });
-    const transport = { ...fakeTransport(contract), exportData };
-    const atomic = fakeAtomicTransaction();
-    const beginTransaction = vi.fn(async () => atomic.transaction);
-    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
-    const request: OpenSessionRequest = {
-      ...openRequest("editing"),
-      source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" }
-    };
-
-    const opened = await bridge.request(request);
-    expect(opened).toMatchObject({
-      kind: "sessionOpened",
-      metadata: {
-        source: request.source,
-        capabilities: { exportCsv: true, notebookInsert: false }
-      }
-    });
-    if (opened.kind !== "sessionOpened") throw new Error("Expected an active R session.");
-    expect(opened.metadata.capabilities.documentInsert).not.toBe(true);
-    await expect(
-      bridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/orders.cleaned.csv",
-        format: "csv"
-      })
-    ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/orders.cleaned.csv", format: "csv" });
-
-    expect(beginTransaction).toHaveBeenCalledWith({
-      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.cleaned.csv" }),
-      protectedSources: []
-    });
-  });
-
-  it("advertises and atomically exports Parquet only when the selected R runtime supports it", async () => {
-    const contract = frameContract();
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
-      await args[3](new TextEncoder().encode("PAR1native-r-parquetPAR1"));
-      return {
-        sessionId: args[0],
-        revision: args[1],
-        format: "parquet",
-        rows: contract.shape.rows,
-        columns: contract.shape.columns
-      };
-    });
-    const transport = {
-      ...fakeTransport(contract, sessionId, ["csv", "parquet"]),
-      exportData
-    };
-    const atomic = fakeAtomicTransaction();
-    const beginTransaction = vi.fn(async () => atomic.transaction);
-    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
-
-    await expect(bridge.request(documentOpenRequest("editing"))).resolves.toMatchObject({
-      kind: "sessionOpened",
-      metadata: { capabilities: { exportCsv: true, exportParquet: true } }
-    });
-    await expect(
-      bridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/orders.cleaned.parquet",
-        format: "parquet"
-      })
-    ).resolves.toEqual({
-      kind: "dataExported",
-      revision: 0,
-      path: "/workspace/orders.cleaned.parquet",
-      format: "parquet",
-      shape: { rows: 1, columns: 8 }
-    });
-
-    expect(exportData).toHaveBeenCalledWith(
-      sessionId,
-      0,
-      "parquet",
-      expect.any(Function),
-      expect.objectContaining({ timeoutMs: 30 * 60_000 })
-    );
-    expect(atomic.write).toHaveBeenCalledWith(new TextEncoder().encode("PAR1native-r-parquetPAR1"));
-    expect(atomic.commit).toHaveBeenCalledOnce();
-    expect(atomic.rollback).not.toHaveBeenCalled();
-  });
-
-  it("advertises R export formats only for eligible local notebook and document sessions", async () => {
-    const contract = frameContract();
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
-      await args[3](new TextEncoder().encode("value\n12.5\n"));
-      return {
-        sessionId: args[0],
-        revision: args[1],
-        format: "csv",
-        rows: contract.shape.rows,
-        columns: contract.shape.columns
-      };
-    });
-    const transport = { ...fakeTransport(contract), exportData };
-    const beginTransaction = vi.fn(async () => fakeAtomicTransaction().transaction);
-
-    const viewingBridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
-    const viewing = await viewingBridge.request(documentOpenRequest("viewing"));
-    expect(viewing).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
-    await expect(
-      viewingBridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/out.csv",
-        format: "csv"
-      })
-    ).resolves.toMatchObject({ kind: "error", code: "unsupported_mode" });
-
-    const notebookTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
-    const notebookBridge = createBridge(notebookTransport, undefined, undefined, undefined, { beginTransaction });
-    const notebook = await notebookBridge.request(openRequest("editing"));
-    expect(notebook).toMatchObject({
-      kind: "sessionOpened",
-      metadata: { capabilities: { exportCsv: true, exportParquet: false } }
-    });
-    await expect(
-      notebookBridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/out.parquet",
-        format: "parquet"
-      })
-    ).resolves.toMatchObject({
-      kind: "error",
-      code: "unsupported_operation",
-      message: expect.stringContaining("nanoparquet 0.5.1")
-    });
-    await expect(
-      notebookBridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/out.csv",
-        format: "csv"
-      })
-    ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/out.csv", format: "csv" });
-
-    const untitledTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
-    const untitledBridge = createBridge(untitledTransport, undefined, undefined, undefined, { beginTransaction });
-    const untitled = await untitledBridge.request(documentOpenRequest("editing", "untitled:orders.R"));
-    expect(untitled).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
-    await expect(
-      untitledBridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 0,
-        path: "/workspace/out.csv",
-        format: "csv"
-      })
-    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation" });
-
-    const remoteTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
-    const remoteBridge = createBridge(remoteTransport, undefined, undefined, undefined, { beginTransaction });
-    const remote = await remoteBridge.request(
-      documentOpenRequest("editing", "vscode-remote://ssh-remote+host/workspace/orders.R")
-    );
-    expect(remote).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
-
-    expect(beginTransaction).toHaveBeenCalledOnce();
-    expect(beginTransaction).toHaveBeenCalledWith({
-      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/out.csv" }),
-      protectedSources: [expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.ipynb" })]
-    });
-  });
-
-  it("rolls back the host transaction immediately when the private R export detaches", async () => {
-    const contract = frameContract();
-    const lateWriter = deferred<void>();
-    const transport = {
-      ...fakeTransport(contract),
-      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => {
-        throw new DetachedBridgeRequestError("R export is still settling.", "timeout", true, lateWriter.promise);
-      })
-    };
-    const atomic = fakeAtomicTransaction();
-    const diagnostics = vi.fn();
-    const bridge = createBridge(transport, undefined, diagnostics, undefined, {
-      beginTransaction: vi.fn(async () => atomic.transaction)
-    });
-    await bridge.request(documentOpenRequest("editing"));
-
-    const exportRequest = bridge.request({
-      kind: "exportData",
-      sessionId,
-      revision: 0,
-      path: "/workspace/out.csv",
-      format: "csv"
-    });
-    await expect(exportRequest).rejects.toBeInstanceOf(DetachedBridgeRequestError);
-    expect(atomic.rollback).toHaveBeenCalledOnce();
-    expect(atomic.abandon).not.toHaveBeenCalled();
-
-    lateWriter.resolve();
-    await Promise.resolve();
-    expect(atomic.rollback).toHaveBeenCalledOnce();
-    expect(diagnostics).not.toHaveBeenCalled();
-  });
-
-  it("rolls back instead of publishing when the R runtime generation changes during export", async () => {
-    const contract = frameContract();
-    const lateResult = deferred<{
-      sessionId: string;
-      revision: number;
-      format: "csv";
-      rows: number;
-      columns: number;
-    }>();
-    const transport = {
-      ...fakeTransport(contract),
-      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => lateResult.promise)
-    };
-    const atomic = fakeAtomicTransaction();
-    const bridge = createBridge(transport, undefined, undefined, undefined, {
-      beginTransaction: vi.fn(async () => atomic.transaction)
-    });
-    await bridge.request(documentOpenRequest("editing"));
-
-    const pending = bridge.request({
-      kind: "exportData",
-      sessionId,
-      revision: 0,
-      path: "/workspace/out.csv",
-      format: "csv"
-    });
-    await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
-    transport.invalidate();
-    lateResult.resolve({
-      sessionId,
-      revision: 0,
-      format: "csv",
-      rows: 1,
-      columns: 8
-    });
-
-    await expect(pending).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
-    expect(atomic.rollback).toHaveBeenCalledOnce();
-    expect(atomic.commit).not.toHaveBeenCalled();
-  });
-
-  it("rolls back an R export whose pinned revision changes before the writer returns", async () => {
-    const source = frameContract();
-    const renamed = renameContract(source, "r:c:0", "amount");
-    const lateResult = deferred<{
-      sessionId: string;
-      revision: number;
-      format: "csv";
-      rows: number;
-      columns: number;
-    }>();
-    const transport = {
-      ...fakeTransport(source),
-      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => lateResult.promise)
-    };
-    const atomic = fakeAtomicTransaction();
-    const bridge = createBridge(transport, undefined, undefined, undefined, {
-      beginTransaction: vi.fn(async () => atomic.transaction)
-    });
-    await bridge.request(documentOpenRequest("editing"));
-
-    const pending = bridge.request({
-      kind: "exportData",
-      sessionId,
-      revision: 0,
-      path: "/workspace/out.csv",
-      format: "csv"
-    });
-    await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
-    transport.queuePreview({
-      sessionId,
-      revision: 1,
-      page: renamed,
-      diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
-    });
-    await expect(bridge.request(renamePreviewRequest(0))).resolves.toMatchObject({ kind: "stepPreview", revision: 1 });
-    lateResult.resolve({
-      sessionId,
-      revision: 0,
-      format: "csv",
-      rows: 1,
-      columns: 8
-    });
-
-    await expect(pending).resolves.toMatchObject({ kind: "error", code: "stale_response" });
-    expect(atomic.rollback).toHaveBeenCalledOnce();
-    expect(atomic.commit).not.toHaveBeenCalled();
-  });
-
-  it("does not reserve an R export file while a draft is open", async () => {
-    const source = frameContract();
-    const renamed = renameContract(source, "r:c:0", "amount");
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>();
-    const transport = { ...fakeTransport(source), exportData };
-    const beginTransaction = vi.fn(async () => fakeAtomicTransaction().transaction);
-    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
-    await bridge.request(documentOpenRequest("editing"));
-    transport.queuePreview({
-      sessionId,
-      revision: 1,
-      page: renamed,
-      diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
-    });
-    await bridge.request(renamePreviewRequest(0));
-
-    await expect(
-      bridge.request({
-        kind: "exportData",
-        sessionId,
-        revision: 1,
-        path: "/workspace/out.csv",
-        format: "csv"
-      })
-    ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
-    expect(beginTransaction).not.toHaveBeenCalled();
-    expect(exportData).not.toHaveBeenCalled();
-  });
-
   it("keeps stable R row identities through compound sort preview, apply, edit, discard, inspection, and undo", async () => {
     const original = dataTableContract(
       rowOrderContract(frameContract({ totalRows: 4 }), ["r:r:0", "r:r:1", "r:r:2", "r:r:3"], 4),
@@ -1288,8 +888,6 @@ describe("canonical R kernel bridge", () => {
       diff: { addedRows: 0, removedRows: 0, changedCells: 0, truncated: false }
     });
     if (inspection.kind !== "stepInspection") throw new Error("Expected an R sort-step inspection.");
-    expect(inspection.inputRowAxis).toEqual({ kind: "positional", levelNames: [] });
-    expect(inspection.outputRowAxis).toEqual({ kind: "positional", levelNames: [] });
     expect(inspection.inputPage.rows.map(({ id }) => id)).toEqual(["r:r:0", "r:r:1", "r:r:2", "r:r:3"]);
     expect(inspection.outputPage.rows.map(({ id }) => id)).toEqual(["r:r:2", "r:r:0", "r:r:3", "r:r:1"]);
 
@@ -9157,103 +8755,6 @@ describe("canonical R kernel bridge", () => {
   });
 });
 
-function createBridge(
-  transport: FakeRTransport,
-  createSessionId?: () => string,
-  diagnosticSink?: (message: string) => void,
-  verifiedVariable?: RNotebookVariableDescriptor,
-  fileOperations?: RKernelBridgeFileOperations
-): RKernelBridge {
-  const context = {
-    extension: { packageJSON: { version: "2.0.0-preview.1" } },
-    subscriptions: []
-  } as unknown as vscode.ExtensionContext;
-  return new RKernelBridge(context, transport, createSessionId, diagnosticSink, verifiedVariable, fileOperations);
-}
-
-function fakeAtomicTransaction(): {
-  transaction: AtomicFileTransaction;
-  write: ReturnType<typeof vi.fn>;
-  prepareExternalWriter: ReturnType<typeof vi.fn>;
-  commit: ReturnType<typeof vi.fn>;
-  rollback: ReturnType<typeof vi.fn>;
-  abandon: ReturnType<typeof vi.fn>;
-} {
-  const write = vi.fn(async (_contents: Uint8Array) => undefined);
-  const prepareExternalWriter = vi.fn(async () => ({
-    path: "/workspace/.openwrangler-export.tmp",
-    identity: { dev: 101n, ino: 202n }
-  }));
-  const commit = vi.fn(async () => undefined);
-  const rollback = vi.fn(async () => undefined);
-  const abandon = vi.fn(async () => undefined);
-  return {
-    transaction: {
-      temporaryPath: "/workspace/.openwrangler-export.tmp",
-      write,
-      prepareExternalWriter,
-      commit,
-      rollback,
-      abandon
-    },
-    write,
-    prepareExternalWriter,
-    commit,
-    rollback,
-    abandon
-  };
-}
-
-function openRequest(mode: OpenSessionRequest["mode"] = "viewing"): OpenSessionRequest {
-  return {
-    kind: "openSession",
-    source: {
-      kind: "notebookVariable",
-      label: "orders",
-      uri: "file:///workspace/orders.ipynb",
-      variableName: "orders"
-    },
-    requestedSessionId: sessionId,
-    backend: "r",
-    mode,
-    pageSize: 20,
-    columnOffset: 0,
-    columnLimit: 8
-  };
-}
-
-function documentOpenRequest(
-  mode: OpenSessionRequest["mode"] = "editing",
-  uri = "file:///workspace/orders.R"
-): OpenSessionRequest {
-  return {
-    ...openRequest(mode),
-    source: {
-      kind: "documentVariable",
-      label: "orders",
-      uri,
-      variableName: "orders"
-    }
-  };
-}
-
-function renamePreviewRequest(revision: number): Extract<OpenWranglerRequest, { kind: "previewStep" }> {
-  return {
-    kind: "previewStep",
-    sessionId,
-    revision,
-    step: {
-      id: "r-step-1",
-      kind: "renameColumn",
-      params: { column: { id: "r:c:0", name: "value" }, newName: "amount" }
-    },
-    offset: 0,
-    limit: 20,
-    columnOffset: 0,
-    columnLimit: 8
-  };
-}
-
 function planRequest(
   kind: "applyDraft" | "discardDraft" | "undoStep",
   revision: number
@@ -9297,183 +8798,6 @@ function retainedByExampleTransformStep(
       program: program ?? { kind: "column", column: { ...sourceColumn } },
       warnings: ["2 programs match; Open Wrangler selected the simplest deterministic program."],
       candidateCount: 2
-    }
-  };
-}
-
-interface FakeRTransport extends RKernelBridgeTransport {
-  open: ReturnType<typeof vi.fn<RKernelBridgeTransport["open"]>>;
-  getPage: ReturnType<typeof vi.fn<RKernelBridgeTransport["getPage"]>>;
-  getSummary: ReturnType<typeof vi.fn<RKernelBridgeTransport["getSummary"]>>;
-  getDatasetStats: ReturnType<typeof vi.fn<RKernelBridgeTransport["getDatasetStats"]>>;
-  getColumnValues: ReturnType<typeof vi.fn<RKernelBridgeTransport["getColumnValues"]>>;
-  previewStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["previewStep"]>>;
-  queuePreview(result: RKernelStepPreviewResult): void;
-  applyDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["applyDraft"]>>;
-  discardDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["discardDraft"]>>;
-  undoStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["undoStep"]>>;
-  inspectStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["inspectStep"]>>;
-  close: ReturnType<typeof vi.fn<RKernelBridgeTransport["close"]>>;
-  isSessionMapped: ReturnType<typeof vi.fn<RKernelBridgeTransport["isSessionMapped"]>>;
-  dispose: ReturnType<typeof vi.fn<RKernelBridgeTransport["dispose"]>>;
-  invalidate(): void;
-}
-
-function fakeTransport(
-  contract: RFramePageContract,
-  openedSessionId = sessionId,
-  exportFormats: readonly ("csv" | "parquet")[] = ["csv"]
-): FakeRTransport {
-  const emitter = new vscode.EventEmitter<void>();
-  const previewQueue: RKernelStepPreviewResult[] = [];
-  return {
-    onDidInvalidateKernel: emitter.event,
-    open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract, exportFormats })),
-    getPage: vi.fn(async () => contract),
-    getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => summaryFor(contract, column))),
-    getDatasetStats: vi.fn(async () => ({ totalRows: contract.shape.rows, stats: datasetStatsFor(contract) })),
-    getColumnValues: vi.fn(async (_sessionId, column) => ({ column: column.name, values: [], hasMore: false })),
-    previewStep: vi.fn(async () => {
-      const next = previewQueue.shift();
-      if (!next) throw new Error("Unexpected R step preview.");
-      return next;
-    }),
-    applyDraft: vi.fn(async () => {
-      throw new Error("Unexpected R draft apply.");
-    }),
-    discardDraft: vi.fn(async () => {
-      throw new Error("Unexpected R draft discard.");
-    }),
-    undoStep: vi.fn(async () => {
-      throw new Error("Unexpected R undo.");
-    }),
-    inspectStep: vi.fn(async () => {
-      throw new Error("Unexpected R step inspection.");
-    }),
-    close: vi.fn(async () => undefined),
-    isSessionMapped: vi.fn(() => true),
-    dispose: vi.fn(async () => undefined),
-    invalidate: () => emitter.fire(),
-    queuePreview: (result) => previewQueue.push(result)
-  };
-}
-
-function summaryFor(contract: RFramePageContract, reference: Readonly<{ id: string; name: string }>): ColumnSummary {
-  const schema = contract.schema.find((column) => column.id === reference.id);
-  if (!schema || schema.name !== reference.name) throw new Error("Unknown fake R profile column.");
-  const cell = contract.page.rows[0]?.values[schema.position];
-  const nullCount = cell?.isNull ? 1 : 0;
-  const nanCount = cell?.isNaN ? 1 : 0;
-  return {
-    columnId: schema.id,
-    column: schema.name,
-    type: schema.type,
-    rawType: schema.rawType,
-    totalCount: contract.shape.rows,
-    nullCount,
-    nanCount,
-    distinctCount: contract.shape.rows - nullCount - nanCount,
-    topValues: cell && !cell.isNull && !cell.isNaN ? [{ value: cell.display, count: 1 }] : []
-  };
-}
-
-function datasetStatsFor(contract: RFramePageContract): DatasetStats {
-  const missingValuesByColumn = contract.schema.map((schema) => ({
-    column: schema.name,
-    count: contract.page.rows[0]?.values[schema.position]?.isNull ? 1 : 0
-  }));
-  return {
-    missingCells: missingValuesByColumn.reduce((total, entry) => total + entry.count, 0),
-    missingRows: missingValuesByColumn.some((entry) => entry.count > 0) ? 1 : 0,
-    duplicateRows: 0,
-    missingValuesByColumn
-  };
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void } {
-  let resolve!: (value?: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next as (value?: T) => void;
-  });
-  return { promise, resolve };
-}
-
-function frameContract(
-  options: Readonly<{ duplicateFirstName?: boolean; explicitRowLabel?: string; totalRows?: number }> = {}
-): RFramePageContract {
-  const names = [
-    "value",
-    options.duplicateFirstName ? "value" : "count",
-    "date",
-    "when",
-    "elapsed",
-    "flag",
-    "missing",
-    "infinite"
-  ];
-  const schemas: RColumnSchema[] = [
-    column(0, names[0] as string, "double", "float", true, "double"),
-    column(1, names[1] as string, "integer64", "integer", true, "integer64"),
-    column(2, names[2] as string, "Date", "date", true, "date"),
-    column(3, names[3] as string, "POSIXct", "datetime", true, "datetime"),
-    column(4, names[4] as string, "difftime", "duration", true, "difftime"),
-    column(5, names[5] as string, "logical", "boolean", true, "logical"),
-    column(6, names[6] as string, "character", "string", true, "character"),
-    column(7, names[7] as string, "double", "float", true, "double")
-  ];
-  const values: RFrameCell[] = [
-    rCell("number", "12.5", "12.5"),
-    rCell("integer", "9223372036854775807", "9223372036854775807"),
-    rCell("date", "2026-08-05", "2026-08-05"),
-    rCell("datetime", "1785945600", "2026-08-05T12:00:00Z"),
-    rCell("duration", "90", "90 secs"),
-    { kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false },
-    { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false },
-    { kind: "infinity", raw: null, display: "Inf", isNull: false, isNaN: false, sign: 1 }
-  ];
-  return {
-    contractVersion: 5,
-    dataframeFlavor: "r.data.frame",
-    shape: { rows: options.totalRows ?? 1, columns: 8 },
-    frameSemantics: {
-      classes: ["data.frame"],
-      rowNames: options.explicitRowLabel === undefined ? "positional" : "explicit",
-      keyColumnIds: []
-    },
-    schema: schemas,
-    page: {
-      offset: 0,
-      limit: 20,
-      totalRows: options.totalRows ?? 1,
-      columnOffset: 0,
-      columnLimit: 8,
-      columnIds: schemas.map((column) => column.id),
-      rows: [
-        {
-          id: "r:r:0",
-          rowNumber: 0,
-          ...(options.explicitRowLabel === undefined ? {} : { rowLabel: options.explicitRowLabel }),
-          values
-        }
-      ]
-    }
-  };
-}
-
-function renameContract(source: RFramePageContract, columnId: string, name: string): RFramePageContract {
-  const position = source.schema.findIndex((column) => column.id === columnId);
-  if (position < 0) throw new Error("Unknown fake R rename column.");
-  const schema = source.schema.map((column) => (column.id === columnId ? { ...column, name } : { ...column }));
-  return {
-    ...source,
-    schema,
-    page: {
-      ...source.page,
-      columnIds: [...source.page.columnIds],
-      rows: source.page.rows.map((row) => ({
-        ...row,
-        values: row.values.map((value) => ({ ...value }))
-      }))
     }
   };
 }
@@ -10124,18 +9448,6 @@ function rowOrderContract(
   };
 }
 
-function renameDiff(): DataDiff {
-  return {
-    addedRows: 0,
-    removedRows: 0,
-    addedColumns: [],
-    removedColumns: [],
-    changedCells: 0,
-    cells: [],
-    truncated: false
-  };
-}
-
 function rowDiff(removedRows = 0): DataDiff {
   return { ...renameDiff(), removedRows };
 }
@@ -10294,39 +9606,6 @@ function groupDiff(source: RFramePageContract, output: RFramePageContract, step:
       output.page.limit < source.page.totalRows ||
       output.page.totalRows !== output.page.rows.length
   };
-}
-
-function column(
-  position: number,
-  name: string,
-  rawType: string,
-  type: RColumnSchema["type"],
-  nullable: boolean,
-  kind: "double" | "integer64" | "date" | "datetime" | "difftime" | "logical" | "character"
-): RColumnSchema {
-  const semantics =
-    kind === "datetime"
-      ? ({ kind, storageMode: "double", classes: ["POSIXct", "POSIXt"], timezone: "UTC" } as const)
-      : kind === "difftime"
-        ? ({ kind, storageMode: "double", classes: ["difftime"], units: "secs" } as const)
-        : kind === "integer64"
-          ? ({ kind, storageMode: "double", classes: ["integer64"] } as const)
-          : kind === "double"
-            ? ({ kind, storageMode: "double", classes: ["numeric"] } as const)
-            : kind === "date"
-              ? ({ kind, storageMode: "double", classes: ["Date"] } as const)
-              : kind === "logical"
-                ? ({ kind, storageMode: "logical", classes: ["logical"] } as const)
-                : ({ kind, storageMode: "character", classes: ["character"] } as const);
-  return { id: `r:c:${position}`, name, position, rawType, type, nullable, semantics };
-}
-
-function rCell(
-  kind: "number" | "integer" | "date" | "datetime" | "duration" | "boolean",
-  raw: string | boolean,
-  display: string
-): RFrameCell {
-  return { kind, raw, display, isNull: false, isNaN: false } as RFrameCell;
 }
 
 function cell(kind: string, raw: unknown, display: string, isNull = false, isNaN = false): Record<string, unknown> {
