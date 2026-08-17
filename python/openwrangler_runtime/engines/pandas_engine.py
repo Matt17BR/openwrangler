@@ -1809,16 +1809,32 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
     # the public schema. Use the same normalized display representation as grid
     # cells so numbers, bytes, containers, booleans, and other Python scalars
     # are measured exactly as users see them.
-    lengths = [
-        len(str(normalize_cell(value)["display"])) for value in series.array if not _pandas_is_missing_scalar(value)
-    ]
-    if not lengths:
+    empty_count = 0
+    minimum_length: int | None = None
+    maximum_length: int | None = None
+    total_length = 0
+    value_count = 0
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        category_counts = series.cat.codes.value_counts(sort=False)
+        values_and_counts = (
+            (series.cat.categories[int(code)], int(count)) for code, count in category_counts.items() if int(code) >= 0
+        )
+    else:
+        values_and_counts = ((value, 1) for value in series.array if not _pandas_is_missing_scalar(value))
+    for value, count in values_and_counts:
+        length = len(str(normalize_cell(value)["display"]))
+        empty_count += count if length == 0 else 0
+        minimum_length = length if minimum_length is None or length < minimum_length else minimum_length
+        maximum_length = length if maximum_length is None or length > maximum_length else maximum_length
+        total_length += length * count
+        value_count += count
+    if value_count == 0 or minimum_length is None or maximum_length is None:
         return {"emptyCount": 0}
     return {
-        "emptyCount": sum(length == 0 for length in lengths),
-        "minLength": min(lengths),
-        "maxLength": max(lengths),
-        "meanLength": float(sum(lengths) / len(lengths)),
+        "emptyCount": empty_count,
+        "minLength": minimum_length,
+        "maxLength": maximum_length,
+        "meanLength": float(total_length / value_count),
     }
 
 
