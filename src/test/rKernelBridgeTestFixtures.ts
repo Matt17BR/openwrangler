@@ -4,6 +4,7 @@ import type {
   ColumnSummary,
   DataDiff,
   DatasetStats,
+  GroupByTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest
 } from "../shared/protocol";
@@ -390,6 +391,106 @@ export function rKernelRowOrderContract(
         values: template.values.map((value) => ({ ...value }))
       }))
     }
+  };
+}
+
+export function rKernelGroupContract(
+  source: RFramePageContract,
+  step: GroupByTransformStep,
+  rows: number
+): RFramePageContract {
+  const key = source.schema.find(
+    (column) => column.id === step.params.keys[0].id && column.name === step.params.keys[0].name
+  );
+  if (!key) throw new Error("Unknown fake R Group By key.");
+  const schema: RColumnSchema[] = [
+    { ...key, position: 0 },
+    {
+      id: `c:step:${step.id}:0`,
+      name: step.params.aggregations[0].alias,
+      position: 1,
+      rawType: "integer",
+      type: "integer",
+      nullable: false,
+      semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+    },
+    {
+      id: `c:step:${step.id}:1`,
+      name: step.params.aggregations[1].alias,
+      position: 2,
+      rawType: "double",
+      type: "float",
+      nullable: true,
+      semantics: { kind: "double", storageMode: "double", classes: ["numeric"] }
+    },
+    {
+      id: `c:step:${step.id}:2`,
+      name: step.params.aggregations[2].alias,
+      position: 3,
+      rawType: "character",
+      type: "string",
+      nullable: true,
+      semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+    }
+  ];
+  const identityRows = source.shape.rows + rows;
+  const pageRows: RFramePageContract["page"]["rows"] = [
+    {
+      id: `r:r:${source.shape.rows}`,
+      rowNumber: 0,
+      values: [
+        rKernelTestCell("boolean", true, "TRUE"),
+        rKernelTestCell("integer", "2", "2"),
+        rKernelTestCell("number", "12.5", "12.5"),
+        { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+      ]
+    },
+    {
+      id: `r:r:${source.shape.rows + 1}`,
+      rowNumber: 1,
+      values: [
+        rKernelTestCell("boolean", false, "FALSE"),
+        rKernelTestCell("integer", "1", "1"),
+        rKernelTestCell("number", "8", "8"),
+        { kind: "string", raw: "ready", display: "ready", isNull: false, isNaN: false }
+      ]
+    }
+  ];
+  return {
+    contractVersion: source.contractVersion,
+    dataframeFlavor: source.dataframeFlavor,
+    shape: { rows: identityRows, columns: schema.length },
+    frameSemantics: { ...source.frameSemantics, rowNames: "positional", keyColumnIds: [] },
+    schema,
+    page: {
+      offset: 0,
+      limit: 20,
+      totalRows: rows,
+      columnOffset: 0,
+      columnLimit: 8,
+      columnIds: schema.map((column) => column.id),
+      rows: pageRows.slice(0, rows)
+    }
+  };
+}
+
+export function rKernelGroupDiff(
+  source: RFramePageContract,
+  output: RFramePageContract,
+  step: GroupByTransformStep
+): DataDiff {
+  const keyIds = new Set(step.params.keys.map((column) => column.id));
+  return {
+    addedRows: output.page.totalRows,
+    removedRows: source.page.totalRows,
+    addedColumns: step.params.aggregations.map((aggregation) => aggregation.alias),
+    removedColumns: source.schema.filter((column) => !keyIds.has(column.id)).map((column) => column.name),
+    changedCells: 0,
+    cells: [],
+    truncated:
+      output.page.offset !== 0 ||
+      output.page.limit < source.page.totalRows ||
+      output.page.totalRows !== output.page.rows.length
   };
 }
 
