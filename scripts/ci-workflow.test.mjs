@@ -25,6 +25,7 @@ const codeql = workflow("codeql.yml");
 const performance = workflow("performance.yml");
 const releasedJupyter = workflow("released-jupyter.yml");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
@@ -131,6 +132,16 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
+}
+
+function exactTomlSection(source, name) {
+  const heading = `[${name}]`;
+  const start = source.indexOf(`${heading}\n`);
+  assert.notEqual(start, -1, `${heading} must exist`);
+  assert.equal(source.indexOf(`${heading}\n`, start + heading.length), -1, `${heading} must be unique`);
+  const contentsStart = start + heading.length + 1;
+  const next = source.indexOf("\n[", contentsStart);
+  return source.slice(contentsStart, next === -1 ? source.length : next + 1);
 }
 
 function nodeTestFiles(command, group) {
@@ -379,6 +390,19 @@ test("invariant core is unconditional and owns full portable, TypeScript, Python
     stepRunning(job, "npm run check:tier-a").env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
   );
+});
+
+test("Python build and development metadata retain the setuptools security floor and exact fsspec pin", () => {
+  const buildSystem = exactTomlSection(pythonProjectMetadata, "build-system");
+  const project = exactTomlSection(pythonProjectMetadata, "project");
+  const development = exactTomlSection(pythonProjectMetadata, "project.optional-dependencies");
+
+  assert.match(buildSystem, /^requires = \["setuptools>=83\.0\.0", "wheel"\]$/mu);
+  assert.match(development, /^ {2}"setuptools>=83\.0\.0",$/mu);
+  assert.equal(pythonProjectMetadata.match(/setuptools>=83\.0\.0/gu)?.length, 2);
+  assert.match(project, /^requires-python = ">=3\.10"$/mu);
+  assert.match(project, /^ {2}"fsspec==2026\.7\.0",$/mu);
+  assert.equal(pythonProjectMetadata.match(/fsspec==2026\.7\.0/gu)?.length, 1);
 });
 
 test("both R 4.5 owners and the retained R 4.4 PR carrier consume exact locks without repository fallback", () => {
