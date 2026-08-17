@@ -135,8 +135,10 @@ _The active filter matches 14,287 rows. Column profiles, the grid, and the sideb
 action without changing the source._
 
 Hover or right-click a scalar grid cell to keep or exclude its exact value. Null and NaN have separate actions.
-Click a cell and extend the selection with Shift+click or Shift+Arrow. The grid footer copies one cell, the loaded
-columns in its row, or the selected range as tab-separated displayed values; Ctrl/Cmd+C copies the selection.
+Drag across cells with a mouse or pen, or extend the focused selection with Shift+click or Shift+Arrow, to select a
+rectangle. Ctrl/Cmd+click starts a new rectangle; non-contiguous selections are not supported. The grid footer copies
+one cell, the loaded columns in its row, or the selected range as tab-separated displayed values; Ctrl/Cmd+C copies
+the selection.
 
 <table>
   <tr>

@@ -99,6 +99,13 @@ interface CellFilterMenuTarget {
   columnId: string;
 }
 
+interface GridPointerSelection {
+  captureTarget: HTMLTableCellElement;
+  cleanup(): void;
+  focus: { row: number; column: number };
+  pointerId: number;
+}
+
 interface ScrollInputs {
   busy: boolean;
   contiguousOnly: boolean;
@@ -128,6 +135,12 @@ const headerProfileFitTolerance = 1;
 const compactHeaderProfilesDescription =
   "Header profile distributions are temporarily hidden until the grid has enough room.";
 const restoredHeaderProfilesDescription = "Header profile distributions are visible again.";
+const gridSelectionInstructions =
+  "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
+const gridModifierSelectionNotice =
+  "Ctrl/Cmd+click started a new selection. Drag or use Shift+click or Shift+Arrow to extend the rectangular range.";
+const pointerAutoScrollEdge = 32;
+const maximumPointerAutoScrollStep = gridRowHeight;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
@@ -213,7 +226,9 @@ export function DataGrid({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
   const headerProfilesButtonRef = useRef<HTMLButtonElement>(null);
+  const pointerSelection = useRef<GridPointerSelection | undefined>(undefined);
   const profileFitDescriptionId = useId();
+  const gridSelectionInstructionsId = useId();
   const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows, rowAxisHeader);
   const [rowHeaderState, setRowHeaderState] = useState({
     sessionId: metadata.sessionId,
@@ -312,6 +327,7 @@ export function DataGrid({
   });
   const resetGridClipboardSelection = gridClipboard.resetSelection;
   const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
+  const [pointerSelectionNotice, setPointerSelectionNotice] = useState("");
 
   useLayoutEffect(() => {
     if (!cellFilterMenuTarget) return;
@@ -372,6 +388,32 @@ export function DataGrid({
     [onViewStateChange]
   );
 
+  const finishPointerSelection = useCallback((pointerId?: number, restoreFocus = false): void => {
+    const active = pointerSelection.current;
+    if (!active || (pointerId !== undefined && active.pointerId !== pointerId)) return;
+    pointerSelection.current = undefined;
+    active.cleanup();
+    try {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    } catch {
+      // Pointer capture is optional in embedded and test browsers, and the
+      // browser may release it before pointerup reaches the window.
+    }
+    if (!restoreFocus || !document.hasFocus()) return;
+    const scroller = scrollerRef.current;
+    if (!scroller || !scroller.contains(document.activeElement)) return;
+    scroller
+      .querySelector<HTMLElement>(`[data-grid-row="${active.focus.row}"][data-grid-column="${active.focus.column}"]`)
+      ?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(
+    () => () => {
+      finishPointerSelection(undefined, false);
+    },
+    [finishPointerSelection]
+  );
+
   const writeProgrammaticViewport = useCallback(
     (scroller: HTMLDivElement, target: ProgrammaticViewportTarget): void => {
       programmaticViewportTarget.current = target;
@@ -403,6 +445,8 @@ export function DataGrid({
   useLayoutEffect(() => {
     if (previousViewContext.current === logicalViewContext) return;
     previousViewContext.current = logicalViewContext;
+    finishPointerSelection(undefined, false);
+    setPointerSelectionNotice("");
     setCellFilterMenuTarget(undefined);
     requestedOffset.current = page.offset;
     focusRequested.current = false;
@@ -447,6 +491,7 @@ export function DataGrid({
       viewport: { firstVisibleRow: page.offset, scrollLeft }
     });
   }, [
+    finishPointerSelection,
     logicalViewContext,
     resetGridClipboardSelection,
     metadata.schema,
@@ -471,6 +516,8 @@ export function DataGrid({
     requestedOffset.current = restoration.page.offset;
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
+    finishPointerSelection(undefined, false);
+    setPointerSelectionNotice("");
     setFocusedCell({ row, column });
     resetGridClipboardSelection({ row, column });
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
@@ -484,7 +531,7 @@ export function DataGrid({
       height: scroller.clientHeight
     });
     appliedViewStateRestoreVersion.current = viewStateRestoreVersion;
-  }, [resetGridClipboardSelection, viewStateRestoreVersion, writeProgrammaticViewport]);
+  }, [finishPointerSelection, resetGridClipboardSelection, viewStateRestoreVersion, writeProgrammaticViewport]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
@@ -1256,11 +1303,18 @@ export function DataGrid({
       <div className="tableScroller" ref={scrollerRef} data-testid="data-grid-scroller">
         <table
           role="grid"
-          style={{ width: rowHeaderWidth + sum(widths), minWidth: rowHeaderWidth + sum(widths) }}
+          style={{
+            width: rowHeaderWidth + sum(widths),
+            minWidth: rowHeaderWidth + sum(widths),
+            userSelect: "none",
+            WebkitUserSelect: "none"
+          }}
           aria-busy={busy || projecting}
           aria-label={`Data grid for ${metadata.source.label}`}
+          aria-describedby={gridSelectionInstructionsId}
           aria-rowcount={page.totalRows === null ? -1 : page.totalRows + 1}
           aria-colcount={metadata.schema.length + 1}
+          title={gridSelectionInstructions}
         >
           <colgroup>
             <col style={{ width: rowHeaderWidth }} />
@@ -1445,7 +1499,79 @@ export function DataGrid({
                       }}
                       onPointerDown={(event) => {
                         if (event.button !== 0 || gridCellControlTarget(event.target, event.currentTarget)) return;
-                        gridClipboard.selectCell({ row: row.rowNumber, column: column.position }, event.shiftKey);
+                        finishPointerSelection(undefined, false);
+                        const start = { row: row.rowNumber, column: column.position };
+                        const modifierStartsNewSelection = event.ctrlKey || event.metaKey;
+                        gridClipboard.selectCell(start, event.shiftKey && !modifierStartsNewSelection);
+                        setFocusedCell(start);
+                        reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                        setPointerSelectionNotice(modifierStartsNewSelection ? gridModifierSelectionNotice : "");
+                        if (event.pointerType === "touch") return;
+
+                        event.preventDefault();
+                        const captureTarget = event.currentTarget;
+                        const pointerId = event.pointerId;
+                        const move = (moveEvent: PointerEvent): void => {
+                          const active = pointerSelection.current;
+                          if (!active || active.pointerId !== moveEvent.pointerId) return;
+                          if (moveEvent.buttons === 0) {
+                            finishPointerSelection(moveEvent.pointerId, true);
+                            return;
+                          }
+                          if (moveEvent.cancelable) moveEvent.preventDefault();
+                          const scroller = scrollerRef.current;
+                          if (!scroller) return;
+                          const coordinate = gridCellCoordinateAtPointer(moveEvent, scroller);
+                          if (
+                            coordinate &&
+                            coordinate.row >= 0 &&
+                            coordinate.row < logicalRowExtent &&
+                            coordinate.column >= 0 &&
+                            coordinate.column < metadata.schema.length &&
+                            (coordinate.row !== active.focus.row || coordinate.column !== active.focus.column)
+                          ) {
+                            active.focus = coordinate;
+                            gridClipboard.selectCell(coordinate, true);
+                            setFocusedCell(coordinate);
+                            setPointerSelectionNotice("");
+                            const selectedColumnId = metadata.schema[coordinate.column]?.id;
+                            if (selectedColumnId) {
+                              reportViewState({ ...viewStateRef.current, selectedColumnId });
+                            }
+                          }
+                          autoScrollGridForPointer(scroller, moveEvent.clientX, moveEvent.clientY);
+                        };
+                        const end = (endEvent: PointerEvent): void => {
+                          finishPointerSelection(endEvent.pointerId, true);
+                        };
+                        const cancel = (cancelEvent: PointerEvent): void => {
+                          finishPointerSelection(cancelEvent.pointerId, true);
+                        };
+                        const blur = (): void => {
+                          finishPointerSelection(undefined, false);
+                        };
+                        const cleanup = (): void => {
+                          window.removeEventListener("pointermove", move);
+                          window.removeEventListener("pointerup", end);
+                          window.removeEventListener("pointercancel", cancel);
+                          window.removeEventListener("blur", blur);
+                        };
+                        pointerSelection.current = {
+                          captureTarget,
+                          cleanup,
+                          focus: start,
+                          pointerId
+                        };
+                        window.addEventListener("pointermove", move, { passive: false });
+                        window.addEventListener("pointerup", end);
+                        window.addEventListener("pointercancel", cancel);
+                        window.addEventListener("blur", blur);
+                        try {
+                          captureTarget.setPointerCapture(pointerId);
+                        } catch {
+                          // Window listeners preserve the bounded drag when pointer capture is unavailable.
+                        }
+                        captureTarget.focus({ preventScroll: true });
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
@@ -1598,6 +1724,18 @@ export function DataGrid({
                   page.totalRows
                 ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
         </span>
+        <span id={gridSelectionInstructionsId} className="gridClipboardAnnouncement">
+          {gridSelectionInstructions}
+        </span>
+        <span
+          className="gridClipboardAnnouncement"
+          role="status"
+          aria-label="Grid selection result"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {pointerSelectionNotice}
+        </span>
         <GridClipboardControls controller={gridClipboard} />
         <div className="gridProfileControls">
           {!profilesDisabled && onProfileValueModeChange && (
@@ -1724,6 +1862,61 @@ export function DataGrid({
     });
     if (block !== page.offset) goToPage(nextRow, true);
   }
+}
+
+function gridCellCoordinateAtPointer(
+  event: PointerEvent,
+  scroller: HTMLDivElement
+): { row: number; column: number } | undefined {
+  const pointTarget =
+    typeof document.elementFromPoint === "function" ? document.elementFromPoint(event.clientX, event.clientY) : null;
+  const target = pointTarget ?? (event.target instanceof Element ? event.target : null);
+  const cell = target?.closest<HTMLElement>("[data-grid-row][data-grid-column]");
+  if (!cell || !scroller.contains(cell)) return undefined;
+  const row = Number(cell.dataset.gridRow);
+  const column = Number(cell.dataset.gridColumn);
+  return Number.isSafeInteger(row) && Number.isSafeInteger(column) ? { row, column } : undefined;
+}
+
+function autoScrollGridForPointer(scroller: HTMLDivElement, clientX: number, clientY: number): void {
+  const bounds = scroller.getBoundingClientRect();
+  if (
+    bounds.width <= 0 ||
+    bounds.height <= 0 ||
+    clientX < bounds.left ||
+    clientX > bounds.right ||
+    clientY < bounds.top ||
+    clientY > bounds.bottom
+  ) {
+    return;
+  }
+  const horizontal = pointerAutoScrollDelta(clientX, bounds.left, bounds.width);
+  const vertical = pointerAutoScrollDelta(clientY, bounds.top, bounds.height);
+  if (horizontal !== 0) {
+    scroller.scrollLeft = Math.max(
+      0,
+      Math.min(scroller.scrollLeft + horizontal, Math.max(0, scroller.scrollWidth - scroller.clientWidth))
+    );
+  }
+  if (vertical !== 0) {
+    scroller.scrollTop = Math.max(
+      0,
+      Math.min(scroller.scrollTop + vertical, Math.max(0, scroller.scrollHeight - scroller.clientHeight))
+    );
+  }
+}
+
+function pointerAutoScrollDelta(position: number, start: number, extent: number): number {
+  const edge = Math.min(pointerAutoScrollEdge, extent / 2);
+  if (edge <= 0) return 0;
+  if (position < start + edge) {
+    return -Math.ceil(maximumPointerAutoScrollStep * ((start + edge - position) / edge));
+  }
+  const end = start + extent;
+  if (position > end - edge) {
+    return Math.ceil(maximumPointerAutoScrollStep * ((position - (end - edge)) / edge));
+  }
+  return 0;
 }
 
 function boundedGridText(value: string | undefined): string | undefined {
