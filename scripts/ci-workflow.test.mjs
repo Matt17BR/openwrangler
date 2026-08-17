@@ -43,6 +43,31 @@ const BOOLEAN_OUTPUTS = Object.freeze({
   windowsUniqueRequired: true
 });
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
+const VALIDATE_CONDITION = "${{ always() && github.event_name == 'pull_request' }}";
+const VALIDATE_NEEDS = Object.freeze([
+  "classify",
+  "invariant-core",
+  "r-contract-kernel",
+  "r-contract-protocol",
+  "native-r-contract",
+  "canonical-editor",
+  "visual-accessibility",
+  "windows-unique"
+]);
+const VALIDATE_ENV = Object.freeze({
+  R_CONTRACT_REQUIRED: "${{ needs.classify.outputs.r_contract_required }}",
+  CANONICAL_EDITOR_REQUIRED: "${{ needs.classify.outputs.canonical_editor_required }}",
+  VISUAL_ACCESSIBILITY_REQUIRED: "${{ needs.classify.outputs.visual_accessibility_required }}",
+  WINDOWS_UNIQUE_REQUIRED: "${{ needs.classify.outputs.windows_unique_required }}",
+  CLASSIFY_RESULT: "${{ needs.classify.result }}",
+  INVARIANT_CORE_RESULT: "${{ needs.invariant-core.result }}",
+  R_CONTRACT_KERNEL_RESULT: "${{ needs.r-contract-kernel.result }}",
+  R_CONTRACT_PROTOCOL_RESULT: "${{ needs.r-contract-protocol.result }}",
+  NATIVE_R_CONTRACT_RESULT: "${{ needs.native-r-contract.result }}",
+  CANONICAL_EDITOR_RESULT: "${{ needs.canonical-editor.result }}",
+  VISUAL_ACCESSIBILITY_RESULT: "${{ needs.visual-accessibility.result }}",
+  WINDOWS_UNIQUE_RESULT: "${{ needs.windows-unique.result }}"
+});
 const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
   ["ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
   ["cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
@@ -213,6 +238,16 @@ function expectedResults(selections = BOOLEAN_OUTPUTS) {
     for (const jobId of jobIds) results[jobId] = selections[selection] ? "success" : "skipped";
   }
   return results;
+}
+
+function assertValidateOwner(document) {
+  const validate = document?.jobs?.validate;
+  assert.equal(validate?.name, "validate");
+  assert.equal(validate?.if, VALIDATE_CONDITION);
+  assert.deepEqual(validate?.needs, VALIDATE_NEEDS);
+  const gate = stepRunning(validate, "node scripts/require-ci-results.mjs");
+  assert.ok(gate, "validate must invoke the sole result owner");
+  assert.deepEqual(gate.env, VALIDATE_ENV);
 }
 
 test("sole classifier emits exactly four conservative Tier-B owner outputs", () => {
@@ -455,31 +490,31 @@ test("conditional owners fail open to run while sole validate owner requires exa
     assert.match(ci.jobs[jobId].if, /classify\.result != 'success'/u);
     assert.match(ci.jobs[jobId].if, /!= 'false'/u);
   }
-  assert.deepEqual(ci.jobs.validate.needs, [
-    "classify",
-    "invariant-core",
-    "r-contract-kernel",
-    "r-contract-protocol",
-    "native-r-contract",
-    "canonical-editor",
-    "visual-accessibility",
-    "windows-unique"
-  ]);
-  const gate = stepRunning(ci.jobs.validate, "node scripts/require-ci-results.mjs");
-  assert.deepEqual(Object.keys(gate.env).sort(), [
-    "CANONICAL_EDITOR_REQUIRED",
-    "CANONICAL_EDITOR_RESULT",
-    "CLASSIFY_RESULT",
-    "INVARIANT_CORE_RESULT",
-    "NATIVE_R_CONTRACT_RESULT",
-    "R_CONTRACT_KERNEL_RESULT",
-    "R_CONTRACT_PROTOCOL_RESULT",
-    "R_CONTRACT_REQUIRED",
-    "VISUAL_ACCESSIBILITY_REQUIRED",
-    "VISUAL_ACCESSIBILITY_RESULT",
-    "WINDOWS_UNIQUE_REQUIRED",
-    "WINDOWS_UNIQUE_RESULT"
-  ]);
+  assertValidateOwner(ci);
+});
+
+test("validate always evaluates the exact PR-only result fan-in", () => {
+  for (const condition of [
+    "${{ !cancelled() && github.event_name == 'pull_request' }}",
+    "${{ success() && github.event_name == 'pull_request' }}",
+    "${{ github.event_name == 'pull_request' }}"
+  ]) {
+    const mutated = structuredClone(ci);
+    mutated.jobs.validate.if = condition;
+    assert.throws(() => assertValidateOwner(mutated));
+  }
+  const omitted = structuredClone(ci);
+  delete omitted.jobs.validate.if;
+  assert.throws(() => assertValidateOwner(omitted));
+
+  const topologyDrift = structuredClone(ci);
+  topologyDrift.jobs.validate.needs.pop();
+  assert.throws(() => assertValidateOwner(topologyDrift));
+
+  const resultInputDrift = structuredClone(ci);
+  const gate = stepRunning(resultInputDrift.jobs.validate, "node scripts/require-ci-results.mjs");
+  gate.env.WINDOWS_UNIQUE_RESULT = "${{ needs.invariant-core.result }}";
+  assert.throws(() => assertValidateOwner(resultInputDrift));
 });
 
 test("required result owner rejects missing, skipped, cancelled, failed, and selection drift", () => {
@@ -509,13 +544,15 @@ test("required result owner rejects missing, skipped, cancelled, failed, and sel
       selections: none
     })
   );
-  for (const result of [undefined, "skipped", "cancelled", "failure"]) {
-    const requiredResults = expectedResults();
-    requiredResults["canonical-editor"] = result;
-    assert.throws(
-      () => requireCiResults({ requiredResults, classificationResult: "success", selections: BOOLEAN_OUTPUTS }),
-      /canonical-editor/u
-    );
+  for (const jobId of REQUIRED_CI_JOBS) {
+    for (const result of [undefined, "skipped", "cancelled", "failure"]) {
+      const requiredResults = expectedResults();
+      requiredResults[jobId] = result;
+      assert.throws(
+        () => requireCiResults({ requiredResults, classificationResult: "success", selections: BOOLEAN_OUTPUTS }),
+        new RegExp(jobId, "u")
+      );
+    }
   }
   assert.throws(
     () =>
@@ -807,7 +844,8 @@ test("every Vitest entry point retains an effective worker ceiling", async () =>
   assert.equal(smoke.config.test?.fileParallelism, false);
 });
 
-test("pull-request workflows cancel only obsolete heads while the CodeQL result gate remains fail-complete", () => {
+test("pull-request workflows cancel only obsolete heads while both required result gates remain fail-complete", () => {
+  const alwaysEvaluatedJobs = [];
   for (const [name, group] of REPLACEABLE_PULL_REQUEST_WORKFLOWS) {
     const document = workflow(name);
     assert.equal(document.concurrency.group, group);
@@ -815,12 +853,11 @@ test("pull-request workflows cancel only obsolete heads while the CodeQL result 
     assert.ok(document.on.pull_request);
     assert.ok(Object.keys(document.on).some((eventName) => eventName !== "pull_request"));
     for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
-      if (String(job.if ?? "").includes("always()")) {
-        assert.equal(`${name}:${jobId}`, "codeql.yml:codeql-gate");
-      }
+      if (String(job.if ?? "").includes("always()")) alwaysEvaluatedJobs.push(`${name}:${jobId}`);
       for (const step of job.steps ?? []) assert.equal(String(step.if ?? "").includes("always()"), false);
     }
   }
+  assert.deepEqual(alwaysEvaluatedJobs, ["ci.yml:validate", "codeql.yml:codeql-gate"]);
 });
 
 test("repository-only roots remain excluded from the VSIX inventory", () => {
