@@ -116,7 +116,7 @@
     "test:r-contract": "node scripts/run-r-contract-tests.mjs",
     "test:r-contract:frame-and-interactive-transport": "node scripts/run-r-contract-tests.mjs --shard frame-and-interactive-transport",
     "test:r-contract:catalog-and-process-transport": "node scripts/run-r-contract-tests.mjs --shard catalog-and-process-transport",
-    "test:r-contract:protocol": "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label test:r-contract:frame-and-interactive-transport test:r-contract:catalog-and-process-transport",
+    "test:r-contract:protocol": "npm-run-all --continue-on-error --print-label test:r-contract:frame-and-interactive-transport test:r-contract:catalog-and-process-transport",
     "test:python-environment-smoke": "vitest run --config vite.python-environment-smoke.config.ts",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run test:extension-host:run",
