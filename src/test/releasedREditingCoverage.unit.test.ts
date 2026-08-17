@@ -72,7 +72,8 @@ describe("released R editing coverage", () => {
     ["jupyter-r", RELEASED_R_REPRESENTATIVE_COVERAGE, ["section:start", "representative"]],
     ["jupyter-r", RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE, ["section:start", "representative", "categorical"]],
     ["jupyter-r", RELEASED_R_VALUE_OPERATIONS_COVERAGE, ["section:start", "representative", "value"]],
-    ["jupyter-r-remote", RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE, ["section:start", "representative"]]
+    ["jupyter-r-remote", RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE, ["section:start", "representative"]],
+    ["jupyter-r-remote", RELEASED_R_VALUE_OPERATIONS_COVERAGE, ["section:start", "representative"]]
   ] as const)("routes %s/%s through its exact editing owner", async (phase, coverage, journeyEvents) => {
     const test = fixture();
 
