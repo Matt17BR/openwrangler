@@ -1061,7 +1061,7 @@ describe("interactive R session transport", () => {
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
       removeFile: async (filePath) => {
-        if (failResponseRemoval && filePath.includes("/responses/")) {
+        if (failResponseRemoval && basename(dirname(dirname(filePath))) === "responses") {
           failResponseRemoval = false;
           throw new Error("simulated response unlink failure");
         }
@@ -1086,7 +1086,7 @@ describe("interactive R session transport", () => {
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
       removeFile: async (filePath) => {
-        if (!replacementPath && basename(dirname(filePath)) === "responses") {
+        if (!replacementPath && basename(dirname(dirname(filePath))) === "responses") {
           const contents = await readFile(filePath);
           replacementPath = filePath;
           displacedPath = resolve(dirname(filePath), "displaced-owned-response.json");
@@ -1110,6 +1110,73 @@ describe("interactive R session transport", () => {
       expect(displacedPath).toBeDefined();
       expect((await readFile(replacementPath!)).every((byte) => byte === 0x78)).toBe(true);
       expect((await readFile(displacedPath!, "utf8")).startsWith("{")).toBe(true);
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("retains the mailbox after a request artifact is swapped during identified cleanup", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-request-swap-unit-"));
+    let replacementPath: string | undefined;
+    let displacedPath: string | undefined;
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      removeFile: async (filePath) => {
+        if (!replacementPath && basename(dirname(dirname(filePath))) === "requests") {
+          replacementPath = filePath;
+          displacedPath = resolve(dirname(filePath), "displaced-owned-request.json");
+          await rename(filePath, displacedPath);
+          await writeFile(filePath, "replacement", { mode: 0o600 });
+          throw new Error("simulated request pathname replacement");
+        }
+        await unlink(filePath);
+      },
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+
+    try {
+      await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
+      await expect(transport.dispose()).rejects.toThrow("could not completely clean up");
+      expect(replacementPath).toBeDefined();
+      expect(displacedPath).toBeDefined();
+      expect(await readFile(replacementPath!, "utf8")).toBe("replacement");
+      expect((await readFile(displacedPath!, "utf8")).startsWith("{")).toBe(true);
+      expect(await readdir(temporaryParent)).toHaveLength(1);
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("retains the mailbox after an ordinary request-artifact cleanup error", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-request-cleanup-error-unit-"));
+    let failedRequestRemoval = false;
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      removeFile: async (filePath) => {
+        if (!failedRequestRemoval && basename(dirname(dirname(filePath))) === "requests") {
+          failedRequestRemoval = true;
+          throw new Error("simulated ordinary request cleanup error");
+        }
+        await unlink(filePath);
+      },
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+
+    try {
+      await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
+      await expect(transport.dispose()).rejects.toThrow("could not completely clean up");
+      expect(failedRequestRemoval).toBe(true);
+      expect(await readdir(temporaryParent)).toHaveLength(1);
     } finally {
       await transport.dispose().catch(() => undefined);
       await rm(temporaryParent, { recursive: true, force: true });
