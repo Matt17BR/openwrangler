@@ -6,6 +6,7 @@ import pixelmatch from "pixelmatch";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
+import { createFilterPanelScreenshotReadiness } from "./capture-screenshots-readiness.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
 import {
@@ -580,6 +581,7 @@ const byExamplePreviewReadiness = createWebviewSelectorReadiness({
   absentText: [{ selector: "th[data-grid-column] > .columnInsight", text: "Profiling…" }],
   emptyArrayGlobals: ["openWranglerHarnessErrors"]
 });
+const filterPanelReadiness = createFilterPanelScreenshotReadiness();
 
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
 writeWebviewHarness(
@@ -675,7 +677,7 @@ writeWebviewHarness(
   { [payloads.values.column]: payloads.values },
   "filter-panel.png",
   {},
-  { openColumnFilter: "city" }
+  { openColumnFilter: "city", readiness: filterPanelReadiness }
 );
 const truncatedNotebook = structuredClone(payloads.notebook);
 const capturedNotebookRows = truncatedNotebook.page.rows.length;
@@ -999,15 +1001,25 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           }
           ${
             openColumnFilter
-              ? `setTimeout(() => {
+              ? `{
+            let committed = false;
+            const commitOpenColumnFilter = () => {
+              if (committed) return;
             const header = document.querySelector(${stringifyForInlineScript(`th[data-column="${openColumnFilter}"]`)});
             const menu = header?.querySelector("details");
-            if (menu) menu.open = true;
             const filter = [...(header?.querySelectorAll("button") ?? [])]
               .find(button => button.textContent?.trim() === "Filter…");
-            filter?.focus();
-            filter?.click();
-          }, 100);`
+              if (!(menu instanceof HTMLDetailsElement) || !(filter instanceof HTMLButtonElement)) return;
+              menu.open = true;
+              filter.focus();
+              filter.click();
+              committed = true;
+              observer.disconnect();
+            };
+            const observer = new MutationObserver(commitOpenColumnFilter);
+            observer.observe(document.body, { childList: true, subtree: true });
+            commitOpenColumnFilter();
+          }`
               : ""
           }
         }
