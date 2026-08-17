@@ -29210,11 +29210,13 @@ async function exercisePackagedLinkedRendererLiveOpen(
         numeric: {
           min: 5,
           max: 7,
+          sum: 12,
           mean: 6,
           median: 6,
           std: Math.SQRT2,
           exactMin: { kind: "integer", raw: 5, display: "5", isNull: false, isNaN: false },
-          exactMax: { kind: "integer", raw: 7, display: "7", isNull: false, isNaN: false }
+          exactMax: { kind: "integer", raw: 7, display: "7", isNull: false, isNaN: false },
+          exactSum: { kind: "integer", raw: 12, display: "12", isNull: false, isNaN: false }
         },
         visualization: {
           kind: "numeric",
