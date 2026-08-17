@@ -547,6 +547,8 @@ async function verifyInsightsDrawerWorkflow(browser) {
     const numericChart = page.getByRole("img", { name: /numeric distribution/u }).first();
     const histogram = numericChart.locator("xpath=../..");
     const firstBar = histogram.locator(".numericHistogramBar").first();
+    const status = histogram.locator(".miniChartCaption");
+    const restingStatus = (await status.textContent())?.trim();
     await firstBar.evaluate((bar) => {
       const chartHeight = bar.ownerSVGElement?.viewBox.baseVal.height;
       if (!chartHeight) throw new Error("Histogram bar has no owning SVG view box.");
@@ -562,18 +564,49 @@ async function verifyInsightsDrawerWorkflow(browser) {
     }
     const initialFill = await firstBar.evaluate((bar) => getComputedStyle(bar).fill);
     await numericChart.hover({ position: { x: firstBarBounds.width / 2, y: 1 } });
-    const tooltip = histogram.getByRole("tooltip");
-    await tooltip.waitFor();
-    const firstLabel = (await tooltip.textContent())?.trim();
+    const firstLabel = (await status.textContent())?.trim();
     if (!firstLabel?.includes("row")) {
       throw new Error(`${harness} did not show the hovered bin's exact interval and row count immediately.`);
+    }
+    const visibleDistribution = await histogram.evaluate((element) => {
+      const chart = element.querySelector(".miniChart");
+      const caption = element.querySelector(".miniChartCaption");
+      const bars = [...element.querySelectorAll(".numericHistogramBar")];
+      if (!chart || !caption) return undefined;
+      const chartBounds = chart.getBoundingClientRect();
+      const captionBounds = caption.getBoundingClientRect();
+      return {
+        activeBins: element.querySelectorAll(".numericHistogramBin.active").length,
+        captionBelowChart: captionBounds.top >= chartBounds.bottom - 1,
+        totalBars: bars.length,
+        visibleBars: bars.filter((bar) => {
+          const bounds = bar.getBoundingClientRect();
+          const style = getComputedStyle(bar);
+          return bounds.width > 0 && bounds.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+        }).length
+      };
+    });
+    if (
+      !visibleDistribution ||
+      visibleDistribution.activeBins !== 1 ||
+      !visibleDistribution.captionBelowChart ||
+      visibleDistribution.totalBars === 0 ||
+      visibleDistribution.visibleBars !== visibleDistribution.totalBars ||
+      (await histogram.getByRole("tooltip").count()) !== 0
+    ) {
+      throw new Error(
+        `${harness} did not keep the complete distribution visible above its active-bin status: ` +
+          `${JSON.stringify(visibleDistribution)}.`
+      );
     }
     const hoveredFill = await firstBar.evaluate((bar) => getComputedStyle(bar).fill);
     if (hoveredFill === initialFill) {
       throw new Error(`${harness} did not visibly highlight the hovered histogram bin.`);
     }
     await page.locator(".backendBadge").first().hover();
-    await tooltip.waitFor({ state: "detached" });
+    if ((await status.textContent())?.trim() !== restingStatus) {
+      throw new Error(`${harness} did not restore its range caption after histogram hover.`);
+    }
     if (width === 800) {
       await page.emulateMedia({ forcedColors: "active" });
       const forcedRestingColors = await firstBar.evaluate((bar) => {
@@ -780,14 +813,22 @@ async function verifyInsightsDrawerWorkflow(browser) {
   }
   const firstLabel = await histogramControl.getAttribute("aria-label");
   await histogramControl.focus();
-  const interactiveTooltip = interactiveHistogram.getByRole("tooltip");
-  await interactiveTooltip.waitFor();
-  if ((await interactiveTooltip.textContent())?.trim() !== firstLabel) {
-    throw new Error(`${interactiveHarness} did not describe the keyboard-selected histogram bin.`);
+  const interactiveStatus = interactiveHistogram.locator(".miniChartCaption");
+  const firstStatus = (await interactiveStatus.textContent())?.trim();
+  if (
+    !firstLabel ||
+    !firstStatus?.includes("row") ||
+    !firstLabel.startsWith(firstStatus) ||
+    (await interactiveStatus.getAttribute("role")) !== null ||
+    (await interactiveStatus.getAttribute("aria-live")) !== null ||
+    (await interactiveHistogram.getByRole("tooltip").count()) !== 0
+  ) {
+    throw new Error(`${interactiveHarness} did not expose the focused bin exactly without a noisy live region.`);
   }
   await interactivePage.keyboard.press("End");
   const lastLabel = await histogramControl.getAttribute("aria-label");
-  if (!lastLabel || lastLabel === firstLabel || (await interactiveTooltip.textContent())?.trim() !== lastLabel) {
+  const lastStatus = (await interactiveStatus.textContent())?.trim();
+  if (!lastLabel || !lastStatus || lastLabel === firstLabel || !lastLabel.startsWith(lastStatus)) {
     throw new Error(`${interactiveHarness} did not move the histogram control to its final bin with End.`);
   }
   await interactivePage.keyboard.press("Home");
@@ -798,8 +839,10 @@ async function verifyInsightsDrawerWorkflow(browser) {
   if (!(await histogramControl.evaluate(isActiveTab))) {
     throw new Error(`${interactiveHarness} moved focus away while changing histogram bins with ArrowRight.`);
   }
-  if ((await interactiveTooltip.textContent())?.trim() !== (await histogramControl.getAttribute("aria-label"))) {
-    throw new Error(`${interactiveHarness} did not update the tooltip for the next keyboard-selected bin.`);
+  const nextLabel = await histogramControl.getAttribute("aria-label");
+  const nextStatus = (await interactiveStatus.textContent())?.trim();
+  if (!nextLabel || !nextStatus || !nextLabel.startsWith(nextStatus)) {
+    throw new Error(`${interactiveHarness} did not update the status for the next keyboard-selected bin.`);
   }
   await interactivePage.keyboard.press("ArrowLeft");
   if ((await histogramControl.getAttribute("aria-label")) !== firstLabel) {
