@@ -55,6 +55,7 @@ describe("bounded dependency guard frame reader", () => {
     });
 
     recorded.reader.accept(frame.subarray(-1));
+    recorded.reader.end();
     expect(recorded.failures).toEqual([]);
     expect(recorded.frames).toHaveLength(1);
     expect(recorded.frames[0]?.value).toMatch(/é$/u);
@@ -157,20 +158,35 @@ describe("bounded dependency guard frame reader", () => {
     expect(recorded.reader.storageState).toEqual(RELEASED_STORAGE);
   });
 
-  it("releases partial storage on EOF and explicit disposal", () => {
-    const eof = recorder();
-    eof.reader.accept(Buffer.from('{"partial":', "utf8"));
-    expect(eof.reader.storageState.retainedSegments).toBe(1);
-    eof.reader.end();
-    expect(eof.reader.storageState).toEqual(RELEASED_STORAGE);
-    eof.reader.accept(Buffer.from("{}\n", "utf8"));
-    expect(eof.frames).toEqual([]);
-    expect(eof.failures).toEqual([]);
+  it.each([
+    { name: "missing output", chunk: undefined },
+    { name: "partial output", chunk: Buffer.from('{"secret":"partial-payload-sentinel', "utf8") }
+  ])("fails closed and releases storage immediately on EOF with $name", ({ chunk }) => {
+    const recorded = recorder();
+    if (chunk) recorded.reader.accept(chunk);
 
+    recorded.reader.end();
+
+    expect(recorded.frames).toEqual([]);
+    expect(recorded.failures).toHaveLength(1);
+    expect(recorded.failures[0]).toBeInstanceOf(DependencyGuardProtocolError);
+    expect(recorded.failures[0]?.message).toContain("ended before its single result frame");
+    expect(recorded.failures[0]?.message).not.toContain("partial-payload-sentinel");
+    expect(recorded.callbackStorage).toEqual([RELEASED_STORAGE]);
+    expect(recorded.reader.storageState).toEqual(RELEASED_STORAGE);
+
+    recorded.reader.end();
+    recorded.reader.accept(Buffer.from("{}\n", "utf8"));
+    expect(recorded.failures).toHaveLength(1);
+  });
+
+  it("releases partial storage silently on explicit disposal", () => {
     const disposed = recorder();
     disposed.reader.accept(Buffer.from('{"partial":', "utf8"));
     disposed.reader.dispose();
     disposed.reader.dispose();
     expect(disposed.reader.storageState).toEqual(RELEASED_STORAGE);
+    expect(disposed.frames).toEqual([]);
+    expect(disposed.failures).toEqual([]);
   });
 });
