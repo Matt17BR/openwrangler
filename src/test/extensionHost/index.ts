@@ -179,6 +179,7 @@ import {
 import { createReleasedRTextOperations } from "./releasedRTextOperations";
 import { createReleasedRVariableDiscovery } from "./releasedRVariableDiscovery";
 import { createReleasedRNotebookMedia } from "./releasedRNotebookMedia";
+import { createReleasedREditingModeTransition } from "./releasedREditingModeTransition";
 import { exerciseReleasedRLowercaseOperation } from "./releasedRLowercaseOperation";
 import { exerciseReleasedRCastOperation } from "./releasedRCastOperation";
 import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
@@ -1532,6 +1533,15 @@ const exerciseReleasedRVariableDiscovery = createReleasedRVariableDiscovery({
   waitForReleasedVariableSession
 });
 
+const exerciseReleasedREditingModeTransition = createReleasedREditingModeTransition({
+  SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+  assertExactOpenNotebookDocument,
+  recordAcceptanceProgress,
+  releasedRSessionApp,
+  requireFreshExactSessionPanelHydration,
+  waitFor
+});
+
 async function exerciseReleasedRJupyterExtension(
   testing: TestApi,
   extension: vscode.Extension<ExtensionApi>,
@@ -1636,68 +1646,7 @@ async function exerciseReleasedRJupyterExtension(
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId, coverage.gridPaging);
     recordReleasedRAcceptanceSection(phase, coverage, "grid", "complete");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
-    const viewingStateBeforeEditing = testing.activeSession()?.viewState;
-    assert.ok(viewingStateBeforeEditing, "The R mode switch requires the confirmed Viewing-mode presentation.");
-    assert.deepEqual(
-      viewingStateBeforeEditing.filterModel.sort.map((rule) => rule.column),
-      ["group", "score"],
-      "The R mode switch acceptance must begin with a real compound sort to prove view replay."
-    );
-    const viewingRevision = testing.activeSession()?.metadata.revision;
-    assert.ok(viewingRevision !== undefined);
-    assertExactOpenNotebookDocument(notebook, "before switching the live R variable to Editing mode");
-    let editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the viewing R session");
-    const switchToEditing = editingApp.getByRole("button", { name: "Switch to Editing", exact: true });
-    await switchToEditing.waitFor({ state: "visible", timeout: 10_000 });
-    recordAcceptanceProgress(`${phase}:editing:switch`);
-    await switchToEditing.click();
-    await waitFor(
-      () => {
-        const active = testing.activeSession();
-        return (
-          active?.sessionId === base.sessionId &&
-          active.metadata.mode === "editing" &&
-          active.metadata.revision > viewingRevision &&
-          active.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "group,score"
-        );
-      },
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the exact live R session to reopen in Editing mode with its view intact",
-      () => JSON.stringify(testing.diagnostics())
-    );
-    assertExactOpenNotebookDocument(notebook, "after switching the live R variable to Editing mode");
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      base.sessionId,
-      "The Editing-mode R session must acknowledge its atomically replaced runtime."
-    );
-    editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the switched R session");
-    assert.equal(await editingApp.getByRole("button", { name: "Switch to Editing", exact: true }).count(), 0);
-    assert.equal((await editingApp.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
-    await editingApp.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
-    const editingDrawer = editingApp.getByRole("complementary", {
-      name: "Column profiles and filters",
-      exact: true
-    });
-    await editingDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
-    await editingDrawer.getByRole("button", { name: "Clear all", exact: true }).click();
-    await waitFor(
-      () => {
-        const active = testing.activeSession();
-        return (
-          active?.sessionId === base.sessionId &&
-          active.viewState.filterModel.filters.length === 0 &&
-          active.viewState.filterModel.sort.length === 0
-        );
-      },
-      30_000,
-      "clearing the replayed R view before the cleaning journey"
-    );
-    editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the cleared R editing view");
-    await editingApp
-      .getByRole("complementary", { name: "Column profiles and filters", exact: true })
-      .getByRole("button", { name: "Close panel" })
-      .click();
+    await exerciseReleasedREditingModeTransition(testing, workbench, notebook, base, phase);
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");
     if (coverage.editing === "core-catalog" || coverage.editing === "clone-lifecycle") {
       await exerciseReleasedREditingJourney(
