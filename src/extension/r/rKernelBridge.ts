@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
-import { supportsViewPredicate } from "../../shared/filterModel";
 import { operationKinds } from "../../shared/operationCatalog.generated";
 import {
   PROTOCOL_VERSION,
@@ -31,7 +30,6 @@ import {
   type FormulaTransformStep,
   type FormatDatetimeTransformStep,
   type FloorNumberTransformStep,
-  type GridPage,
   type GroupByTransformStep,
   type InspectStepRequest,
   type LowerTextTransformStep,
@@ -74,7 +72,6 @@ import {
 import {
   assertRKernelCustomCodeTransportCode,
   assertRKernelByExampleTransportStrings,
-  type RKernelColumnFilter,
   type RKernelColumnReference,
   type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
@@ -87,17 +84,36 @@ import {
   type RKernelSortRule,
   type RKernelStepInspectionResult,
   type RKernelStepPreviewResult,
-  type RKernelTransformFilterModel,
   type RKernelViewQuery
 } from "./rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
   type RColumnSchema,
-  type RColumnType,
   type RDataframeFlavor,
   type RFrameCell,
   type RFramePageContract
 } from "./rFrameContract";
+import {
+  cellValueFromR,
+  copyRSchema as copySchema,
+  emptyRViewQuery,
+  gridPageFromRContract as gridPageFromContract,
+  rPageWindow as pageWindow,
+  sameRSchema as sameSchema,
+  schemaFromRContract as schemaFromContract,
+  validateRPageWindow as validatePageWindow
+} from "./rKernelFrameMapping";
+import {
+  assertRColumnValuesContract as assertColumnValuesContract,
+  assertRDatasetStatsContract as assertDatasetStatsContract,
+  assertRSummaryContract as assertSummaryContract,
+  requireRTransformColumn as requireTransformColumn,
+  resolveNamedRColumn as resolveNamedColumn,
+  resolveRProfileColumns as resolveProfileColumns,
+  resolveRTransformFilterModel as resolveTransformFilterModel,
+  resolveRTransformSortRules as resolveTransformSortRules,
+  resolveRViewQuery as resolveViewQuery
+} from "./rKernelViewContract";
 import {
   claimVerifiedRNotebookVariableSelection,
   type RNotebookVariableDescriptor,
@@ -1696,261 +1712,6 @@ function validateOpenRequest(request: OpenSessionRequest): ErrorResponse | undef
   return undefined;
 }
 
-function validatePageWindow(rowOffset: number, rowLimit: number, columnOffset: number, columnLimit: number): void {
-  if (!Number.isSafeInteger(rowOffset) || rowOffset < 0 || rowOffset > R_FRAME_CONTRACT_LIMITS.rows) {
-    throw new TypeError("The R row offset is outside the supported range.");
-  }
-  if (!Number.isSafeInteger(rowLimit) || rowLimit < 1 || rowLimit > R_FRAME_CONTRACT_LIMITS.pageRows) {
-    throw new TypeError(`R pages may contain at most ${R_FRAME_CONTRACT_LIMITS.pageRows} rows.`);
-  }
-  if (!Number.isSafeInteger(columnOffset) || columnOffset < 0 || columnOffset > R_FRAME_CONTRACT_LIMITS.columns) {
-    throw new TypeError("The R column offset is outside the supported range.");
-  }
-  if (!Number.isSafeInteger(columnLimit) || columnLimit < 1 || columnLimit > R_FRAME_CONTRACT_LIMITS.pageColumns) {
-    throw new TypeError(`R pages may contain at most ${R_FRAME_CONTRACT_LIMITS.pageColumns} columns.`);
-  }
-  if (rowLimit * columnLimit > R_FRAME_CONTRACT_LIMITS.pageCells) {
-    throw new TypeError(`R pages may contain at most ${R_FRAME_CONTRACT_LIMITS.pageCells} cells.`);
-  }
-}
-
-function pageWindow(
-  rowOffset: number,
-  rowLimit: number,
-  columnOffset: number,
-  columnLimit: number,
-  view: RKernelViewQuery
-): RKernelPageWindow {
-  return Object.freeze({ rowOffset, rowLimit, columnOffset, columnLimit, view });
-}
-
-function emptyRViewQuery(): RKernelViewQuery {
-  return Object.freeze({ filters: Object.freeze([]), sorts: Object.freeze([]) });
-}
-
-function resolveViewQuery(filterModel: FilterModel, schema: readonly ColumnSchema[]): RKernelViewQuery {
-  const filters = Object.freeze(
-    filterModel.filters.map<RKernelColumnFilter>((filter) => {
-      const column = resolveNamedColumn(filter.column, schema, "filter");
-      const schemaColumn = schema.find((candidate) => candidate.id === column.id) as ColumnSchema;
-      const columnType = requireRColumnType(schemaColumn.type);
-      if (filter.type !== columnType) {
-        throw new TypeError(
-          `The filter for ${JSON.stringify(filter.column)} declares ${filter.type}, but the R column is ${schemaColumn.type}.`
-        );
-      }
-      return Object.freeze({
-        column,
-        type: columnType,
-        ...(filter.logic ? { logic: filter.logic } : {}),
-        ...(filter.valueFilter
-          ? {
-              valueFilter: Object.freeze({
-                ...filter.valueFilter,
-                selectedValues: Object.freeze([...filter.valueFilter.selectedValues])
-              })
-            }
-          : {}),
-        predicates: Object.freeze(filter.predicates.map((predicate) => Object.freeze({ ...predicate })))
-      });
-    })
-  );
-  return Object.freeze({
-    ...(filterModel.logic ? { logic: filterModel.logic } : {}),
-    filters,
-    sorts: resolveSorts(filterModel, schema)
-  });
-}
-
-function assertColumnValuesContract(
-  session: RBridgeSession,
-  requested: RKernelColumnReference,
-  result: Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>,
-  limit: number,
-  search: string | undefined
-): void {
-  const schema = session.schema.find((column) => column.id === requested.id);
-  if (!schema || schema.name !== requested.name || result.column !== requested.name || result.values.length > limit) {
-    throw new Error("The R kernel returned values for the wrong column or request limit.");
-  }
-  const expectedType = requireRColumnType(schema.type);
-  if (
-    result.sampleSize !== undefined &&
-    (result.sampleSize !== R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
-      result.sampleSize >= session.rows ||
-      (search !== undefined && search !== "") ||
-      !result.hasMore)
-  ) {
-    throw new Error("The R kernel returned an invalid column-value sample size.");
-  }
-  const countDomain = result.sampleSize ?? session.rows;
-  let returnedCount = 0;
-  for (const entry of result.values) {
-    if (
-      !Number.isSafeInteger(entry.count) ||
-      entry.count < 1 ||
-      entry.count > countDomain ||
-      entry.count > countDomain - returnedCount ||
-      entry.selectionValue === undefined ||
-      entry.selectionValue.columnType !== expectedType
-    ) {
-      throw new Error("The R kernel returned values with incompatible typed selections or row counts.");
-    }
-    returnedCount += entry.count;
-  }
-}
-
-function requireRColumnType(type: ColumnSchema["type"]): RColumnType {
-  if (
-    type === "string" ||
-    type === "integer" ||
-    type === "float" ||
-    type === "boolean" ||
-    type === "datetime" ||
-    type === "date" ||
-    type === "duration"
-  ) {
-    return type;
-  }
-  throw new TypeError(`The R dataframe exposed an unsupported ${type} column type.`);
-}
-
-function resolveNamedColumn(
-  name: string,
-  schema: readonly ColumnSchema[],
-  purpose: "filter" | "sort" | "values"
-): RKernelColumnReference {
-  const matches = schema.filter((column) => column.name === name);
-  if (matches.length !== 1) {
-    throw new TypeError(
-      matches.length === 0
-        ? `The ${purpose} column ${JSON.stringify(name)} is no longer in this R dataframe.`
-        : `The ${purpose} column ${JSON.stringify(name)} is ambiguous because that name is repeated.`
-    );
-  }
-  const column = matches[0] as ColumnSchema;
-  return Object.freeze({ id: column.id, name: column.name });
-}
-
-function resolveSorts(filterModel: FilterModel, schema: readonly ColumnSchema[]): readonly RKernelSortRule[] {
-  if (filterModel.sort.length > R_FRAME_CONTRACT_LIMITS.sortRules) {
-    throw new TypeError(`R views support at most ${R_FRAME_CONTRACT_LIMITS.sortRules} sort rules.`);
-  }
-  const seen = new Set<string>();
-  return Object.freeze(
-    filterModel.sort.map((rule) => {
-      const reference = resolveNamedColumn(rule.column, schema, "sort");
-      const column = schema.find((candidate) => candidate.id === reference.id) as ColumnSchema;
-      if (seen.has(column.id)) throw new TypeError(`The sort column ${JSON.stringify(rule.column)} is repeated.`);
-      seen.add(column.id);
-      return Object.freeze({
-        column: Object.freeze({ id: column.id, name: column.name }),
-        direction: rule.direction,
-        nulls: rule.nulls
-      });
-    })
-  );
-}
-
-function resolveTransformSortRules(
-  rules: readonly SortRowsTransformStep["params"]["rules"][number][],
-  schema: readonly ColumnSchema[],
-  purpose: string
-): readonly RKernelSortRule[] {
-  if (rules.length > R_FRAME_CONTRACT_LIMITS.sortRules) {
-    throw new TypeError(`${purpose} supports at most ${R_FRAME_CONTRACT_LIMITS.sortRules} sort rules.`);
-  }
-  const seen = new Set<string>();
-  return Object.freeze(
-    rules.map((rule) => {
-      const column = requireTransformColumn(rule.column, schema, purpose);
-      if (seen.has(column.id)) throw new TypeError(`${purpose} repeats the same R column identity.`);
-      seen.add(column.id);
-      return Object.freeze({
-        column: Object.freeze({ id: column.id, name: column.name }),
-        direction: rule.direction,
-        nulls: rule.nulls
-      });
-    })
-  );
-}
-
-function resolveTransformFilterModel(
-  model: FilterRowsTransformStep["params"]["filterModel"],
-  schema: readonly ColumnSchema[]
-): RKernelTransformFilterModel {
-  if (model.filters.length > R_FRAME_CONTRACT_LIMITS.filters) {
-    throw new TypeError(`Filter rows supports at most ${R_FRAME_CONTRACT_LIMITS.filters} column filters.`);
-  }
-  const seen = new Set<string>();
-  const filters = Object.freeze(
-    model.filters.map<RKernelColumnFilter>((filter) => {
-      const column = requireTransformColumn(filter.column, schema, "Filter rows");
-      if (seen.has(column.id)) throw new TypeError("Filter rows repeats the same R column identity.");
-      seen.add(column.id);
-      const type = requireRColumnType(column.type);
-      if (filter.type !== type) {
-        throw new TypeError(
-          `Filter rows declares ${filter.type} for ${JSON.stringify(column.name)}, but the R column is ${type}.`
-        );
-      }
-      if (filter.predicates.length > R_FRAME_CONTRACT_LIMITS.predicatesPerFilter) {
-        throw new TypeError(
-          `Filter rows supports at most ${R_FRAME_CONTRACT_LIMITS.predicatesPerFilter} predicates per column.`
-        );
-      }
-      for (const predicate of filter.predicates) {
-        if (!supportsViewPredicate(type, predicate.operator)) {
-          throw new TypeError(`The ${predicate.operator} predicate is not available for R ${type} columns.`);
-        }
-      }
-      if (
-        filter.valueFilter &&
-        filter.valueFilter.selectedValues.length > R_FRAME_CONTRACT_LIMITS.selectedValuesPerFilter
-      ) {
-        throw new TypeError(
-          `Filter rows supports at most ${R_FRAME_CONTRACT_LIMITS.selectedValuesPerFilter} selected values per column.`
-        );
-      }
-      return Object.freeze({
-        column: Object.freeze({ id: column.id, name: column.name }),
-        type,
-        ...(filter.logic ? { logic: filter.logic } : {}),
-        ...(filter.valueFilter
-          ? {
-              valueFilter: Object.freeze({
-                ...filter.valueFilter,
-                selectedValues: Object.freeze([...filter.valueFilter.selectedValues])
-              })
-            }
-          : {}),
-        predicates: Object.freeze(filter.predicates.map((predicate) => Object.freeze({ ...predicate })))
-      });
-    })
-  );
-  return Object.freeze({
-    ...(model.logic ? { logic: model.logic } : {}),
-    filters,
-    sort: resolveTransformSortRules(model.sort, schema, "Filter rows")
-  });
-}
-
-function requireTransformColumn(
-  reference: Readonly<{ id: string; name: string }>,
-  schema: readonly ColumnSchema[],
-  purpose: string
-): ColumnSchema {
-  const matches = schema.filter((column) => column.id === reference.id && column.name === reference.name);
-  if (matches.length !== 1) {
-    throw new TypeError(`${purpose} contains a stale or mismatched R column reference.`);
-  }
-  const column = matches[0] as ColumnSchema;
-  if (column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
-    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
-  }
-  return column;
-}
-
 function validateProfileRequest(
   request: SummaryRequest | DatasetStatsRequest,
   session: RBridgeSession | undefined
@@ -1958,101 +1719,6 @@ function validateProfileRequest(
   if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
   if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
   return staleRevisionError(session, request.revision, request.viewRequestId);
-}
-
-function resolveProfileColumns(
-  columnIds: readonly string[],
-  schema: readonly ColumnSchema[]
-): readonly RKernelColumnReference[] {
-  if (columnIds.length === 0 || new Set(columnIds).size !== columnIds.length) {
-    throw new TypeError("R profile columns must be a non-empty unique list.");
-  }
-  const schemaById = new Map(schema.map((column) => [column.id, column]));
-  return Object.freeze(
-    columnIds.map((columnId) => {
-      const column = schemaById.get(columnId);
-      if (!column) throw new TypeError(`The profile column ${JSON.stringify(columnId)} is no longer available.`);
-      return Object.freeze({ id: column.id, name: column.name });
-    })
-  );
-}
-
-function assertSummaryContract(
-  session: RBridgeSession,
-  requested: readonly RKernelColumnReference[],
-  summaries: readonly ColumnSummary[],
-  view: RKernelViewQuery
-): void {
-  if (summaries.length !== requested.length) {
-    throw new Error("The R kernel returned summaries for the wrong column projection.");
-  }
-  const schemaById = new Map(session.schema.map((column) => [column.id, column]));
-  const totalRows = summaries[0]?.totalCount ?? 0;
-  if (
-    totalRows > session.rows ||
-    (view.filters.length === 0 && totalRows !== session.rows) ||
-    summaries.some((summary) => summary.totalCount !== totalRows)
-  ) {
-    throw new Error("The R kernel returned summaries for inconsistent filtered views.");
-  }
-  for (const [index, summary] of summaries.entries()) {
-    const reference = requested[index] as RKernelColumnReference;
-    const schema = schemaById.get(reference.id);
-    if (
-      !schema ||
-      summary.columnId !== reference.id ||
-      summary.column !== reference.name ||
-      summary.column !== schema.name ||
-      summary.type !== schema.type ||
-      summary.rawType !== schema.rawType ||
-      summary.totalCount !== totalRows ||
-      summary.nullCount + summary.nanCount > totalRows ||
-      (summary.distinctCount !== undefined &&
-        summary.distinctCount > totalRows - summary.nullCount - summary.nanCount) ||
-      summary.topValues.reduce((count, value) => count + value.count, 0) >
-        totalRows - summary.nullCount - summary.nanCount
-    ) {
-      throw new Error("The R kernel returned a summary that does not match the active dataframe.");
-    }
-    if (
-      summary.visualization?.kind === "boolean" &&
-      summary.visualization.trueCount + summary.visualization.falseCount !==
-        totalRows - summary.nullCount - summary.nanCount
-    ) {
-      throw new Error("The R kernel returned inconsistent boolean profile counts.");
-    }
-  }
-}
-
-function assertDatasetStatsContract(
-  session: RBridgeSession,
-  result: RKernelDatasetStatsResult,
-  view: RKernelViewQuery
-): void {
-  const rows = result.totalRows;
-  const columns = session.schema.length;
-  const duplicateRowsDomain = result.stats.duplicateRowsSampleSize ?? rows;
-  if (
-    rows > session.rows ||
-    (view.filters.length === 0 && rows !== session.rows) ||
-    result.stats.missingRows > rows ||
-    duplicateRowsDomain > rows ||
-    result.stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1) ||
-    result.stats.missingCells > rows * columns ||
-    result.stats.missingValuesByColumn.length !== columns
-  ) {
-    throw new Error("The R kernel returned dataset statistics outside the active dataframe shape.");
-  }
-  let missingCells = 0;
-  for (const [index, entry] of result.stats.missingValuesByColumn.entries()) {
-    if (entry.column !== session.schema[index]?.name || entry.count > rows) {
-      throw new Error("The R kernel returned dataset statistics for the wrong column projection.");
-    }
-    missingCells += entry.count;
-  }
-  if (missingCells !== result.stats.missingCells) {
-    throw new Error("The R kernel returned inconsistent missing-value totals.");
-  }
 }
 
 function sessionFromContract(
@@ -2193,30 +1859,6 @@ function assertRExportResult(
   }
 }
 
-function gridPageFromContract(contract: RFramePageContract): GridPage {
-  return {
-    offset: contract.page.offset,
-    limit: contract.page.limit,
-    totalRows: contract.page.totalRows,
-    columnIds: [...contract.page.columnIds],
-    rows: contract.page.rows.map((row) => ({
-      id: row.id,
-      rowNumber: row.rowNumber,
-      ...(row.rowLabel === undefined ? {} : { rowLabel: row.rowLabel }),
-      values: row.values.map(cellValueFromR)
-    }))
-  };
-}
-
-function cellValueFromR(cell: RFrameCell): CellValue {
-  if (cell.kind === "number") {
-    const raw = Number(cell.raw);
-    if (!Number.isFinite(raw)) throw new TypeError("The R frame returned a non-finite value as a finite double.");
-    return { ...cell, raw };
-  }
-  return { ...cell };
-}
-
 type PageWindowCoordinates = Readonly<{
   offset: number;
   limit: number;
@@ -2320,43 +1962,6 @@ function rowNamesAfterRStep(
   step: RPreviewTransformStep
 ): RFramePageContract["frameSemantics"]["rowNames"] {
   return step.kind === "groupBy" ? "positional" : input;
-}
-
-function sameSchema(expected: readonly ColumnSchema[], actual: RFramePageContract["schema"]): boolean {
-  return (
-    expected.length === actual.length &&
-    expected.every((column, index) => {
-      const candidate = actual[index];
-      return (
-        candidate !== undefined &&
-        candidate.id === column.id &&
-        candidate.name === column.name &&
-        candidate.position === column.position &&
-        candidate.rawType === column.rawType &&
-        candidate.type === column.type &&
-        candidate.nullable === column.nullable
-      );
-    })
-  );
-}
-
-function schemaFromContract(contract: RFramePageContract): readonly ColumnSchema[] {
-  return Object.freeze(
-    contract.schema.map<ColumnSchema>((column) =>
-      Object.freeze({
-        id: column.id,
-        name: column.name,
-        position: column.position,
-        rawType: column.rawType,
-        type: column.type,
-        nullable: column.nullable
-      })
-    )
-  );
-}
-
-function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
-  return schema.map((column) => ({ ...column }));
 }
 
 function schemaAfterRStep(
