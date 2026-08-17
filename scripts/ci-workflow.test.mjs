@@ -100,7 +100,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "af7ab5fd17c5e13e2c1f569a43e30fe1d71f0f94fa13808296b3b4fcd3a7a0d8";
+const WORKFLOW_USE_INVENTORY_SHA256 = "d25ee2007b7cf484c2cacd73d3eb7c0375b7fab24e43fbb62a8ad35956bbe453";
 
 function stepsUsing(job, prefix) {
   return (job?.steps ?? []).filter((step) => typeof step?.uses === "string" && step.uses.startsWith(prefix));
@@ -178,7 +178,7 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
     external.push([name, path, uses]);
   }
   if (!exactInventory) return Object.freeze({ external, local });
-  assert.equal(external.length, 139);
+  assert.equal(external.length, 148);
   assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
   const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
   assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
@@ -943,7 +943,7 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
     .sort();
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
-  assert.equal(inventory.external.length, 139);
+  assert.equal(inventory.external.length, 148);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
 
   const sources = names.map((entry) => readFileSync(workflowPath(entry), "utf8")).join("\n");
