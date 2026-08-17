@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from math import isfinite
@@ -78,6 +78,7 @@ PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
 PYSPARK_PROFILE_PROTOCOL_BYTE_LIMIT = 16 * 1024 * 1024
 PYSPARK_SUMMARY_DISTINCT_GROUP_LIMIT = 4
 PYSPARK_SUMMARY_SCALAR_ALIAS_LIMIT = 32
+PYSPARK_SUMMARY_TERMINAL_BRANCH_LIMIT = 4
 _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS = 16 * 1024
 
 
@@ -501,6 +502,7 @@ class PySparkEngine(DataFrameEngine):
             )
             grouped_value = self._groupable_value(functions, column, data_type)
             display_value = self._profile_display_value(functions, column, data_type)
+            display_decoder = _profile_display_decoder(data_type)
 
             metric_expressions: list[Any] = []
             metric_aliases: dict[str, str] = {}
@@ -632,6 +634,12 @@ class PySparkEngine(DataFrameEngine):
                     "finiteExpression": finite,
                     "groupedValueExpression": grouped_value,
                     "displayValueExpression": display_value,
+                    "displayDecoder": display_decoder,
+                    "encodedGroupKeyExpression": (
+                        _encode_profile_group_key(functions, grouped_value, display_value, data_type)
+                        if display_decoder is not None
+                        else None
+                    ),
                     "metricExpressions": metric_expressions,
                     "metricAliases": metric_aliases,
                     "distinctGroupCount": distinct_group_count,
@@ -648,61 +656,20 @@ class PySparkEngine(DataFrameEngine):
             for plan in batch:
                 plan["metrics"] = {name: fixed_result[alias] for name, alias in plan["metricAliases"].items()}
 
+        self._collect_summary_top_values(functions, frame, profile_plans)
+        self._collect_summary_histograms(functions, frame, profile_plans)
+
         summaries: list[dict[str, Any]] = []
-        remaining_transport_bytes = PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT
         for plan in profile_plans:
             column_id = str(plan["columnId"])
             column_name = str(plan["column"])
             column_type = str(plan["type"])
             raw_type = str(plan["rawType"])
-            data_type = plan["dataType"]
-            column = plan["columnExpression"]
-            valid = plan["validExpression"]
-            finite = plan["finiteExpression"]
-            grouped_value = plan["groupedValueExpression"]
-            display_value = plan["displayValueExpression"]
             metrics = plan["metrics"]
             total_count = int(metrics["__ow_total"] or 0)
             null_count = int(metrics["__ow_null"] or 0)
             nan_count = int(metrics["__ow_nan"] or 0)
-            top_frame = (
-                frame.where(valid)
-                .select(
-                    grouped_value.alias("__ow_group_key"),
-                    display_value.alias("__ow_display_value"),
-                )
-                .groupBy("__ow_group_key")
-                .agg(
-                    functions.count(functions.lit(1)).alias("count"),
-                    functions.min("__ow_display_value").alias("__ow_value"),
-                )
-                .orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
-                .limit(10)
-                .select("count", "__ow_value")
-            )
-            top_rows, consumed_transport_bytes = self._guarded_profile_rows(
-                functions,
-                top_frame,
-                functions.col("__ow_value"),
-                remaining_transport_bytes,
-            )
-            if consumed_transport_bytes > remaining_transport_bytes:
-                encountered = (
-                    PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT - remaining_transport_bytes + consumed_transport_bytes
-                )
-                raise EngineError(
-                    "PySpark summary values may contain at most "
-                    f"{PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; encountered at least "
-                    f"{encountered:,}. Profile fewer columns or shorten large values."
-                )
-            remaining_transport_bytes -= consumed_transport_bytes
-            top_values = [
-                {
-                    "value": normalize_cell(_spark_python_value(row["__ow_value"]))["display"],
-                    "count": int(row["count"]),
-                }
-                for row in top_rows
-            ]
+            top_values = plan["topValues"]
             summary: dict[str, Any] = {
                 "columnId": column_id,
                 "column": column_name,
@@ -727,16 +694,7 @@ class PySparkEngine(DataFrameEngine):
                     numeric["exactMin"] = normalize_cell(_spark_python_value(metrics["__ow_min"]))
                     numeric["exactMax"] = normalize_cell(_spark_python_value(metrics["__ow_max"]))
                 summary["numeric"] = {key: value for key, value in numeric.items() if value is not None}
-                summary["visualization"] = _numeric_visualization(
-                    functions,
-                    frame,
-                    column,
-                    finite,
-                    metrics["__ow_hist_min"],
-                    metrics["__ow_hist_max"],
-                    int(metrics["__ow_hist_count"] or 0),
-                    int(metrics["__ow_hist_distinct"] or 0),
-                )
+                summary["visualization"] = plan["numericVisualization"]
             elif column_type == "boolean":
                 summary["visualization"] = {
                     "kind": "boolean",
@@ -762,6 +720,145 @@ class PySparkEngine(DataFrameEngine):
             summaries.append(summary)
         _validate_profile_protocol_size(summaries, "summaries")
         return summaries
+
+    def _collect_summary_top_values(
+        self,
+        functions: Any,
+        frame: Any,
+        profile_plans: list[dict[str, Any]],
+    ) -> None:
+        remaining_transport_bytes = PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT
+        batch_ranges = _summary_terminal_batch_ranges([plan["displayDecoder"] is not None for plan in profile_plans])
+        for batch_start, batch_end in batch_ranges:
+            batch = profile_plans[batch_start:batch_end]
+            for plan in batch:
+                plan["topValues"] = []
+
+            if len(batch) == 1:
+                plan = batch[0]
+                top_frame = _summary_top_value_frame(functions, frame, plan)
+                top_rows, consumed_transport_bytes = self._guarded_profile_rows(
+                    functions,
+                    top_frame,
+                    functions.col("__ow_value"),
+                    remaining_transport_bytes,
+                )
+            else:
+                combined = _summary_top_value_batch_frame(
+                    functions,
+                    frame,
+                    batch,
+                    batch_start,
+                )
+                top_rows, consumed_transport_bytes = self._guarded_profile_rows(
+                    functions,
+                    combined,
+                    functions.col("__ow_encoded_value"),
+                    remaining_transport_bytes,
+                    retained_columns=("__ow_profile_index",),
+                    measurement_expression=functions.col("__ow_sort_value"),
+                    order_expressions=(
+                        functions.asc("__ow_profile_index"),
+                        functions.desc("count"),
+                        functions.asc("__ow_sort_value"),
+                    ),
+                )
+
+            if consumed_transport_bytes > remaining_transport_bytes:
+                encountered = (
+                    PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT - remaining_transport_bytes + consumed_transport_bytes
+                )
+                raise EngineError(
+                    "PySpark summary values may contain at most "
+                    f"{PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; encountered at least "
+                    f"{encountered:,}. Profile fewer columns or shorten large values."
+                )
+            remaining_transport_bytes -= consumed_transport_bytes
+            if len(batch) == 1:
+                plan["topValues"] = [
+                    {
+                        "value": normalize_cell(_spark_python_value(row["__ow_value"]))["display"],
+                        "count": int(row["count"]),
+                    }
+                    for row in top_rows
+                ]
+            else:
+                for row in top_rows:
+                    profile_index = int(row["__ow_profile_index"])
+                    row_plan = profile_plans[profile_index]
+                    row_plan["topValues"].append(
+                        {
+                            "value": _decode_profile_display_value(
+                                row["__ow_value"],
+                                str(row_plan["displayDecoder"]),
+                            ),
+                            "count": int(row["count"]),
+                        }
+                    )
+
+    @staticmethod
+    def _collect_summary_histograms(
+        functions: Any,
+        frame: Any,
+        profile_plans: list[dict[str, Any]],
+    ) -> None:
+        histogram_plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for plan in profile_plans:
+            if plan["type"] not in {"integer", "float", "decimal"}:
+                continue
+            metrics = plan["metrics"]
+            histogram = _numeric_histogram_plan(
+                functions,
+                plan["columnExpression"],
+                plan["finiteExpression"],
+                metrics["__ow_hist_min"],
+                metrics["__ow_hist_max"],
+                int(metrics["__ow_hist_count"] or 0),
+                int(metrics["__ow_hist_distinct"] or 0),
+            )
+            if "visualization" in histogram:
+                plan["numericVisualization"] = histogram["visualization"]
+            else:
+                histogram_plans.append((plan, histogram))
+
+        batch_ranges = _summary_terminal_batch_ranges([True] * len(histogram_plans))
+        for batch_start, batch_end in batch_ranges:
+            batch = histogram_plans[batch_start:batch_end]
+            if len(batch) == 1:
+                plan, histogram = batch[0]
+                aliases = [f"__ow_hist_{bin_index}" for bin_index in range(len(histogram["countExpressions"]))]
+                counts = frame.agg(
+                    *(
+                        expression.alias(alias)
+                        for expression, alias in zip(histogram["countExpressions"], aliases, strict=True)
+                    )
+                ).collect()[0]
+                bin_counts = [counts[alias] for alias in aliases]
+                plan["numericVisualization"] = numeric_visualization_from_bin_counts(
+                    histogram["minimum"],
+                    histogram["maximum"],
+                    bin_counts,
+                )
+                continue
+
+            count_expressions: list[Any] = []
+            count_aliases_by_plan: list[list[str]] = []
+            for profile_offset, (_plan, histogram) in enumerate(batch, start=batch_start):
+                aliases = [
+                    f"__ow_hist_{profile_offset}_{bin_index}" for bin_index in range(len(histogram["countExpressions"]))
+                ]
+                count_aliases_by_plan.append(aliases)
+                count_expressions.extend(
+                    expression.alias(alias)
+                    for expression, alias in zip(histogram["countExpressions"], aliases, strict=True)
+                )
+            counts = frame.agg(*count_expressions).collect()[0]
+            for (plan, histogram), aliases in zip(batch, count_aliases_by_plan, strict=True):
+                plan["numericVisualization"] = numeric_visualization_from_bin_counts(
+                    histogram["minimum"],
+                    histogram["maximum"],
+                    (counts[alias] for alias in aliases),
+                )
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
         functions = import_module("pyspark.sql.functions")
@@ -1031,12 +1128,17 @@ class PySparkEngine(DataFrameEngine):
         frame: Any,
         expression: Any,
         byte_limit: int,
+        *,
+        retained_columns: tuple[str, ...] = (),
+        measurement_expression: Any | None = None,
+        order_expressions: tuple[Any, ...] = (),
     ) -> tuple[list[Any], int]:
         """Collect bounded profile rows without evaluating their plan twice."""
 
         Window = import_module("pyspark.sql.window").Window
+        measured_expression = expression if measurement_expression is None else measurement_expression
         byte_count = functions.coalesce(
-            functions.length(functions.encode(expression.cast("string"), "UTF-8")).cast("long"),
+            functions.length(functions.encode(measured_expression.cast("string"), "UTF-8")).cast("long"),
             functions.lit(0).cast("long"),
         )
         measured = frame.withColumn("__ow_profile_value_bytes", byte_count)
@@ -1048,14 +1150,21 @@ class PySparkEngine(DataFrameEngine):
             "__ow_profile_total_bytes",
             functions.sum(functions.col("__ow_profile_value_bytes")).over(whole_result),
         )
+        if order_expressions:
+            measured = measured.orderBy(*order_expressions)
         guarded = measured.select(
+            *(functions.col(name) for name in retained_columns),
             "count",
             functions.when(
                 functions.col("__ow_profile_total_bytes") <= functions.lit(int(byte_limit)),
                 expression,
             ).alias("__ow_value"),
             "__ow_profile_total_bytes",
-        ).orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
+        )
+        if not order_expressions:
+            guarded = guarded.orderBy(
+                functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string"))
+            )
         rows = guarded.collect()
         total_bytes = int(rows[0]["__ow_profile_total_bytes"] or 0) if rows else 0
         return rows, total_bytes
@@ -1194,6 +1303,192 @@ def _append_summary_metric(
     alias = f"__ow_summary_{profile_index}_{name.removeprefix('__ow_')}"
     metric_aliases[name] = alias
     metric_expressions.append(expression.alias(alias))
+
+
+def _summary_top_value_frame(functions: Any, frame: Any, plan: Mapping[str, Any]) -> Any:
+    return (
+        frame.where(plan["validExpression"])
+        .select(
+            plan["groupedValueExpression"].alias("__ow_group_key"),
+            plan["displayValueExpression"].alias("__ow_display_value"),
+        )
+        .groupBy("__ow_group_key")
+        .agg(
+            functions.count(functions.lit(1)).alias("count"),
+            functions.min("__ow_display_value").alias("__ow_value"),
+        )
+        .orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
+        .limit(10)
+        .select("count", "__ow_value")
+    )
+
+
+def _summary_top_value_batch_frame(
+    functions: Any,
+    frame: Any,
+    batch: list[dict[str, Any]],
+    profile_start: int,
+) -> Any:
+    """Build one source scan for at most four exact per-column top-value plans."""
+
+    Window = import_module("pyspark.sql.window").Window
+    entries = []
+    for profile_index, plan in enumerate(batch, start=profile_start):
+        decoder = str(plan["displayDecoder"])
+        encoded_value = _encode_profile_display_value(
+            functions,
+            plan["displayValueExpression"],
+            decoder,
+        )
+        entries.append(
+            functions.struct(
+                functions.lit(profile_index).cast("int").alias("__ow_profile_index"),
+                plan["validExpression"].alias("__ow_valid"),
+                plan["encodedGroupKeyExpression"].alias("__ow_group_key"),
+                encoded_value.alias("__ow_encoded_value"),
+                plan["displayValueExpression"].cast("string").alias("__ow_sort_value"),
+            )
+        )
+
+    exploded = frame.select(functions.explode(functions.array(*entries)).alias("__ow_profile"))
+    long_values = exploded.where(functions.col("__ow_profile.__ow_valid")).select(
+        functions.col("__ow_profile.__ow_profile_index").alias("__ow_profile_index"),
+        functions.col("__ow_profile.__ow_group_key").alias("__ow_group_key"),
+        functions.col("__ow_profile.__ow_encoded_value").alias("__ow_encoded_value"),
+        functions.col("__ow_profile.__ow_sort_value").alias("__ow_sort_value"),
+    )
+    representative = functions.min(
+        functions.struct(
+            functions.col("__ow_sort_value"),
+            functions.col("__ow_encoded_value"),
+        )
+    ).alias("__ow_representative")
+    grouped = long_values.groupBy("__ow_profile_index", "__ow_group_key").agg(
+        functions.count(functions.lit(1)).alias("count"),
+        representative,
+    )
+    ordered = grouped.select(
+        "__ow_profile_index",
+        "count",
+        functions.col("__ow_representative.__ow_encoded_value").alias("__ow_encoded_value"),
+        functions.col("__ow_representative.__ow_sort_value").alias("__ow_sort_value"),
+    )
+    top_per_profile = Window.partitionBy("__ow_profile_index").orderBy(
+        functions.desc("count"),
+        functions.asc("__ow_sort_value"),
+    )
+    return (
+        ordered.withColumn("__ow_profile_rank", functions.row_number().over(top_per_profile))
+        .where(functions.col("__ow_profile_rank") <= functions.lit(10))
+        .select("__ow_profile_index", "count", "__ow_encoded_value", "__ow_sort_value")
+    )
+
+
+def _profile_display_decoder(data_type: Any) -> str | None:
+    type_name = type(data_type).__name__
+    if type_name in {"ByteType", "ShortType", "IntegerType", "LongType"}:
+        return "integer"
+    if type_name in {"FloatType", "DoubleType"}:
+        return "float"
+    if type_name == "DecimalType":
+        return "decimal"
+    if type_name == "BooleanType":
+        return "boolean"
+    if type_name == "DateType":
+        return "date"
+    if type_name == "TimestampType":
+        return "timestamp"
+    if type_name == "TimestampNTZType":
+        return "timestamp_ntz"
+    if type_name in {"CharType", "VarcharType"} or (
+        type_name == "StringType" and not data_type.isUTF8BinaryCollation()
+    ):
+        # A common binary string encoding would discard a source collation's
+        # native equality, and CHAR/VARCHAR padding semantics are not inferred
+        # from their display cast. Keep those types on the exact singleton path.
+        return None
+    if type_name in {
+        "ArrayType",
+        "BinaryType",
+        "MapType",
+        "NullType",
+        "StringType",
+        "StructType",
+    }:
+        return "string"
+    # Day-time intervals remain supported, but their native Python timedelta
+    # display has no stable public Spark SQL string inverse. Keep those columns
+    # on the existing single-branch path rather than changing their output.
+    return None
+
+
+def _encode_profile_group_key(functions: Any, grouped: Any, display: Any, data_type: Any) -> Any:
+    type_name = type(data_type).__name__
+    if type_name == "TimestampType":
+        return functions.unix_micros(grouped).cast("string")
+    key = display if type_name in {"FloatType", "DoubleType"} else grouped
+    return key.cast("string")
+
+
+def _encode_profile_display_value(functions: Any, expression: Any, decoder: str) -> Any:
+    if decoder == "timestamp":
+        return functions.unix_micros(expression).cast("string")
+    return expression.cast("string")
+
+
+def _decode_profile_display_value(value: Any, decoder: str) -> str:
+    if not isinstance(value, str):
+        raise EngineError("PySpark summary batching returned a malformed encoded display value.")
+    try:
+        if decoder == "integer":
+            decoded: Any = int(value)
+        elif decoder == "float":
+            decoded = float(value)
+        elif decoder == "decimal":
+            decoded = Decimal(value)
+        elif decoder == "boolean":
+            if value not in {"true", "false"}:
+                raise ValueError("expected true or false")
+            decoded = value == "true"
+        elif decoder == "date":
+            decoded = date.fromisoformat(value)
+        elif decoder == "timestamp":
+            encoded_micros = int(value)
+            seconds, micros = divmod(encoded_micros, 1_000_000)
+            decoded = datetime.fromtimestamp(seconds).replace(microsecond=micros)
+        elif decoder == "timestamp_ntz":
+            decoded = datetime.fromisoformat(value)
+        elif decoder == "string":
+            decoded = value
+        else:
+            raise ValueError("unknown display decoder")
+    except (InvalidOperation, OverflowError, OSError, TypeError, ValueError) as error:
+        raise EngineError(f"PySpark summary batching returned a malformed {decoder} display value.") from error
+    return str(normalize_cell(decoded)["display"])
+
+
+def _summary_terminal_batch_ranges(batchable: Iterable[bool]) -> list[tuple[int, int]]:
+    """Batch fixed-size terminal branches without crossing an unsafe value type."""
+
+    ranges: list[tuple[int, int]] = []
+    batch_start: int | None = None
+    item_count = 0
+    for item_count, can_batch in enumerate(batchable, start=1):
+        item_index = item_count - 1
+        if not can_batch:
+            if batch_start is not None:
+                ranges.append((batch_start, item_index))
+                batch_start = None
+            ranges.append((item_index, item_count))
+            continue
+        if batch_start is None:
+            batch_start = item_index
+        if item_count - batch_start == PYSPARK_SUMMARY_TERMINAL_BRANCH_LIMIT:
+            ranges.append((batch_start, item_count))
+            batch_start = None
+    if batch_start is not None:
+        ranges.append((batch_start, item_count))
+    return ranges
 
 
 def _summary_metric_batch_ranges(metric_shapes: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -1532,9 +1827,8 @@ def _spark_python_value(value: Any) -> Any:
     return value
 
 
-def _numeric_visualization(
+def _numeric_histogram_plan(
     functions: Any,
-    frame: Any,
     column: Any,
     finite: Any,
     minimum: Any,
@@ -1547,16 +1841,18 @@ def _numeric_visualization(
     maximum_float = _finite_float(maximum)
     edges = numeric_histogram_edges(minimum_float, maximum_float, bin_count)
     if not edges:
-        return {"kind": "numeric", "bins": []}
+        return {"visualization": {"kind": "numeric", "bins": []}}
     if minimum_float == maximum_float:
-        return numeric_visualization_from_bin_counts(
-            minimum_float,
-            maximum_float,
-            [finite_count],
-        )
+        return {
+            "visualization": numeric_visualization_from_bin_counts(
+                minimum_float,
+                maximum_float,
+                [finite_count],
+            )
+        }
 
     numeric_value = column.cast("double")
-    count_expressions = []
+    count_expressions: list[Any] = []
     for bin_index in range(bin_count):
         if bin_index == 0:
             interval = numeric_value < functions.lit(edges[1])
@@ -1566,15 +1862,12 @@ def _numeric_visualization(
             interval = (numeric_value >= functions.lit(edges[bin_index])) & (
                 numeric_value < functions.lit(edges[bin_index + 1])
             )
-        count_expressions.append(
-            functions.sum(functions.when(finite & interval, 1).otherwise(0)).alias(f"__ow_hist_{bin_index}")
-        )
-    counts = frame.agg(*count_expressions).collect()[0]
-    return numeric_visualization_from_bin_counts(
-        minimum_float,
-        maximum_float,
-        (counts[f"__ow_hist_{index}"] for index in range(bin_count)),
-    )
+        count_expressions.append(functions.sum(functions.when(finite & interval, 1).otherwise(0)))
+    return {
+        "minimum": minimum_float,
+        "maximum": maximum_float,
+        "countExpressions": count_expressions,
+    }
 
 
 def _finite_float(value: Any) -> float | None:
