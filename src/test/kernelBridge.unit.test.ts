@@ -697,7 +697,7 @@ describe("kernel retry classification", () => {
       kernelA.setStatus("restarting");
 
       await expect(
-        bridge.reconfigureNotebookSessionForEditing?.(opened.metadata.sessionId, opened.metadata.revision, {
+        bridge.reconfigureLiveSessionMode?.(opened.metadata.sessionId, opened.metadata.revision, "editing", {
           columnWidths: {},
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         })

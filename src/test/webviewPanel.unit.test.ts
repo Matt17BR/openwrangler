@@ -4991,13 +4991,20 @@ describe("OpenWranglerPanel retained view state", () => {
         capabilities: { ...viewing.metadata.capabilities, exportCsv: true }
       }
     };
+    const viewingAgain: SessionOpenedResponse = {
+      ...viewing,
+      metadata: { ...viewing.metadata, revision: 2 }
+    };
     const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (candidate.kind === "openSession") return viewing;
       throw new Error(`Unexpected request ${candidate.kind}`);
     });
-    const reconfigureNotebookSessionForEditing = vi.fn(async (): Promise<OpenWranglerResponse> => editing);
+    const reconfigureLiveSessionMode = vi.fn(
+      async (_sessionId: string, _revision: number, mode: SessionMetadata["mode"]): Promise<OpenWranglerResponse> =>
+        mode === "editing" ? editing : viewingAgain
+    );
     const harness = createPanelHarness(
-      { request, reconfigureNotebookSessionForEditing },
+      { request, reconfigureLiveSessionMode },
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
@@ -5009,21 +5016,90 @@ describe("OpenWranglerPanel retained view state", () => {
       columnWidths: { "c:0": 240 },
       viewport: { firstVisibleRow: 1, scrollLeft: 73 }
     };
-    await harness.receive({ kind: "switchSessionToEditing", state: currentViewState });
+    await harness.receive({ kind: "switchSessionMode", mode: "editing", state: currentViewState });
 
-    expect(reconfigureNotebookSessionForEditing).toHaveBeenCalledWith("session", 0, currentViewState, {
+    expect(reconfigureLiveSessionMode).toHaveBeenCalledWith("session", 0, "editing", currentViewState, {
       priority: "interactive",
       backendPreference: "r"
     });
     expect(harness.posted).toEqual([
-      { kind: "sessionModeChangeState", busy: true },
+      { kind: "sessionModeChangeState", busy: true, mode: "editing" },
       editing,
-      { kind: "sessionModeChangeState", busy: false }
+      { kind: "sessionModeChangeState", busy: false, mode: "editing" }
     ]);
 
-    await harness.receive({ kind: "switchSessionToEditing" });
-    await harness.receive({ kind: "switchSessionToEditing", state: currentViewState, mode: "editing" });
-    expect(reconfigureNotebookSessionForEditing).toHaveBeenCalledOnce();
+    await harness.receive({ kind: "switchSessionMode", state: currentViewState });
+    await harness.receive({ kind: "switchSessionMode", mode: "unsupported", state: currentViewState });
+    await harness.receive({ kind: "switchSessionMode", mode: "editing", state: currentViewState, extra: true });
+    expect(reconfigureLiveSessionMode).toHaveBeenCalledOnce();
+
+    harness.posted.length = 0;
+    await harness.receive({ kind: "switchSessionMode", mode: "viewing", state: currentViewState });
+    expect(reconfigureLiveSessionMode).toHaveBeenLastCalledWith("session", 1, "viewing", currentViewState, {
+      priority: "interactive",
+      backendPreference: "r"
+    });
+    expect(harness.posted).toEqual([
+      { kind: "sessionModeChangeState", busy: true, mode: "viewing" },
+      viewingAgain,
+      { kind: "sessionModeChangeState", busy: false, mode: "viewing" }
+    ]);
+  });
+
+  it("rejects a forged switch to Viewing while the confirmed cleaning plan is non-empty", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const editing: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...metadata,
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        mode: "editing",
+        source,
+        capabilities: {
+          ...metadata.capabilities,
+          notebookInsert: true,
+          supportedOperations: ["lowerText"]
+        },
+        steps: [
+          {
+            id: "lower-city",
+            kind: "lowerText",
+            params: { column: { id: "c:0", name: "city" } }
+          }
+        ],
+        latestStepInputSchema: metadata.schema
+      }
+    };
+    const reconfigureLiveSessionMode = vi.fn();
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => editing), reconfigureLiveSessionMode },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(editing));
+    harness.posted.length = 0;
+
+    await harness.receive({
+      kind: "switchSessionMode",
+      mode: "viewing",
+      state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+    });
+
+    expect(reconfigureLiveSessionMode).not.toHaveBeenCalled();
+    expect(harness.posted).toEqual([
+      expect.objectContaining({
+        kind: "error",
+        code: "viewing_mode_unavailable",
+        message: "Undo the applied step before switching to Viewing.",
+        recoverable: true,
+        sessionId: "session"
+      })
+    ]);
   });
 
   it("offers the same Editing transition for an active R-session dataframe", async () => {
@@ -5065,24 +5141,25 @@ describe("OpenWranglerPanel retained view state", () => {
       if (candidate.kind === "openSession") return viewing;
       throw new Error(`Unexpected request ${candidate.kind}`);
     });
-    const reconfigureNotebookSessionForEditing = vi.fn(async (): Promise<OpenWranglerResponse> => editing);
+    const reconfigureLiveSessionMode = vi.fn(async (): Promise<OpenWranglerResponse> => editing);
     const harness = createPanelHarness(
-      { request, reconfigureNotebookSessionForEditing },
+      { request, reconfigureLiveSessionMode },
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
     await vi.waitFor(() => expect(harness.posted).toContainEqual(viewing));
     harness.posted.length = 0;
 
     await harness.receive({
-      kind: "switchSessionToEditing",
+      kind: "switchSessionMode",
+      mode: "editing",
       state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
     });
 
-    expect(reconfigureNotebookSessionForEditing).toHaveBeenCalledOnce();
+    expect(reconfigureLiveSessionMode).toHaveBeenCalledOnce();
     expect(harness.posted).toEqual([
-      { kind: "sessionModeChangeState", busy: true },
+      { kind: "sessionModeChangeState", busy: true, mode: "editing" },
       editing,
-      { kind: "sessionModeChangeState", busy: false }
+      { kind: "sessionModeChangeState", busy: false, mode: "editing" }
     ]);
   });
 

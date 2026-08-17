@@ -3005,6 +3005,10 @@ describe("App file import options", () => {
     expect(screen.getByText("Viewing only")).toBeVisible();
     expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Switch to Editing" })).not.toBeInTheDocument();
+    const modeBadge = screen.getByText("Viewing only").closest("summary");
+    fireEvent.click(modeBadge!);
+    expect(screen.getByText(/read-only exploration of live PySpark dataframes/u)).toBeVisible();
+    expect(screen.getByText(/Cleaning steps, generated code, and data export are not available/u)).toBeVisible();
   });
 
   it("carries the latest grid state into Editing mode and restores keyboard focus", async () => {
@@ -3047,10 +3051,11 @@ describe("App file import options", () => {
       fireEvent.click(action);
       const stateMessages = webviewPostMessage.mock.calls
         .map(([message]) => message)
-        .filter((message) => message?.kind === "updateViewState" || message?.kind === "switchSessionToEditing");
+        .filter((message) => message?.kind === "updateViewState" || message?.kind === "switchSessionMode");
       expect(stateMessages).toEqual([
         {
-          kind: "switchSessionToEditing",
+          kind: "switchSessionMode",
+          mode: "editing",
           state: {
             columnWidths: { "c:0": 200 },
             viewport: { firstVisibleRow: 0, scrollLeft: 0 }
@@ -3058,7 +3063,7 @@ describe("App file import options", () => {
         }
       ]);
 
-      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "editing" });
       expect(action).toBeDisabled();
       expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
       expect(screen.getByText("Opening Editing mode…")).toHaveAttribute("role", "status");
@@ -3070,24 +3075,69 @@ describe("App file import options", () => {
         recoverable: true,
         sessionId: viewingMetadata.sessionId
       });
-      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
       expect(frames).toHaveLength(1);
       act(() => frames.shift()!(performance.now()));
       expect(action).toHaveFocus();
 
       fireEvent.click(action);
-      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "editing" });
       dispatchAppMessage({
         kind: "sessionOpened",
         metadata: { ...viewingMetadata, revision: 1, mode: "editing" },
         page,
         summaries: []
       });
-      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false });
+      dispatchAppMessage({
+        kind: "viewState",
+        state: { columnWidths: { "c:0": 200 }, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
       expect(frames).toHaveLength(1);
       act(() => frames.shift()!(performance.now()));
       expect(screen.queryByRole("button", { name: "Switch to Editing" })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus();
+
+      const switchToViewing = screen.getByRole("button", { name: "Switch to Viewing" });
+      expect(switchToViewing).toBeEnabled();
+      webviewPostMessage.mockClear();
+      switchToViewing.focus();
+      fireEvent.click(switchToViewing);
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "switchSessionMode",
+        mode: "viewing",
+        state: { columnWidths: { "c:0": 200 }, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "viewing" });
+      expect(screen.getByText("Opening Viewing mode…")).toHaveAttribute("role", "status");
+      dispatchAppMessage({
+        kind: "error",
+        code: "viewing_mode_open_failed",
+        message: "The selected kernel changed.",
+        recoverable: true,
+        sessionId: viewingMetadata.sessionId
+      });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "viewing" });
+      expect(frames).toHaveLength(1);
+      act(() => frames.shift()!(performance.now()));
+      expect(switchToViewing).toHaveFocus();
+
+      fireEvent.click(switchToViewing);
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "viewing" });
+      dispatchAppMessage({
+        kind: "sessionOpened",
+        metadata: { ...viewingMetadata, revision: 2, mode: "viewing" },
+        page,
+        summaries: []
+      });
+      dispatchAppMessage({
+        kind: "viewState",
+        state: { columnWidths: { "c:0": 200 }, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "viewing" });
+      expect(frames).toHaveLength(1);
+      act(() => frames.shift()!(performance.now()));
+      expect(screen.getByRole("button", { name: "Switch to Editing" })).toHaveFocus();
     } finally {
       hasFocus.mockRestore();
       requestFrame.mockRestore();
@@ -3120,7 +3170,8 @@ describe("App file import options", () => {
     webviewPostMessage.mockClear();
     fireEvent.click(action);
     expect(webviewPostMessage).toHaveBeenCalledWith({
-      kind: "switchSessionToEditing",
+      kind: "switchSessionMode",
+      mode: "editing",
       state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
     });
 

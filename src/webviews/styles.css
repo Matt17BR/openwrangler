@@ -207,11 +207,18 @@ textarea {
   white-space: nowrap;
 }
 
-.orderingHelp {
+.orderingHelp,
+.sessionModeHelp {
   position: relative;
 }
 
-.orderingBadge {
+.sessionModeHelp {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.orderingBadge,
+.sessionModeBadge {
   align-items: center;
   border: 0;
   cursor: pointer;
@@ -220,27 +227,30 @@ textarea {
   list-style: none;
 }
 
-.orderingBadge::-webkit-details-marker {
+.orderingBadge::-webkit-details-marker,
+.sessionModeBadge::-webkit-details-marker {
   display: none;
 }
 
-.orderingBadge:focus-visible {
+.orderingBadge:focus-visible,
+.sessionModeBadge:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 2px;
 }
 
-.orderingBadge .codicon {
+.orderingBadge .codicon,
+.sessionModeBadge .codicon {
   font-size: 11px;
 }
 
-.orderingHelpText {
+.orderingHelpText,
+.sessionModeHelpText {
   background: var(--vscode-editorHoverWidget-background);
   border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border));
   box-shadow: 0 2px 8px var(--vscode-widget-shadow);
   color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
   font-size: 12px;
   line-height: 1.4;
-  max-width: min(320px, calc(100vw - 32px));
   padding: 8px 10px;
   position: absolute;
   right: 0;
@@ -249,6 +259,14 @@ textarea {
   white-space: normal;
   width: max-content;
   z-index: 30;
+}
+
+.orderingHelpText {
+  max-width: min(320px, calc(100vw - 32px));
+}
+
+.sessionModeHelpText {
+  max-width: min(360px, calc(100vw - 32px));
 }
 
 .toolbarActions {
@@ -2612,6 +2630,21 @@ dd {
 
   .toolbarWithSessionModeAction .toolbarActions {
     justify-content: flex-start;
+  }
+
+  .sessionModeHelp[open] {
+    align-items: flex-start;
+    flex-basis: 100%;
+    flex-direction: column;
+    gap: 6px;
+    white-space: normal;
+  }
+
+  .sessionModeHelp[open] .sessionModeHelpText {
+    box-sizing: border-box;
+    max-width: none;
+    position: static;
+    width: 100%;
   }
 }
 

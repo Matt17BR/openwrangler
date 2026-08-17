@@ -646,9 +646,11 @@ describe("native state and presentation commands", () => {
 
     const operations = treeChildren("openWrangler.operations");
     expect(operations.every((node) => node.description !== "Apply or discard the current draft")).toBe(true);
-    expect(operations.every((node) => String(node.tooltip).includes("Apply or discard the current draft first"))).toBe(
-      true
-    );
+    expect(
+      operations.every((node) =>
+        String(node.tooltip).includes("Apply or discard the current draft before adding another cleaning step.")
+      )
+    ).toBe(true);
 
     await command("openWrangler.editLatestStep")();
 
@@ -696,7 +698,13 @@ describe("native state and presentation commands", () => {
     const operations = treeChildren("openWrangler.operations");
     expect(operations.length).toBeGreaterThan(0);
     expect(operations.every((node) => node.description !== "Viewing mode" && node.command === undefined)).toBe(true);
-    expect(operations.every((node) => String(node.tooltip).includes("Available in editing mode"))).toBe(true);
+    expect(
+      operations.every((node) =>
+        String(node.tooltip).includes(
+          "Saved notebook snapshots are viewing only. Rerun the cell and open its live variable to add cleaning steps."
+        )
+      )
+    ).toBe(true);
     expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
       ["Saved sales preview", "Polars · viewing"],
       ["Shape", "4 × 3"],

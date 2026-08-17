@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
-import type { OpenSessionRequest, SessionMetadata, SessionSource } from "../shared/protocol";
+import type { OpenSessionRequest, SessionMetadata, SessionMode, SessionSource } from "../shared/protocol";
+import { canRequestLiveSessionMode } from "../shared/sessionMode";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
 
 export interface TextDocumentSessionOrigin {
@@ -38,18 +39,12 @@ export function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined):
   return Object.freeze({ kind: "notebook", document: origin });
 }
 
-export function canReopenLiveSessionForEditing(session: LiveEditingSession): boolean {
-  if (session.metadata.mode !== "viewing" || session.metadata.backend === "pyspark") return false;
+export function canReopenLiveSessionInMode(session: LiveEditingSession, target: SessionMode): boolean {
+  if (!canRequestLiveSessionMode(session.metadata, target)) return false;
   if (session.openRequest.source.kind === "notebookVariable") {
-    return session.origin?.kind === "notebook" && session.metadata.capabilities.notebookInsert;
+    return session.origin?.kind === "notebook";
   }
-  return (
-    session.openRequest.source.kind === "rInteractiveVariable" &&
-    session.metadata.backend === "r" &&
-    session.origin === undefined &&
-    !session.metadata.capabilities.notebookInsert &&
-    session.metadata.capabilities.documentInsert !== true
-  );
+  return session.openRequest.source.kind === "rInteractiveVariable" && session.origin === undefined;
 }
 
 export function sessionOriginMismatch(

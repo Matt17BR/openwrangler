@@ -6,10 +6,12 @@ import type {
   OpenWranglerResponse,
   OperationKind,
   SessionMetadata,
+  SessionMode,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
 import { supportsOperation } from "../shared/operations";
+import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionMode";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
@@ -519,8 +521,8 @@ export class OpenWranglerPanel {
       return;
     }
 
-    if (decoded.kind === "switchSessionToEditing") {
-      await this.switchSessionToEditing(decoded.state);
+    if (decoded.kind === "switchSessionMode") {
+      await this.switchSessionMode(decoded.mode, decoded.state);
       return;
     }
 
@@ -559,27 +561,41 @@ export class OpenWranglerPanel {
     );
   }
 
-  private switchSessionToEditing(viewState: GridViewState): Promise<void> {
+  private switchSessionMode(mode: SessionMode, viewState: GridViewState): Promise<void> {
     if (this.sessionModeChangeTask) return this.sessionModeChangeTask;
     const task = (async () => {
       const sessionId = this.sessionId;
       const revision = this.sessionRevision;
       const metadata = this.snapshot?.metadata;
-      if (!sessionId || !metadata || !canSwitchLiveSessionToEditing(metadata) || this.disposed) return;
-      if (!this.bridge.reconfigureNotebookSessionForEditing) {
+      if (!sessionId || !metadata || this.disposed) return;
+      if (!canRequestLiveSessionMode(metadata, mode)) {
+        const action = sessionModeAction(metadata);
         await this.post({
           kind: "error",
-          code: "editing_mode_unavailable",
-          message: "This Open Wrangler session cannot switch to Editing mode.",
+          code: `${mode}_mode_unavailable`,
+          message:
+            action?.target === mode && action.disabledReason
+              ? action.disabledReason
+              : `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
+          recoverable: true,
+          sessionId
+        });
+        return;
+      }
+      if (!this.bridge.reconfigureLiveSessionMode) {
+        await this.post({
+          kind: "error",
+          code: `${mode}_mode_unavailable`,
+          message: `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
           recoverable: true,
           sessionId
         });
         return;
       }
 
-      await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true });
+      await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true, mode });
       try {
-        const response = await this.bridge.reconfigureNotebookSessionForEditing(sessionId, revision, viewState, {
+        const response = await this.bridge.reconfigureLiveSessionMode(sessionId, revision, mode, viewState, {
           priority: "interactive",
           backendPreference: this.backendPreference
         });
@@ -588,13 +604,13 @@ export class OpenWranglerPanel {
           if (
             response.metadata.sessionId !== sessionId ||
             response.metadata.revision <= revision ||
-            response.metadata.mode !== "editing" ||
+            response.metadata.mode !== mode ||
             response.metadata.source.kind !== metadata.source.kind
           ) {
             await this.post({
               kind: "error",
               code: "invalid_runtime_response",
-              message: "Open Wrangler rejected an invalid Editing-mode response.",
+              message: `Open Wrangler rejected an invalid ${modeName(mode)}-mode response.`,
               recoverable: true,
               sessionId
             });
@@ -619,14 +635,14 @@ export class OpenWranglerPanel {
         if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
         await this.post({
           kind: "error",
-          code: "editing_mode_open_failed",
+          code: `${mode}_mode_open_failed`,
           message: error instanceof Error ? error.message : String(error),
           recoverable: true,
           sessionId
         });
       } finally {
         if (!this.disposed) {
-          await this.postRendererMessage({ kind: "sessionModeChangeState", busy: false });
+          await this.postRendererMessage({ kind: "sessionModeChangeState", busy: false, mode });
         }
       }
     })();
@@ -1606,10 +1622,10 @@ export class OpenWranglerPanel {
     if (message.kind === "exportData") {
       return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
     }
-    if (message.kind === "switchSessionToEditing") {
-      if (!hasExactKeys(message, ["kind", "state"])) return undefined;
+    if (message.kind === "switchSessionMode") {
+      if (!hasExactKeys(message, ["kind", "mode", "state"]) || !isSessionMode(message.mode)) return undefined;
       const state = decodeGridViewState(message.state);
-      return state ? { kind: "switchSessionToEditing", state } : undefined;
+      return state ? { kind: "switchSessionMode", mode: message.mode, state } : undefined;
     }
     if (message.kind === "reconnectLiveSource") {
       return hasExactKeys(message, ["kind"]) ? { kind: "reconnectLiveSource" } : undefined;
@@ -1744,7 +1760,7 @@ type WebviewRequest =
   | { kind: "changeBackend" }
   | { kind: "installRuntimeDependencies" }
   | { kind: "exportData" }
-  | { kind: "switchSessionToEditing"; state: GridViewState }
+  | { kind: "switchSessionMode"; mode: SessionMode; state: GridViewState }
   | { kind: "reconnectLiveSource" }
   | {
       kind: "runtimeRequest";
@@ -1791,15 +1807,12 @@ function backendDisplayName(backend: DataBackend): string {
   return "R";
 }
 
-function canSwitchLiveSessionToEditing(metadata: SessionMetadata): boolean {
-  if (metadata.mode !== "viewing" || metadata.backend === "pyspark") return false;
-  if (metadata.source.kind === "notebookVariable") return metadata.capabilities.notebookInsert;
-  return (
-    metadata.source.kind === "rInteractiveVariable" &&
-    metadata.backend === "r" &&
-    !metadata.capabilities.notebookInsert &&
-    metadata.capabilities.documentInsert !== true
-  );
+function isSessionMode(value: unknown): value is SessionMode {
+  return value === "viewing" || value === "editing";
+}
+
+function modeName(mode: SessionMode): "Editing" | "Viewing" {
+  return mode === "editing" ? "Editing" : "Viewing";
 }
 
 function fileSourceUri(source: SessionSource): vscode.Uri | undefined {

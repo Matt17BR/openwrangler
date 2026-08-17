@@ -5,6 +5,7 @@ import type {
   OpenWranglerResponse,
   PageResponse,
   SessionMetadata,
+  SessionMode,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
@@ -52,16 +53,26 @@ export class SessionRuntimeReconfigurer {
     private readonly responseCommitter: SessionResponseCommitter
   ) {}
 
-  async reopenNotebookForEditing(
+  async reopenLiveSessionInMode(
     session: RuntimeReconfigurationSession,
+    mode: SessionMode,
     options: BridgeRequestOptions | undefined,
     hooks: RuntimeReconfigurationHooks
   ): Promise<OpenWranglerResponse> {
+    const displayMode = modeName(mode);
     if (!hooks.isCurrent()) {
       return protocolError(
         hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        "The live session closed before Editing mode could open.",
+        `The live session closed before ${displayMode} mode could open.`,
         false,
+        session.publicId
+      );
+    }
+    if (mode === "viewing" && (session.metadata.steps.length > 0 || session.metadata.draftStep)) {
+      return protocolError(
+        "viewing_mode_unavailable",
+        "Discard the draft and undo every applied step before switching to Viewing mode.",
+        true,
         session.publicId
       );
     }
@@ -73,7 +84,7 @@ export class SessionRuntimeReconfigurer {
     const candidateRequest: OpenSessionRequest = {
       ...session.openRequest,
       backend: session.metadata.backend,
-      mode: "editing",
+      mode,
       requestedSessionId: candidateSessionId
     };
     let candidate: RuntimeSessionState | undefined;
@@ -83,7 +94,7 @@ export class SessionRuntimeReconfigurer {
       candidateCleanupAttempted = true;
       await this.runtimeCleanup.close(
         candidate ?? candidateShell(session, candidateSessionId),
-        "editing candidate",
+        `${mode} candidate`,
         runtimeCleanupOptions(),
         true
       );
@@ -98,8 +109,8 @@ export class SessionRuntimeReconfigurer {
     } catch (error) {
       await cleanupCandidate();
       return protocolError(
-        "editing_mode_open_failed",
-        `Open Wrangler could not confirm the Editing session: ${error instanceof Error ? error.message : String(error)}`,
+        `${mode}_mode_open_failed`,
+        `Open Wrangler could not confirm the ${displayMode} session: ${error instanceof Error ? error.message : String(error)}`,
         true,
         session.publicId
       );
@@ -109,7 +120,7 @@ export class SessionRuntimeReconfigurer {
       if (response.sessionId && response.sessionId !== candidateSessionId) {
         return protocolError(
           "invalid_runtime_response",
-          `Ignored an Editing-mode error correlated to runtime session ${response.sessionId} instead of ${candidateSessionId}.`,
+          `Ignored an error for ${displayMode} mode correlated to runtime session ${response.sessionId} instead of ${candidateSessionId}.`,
           true,
           session.publicId
         );
@@ -124,7 +135,7 @@ export class SessionRuntimeReconfigurer {
       await cleanupCandidate();
       return protocolError(
         "invalid_runtime_response",
-        `The runtime returned ${response.kind} while opening Editing mode.`,
+        `The runtime returned ${response.kind} while opening ${displayMode} mode.`,
         true,
         session.publicId
       );
@@ -136,7 +147,7 @@ export class SessionRuntimeReconfigurer {
       await cleanupCandidate();
       return protocolError(
         "invalid_runtime_response",
-        `Ignored an invalid Editing openSession response: ${openedMismatch}`,
+        `Ignored an invalid ${displayMode} openSession response: ${openedMismatch}`,
         true,
         session.publicId
       );
@@ -161,10 +172,10 @@ export class SessionRuntimeReconfigurer {
     } catch (error) {
       await cleanupCandidate();
       return protocolError(
-        error instanceof ReconfigurationSupersededError ? "invalid_source_origin" : "editing_mode_view_restore_failed",
+        error instanceof ReconfigurationSupersededError ? "invalid_source_origin" : `${mode}_mode_view_restore_failed`,
         error instanceof ReconfigurationSupersededError
-          ? "The live dataframe source changed while Editing mode was opening."
-          : `Open Wrangler could not restore the current view in Editing mode: ${
+          ? `The live dataframe source changed while ${displayMode} mode was opening.`
+          : `Open Wrangler could not restore the current view in ${displayMode} mode: ${
               error instanceof Error ? error.message : String(error)
             }`,
         true,
@@ -387,6 +398,10 @@ export class SessionRuntimeReconfigurer {
       source
     );
   }
+}
+
+function modeName(mode: SessionMode): "Editing" | "Viewing" {
+  return mode === "editing" ? "Editing" : "Viewing";
 }
 
 function runtimeState(session: RuntimeReconfigurationSession): RuntimeSessionState {

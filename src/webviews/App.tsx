@@ -17,6 +17,7 @@ import type {
   LiveGridPage,
   OperationKind,
   SessionMetadata,
+  SessionMode,
   StepInspectionResponse,
   TransformStep,
   ValuesResponse
@@ -39,6 +40,7 @@ import {
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
+import { sessionModeAction } from "../shared/sessionMode";
 import { ActiveFilterBar, type FilterBarRequestLifecycle } from "./filters/ActiveFilterBar";
 import { FilterPanel } from "./filters/FilterPanel";
 import {
@@ -57,6 +59,7 @@ import { OperationBuilder } from "./operations/OperationBuilder";
 import { ColumnSearch } from "./ColumnSearch";
 import { draftDiffLabels, fillMissingResultLabel } from "./draftResultPresentation";
 import { StepInspectionPanel } from "./StepInspectionPanel";
+import { SessionModeControl } from "./SessionModeControl";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
@@ -107,6 +110,7 @@ export function App() {
   const [queuedOperationIntent, setQueuedOperationIntent] = useState<QueuedOperationIntent | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
   const [sessionModeChangePending, setSessionModeChangePending] = useState(false);
+  const [sessionModeChangeTarget, setSessionModeChangeTarget] = useState<SessionMode | undefined>();
   const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
@@ -382,17 +386,18 @@ export function App() {
     [flushGridViewState, storeGridViewState]
   );
 
-  const requestSessionModeChange = useCallback((trigger: HTMLButtonElement) => {
+  const requestSessionModeChange = useCallback((target: SessionMode, trigger: HTMLButtonElement) => {
     if (gridViewStateTimer.current !== undefined) {
       window.clearTimeout(gridViewStateTimer.current);
       gridViewStateTimer.current = undefined;
     }
     pendingGridViewState.current = undefined;
     sessionModeChangeReturnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
-    vscode.postMessage({ kind: "switchSessionToEditing", state: gridViewStateRef.current });
+    setSessionModeChangeTarget(target);
+    vscode.postMessage({ kind: "switchSessionMode", mode: target, state: gridViewStateRef.current });
   }, []);
 
-  const restoreSessionModeChangeFocus = useCallback(() => {
+  const restoreSessionModeChangeFocus = useCallback((targetMode: SessionMode) => {
     if (sessionModeChangeFocusFrame.current !== undefined) {
       window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
     }
@@ -400,13 +405,14 @@ export function App() {
     sessionModeChangeReturnFocus.current = null;
     sessionModeChangeFocusFrame.current = scheduleWebviewFocusRestoration(() => {
       sessionModeChangeFocusFrame.current = undefined;
+      const changedMode = metadataRef.current?.mode === targetMode;
+      if (!changedMode && canRestoreFocusTo(returnTarget)) {
+        returnTarget.focus();
+        return;
+      }
       if (metadataRef.current?.mode === "editing") {
         const primaryAction = document.querySelector<HTMLElement>("[data-operation-focus-fallback]:not(:disabled)");
         (primaryAction ?? document.querySelector<HTMLElement>("main.app"))?.focus();
-        return;
-      }
-      if (canRestoreFocusTo(returnTarget)) {
-        returnTarget.focus();
         return;
       }
       document.querySelector<HTMLButtonElement>("[data-session-mode-action]:not(:disabled)")?.focus();
@@ -1144,7 +1150,11 @@ export function App() {
       }
       if (response.kind === "sessionModeChangeState") {
         setSessionModeChangePending(response.busy);
-        if (!response.busy) restoreSessionModeChangeFocus();
+        if (response.busy) setSessionModeChangeTarget(response.mode);
+        else {
+          setSessionModeChangeTarget(undefined);
+          restoreSessionModeChangeFocus(response.mode);
+        }
         return;
       }
       if (response.kind === "sessionPresentation") {
@@ -2513,9 +2523,7 @@ export function App() {
         aria-hidden={operationOpen ? true : undefined}
       >
         <header
-          className={
-            metadata && canSwitchLiveSessionToEditing(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"
-          }
+          className={metadata && sessionModeAction(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"}
         >
           <div className="toolbarIdentity">
             <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
@@ -2655,19 +2663,11 @@ export function App() {
                 selectedColumnId={gridViewState.selectedColumnId}
                 onSelect={requestColumnReveal}
               />
-              {canSwitchLiveSessionToEditing(metadata) && (
-                <button
-                  type="button"
-                  className="toolbarButton"
-                  data-session-mode-action
-                  disabled={sessionModeChangePending}
-                  aria-busy={sessionModeChangePending || undefined}
-                  title="Reopen this live dataframe in Editing mode"
-                  onClick={(event) => requestSessionModeChange(event.currentTarget)}
-                >
-                  <span className="codicon codicon-edit" aria-hidden="true" /> Switch to Editing
-                </button>
-              )}
+              <SessionModeControl
+                metadata={metadata}
+                busy={sessionModeChangePending}
+                onSwitch={requestSessionModeChange}
+              />
               {metadata.backend === "pyspark" && (
                 <details className="orderingHelp">
                   <summary
@@ -2685,9 +2685,6 @@ export function App() {
                   </span>
                 </details>
               )}
-              <span className="sessionBadge modeBadge" data-session-badge="mode">
-                {metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}
-              </span>
               {metadata.source.kind === "file" && isSwitchableFileBackend(metadata.backend) ? (
                 <button
                   type="button"
@@ -3031,7 +3028,7 @@ export function App() {
       </div>
       {sessionModeChangePending && (
         <span className="sessionModeChangeStatus" role="status" aria-live="polite" aria-atomic="true">
-          Opening Editing mode…
+          Opening {sessionModeChangeTarget === "viewing" ? "Viewing" : "Editing"} mode…
         </span>
       )}
       {metadata && operationOpen && (
@@ -3129,6 +3126,7 @@ interface RuntimeDependencyInstallStateMessage {
 interface SessionModeChangeStateMessage {
   kind: "sessionModeChangeState";
   busy: boolean;
+  mode: SessionMode;
 }
 
 interface SessionOpenProgressMessage {
@@ -3284,17 +3282,6 @@ function cloneBackgroundDiagnostics(
 function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
   const { stats: _stats, ...rest } = metadata;
   return rest;
-}
-
-function canSwitchLiveSessionToEditing(metadata: SessionMetadata): boolean {
-  if (metadata.mode !== "viewing" || metadata.backend === "pyspark") return false;
-  if (metadata.source.kind === "notebookVariable") return metadata.capabilities.notebookInsert;
-  return (
-    metadata.source.kind === "rInteractiveVariable" &&
-    metadata.backend === "r" &&
-    !metadata.capabilities.notebookInsert &&
-    metadata.capabilities.documentInsert !== true
-  );
 }
 
 function isEditableKeyboardTarget(target: EventTarget): boolean {

@@ -993,6 +993,10 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R` files.
 
+The released IRkernel journey also moves one exact live session from Viewing to Editing, back to Viewing, and into
+Editing again before cleaning. It requires the same public session, source object, notebook origin, compound viewing
+sort, selected column, widths, and viewport through every private-runtime replacement.
+
 The current 1.99-source test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Formula, Text Length, One-hot
 encode, Multi-label binarize, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max

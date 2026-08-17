@@ -56,7 +56,7 @@ describe("SessionCoordinator", () => {
     setOpenNotebookDocuments();
   });
 
-  it("atomically reopens the exact live notebook variable in Editing mode and retains its view", async () => {
+  it("atomically round-trips the exact live notebook variable between Viewing and Editing", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/r-editing.ipynb"),
       isClosed: false
@@ -164,7 +164,7 @@ describe("SessionCoordinator", () => {
         columnWidths: { "c:value": 240 },
         viewport: { firstVisibleRow: 0, scrollLeft: 81 }
       };
-      const editing = await bridge.reconfigureNotebookSessionForEditing?.(publicId, sorted.revision, currentViewState);
+      const editing = await bridge.reconfigureLiveSessionMode?.(publicId, sorted.revision, "editing", currentViewState);
 
       expect(editing).toMatchObject({
         kind: "sessionOpened",
@@ -209,6 +209,52 @@ describe("SessionCoordinator", () => {
       await vi.waitFor(() =>
         expect(runtimeRequests).toContainEqual(
           expect.objectContaining({ kind: "closeSession", sessionId: "r-runtime-1" })
+        )
+      );
+
+      if (!editing || editing.kind !== "sessionOpened") throw new Error("Expected Editing mode to open.");
+      const viewingAgain = await bridge.reconfigureLiveSessionMode?.(
+        publicId,
+        editing.metadata.revision,
+        "viewing",
+        currentViewState
+      );
+      expect(viewingAgain).toMatchObject({
+        kind: "sessionOpened",
+        metadata: {
+          sessionId: publicId,
+          revision: editing.metadata.revision + 1,
+          backend: "r",
+          mode: "viewing",
+          source,
+          steps: []
+        }
+      });
+      expect(coordinator.activeSession()).toMatchObject({
+        sessionId: publicId,
+        metadata: { mode: "viewing", filterModel: sorted.metadata.filterModel, steps: [] },
+        viewState: {
+          selectedColumnId: "c:value",
+          columnWidths: { "c:value": 240 },
+          viewport: { firstVisibleRow: 0, scrollLeft: 81 },
+          filterModel: sorted.metadata.filterModel
+        }
+      });
+      const roundTripOpens = runtimeRequests.filter(
+        (request): request is Extract<OpenWranglerRequest, { kind: "openSession" }> => request.kind === "openSession"
+      );
+      expect(roundTripOpens).toHaveLength(3);
+      expect(roundTripOpens[2]).toMatchObject({ source, backend: "r", mode: "viewing" });
+      expect(runtimeRequests).toContainEqual(
+        expect.objectContaining({
+          kind: "getPage",
+          sessionId: roundTripOpens[2]?.requestedSessionId,
+          filterModel: sorted.metadata.filterModel
+        })
+      );
+      await vi.waitFor(() =>
+        expect(runtimeRequests).toContainEqual(
+          expect.objectContaining({ kind: "closeSession", sessionId: roundTripOpens[1]?.requestedSessionId })
         )
       );
     } finally {
@@ -294,9 +340,10 @@ describe("SessionCoordinator", () => {
       const opened = await bridge.request({ ...openRequest, source, backend: "r", mode: "viewing" });
       if (opened.kind !== "sessionOpened") throw new Error("Expected the active R session to open.");
 
-      const editing = await bridge.reconfigureNotebookSessionForEditing?.(
+      const editing = await bridge.reconfigureLiveSessionMode?.(
         opened.metadata.sessionId,
         opened.metadata.revision,
+        "editing",
         { selectedColumnId: "c:value", columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 42 } }
       );
 
@@ -383,9 +430,10 @@ describe("SessionCoordinator", () => {
       const opened = await bridge.request({ ...openRequest, source, backend: "r", mode: "viewing" });
       if (opened.kind !== "sessionOpened") throw new Error("Expected the R notebook session to open.");
 
-      const switching = bridge.reconfigureNotebookSessionForEditing?.(
+      const switching = bridge.reconfigureLiveSessionMode?.(
         opened.metadata.sessionId,
         opened.metadata.revision,
+        "editing",
         { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 44 } }
       );
       await vi.waitFor(() => expect(candidateSessionId).toBeTruthy());

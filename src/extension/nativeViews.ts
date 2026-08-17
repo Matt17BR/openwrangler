@@ -14,6 +14,7 @@ import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } fr
 import type { FilterModel, OperationKind, RowAxisExportPolicy, SessionMetadata } from "../shared/protocol";
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
 import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../shared/runtimeIdentity";
+import { cleaningUnavailableReason } from "../shared/sessionMode";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
@@ -500,11 +501,7 @@ export function registerNativeViews(
         return;
       }
       if (!canStartOperation(snapshot.metadata, kind)) {
-        void vscode.window.showInformationMessage(
-          snapshot.metadata.draftStep
-            ? "Apply or discard the current draft before adding another cleaning step."
-            : "Open an editable dataframe before adding a cleaning step."
-        );
+        void vscode.window.showInformationMessage(cleaningUnavailableReason(snapshot.metadata));
         return;
       }
       if (
@@ -852,11 +849,7 @@ function operationNodes(
               }
             : undefined,
           undefined,
-          !editable
-            ? "Available in editing mode"
-            : metadata.draftStep
-              ? "Apply or discard the current draft first"
-              : undefined
+          !editable || metadata.draftStep ? cleaningUnavailableReason(metadata) : undefined
         )
     )
   ];
