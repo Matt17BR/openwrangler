@@ -1332,6 +1332,12 @@ class PolarsEngine(DataFrameEngine):
                     "    return total",
                     "",
                     "",
+                    "def _ow_checked_integer_sum_result(parts):",
+                    "    # Older supported Polars infers a small Python result as Int64.",
+                    "    # Return a native Series so the physical callback type remains Int128.",
+                    "    return pl.Series([_ow_checked_integer_sum_parts(parts.item())], dtype=pl.Int128)",
+                    "",
+                    "",
                     "def _ow_checked_integer_sum(expression, dtype):",
                     "    native_type = pl.UInt128 if dtype == pl.UInt128 else pl.Int128",
                     "    remaining = expression if dtype == pl.UInt128 else expression.cast(pl.Int128)",
@@ -1345,8 +1351,8 @@ class PolarsEngine(DataFrameEngine):
                     "    limbs.append(",
                     "        remaining.cast(pl.Int128).sum().alias(f'_ow_limb_{_OW_INTEGER_LIMB_COUNT - 1}')",
                     "    )",
-                    "    return pl.struct(limbs).map_elements(",
-                    "        _ow_checked_integer_sum_parts, return_dtype=pl.Int128, skip_nulls=False",
+                    "    return pl.struct(limbs).map_batches(",
+                    "        _ow_checked_integer_sum_result, return_dtype=pl.Int128, returns_scalar=True",
                     "    )",
                     "",
                     "",
@@ -3365,6 +3371,14 @@ def _polars_checked_integer_sum_parts(parts: Mapping[str, Any]) -> int:
     return total
 
 
+def _polars_checked_integer_sum_result(parts: Any) -> Any:
+    import polars as pl
+
+    # Older supported Polars infers a small Python result as Int64.
+    # Return a native Series so the physical callback type remains Int128.
+    return pl.Series([_polars_checked_integer_sum_parts(parts.item())], dtype=pl.Int128)
+
+
 def _polars_checked_integer_sum(expression: Any, dtype: Any) -> Any:
     """Build an exact, bounded-memory Polars integer sum expression.
 
@@ -3385,10 +3399,10 @@ def _polars_checked_integer_sum(expression: Any, dtype: Any) -> Any:
         limbs.append((remaining % base).cast(pl.Int128).sum().alias(f"_ow_limb_{index}"))
         remaining = remaining // base
     limbs.append(remaining.cast(pl.Int128).sum().alias(f"_ow_limb_{_POLARS_INTEGER_LIMB_COUNT - 1}"))
-    return pl.struct(limbs).map_elements(
-        _polars_checked_integer_sum_parts,
+    return pl.struct(limbs).map_batches(
+        _polars_checked_integer_sum_result,
         return_dtype=pl.Int128,
-        skip_nulls=False,
+        returns_scalar=True,
     )
 
 

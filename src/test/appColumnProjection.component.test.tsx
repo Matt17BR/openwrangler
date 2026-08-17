@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
 
 const postMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -125,6 +125,67 @@ describe("App column projection", () => {
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
     const inspectionRequest = await onlyRuntimeRequest("inspectStep");
     expect(inspectionRequest).toMatchObject({ offset: 0, columnOffset: 16, columnLimit: 16 });
+  });
+
+  it("keeps successful integer profiles across horizontal projections out of warning diagnostics", async () => {
+    const integerMetadata: SessionMetadata = {
+      ...metadata,
+      schema: schema.map((column) => ({ ...column, rawType: "Int64", type: "integer" as const }))
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: integerMetadata, page: integerProjectedPage(0, 0), summaries: [] });
+    await screen.findByRole("cell", { name: "0" });
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 760 });
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => expect(runtimeRequests("getSummary").length).toBeGreaterThan(0));
+    const profiledColumnIds = new Set<string>();
+    for (const request of runtimeRequests("getSummary")) {
+      const columnId = String((request.columnIds as string[])[0]);
+      profiledColumnIds.add(columnId);
+      dispatch({
+        kind: "summary",
+        revision: integerMetadata.revision,
+        viewRequestId: String(request.viewRequestId),
+        summaries: [integerSummary(columnId)]
+      });
+    }
+    expect(screen.queryByRole("status", { name: "Profiling diagnostics" })).not.toBeInTheDocument();
+
+    postMessage.mockClear();
+    scroller.scrollLeft = 20 * 190;
+    fireEvent.scroll(scroller);
+    const projectionRequest = await onlyRuntimeRequest("getPage");
+    dispatch(pageResponse(projectionRequest, integerMetadata, integerProjectedPage(0, 16)));
+
+    await waitFor(() => expect(runtimeRequests("getSummary").length).toBeGreaterThan(0));
+    const projectedRequests = runtimeRequests("getSummary");
+    for (const request of projectedRequests.slice(0, -1)) {
+      const columnId = String((request.columnIds as string[])[0]);
+      profiledColumnIds.add(columnId);
+      dispatch({
+        kind: "summary",
+        revision: integerMetadata.revision,
+        viewRequestId: String(request.viewRequestId),
+        summaries: [integerSummary(columnId)]
+      });
+    }
+    const genuineFailure = projectedRequests.at(-1);
+    if (!genuineFailure) throw new Error("Expected a projected integer summary request.");
+    profiledColumnIds.add(String((genuineFailure.columnIds as string[])[0]));
+    dispatch({
+      kind: "error",
+      code: "engine_error",
+      message: "Genuine projected profile failure",
+      recoverable: true,
+      viewRequestId: String(genuineFailure.viewRequestId)
+    });
+
+    expect(profiledColumnIds.size).toBeGreaterThanOrEqual(8);
+    const diagnostic = await screen.findByRole("status", { name: "Profiling diagnostics" });
+    expect(diagnostic).toHaveTextContent("Profile warning: Genuine projected profile failure");
+    expect(diagnostic.textContent?.match(/Genuine projected profile failure/gu)).toHaveLength(1);
   });
 
   it("reconciles a horizontal scroll that arrives while the next row block is pending", async () => {
@@ -438,6 +499,65 @@ function projectedPage(offset: number, columnOffset: number): GridPage {
         }))
       }
     ]
+  };
+}
+
+function integerProjectedPage(offset: number, columnOffset: number): GridPage {
+  const columns = schema.slice(columnOffset, columnOffset + 16);
+  return {
+    offset,
+    limit: 200,
+    totalRows: 400,
+    columnIds: columns.map((column) => column.id),
+    rows: [
+      {
+        id: `r:${offset}`,
+        rowNumber: offset,
+        values: columns.map((column) => ({
+          kind: "integer" as const,
+          raw: column.position,
+          display: String(column.position),
+          isNull: false,
+          isNaN: false
+        }))
+      }
+    ]
+  };
+}
+
+function integerSummary(columnId: string): ColumnSummary {
+  const column = schema.find((candidate) => candidate.id === columnId);
+  if (!column) throw new Error(`Unknown integer summary column: ${columnId}`);
+  const sum = column.position * 400;
+  return {
+    columnId,
+    column: column.name,
+    type: "integer",
+    rawType: "Int64",
+    totalCount: 400,
+    nullCount: 0,
+    nanCount: 0,
+    distinctCount: 1,
+    topValues: [{ value: String(column.position), count: 400 }],
+    numeric: {
+      min: column.position,
+      max: column.position,
+      mean: column.position,
+      median: column.position,
+      std: 0,
+      sum,
+      exactSum: {
+        kind: "integer",
+        raw: sum,
+        display: String(sum),
+        isNull: false,
+        isNaN: false
+      }
+    },
+    visualization: {
+      kind: "numeric",
+      bins: [{ min: column.position, max: column.position, count: 400 }]
+    }
   };
 }
 

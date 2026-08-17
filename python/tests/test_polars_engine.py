@@ -729,7 +729,152 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
 
 
 @pytest.mark.parametrize("lazy", [False, True])
-def test_polars_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema(
+def test_polars_profiles_a_wide_int64_projection_with_exact_native_sums(
+    lazy: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    column_count = 64
+    row_count = 257
+    frame = pl.DataFrame(
+        {
+            f"value_{column}": pl.Series(
+                [(row % 17) + column for row in range(row_count)],
+                dtype=pl.Int64,
+            )
+            for column in range(column_count)
+        }
+    )
+    source = frame.lazy() if lazy else frame
+    native_collect = pl.LazyFrame.collect
+    native_collect_all = pl.collect_all
+    collected_heights: list[int] = []
+
+    def bounded_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        result = cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+        collected_heights.append(result.height)
+        assert result.height <= 20
+        return result
+
+    def bounded_collect_all(frames: Any, *args: Any, **kwargs: Any) -> list[pl.DataFrame]:
+        results = native_collect_all(frames, *args, **kwargs)
+        collected_heights.extend(result.height for result in results)
+        assert all(result.height <= 20 for result in results)
+        return results
+
+    if lazy:
+        monkeypatch.setattr(pl.LazyFrame, "collect", bounded_collect)
+        monkeypatch.setattr(pl, "collect_all", bounded_collect_all)
+    projection = [(position, f"c:{position}") for position in range(column_count)]
+
+    summaries = PolarsEngine().summaries(source, projection)
+
+    base_sum = sum(row % 17 for row in range(row_count))
+    assert [summary["columnId"] for summary in summaries] == [column_id for _, column_id in projection]
+    assert [summary["numeric"]["exactSum"]["raw"] for summary in summaries] == [
+        base_sum + (position * row_count) for position in range(column_count)
+    ]
+    if lazy:
+        assert collected_heights
+        assert max(collected_heights) <= 20
+
+
+def test_live_lazy_polars_profiles_many_horizontal_column_windows_without_unbounded_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import __main__
+
+    row_count = 10_003
+    column_count = 40
+    window_size = 8
+    source_path = tmp_path / "wide-live-profile.parquet"
+    rows = pl.int_range(0, row_count, eager=True)
+    pl.DataFrame(
+        {f"value_{column}": ((rows % 17) + column).cast(pl.Int64) for column in range(column_count)}
+    ).write_parquet(source_path)
+    live = pl.scan_parquet(source_path)
+    original_schema = live.collect_schema()
+    original_plan = live.explain(optimized=False)
+    monkeypatch.setattr(__main__, "wide_live_profile", live, raising=False)
+
+    native_collect = pl.LazyFrame.collect
+    native_collect_all = pl.collect_all
+    native_to_list = pl.Series.to_list
+    collected_heights: list[int] = []
+    to_list_lengths: list[int] = []
+
+    def bounded_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        result = cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+        collected_heights.append(result.height)
+        assert result.height <= 20, "A horizontal LazyFrame profile collected an unbounded result."
+        return result
+
+    def bounded_collect_all(frames: Any, *args: Any, **kwargs: Any) -> list[pl.DataFrame]:
+        results = native_collect_all(frames, *args, **kwargs)
+        collected_heights.extend(result.height for result in results)
+        assert all(result.height <= 20 for result in results), "A horizontal profile collected unbounded results."
+        return results
+
+    def bounded_to_list(series: pl.Series) -> list[Any]:
+        to_list_lengths.append(len(series))
+        assert len(series) <= 20, "A horizontal profile converted an unbounded Series to a list."
+        return native_to_list(series)
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", bounded_collect)
+    monkeypatch.setattr(pl, "collect_all", bounded_collect_all)
+    monkeypatch.setattr(pl.Series, "to_list", bounded_to_list)
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "label": "wide_live_profile",
+            "variableName": "wide_live_profile",
+        },
+        backend="polars",
+        mode="editing",
+        page_size=2,
+        column_limit=window_size,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    schema = opened["metadata"]["schema"]
+    empty_view = {"filters": [], "sort": []}
+    profiled_ids: list[str] = []
+    pages = [opened]
+    for column_offset in range(window_size, column_count, window_size):
+        pages.append(
+            manager.get_page(
+                session_id,
+                0,
+                0,
+                2,
+                empty_view,
+                column_offset=column_offset,
+                column_limit=window_size,
+            )
+        )
+
+    base_sum = sum(row % 17 for row in range(row_count))
+    for page_response in pages:
+        for column_id in page_response["page"]["columnIds"]:
+            position = next(column["position"] for column in schema if column["id"] == column_id)
+            response = manager.get_summary(session_id, 0, empty_view, [column_id])
+            summary = response["summaries"][0]
+            assert summary["numeric"]["exactSum"]["raw"] == base_sum + (position * row_count)
+            profiled_ids.append(column_id)
+
+    assert opened["metadata"]["capabilities"]["lazy"] is True
+    assert isinstance(manager.sessions[session_id].original, pl.LazyFrame)
+    assert profiled_ids == [column["id"] for column in schema]
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+    assert live.collect_schema() == original_schema
+    assert live.explain(optimized=False) == original_plan
+    assert collected_heights and max(collected_heights) <= 20
+    assert all(length <= 20 for length in to_list_lengths)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_numeric_summaries_publish_lossless_wide_extrema_and_sums(
     lazy: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -738,6 +883,7 @@ def test_polars_numeric_summaries_publish_lossless_wide_integer_and_decimal_extr
 
     monkeypatch.setattr(pl.DataFrame, "to_pandas", reject_conversion, raising=False)
     wide_values = [-(10**30) + 2, 10**30 + 3, 10**30 + 1]
+    unsigned_values = [10**30 + 5, 7, None]
     decimal_values = [
         Decimal("-12345678901234567890.123456789012345678"),
         Decimal("98765432109876543210.987654321098765432"),
@@ -746,6 +892,7 @@ def test_polars_numeric_summaries_publish_lossless_wide_integer_and_decimal_extr
     frame = pl.DataFrame(
         {
             "wide": pl.Series(wide_values, dtype=pl.Int128),
+            "unsigned": pl.Series(unsigned_values, dtype=pl.UInt128),
             "amount": pl.Series(decimal_values, dtype=pl.Decimal(38, 18)),
         }
     )
@@ -766,10 +913,13 @@ def test_polars_numeric_summaries_publish_lossless_wide_integer_and_decimal_extr
         "isNull": False,
         "isNaN": False,
     }
-    assert summaries[1]["numeric"]["exactMin"]["display"] == str(decimal_values[0])
-    assert summaries[1]["numeric"]["exactMax"]["display"] == str(decimal_values[1])
-    assert summaries[1]["numeric"]["exactMin"]["kind"] == "decimal"
-    assert summaries[1]["numeric"]["exactMax"]["kind"] == "decimal"
+    assert summaries[0]["numeric"]["exactSum"]["display"] == str(sum(wide_values))
+    assert summaries[1]["numeric"]["exactSum"]["display"] == str(sum(value or 0 for value in unsigned_values))
+    assert summaries[2]["numeric"]["exactMin"]["display"] == str(decimal_values[0])
+    assert summaries[2]["numeric"]["exactMax"]["display"] == str(decimal_values[1])
+    assert summaries[2]["numeric"]["exactSum"]["display"] == "86419753208641975320.864197532086419754"
+    assert summaries[2]["numeric"]["exactMin"]["kind"] == "decimal"
+    assert summaries[2]["numeric"]["exactMax"]["kind"] == "decimal"
 
 
 @pytest.mark.parametrize("lazy", [False, True])
