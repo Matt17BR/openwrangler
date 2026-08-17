@@ -68,7 +68,8 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 <!-- open-wrangler-release-status:end -->
 
 The unpublished 1.99.7 candidate contains all 28 native-R cleaning operations, adding **Transform by Example** and
-**Custom Code**. A future preview package will use that candidate only after its release gates pass.
+**Custom Code**. Disposable nonpublishing previews may exercise its packaging path; any future release
+candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.
 Dedicated source contracts exercise the exact ordered catalog and executable production-generated R. A separate host
 contract proves byte-exact clipboard and atomic script saves with one distinct executable operation-labelled buffer
 per catalog entry. Candidate acceptance requires all 28 advertised capabilities and exercises Custom Code through

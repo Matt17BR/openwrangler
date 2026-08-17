@@ -267,6 +267,10 @@ function assertCrossScheduledOwners(document) {
   ]);
   const nativeStep = stepRunning(runtime, "npm run test:scripts:native");
   assert.equal(nativeStep.if, "${{ runner.os == 'Windows' }}");
+  assert.ok(stepRunning(runtime, "python -m pytest python/tests -q"));
+  assert.deepEqual(stepRunning(runtime, "npm run test:extension-host").env, {
+    VSCODE_TEST_VERSION: "stable"
+  });
   for (const step of runtime.steps) {
     if (step === nativeStep) continue;
     assert.equal(step.if, undefined);
@@ -277,14 +281,53 @@ function assertCrossScheduledOwners(document) {
   assert.equal(windows.if, undefined);
   assert.deepEqual(windows.strategy.matrix.python, ["3.10", "3.12"]);
   assert.ok(windows.steps.every((step) => step.if === undefined));
+  assert.ok(stepRunning(windows, "python -m pytest python/tests/test_dependency_guard.py -q"));
 
   const scheduled = document.jobs["r-4-4-scheduled-qualification"];
   assert.equal(scheduled.if, "${{ !cancelled() }}");
-  assert.match(JSON.stringify(scheduled), /ubuntu-24\.04-x86_64-r-4\.4\.lock\.json/u);
-  assert.match(JSON.stringify(scheduled), /r-dependency-lock\.mjs install/u);
-  assert.equal(stepsUsing(scheduled, "actions/cache/restore@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
-  assert.equal(stepsUsing(scheduled, "actions/cache/save@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
-  assert.ok(stepRunning(scheduled, "npm run test:r-contract"));
+  assert.deepEqual(stepsUsing(scheduled, "r-lib/actions/setup-r@"), [
+    {
+      uses: SETUP_R,
+      with: { "r-version": "4.4", "use-public-rspm": false }
+    }
+  ]);
+  const prepare = scheduled.steps.find((step) => step.id === "r_prepare");
+  assert.equal(
+    prepare?.run,
+    'node scripts/r-dependency-lock.mjs prepare --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json --rscript "$(command -v Rscript)" --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-library" --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-archives" --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-receipt.json"'
+  );
+  const restore = stepsUsing(scheduled, "actions/cache/restore@");
+  assert.deepEqual(restore, [
+    {
+      id: "r_cache",
+      uses: CACHE_RESTORE,
+      with: {
+        path: "${{ steps.r_prepare.outputs.archives }}",
+        key: "${{ steps.r_prepare.outputs.cache-key }}",
+        "fail-on-cache-miss": false
+      }
+    }
+  ]);
+  assert.equal(Object.hasOwn(restore[0].with, "restore-keys"), false);
+  assert.ok(
+    stepRunning(
+      scheduled,
+      'node scripts/r-dependency-lock.mjs install --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json --rscript "$(command -v Rscript)" --library "${{ steps.r_prepare.outputs.library }}" --archives "${{ steps.r_prepare.outputs.archives }}" --receipt "${{ steps.r_prepare.outputs.receipt }}" --cache-hit "${{ steps.r_cache.outputs.cache-hit == \'true\' }}"'
+    )
+  );
+  assert.deepEqual(stepsUsing(scheduled, "actions/cache/save@"), [
+    {
+      if: "${{ steps.r_cache.outputs.cache-hit != 'true' }}",
+      uses: CACHE_SAVE,
+      with: {
+        path: "${{ steps.r_prepare.outputs.archives }}",
+        key: "${{ steps.r_prepare.outputs.cache-key }}"
+      }
+    }
+  ]);
+  assert.deepEqual(stepRunning(scheduled, "npm run test:r-contract").env, {
+    R_LIBS_USER: "${{ steps.r_prepare.outputs.library }}"
+  });
 
   const source = JSON.stringify(document);
   assert.doesNotMatch(source, /needs\.classify|r_contract_required|canonical_editor_required|windows_unique_required/u);
@@ -632,6 +675,54 @@ test("Cross is manual and scheduled only with exact platform and R 4.4 owners", 
   const nativeConditionDrift = structuredClone(cross);
   delete stepRunning(nativeConditionDrift.jobs.runtime, "npm run test:scripts:native").if;
   assert.throws(() => assertCrossScheduledOwners(nativeConditionDrift));
+
+  const retainedOwnerMutations = [
+    (document) => {
+      document.jobs.runtime.steps = document.jobs.runtime.steps.filter(
+        (step) => step.run !== "python -m pytest python/tests -q"
+      );
+    },
+    (document) => {
+      stepRunning(document.jobs.runtime, "npm run test:extension-host").run = "npm run test:ts";
+    },
+    (document) => {
+      stepRunning(
+        document.jobs["dependency-guard-windows"],
+        "python -m pytest python/tests/test_dependency_guard.py -q"
+      ).run = "python -m pytest -q";
+    },
+    (document) => {
+      stepsUsing(document.jobs["r-4-4-scheduled-qualification"], "r-lib/actions/setup-r@")[0].with["r-version"] = "4.5";
+    },
+    (document) => {
+      stepsUsing(document.jobs["r-4-4-scheduled-qualification"], "r-lib/actions/setup-r@")[0].with["use-public-rspm"] =
+        true;
+    },
+    (document) => {
+      document.jobs["r-4-4-scheduled-qualification"].steps = document.jobs[
+        "r-4-4-scheduled-qualification"
+      ].steps.filter((step) => step.id !== "r_prepare");
+    },
+    (document) => {
+      const install = document.jobs["r-4-4-scheduled-qualification"].steps.find((step) =>
+        String(step.run ?? "").includes("r-dependency-lock.mjs install")
+      );
+      install.run = install.run.replace("steps.r_prepare.outputs.archives", "steps.r_cache.outputs.archives");
+    },
+    (document) => {
+      stepsUsing(document.jobs["r-4-4-scheduled-qualification"], "actions/cache/restore@")[0].with["restore-keys"] =
+        "openwrangler-r-";
+    },
+    (document) => {
+      stepRunning(document.jobs["r-4-4-scheduled-qualification"], "npm run test:r-contract").env.R_LIBS_USER =
+        "$RUNNER_TEMP/unverified-library";
+    }
+  ];
+  for (const mutate of retainedOwnerMutations) {
+    const drift = structuredClone(cross);
+    mutate(drift);
+    assert.throws(() => assertCrossScheduledOwners(drift));
+  }
 });
 
 test("CodeQL has two always-on explicit analyzers, preserves required names, and fails closed through one gate", () => {

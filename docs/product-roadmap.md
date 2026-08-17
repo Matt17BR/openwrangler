@@ -46,7 +46,8 @@ The following gates are binding before stable 2.0 or automatic backend, platform
 1. Contributors have one authoritative `npm run check:pr` local command with recorded cold and warm timings.
 2. Ordinary pull requests have a measured p95 below 10 minutes and use at least 50% fewer job or runner minutes than
    the recorded pre-freeze baseline.
-3. The current seven required contexts are reduced to at most two through mechanical result fan-in.
+3. The active ruleset requires exactly two integration-bound contexts, `validate` and `CodeQL gate`, through
+   mechanical result fan-in.
 4. The trailing 100 qualifying runs contain zero unexplained retries.
 5. No new production file exceeds 1,000 lines, no new test file exceeds 1,500 lines, and existing hotspots show real
    reductions rather than wrapper-only movement.
@@ -67,7 +68,8 @@ Current implementation evidence closes prerequisites, not the complete approacha
 - The fail-complete default PR command and focused Native R selector primitives are landed in
   [the default PR checks checkpoint](https://github.com/Matt17BR/openwrangler/commit/a9824237ee5af8e75254ec417690bc0bd0fc3d13)
   and [the selector checkpoint](https://github.com/Matt17BR/openwrangler/commit/3182911e5109b219aa50696eeef26d9374e5f14d).
-  The path-selected PR checks, required-context reduction, and ruleset outcomes remain open.
+  The path-selected PR checks and two integration-bound ruleset outcomes are landed. Hosted job-count, compute,
+  wall-time, p95, and reliability evidence remain open.
 - The host-owned Atomic Export boundary is landed at
   [f9578df](https://github.com/Matt17BR/openwrangler/commit/f9578dfeded1ae9c72a90a1161ce5ef804e21d4b)
   with tree `32bf650546f7649db807bf4fa7dddf778e031655`. Configurable delimiter, quote, encoding, header,
@@ -146,7 +148,7 @@ by this priority.
 | 7. Ecosystem gaps                       | Debugger variables, browser/code-server hosts, localization, multidimensional or non-dataframe viewing, and deterministic natural-language entry points are absent. The bounded VS Code Remote SSH path is already covered. | Partly confirmed; Remote SSH is already solved for its stated path. Remaining breadth is P5; natural language follows P2/P3. | Per-host source/lifecycle design; no broad expansion before approachability gates.                             | [P5](#p5-entry-points-and-platform-coverage)                                                                                                                    | Separate bounded acceptance and precise support claim for each slice.                                 |
 | 8. Backend claims                       | R is Partial preview, DuckDB is experimental/Partial, and PySpark is local-notebook view-only; flat headline/package wording can obscure those limits.                                                                      | Confirmed positioning debt; correct now. Backend expansion remains P4/P5.                                                    | README, package metadata, feature parity, and [issue #87](https://github.com/Matt17BR/openwrangler/issues/87). | [Current supported scope](#current-supported-scope)                                                                                                             | Documentation/package checks and editorial review against current source and public status.           |
 | 9. Feedback and roadmap discoverability | Issue #87 is current, and structured bug and feature forms are checked in. A product roadmap was missing.                                                                                                                   | Stale issue narrative is superseded; durable roadmap and forms solve discoverability.                                        | Repository docs and GitHub issue forms.                                                                        | This document and [issue #87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                               | Links remain current; roadmap holds priorities and acceptance criteria rather than run histories.     |
-| 10. Product-delivery cost               | Default PR checks and focused selector primitives are landed, but ordinary changes still select broad required contexts and the path-selected PR checks and ruleset outcomes remain open.                                   | Confirmed P0 maintainability/product-delivery risk. Safety boundaries remain binding.                                        | Maintainability owners and CI fan-in work.                                                                     | [Approachability gates](#approachability-gates)                                                                                                                 | All ten gates need measured evidence before stable 2.0 or automatic scope expansion.                  |
+| 10. Product-delivery cost               | Default PR checks, focused selector primitives, path-selected PR checks, and two integration-bound outcomes are landed; hosted job-count, compute, wall-time, p95, and reliability evidence remains open.                   | Confirmed P0 maintainability/product-delivery risk. Safety boundaries remain binding.                                        | Maintainability owners and CI fan-in work.                                                                     | [Approachability gates](#approachability-gates)                                                                                                                 | All ten gates need measured evidence before stable 2.0 or automatic scope expansion.                  |
 
 ## Evidence and feedback policy
 

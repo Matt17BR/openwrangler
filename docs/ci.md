@@ -81,8 +81,9 @@ bytewise UTF-8 order, STORE compression, fixed ZIP timestamps, exact `100644` ZI
 STORE remains compatible with ordinary VSIX readers; the accepted tradeoff is an approximately 5 MB artifact instead
 of the current approximately 1.2 MB compressed package. Complete source and archive receipts plus a portable internal
 manifest are revalidated before and after atomic no-clobber hard-link publication. The manifest is not an artifact or
-provenance field. Preview 1.99.7 is the first planned exercise of the path; no candidate job, readiness rule,
-provenance contract, or publication topology changes with this foundation.
+provenance field. Disposable nonpublishing previews from protected `main` may exercise the path. A future release
+candidate requires explicit review, a soak of those same bytes, and a separate one-shot promotion; no candidate job,
+readiness rule, provenance contract, or publication topology changes with this foundation.
 
 The release tier adds the expensive product checks that no longer run on every pull request:
 

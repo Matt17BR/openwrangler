@@ -89,7 +89,8 @@ name, flushes both directories, and requires the public file to have exactly one
 canonical/source validation. Destination, parent, raw-candidate, source, write, link, retirement, substitution, or
 cleanup uncertainty fails. On failure, the exact produced public inode is removed only while its identity remains
 attributable; a substituted or otherwise unknown path is retained and reported as cleanup uncertainty rather than
-being deleted. The first planned public exercise of this path is preview 1.99.7.
+being deleted. Disposable nonpublishing previews from protected `main` may exercise this path. A future release
+candidate requires explicit review, a soak of those same bytes, and a separate one-shot promotion.
 
 This foundation does not change candidate workflow topology, the checksum/provenance triple, release readiness, or
 publication policy.

@@ -50,8 +50,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   atomic no-clobber hard-link transition from a private sibling (POSIX mode `0700`, with Windows' coarser
   identity-pinned writable host contract), followed by link-count-one canonical, inventory, source, and manifest
   revalidation. Failure removes the exact produced public inode only while it remains attributable; a substituted or
-  unknown path is retained and reported as cleanup uncertainty. Preview 1.99.7 is the first release exercise for this
-  path.
+  unknown path is retained and reported as cleanup uncertainty. Disposable nonpublishing previews may exercise this
+  path; any future release candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.
   Candidate workflow topology, readiness, provenance, and registry publication contracts are unchanged.
 - Native R now exposes all 28 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
   accepts at most 64 KiB of exact UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures before
