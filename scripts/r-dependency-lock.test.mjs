@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,9 +9,11 @@ import {
   LOCK_ROOTS,
   SNAPSHOT_DATE,
   canonicalLockBytes,
+  installFromArchiveCache,
   readLock,
   sha256,
-  validateLock
+  validateLock,
+  verifyArchiveCache
 } from "./r-dependency-lock.mjs";
 
 function packageEntry(name, rMinor = "4.5") {
@@ -61,6 +63,46 @@ function validLock(rMinor = "4.5") {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function cacheLock() {
+  const lock = validLock();
+  for (const entry of lock.packages) {
+    const bytes = Buffer.from(`archive:${entry.name}`, "utf8");
+    entry.source.bytes = bytes.length;
+    entry.source.sha256 = sha256(bytes);
+  }
+  validateLock(lock);
+  return lock;
+}
+
+function writeArchiveCache(directory, lock) {
+  mkdirSync(directory, { mode: 0o700 });
+  for (const entry of lock.packages) {
+    writeFileSync(
+      join(directory, `${entry.name}_${entry.version}.tar.gz`),
+      Buffer.from(`archive:${entry.name}`, "utf8"),
+      {
+        mode: 0o600
+      }
+    );
+  }
+}
+
+function fakeInstalledReceipt(lockRecord) {
+  const receipt = {
+    protocol: "openwrangler-native-r-installed-library-v1",
+    lockSha256: lockRecord.digest,
+    rVersion: lockRecord.lock.qualification.generatedWithRVersion,
+    rPlatform: lockRecord.lock.qualification.rPlatform,
+    packageCount: lockRecord.lock.packages.length,
+    packageSetSha256: sha256("packages"),
+    treeSha256: sha256("tree"),
+    archiveCount: lockRecord.lock.packages.length,
+    archiveBytes: lockRecord.lock.packages.reduce((sum, entry) => sum + entry.source.bytes, 0),
+    archiveSetSha256: sha256("archives")
+  };
+  return { receipt, bytes: canonicalLockBytes(receipt), runtime: { command: "/fake/Rscript" } };
 }
 
 test("strict canonical locks bind the exact qualification, roots, archives, and filename", () => {
@@ -127,4 +169,151 @@ test("lock validation accepts fixed base and recommended R dependencies but no u
   const missing = clone(validLock());
   missing.packages[0].dependencies.imports = ["ambientPackage"];
   assert.throws(() => validateLock(missing), /unlocked hard dependency/u);
+});
+
+test("archive cache authenticates every exact lock-pinned descriptor before installation", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-cache-test-"));
+  try {
+    const lock = cacheLock();
+    const lockRecord = { lock, bytes: Buffer.from(canonicalLockBytes(lock)), digest: sha256(canonicalLockBytes(lock)) };
+    const archives = join(directory, "archives");
+    const library = join(directory, "library");
+    const receipt = join(directory, "receipt.json");
+    writeArchiveCache(archives, lock);
+    assert.equal(verifyArchiveCache({ lockRecord, archives }).paths.size, lock.packages.length);
+
+    const installed = [];
+    const verified = await installFromArchiveCache({
+      lockRecord,
+      rscript: "/fake/Rscript",
+      library,
+      archives,
+      receipt,
+      cacheHit: true,
+      installArchive: ({ entry }) => installed.push(entry.name),
+      verifyLibrary: () => fakeInstalledReceipt(lockRecord)
+    });
+    assert.deepEqual(
+      installed,
+      lock.packages.map((entry) => entry.name)
+    );
+    assert.equal(readFileSync(receipt, "utf8"), verified.bytes);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("tampered archive cache fails before install or namespace verification", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-cache-tamper-"));
+  try {
+    const lock = cacheLock();
+    const lockRecord = { lock, bytes: Buffer.from(canonicalLockBytes(lock)), digest: sha256(canonicalLockBytes(lock)) };
+    const archives = join(directory, "archives");
+    const library = join(directory, "library");
+    const receipt = join(directory, "receipt.json");
+    writeArchiveCache(archives, lock);
+    const first = lock.packages[0];
+    writeFileSync(join(archives, `${first.name}_${first.version}.tar.gz`), "tampered", { mode: 0o600 });
+    let installs = 0;
+    let namespaceVerifications = 0;
+    await assert.rejects(
+      installFromArchiveCache({
+        lockRecord,
+        rscript: "/fake/Rscript",
+        library,
+        archives,
+        receipt,
+        cacheHit: true,
+        installArchive: () => {
+          installs += 1;
+        },
+        verifyLibrary: () => {
+          namespaceVerifications += 1;
+          return fakeInstalledReceipt(lockRecord);
+        }
+      }),
+      /size is invalid|identity or digest is invalid/u
+    );
+    assert.equal(installs, 0);
+    assert.equal(namespaceVerifications, 0);
+    assert.equal(existsSync(library), false);
+    assert.equal(existsSync(receipt), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a colocated forged library and receipt can never act as a cache hit", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-cache-forged-"));
+  try {
+    const lock = cacheLock();
+    const lockRecord = { lock, bytes: Buffer.from(canonicalLockBytes(lock)), digest: sha256(canonicalLockBytes(lock)) };
+    const archives = join(directory, "archives");
+    const library = join(directory, "library");
+    const receipt = join(directory, "receipt.json");
+    writeArchiveCache(archives, lock);
+    mkdirSync(library, { mode: 0o700 });
+    writeFileSync(join(library, "forged-package"), "forged", { mode: 0o600 });
+    writeFileSync(receipt, "forged receipt", { mode: 0o600 });
+    let installs = 0;
+    let namespaceVerifications = 0;
+    await assert.rejects(
+      installFromArchiveCache({
+        lockRecord,
+        rscript: "/fake/Rscript",
+        library,
+        archives,
+        receipt,
+        cacheHit: true,
+        installArchive: () => {
+          installs += 1;
+        },
+        verifyLibrary: () => {
+          namespaceVerifications += 1;
+          return fakeInstalledReceipt(lockRecord);
+        }
+      }),
+      /empty regular directory/u
+    );
+    assert.equal(installs, 0);
+    assert.equal(namespaceVerifications, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("archive installation cannot bypass final fresh-library verification", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-cache-bypass-"));
+  try {
+    const lock = cacheLock();
+    const lockRecord = { lock, bytes: Buffer.from(canonicalLockBytes(lock)), digest: sha256(canonicalLockBytes(lock)) };
+    const archives = join(directory, "archives");
+    const receipt = join(directory, "receipt.json");
+    writeArchiveCache(archives, lock);
+    let installs = 0;
+    let verifications = 0;
+    await assert.rejects(
+      installFromArchiveCache({
+        lockRecord,
+        rscript: "/fake/Rscript",
+        library: join(directory, "library"),
+        archives,
+        receipt,
+        cacheHit: true,
+        installArchive: () => {
+          installs += 1;
+        },
+        verifyLibrary: () => {
+          verifications += 1;
+          throw new Error("fresh installed package set is missing");
+        }
+      }),
+      /fresh installed package set is missing/u
+    );
+    assert.equal(installs, lock.packages.length);
+    assert.equal(verifications, 1);
+    assert.equal(existsSync(receipt), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

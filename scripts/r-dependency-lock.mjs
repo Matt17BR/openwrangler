@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
+  constants,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -575,20 +577,57 @@ function ensureContained(root, path, label) {
 
 function readOwnedRegularFile(path, label, { expectedBytes, expectedSha256, maximumBytes = 64 * 1024 } = {}) {
   const absolute = resolve(path);
-  const stat = lstatSync(absolute);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+  const namedBefore = lstatSync(absolute);
+  if (!namedBefore.isFile() || namedBefore.isSymbolicLink() || namedBefore.nlink !== 1) {
     throw new Error(`${label} must be a singly linked regular file.`);
   }
   if (
-    (expectedBytes !== undefined && stat.size !== expectedBytes) ||
-    !Number.isSafeInteger(stat.size) ||
-    stat.size <= 0 ||
-    stat.size > maximumBytes
+    (expectedBytes !== undefined && namedBefore.size !== expectedBytes) ||
+    !Number.isSafeInteger(namedBefore.size) ||
+    namedBefore.size <= 0 ||
+    namedBefore.size > maximumBytes
   ) {
     throw new Error(`${label} size is invalid.`);
   }
-  const bytes = readFileSync(absolute);
-  if (bytes.length !== stat.size || (expectedSha256 !== undefined && sha256(bytes) !== expectedSha256)) {
+  const descriptor = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let bytes;
+  try {
+    const descriptorBefore = fstatSync(descriptor);
+    if (
+      !descriptorBefore.isFile() ||
+      descriptorBefore.nlink !== 1 ||
+      descriptorBefore.dev !== namedBefore.dev ||
+      descriptorBefore.ino !== namedBefore.ino ||
+      descriptorBefore.mode !== namedBefore.mode ||
+      descriptorBefore.size !== namedBefore.size
+    ) {
+      throw new Error(`${label} descriptor does not match its named path.`);
+    }
+    bytes = readFileSync(descriptor);
+    const descriptorAfter = fstatSync(descriptor);
+    const namedAfter = lstatSync(absolute);
+    if (
+      descriptorAfter.dev !== descriptorBefore.dev ||
+      descriptorAfter.ino !== descriptorBefore.ino ||
+      descriptorAfter.mode !== descriptorBefore.mode ||
+      descriptorAfter.nlink !== descriptorBefore.nlink ||
+      descriptorAfter.size !== descriptorBefore.size ||
+      descriptorAfter.mtimeMs !== descriptorBefore.mtimeMs ||
+      descriptorAfter.ctimeMs !== descriptorBefore.ctimeMs ||
+      namedAfter.dev !== descriptorAfter.dev ||
+      namedAfter.ino !== descriptorAfter.ino ||
+      namedAfter.mode !== descriptorAfter.mode ||
+      namedAfter.nlink !== descriptorAfter.nlink ||
+      namedAfter.size !== descriptorAfter.size ||
+      namedAfter.mtimeMs !== descriptorAfter.mtimeMs ||
+      namedAfter.ctimeMs !== descriptorAfter.ctimeMs
+    ) {
+      throw new Error(`${label} identity changed during its descriptor read.`);
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  if (bytes.length !== namedBefore.size || (expectedSha256 !== undefined && sha256(bytes) !== expectedSha256)) {
     throw new Error(`${label} identity or digest is invalid.`);
   }
   return bytes;
@@ -659,7 +698,83 @@ function archiveSet(lock) {
   });
 }
 
-function verifyInstalled({ lockRecord, rscript, library, receiptPath }) {
+function archiveFilename(entry) {
+  return `${entry.name}_${entry.version}.tar.gz`;
+}
+
+function requireOwnedDirectory(path, label) {
+  const absolute = resolve(path);
+  if (!isAbsolute(absolute) || absolute === resolve(sep) || absolute === resolve(process.cwd())) {
+    throw new Error(`${label} path is unsafe.`);
+  }
+  const stat = lstatSync(absolute);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label} must be a regular directory.`);
+  const canonical = realpathSync(absolute);
+  if (canonical !== absolute) throw new Error(`${label} path contains a symlink.`);
+  return canonical;
+}
+
+export function verifyArchiveCache({ lockRecord, archives }) {
+  const archiveRoot = requireOwnedDirectory(archives, "R archive cache");
+  const expectedNames = lockRecord.lock.packages.map(archiveFilename).sort();
+  const actualNames = readdirSync(archiveRoot).sort();
+  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    throw new Error("R archive cache inventory does not exactly match the canonical lock.");
+  }
+  const paths = new Map();
+  for (const entry of lockRecord.lock.packages) {
+    const path = join(archiveRoot, archiveFilename(entry));
+    readOwnedRegularFile(path, `${entry.name} cached archive`, {
+      expectedBytes: entry.source.bytes,
+      expectedSha256: entry.source.sha256,
+      maximumBytes: LOCK_LIMITS.archiveBytes
+    });
+    paths.set(entry.name, path);
+  }
+  return Object.freeze({ archiveRoot, paths });
+}
+
+async function populateArchiveCache({ lockRecord, archives, fetchArchive }) {
+  const archiveRoot = requireOwnedEmptyPath(archives, "R archive cache");
+  for (const entry of lockRecord.lock.packages) {
+    const response = await fetchArchive(entry.source.url, {
+      maximumBytes: LOCK_LIMITS.archiveBytes,
+      expectedBytes: entry.source.bytes
+    });
+    if (sha256(response.bytes) !== entry.source.sha256) throw new Error(`R archive digest mismatch for ${entry.name}.`);
+    const path = join(archiveRoot, archiveFilename(entry));
+    const descriptor = openSync(path, "wx", 0o600);
+    try {
+      writeFileSync(descriptor, response.bytes);
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  return verifyArchiveCache({ lockRecord, archives: archiveRoot });
+}
+
+function installRArchive({ rscript, library, path, entry }) {
+  readOwnedRegularFile(path, `${entry.name} install archive`, {
+    expectedBytes: entry.source.bytes,
+    expectedSha256: entry.source.sha256,
+    maximumBytes: LOCK_LIMITS.archiveBytes
+  });
+  const rCommand = realpathSync(join(dirname(rscript), process.platform === "win32" ? "R.exe" : "R"));
+  const result = spawnSync(rCommand, ["CMD", "INSTALL", "--library", library, "--no-docs", "--no-help", path], {
+    encoding: "utf8",
+    env: { ...process.env, R_DEFAULT_PACKAGES: "base", R_LIBS: library, R_LIBS_USER: library },
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 180_000
+  });
+  if (result.error || result.status !== 0 || result.signal !== null) {
+    throw new Error(
+      `Local-only R install failed for ${entry.name}: ${`${result.stdout ?? ""}${result.stderr ?? ""}`.slice(0, 4096)}`
+    );
+  }
+}
+
+function verifyInstalled({ lockRecord, rscript, library }) {
   const { lock, digest: lockDigest } = lockRecord;
   const runtime = actualR(rscript);
   validateRuntime(lock, runtime);
@@ -699,49 +814,34 @@ function verifyInstalled({ lockRecord, rscript, library, receiptPath }) {
     archiveSetSha256: archives.digest
   };
   const bytes = canonicalLockBytes(receipt);
-  if (receiptPath !== undefined) {
-    const existing = readOwnedRegularFile(receiptPath, "Cached R library receipt").toString("utf8");
-    if (existing !== bytes) throw new Error("Cached R library receipt does not match the reverified library.");
-  }
   return Object.freeze({ receipt, bytes, runtime });
 }
 
-async function installMiss({ lockRecord, rscript, library, archives, receipt }) {
+export async function installFromArchiveCache({
+  lockRecord,
+  rscript,
+  library,
+  archives,
+  receipt,
+  cacheHit,
+  fetchArchive = fetchBytes,
+  installArchive = installRArchive,
+  verifyLibrary = verifyInstalled
+}) {
+  const verifiedCache = cacheHit
+    ? verifyArchiveCache({ lockRecord, archives })
+    : await populateArchiveCache({ lockRecord, archives, fetchArchive });
   const libraryRoot = requireOwnedEmptyPath(library, "R library");
-  const archiveRoot = requireOwnedEmptyPath(archives, "R archive");
   for (const entry of topologicalPackages(lockRecord.lock.packages)) {
-    const response = await fetchBytes(entry.source.url, {
-      maximumBytes: LOCK_LIMITS.archiveBytes,
-      expectedBytes: entry.source.bytes
-    });
-    if (sha256(response.bytes) !== entry.source.sha256) throw new Error(`R archive digest mismatch for ${entry.name}.`);
-    const path = join(archiveRoot, `${entry.name}_${entry.version}.tar.gz`);
-    const descriptor = openSync(path, "wx", 0o600);
-    try {
-      writeFileSync(descriptor, response.bytes);
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
-    readOwnedRegularFile(path, `${entry.name} archive`, {
+    const path = verifiedCache.paths.get(entry.name);
+    readOwnedRegularFile(path, `${entry.name} pre-install archive`, {
       expectedBytes: entry.source.bytes,
       expectedSha256: entry.source.sha256,
       maximumBytes: LOCK_LIMITS.archiveBytes
     });
-    const rCommand = realpathSync(join(dirname(rscript), process.platform === "win32" ? "R.exe" : "R"));
-    const result = spawnSync(rCommand, ["CMD", "INSTALL", "--library", libraryRoot, "--no-docs", "--no-help", path], {
-      encoding: "utf8",
-      env: { ...process.env, R_DEFAULT_PACKAGES: "base", R_LIBS: libraryRoot, R_LIBS_USER: libraryRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 180_000
-    });
-    if (result.error || result.status !== 0 || result.signal !== null) {
-      throw new Error(
-        `Local-only R install failed for ${entry.name}: ${`${result.stdout ?? ""}${result.stderr ?? ""}`.slice(0, 4096)}`
-      );
-    }
+    installArchive({ rscript, library: libraryRoot, path, entry });
   }
-  const verified = verifyInstalled({ lockRecord, rscript, library: libraryRoot });
+  const verified = verifyLibrary({ lockRecord, rscript, library: libraryRoot });
   const receiptDescriptor = openSync(receipt, "wx", 0o600);
   try {
     writeFileSync(receiptDescriptor, verified.bytes);
@@ -816,6 +916,7 @@ async function main(args) {
   const rscript = option(options, "rscript");
   const library = option(options, "library");
   const receipt = option(options, "receipt");
+  const archives = option(options, "archives");
   const lockRecord = readLock(lockPath);
   if (command === "prepare") {
     const runtime = actualR(rscript);
@@ -828,7 +929,7 @@ async function main(args) {
       ])
     );
     const key = [
-      "openwrangler-r-contract-v1",
+      "openwrangler-r-contract-v2",
       requireText(process.env.ImageOS, "ImageOS"),
       requireText(process.env.ImageVersion, "ImageVersion"),
       requireText(process.env.RUNNER_ARCH, "RUNNER_ARCH"),
@@ -844,6 +945,7 @@ async function main(args) {
       "r-platform": runtime.platform,
       "cache-key": key,
       library: resolve(library),
+      archives: resolve(archives),
       receipt: resolve(receipt)
     });
     process.stdout.write(
@@ -865,16 +967,16 @@ async function main(args) {
     const startedAt = Date.now();
     const cacheHit = option(options, "cache-hit");
     if (cacheHit !== "true" && cacheHit !== "false") throw new Error("--cache-hit must be true or false.");
-    const verified =
-      cacheHit === "true"
-        ? verifyInstalled({ lockRecord, rscript, library, receiptPath: receipt })
-        : await installMiss({
-            lockRecord,
-            rscript: actualR(rscript).command,
-            library,
-            archives: option(options, "archives"),
-            receipt
-          });
+    const runtime = actualR(rscript);
+    validateRuntime(lockRecord.lock, runtime);
+    const verified = await installFromArchiveCache({
+      lockRecord,
+      rscript: runtime.command,
+      library,
+      archives,
+      receipt,
+      cacheHit: cacheHit === "true"
+    });
     appendOutputs({
       "cache-hit": cacheHit,
       "package-count": verified.receipt.packageCount,

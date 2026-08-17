@@ -23,9 +23,19 @@ const SELF_SELECTING_PATHS = new Set([
   "scripts/r-dependency-lock.test.mjs"
 ]);
 const DOCUMENTATION_ROOTS = new Set(["AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]);
+const R_CONTRACT_PATHS = new Set([
+  "protocol/openwrangler.v2.schema.json",
+  "python/openwrangler_runtime/session.py",
+  "schemas/operation-catalog.v1.json",
+  "src/shared/operationCatalog.generated.ts",
+  "python/openwrangler_runtime/operation_catalog_generated.py"
+]);
 const WINDOWS_UNIQUE_PATHS = new Set([
   "python/openwrangler_runtime/dependency_guard.py",
+  "python/openwrangler_runtime/engines/base.py",
+  "python/openwrangler_runtime/engines/duckdb_engine.py",
   "python/openwrangler_runtime/engines/duckdb_export_filesystem.py",
+  "python/openwrangler_runtime/error_causality.py",
   "python/openwrangler_runtime/export_target.py",
   "python/openwrangler_runtime/process_supervision.py",
   "python/openwrangler_runtime/windows_file_handle.py",
@@ -44,6 +54,7 @@ const WINDOWS_UNIQUE_PATHS = new Set([
   "src/extension/pythonEnvironment.ts",
   "src/extension/pythonEnvironmentModel.ts",
   "src/test/dependencyInstaller.unit.test.ts",
+  "src/test/extensionHost/index.ts",
   "src/test/nativeViewExportCommands.unit.test.ts",
   "src/test/processShutdown.unit.test.ts",
   "src/test/pythonBridgeDataExport.unit.test.ts",
@@ -87,9 +98,7 @@ function rContractPath(path) {
     path.startsWith("r/") ||
     path.startsWith("src/extension/r/") ||
     /^src\/test\/.*(?:releasedR|rKernel|rContract|R[A-Z])/u.test(path) ||
-    path === "schemas/operation-catalog.v1.json" ||
-    path === "src/shared/operationCatalog.generated.ts" ||
-    path === "python/openwrangler_runtime/operation_catalog_generated.py" ||
+    R_CONTRACT_PATHS.has(path) ||
     path.startsWith("scripts/run-r-contract-tests.") ||
     path.startsWith("scripts/generate-operation-catalog.")
   );

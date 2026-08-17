@@ -212,13 +212,12 @@ jobs:
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
           --rscript "$(command -v Rscript)"
           --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-library"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-archives"
           --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-receipt.json"
       - id: r_cache
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
           fail-on-cache-miss: false
       - run: >-
@@ -226,15 +225,13 @@ jobs:
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
           --rscript "$(command -v Rscript)"
           --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-archives"
+          --archives "${{ steps.r_prepare.outputs.archives }}"
           --receipt "${{ steps.r_prepare.outputs.receipt }}"
           --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
       - if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
       - run: npm run test:r-contract
         env:
