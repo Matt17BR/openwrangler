@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RKernelBridgeTransport } from "../extension/r/rKernelBridge";
+import type { RKernelBridgeTransport } from "../extension/r/rKernelBridgeTransport";
 import type { ActiveSessionSnapshot, SessionCoordinator } from "../extension/sessionCoordinator";
 import type { OperationKind } from "../shared/protocol";
 import { operationCatalog, operationKinds as EXPECTED_NATIVE_R_OPERATIONS } from "../shared/operationCatalog.generated";

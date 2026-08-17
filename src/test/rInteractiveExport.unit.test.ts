@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenSessionRequest } from "../shared/protocol";
 import type { AtomicFileTransaction } from "../extension/files/safeFileExport";
-import { RKernelBridge, type RKernelBridgeTransport } from "../extension/r/rKernelBridge";
+import { RKernelBridge } from "../extension/r/rKernelBridge";
+import type { RKernelBridgeTransport } from "../extension/r/rKernelBridgeTransport";
 import type { RFramePageContract } from "../extension/r/rFrameContract";
 
 const sessionId = "91919191-9191-4191-8191-919191919191";

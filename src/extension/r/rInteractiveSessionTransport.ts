@@ -9,7 +9,7 @@ import type { ColumnSummary, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
-import type { RKernelBridgeTransport } from "./rKernelBridge";
+import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import {
   decodeRKernelResponseJson,
   encodeRKernelRequest,

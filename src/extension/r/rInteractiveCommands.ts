@@ -13,7 +13,8 @@ import {
   type RVscodeWorkspaceWatcherFactory
 } from "./rVscodeWorkspaceWatcher";
 import { OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND, OPEN_R_DOCUMENT_COMMAND } from "./rDocumentCommands";
-import { RKernelBridge, type RKernelBridgeTransport } from "./rKernelBridge";
+import { RKernelBridge } from "./rKernelBridge";
+import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
 import {
   isCurrentLiterateDocumentOrigin,
