@@ -1436,6 +1436,9 @@ def test_status_and_validation_fail_busy_while_pip_holds_lock(guard_fixture: Gua
     )
     try:
         _write_frame(process, _go_frame(token))
+        assert process.stdin is not None
+        process.stdin.close()
+        process.stdin = None
         deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
         while not guard_fixture.pip_sentinel.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
