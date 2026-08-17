@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdtemp, open } from "node:fs/promises";
 import { join } from "node:path";
@@ -361,6 +362,100 @@ export function createSoakReceipt(value) {
   return Object.freeze({ envelope, json, byteLength });
 }
 
+function metadataSnapshot(metadata) {
+  return Object.freeze({
+    dev: metadata.dev,
+    ino: metadata.ino,
+    mode: metadata.mode,
+    nlink: metadata.nlink,
+    size: metadata.size,
+    mtimeNs: metadata.mtimeNs,
+    ctimeNs: metadata.ctimeNs
+  });
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameSnapshot(left, right) {
+  return (
+    sameIdentity(left, right) &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function isPrivateOwner(metadata) {
+  return process.platform === "win32" || (metadata.uid === BigInt(process.getuid()) && (metadata.mode & 0o077n) === 0n);
+}
+
+async function capturePrivateParent(path) {
+  const metadata = await lstat(path, { bigint: true });
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || !isPrivateOwner(metadata)) {
+    throw new SoakContractError("The failure receipt directory is not privately owned.");
+  }
+  return Object.freeze({ path, snapshot: metadataSnapshot(metadata) });
+}
+
+async function assertParentReceipt(receipt) {
+  const current = await capturePrivateParent(receipt.path);
+  if (!sameSnapshot(receipt.snapshot, current.snapshot)) {
+    throw new SoakContractError("The failure receipt parent changed after it was sealed.");
+  }
+}
+
+function assertPrivateFile(metadata) {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n || !isPrivateOwner(metadata)) {
+    throw new SoakContractError("The failure receipt is not one private regular file.");
+  }
+}
+
+async function captureFailureFileReceipt(path, parent, expectedFile, expectedSize, expectedSha256) {
+  if (path !== join(parent.path, "failure.json")) {
+    throw new SoakContractError("The failure receipt escaped its sealed parent.");
+  }
+  await assertParentReceipt(parent);
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0));
+  try {
+    const opened = await handle.stat({ bigint: true });
+    const openedPath = await lstat(path, { bigint: true });
+    assertPrivateFile(opened);
+    assertPrivateFile(openedPath);
+    if (!sameSnapshot(metadataSnapshot(opened), metadataSnapshot(openedPath)) || !sameIdentity(expectedFile, opened)) {
+      throw new SoakContractError("The failure receipt path changed after its writer closed.");
+    }
+    if (opened.size !== BigInt(expectedSize) || opened.size > BigInt(SOAK_MAX_RECEIPT_BYTES)) {
+      throw new SoakContractError("The sealed failure receipt has an invalid size.");
+    }
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const finalPath = await lstat(path, { bigint: true });
+    const sha256 = sha256Hex(bytes);
+    if (
+      bytes.length !== expectedSize ||
+      sha256 !== expectedSha256 ||
+      !sameSnapshot(metadataSnapshot(opened), metadataSnapshot(after)) ||
+      !sameSnapshot(metadataSnapshot(opened), metadataSnapshot(finalPath))
+    ) {
+      throw new SoakContractError("The failure receipt changed while its seal was captured.");
+    }
+    await assertParentReceipt(parent);
+    return Object.freeze({
+      path,
+      parent,
+      file: metadataSnapshot(after),
+      byteLength: bytes.length,
+      sha256
+    });
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function writeFailureReceipt(receipt, parentDirectory) {
   if (receipt.envelope?.payload?.outcome !== "failure") {
     throw new SoakContractError("Only failure receipts may be retained.");
@@ -375,28 +470,80 @@ export async function writeFailureReceipt(receipt, parentDirectory) {
     throw new SoakContractError("The failure receipt changed during schema revalidation.");
   }
   const root = await mkdtemp(join(parentDirectory, "openwrangler-soak-failure-"));
-  const rootStat = await lstat(root);
-  if (
-    !rootStat.isDirectory() ||
-    rootStat.isSymbolicLink() ||
-    (process.platform !== "win32" && (rootStat.uid !== process.getuid() || (rootStat.mode & 0o077) !== 0))
-  ) {
-    throw new SoakContractError("The failure receipt directory is not privately owned.");
-  }
+  const openedParent = await capturePrivateParent(root);
   const path = join(root, "failure.json");
   const fileText = redacted.endsWith("\n") ? redacted : `${redacted}\n`;
   const byteLength = Buffer.byteLength(fileText, "utf8");
   if (byteLength > SOAK_MAX_RECEIPT_BYTES) {
     throw new SoakContractError("The retained failure receipt exceeds its byte limit.");
   }
-  const handle = await open(path, "wx", 0o600);
+  const handle = await open(
+    path,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      (constants.O_NOFOLLOW ?? 0) |
+      (constants.O_CLOEXEC ?? 0),
+    0o600
+  );
+  let openedFile;
+  let completedFile;
   try {
+    openedFile = await handle.stat({ bigint: true });
+    const openedPath = await lstat(path, { bigint: true });
+    assertPrivateFile(openedFile);
+    assertPrivateFile(openedPath);
+    if (!sameIdentity(openedFile, openedPath)) {
+      throw new SoakContractError("The failure receipt path does not identify its opened file.");
+    }
+    const currentParent = await capturePrivateParent(root);
+    if (!sameIdentity(openedParent.snapshot, currentParent.snapshot)) {
+      throw new SoakContractError("The failure receipt parent changed while its file was opened.");
+    }
     await handle.writeFile(fileText, "utf8");
     await handle.sync();
+    completedFile = await handle.stat({ bigint: true });
+    if (
+      !sameIdentity(openedFile, completedFile) ||
+      completedFile.nlink !== 1n ||
+      completedFile.size !== BigInt(byteLength)
+    ) {
+      throw new SoakContractError("The failure receipt changed while it was written.");
+    }
   } finally {
     await handle.close();
   }
-  return Object.freeze({ path, byteLength });
+  const parent = await capturePrivateParent(root);
+  if (!sameIdentity(openedParent.snapshot, parent.snapshot)) {
+    throw new SoakContractError("The failure receipt parent changed before sealing.");
+  }
+  return captureFailureFileReceipt(path, parent, completedFile, byteLength, sha256Hex(fileText));
+}
+
+export async function assertFailureReceiptForEmission(receipt) {
+  if (
+    typeof receipt !== "object" ||
+    receipt === null ||
+    typeof receipt.path !== "string" ||
+    typeof receipt.byteLength !== "number" ||
+    typeof receipt.sha256 !== "string" ||
+    typeof receipt.parent !== "object" ||
+    receipt.parent === null ||
+    typeof receipt.file !== "object" ||
+    receipt.file === null
+  ) {
+    throw new SoakContractError("The sealed failure receipt is invalid.");
+  }
+  const current = await captureFailureFileReceipt(
+    receipt.path,
+    receipt.parent,
+    receipt.file,
+    receipt.byteLength,
+    receipt.sha256
+  );
+  if (!sameSnapshot(receipt.file, current.file) || !sameSnapshot(receipt.parent.snapshot, current.parent.snapshot)) {
+    throw new SoakContractError("The sealed failure receipt changed before emission.");
+  }
 }
 
 export function maximumCompletedIterations() {
