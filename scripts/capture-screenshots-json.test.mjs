@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
+import { createFilterPanelScreenshotReadiness } from "./capture-screenshots-readiness.mjs";
 import {
   captureWebviewScreenshot,
   createWebviewSelectorReadiness,
@@ -52,6 +53,25 @@ function readinessScope({
     ["th[data-grid-column] .emptyInsight", elements(emptyCount)],
     ["th[data-grid-column] > .columnInsight", elements(texts.length, texts)]
   ]);
+  return {
+    window: {
+      document: {
+        querySelectorAll(selector) {
+          return selectorResults.get(selector) ?? [];
+        }
+      },
+      openWranglerHarnessErrors: errors
+    }
+  };
+}
+
+function filterPanelReadinessScope(readiness, { selectorCountOverrides = {}, errors = [] } = {}) {
+  const selectorResults = new Map(
+    readiness.argument.selectors.map(({ selector, count }) => [
+      selector,
+      Array.from({ length: selectorCountOverrides[selector] ?? count }, () => ({ textContent: "" }))
+    ])
+  );
   return {
     window: {
       document: {
@@ -350,6 +370,115 @@ test("selector readiness requires exact completed profiles without placeholders 
   );
 });
 
+test("filter-panel readiness binds the open drawer, active view, exact fixture rules, and values", () => {
+  const readiness = createFilterPanelScreenshotReadiness();
+  const selectors = readiness.argument.selectors.map(({ selector, count }) => [selector, count]);
+  assert.equal(readiness.description, "the open city filter panel with its exact active filter fixture");
+  assert.deepEqual(selectors, [
+    [
+      'button[aria-label="Column profiles and filters"][aria-expanded="true"][aria-controls="openwrangler-insights-panel"]',
+      1
+    ],
+    ['aside#openwrangler-insights-panel.sidebar[aria-label="Column profiles and filters"]', 1],
+    ['#openwrangler-insights-panel .summaryPanel[data-active-view="filters"]', 1],
+    [
+      '#openwrangler-insights-tab-filters[role="tab"][aria-selected="true"][aria-controls="openwrangler-insights-view-filters"]',
+      1
+    ],
+    [
+      '#openwrangler-insights-view-filters.filtersViewContent[role="tabpanel"][aria-labelledby="openwrangler-insights-tab-filters"]',
+      1
+    ],
+    ["#openwrangler-insights-view-filters .panel.filterSortPanel", 1],
+    ['#openwrangler-insights-view-filters .activeFilterOverview[aria-label="Active filters"]', 1],
+    ['#openwrangler-insights-view-filters .activeFilterGroup[aria-label="city filters"]', 1],
+    ["#openwrangler-insights-view-filters .rulePill.rulePillButton", 3],
+    [`#openwrangler-insights-view-filters button[aria-label='Remove equals "Berlin" filter from city']`, 1],
+    [`#openwrangler-insights-view-filters button[aria-label='Remove equals "Milan" filter from city']`, 1],
+    [`#openwrangler-insights-view-filters button[aria-label='Remove contains "i" filter from city']`, 1],
+    ['#openwrangler-insights-view-filters select[aria-label="Filter column"]', 1],
+    ['#openwrangler-insights-view-filters input[aria-label="Search values for city"]', 1],
+    ['#openwrangler-insights-view-filters button[aria-label="Search values in city"]', 1],
+    ["#openwrangler-insights-view-filters .valueList > label.checkboxRow", 2]
+  ]);
+  assert.deepEqual(readiness.argument.emptyArrayGlobals, ["openWranglerHarnessErrors"]);
+  assert.equal(readiness.predicate(readiness.argument, filterPanelReadinessScope(readiness)), true);
+
+  for (const selector of [selectors[0][0], selectors[2][0], selectors[7][0], selectors[11][0], selectors[15][0]]) {
+    assert.equal(
+      readiness.predicate(
+        readiness.argument,
+        filterPanelReadinessScope(readiness, { selectorCountOverrides: { [selector]: 0 } })
+      ),
+      false,
+      `Readiness must reject missing ${selector}.`
+    );
+  }
+  assert.throws(
+    () =>
+      readiness.predicate(
+        readiness.argument,
+        filterPanelReadinessScope(readiness, { errors: ["synthetic filter harness error"] })
+      ),
+    /openWranglerHarnessErrors reported an error/u
+  );
+});
+
+test("filter-panel capture waits for exact readiness and re-confirms it immediately before writing", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "ow-filter-readiness-test-"));
+  const readiness = createFilterPanelScreenshotReadiness();
+  const openDrawerSelector = readiness.argument.selectors[0].selector;
+  const capture = mockScreenshotCapture({
+    parent,
+    onWaitForFunction(predicate, argument) {
+      assert.equal(predicate, readiness.predicate);
+      assert.equal(
+        predicate(
+          argument,
+          filterPanelReadinessScope(readiness, { selectorCountOverrides: { [openDrawerSelector]: 0 } })
+        ),
+        false
+      );
+      assert.equal(predicate(argument, filterPanelReadinessScope(readiness)), true);
+    },
+    onReadinessConfirmation(predicate, argument) {
+      return predicate(argument, filterPanelReadinessScope(readiness));
+    }
+  });
+  try {
+    await captureWebviewScreenshot({ ...capture.options, readiness });
+    assert.ok(capture.order.indexOf("readiness-wait") < capture.order.indexOf("readiness-confirm"));
+    assert.ok(capture.order.indexOf("readiness-confirm") < capture.order.indexOf("screenshot"));
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("filter-panel capture rejects stale readiness without writing an image", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "ow-filter-readiness-stale-test-"));
+  const readiness = createFilterPanelScreenshotReadiness();
+  const activeFilterSelector = readiness.argument.selectors[7].selector;
+  const capture = mockScreenshotCapture({
+    parent,
+    onWaitForFunction() {},
+    onReadinessConfirmation(predicate, argument) {
+      return predicate(
+        argument,
+        filterPanelReadinessScope(readiness, { selectorCountOverrides: { [activeFilterSelector]: 0 } })
+      );
+    }
+  });
+  try {
+    await assert.rejects(
+      () => captureWebviewScreenshot({ ...capture.options, readiness }),
+      /Webview readiness was lost before capture for the open city filter panel with its exact active filter fixture\./u
+    );
+    assert.equal(capture.order.includes("screenshot"), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("screenshot capture waits for semantic readiness and confirms it before writing", async () => {
   const parent = mkdtempSync(join(tmpdir(), "ow-readiness-wait-test-"));
   const readiness = completedHeaderReadiness();
@@ -525,6 +654,13 @@ test("screenshot and accessibility consumers preserve browser isolation ordering
   );
   assert.match(capture, /await screenshotQueue;/u);
   assert.equal((capture.match(/readiness: byExamplePreviewReadiness/gu) ?? []).length, 3);
+  assert.equal((capture.match(/readiness: filterPanelReadiness/gu) ?? []).length, 1);
+  assert.match(
+    capture,
+    /const observer = new MutationObserver\(commitOpenColumnFilter\);[\s\S]*observer\.observe\(document\.body, \{ childList: true, subtree: true \}\);[\s\S]*commitOpenColumnFilter\(\);/u
+  );
+  assert.match(capture, /observer\.disconnect\(\);/u);
+  assert.doesNotMatch(capture, /filter\?\.click\(\)|openColumnFilter\s*\?\s*`setTimeout/u);
   assert.match(capture, /byExampleHeaderCount !== 2/u);
   assert.doesNotMatch(capture, /process\.env\.(?:HOME|XDG_[A-Z_]+|TMPDIR?)\s*=/u);
 
