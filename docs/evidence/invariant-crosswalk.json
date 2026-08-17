@@ -1,0 +1,785 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/spec-invariants.mjs",
+  "authority": {
+    "path": "AGENTS.md",
+    "section": "Non-negotiable invariants",
+    "sha256": "8312c3032499c693917376ff20517bbb111f2607a72d56d2c9e4342473030cd6"
+  },
+  "archive": {
+    "path": "docs/contracts/invariants-v1.md",
+    "sha256": "8312c3032499c693917376ff20517bbb111f2607a72d56d2c9e4342473030cd6"
+  },
+  "scannedDocuments": ["docs/architecture.md", "docs/feature-parity.md", "docs/releasing.md", "docs/testing.md"],
+  "invariantCount": 58,
+  "invariants": [
+    {
+      "id": 1,
+      "sha256": "930149299499ad08c3b31330a8f0f4c679c400c7442cf89bf8d26ba16cbc0bd3",
+      "sourceLines": {
+        "start": 58,
+        "end": 58
+      },
+      "archiveLines": {
+        "start": 3,
+        "end": 3
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 2,
+      "sha256": "378fcd0de354a6b0fc93f94f1545a1de975124e23641a4dd3b4d77320749c747",
+      "sourceLines": {
+        "start": 59,
+        "end": 59
+      },
+      "archiveLines": {
+        "start": 4,
+        "end": 4
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 3,
+      "sha256": "4c66e2179008bed63bbfe90c8402222714875d4fb8c334254908fc36dc089873",
+      "sourceLines": {
+        "start": 60,
+        "end": 60
+      },
+      "archiveLines": {
+        "start": 5,
+        "end": 5
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 4,
+      "sha256": "1ff3a4b650e32068891489fca8610cd9d83da5556c159be3c70896c39e09a095",
+      "sourceLines": {
+        "start": 61,
+        "end": 61
+      },
+      "archiveLines": {
+        "start": 6,
+        "end": 6
+      },
+      "explicitReferences": [
+        {
+          "path": "docs/architecture.md",
+          "line": 148
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "sha256": "137354fcca76a5105afd97ea71bc9a338413fe51fc737a05e9f7543ca2dd15f8",
+      "sourceLines": {
+        "start": 62,
+        "end": 62
+      },
+      "archiveLines": {
+        "start": 7,
+        "end": 7
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 6,
+      "sha256": "98d8f411b671c37017a9536cd949d05a993b4cf0326b4a5ce55532b692dbc982",
+      "sourceLines": {
+        "start": 63,
+        "end": 63
+      },
+      "archiveLines": {
+        "start": 8,
+        "end": 8
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 7,
+      "sha256": "85cda9f4aafb2df84a0331954f8972dcfa8c2d0bcf60846883a1e11e11d7ce88",
+      "sourceLines": {
+        "start": 64,
+        "end": 64
+      },
+      "archiveLines": {
+        "start": 9,
+        "end": 9
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 8,
+      "sha256": "4e5b036a16d0757c536286a3576081e58b25310ec83fa0c7892e8c21847de74f",
+      "sourceLines": {
+        "start": 65,
+        "end": 65
+      },
+      "archiveLines": {
+        "start": 10,
+        "end": 10
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 9,
+      "sha256": "f7f323bcf1db24cd55b89beb4f60e53d038176f18d090b5029b8c45c3af25cfb",
+      "sourceLines": {
+        "start": 66,
+        "end": 66
+      },
+      "archiveLines": {
+        "start": 11,
+        "end": 11
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 10,
+      "sha256": "e67679570d720e6ad122a61dfe171cfe517fd4cfe2fe6ba81d677f6dc8cb8c82",
+      "sourceLines": {
+        "start": 67,
+        "end": 67
+      },
+      "archiveLines": {
+        "start": 12,
+        "end": 12
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 11,
+      "sha256": "22034abeee6ef75bc12ec820556aec143962ec2ec9ba15abb7064caac70fd4ac",
+      "sourceLines": {
+        "start": 68,
+        "end": 68
+      },
+      "archiveLines": {
+        "start": 13,
+        "end": 13
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 12,
+      "sha256": "8fe15feb538c9ff199359c7fb1ae4e5e87d0eb5ef8bc736c50c77d92d23b5a06",
+      "sourceLines": {
+        "start": 69,
+        "end": 69
+      },
+      "archiveLines": {
+        "start": 14,
+        "end": 14
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 13,
+      "sha256": "94b50e15645ae20411e0499c94cf35c878e184744aa9f954d0ab05a5eca57317",
+      "sourceLines": {
+        "start": 70,
+        "end": 70
+      },
+      "archiveLines": {
+        "start": 15,
+        "end": 15
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 14,
+      "sha256": "58fe8ab93f82024d60b36c36b12b75f327942fb452db637a6080f9dd15eda88e",
+      "sourceLines": {
+        "start": 71,
+        "end": 71
+      },
+      "archiveLines": {
+        "start": 16,
+        "end": 16
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 15,
+      "sha256": "4bf98b72ac041bebf6524d3a7837cdaac7e6ddd998217967ca5800ef5cb799f2",
+      "sourceLines": {
+        "start": 72,
+        "end": 72
+      },
+      "archiveLines": {
+        "start": 17,
+        "end": 17
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 16,
+      "sha256": "937d044f5a9871af9c165a0f88ba758e1288a7fa3d1331b0352797cba33faa89",
+      "sourceLines": {
+        "start": 73,
+        "end": 73
+      },
+      "archiveLines": {
+        "start": 18,
+        "end": 18
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 17,
+      "sha256": "94324c09575520dcb1d9083a970c40bcf64dfa08f9e5687794ac79db8c95d7d2",
+      "sourceLines": {
+        "start": 74,
+        "end": 74
+      },
+      "archiveLines": {
+        "start": 19,
+        "end": 19
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 18,
+      "sha256": "1fa80bc9c27b3741a57e18ba7022d63d7a22ac7f10c5b5e758caa0aaafe6357f",
+      "sourceLines": {
+        "start": 75,
+        "end": 75
+      },
+      "archiveLines": {
+        "start": 20,
+        "end": 20
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 19,
+      "sha256": "d2e376f780666cbfed4788aebfb852f14491445b82731bf85aec834cdbc6616d",
+      "sourceLines": {
+        "start": 76,
+        "end": 76
+      },
+      "archiveLines": {
+        "start": 21,
+        "end": 21
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 20,
+      "sha256": "f394f6cb0cee0e2eec825d8ae95513a194ec62f7b11a23c51cbff1979f139cbf",
+      "sourceLines": {
+        "start": 77,
+        "end": 77
+      },
+      "archiveLines": {
+        "start": 22,
+        "end": 22
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 21,
+      "sha256": "c388861a1d6eb484a1c73921b788b54a9a261f53a77fc1b31fa42d897048c3a5",
+      "sourceLines": {
+        "start": 78,
+        "end": 78
+      },
+      "archiveLines": {
+        "start": 23,
+        "end": 23
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 22,
+      "sha256": "8da4f9f48f36951f9d87e1f69a6df33487e6e9d02f4b2d7877d78eede7e0c9f4",
+      "sourceLines": {
+        "start": 79,
+        "end": 79
+      },
+      "archiveLines": {
+        "start": 24,
+        "end": 24
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 23,
+      "sha256": "f6da08ede8a8c07cb5b1693fc80167491723d7fae11c7725c383efdbef9a3350",
+      "sourceLines": {
+        "start": 80,
+        "end": 80
+      },
+      "archiveLines": {
+        "start": 25,
+        "end": 25
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 24,
+      "sha256": "66f159b64bdfaf667a65596c7208e3bf1f1b9c0d7f7e8b680663e715be73974e",
+      "sourceLines": {
+        "start": 81,
+        "end": 81
+      },
+      "archiveLines": {
+        "start": 26,
+        "end": 26
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 25,
+      "sha256": "8effc40e081eae3ea502e03d554cb878310aefce177341ea31bd6bd8d0d0bd97",
+      "sourceLines": {
+        "start": 82,
+        "end": 82
+      },
+      "archiveLines": {
+        "start": 27,
+        "end": 27
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 26,
+      "sha256": "55cfdd7ff3d6d220dd56e44f06b5a168b716de47ad4f1fa3bd36cdbddfad056e",
+      "sourceLines": {
+        "start": 83,
+        "end": 83
+      },
+      "archiveLines": {
+        "start": 28,
+        "end": 28
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 27,
+      "sha256": "c95a992e73686f0ad1516ab73b3d40fc9f8cf5ddc983b433df81d94bd07afc9b",
+      "sourceLines": {
+        "start": 84,
+        "end": 84
+      },
+      "archiveLines": {
+        "start": 29,
+        "end": 29
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 28,
+      "sha256": "490fdb7c0c37f7e6135d3260d67944e4150efd58eeed04723d8540d56623444c",
+      "sourceLines": {
+        "start": 85,
+        "end": 85
+      },
+      "archiveLines": {
+        "start": 30,
+        "end": 30
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 29,
+      "sha256": "0d0e48174a4ece2abe0bbb9ab76095e63986378d635a49ce1a919eccfa4f64d9",
+      "sourceLines": {
+        "start": 86,
+        "end": 86
+      },
+      "archiveLines": {
+        "start": 31,
+        "end": 31
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 30,
+      "sha256": "e2811d8d9e9fa6aa598d9220bbc721197677436d30a9fe22251cfb9f1f7aa905",
+      "sourceLines": {
+        "start": 87,
+        "end": 87
+      },
+      "archiveLines": {
+        "start": 32,
+        "end": 32
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 31,
+      "sha256": "b4718fd3576f7d573862bf31ed3a051d359c38786dc762afebfc0a3caf30b010",
+      "sourceLines": {
+        "start": 88,
+        "end": 88
+      },
+      "archiveLines": {
+        "start": 33,
+        "end": 33
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 32,
+      "sha256": "3e2116dcac1b6694f12a1399e208c252f34a0fda911dfeb77e2c443270387c5b",
+      "sourceLines": {
+        "start": 89,
+        "end": 89
+      },
+      "archiveLines": {
+        "start": 34,
+        "end": 34
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 33,
+      "sha256": "99817bc691ab587432adb95cd9eada99cfb46f4c1c5c671ade78c084c648b878",
+      "sourceLines": {
+        "start": 90,
+        "end": 90
+      },
+      "archiveLines": {
+        "start": 35,
+        "end": 35
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 34,
+      "sha256": "41b55a649569453f6db6472a8cbfc1ed793be3061d714ed2fa3576767cec210f",
+      "sourceLines": {
+        "start": 91,
+        "end": 91
+      },
+      "archiveLines": {
+        "start": 36,
+        "end": 36
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 35,
+      "sha256": "3d1caabbd311aea212dc7c6720c3d6440f7a22d4eb88b24f6683e8b2c8d09066",
+      "sourceLines": {
+        "start": 92,
+        "end": 92
+      },
+      "archiveLines": {
+        "start": 37,
+        "end": 37
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 36,
+      "sha256": "3e7b81e2fabc0d4b1b8ad1081abcc74a0b8152f2ea7e03ebb2e954d3ae5e2b2f",
+      "sourceLines": {
+        "start": 93,
+        "end": 93
+      },
+      "archiveLines": {
+        "start": 38,
+        "end": 38
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 37,
+      "sha256": "9ba4f23c1fa6d57f7cfcb85f008dfd0ac0e62d2ff188fe096580c212fbc278db",
+      "sourceLines": {
+        "start": 94,
+        "end": 94
+      },
+      "archiveLines": {
+        "start": 39,
+        "end": 39
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 38,
+      "sha256": "4568ea7c66eb5cdb7c7eeab1e44be0ae1ae822686becd52e97e8cff8abb7df80",
+      "sourceLines": {
+        "start": 95,
+        "end": 95
+      },
+      "archiveLines": {
+        "start": 40,
+        "end": 40
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 39,
+      "sha256": "dc738a6f2280e8cdfbf09a9d5a6086ba83e92f0c816af792f3987263d02e440d",
+      "sourceLines": {
+        "start": 96,
+        "end": 96
+      },
+      "archiveLines": {
+        "start": 41,
+        "end": 41
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 40,
+      "sha256": "76b82d05f096960e389b965e915ec993fa51b0c06cc35b73df79e0875858e50d",
+      "sourceLines": {
+        "start": 97,
+        "end": 97
+      },
+      "archiveLines": {
+        "start": 42,
+        "end": 42
+      },
+      "explicitReferences": [
+        {
+          "path": "docs/architecture.md",
+          "line": 148
+        },
+        {
+          "path": "docs/testing.md",
+          "line": 350
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "sha256": "286632bfcb3592bb714ccfba48b95908f38a38b65cc9904b6d353ac5a9b1bd7e",
+      "sourceLines": {
+        "start": 98,
+        "end": 98
+      },
+      "archiveLines": {
+        "start": 43,
+        "end": 43
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 42,
+      "sha256": "1a66ed1fbd2a6b5280341665486e458a0ab7a3f0b20099d36d5de075b38bfc34",
+      "sourceLines": {
+        "start": 99,
+        "end": 99
+      },
+      "archiveLines": {
+        "start": 44,
+        "end": 44
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 43,
+      "sha256": "8404633ca4833ed33f1c3bbd032db1e66633f2b892183b31ad13610ff1edcca8",
+      "sourceLines": {
+        "start": 101,
+        "end": 101
+      },
+      "archiveLines": {
+        "start": 46,
+        "end": 46
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 44,
+      "sha256": "fba5bf99ff7f4236e522a3115744bac88ced5bc03269199b8714932b95c5d2b1",
+      "sourceLines": {
+        "start": 103,
+        "end": 103
+      },
+      "archiveLines": {
+        "start": 48,
+        "end": 48
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 45,
+      "sha256": "3aa3458e39412173ad59abaa208a4002eddef4637538fa479135fdce7efd1743",
+      "sourceLines": {
+        "start": 104,
+        "end": 104
+      },
+      "archiveLines": {
+        "start": 49,
+        "end": 49
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 46,
+      "sha256": "b763ce52d8279997f056b2ab87327235dac0792b745f673b03aa458b622480e4",
+      "sourceLines": {
+        "start": 105,
+        "end": 105
+      },
+      "archiveLines": {
+        "start": 50,
+        "end": 50
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 47,
+      "sha256": "88bf76d4c28b85b08a761282543c6db89bd0eb1e2855a410ef98650296376da9",
+      "sourceLines": {
+        "start": 106,
+        "end": 106
+      },
+      "archiveLines": {
+        "start": 51,
+        "end": 51
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 48,
+      "sha256": "0fd8325b7e2b2bc78b8d87035e1d795be90e28c52234a59ea5da1f978091b927",
+      "sourceLines": {
+        "start": 107,
+        "end": 107
+      },
+      "archiveLines": {
+        "start": 52,
+        "end": 52
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 49,
+      "sha256": "d19c0c9bc7a5311fe6102d21e1411e5aa7114f4a6206f3233a313a2f9814b418",
+      "sourceLines": {
+        "start": 108,
+        "end": 108
+      },
+      "archiveLines": {
+        "start": 53,
+        "end": 53
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 50,
+      "sha256": "bcc20e0a2c3d161b4a1b89bd3972c6e7152d663a8875bea7d63a39d2cb6d7614",
+      "sourceLines": {
+        "start": 109,
+        "end": 109
+      },
+      "archiveLines": {
+        "start": 54,
+        "end": 54
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 51,
+      "sha256": "5228931e2ffd7c0f7dcc1445eb3266e8cefa0728d2f4f0fa4e2b19c6ccb56bd9",
+      "sourceLines": {
+        "start": 111,
+        "end": 111
+      },
+      "archiveLines": {
+        "start": 56,
+        "end": 56
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 52,
+      "sha256": "a443aa7950d252d281c2009bfd82823ceaa8eacec8963f6ea0ef4caf33747e3c",
+      "sourceLines": {
+        "start": 112,
+        "end": 113
+      },
+      "archiveLines": {
+        "start": 57,
+        "end": 58
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 53,
+      "sha256": "acd77a141ff273dd833e38ce4ebdc2ae2ec5ded177318c69172e8983b0a1875e",
+      "sourceLines": {
+        "start": 114,
+        "end": 114
+      },
+      "archiveLines": {
+        "start": 59,
+        "end": 59
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 54,
+      "sha256": "efd107a36b77376471bb50447933a47c83d16912b74459f04d150cec4bd18915",
+      "sourceLines": {
+        "start": 116,
+        "end": 116
+      },
+      "archiveLines": {
+        "start": 61,
+        "end": 61
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 55,
+      "sha256": "67e9c8ea589471eb31afd09a5d0da793c5c20e6d38bb816fcce5741213fd46e7",
+      "sourceLines": {
+        "start": 118,
+        "end": 118
+      },
+      "archiveLines": {
+        "start": 63,
+        "end": 63
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 56,
+      "sha256": "8dc7f18498251243f250e3826bb81d31b812387ed10175e920abeb27145884a5",
+      "sourceLines": {
+        "start": 120,
+        "end": 120
+      },
+      "archiveLines": {
+        "start": 65,
+        "end": 65
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 57,
+      "sha256": "b9235ba1e729a1583ba0a5d81d3d83a06341c973399ac0c3907bdfdbc3fb4bef",
+      "sourceLines": {
+        "start": 122,
+        "end": 129
+      },
+      "archiveLines": {
+        "start": 67,
+        "end": 74
+      },
+      "explicitReferences": []
+    },
+    {
+      "id": 58,
+      "sha256": "f444a9ea515a5cc5c66fbeddd0c66afed67aae1f5cc5b7b24681f4044ca34dbe",
+      "sourceLines": {
+        "start": 131,
+        "end": 142
+      },
+      "archiveLines": {
+        "start": 76,
+        "end": 87
+      },
+      "explicitReferences": []
+    }
+  ]
+}
