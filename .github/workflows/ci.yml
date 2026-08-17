@@ -59,7 +59,7 @@ jobs:
       - name: Install the exact remote-Jupyter lock compiler
         run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
       - name: Portable, TypeScript, Python 3.10, schema, protocol, reference, docs, and license invariants
-        run: npm run check:tier-a
+        run: npm run check:pr
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
       - name: Remote Jupyter lock reproducibility
@@ -197,69 +197,6 @@ jobs:
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
 
-  native-r-contract:
-    name: Native R contract (R 4.4)
-    needs: [classify, invariant-core]
-    if: >-
-      ${{
-        !cancelled() &&
-        github.event_name == 'pull_request' &&
-        needs.invariant-core.result == 'success' &&
-        (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
-      }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          r-version: "4.4"
-          use-public-rspm: false
-      - name: Install the declared system requirement
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libx11-dev
-          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
-      - run: npm ci
-      - id: r_prepare
-        name: Validate the R 4.4 lock before cache or network mutation
-        run: >-
-          node scripts/r-dependency-lock.mjs prepare
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
-          --rscript "$(command -v Rscript)"
-          --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-library"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-archives"
-          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-receipt.json"
-      - id: r_cache
-        name: Restore the untrusted exact R archive cache
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ${{ steps.r_prepare.outputs.archives }}
-          key: ${{ steps.r_prepare.outputs.cache-key }}
-          fail-on-cache-miss: false
-      - name: Verify archives and cold-install the exact R library
-        run: >-
-          node scripts/r-dependency-lock.mjs install
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
-          --rscript "$(command -v Rscript)"
-          --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "${{ steps.r_prepare.outputs.archives }}"
-          --receipt "${{ steps.r_prepare.outputs.receipt }}"
-          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - name: Save only a newly authenticated R archive cache
-        if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ${{ steps.r_prepare.outputs.archives }}
-          key: ${{ steps.r_prepare.outputs.cache-key }}
-      - run: npm run test:r-contract
-        env:
-          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
-
   canonical-editor:
     name: Canonical package and editor
     needs: [classify, invariant-core]
@@ -393,7 +330,6 @@ jobs:
       - invariant-core
       - r-contract-kernel
       - r-contract-protocol
-      - native-r-contract
       - canonical-editor
       - visual-accessibility
       - windows-unique
@@ -416,7 +352,6 @@ jobs:
           INVARIANT_CORE_RESULT: ${{ needs.invariant-core.result }}
           R_CONTRACT_KERNEL_RESULT: ${{ needs.r-contract-kernel.result }}
           R_CONTRACT_PROTOCOL_RESULT: ${{ needs.r-contract-protocol.result }}
-          NATIVE_R_CONTRACT_RESULT: ${{ needs.native-r-contract.result }}
           CANONICAL_EDITOR_RESULT: ${{ needs.canonical-editor.result }}
           VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
           WINDOWS_UNIQUE_RESULT: ${{ needs.windows-unique.result }}

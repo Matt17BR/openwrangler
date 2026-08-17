@@ -2,14 +2,14 @@
 
 ## Automated layers
 
-Use `npm run check:tier-a` as the authoritative local gate for an ordinary change. It runs the complete static
+Use `npm run check:pr` as the authoritative local gate for an ordinary change. It runs the complete static
 `check` branch and ordinary `test` branch concurrently, caps top-level parallelism at two, labels both branches, and
 waits for both to report even when one fails. Do not run another memory-intensive command alongside it. The
 repository cannot coordinate separate clones or worktrees, so cross-worktree resource isolation remains an operator
 responsibility. Use a narrower focused command while iterating, and reserve the complete editor/platform/release
 matrix for release candidates or changes that cross those boundaries.
 
-- `npm run check:tier-a` is the fail-complete Tier A command. It preserves every invariant in `npm run check` and
+- `npm run check:pr` is the fail-complete default PR command. It preserves every invariant in `npm run check` and
   `npm test`; concurrency changes wall time, not the test inventory. The two-branch ceiling is the local resource
   budget, and `--continue-on-error` plus `--print-label` prefixes every interleaved output line so one early failure
   cannot hide or obscure the other result.
@@ -97,10 +97,10 @@ matrix for release candidates or changes that cross those boundaries.
   timeout/failure receipts; there are no retries. The existing frame-contract process also parses the exact tracked
   `scripts/r-performance-harness.R` and requires a nonempty expression on both hosted R versions; this adds no fourth
   direct R subprocess. These runner bounds do not change editor phase, editor inactivity, or runtime-operation
-  deadlines. Stage A runs two selected R 4.5 owners after the invariant core: the kernel-agent shard and a fail-complete
-  parallel pair containing the remaining protocol shards. The temporary `Native R contract (R 4.4)` pull-request
-  carrier remains selected by the same R flag until the ruleset migration is proven; a scheduled R 4.4 owner is
-  additive. Every owner consumes its exact dated lock through the strict private-library path above. The contract also
+  deadlines. The current PR workflow runs two selected R 4.5 owners after the invariant core: the kernel-agent shard and a fail-complete
+  parallel pair containing the remaining protocol shards. The temporary R 4.4 pull-request carrier is retired; the
+  manual and scheduled Cross workflow owns the lock-backed R 4.4 qualification. Every owner consumes its exact dated
+  lock through the strict private-library path above. The contract also
   runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
@@ -172,11 +172,11 @@ matrix for release candidates or changes that cross those boundaries.
   Release-document fixtures also require the preview and stable README sections to retain the same editor-support matrix.
   This local command remains the complete superset of the four disjoint CI groups below.
 - `npm run test:scripts:workflow` runs `scripts/ci-workflow.test.mjs` beside the candidate workflow contract in the
-  unconditional invariant core. It owns the sole four-output classifier, exact result fan-in, compatibility carriers,
+  unconditional invariant core. It owns the sole four-output classifier, exact result fan-in, changed-area owner topology,
   CodeQL gate, immutable recursive action pins, and both R lock consumers.
 - `npm run test:scripts:portable` runs the remaining general or Linux-owned `scripts/*.test.mjs`, including GitHub
   publication and R-lock adversarial contracts, with at most four Node test files active at once, then invokes the
-  isolated media contract below. It is also owned by the invariant core through `npm run check:tier-a`.
+  isolated media contract below. It is also owned by the invariant core through `npm run check:pr`.
   Failure-evidence credential patterns receive at most 8 KiB per logical line. Longer lines containing a quote,
   URI user-info marker, or credential marker are omitted fail-closed; longer marker-free lines bypass the complex
   patterns. The maximum admitted 16 MiB hostile quoted and assignment cases also run in a child process capped to a
@@ -195,7 +195,7 @@ not select a fifth classifier output or launch the benchmark. Actual comparisons
   Sorting interaction coverage requires header actions to close their menu, promote the newest column to priority 1 without losing the remaining tie-breakers, avoid duplicate rules when that column was already sorted, expose `aria-sort` only on priority 1, label every lower-priority key, keep a clear action for every active key, and leave the cleaning plan untouched. Filters / Sorts tests separately require ordered multi-sort drafts, explicit apply/discard, move-up/down priority changes, independent direction and null placement, individual removal, clear-all/clear-column cleanup of uncommitted edits, and preservation of the active filter model. Native Activity Bar tests require literal priority labels, row-click navigation into the Filters drawer, real view transactions for inline reorder/removal, inspection-safe passive controls, structurally cloned standard TreeItem fields in VS Code forks, provider-handle stability across unrelated profile or selection updates, and rejection of stale or malformed tree-node payloads including an A → B → A sort-model transition. The physical editor journey additionally proves that opening the Activity Bar retains the exact hydrated dataframe session; a failed reorder records the host dispatch status, active and retained sort models, plus bounded tree state instead of collapsing into an opaque timeout. Protocol and persistence tests reject repeated viewing-sort columns before they can produce ambiguous priority. Production browser acceptance also measures the complete 140-pixel summary-family headers at normal and 200% zoom: each realistic name must retain at least 72% of the cell width, fit without truncation, and stay above the compact type/action rail.
   Progressive-summary interaction coverage starts with more than six columns, explicitly opens one disclosure, adds a later profile response, and requires that disclosure to remain open. Selecting a numeric grid column must promote and expand its summary with exact min/max/mean/median values and the same exact histogram shown in **Column profiles**. One Counts/% setting controls both compact grid headers and the selected-column panel, can be changed from either surface, and remains available before a profile is opened. Exact count and percentage stay in the tooltip and accessible name in either mode. Truncated categorical and string profiles expose **More values…** and request the existing bounded 100-value browser. The numeric profile's one full-chart pointer and keyboard target reports the active bin's interval, exact row count, and percentage through an immediate theme-aware tooltip and accessible name, even when the proportional visible bar is only two pixels tall. Production-browser interaction enters the transparent lane above a two-pixel bar, requires an immediate visible highlight and tooltip, preserves the focused bin after pointer exit, advances through bins in keyboard order, and maps resting/active bars to `CanvasText`/`Highlight` in forced-color mode without duplicating the accessible name as a description.
   Operation-builder coverage uses the real accessible checkbox lists without keyboard modifiers, preserves explicit selection order, moves and removes individual sort/aggregation rows without losing retained values, and verifies schema-type filtering for text, numeric, datetime, group-key, by-example, and per-calculation aggregation inputs. Fill-missing tests choose the column before the method, offer median only for numeric columns and most common only for text or boolean columns, restrict interpolation to floating-point targets and safe coordinate types, retain stable references while methods change, restore saved steps, keep an empty text value, and normalize `.5`, `1.`, and `+1` before protocol validation.
-- `npm run test:python-environment-smoke` runs real system-interpreter discovery alone, with one worker and no override or Python-extension API. It must return a fully qualified supported `source: system` interpreter inside the 30-second aggregate resolution bound. The invariant core owns the Linux/Python 3.10 smoke; temporary Cross compatibility carriers retain macOS/Python 3.12 and Windows/Python 3.14 evidence until Stage B. Failures retain only stable classification, stage, process-count, and candidate-limit metadata, never interpreter paths, subprocess output, causes, or inherited environment values.
+- `npm run test:python-environment-smoke` runs real system-interpreter discovery alone, with one worker and no override or Python-extension API. It must return a fully qualified supported `source: system` interpreter inside the 30-second aggregate resolution bound. The invariant core owns the Linux/Python 3.10 smoke; scheduled/manual Cross retains macOS/Python 3.12 and Windows/Python 3.14 evidence outside pull requests. Failures retain only stable classification, stage, process-count, and candidate-limit metadata, never interpreter paths, subprocess output, causes, or inherited environment values.
 - `npm run test:python` covers the Pandas/Polars parity engines plus the file-backed DuckDB preview, transformations, code generation, exports, and runtime dispatch. Fill-missing coverage runs the live and generated Pandas, Polars, and DuckDB paths, including null versus float or Decimal NaN, exact wide-integer and 38-digit decimal medians, unique most-common text and boolean values, grouped median/mean/mode with multiple keys and unresolved ties, previous/next fills, linear interpolation by irregular numeric and date-time coordinates, high-offset coordinate distances, typed empty frames, categorical and enum no-ops, high-magnitude finite floats, decimal-scale rejection, matching and mismatched datetime timezones, DuckDB UUID text fills, duplicate or non-string Pandas labels, type binding, and the normal draft/apply/undo lifecycle. Spark-dependent PySpark cases skip only when their optional runtime is absent from an ordinary developer environment. Required CI coverage installs and verifies exact PySpark 4.2 Connect extras, compatible Pandas, and Java 17 before running the complete instrumented Python corpus, so those cases cannot disappear behind that local-only skip.
 - Focused Spark Connect tests use PySpark's structured conditions and gRPC status instead of matching error text. They cover temporary endpoint failure, lost server session or DataFrame state, exact session/view correlation, cache handling, and preservation of the last confirmed host view. Message-only lookalikes and unrelated reattach conditions must remain ordinary engine errors. Request cancellation stays disabled.
 - `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and a copied private workspace, then uses separate zero-window seed/verify editor processes to validate workspace-state replay and injected runtime recovery in the rendered grid. The fresh verify process physically proves the committed output column, two-sort priority, selected column, distinctive width, nonzero row/column viewport, and visible-row status; a renderer-originated **Header profiles** request then restarts the runtime and must preserve that complete state. Actual Explorer-row, editor-title, and editor-tab file-launch clicks run through a private Electron debugging port. Each context action must appear exactly once, open the exact copied source without import prompts, render its grid, and leave its bytes unchanged. Multi-megabyte fixture-preservation checks compare exact bytes with bounded size/first-difference diagnostics; they never pass complete buffers to Node's assertion formatter. Runtime-selection commands may write workspace configuration only inside that per-run copy, so an interrupted editor phase cannot leave a stale disposable interpreter configured in the repository. A same-URI session-to-custom-editor reload waits for the prior public tab model to become empty before dispatch, then requires the exact fresh `TabInputCustom`; runtime cleanup alone is not treated as editor-input disposal. Stable VS Code defaults to native context menus on macOS, which are outside the renderer debugging protocol, so the disposable profile selects VS Code's built-in custom menu style for these physical assertions.
@@ -231,8 +231,9 @@ not select a fifth classifier output or launch the benchmark. Actual comparisons
   shard matrix; mutation tests prove that an unknown shard or sibling cancellation blocks the candidate. The only steps
   allowed to use `continue-on-error` are named diagnostic producers, and each must be followed immediately by its upload
   while the shard's explicit raw-outcome failure is deferred until all assigned phases finish.
-  Protected pull-request CI is the sole direct R-contract owner on R 4.4 and 4.5. Preview and stable candidates instead
-  install the exact candidate VSIX in the requested editors and prove the distinct native-R package/platform seams.
+  Protected pull-request CI owns the direct R 4.5 contracts; scheduled/manual Cross owns the direct R 4.4 contract.
+  Preview and stable candidates instead install the exact candidate VSIX in the requested editors and prove the
+  distinct native-R package/platform seams.
 - Microsoft Marketplace tests parse and pin the complete Azure Pipeline, require its WIF service connection and
   protected environment, and reject PATs, rebuilds, mutable artifact paths, channel omissions, and intervening
   commands. Before AzureCLI, one anonymous single-attempt exact-byte probe either proves the complete existing public
@@ -254,13 +255,14 @@ median calculated separately by market and segment.
 ## CI gate ownership
 
 Every required context has one primary evidence owner. [CI and release checks](ci.md) maps the pull-request, scheduled,
-compatibility, and release tiers. `validate` runs after every Stage-A CI owner and is the sole parser of their exact
-results. Cross retains its required macOS/Windows and dependency-guard names during compatibility proof. CodeQL
-retains both required analyzer names and adds one result gate; neither workflow invents another classifier. Draft and
-ready heads use the same evidence mapping, and superseded PR heads alone are cancelled.
+and release tiers. `validate` runs after every selected PR workflow owner and is the sole parser of their exact
+results. Cross runs only on manual dispatch and schedule, retaining its macOS/Windows runtime, Windows dependency
+guards, and R 4.4 qualification. CodeQL retains both analyzer names and one result gate; neither workflow invents
+another classifier. Draft and ready heads use the same pull-request evidence mapping, and superseded PR heads alone
+are cancelled.
 
 `package.json`, `package-lock.json`, toolchain, workflow, classifier, validation, and lock-owner changes self-select the
-complete four-flag union. There is no narrow dependency-lock or release-infrastructure classifier mode in Stage A.
+complete four-flag union. There is no narrow dependency-lock or release-infrastructure classifier mode in the current PR workflow.
 
 Remote SSH setup never makes a writable dynamic-loader cache available to the editor or candidate: the private Dropbear binary is probed and launched through its pinned loader plus an explicit read-only library path. The immutable Dropbear runtime is mounted under private `/ow/ssh-runtime`, outside every host-backed mutable home, so a same-UID host rename cannot substitute the executable or libraries through a mutable ancestor. Every Dropbear server loader call supplies one fixed `--argv0` path named `dropbear` beneath the namespace's kernel-owned procfs and first proves that path absent with `lstat`; only `ENOENT` is accepted, and the namespace preflight verifies procfs by filesystem magic before any loader call. Dropbear 2025.89 therefore takes its supported plain-fork fallback instead of reopening and re-executing itself without the loader's one-shot private search path. This intentionally gives up per-connection ASLR rerandomization only for the ephemeral, loopback-only, network-isolated acceptance daemon. Exact pinned TomCrypt and TomMath files remain independently leased over their read-only multiarch SONAME paths after the host runtime-directory mount, so default-loader validation never resolves either dependency from host library bytes. Both bootstrap and real phases use the pinned loader's bounded `--list` output to require each SONAME to resolve through only the namespace's fixed `/lib -> /usr/lib` aliases to that independently leased multiarch file, including in the presence of higher-priority glibc hardware-capability directories, and then execute the Dropbear ELF directly before daemon launch. A missing or shadowed default-loader dependency therefore fails before an SSH connection. Bubblewrap support must include descriptor-bound mounts and explicit next-object permissions; the namespace root is created as mode `0700`. A copied virtual environment's conventional Python symlink is resolved once into a new receipt-bound, mode-`0700`, single-link regular launcher, and that launcher must still report the copied environment as `sys.prefix`. Before the launch embargo begins, the exact sealed Bubblewrap argument and descriptor-FD set runs a bounded no-editor bootstrap that loads the controller imports and validates the mounted descriptor leaves, critical executable modes, loopback and both Dropbear loader probes, private namespace identities, host isolation, empty child/display state, and zero capabilities; the real spawn repeats the seal. Structurally or physically invalid descriptors and any namespace inconsistency remain unrecoverable and publish nothing. After descriptor and namespace validation, an isolated controller failure may publish only a fixed stage code for setup, display, SSH, editor launch, result wait, an allowlisted acceptance action, cleanup, or terminal validation, and only after a second child shutdown, empty-display proof, complete namespace/host-isolation proof including all five namespace identities, and zero-capability check. Before a harness result exists, recovery additionally requires randomized exclusive no-follow temporary write, flush, close, no-overwrite atomic publication, identified-temp cleanup, and result-lease validation. If cleanup or terminal validation fails after a harness result exists, recovery may carry forward only the receipt from its first-observed result lease after the lease's final identity check and successful close; any earlier lease fault latches permanently even if the named path is restored. The host then requires the surviving named result to match that receipt before reporting a synthetic fixed controller failure. It never overwrites or exposes the underlying result as success. Raw editor, SSH, daemon, path, URL, and caught-error text never enters either form. Malformed, late, or replaced results, residue, ownership drift, lease faults, and publication faults retain the no-attestation/no-cleanup fail-closed path.
 
@@ -276,10 +278,10 @@ If the editor reaches the result wait but never publishes a terminal result, dia
 
 The selected `canonical-editor` owner performs one clean production build, packages and verifies the VSIX, and runs
 the stable extension-host acceptance against the same checkout. Release workflows still create and distribute their
-own receipt-bound candidate artifact; Stage A does not alter that authority. Remote SSH remains a release/candidate
-boundary rather than a default Stage-A PR job. Cross compatibility carriers continue to own only their existing
-macOS/Windows seams. CI, Cross, and CodeQL cancel only superseded pull-request heads; scheduled and default-branch
-evidence is never cancelled, and a failed phase is never retried automatically. Protected-main pushes run the
+own receipt-bound candidate artifact; the current PR workflow does not alter that authority. Remote SSH remains a release/candidate
+boundary rather than a default PR job. Scheduled/manual Cross owns its existing macOS/Windows seams without a
+pull-request trigger. CI and CodeQL cancel only superseded pull-request heads; scheduled and default-branch evidence
+is never cancelled, and a failed phase is never retried automatically. Protected-main pushes run the
 invariant core and both always-on CodeQL analyzers. The manually dispatched Released Jupyter and performance workflows
 remain outside pull-request CI with unchanged product semantics and newly immutable action references.
 
@@ -299,7 +301,8 @@ omit native frames and remain restart-free. Default/unset manual core retains th
 journey retains representative embedded behavior, so no platform loses coverage. The
 remote R job uses only VS Code and the five-phase Docker fixture, retains that restart journey and its independent
 `lowerText` (Lowercase) operation check, and skips hosted R, local kernel preparation, Cursor, and native R/Quarto
-tooling. The source-only R contract remains in protected pull-request CI rather than becoming a release sibling. A
+tooling. The R 4.5 source contract remains in protected pull-request CI and R 4.4 remains in scheduled/manual Cross
+rather than becoming a release sibling. A
 reported failure identifies its owner without cancelling sibling cleanup. Every native phase keeps the 300-second hard and 180-second
 inactivity deadlines and is never retried.
 
@@ -336,7 +339,7 @@ metadata, inventory, URL, and size failures remain single-attempt and occur befo
 Filesystem failures are also never retried and may retain only their partial output in the disposable recovery
 workspace. Existing tests independently pin the downloader's narrow pending-versus-fatal HTTP status policy.
 
-[GitHub reports a conditionally skipped job as a successful check](https://docs.github.com/en/pull-requests/reference/status-checks), including when that check is required. Stage A therefore keeps conditional owners and legacy compatibility carriers present while the sole `validate` owner distinguishes exact selected success from an intentional skip. Draft and ready pull requests share the same workflow triggers; readiness is not a classifier output. Cross retains its required platform names, and both CodeQL language analyzers remain always-on behind `CodeQL gate`. When multiple ready branches share one base, finish and merge one matrix before updating and starting the next. Routine Dependabot version updates are staggered on separate UTC days and group compatible minor and patch updates by ecosystem; major and security updates remain separate.
+[GitHub reports a conditionally skipped job as a successful check](https://docs.github.com/en/pull-requests/reference/status-checks), including when that check is required. The current PR workflow therefore keeps every selected pull-request owner behind the sole `validate` result parser, which distinguishes exact selected success from an intentional skip and rejects missing, failed, cancelled, or unexpectedly skipped results. Draft and ready pull requests share the same CI trigger; readiness is not a classifier output. Cross is scheduled/manual only, and both CodeQL language analyzers remain always-on behind `CodeQL gate`. When multiple ready branches share one base, finish and merge one matrix before updating and starting the next. Routine Dependabot version updates are staggered on separate UTC days and group compatible minor and patch updates by ecosystem; major and security updates remain separate.
 
 Standalone backend preparation is a release-blocking engine-lifecycle contract. Tests require a separately owned transient adapter, cleanup on success and failure, propagation of the exact source descriptor, explicit-backend selection or the automatic Polars file default without guessing an unresolved notebook variable, and a structured engine error when preparation fails. Server transport tests prove preparation runs on the process-owned stdin reader thread before the real open is dispatched to a worker. Polars preparation tests require discoverable PyArrow to be preloaded only for Excel sources across the supported `fastexcel` range, while CSV, notebook, and PyArrow-absent environments remain unchanged. A fresh subprocess must then open a real Polars CSV and a real Pandas TSV in the same server, return both correlated sessions within the open bound, close both, and exit on EOF; Windows runtime CI is the authority for the cold native-import order.
 
@@ -819,7 +822,7 @@ After a forced renderer synchronization, editor interaction binds to the host-ac
 
 In Cursor's remote-kernel phase, the harness restores the captured notebook once if focus moved before waiting for the Variables row action. It does not reopen the Variables view or repeat the action. Timeout output includes only bounded loading state and element counts; it excludes webview URLs and table text.
 
-The Stage-A pull-request workflow keeps released-Jupyter qualification inside the canonical package-and-editor owner.
+The current PR workflow keeps released-Jupyter qualification inside the canonical package-and-editor owner.
 That owner builds and verifies one VSIX, then runs the extension-host journey from the exact checkout. The standalone
 Released Jupyter workflow remains the explicit compatibility path described below. Documentation-only changes may skip
 the conditional owner; classifier failure, malformed output, control-plane changes, and unmatched substantive paths
@@ -898,8 +901,9 @@ It then opens a fresh Python file and uses Jupyter's ordinary **Run Cell** comma
 active, Operations must find the new Pandas dataframe automatically. Opening it from the Interactive action must reuse
 the same kernel and completed cell; the later source cell must not run, and neither file may change.
 
-The Stage-A R 4.4/4.5 contract owners receive `readr` and `dplyr` plus their complete hard-dependency closure from the
-two dated lock registries because the suite opens actual readr and grouped tibbles rather than hand-built stand-ins.
+The PR workflow's R 4.5 owners and scheduled/manual Cross R 4.4 owner receive `readr` and `dplyr` plus their
+complete hard-dependency closure from the two dated lock registries because the suite opens actual readr and grouped
+tibbles rather than hand-built stand-ins.
 R 4.4 and R 4.5 are tested qualification environments, not a declared public support range; the release-candidate
 R 4.5.2 fixture below remains separate evidence.
 The local kernel installs missing packages into a temporary library. Linux uses
@@ -1514,10 +1518,10 @@ Every success or failure path waits for or terminates only its exact spawned edi
 
 Attestation uncertainty is permanently latched: a later matching marker, exit, close, or error cannot upgrade an ambiguous launch to verified ownership. The native Windows smoke exercises the compiled C# supervisor, proves its compile-once contract, natural-exit descendant containment, and explicit termination, and rejects malformed launch framing.
 
-Stage-A pull-request CI runs one canonical stable VS Code extension-host owner on isolated Linux and retains the
-stable macOS and Windows extension-host compatibility cells in Cross. The Windows owners also retain the native
+The PR workflow runs one canonical stable VS Code extension-host owner on isolated Linux. Scheduled/manual
+Cross retains the stable macOS and Windows extension-host cells, and its Windows owner retains the native
 process-supervisor and dependency-guard contracts. Minimum-editor and broader packaged VS Code/Cursor evidence remain
-release qualification; Stage A does not claim that those lanes moved into the canonical pull-request owner.
+release qualification; the current PR workflow does not claim that those lanes moved into the canonical pull-request owner.
 
 The Windows cross-platform cell runs `npm run test:scripts:native`, so the real Windows supervisor is checked without adding another setup job or repeating the portable script suite. Phase deadlines include supervisor preparation, receipt validation, process spawn, and the cancellable private debugging-port reservation; a stalled reservation aborts and closes its unreferenced server before the phase can launch an editor. Windows CLI-only setup never invokes a `.cmd` file or command shell: it requires the wrapper to identify the editor's own `bin` directory, resolves exactly one regular contained `resources/app/out/cli.js` from either the legacy root or one 10-hex version directory, and launches the verified editor executable with that path prepended. Only this CLI child receives the fixed `ELECTRON_RUN_AS_NODE=1`; workbench launches continue to strip inherited Electron mode flags.
 
@@ -1613,19 +1617,19 @@ explicit for both channels and must select `--pre-release` only from verified pu
 not claim that a `publish: false` hosted run exercised live environment approval, secrets, GitHub mutation, Azure
 federation, or registry propagation.
 
-Pull-request classification is covered by `npm run test:scripts:workflow`. Stage A has no draft-only context or legacy
+Pull-request classification is covered by `npm run test:scripts:workflow`. The current PR workflow has no draft-only context or legacy
 release-infrastructure/package/full-matrix classifier mode: the sole classifier emits exactly
 `r_contract_required`, `canonical_editor_required`, `visual_accessibility_required`, and `windows_unique_required`.
 Control-plane changes, malformed or missing output, unmatched substantive paths, and non-pull-request events select
 the complete four-owner union. Documentation-only changes may select no conditional owner, while the unconditional
 `invariant-core` still runs the complete portable, TypeScript, Python 3.10, audit, schema, documentation, and license
-boundary. The selected R owners include the temporary lock-backed R 4.4 pull-request carrier; Cross keeps the existing
-macOS/Windows and Windows dependency contexts and adds only a scheduled R 4.4 qualification. Missing, failed,
-cancelled, or unexpectedly skipped selected results block the sole `validate` owner. CodeQL independently runs the
-always-on JavaScript/TypeScript and Python analyzers and requires both through `CodeQL gate`. Every external workflow
-action occurrence and both local reusable-workflow targets are an exact reviewed inventory. These compatibility
-carriers remain until hosted Stage-A evidence and a separate mechanical ruleset migration are green; no Stage-B job,
-context, compute, or wall-time reduction is claimed here. Remote SSH remains opt-in through the
+boundary. The selected R owners are the two lock-backed R 4.5 pull-request jobs. Cross has no pull-request trigger; its
+manual dispatch and weekly schedule retain the macOS/Windows runtime matrix, Windows dependency guards, and lock-backed
+R 4.4 qualification. Missing, failed, cancelled, or unexpectedly skipped selected results block the sole `validate`
+owner. CodeQL independently runs the always-on JavaScript/TypeScript and Python analyzers and requires both through
+`CodeQL gate`. Every external workflow action occurrence and both local reusable-workflow targets are an exact reviewed
+inventory. The topology contract makes no job-count, compute, or wall-time claim before separate hosted measurement.
+Remote SSH remains opt-in through the
 `acceptance:remote-ssh` label.
 
 Pushes to protected `main` run complete JavaScript/TypeScript and Python CodeQL analysis so the Security tab is

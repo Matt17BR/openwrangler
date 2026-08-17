@@ -410,22 +410,21 @@ The same installed-editor report must prove that the production renderer and for
 
 ## GitHub workflow
 
-Each coherent change uses a feature branch and pull request. Stage A applies the same pull-request triggers to draft
+Each coherent change uses a feature branch and pull request. The current PR workflow applies the same triggers to draft
 and ready changes; there is no separate draft-only feedback context. The unconditional `invariant-core` owns the
 portable, TypeScript, Python 3.10, audit, schema, documentation, and license boundary. Four conservative classifier
-outputs select the paired R 4.5 owners plus temporary R 4.4 compatibility carrier, canonical package/editor owner,
+outputs select the paired R 4.5 owners, canonical package/editor owner,
 visual/accessibility owner, and Windows unique-risk owner. Missing or malformed classification fails open to all four,
-and the sole `validate` fan-in fails closed on every required result. Cross retains its legacy macOS/Windows and
-Windows dependency contexts, while scheduled R 4.4 is additive. CodeQL runs explicit always-on JavaScript/TypeScript
+and the sole `validate` fan-in fails closed on every required result. Scheduled/manual Cross retains its
+macOS/Windows runtime, Windows dependency checks, and R 4.4 qualification. CodeQL runs explicit always-on JavaScript/TypeScript
 and Python analyzers and joins them through `CodeQL gate`. Pushes to `main` retain CI and both CodeQL analyzers;
 publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
 
-Stage A has no release-infrastructure-only, package-only, allowlist, or full-matrix classifier branch and no fixed
+The current PR workflow has no release-infrastructure-only, package-only, allowlist, or full-matrix classifier branch and no fixed
 release job in pull-request CI. Control-plane and unmatched substantive changes select the full owner union. The
 slower native editor, Jupyter, Remote SSH, installed-performance, canary, and publication checks remain separate exact
-candidate or release evidence. The compatibility carriers stay in place until hosted Stage-A evidence and a separate
-mechanical ruleset migration are green; this topology does not claim the later job, context, compute, or wall-time
-reductions. It does not weaken or replace complete exact-artifact release-candidate acceptance.
+candidate or release evidence. This topology does not claim job-count, compute, or wall-time reductions before hosted
+evidence. It does not weaken or replace complete exact-artifact release-candidate acceptance.
 
 The active `main` ruleset keeps its existing rebase-only pull-request, thread-resolution, linear-history, deletion,
 force-push, and required-status protections. Its CodeQL merge rule blocks non-security errors and high-or-higher
@@ -628,8 +627,8 @@ Microsoft can accept a VSIX while `vsce publish` still returns a nonzero status.
 an ambiguous submission and continues to the exact public-package check. Missing or conflicting public bytes still
 fail after the bounded wait; identity, authentication, and artifact checks remain fail-fast.
 
-Draft and ready pull requests share the Stage-A CI, Cross, and CodeQL triggers; Stage A defines no draft-only check
-name. Readiness and merge eligibility remain repository-policy decisions outside the four-output classifier. When
+Draft and ready pull requests share the CI and CodeQL triggers; Cross is scheduled/manual only, and the current PR
+workflow defines no draft-only check name. Readiness and merge eligibility remain repository-policy decisions outside the four-output classifier. When
 several ready pull requests share a base, merge them one at a time so strict up-to-date protection does not spend time
 on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days,
 groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.

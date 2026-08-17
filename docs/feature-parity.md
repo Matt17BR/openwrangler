@@ -654,12 +654,12 @@ Release-guardrail slice, 2026-07-15:
 
 - Required CI coverage now enforces TypeScript/webview floors of 60% statements, 55% branches, 60% functions, and 65% lines plus a 78% Python-runtime floor. The initial accepted reports are 63.36/59.28/66.12/67.94% and 80.37%, respectively, and CI uploads their HTML/JSON/XML artifacts.
 - A production dependency policy resolves the actual installed manifest for every non-development package, accepts only explicitly approved licenses, and requires a matching notice group. The current webview bundle contains 17 MIT packages and one CC-BY-4.0 Codicons package; the notice file now reflects Codicons' actual license.
-- Pull-request validation retains npm and Python vulnerability audits. Stage A always runs `invariant-core`; its four
-  conservative outputs select R, canonical package/editor, visual/accessibility, and Windows unique-risk owners while
-  retaining the existing Cross compatibility contexts and the temporary R 4.4 pull-request carrier. Protected-branch
+- Pull-request validation retains npm and Python vulnerability audits. The default PR checks always run
+  `invariant-core`; its four conservative outputs select R 4.5, canonical package/editor, visual/accessibility, and
+  Windows unique-risk owners. Scheduled/manual Cross retains platform checks and the R 4.4 qualification. Protected-branch
   pushes retain CI plus explicit JavaScript/TypeScript and Python CodeQL analysis. Exact release candidates still own
   the broader native/editor/release matrix, and stable publication must promote the already accepted artifact without
-  rebuilding it. No Stage-B job/context reduction or ruleset migration is claimed by this compatibility topology.
+  rebuilding it. No job-count, compute, or wall-time reduction is claimed before hosted evidence.
 - Screenshot capture now resolves the hosted CI interpreter before a local `.venv`, fixing the first full validate run's only failure while keeping local deterministic-environment preference.
 
 These are release guardrails rather than user-visible parity rows. They remain mandatory for every subsequent slice and release tag.

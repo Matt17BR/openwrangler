@@ -49,7 +49,6 @@ const VALIDATE_NEEDS = Object.freeze([
   "invariant-core",
   "r-contract-kernel",
   "r-contract-protocol",
-  "native-r-contract",
   "canonical-editor",
   "visual-accessibility",
   "windows-unique"
@@ -63,14 +62,12 @@ const VALIDATE_ENV = Object.freeze({
   INVARIANT_CORE_RESULT: "${{ needs.invariant-core.result }}",
   R_CONTRACT_KERNEL_RESULT: "${{ needs.r-contract-kernel.result }}",
   R_CONTRACT_PROTOCOL_RESULT: "${{ needs.r-contract-protocol.result }}",
-  NATIVE_R_CONTRACT_RESULT: "${{ needs.native-r-contract.result }}",
   CANONICAL_EDITOR_RESULT: "${{ needs.canonical-editor.result }}",
   VISUAL_ACCESSIBILITY_RESULT: "${{ needs.visual-accessibility.result }}",
   WINDOWS_UNIQUE_RESULT: "${{ needs.windows-unique.result }}"
 });
 const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
   ["ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
-  ["cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
   ["codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ]);
 const APPROVED_EXTERNAL_ACTIONS = new Set([
@@ -96,7 +93,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "00f2d74bc4d7b44de8d6de1a96e470fd5dc76884d1b292092999b055b50a3c18";
+const WORKFLOW_USE_INVENTORY_SHA256 = "af7ab5fd17c5e13e2c1f569a43e30fe1d71f0f94fa13808296b3b4fcd3a7a0d8";
 
 function stepsUsing(job, prefix) {
   return (job?.steps ?? []).filter((step) => typeof step?.uses === "string" && step.uses.startsWith(prefix));
@@ -148,7 +145,7 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
     external.push([name, path, uses]);
   }
   if (!exactInventory) return Object.freeze({ external, local });
-  assert.equal(external.length, 146);
+  assert.equal(external.length, 139);
   assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
   const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
   assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
@@ -250,7 +247,50 @@ function assertValidateOwner(document) {
   assert.deepEqual(gate.env, VALIDATE_ENV);
 }
 
-test("sole classifier emits exactly four conservative Tier-B owner outputs", () => {
+function assertCrossScheduledOwners(document) {
+  assert.equal(document?.on?.pull_request, undefined);
+  assert.ok(Object.hasOwn(document?.on ?? {}, "workflow_dispatch"));
+  assert.ok(Object.hasOwn(document?.on ?? {}, "schedule"));
+  assert.equal(document?.concurrency?.["cancel-in-progress"], false);
+  assert.deepEqual(Object.keys(document?.jobs ?? {}), [
+    "runtime",
+    "dependency-guard-windows",
+    "r-4-4-scheduled-qualification"
+  ]);
+
+  const runtime = document.jobs.runtime;
+  assert.equal(runtime.needs, undefined);
+  assert.equal(runtime.if, undefined);
+  assert.deepEqual(runtime.strategy.matrix.include, [
+    { os: "macos-latest", python: "3.12" },
+    { os: "windows-latest", python: "3.14" }
+  ]);
+  const nativeStep = stepRunning(runtime, "npm run test:scripts:native");
+  assert.equal(nativeStep.if, "${{ runner.os == 'Windows' }}");
+  for (const step of runtime.steps) {
+    if (step === nativeStep) continue;
+    assert.equal(step.if, undefined);
+  }
+
+  const windows = document.jobs["dependency-guard-windows"];
+  assert.equal(windows.needs, undefined);
+  assert.equal(windows.if, undefined);
+  assert.deepEqual(windows.strategy.matrix.python, ["3.10", "3.12"]);
+  assert.ok(windows.steps.every((step) => step.if === undefined));
+
+  const scheduled = document.jobs["r-4-4-scheduled-qualification"];
+  assert.equal(scheduled.if, "${{ !cancelled() }}");
+  assert.match(JSON.stringify(scheduled), /ubuntu-24\.04-x86_64-r-4\.4\.lock\.json/u);
+  assert.match(JSON.stringify(scheduled), /r-dependency-lock\.mjs install/u);
+  assert.equal(stepsUsing(scheduled, "actions/cache/restore@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
+  assert.equal(stepsUsing(scheduled, "actions/cache/save@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
+  assert.ok(stepRunning(scheduled, "npm run test:r-contract"));
+
+  const source = JSON.stringify(document);
+  assert.doesNotMatch(source, /needs\.classify|r_contract_required|canonical_editor_required|windows_unique_required/u);
+}
+
+test("sole classifier emits exactly four conservative changed-area owner outputs", () => {
   assert.deepEqual(CI_CLASSIFIER_OUTPUTS, [
     "r_contract_required",
     "canonical_editor_required",
@@ -387,22 +427,19 @@ test("changed path transport remains NUL-safe and fatal UTF-8", () => {
   assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
 });
 
-test("CI exposes the Stage-A owners plus the temporary R 4.4 compatibility carrier", () => {
+test("CI exposes only the current pull-request owners", () => {
   assert.deepEqual(Object.keys(ci.jobs), [
     "classify",
     "invariant-core",
     "r-contract-kernel",
     "r-contract-protocol",
-    "native-r-contract",
     "canonical-editor",
     "visual-accessibility",
     "windows-unique",
     "validate"
   ]);
   assert.deepEqual(Object.keys(ci.jobs.classify.outputs), CI_CLASSIFIER_OUTPUTS);
-  assert.equal(ci.jobs["native-r-contract"].name, "Native R contract (R 4.4)");
-  assert.match(ci.jobs["native-r-contract"].if, /r_contract_required != 'false'/u);
-  assert.match(ci.jobs["native-r-contract"].if, /classify\.result != 'success'/u);
+  assert.equal(ci.jobs["native-r-contract"], undefined);
   assert.equal(ci.jobs["r-contract-kernel"].name, "R 4.5 kernel contract");
   assert.equal(ci.jobs["r-contract-protocol"].name, "R 4.5 protocol contracts");
   assert.equal(ci.jobs["canonical-editor"].name, "Canonical package and editor");
@@ -411,6 +448,14 @@ test("CI exposes the Stage-A owners plus the temporary R 4.4 compatibility carri
 
 test("invariant core is unconditional and owns full portable, TypeScript, Python 3.10, audit, schema, and docs evidence", () => {
   const job = ci.jobs["invariant-core"];
+  assert.equal(
+    packageJson.scripts["check:pr"],
+    "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test"
+  );
+  assert.deepEqual(
+    Object.keys(packageJson.scripts).filter((name) => /^check:(?:pr|tier)/u.test(name)),
+    ["check:pr"]
+  );
   assert.equal(job.if, undefined);
   assert.equal(job["runs-on"], "ubuntu-24.04");
   const python = stepsUsing(job, "actions/setup-python@");
@@ -418,11 +463,11 @@ test("invariant core is unconditional and owns full portable, TypeScript, Python
   assert.equal(python[0].uses, SETUP_PYTHON);
   assert.equal(python[0].with["python-version"], "3.10");
   assert.ok(stepRunning(job, 'python -m pip install -e "python[dev]"'));
-  assert.ok(stepRunning(job, "npm run check:tier-a"));
+  assert.ok(stepRunning(job, "npm run check:pr"));
   assert.ok(stepRunning(job, "npm audit"));
   assert.ok(stepRunning(job, "npm run audit:python"));
   assert.equal(
-    stepRunning(job, "npm run check:tier-a").env.OPEN_WRANGLER_PYTHON,
+    stepRunning(job, "npm run check:pr").env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
   );
 });
@@ -440,11 +485,10 @@ test("Python build and development metadata retain the setuptools security floor
   assert.equal(pythonProjectMetadata.match(/fsspec==2026\.7\.0/gu)?.length, 1);
 });
 
-test("both R 4.5 owners and the retained R 4.4 PR carrier consume exact locks without repository fallback", () => {
+test("both R 4.5 pull-request owners consume the exact lock without repository fallback", () => {
   const owners = [
     ["r-contract-kernel", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"],
-    ["r-contract-protocol", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"],
-    ["native-r-contract", "4.4", "ubuntu-24.04-x86_64-r-4.4.lock.json"]
+    ["r-contract-protocol", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"]
   ];
   for (const [jobId, version, lockName] of owners) {
     const job = ci.jobs[jobId];
@@ -475,14 +519,12 @@ test("both R 4.5 owners and the retained R 4.4 PR carrier consume exact locks wi
   }
   assert.ok(stepRunning(ci.jobs["r-contract-kernel"], "npm run test:r-contract -- --shard kernel-agent"));
   assert.ok(stepRunning(ci.jobs["r-contract-protocol"], "npm run test:r-contract:protocol"));
-  assert.ok(stepRunning(ci.jobs["native-r-contract"], "npm run test:r-contract"));
 });
 
 test("conditional owners fail open to run while sole validate owner requires exact selected outcomes", () => {
   for (const jobId of [
     "r-contract-kernel",
     "r-contract-protocol",
-    "native-r-contract",
     "canonical-editor",
     "visual-accessibility",
     "windows-unique"
@@ -524,7 +566,6 @@ test("required result owner rejects missing, skipped, cancelled, failed, and sel
     "invariant-core",
     "r-contract-kernel",
     "r-contract-protocol",
-    "native-r-contract",
     "canonical-editor",
     "visual-accessibility",
     "windows-unique"
@@ -566,35 +607,31 @@ test("required result owner rejects missing, skipped, cancelled, failed, and sel
   assert.equal(parseRequiredFlag("true", "FLAG"), true);
   assert.equal(parseRequiredFlag("false", "FLAG"), false);
   assert.throws(() => parseRequiredFlag("", "FLAG"), /exactly true or false/u);
-  assert.equal(resultEnvironmentKey("native-r-contract"), "NATIVE_R_CONTRACT_RESULT");
+  assert.equal(resultEnvironmentKey("r-contract-kernel"), "R_CONTRACT_KERNEL_RESULT");
 });
 
-test("Cross preserves every legacy context, reuses only the four-output classifier, and adds scheduled R 4.4", () => {
-  assert.deepEqual(Object.keys(cross.jobs), [
-    "classify",
-    "runtime",
-    "dependency-guard-windows",
-    "r-4-4-scheduled-qualification"
-  ]);
-  assert.deepEqual(Object.keys(cross.jobs.classify.outputs), CI_CLASSIFIER_OUTPUTS);
-  assert.deepEqual(cross.jobs.runtime.strategy.matrix.include, [
-    { os: "macos-latest", python: "3.12" },
-    { os: "windows-latest", python: "3.14" }
-  ]);
-  assert.equal(cross.jobs["dependency-guard-windows"].name, "Dependency guard (Windows, Python ${{ matrix.python }})");
-  assert.deepEqual(cross.jobs["dependency-guard-windows"].strategy.matrix.python, ["3.10", "3.12"]);
-  assert.match(JSON.stringify(cross.jobs.runtime), /canonical_editor_required/u);
-  assert.match(JSON.stringify(cross.jobs.runtime), /windows_unique_required/u);
-  assert.match(JSON.stringify(cross.jobs.runtime), /classify\.result != 'success'/u);
-  assert.match(JSON.stringify(cross.jobs["dependency-guard-windows"]), /windows_unique_required/u);
-  const scheduled = cross.jobs["r-4-4-scheduled-qualification"];
-  assert.equal(scheduled.name, "Scheduled R 4.4 lock qualification");
-  assert.match(scheduled.if, /event_name != 'pull_request'/u);
-  assert.match(JSON.stringify(scheduled), /ubuntu-24\.04-x86_64-r-4\.4\.lock\.json/u);
-  assert.match(JSON.stringify(scheduled), /r-dependency-lock\.mjs install/u);
-  assert.equal(stepsUsing(scheduled, "actions/cache/restore@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
-  assert.equal(stepsUsing(scheduled, "actions/cache/save@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
-  assert.ok(stepRunning(scheduled, "npm run test:r-contract"));
+test("Cross is manual and scheduled only with exact platform and R 4.4 owners", () => {
+  assertCrossScheduledOwners(cross);
+
+  const pullRequestDrift = structuredClone(cross);
+  pullRequestDrift.on.pull_request = { branches: ["main"] };
+  assert.throws(() => assertCrossScheduledOwners(pullRequestDrift));
+
+  const classifierDrift = structuredClone(cross);
+  classifierDrift.jobs.classify = { runsOn: "ubuntu-latest" };
+  assert.throws(() => assertCrossScheduledOwners(classifierDrift));
+
+  const missingManual = structuredClone(cross);
+  delete missingManual.on.workflow_dispatch;
+  assert.throws(() => assertCrossScheduledOwners(missingManual));
+
+  const missingSchedule = structuredClone(cross);
+  delete missingSchedule.on.schedule;
+  assert.throws(() => assertCrossScheduledOwners(missingSchedule));
+
+  const nativeConditionDrift = structuredClone(cross);
+  delete stepRunning(nativeConditionDrift.jobs.runtime, "npm run test:scripts:native").if;
+  assert.throws(() => assertCrossScheduledOwners(nativeConditionDrift));
 });
 
 test("CodeQL has two always-on explicit analyzers, preserves required names, and fails closed through one gate", () => {
@@ -625,7 +662,7 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
     .sort();
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
-  assert.equal(inventory.external.length, 146);
+  assert.equal(inventory.external.length, 139);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
 
   const sources = names.map((entry) => readFileSync(workflowPath(entry), "utf8")).join("\n");
@@ -743,11 +780,15 @@ test("performance and standalone released-Jupyter retain triggers and semantics 
   assert.ok(allExternalUses(releasedJupyter).some(([, uses]) => uses === SETUP_NODE));
 });
 
-test("protected branch triggers and obsolete classifier vocabulary are absent from Stage-A owners", () => {
-  for (const document of [ci, cross, codeql]) {
+test("protected branch triggers and obsolete classifier vocabulary are absent from current PR workflow owners", () => {
+  for (const document of [ci, codeql]) {
     assert.deepEqual(document.on.pull_request.branches ?? ["main"], ["main"]);
     assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
   }
+  assert.equal(cross.on.pull_request, undefined);
+  assert.ok(Object.hasOwn(cross.on, "workflow_dispatch"));
+  assert.ok(Object.hasOwn(cross.on, "schedule"));
+  assert.equal(cross.concurrency["cancel-in-progress"], false);
   assert.deepEqual(ci.on.push.branches, ["main"]);
   assert.deepEqual(codeql.on.push.branches, ["main"]);
   const owned = [ci, cross, codeql].map((value) => JSON.stringify(value)).join("\n");
