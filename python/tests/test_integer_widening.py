@@ -109,6 +109,47 @@ def test_integer_group_sum_widens_before_overflow_in_live_and_generated_code(eng
     assert_integer_surface(engine, compiled, "total")
 
 
+@pytest.mark.parametrize(
+    ("dtype", "values", "expected"),
+    [
+        (pl.Int64, [1, 2], 3),
+        (pl.Int128, [10**30 + 1, -(10**30) + 2], 3),
+        (pl.UInt128, [1, 2], 3),
+    ],
+)
+def test_polars_small_group_sum_keeps_its_declared_int128_type_live_and_generated(
+    dtype: Any,
+    values: list[int],
+    expected: int,
+) -> None:
+    engine = PolarsEngine()
+    frame = pl.DataFrame(
+        {
+            "group": ["a", "a"],
+            "value": pl.Series(values, dtype=dtype),
+        }
+    )
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    public = validate_step(
+        {
+            "id": "small-sum",
+            "kind": "groupBy",
+            "params": {
+                "keys": [lineage[0]],
+                "aggregations": [
+                    {"column": lineage[1], "operation": "sum", "alias": "total"},
+                ],
+            },
+        }
+    )
+    operation = bind_step(public, schema, lineage)
+
+    for result in (engine.apply_transform(frame, operation), generated(engine, frame, [operation])):
+        assert result.schema["total"] == pl.Int128
+        assert result.get_column("total").item() == expected
+
+
 def test_by_example_integer_arithmetic_widens_before_overflow_in_live_and_generated_code(engine: Any) -> None:
     frame = frame_for(engine, grouped=False)
     schema = engine.schema(frame)
