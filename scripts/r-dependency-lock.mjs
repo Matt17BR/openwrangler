@@ -37,6 +37,9 @@ export const SNAPSHOT_HOST = "packagemanager.posit.co";
 export const LOCK_LIMITS = Object.freeze({
   archiveBytes: 64 * 1024 * 1024,
   aggregateArchiveBytes: 512 * 1024 * 1024,
+  installedFileBytes: 128 * 1024 * 1024,
+  installedTreeBytes: 1024 * 1024 * 1024,
+  installedTreeEntries: 100_000,
   packages: 64,
   textBytes: 512 * 1024
 });
@@ -575,62 +578,123 @@ function ensureContained(root, path, label) {
   }
 }
 
-function readOwnedRegularFile(path, label, { expectedBytes, expectedSha256, maximumBytes = 64 * 1024 } = {}) {
-  const absolute = resolve(path);
-  const namedBefore = lstatSync(absolute);
-  if (!namedBefore.isFile() || namedBefore.isSymbolicLink() || namedBefore.nlink !== 1) {
-    throw new Error(`${label} must be a singly linked regular file.`);
-  }
+const OWNED_FILE_OPERATIONS = Object.freeze({
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync
+});
+
+function identitySnapshot(stat) {
+  return Object.freeze({
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: stat.mode,
+    nlink: stat.nlink,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs
+  });
+}
+
+function sameIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function requireContainedParent(root, absolute, label, operations) {
+  if (root === undefined) return undefined;
+  const canonicalRoot = resolve(root);
+  ensureContained(canonicalRoot, absolute, label);
+  const parent = dirname(absolute);
+  const canonicalParent = operations.realpathSync(parent);
+  const parentStat = operations.lstatSync(parent);
+  const remainder = relative(canonicalRoot, canonicalParent);
   if (
-    (expectedBytes !== undefined && namedBefore.size !== expectedBytes) ||
-    !Number.isSafeInteger(namedBefore.size) ||
-    namedBefore.size <= 0 ||
-    namedBefore.size > maximumBytes
+    !parentStat.isDirectory() ||
+    parentStat.isSymbolicLink() ||
+    canonicalParent !== parent ||
+    remainder === ".." ||
+    remainder.startsWith(`..${sep}`) ||
+    isAbsolute(remainder)
   ) {
-    throw new Error(`${label} size is invalid.`);
+    throw new Error(`${label} parent escapes its private root.`);
   }
-  const descriptor = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  return identitySnapshot(parentStat);
+}
+
+export function readOwnedRegularFile(
+  path,
+  label,
+  {
+    expectedBytes,
+    expectedSha256,
+    minimumBytes = 1,
+    maximumBytes = 64 * 1024,
+    root,
+    operations = OWNED_FILE_OPERATIONS
+  } = {}
+) {
+  const absolute = resolve(path);
+  if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0 || !Number.isSafeInteger(maximumBytes)) {
+    throw new Error(`${label} byte bounds are invalid.`);
+  }
+  const descriptor = operations.openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   let bytes;
+  let descriptorSnapshot;
   try {
-    const descriptorBefore = fstatSync(descriptor);
+    const descriptorBefore = operations.fstatSync(descriptor);
     if (
       !descriptorBefore.isFile() ||
       descriptorBefore.nlink !== 1 ||
-      descriptorBefore.dev !== namedBefore.dev ||
-      descriptorBefore.ino !== namedBefore.ino ||
-      descriptorBefore.mode !== namedBefore.mode ||
-      descriptorBefore.size !== namedBefore.size
+      !Number.isSafeInteger(descriptorBefore.size) ||
+      descriptorBefore.size < minimumBytes ||
+      descriptorBefore.size > maximumBytes ||
+      (expectedBytes !== undefined && descriptorBefore.size !== expectedBytes)
+    ) {
+      throw new Error(`${label} descriptor is not a bounded singly linked regular file.`);
+    }
+    descriptorSnapshot = identitySnapshot(descriptorBefore);
+    const namedBefore = operations.lstatSync(absolute);
+    const namedSnapshotBefore = identitySnapshot(namedBefore);
+    const parentBefore = requireContainedParent(root, absolute, label, operations);
+    if (
+      !namedBefore.isFile() ||
+      namedBefore.isSymbolicLink() ||
+      !sameIdentity(namedSnapshotBefore, descriptorSnapshot)
     ) {
       throw new Error(`${label} descriptor does not match its named path.`);
     }
-    bytes = readFileSync(descriptor);
-    const descriptorAfter = fstatSync(descriptor);
-    const namedAfter = lstatSync(absolute);
+    bytes = operations.readFileSync(descriptor);
+    const descriptorAfter = operations.fstatSync(descriptor);
+    const namedAfter = operations.lstatSync(absolute);
+    const parentAfter = requireContainedParent(root, absolute, label, operations);
     if (
-      descriptorAfter.dev !== descriptorBefore.dev ||
-      descriptorAfter.ino !== descriptorBefore.ino ||
-      descriptorAfter.mode !== descriptorBefore.mode ||
-      descriptorAfter.nlink !== descriptorBefore.nlink ||
-      descriptorAfter.size !== descriptorBefore.size ||
-      descriptorAfter.mtimeMs !== descriptorBefore.mtimeMs ||
-      descriptorAfter.ctimeMs !== descriptorBefore.ctimeMs ||
-      namedAfter.dev !== descriptorAfter.dev ||
-      namedAfter.ino !== descriptorAfter.ino ||
-      namedAfter.mode !== descriptorAfter.mode ||
-      namedAfter.nlink !== descriptorAfter.nlink ||
-      namedAfter.size !== descriptorAfter.size ||
-      namedAfter.mtimeMs !== descriptorAfter.mtimeMs ||
-      namedAfter.ctimeMs !== descriptorAfter.ctimeMs
+      !sameIdentity(identitySnapshot(descriptorAfter), descriptorSnapshot) ||
+      !namedAfter.isFile() ||
+      namedAfter.isSymbolicLink() ||
+      !sameIdentity(identitySnapshot(namedAfter), descriptorSnapshot) ||
+      (parentBefore !== undefined && (parentAfter === undefined || !sameIdentity(parentAfter, parentBefore)))
     ) {
       throw new Error(`${label} identity changed during its descriptor read.`);
     }
   } finally {
-    closeSync(descriptor);
+    operations.closeSync(descriptor);
   }
-  if (bytes.length !== namedBefore.size || (expectedSha256 !== undefined && sha256(bytes) !== expectedSha256)) {
+  if (bytes.length !== descriptorSnapshot.size || (expectedSha256 !== undefined && sha256(bytes) !== expectedSha256)) {
     throw new Error(`${label} identity or digest is invalid.`);
   }
-  return bytes;
+  return Object.freeze({ bytes, snapshot: descriptorSnapshot });
 }
 
 function installedPackageRows(rscript, library, names) {
@@ -662,25 +726,80 @@ function installedPackageRows(rscript, library, names) {
     });
 }
 
-function treeDigest(root) {
+export function treeDigest(root, { operations = OWNED_FILE_OPERATIONS } = {}) {
   const rows = [];
-  const walk = (directory) => {
-    for (const name of readdirSync(directory).sort()) {
-      const path = join(directory, name);
-      const stat = lstatSync(path);
-      const item = relative(root, path).split(sep).join("/");
-      if (stat.isSymbolicLink()) throw new Error(`Installed R library contains a symlink: ${item}.`);
-      if (stat.isDirectory()) {
-        rows.push(`${item}\0directory\0${stat.mode & 0o777}\0`);
-        walk(path);
-      } else if (stat.isFile()) {
-        rows.push(`${item}\0file\0${stat.mode & 0o777}\0${stat.size}\0${sha256(readFileSync(path))}`);
-      } else {
-        throw new Error(`Installed R library contains an unsupported path type: ${item}.`);
+  let entries = 0;
+  let totalBytes = 0;
+  const walk = (directory, item) => {
+    const descriptor = operations.openSync(
+      directory,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+    );
+    let directorySnapshot;
+    let names;
+    try {
+      const descriptorBefore = operations.fstatSync(descriptor);
+      const canonical = operations.realpathSync(directory);
+      const namedBefore = operations.lstatSync(directory);
+      directorySnapshot = identitySnapshot(descriptorBefore);
+      if (
+        !descriptorBefore.isDirectory() ||
+        !namedBefore.isDirectory() ||
+        namedBefore.isSymbolicLink() ||
+        canonical !== resolve(directory) ||
+        !sameIdentity(identitySnapshot(namedBefore), directorySnapshot)
+      ) {
+        throw new Error("Installed R library directory identity is invalid.");
       }
+      if (item !== undefined) rows.push(`${item}\0directory\0${directorySnapshot.mode & 0o777}\0`);
+      names = operations
+        .readdirSync(directory, { withFileTypes: true })
+        .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+      for (const entry of names) {
+        entries += 1;
+        if (entries > LOCK_LIMITS.installedTreeEntries) throw new Error("Installed R library entry bound exceeded.");
+        const name = entry.name;
+        const path = join(directory, name);
+        const childItem = relative(root, path).split(sep).join("/");
+        if (entry.isSymbolicLink()) throw new Error(`Installed R library contains a symlink: ${childItem}.`);
+        if (entry.isDirectory()) {
+          walk(path, childItem);
+        } else if (entry.isFile()) {
+          const verified = readOwnedRegularFile(path, `${childItem} installed R file`, {
+            minimumBytes: 0,
+            maximumBytes: LOCK_LIMITS.installedFileBytes,
+            root,
+            operations
+          });
+          totalBytes += verified.snapshot.size;
+          if (totalBytes > LOCK_LIMITS.installedTreeBytes) {
+            throw new Error("Installed R library byte bound exceeded.");
+          }
+          rows.push(
+            `${childItem}\0file\0${verified.snapshot.mode & 0o777}\0${verified.snapshot.size}\0${sha256(verified.bytes)}`
+          );
+        } else {
+          throw new Error(`Installed R library contains an unsupported path type: ${childItem}.`);
+        }
+      }
+      const descriptorAfter = operations.fstatSync(descriptor);
+      const canonicalAfter = operations.realpathSync(directory);
+      const namedAfter = operations.lstatSync(directory);
+      if (
+        !namedAfter.isDirectory() ||
+        namedAfter.isSymbolicLink() ||
+        !sameIdentity(identitySnapshot(descriptorAfter), directorySnapshot) ||
+        !sameIdentity(identitySnapshot(namedAfter), directorySnapshot) ||
+        canonicalAfter !== resolve(directory)
+      ) {
+        throw new Error("Installed R library directory identity changed during traversal.");
+      }
+    } finally {
+      operations.closeSync(descriptor);
     }
+    return directorySnapshot;
   };
-  walk(root);
+  walk(root, undefined);
   return sha256(`${rows.join("\n")}\n`);
 }
 
@@ -727,7 +846,8 @@ export function verifyArchiveCache({ lockRecord, archives }) {
     readOwnedRegularFile(path, `${entry.name} cached archive`, {
       expectedBytes: entry.source.bytes,
       expectedSha256: entry.source.sha256,
-      maximumBytes: LOCK_LIMITS.archiveBytes
+      maximumBytes: LOCK_LIMITS.archiveBytes,
+      root: archiveRoot
     });
     paths.set(entry.name, path);
   }
@@ -758,7 +878,8 @@ function installRArchive({ rscript, library, path, entry }) {
   readOwnedRegularFile(path, `${entry.name} install archive`, {
     expectedBytes: entry.source.bytes,
     expectedSha256: entry.source.sha256,
-    maximumBytes: LOCK_LIMITS.archiveBytes
+    maximumBytes: LOCK_LIMITS.archiveBytes,
+    root: dirname(path)
   });
   const rCommand = realpathSync(join(dirname(rscript), process.platform === "win32" ? "R.exe" : "R"));
   const result = spawnSync(rCommand, ["CMD", "INSTALL", "--library", library, "--no-docs", "--no-help", path], {
@@ -837,7 +958,8 @@ export async function installFromArchiveCache({
     readOwnedRegularFile(path, `${entry.name} pre-install archive`, {
       expectedBytes: entry.source.bytes,
       expectedSha256: entry.source.sha256,
-      maximumBytes: LOCK_LIMITS.archiveBytes
+      maximumBytes: LOCK_LIMITS.archiveBytes,
+      root: verifiedCache.archiveRoot
     });
     installArchive({ rscript, library: libraryRoot, path, entry });
   }
@@ -849,7 +971,9 @@ export async function installFromArchiveCache({
   } finally {
     closeSync(receiptDescriptor);
   }
-  const writtenReceipt = readOwnedRegularFile(receipt, "Installed R library receipt").toString("utf8");
+  const writtenReceipt = readOwnedRegularFile(receipt, "Installed R library receipt", {
+    root: dirname(resolve(receipt))
+  }).bytes.toString("utf8");
   if (writtenReceipt !== verified.bytes) throw new Error("Installed R library receipt publication failed.");
   return verified;
 }

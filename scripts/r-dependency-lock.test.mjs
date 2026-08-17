@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,8 +27,10 @@ import {
   SNAPSHOT_DATE,
   canonicalLockBytes,
   installFromArchiveCache,
+  readOwnedRegularFile,
   readLock,
   sha256,
+  treeDigest,
   validateLock,
   verifyArchiveCache
 } from "./r-dependency-lock.mjs";
@@ -103,6 +122,19 @@ function fakeInstalledReceipt(lockRecord) {
     archiveSetSha256: sha256("archives")
   };
   return { receipt, bytes: canonicalLockBytes(receipt), runtime: { command: "/fake/Rscript" } };
+}
+
+function fileOperations(overrides = {}) {
+  return {
+    closeSync,
+    fstatSync,
+    lstatSync,
+    openSync,
+    readFileSync,
+    readdirSync,
+    realpathSync,
+    ...overrides
+  };
 }
 
 test("strict canonical locks bind the exact qualification, roots, archives, and filename", () => {
@@ -203,7 +235,7 @@ test("archive cache authenticates every exact lock-pinned descriptor before inst
   }
 });
 
-test("tampered archive cache fails before install or namespace verification", async () => {
+test("the final tampered archive fails before any install or namespace verification", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ow-r-cache-tamper-"));
   try {
     const lock = cacheLock();
@@ -212,8 +244,8 @@ test("tampered archive cache fails before install or namespace verification", as
     const library = join(directory, "library");
     const receipt = join(directory, "receipt.json");
     writeArchiveCache(archives, lock);
-    const first = lock.packages[0];
-    writeFileSync(join(archives, `${first.name}_${first.version}.tar.gz`), "tampered", { mode: 0o600 });
+    const last = lock.packages.at(-1);
+    writeFileSync(join(archives, `${last.name}_${last.version}.tar.gz`), "tampered", { mode: 0o600 });
     let installs = 0;
     let namespaceVerifications = 0;
     await assert.rejects(
@@ -232,12 +264,156 @@ test("tampered archive cache fails before install or namespace verification", as
           return fakeInstalledReceipt(lockRecord);
         }
       }),
-      /size is invalid|identity or digest is invalid/u
+      /bounded singly linked regular file|identity or digest is invalid/u
     );
     assert.equal(installs, 0);
     assert.equal(namespaceVerifications, 0);
     assert.equal(existsSync(library), false);
     assert.equal(existsSync(receipt), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("owned files reject deterministic replacement after open and during descriptor read", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-owned-file-race-"));
+  try {
+    const path = join(directory, "owned.bin");
+    const displaced = join(directory, "displaced.bin");
+    const trusted = Buffer.from("trusted archive", "utf8");
+    const replacement = Buffer.from("replacement bytes", "utf8");
+    writeFileSync(path, trusted, { mode: 0o600 });
+
+    assert.throws(
+      () =>
+        readOwnedRegularFile(path, "after-open test file", {
+          expectedBytes: trusted.length,
+          expectedSha256: sha256(trusted),
+          root: directory,
+          operations: fileOperations({
+            openSync(candidate, flags) {
+              const descriptor = openSync(candidate, flags);
+              renameSync(path, displaced);
+              writeFileSync(path, replacement, { mode: 0o600 });
+              return descriptor;
+            }
+          })
+        }),
+      /descriptor does not match its named path/u
+    );
+
+    unlinkSync(path);
+    renameSync(displaced, path);
+    assert.throws(
+      () =>
+        readOwnedRegularFile(path, "during-read test file", {
+          expectedBytes: trusted.length,
+          expectedSha256: sha256(trusted),
+          root: directory,
+          operations: fileOperations({
+            readFileSync(descriptor) {
+              const bytes = readFileSync(descriptor);
+              renameSync(path, displaced);
+              writeFileSync(path, replacement, { mode: 0o600 });
+              return bytes;
+            }
+          })
+        }),
+      /identity changed during its descriptor read/u
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("archive authentication rejects symlinks and hard links before install or namespace verification", async () => {
+  for (const linkKind of ["symbolic", "hard"]) {
+    const directory = mkdtempSync(join(tmpdir(), `ow-r-cache-${linkKind}-link-`));
+    try {
+      const lock = cacheLock();
+      const lockRecord = {
+        lock,
+        bytes: Buffer.from(canonicalLockBytes(lock)),
+        digest: sha256(canonicalLockBytes(lock))
+      };
+      const archives = join(directory, "archives");
+      const library = join(directory, "library");
+      const receipt = join(directory, "receipt.json");
+      writeArchiveCache(archives, lock);
+      const entry = lock.packages[0];
+      const archive = join(archives, `${entry.name}_${entry.version}.tar.gz`);
+      const target = join(directory, `${linkKind}-target.tar.gz`);
+      renameSync(archive, target);
+      if (linkKind === "symbolic") symlinkSync(target, archive);
+      else linkSync(target, archive);
+      let installs = 0;
+      let namespaceVerifications = 0;
+
+      await assert.rejects(
+        installFromArchiveCache({
+          lockRecord,
+          rscript: "/fake/Rscript",
+          library,
+          archives,
+          receipt,
+          cacheHit: true,
+          installArchive: () => {
+            installs += 1;
+          },
+          verifyLibrary: () => {
+            namespaceVerifications += 1;
+            return fakeInstalledReceipt(lockRecord);
+          }
+        }),
+        linkKind === "symbolic" ? /ELOOP|symbolic link/u : /singly linked regular file/u
+      );
+      assert.equal(installs, 0);
+      assert.equal(namespaceVerifications, 0);
+      assert.equal(existsSync(library), false);
+      assert.equal(existsSync(receipt), false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("installed tree hashing accepts bounded empty files and rejects descriptor-read replacement", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-tree-digest-"));
+  try {
+    const empty = join(directory, "empty");
+    const filled = join(directory, "filled");
+    writeFileSync(empty, Buffer.alloc(0), { mode: 0o600 });
+    writeFileSync(filled, "trusted installed bytes", { mode: 0o600 });
+    const emptyStat = lstatSync(empty);
+    const filledStat = lstatSync(filled);
+    const expected = sha256(
+      [
+        `empty\0file\0${emptyStat.mode & 0o777}\0${0}\0${sha256(Buffer.alloc(0))}`,
+        `filled\0file\0${filledStat.mode & 0o777}\0${filledStat.size}\0${sha256(readFileSync(filled))}`
+      ].join("\n") + "\n"
+    );
+    assert.equal(treeDigest(directory), expected);
+
+    const displaced = join(directory, "filled.displaced");
+    let replaced = false;
+    assert.throws(
+      () =>
+        treeDigest(directory, {
+          operations: fileOperations({
+            readFileSync(descriptor) {
+              const bytes = readFileSync(descriptor);
+              if (!replaced && bytes.length > 0) {
+                replaced = true;
+                renameSync(filled, displaced);
+                writeFileSync(filled, "replacement installed bytes", { mode: 0o600 });
+              }
+              return bytes;
+            }
+          })
+        }),
+      /identity changed during its descriptor read/u
+    );
+    assert.equal(replaced, true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

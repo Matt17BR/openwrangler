@@ -4,6 +4,7 @@ import ctypes
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -36,6 +37,13 @@ from openwrangler_runtime.windows_file_handle import (
 
 TARGET_IDENTITY = (29, (7 << 32) | 11)
 PARENT_IDENTITY = (29, (5 << 32) | 3)
+
+
+def exception_notes(error: BaseException) -> list[str]:
+    notes = getattr(error, "__notes__", None)
+    assert isinstance(notes, list)
+    assert all(isinstance(note, str) for note in notes)
+    return cast(list[str], notes)
 
 
 class FakeKernel32:
@@ -364,7 +372,9 @@ def test_windows_validation_and_pin_cleanup_failures_both_remain_visible(tmp_pat
 
     assert isinstance(raised.value.__cause__, WindowsFileHandleValidationError)
     assert str(raised.value.__cause__) == "named target identity changed"
-    assert raised.value.__notes__ == ["Windows export target pin cleanup also failed: OSError: pin cleanup failed"]
+    assert exception_notes(raised.value) == [
+        "Windows export target pin cleanup also failed: OSError: pin cleanup failed"
+    ]
 
 
 class DefensivePython310StyleError(RuntimeError):
@@ -380,12 +390,13 @@ def test_cleanup_notes_remain_available_without_base_exception_add_note() -> Non
     BaseException.__setattr__(export_error, "__notes__", ["prior cleanup evidence"])
     _add_cleanup_note(export_error, OSError("writer cleanup failed"), "Export writer cleanup")
     _add_cleanup_note(export_error, OSError("x" * 700), "Export pin cleanup")
-    assert export_error.__notes__ == [
+    notes = exception_notes(export_error)
+    assert notes == [
         "prior cleanup evidence",
         "Export writer cleanup also failed: OSError: writer cleanup failed",
         "Export pin cleanup also failed: OSError: " + "x" * 471,
     ]
-    assert len(export_error.__notes__[-1]) == 512
+    assert len(notes[-1]) == 512
 
     windows_error = RuntimeError("Windows validation failed")
     BaseException.__setattr__(windows_error, "add_note", None)
@@ -393,7 +404,7 @@ def test_cleanup_notes_remain_available_without_base_exception_add_note() -> Non
     with pytest.raises(RuntimeError) as raised:
         _raise_with_windows_cleanup(windows_error, OSError("pin cleanup failed"), "Windows pin cleanup")
     assert raised.value is windows_error
-    assert raised.value.__notes__ == ["Windows pin cleanup also failed: OSError: pin cleanup failed"]
+    assert exception_notes(raised.value) == ["Windows pin cleanup also failed: OSError: pin cleanup failed"]
 
 
 def test_binary_writer_truncates_and_keeps_the_reserved_identity(tmp_path) -> None:
@@ -516,7 +527,7 @@ def test_operation_and_all_nested_cleanup_failures_remain_visible(tmp_path, monk
 
     assert isinstance(raised.value.__cause__, OSError)
     assert str(raised.value.__cause__) == "writer cleanup failed"
-    assert raised.value.__notes__ == [
+    assert exception_notes(raised.value) == [
         "Windows export target pin cleanup also failed: WindowsFileHandleCleanupError "
         "(OSError: target pin cleanup failed; OSError: parent pin cleanup failed)"
     ]
