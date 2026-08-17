@@ -1,6 +1,6 @@
-import { lstat, link, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, link, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createNodeRPrivateArtifactOperations,
@@ -8,6 +8,7 @@ import {
   removeRPrivateArtifactAtPath,
   RPrivateArtifactCleanupError,
   rPrivateArtifactFailureRequiresContainerPreservation,
+  rPrivateCleanupDirectoryModeIsPrivate,
   streamAndRemoveRPrivateArtifact,
   type RPrivateArtifactOperations
 } from "../extension/r/rPrivateArtifactBoundary";
@@ -23,7 +24,47 @@ describe("R private artifact boundary", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it("reads and removes the exact descriptor-validated artifact", async () => {
+  it("accepts Windows directory modes without weakening POSIX private-mode checks", () => {
+    expect(rPrivateCleanupDirectoryModeIsPrivate(0o40755n, "win32")).toBe(true);
+    expect(rPrivateCleanupDirectoryModeIsPrivate(0o40700n, "linux")).toBe(true);
+    expect(rPrivateCleanupDirectoryModeIsPrivate(0o40755n, "linux")).toBe(false);
+  });
+
+  it("completes identified cleanup under Windows-synthesized directory mode bits", async () => {
+    const artifactPath = resolve(directory, "windows-response.json");
+    await writeFile(artifactPath, "owned", { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      platform: "win32",
+      async lstat(filePath) {
+        const metadata = await base.lstat(filePath);
+        if (!basename(filePath).startsWith(".openwrangler-cleanup-")) return metadata;
+        return new Proxy(metadata, {
+          get(target, property) {
+            if (property === "mode") return target.mode | 0o077n;
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+      }
+    };
+
+    await expect(
+      removeRPrivateArtifactAtPath({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        expectedBytes: 5,
+        label: "test Windows R response",
+        operations
+      })
+    ).resolves.toBeUndefined();
+
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
+  });
+
+  it("reads and descriptor-scrubs the exact artifact outside its public pathname", async () => {
     const artifactPath = resolve(directory, "response.json");
     await writeFile(artifactPath, '{"status":"ready"}', { mode: 0o600 });
 
@@ -36,9 +77,10 @@ describe("R private artifact boundary", () => {
 
     expect(contents?.toString("utf8")).toBe('{"status":"ready"}');
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
   });
 
-  it("removes an unread exact artifact through the same descriptor boundary", async () => {
+  it("descriptor-scrubs an unread exact artifact through the same boundary", async () => {
     const artifactPath = resolve(directory, "export.csv");
     await writeFile(artifactPath, "value\n1\n", { mode: 0o600 });
 
@@ -49,6 +91,7 @@ describe("R private artifact boundary", () => {
     });
 
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
   });
 
   it("leaves a same-size pathname substitution and its displaced owned file intact", async () => {
@@ -111,27 +154,29 @@ describe("R private artifact boundary", () => {
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("never unlinks the public pathname where a successful swap could remove a replacement", async () => {
+  it("retains a quarantined replacement instead of path-unlinking after a swap", async () => {
     const artifactPath = resolve(directory, "response.json");
-    const displacedPath = resolve(directory, "displaced-owned-response.json");
-    let attackedPublicPath = false;
+    const displacedPath = resolve(directory, "quarantined-owned-response.json");
+    let replacementPath: string | undefined;
     await writeFile(artifactPath, "owned", { mode: 0o600 });
     const base = createNodeRPrivateArtifactOperations();
     const operations: RPrivateArtifactOperations = {
       ...base,
-      async remove(filePath) {
-        if (filePath === artifactPath) {
-          attackedPublicPath = true;
+      async open(filePath, flags) {
+        if (
+          !replacementPath &&
+          basename(filePath) === "artifact" &&
+          basename(dirname(filePath)).startsWith(".openwrangler-cleanup-")
+        ) {
+          replacementPath = filePath;
           await rename(filePath, displacedPath);
           await writeFile(filePath, "other", { mode: 0o600 });
-          await unlink(filePath);
-          return;
         }
-        await base.remove(filePath);
+        return base.open(filePath, flags);
       }
     };
 
-    await expect(
+    const error = await captureFailure(() =>
       readRPrivateArtifact({
         filePath: artifactPath,
         maximumBytes: 5,
@@ -140,12 +185,13 @@ describe("R private artifact boundary", () => {
         removeAfterRead: "success",
         operations
       })
-    ).resolves.toEqual(Buffer.from("owned"));
+    );
 
-    expect(attackedPublicPath).toBe(false);
+    expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
+    expect(replacementPath).toBeDefined();
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(lstat(displacedPath)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readdir(directory)).toEqual([]);
+    expect(await readFile(displacedPath, "utf8")).toBe("owned");
+    expect(await readFile(replacementPath!, "utf8")).toBe("other");
   });
 
   it.skipIf(process.platform === "win32")("does not follow or remove a substituted symlink", async () => {
@@ -198,7 +244,7 @@ describe("R private artifact boundary", () => {
     expect((await lstat(linkedPath, { bigint: true })).nlink).toBe(2n);
   });
 
-  it("reports a descriptor close failure while still removing the matching owned artifact", async () => {
+  it("reports a descriptor close failure while still scrubbing the matching owned artifact", async () => {
     const artifactPath = resolve(directory, "response.json");
     await writeFile(artifactPath, "owned", { mode: 0o600 });
     const operations = operationsWithClose(async () => {
@@ -219,6 +265,7 @@ describe("R private artifact boundary", () => {
     expect((error as Error).message).toContain("could not completely clean up");
     expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(false);
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
   });
 
   it("rejects a same-inode rewrite but still removes that exact owned artifact", async () => {
@@ -247,6 +294,7 @@ describe("R private artifact boundary", () => {
     expect((error as Error).message).toContain("changing test R export artifact");
     expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(false);
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
   });
 
   it("aggregates streaming, close, and identity cleanup failures without deleting a replacement", async () => {
@@ -307,6 +355,7 @@ function operationsWithClose(afterClose: () => Promise<void>): RPrivateArtifactO
       return {
         stat: (options) => handle.stat(options),
         read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
+        truncate: (length) => handle.truncate(length),
         async close() {
           await handle.close();
           await afterClose();
@@ -314,6 +363,13 @@ function operationsWithClose(afterClose: () => Promise<void>): RPrivateArtifactO
       };
     }
   };
+}
+
+async function soleQuarantinedArtifact(root: string): Promise<string> {
+  const entries = await readdir(root);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatch(/^\.openwrangler-cleanup-/);
+  return resolve(root, entries[0]!, "artifact");
 }
 
 async function captureFailure(work: () => Promise<unknown>): Promise<unknown> {

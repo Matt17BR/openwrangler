@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, readFile, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { mkdtemp, open, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -14,6 +14,10 @@ import {
   R_KERNEL_TRANSPORT_VERSION
 } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
+import {
+  createNodeRPrivateArtifactOperations,
+  type RPrivateArtifactOperations
+} from "../extension/r/rPrivateArtifactBoundary";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -1058,14 +1062,18 @@ describe("interactive R session transport", () => {
   it("returns an authoritative response before reporting response-artifact cleanup failure on disposal", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-cleanup-failure-unit-"));
     let failResponseRemoval = true;
+    const base = createNodeRPrivateArtifactOperations();
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
-      removeFile: async (filePath) => {
-        if (failResponseRemoval && basename(dirname(dirname(filePath))) === "responses") {
-          failResponseRemoval = false;
-          throw new Error("simulated response unlink failure");
+      artifactOperations: {
+        ...base,
+        async rename(sourcePath, destinationPath) {
+          if (failResponseRemoval && basename(dirname(sourcePath)) === "responses") {
+            failResponseRemoval = false;
+            throw new Error("simulated response quarantine failure");
+          }
+          await base.rename(sourcePath, destinationPath);
         }
-        await unlink(filePath);
       },
       runSelection: async (code) => {
         const { requestPath, responsePath } = mailboxPaths(code);
@@ -1073,28 +1081,49 @@ describe("interactive R session transport", () => {
         await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
       }
     });
-    await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
-    await expect(transport.dispose()).rejects.toThrow("private interactive R response artifact");
-    expect(await readdir(temporaryParent)).toEqual([]);
-    await rm(temporaryParent, { recursive: true, force: true });
+    try {
+      await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
+      let disposalError: unknown;
+      try {
+        await transport.dispose();
+      } catch (error) {
+        disposalError = error;
+      }
+      expect(disposalError).toBeInstanceOf(AggregateError);
+      expect((disposalError as AggregateError).errors).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining("private interactive R response artifact")
+        }),
+        expect.objectContaining({
+          message: expect.stringContaining("unowned artifact path")
+        })
+      ]);
+      expect(await readdir(temporaryParent)).toHaveLength(1);
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
   });
 
   it("retains a same-size response replacement when identified cleanup loses the pathname", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-cleanup-replacement-unit-"));
     let replacementPath: string | undefined;
     let displacedPath: string | undefined;
+    const base = createNodeRPrivateArtifactOperations();
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
-      removeFile: async (filePath) => {
-        if (!replacementPath && basename(dirname(dirname(filePath))) === "responses") {
-          const contents = await readFile(filePath);
-          replacementPath = filePath;
-          displacedPath = resolve(dirname(filePath), "displaced-owned-response.json");
-          await rename(filePath, displacedPath);
-          await writeFile(filePath, Buffer.alloc(contents.byteLength, 0x78), { mode: 0o600 });
-          throw new Error("simulated response pathname replacement");
+      artifactOperations: {
+        ...base,
+        async rename(sourcePath, destinationPath) {
+          if (!replacementPath && basename(dirname(sourcePath)) === "responses") {
+            const contents = await readFile(sourcePath);
+            displacedPath = resolve(dirname(sourcePath), "displaced-owned-response.json");
+            await rename(sourcePath, displacedPath);
+            await writeFile(sourcePath, Buffer.alloc(contents.byteLength, 0x78), { mode: 0o600 });
+            replacementPath = destinationPath;
+          }
+          await base.rename(sourcePath, destinationPath);
         }
-        await unlink(filePath);
       },
       runSelection: async (code) => {
         const { requestPath, responsePath } = mailboxPaths(code);
@@ -1120,17 +1149,20 @@ describe("interactive R session transport", () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-request-swap-unit-"));
     let replacementPath: string | undefined;
     let displacedPath: string | undefined;
+    const base = createNodeRPrivateArtifactOperations();
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
-      removeFile: async (filePath) => {
-        if (!replacementPath && basename(dirname(dirname(filePath))) === "requests") {
-          replacementPath = filePath;
-          displacedPath = resolve(dirname(filePath), "displaced-owned-request.json");
-          await rename(filePath, displacedPath);
-          await writeFile(filePath, "replacement", { mode: 0o600 });
-          throw new Error("simulated request pathname replacement");
+      artifactOperations: {
+        ...base,
+        async rename(sourcePath, destinationPath) {
+          if (!replacementPath && basename(dirname(sourcePath)) === "requests") {
+            displacedPath = resolve(dirname(sourcePath), "displaced-owned-request.json");
+            await rename(sourcePath, displacedPath);
+            await writeFile(sourcePath, "replacement", { mode: 0o600 });
+            replacementPath = destinationPath;
+          }
+          await base.rename(sourcePath, destinationPath);
         }
-        await unlink(filePath);
       },
       runSelection: async (code) => {
         const { requestPath, responsePath } = mailboxPaths(code);
@@ -1156,14 +1188,18 @@ describe("interactive R session transport", () => {
   it("retains the mailbox after an ordinary request-artifact cleanup error", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-request-cleanup-error-unit-"));
     let failedRequestRemoval = false;
+    const base = createNodeRPrivateArtifactOperations();
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
-      removeFile: async (filePath) => {
-        if (!failedRequestRemoval && basename(dirname(dirname(filePath))) === "requests") {
-          failedRequestRemoval = true;
-          throw new Error("simulated ordinary request cleanup error");
+      artifactOperations: {
+        ...base,
+        async rename(sourcePath, destinationPath) {
+          if (!failedRequestRemoval && basename(dirname(sourcePath)) === "requests") {
+            failedRequestRemoval = true;
+            throw new Error("simulated ordinary request cleanup error");
+          }
+          await base.rename(sourcePath, destinationPath);
         }
-        await unlink(filePath);
       },
       runSelection: async (code) => {
         const { requestPath, responsePath } = mailboxPaths(code);
@@ -1171,12 +1207,96 @@ describe("interactive R session transport", () => {
         await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
       }
     });
-
     try {
       await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
       await expect(transport.dispose()).rejects.toThrow("could not completely clean up");
       expect(failedRequestRemoval).toBe(true);
       expect(await readdir(temporaryParent)).toHaveLength(1);
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a same-length request pathname replacement before dispatch", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-request-create-swap-unit-"));
+    let replacementPath: string | undefined;
+    let displacedPath: string | undefined;
+    const base = createNodeRPrivateArtifactOperations();
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async lstat(filePath) {
+        if (!replacementPath && basename(dirname(filePath)) === "requests") {
+          const contents = await readFile(filePath);
+          replacementPath = filePath;
+          displacedPath = resolve(dirname(filePath), "displaced-created-request.json");
+          await rename(filePath, displacedPath);
+          await writeFile(filePath, Buffer.alloc(contents.byteLength, 0x78), { mode: 0o600 });
+        }
+        return base.lstat(filePath);
+      }
+    };
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      artifactOperations: operations,
+      runSelection: async () => {
+        throw new Error("request replacement must fail before dispatch");
+      }
+    });
+
+    try {
+      await expect(transport.discoverVariables()).rejects.toThrow("changing interactive R request artifact");
+      await expect(transport.dispose()).rejects.toThrow("could not completely clean up");
+      expect(replacementPath).toBeDefined();
+      expect(displacedPath).toBeDefined();
+      const replacement = await readFile(replacementPath!);
+      const displaced = await readFile(displacedPath!);
+      expect(replacement.byteLength).toBe(displaced.byteLength);
+      expect(replacement.every((byte) => byte === 0x78)).toBe(true);
+      expect(displaced.toString("utf8").startsWith("{")).toBe(true);
+      expect(await readdir(temporaryParent)).toHaveLength(1);
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a request symlink substitution before dispatch", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-request-create-symlink-unit-"));
+    const attackerPath = resolve(temporaryParent, "attacker.json");
+    let requestPath: string | undefined;
+    let displacedPath: string | undefined;
+    await writeFile(attackerPath, '{"attacker":true}', { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async lstat(filePath) {
+        if (!requestPath && basename(dirname(filePath)) === "requests") {
+          requestPath = filePath;
+          displacedPath = resolve(dirname(filePath), "displaced-created-request.json");
+          await rename(filePath, displacedPath);
+          await symlink(attackerPath, filePath);
+        }
+        return base.lstat(filePath);
+      }
+    };
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      artifactOperations: operations,
+      runSelection: async () => {
+        throw new Error("request symlink substitution must fail before dispatch");
+      }
+    });
+
+    try {
+      await expect(transport.discoverVariables()).rejects.toThrow("invalid interactive R request artifact");
+      await expect(transport.dispose()).rejects.toThrow("could not completely clean up");
+      expect(requestPath).toBeDefined();
+      expect(displacedPath).toBeDefined();
+      expect((await lstat(requestPath!)).isSymbolicLink()).toBe(true);
+      expect((await readFile(displacedPath!, "utf8")).startsWith("{")).toBe(true);
+      expect(await readFile(attackerPath, "utf8")).toBe('{"attacker":true}');
+      expect(await readdir(temporaryParent)).toHaveLength(2);
     } finally {
       await transport.dispose().catch(() => undefined);
       await rm(temporaryParent, { recursive: true, force: true });
