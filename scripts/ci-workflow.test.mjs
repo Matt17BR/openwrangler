@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -230,7 +230,6 @@ test("sole classifier emits exactly four conservative Tier-B owner outputs", () 
     "src/extension/r/rKernelBridge.ts",
     "src/test/rKernelBridge.unit.test.ts",
     "src/test/releasedRAcceptanceCoverage.unit.test.ts",
-    "python/openwrangler_runtime/session.py",
     "protocol/openwrangler.v2.schema.json",
     "schemas/operation-catalog.v1.json",
     "src/shared/operationCatalog.generated.ts"
@@ -238,6 +237,19 @@ test("sole classifier emits exactly four conservative Tier-B owner outputs", () 
     const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
     assert.equal(result.rContractRequired, true, `${path} must select the R contract owner`);
     assert.equal(result.canonicalEditorRequired, true, `${path} must select the canonical editor owner`);
+  }
+  for (const path of [
+    "python/openwrangler_runtime/protocol.py",
+    "python/openwrangler_runtime/server.py",
+    "python/openwrangler_runtime/session.py"
+  ]) {
+    assert.equal(existsSync(path), true, `${path} must remain a real classifier owner path`);
+    assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: [path] }), {
+      rContractRequired: true,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: true
+    });
   }
   assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: ["src/webviews/App.tsx"] }), {
     rContractRequired: false,
@@ -268,16 +280,21 @@ test("sole classifier emits exactly four conservative Tier-B owner outputs", () 
     assert.equal(result.windowsUniqueRequired, true, `${path} must select the Windows unique-risk owner`);
     if (path === "python/pyproject.toml") assert.deepEqual(result, BOOLEAN_OUTPUTS);
   }
-  for (const path of ["python/openwrangler_runtime/session_helpers.py", "protocol/openwrangler.v1.schema.json"]) {
-    const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
-    assert.equal(result.rContractRequired, false, `${path} must not broaden the exact R owner map`);
-    assert.equal(result.canonicalEditorRequired, true);
+  for (const path of ["python/openwrangler_runtime/limits.py", "python/openwrangler_runtime/version.py"]) {
+    assert.equal(existsSync(path), true, `${path} must remain a real adjacent negative path`);
+    assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: [path] }), {
+      rContractRequired: false,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: false
+    });
   }
   for (const path of [
     "python/openwrangler_runtime/engines/pandas_engine.py",
-    "python/openwrangler_runtime/error_types.py",
-    "src/test/extensionHost/extensionHostTestApi.ts"
+    "python/openwrangler_runtime/engines/polars_engine.py",
+    "src/test/extensionHost/playwrightLifecycle.ts"
   ]) {
+    assert.equal(existsSync(path), true, `${path} must remain a real adjacent negative path`);
     const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
     assert.equal(result.windowsUniqueRequired, false, `${path} must not broaden the exact Windows owner map`);
     assert.equal(result.canonicalEditorRequired, true);
