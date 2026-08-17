@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
 import type { ColumnReference, SessionMetadata } from "../../shared/protocol";
+import type { NumericSummaryValueExpectation } from "./numericSummaryJourney";
 import type { ReleasedRAcceptanceCoverageProfile } from "./releasedRAcceptanceCoverage";
 import type { TestApi } from "./extensionHostTestApi";
 
@@ -14,6 +15,7 @@ interface ReleasedRGridDependencies {
     direction: "ascending" | "descending",
     expectedPriority: readonly string[]
   ) => Promise<void>;
+  readonly assertNumericSummarySum: (panel: Locator, expected: NumericSummaryValueExpectation) => Promise<void>;
   readonly assertReleasedProfileStat: (panel: Locator, label: string, expected: string) => Promise<void>;
   readonly columnReference: (metadata: SessionMetadata, name: string) => ColumnReference;
   readonly openWorkbenchContextMenu: (
@@ -45,6 +47,7 @@ interface ReleasedRGridDependencies {
 export function createReleasedRGridJourney({
   GRID_COLUMN_WINDOW,
   applyReleasedRQuickSort,
+  assertNumericSummarySum,
   assertReleasedProfileStat,
   columnReference,
   openWorkbenchContextMenu,
@@ -112,6 +115,7 @@ export function createReleasedRGridJourney({
     await assertReleasedProfileStat(columnProfile, "Distinct", "1,205");
     await assertReleasedProfileStat(columnProfile, "Min", "1");
     await assertReleasedProfileStat(columnProfile, "Max", "1,205");
+    await assertNumericSummarySum(columnProfile, { text: "726,615", ariaLabel: "Sum 726,615" });
     await drawer.getByRole("tab", { name: "Dataset", exact: true }).click();
     const datasetProfile = drawer.getByRole("tabpanel");
     await datasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
