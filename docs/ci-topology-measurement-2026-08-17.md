@@ -23,9 +23,10 @@ pull-request Cross workflow; the path-selected workflow intentionally has no pul
 ## Method
 
 - Each row is bound to the workflow run's exact head, `pull_request` event, attempt number, and terminal success.
-- Executed jobs are the expanded jobs returned for that run, including classifier and result-gate jobs.
-- Runner seconds are the sum of each job's `completed_at - started_at` interval. They are observed occupancy, not
-  rounded billing minutes, CPU time, or a causal estimate.
+- Executed jobs are the expanded jobs returned for that run whose conclusion is not `skipped`, including classifier
+  and result-gate jobs.
+- Runner seconds are the sum of each non-skipped job's `completed_at - started_at` interval. They are observed
+  occupancy, not rounded billing minutes, CPU time, or a causal estimate.
 - A missing workflow is counted as zero only when the exact-head API has no run and the reviewed workflow has no
   pull-request trigger. It is not a skipped or substituted run.
 
