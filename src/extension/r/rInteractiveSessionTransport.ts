@@ -75,6 +75,8 @@ export interface RInteractiveSessionTransportOptions {
   readonly disposalSettlementMs?: number;
   /** Test seam for bounded data-export cleanup coverage. */
   readonly dataExportCleanupTimeoutMs?: number;
+  /** Test seam for deterministic request-deadline coverage. */
+  readonly waitWithTimeout?: typeof withKernelTimeout;
   /** Bind only to the currently active official R terminal, or create one when none is available. */
   readonly terminalMode?: "active" | "activeOrCreate";
   /** Exact official R terminal captured by the caller before any asynchronous work. */
@@ -126,6 +128,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private readonly artifactOperations: RPrivateArtifactOperations;
   private readonly disposalSettlementMs: number;
   private readonly dataExportCleanupTimeoutMs: number;
+  private readonly waitWithTimeout: typeof withKernelTimeout;
   private readonly terminalMode: "active" | "activeOrCreate";
   private readonly invalidatedEmitter = new vscode.EventEmitter<void>();
   private readonly variablesChangedEmitter = new vscode.EventEmitter<RProcessVariableDiscovery>();
@@ -170,6 +173,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     this.artifactOperations = options.artifactOperations ?? createNodeRPrivateArtifactOperations();
     this.disposalSettlementMs = options.disposalSettlementMs ?? DISPOSAL_SETTLEMENT_MS;
     this.dataExportCleanupTimeoutMs = options.dataExportCleanupTimeoutMs ?? DATA_EXPORT_CLEANUP_TIMEOUT_MS;
+    this.waitWithTimeout = options.waitWithTimeout ?? withKernelTimeout;
     this.terminalMode = options.terminalMode ?? "activeOrCreate";
     if (!path.isAbsolute(this.runtimeRoot)) throw new TypeError("The bundled R runtime path must be absolute.");
     if (!path.isAbsolute(this.temporaryParent)) {
@@ -843,7 +847,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     const timeoutMs = requestTimeout(options.timeoutMs);
     let reason: DetachedBridgeRequestReason | undefined;
     try {
-      return await withKernelTimeout(
+      return await this.waitWithTimeout(
         scheduled.completion,
         timeoutMs,
         () => {
@@ -925,11 +929,11 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   }
 
   private async recoverFromExportCleanupFailure(sessionId: string, cleanupError: unknown): Promise<void> {
-    const scheduledClose = this.scheduleKernelCleanup(this.request("closeSession", { sessionId }));
     try {
       if (cleanupError instanceof DetachedBridgeRequestError && cleanupError.dispatched) {
         await cleanupError.settlement;
       }
+      const scheduledClose = this.scheduleKernelCleanup(this.request("closeSession", { sessionId }));
       const response = await this.waitForScheduled(scheduledClose, { timeoutMs: this.dataExportCleanupTimeoutMs });
       if (!isCorrelatedClose(response, sessionId)) {
         if (response.kind === "error") throw new RKernelDiagnosticError(response);
