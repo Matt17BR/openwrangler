@@ -45,7 +45,8 @@ def test_strict_pyspark_version_contract() -> None:
     )
 
 
-def test_summary_metric_batch_ranges_bound_exact_distinct_groups_and_action_formula() -> None:
+def test_summary_batch_ranges_bound_exact_work_and_action_formula() -> None:
+    data_types = import_module("pyspark.sql.types")
     numeric_shape = (2, 13)
     mixed_shapes = [
         numeric_shape,
@@ -62,12 +63,32 @@ def test_summary_metric_batch_ranges_bound_exact_distinct_groups_and_action_form
 
     mixed_batches = pyspark_engine_module._summary_metric_batch_ranges(mixed_shapes)
     numeric_batches = pyspark_engine_module._summary_metric_batch_ranges([numeric_shape] * 50)
+    mixed_top_batches = pyspark_engine_module._summary_terminal_batch_ranges([True] * 10)
+    mixed_histogram_batches = pyspark_engine_module._summary_terminal_batch_ranges([True] * 3)
+    numeric_top_batches = pyspark_engine_module._summary_terminal_batch_ranges([True] * 50)
+    numeric_histogram_batches = pyspark_engine_module._summary_terminal_batch_ranges([True] * 50)
+    interval_fallback_batches = pyspark_engine_module._summary_terminal_batch_ranges(
+        [True, True, False, True, True, True, True, True]
+    )
 
     assert mixed_batches == [(0, 2), (2, 5), (5, 9), (9, 10)]
-    assert len(mixed_batches) + len(mixed_shapes) + 3 == 17
+    assert mixed_top_batches == [(0, 4), (4, 8), (8, 10)]
+    assert mixed_histogram_batches == [(0, 3)]
+    assert len(mixed_batches) + len(mixed_top_batches) + len(mixed_histogram_batches) == 8
     assert len(numeric_batches) == 25
-    assert len(numeric_batches) + 50 + 50 == 125
+    assert len(numeric_top_batches) == 13
+    assert len(numeric_histogram_batches) == 13
+    assert len(numeric_batches) + len(numeric_top_batches) + len(numeric_histogram_batches) == 51
     assert all(end - start == 2 for start, end in numeric_batches)
+    assert interval_fallback_batches == [(0, 2), (2, 3), (3, 7), (7, 8)]
+    assert all(
+        end - start <= pyspark_engine_module.PYSPARK_SUMMARY_TERMINAL_BRANCH_LIMIT for start, end in numeric_top_batches
+    )
+    assert pyspark_engine_module._profile_display_decoder(data_types.StringType()) == "string"
+    assert pyspark_engine_module._profile_display_decoder(data_types.StringType("UTF8_LCASE")) is None
+    assert pyspark_engine_module._profile_display_decoder(data_types.CharType(8)) is None
+    assert pyspark_engine_module._profile_display_decoder(data_types.VarcharType(8)) is None
+    assert pyspark_engine_module._profile_display_decoder(data_types.DayTimeIntervalType()) is None
 
 
 @pytest.fixture(scope="module", params=("classic", "connect"))
@@ -1593,6 +1614,7 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
     dataframe_type = type(indexed)
     original_collect = dataframe_type.collect
     collected_projections: list[tuple[str, ...]] = []
+    optimized_plans: list[tuple[tuple[str, ...], str]] = []
 
     def forbidden(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("The shared PySpark profile fixture must never use a dataframe conversion path.")
@@ -1602,7 +1624,10 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
             monkeypatch.setattr(dataframe_type, method_name, forbidden)
 
     def observed_collect(value: Any) -> Any:
-        collected_projections.append(tuple(value.columns))
+        projection = tuple(value.columns)
+        collected_projections.append(projection)
+        if ".connect." not in type(value).__module__:
+            optimized_plans.append((projection, str(value._jdf.queryExecution().optimizedPlan().toString())))
         return original_collect(value)
 
     monkeypatch.setattr(dataframe_type, "collect", observed_collect)
@@ -1639,6 +1664,7 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         )
 
         collected_projections.clear()
+        optimized_plans.clear()
         summaries = engine.summaries(indexed, projection)
         assert [summary["columnId"] for summary in summaries] == [column_id for _position, column_id in projection]
         assert [summary["column"] for summary in summaries] == list(PROFILE_COLUMN_NAMES)
@@ -1649,7 +1675,12 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert summaries[8]["rawType"] == "map<string,string>"
         assert summaries[9]["rawType"] == "struct<region:string,priority:int>"
         assert all(summaries[position]["topValues"] for position in (6, 7, 8, 9))
-        guarded_top_value_projection = ("count", "__ow_value", "__ow_profile_total_bytes")
+        guarded_top_value_projection = (
+            "__ow_profile_index",
+            "count",
+            "__ow_value",
+            "__ow_profile_total_bytes",
+        )
         fixed_metric_projections = [
             columns
             for columns in collected_projections
@@ -1661,10 +1692,22 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
             if columns and all(column.startswith("__ow_hist_") for column in columns)
         ]
         assert len(fixed_metric_projections) == 4
-        assert collected_projections.count(guarded_top_value_projection) == len(projection)
-        assert len(histogram_projections) == 3
-        assert len(collected_projections) == 17
+        assert collected_projections.count(guarded_top_value_projection) == 3
+        assert len(histogram_projections) == 1
+        assert len(collected_projections) == 8
         assert ("__ow_profile_value_bytes",) not in collected_projections
+        if optimized_plans:
+            top_plans = [plan for columns, plan in optimized_plans if columns == guarded_top_value_projection]
+            histogram_plans = [
+                plan
+                for columns, plan in optimized_plans
+                if columns and all(column.startswith("__ow_hist_") for column in columns)
+            ]
+            assert len(top_plans) == 3
+            assert len(histogram_plans) == 1
+            assert all("Union" not in plan for _columns, plan in optimized_plans)
+            assert all("Generate explode" in plan and plan.count("Range (") == 1 for plan in top_plans)
+            assert all("Aggregate" in plan and plan.count("Range (") == 1 for plan in histogram_plans)
 
         ordered = engine.apply_filter_model(
             indexed,
@@ -1710,7 +1753,16 @@ def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark
           (CAST(2 AS BIGINT), CAST(NULL AS DECIMAL(38, 18)),
            CAST(-0.0 AS DOUBLE), '😀', CAST(NULL AS DATE), CAST(NULL AS TIMESTAMP)),
           (CAST(NULL AS BIGINT), CAST('2.000000000000000000' AS DECIMAL(38, 18)),
-           CAST(3.5 AS DOUBLE), '東京', DATE '2026-01-04', TIMESTAMP '2026-01-03 23:59:59')
+           CAST(3.5 AS DOUBLE), '|,:[]{}東京😀', DATE '2026-01-04', TIMESTAMP '2026-01-03 23:59:59'),
+          (CAST(3 AS BIGINT), CAST('3.000000000000000000' AS DECIMAL(38, 18)),
+           CAST(0.0 AS DOUBLE), CAST(NULL AS STRING), CAST(NULL AS DATE),
+           CAST('1969-12-31T23:59:59.999999Z' AS TIMESTAMP)),
+          (CAST(4 AS BIGINT), CAST('4.000000000000000000' AS DECIMAL(38, 18)),
+           CAST('1.0' AS DOUBLE), CAST(NULL AS STRING), CAST(NULL AS DATE),
+           CAST('2024-10-27T02:30:00+02:00' AS TIMESTAMP)),
+          (CAST(5 AS BIGINT), CAST('5.000000000000000000' AS DECIMAL(38, 18)),
+           CAST('1.0000000000000002' AS DOUBLE), CAST(NULL AS STRING), CAST(NULL AS DATE),
+           CAST('2024-10-27T00:30:00Z' AS TIMESTAMP))
         AS fixture(wide, amount, floating, text_value, day_value, timestamp_value)
         """
     )
@@ -1734,11 +1786,81 @@ def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark
         assert encode(fused) == encode(per_column)
         assert fused[0]["numeric"]["exactMin"]["display"] == "-9007199254740993"
         assert fused[1]["numeric"]["exactMax"]["display"] == "987654321098765.987654321098765432"
+        assert fused[0]["distinctCount"] == 8
+        assert fused[1]["distinctCount"] == 8
+        assert {item["value"] for item in fused[0]["topValues"]} >= {
+            "-9007199254740993",
+            "9007199254740995",
+        }
+        assert {item["value"] for item in fused[1]["topValues"]} >= {
+            "-123456789012345.123456789012345678",
+            "987654321098765.987654321098765432",
+        }
         assert fused[2]["nullCount"] == 1
         assert fused[2]["nanCount"] == 1
-        assert fused[3]["text"] == pytest.approx({"emptyCount": 1, "minLength": 0, "maxLength": 2, "meanLength": 1.2})
+        float_top_values = {item["value"]: item["count"] for item in fused[2]["topValues"]}
+        assert fused[2]["distinctCount"] == 6
+        assert float_top_values["0.0"] == 2
+        assert float_top_values["1.0"] == 1
+        assert float_top_values["1.0000000000000002"] == 1
+        assert float_top_values["Infinity"] == 1
+        assert float_top_values["-Infinity"] == 1
+        assert fused[3]["text"] == pytest.approx({"emptyCount": 1, "minLength": 0, "maxLength": 10, "meanLength": 2.8})
         assert fused[4]["visualization"]["kind"] == "datetime"
         assert fused[5]["visualization"]["kind"] == "datetime"
+        assert fused[5]["distinctCount"] == 6
+        assert sorted(item["count"] for item in fused[5]["topValues"]) == [1, 1, 1, 1, 1, 2]
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_batched_terminal_summaries_match_temporal_complex_and_interval_bytes(spark_session: Any) -> None:
+    frame = spark_session.sql(
+        """
+        SELECT 1 AS record_id, true AS active,
+          DATE '2026-01-01' AS day_value, TIMESTAMP '2026-01-01 00:00:00.123456' AS timestamp_value,
+          TIMESTAMP_NTZ '2026-01-01 00:00:00.123456' AS timestamp_ntz_value,
+          encode('|,:[]{}é😀', 'UTF-8') AS binary_value, array('x', 'y') AS array_value,
+          map_from_arrays(array('a', 'b'), array(1, 2)) AS map_value,
+          named_struct('region', 'DACH', 'priority', 1) AS struct_value,
+          INTERVAL '1 02:03:04.500000' DAY TO SECOND AS interval_value
+        UNION ALL
+        SELECT 2, false,
+          DATE '2026-01-02', TIMESTAMP '2026-01-01 00:00:00.123457',
+          TIMESTAMP_NTZ '2026-01-01 00:00:00.123457',
+          encode('beta', 'UTF-8'), array('x', 'y'),
+          map_from_arrays(array('b', 'a'), array(2, 1)),
+          named_struct('region', 'DACH', 'priority', 1),
+          INTERVAL '1 02:03:04.500000' DAY TO SECOND
+        UNION ALL
+        SELECT 3, CAST(NULL AS BOOLEAN),
+          CAST(NULL AS DATE), CAST(NULL AS TIMESTAMP),
+          CAST(NULL AS TIMESTAMP_NTZ),
+          CAST(NULL AS BINARY), CAST(NULL AS ARRAY<STRING>),
+          CAST(NULL AS MAP<STRING, INT>), CAST(NULL AS STRUCT<region: STRING, priority: INT>),
+          INTERVAL '2 00:00:00.000001' DAY TO SECOND
+        """
+    )
+    engine, indexed = _open_engine(frame, "batched-terminal-equality")
+    try:
+        schema = engine.schema(indexed)
+        projection = [(int(column["position"]), f"terminal:{column['name']}") for column in schema]
+
+        batched = engine.summaries(indexed, projection)
+        per_column = [engine.summaries(indexed, [item])[0] for item in projection]
+
+        def encode(value: Any) -> bytes:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+        assert batched == per_column
+        assert encode(batched) == encode(per_column)
+        assert batched[3]["distinctCount"] == 2
+        assert batched[4]["distinctCount"] == 2
+        assert batched[7]["distinctCount"] == 1
+        assert batched[7]["topValues"] == [{"value": '{"a":1,"b":2}', "count": 2}]
+        assert batched[9]["topValues"][0]["count"] == 2
     finally:
         engine.close()
 
@@ -1922,12 +2044,22 @@ def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: A
             ],
         }
 
-        payload_summary = engine.summaries(indexed, [(0, "payload-id")])[0]
+        projection = [(0, "payload-id"), (1, "detail-id")]
+        summaries = engine.summaries(indexed, projection)
+        per_column = [engine.summaries(indexed, [item])[0] for item in projection]
+        assert summaries == per_column
+        assert json.dumps(summaries, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(
+            "utf-8"
+        ) == json.dumps(per_column, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+        payload_summary = summaries[0]
         assert payload_summary["distinctCount"] == 2
         assert payload_summary["topValues"] == [
             {"value": '{"a":1,"b":2}', "count": 2},
             {"value": '{"a":9}', "count": 1},
         ]
+        assert summaries[1]["distinctCount"] == 2
+        assert summaries[1]["topValues"][0]["count"] == 2
         values, has_more = engine.column_values(indexed, "payload", limit=10)
         assert not has_more
         assert values == [
@@ -1999,8 +2131,19 @@ def test_nested_negative_zero_uses_native_profile_equality(spark_session: Any) -
     )
     engine, indexed = _open_engine(frame, "nested-negative-zero")
     try:
+        projection = [
+            (position, f"{column_name}-id")
+            for position, column_name in enumerate(("array_value", "map_value", "struct_value"))
+        ]
+        summaries = engine.summaries(indexed, projection)
+        per_column = [engine.summaries(indexed, [item])[0] for item in projection]
+        assert summaries == per_column
+        assert json.dumps(summaries, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(
+            "utf-8"
+        ) == json.dumps(per_column, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
         for position, column_name in enumerate(("array_value", "map_value", "struct_value")):
-            summary = engine.summaries(indexed, [(position, f"{column_name}-id")])[0]
+            summary = summaries[position]
             assert summary["distinctCount"] == 1
             assert len(summary["topValues"]) == 1
             assert summary["topValues"][0]["count"] == 2
@@ -2110,6 +2253,56 @@ def test_large_profile_values_fail_without_transporting_terminal_values(
         assert collected_projections.count(("__ow_profile_value_bytes",)) == 0
         assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 10
         assert transported_profile_values == [None] * 10
+        assert all("__ow_group_key" not in projection for projection in collected_projections)
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_batched_profile_values_fail_without_transporting_terminal_values(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = spark_session.sql(
+        """
+        SELECT
+          repeat('a', 128) AS first_value,
+          repeat('b', 128) AS second_value,
+          encode(repeat('c', 128), 'UTF-8') AS binary_value,
+          array_repeat(repeat('d', 8), 32) AS array_value
+        """
+    )
+    engine, indexed = _open_engine(frame, "large-batched-profile-values")
+    dataframe_type = type(indexed)
+    original_collect = dataframe_type.collect
+    collected_projections: list[tuple[str, ...]] = []
+    transported_profile_values: list[Any] = []
+
+    def guarded_collect(value: Any) -> Any:
+        projection = tuple(value.columns)
+        collected_projections.append(projection)
+        rows = original_collect(value)
+        if "__ow_profile_total_bytes" in projection:
+            value_index = projection.index("__ow_value")
+            transported_profile_values.extend(row[value_index] for row in rows)
+        return rows
+
+    try:
+        projection = [(position, f"profile:{name}") for position, name in enumerate(frame.columns)]
+        with monkeypatch.context() as profile_patch:
+            profile_patch.setattr(pyspark_engine_module, "PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT", 32)
+            profile_patch.setattr(dataframe_type, "collect", guarded_collect)
+            with pytest.raises(EngineError, match=r"at most 32 UTF-8 bytes"):
+                engine.summaries(indexed, projection)
+
+        assert collected_projections[-1] == (
+            "__ow_profile_index",
+            "count",
+            "__ow_value",
+            "__ow_profile_total_bytes",
+        )
+        assert transported_profile_values == [None, None, None, None]
         assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()
