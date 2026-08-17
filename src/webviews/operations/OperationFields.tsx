@@ -4,13 +4,13 @@ import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterMod
 import type { ColumnSchema, OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
 import { FillMissingFields } from "./FillMissingFields";
 import {
+  aggregationOperations,
   aggregationColumnTypes,
   compatibleColumns,
-  datetimeColumnTypes,
-  numericColumnTypes,
-  portableScalarColumnTypes,
-  textColumnTypes
+  isAggregationOperation,
+  operationColumnTypes
 } from "./operationFieldCompatibility";
+import type { AggregationOperation } from "./operationFieldCompatibility";
 import {
   ColumnReferenceSelect,
   ColumnReferencesSelect,
@@ -23,7 +23,6 @@ import {
 import { columnReferenceId } from "./operationParams";
 
 const formulaOperators = ["add", "subtract", "multiply", "divide", "modulo", "power"] as const;
-const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"];
 
 interface OperationFieldsProps {
   kind: OperationKind;
@@ -209,7 +208,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "oneHotEncode") {
-    const categoricalColumns = compatibleColumns(columns, portableScalarColumnTypes);
+    const categoricalColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferencesSelect
@@ -259,7 +258,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "formula") {
-    const numericColumns = compatibleColumns(columns, numericColumnTypes);
+    const numericColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -309,7 +308,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "textLength") {
-    const textColumns = compatibleColumns(columns, textColumnTypes);
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -324,7 +323,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "multiLabelBinarize") {
-    const textColumns = compatibleColumns(columns, textColumnTypes);
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -354,7 +353,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "findReplace") {
-    const textColumns = compatibleColumns(columns, textColumnTypes);
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -372,7 +371,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "stripText") {
-    const textColumns = compatibleColumns(columns, textColumnTypes);
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -388,7 +387,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "splitText") {
-    const textColumns = compatibleColumns(columns, textColumnTypes);
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -412,8 +411,8 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </>
     );
   }
-  if (["capitalizeText", "lowerText", "upperText"].includes(kind)) {
-    const textColumns = compatibleColumns(columns, textColumnTypes);
+  if (kind === "capitalizeText" || kind === "lowerText" || kind === "upperText") {
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -427,8 +426,8 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </>
     );
   }
-  if (["minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
-    const numericColumns = compatibleColumns(columns, numericColumnTypes);
+  if (kind === "minMaxScale" || kind === "floorNumber" || kind === "ceilNumber") {
+    const numericColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -443,7 +442,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "roundNumber") {
-    const numericColumns = compatibleColumns(columns, numericColumnTypes);
+    const numericColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -466,7 +465,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "formatDatetime") {
-    const datetimeColumns = compatibleColumns(columns, datetimeColumnTypes);
+    const datetimeColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (
       <>
         <ColumnReferenceSelect
@@ -491,7 +490,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "groupBy") {
-    const groupColumns = compatibleColumns(columns, portableScalarColumnTypes);
+    const groupColumns = compatibleColumns(columns, operationColumnTypes(kind));
     const aggregationsById = new Map<string, Record<string, unknown>>(
       initialAggregations.map((aggregation, index) => [`aggregation-${index}`, aggregation])
     );
@@ -533,7 +532,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "byExample") {
-    const sourceColumns = compatibleColumns(columns, portableScalarColumnTypes);
+    const sourceColumns = compatibleColumns(columns, operationColumnTypes(kind));
     const examples = Array.isArray(params.examples)
       ? JSON.stringify(params.examples, null, 2)
       : JSON.stringify(
@@ -593,7 +592,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </label>
     );
   }
-  return null;
+  return unsupportedOperationKind(kind);
 }
 
 function isDefined<T>(value: T | undefined): value is T {
@@ -621,8 +620,9 @@ function AggregationRow({
   onMoveUp(): void;
   onMoveDown(): void;
 }) {
-  const initialOperation = String(initialAggregation?.operation ?? "sum");
-  const [operation, setOperation] = useState(initialOperation);
+  const initialOperationValue = String(initialAggregation?.operation ?? "sum");
+  const initialOperation = isAggregationOperation(initialOperationValue) ? initialOperationValue : "sum";
+  const [operation, setOperation] = useState<AggregationOperation>(initialOperation);
   const availableColumns = compatibleColumns(columns, aggregationColumnTypes(operation));
   const initialColumnId = columnReferenceId(initialAggregation?.column);
   const [selectedColumnId, setSelectedColumnId] = useState(() =>
@@ -631,7 +631,7 @@ function AggregationRow({
       : (availableColumns[0]?.id ?? "")
   );
 
-  const changeOperation = (nextOperation: string) => {
+  const changeOperation = (nextOperation: AggregationOperation) => {
     const nextColumns = compatibleColumns(columns, aggregationColumnTypes(nextOperation));
     setOperation(nextOperation);
     setSelectedColumnId((current) =>
@@ -655,7 +655,9 @@ function AggregationRow({
           name="aggregationOperation"
           aria-label={`Calculation ${index + 1}`}
           value={operation}
-          onChange={(event) => changeOperation(event.target.value)}
+          onChange={(event) => {
+            if (isAggregationOperation(event.target.value)) changeOperation(event.target.value);
+          }}
         >
           {aggregationOperations.map((value) => (
             <option key={value} value={value}>
@@ -681,6 +683,11 @@ function AggregationRow({
       />
     </div>
   );
+}
+
+function unsupportedOperationKind(kind: never): null {
+  void kind;
+  return null;
 }
 
 function CheckboxField({ name, label, defaultChecked }: { name: string; label: string; defaultChecked: boolean }) {

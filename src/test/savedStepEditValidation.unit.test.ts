@@ -9,6 +9,7 @@ const otherValue = { id: "c:other-value", name: "other_value" } as const;
 const order = { id: "c:order", name: "order" } as const;
 const date = { id: "c:date", name: "date" } as const;
 const nested = { id: "c:nested", name: "nested" } as const;
+const mystery = { id: "c:mystery", name: "mystery" } as const;
 const missing = { id: "c:missing", name: "missing" } as const;
 
 const schema = [
@@ -18,7 +19,8 @@ const schema = [
   column(otherValue, 3, "float", "Float64"),
   column(order, 4, "integer", "Int64"),
   column(date, 5, "date", "Date"),
-  column(nested, 6, "list", "List(String)")
+  column(nested, 6, "list", "List(String)"),
+  column(mystery, 7, "unknown", "Null")
 ] satisfies ColumnSchema[];
 
 function column(
@@ -324,6 +326,107 @@ describe("savedStepEditError", () => {
 
   it.each([
     [
+      "formula left operand",
+      step("formula", { leftColumn: text, rightColumn: otherValue, operator: "add", newColumn: "total" }),
+      "left formula column",
+      "formula inputs must be numeric"
+    ],
+    [
+      "formula right operand",
+      step("formula", { leftColumn: value, rightColumn: text, operator: "add", newColumn: "total" }),
+      "right formula column",
+      "formula inputs must be numeric"
+    ],
+    ["text length", step("textLength", { column: value, newColumn: "length" }), "input column", "string column"],
+    [
+      "multi-label encoding",
+      step("multiLabelBinarize", { column: value, delimiter: "," }),
+      "input column",
+      "string column"
+    ],
+    [
+      "find and replace",
+      step("findReplace", { column: value, find: "a", replacement: "b" }),
+      "input column",
+      "string column"
+    ],
+    ["strip text", step("stripText", { column: value }), "input column", "string column"],
+    [
+      "split text",
+      step("splitText", { column: value, delimiter: ",", index: 0, newColumn: "part" }),
+      "input column",
+      "string column"
+    ],
+    ["capitalize text", step("capitalizeText", { column: value }), "input column", "string column"],
+    ["lower text", step("lowerText", { column: value }), "input column", "string column"],
+    ["upper text", step("upperText", { column: value }), "input column", "string column"],
+    ["min-max scale", step("minMaxScale", { column: text }), "input column", "numeric operation"],
+    ["round number", step("roundNumber", { column: text, decimals: 2 }), "input column", "numeric operation"],
+    ["floor number", step("floorNumber", { column: text }), "input column", "numeric operation"],
+    ["ceil number", step("ceilNumber", { column: text }), "input column", "numeric operation"],
+    [
+      "format datetime",
+      step("formatDatetime", { column: text, format: "%Y-%m-%d" }),
+      "input column",
+      "date or datetime"
+    ],
+    ["one-hot encoding", step("oneHotEncode", { columns: [nested] }), "column 1", "portable scalar"],
+    [
+      "group key",
+      step("groupBy", {
+        keys: [nested],
+        aggregations: [{ column: value, operation: "sum", alias: "total" }]
+      }),
+      "group key 1",
+      "portable scalar"
+    ],
+    [
+      "by-example source",
+      step("byExample", {
+        sourceColumns: [nested],
+        newColumn: "example",
+        examples: [
+          { inputs: ["a"], output: "A" },
+          { inputs: ["b"], output: "B" }
+        ],
+        program: { kind: "column", column: nested }
+      }),
+      "by-example source 1",
+      "portable scalar"
+    ]
+  ] satisfies [caseName: string, savedStep: TransformStep, reference: string, requirement: string][])(
+    "rejects operation/type mismatch: %s",
+    (_caseName, savedStep, reference, requirement) => {
+      const error = savedStepEditError(savedStep, schema);
+      expect(error).toContain(`saved ${reference} uses a recorded`);
+      expect(error).toContain(requirement);
+    }
+  );
+
+  it.each([
+    ["sum", text],
+    ["mean", text],
+    ["median", text],
+    ["min", nested],
+    ["max", nested],
+    ["count", nested],
+    ["nUnique", nested],
+    ["first", nested],
+    ["last", nested]
+  ] as const)("rejects a %s aggregation whose saved input type is incompatible", (operation, reference) => {
+    const error = savedStepEditError(
+      step("groupBy", {
+        keys: [text],
+        aggregations: [{ column: reference, operation, alias: "result" }]
+      }),
+      schema
+    );
+    expect(error).toContain("saved aggregation value 1 uses a recorded");
+    expect(error).toContain(`the ${operation} aggregation does not support that column type`);
+  });
+
+  it.each([
+    [
       "fallback type mismatch",
       step("fillMissingValues", {
         column: text,
@@ -398,6 +501,67 @@ describe("savedStepEditError", () => {
   ])("accepts compatible saved fill references for $params.replacement.kind", (savedStep) => {
     expect(savedStepEditError(savedStep, schema)).toBeUndefined();
   });
+
+  it.each([
+    [
+      "unsupported target",
+      step("fillMissingValues", { column: nested, replacement: { kind: "string", value: "" } }),
+      "does not support filling"
+    ],
+    ["median target", step("fillMissingValues", { column: text, replacement: { kind: "median" } }), "not compatible"],
+    ["mean target", step("fillMissingValues", { column: order, replacement: { kind: "mean" } }), "not compatible"],
+    [
+      "most-frequent target",
+      step("fillMissingValues", { column: value, replacement: { kind: "mostFrequent" } }),
+      "not compatible"
+    ],
+    [
+      "grouped-median target",
+      step("fillMissingValues", {
+        column: text,
+        replacement: { kind: "groupedStatistic", statistic: "median", keys: [order] }
+      }),
+      "not compatible"
+    ],
+    [
+      "grouped-mean target",
+      step("fillMissingValues", {
+        column: order,
+        replacement: { kind: "groupedStatistic", statistic: "mean", keys: [text] }
+      }),
+      "not compatible"
+    ],
+    [
+      "grouped-most-frequent target",
+      step("fillMissingValues", {
+        column: value,
+        replacement: { kind: "groupedStatistic", statistic: "mostFrequent", keys: [text] }
+      }),
+      "not compatible"
+    ],
+    [
+      "directional target",
+      step("fillMissingValues", {
+        column: mystery,
+        replacement: {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [{ column: order, direction: "asc", nulls: "last" }]
+        }
+      }),
+      "not compatible"
+    ],
+    [
+      "explicit value kind",
+      step("fillMissingValues", { column: order, replacement: { kind: "float", value: "1" } }),
+      "not compatible"
+    ]
+  ] satisfies [caseName: string, savedStep: TransformStep, message: string][])(
+    "rejects saved fill method/target policy mismatch: %s",
+    (_caseName, savedStep, message) => {
+      expect(savedStepEditError(savedStep, schema)).toContain(message);
+    }
+  );
 
   it("requires a deterministic by-example program and contains every nested operand within selected sources", () => {
     expect(
