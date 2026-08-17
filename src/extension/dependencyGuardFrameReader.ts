@@ -84,7 +84,12 @@ export class BoundedDependencyGuardFrameReader {
   }
 
   end(): void {
-    this.dispose();
+    if (this.failed || this.disposed) return;
+    if (this.frameReceived) {
+      this.dispose();
+      return;
+    }
+    this.fail("the helper output stream ended before its single result frame");
   }
 
   dispose(): void {
