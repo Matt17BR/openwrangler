@@ -29,6 +29,18 @@ cell position, and restores focus after it arrives if the webview still owns foc
 not known yet, the grid exposes an unknown ARIA row count and only a bounded next block. **Next block** continues the
 traversal until a terminal page establishes the total.
 
+Click a cell to start a selection. Drag across rendered cells with a mouse or pen, or use `Shift+click` or
+`Shift+Arrow`, to extend the anchor into one rectangular range. Pointer dragging suppresses native text selection and
+returns the grid's roving Tab stop to the range endpoint when the webview still owns focus. Bounded edge scrolling can
+bring adjacent rendered cells into the drag. Touch pointers retain native scrolling; use the keyboard commands for a
+precise touch-assisted selection.
+
+`Ctrl/Cmd+click` starts a new rectangle. Open Wrangler does not support non-contiguous grid selections. The grid's
+accessible description states these rules, and the footer reports the selected dimensions. **Copy range** or
+`Ctrl/Cmd+C` copies the displayed values in the rectangle as tab-separated rows. **Copy cell** copies the focused
+cell. **Copy row** copies the loaded columns in the focused row and says when the row is only a projected set of
+columns.
+
 PySpark traversal remains contiguous even after the total becomes exact. In that backend, `Ctrl/Cmd+End` advances
 only to the next permitted block instead of skipping directly to the final row.
 
@@ -146,6 +158,8 @@ The layout change is announced. If focus was inside a chart that disappears, foc
 
 - Large grids virtualize both dimensions. Keyboard navigation requests off-screen data as needed, but cells outside
   the rendered window are not present in the document at the same time.
+- Pointer range selection advances only through rendered cells. Use Shift-modified keyboard navigation to extend a
+  range farther than bounded edge scrolling can reveal during a drag.
 - PySpark does not expose an exact grid row count until traversal reaches its terminal page. Before then, the row-count
   status says that the total appears after the last page.
 - Some distributions are intentionally non-interactive when the backend or current state does not permit filtering.
