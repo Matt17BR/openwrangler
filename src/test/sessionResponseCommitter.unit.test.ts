@@ -502,6 +502,8 @@ function inspectionResponse(stepIndex: number): StepInspectionResponse {
     stepIndex,
     inputPage: gridPage(0, 10, 10),
     outputPage: gridPage(0, 10, 10),
+    inputRowAxis: { kind: "positional", levelNames: [] },
+    outputRowAxis: { kind: "positional", levelNames: [] },
     inputSchema: schema,
     outputSchema: schema,
     diff: emptyDiff(),

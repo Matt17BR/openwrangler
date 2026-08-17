@@ -8,6 +8,7 @@ import type {
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope,
+  RowAxis,
   SessionDataShape,
   SessionMetadata,
   TransformColumnFilter,
@@ -261,11 +262,16 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       );
     }
     case "exportData": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "path", "format"], ["targetIdentity"]);
+      const candidate = exactRecord(
+        value,
+        ["kind", "sessionId", "revision", "path", "format"],
+        ["rowAxisPolicy", "targetIdentity"]
+      );
       return (
         isSessionRequest(candidate, "exportData") &&
         isNonEmptyString(candidate.path) &&
         isOneOf(candidate.format, ["csv", "parquet"]) &&
+        optional(candidate, "rowAxisPolicy", (policy) => isOneOf(policy, ["preserve", "omit"])) &&
         (candidate.targetIdentity === undefined || isExportTargetIdentity(candidate.targetIdentity))
       );
     }
@@ -442,7 +448,7 @@ function isStepPreviewResponse(value: unknown): boolean {
     candidate.kind === "stepPreview" &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page, candidate.metadata.schema) &&
+    isGridPageForRowAxis(candidate.page, candidate.metadata.schema, candidate.metadata.rowAxis) &&
     isDataDiff(candidate.diff, candidate.metadata.schema) &&
     isString(candidate.code) &&
     optional(candidate, "remainingMissingCells", isNonNegativeInteger) &&
@@ -465,6 +471,8 @@ function isStepInspectionResponse(value: unknown): boolean {
     "outputPage",
     "inputSchema",
     "outputSchema",
+    "inputRowAxis",
+    "outputRowAxis",
     "diff",
     "code"
   ]);
@@ -476,8 +484,10 @@ function isStepInspectionResponse(value: unknown): boolean {
     isNonNegativeInteger(candidate.stepIndex) &&
     isColumnSchemaArray(candidate.inputSchema) &&
     isColumnSchemaArray(candidate.outputSchema) &&
-    isGridPage(candidate.inputPage, candidate.inputSchema) &&
-    isGridPage(candidate.outputPage, candidate.outputSchema) &&
+    isRowAxis(candidate.inputRowAxis) &&
+    isRowAxis(candidate.outputRowAxis) &&
+    isGridPageForRowAxis(candidate.inputPage, candidate.inputSchema, candidate.inputRowAxis) &&
+    isGridPageForRowAxis(candidate.outputPage, candidate.outputSchema, candidate.outputRowAxis) &&
     isDataDiff(candidate.diff, candidate.outputSchema) &&
     isString(candidate.code)
   );
@@ -491,7 +501,7 @@ function isPlanUpdatedResponse(value: unknown): boolean {
     isOneOf(candidate.action, ["apply", "discard", "undo"]) &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page, candidate.metadata.schema) &&
+    isGridPageForRowAxis(candidate.page, candidate.metadata.schema, candidate.metadata.rowAxis) &&
     isString(candidate.code)
   );
 }
@@ -558,7 +568,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       "filterModel",
       "steps"
     ],
-    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor"]
+    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor", "rowAxis"]
   );
   return (
     candidate !== undefined &&
@@ -585,6 +595,9 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isSessionDataShape(candidate.filteredShape) &&
     (candidate.backend === "pyspark" || (candidate.shape.rows !== null && candidate.filteredShape.rows !== null)) &&
     isColumnSchemaArray(candidate.schema) &&
+    (candidate.backend === "pandas"
+      ? isRowAxis(candidate.rowAxis)
+      : !Object.prototype.hasOwnProperty.call(candidate, "rowAxis")) &&
     isFilterModel(candidate.filterModel) &&
     Array.isArray(candidate.steps) &&
     candidate.steps.every(isRetainedTransformStep) &&
@@ -1553,7 +1566,7 @@ function isUnknownTotalGridPage(value: unknown, schema?: readonly ColumnSchema[]
 }
 
 function isLiveGridPageForMetadata(value: unknown, metadata: SessionMetadata): boolean {
-  if (isGridPage(value, metadata.schema)) {
+  if (isGridPageForRowAxis(value, metadata.schema, metadata.rowAxis)) {
     return metadata.filteredShape.rows === (value as { totalRows: number }).totalRows;
   }
   return (
@@ -1561,6 +1574,33 @@ function isLiveGridPageForMetadata(value: unknown, metadata: SessionMetadata): b
     metadata.filteredShape.rows === null &&
     isUnknownTotalGridPage(value, metadata.schema)
   );
+}
+
+function isGridPageForRowAxis(value: unknown, schema: readonly ColumnSchema[], rowAxis: RowAxis | undefined): boolean {
+  if (!isGridPage(value, schema)) return false;
+  if (rowAxis === undefined) return true;
+  const rows = (value as { rows: Array<{ rowLabel?: string }> }).rows;
+  return rowAxis.kind === "positional"
+    ? rows.every((row) => row.rowLabel === undefined)
+    : rows.every((row) => row.rowLabel !== undefined);
+}
+
+function isRowAxis(value: unknown): value is RowAxis {
+  const candidate = exactRecord(value, ["kind", "levelNames"]);
+  if (
+    candidate === undefined ||
+    !isOneOf(candidate.kind, ["positional", "index", "multiIndex"]) ||
+    !Array.isArray(candidate.levelNames) ||
+    candidate.levelNames.length > 64 ||
+    !candidate.levelNames.every(
+      (name) => name === null || (isString(name) && hasAtMostCodePoints(name, MAX_ROW_LABEL_CODE_POINTS))
+    )
+  ) {
+    return false;
+  }
+  if (candidate.kind === "positional") return candidate.levelNames.length === 0;
+  if (candidate.kind === "index") return candidate.levelNames.length === 1;
+  return candidate.levelNames.length >= 2;
 }
 
 function isDataRow(value: unknown, expectedWidth?: number): boolean {

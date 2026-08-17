@@ -1270,6 +1270,22 @@ Grid clipboard selection, 2026-08-16:
   rows, exact UTF-8 boundaries, payload-free rejection, stale and oversized selections, pointer and keyboard range
   extension, the platform copy shortcut, view replacement, and clipboard denial.
 
+Pandas index fidelity, 2026-08-17:
+
+- Pandas session metadata carries a separate bounded row-axis descriptor for a positional index, named index, or
+  MultiIndex. Its level names and page row labels never become ordinary schema columns, and non-Pandas session
+  metadata cannot claim the Pandas-only descriptor.
+- Pandas pages derive each label from the exact post-filter and post-sort slice. The shared grid renders those labels
+  as accessible row headers, keeps ordinary columns on their full-schema ARIA coordinates, and preserves row-axis
+  metadata across preview, apply, inspection, recovery, and undo.
+- Every Pandas CSV or Parquet export requires an explicit **Preserve index** or **Omit index** choice before runtime
+  dispatch. The request remains pinned through the existing Atomic Export writer; other backends reject the policy
+  rather than silently interpreting it.
+- Focused protocol, validation, runtime, coordinator, React, and extension-host owners cover named and multi-level
+  axes, duplicate and non-string ordinary labels, positional reset/inspection/undo, exact exported files, source
+  immutability, and terminal session cleanup. The live notebook journey exercises both CSV preservation and Parquet
+  omission through the real shared webview.
+
 Shared cleaned-data publication, 2026-08-16:
 
 - Pandas, Polars, and DuckDB CSV/Parquet runtime tests write only a host-reserved target with a pinned filesystem

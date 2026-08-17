@@ -42,6 +42,7 @@ describe("host-owned Python data export", () => {
           device: expect.stringMatching(/^(?:0|[1-9][0-9]*)$/u),
           inode: expect.stringMatching(/^(?:0|[1-9][0-9]*)$/u)
         });
+        expect(request.rowAxisPolicy).toBe("preserve");
         await writeFile(request.path, EXPORTED_BYTES);
         return exportedResponse(request);
       }
@@ -287,7 +288,8 @@ describe("host-owned Python data export", () => {
       sessionId: "python-session",
       revision: 4,
       path: destination,
-      format: "csv"
+      format: "csv",
+      rowAxisPolicy: "preserve"
     };
   }
 

@@ -13,7 +13,12 @@ from typing import Any, Literal
 
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
-from .engines.base import PageColumnProjection, SummaryColumnProjection, reconcile_view_filter_model
+from .engines.base import (
+    PageColumnProjection,
+    RowAxisExportPolicy,
+    SummaryColumnProjection,
+    reconcile_view_filter_model,
+)
 from .export_target import ExportTarget, ExportTargetError
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
@@ -793,6 +798,8 @@ class SessionManager:
                 "outputPage": output_page,
                 "inputSchema": input_schema,
                 "outputSchema": output_schema,
+                "inputRowAxis": session.engine.row_axis(before),
+                "outputRowAxis": session.engine.row_axis(after),
                 "diff": self._diff(
                     session,
                     before,
@@ -992,6 +999,7 @@ class SessionManager:
         path: str,
         format_name: Literal["csv", "parquet"],
         target_identity: Mapping[str, Any] | None = None,
+        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._exclusive_session_read(session):
@@ -1003,6 +1011,11 @@ class SessionManager:
                 raise EngineError(f"Unsupported export format: {format_name}")
             if format_name not in session.engine.capabilities.export_formats:
                 raise EngineError(f"The {session.backend} backend cannot export {format_name} data.")
+            if session.backend == "pandas":
+                if row_axis_policy not in {"preserve", "omit"}:
+                    raise EngineError("Pandas export requires an explicit preserve-or-omit index choice.")
+            elif row_axis_policy is not None:
+                raise EngineError(f"The {session.backend} backend does not accept a Pandas row-axis policy.")
 
             source_path = session.source.get("path")
             if source_path and Path(path).absolute() == Path(str(source_path)).absolute():
@@ -1016,7 +1029,12 @@ class SessionManager:
                 ):
                     raise ExportTargetError("The host-owned export target cannot be the active source file.")
                 with target.pinned_writer_path() as writer_path:
-                    session.engine.export_data(session.committed, writer_path, format_name)
+                    session.engine.export_data(
+                        session.committed,
+                        writer_path,
+                        format_name,
+                        row_axis_policy=row_axis_policy,
+                    )
             except ExportTargetError as error:
                 raise EngineError(str(error)) from error
 
@@ -1333,6 +1351,8 @@ class SessionManager:
             "filterModel": session.filter_model,
             "steps": session.plan,
         }
+        if session.backend == "pandas":
+            metadata["rowAxis"] = session.engine.row_axis(session.display_frame)
         if session.plan_input_schemas:
             metadata["latestStepInputSchema"] = session.plan_input_schemas[-1]
         if session.draft_step is not None:

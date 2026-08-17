@@ -14,6 +14,7 @@ type AcceptancePoll = (probe: () => Promise<boolean>, options: AcceptancePollOpt
 
 export interface CleanedDataExportTiming {
   readonly pollCondition?: AcceptancePoll;
+  readonly rowAxisPolicy?: "preserve" | "omit";
 }
 
 export async function exportCleanedDataThroughWorkbench(
@@ -21,11 +22,11 @@ export async function exportCleanedDataThroughWorkbench(
   workbench: Page,
   destination: string,
   format: CleanedDataExportFormat = "csv",
-  { pollCondition = pollAcceptanceCondition }: CleanedDataExportTiming = {}
+  { pollCondition = pollAcceptanceCondition, rowAxisPolicy }: CleanedDataExportTiming = {}
 ): Promise<void> {
   await dismissStaleWorkbenchHover(workbench, pollCondition);
   await app.getByRole("button", { name: "Export", exact: true }).click();
-  await completeCleanedDataExportDialog(workbench, destination, format, pollCondition);
+  await completeCleanedDataExportDialog(workbench, destination, format, rowAxisPolicy, pollCondition);
 }
 
 export async function dismissStaleWorkbenchHover(
@@ -48,6 +49,7 @@ async function completeCleanedDataExportDialog(
   workbench: Page,
   destination: string,
   format: CleanedDataExportFormat,
+  rowAxisPolicy: "preserve" | "omit" | undefined,
   pollCondition: AcceptancePoll
 ): Promise<void> {
   const formatPicker = workbench
@@ -74,6 +76,28 @@ async function completeCleanedDataExportDialog(
     );
   }
   await formatOption.click();
+  if (rowAxisPolicy !== undefined) {
+    const policyPicker = workbench
+      .locator(".quick-input-widget:visible")
+      .filter({ hasText: "Export Pandas Index" })
+      .last();
+    await policyPicker.waitFor({ state: "visible", timeout: 10_000 });
+    const policyLabel = rowAxisPolicy === "preserve" ? /^Preserve index/u : /^Omit index/u;
+    const policyOption = policyPicker.getByRole("option").filter({ hasText: policyLabel }).first();
+    try {
+      await policyOption.waitFor({ state: "visible", timeout: 10_000 });
+    } catch (error) {
+      const options = (await policyPicker.getByRole("option").allInnerTexts()).map((text) =>
+        text.replace(/\s+/gu, " ").trim().slice(0, 200)
+      );
+      throw new Error(
+        `The cleaned-data export picker did not offer the Pandas ${rowAxisPolicy} policy. ` +
+          `Visible options: ${JSON.stringify(options)}.`,
+        { cause: error }
+      );
+    }
+    await policyOption.click();
+  }
   assert.equal(
     await pollCondition(
       async () =>

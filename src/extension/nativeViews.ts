@@ -11,7 +11,7 @@ import {
   supportsOperation
 } from "../shared/operations";
 import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
-import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
+import type { FilterModel, OperationKind, RowAxisExportPolicy, SessionMetadata } from "../shared/protocol";
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
 import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../shared/runtimeIdentity";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
@@ -1215,11 +1215,26 @@ async function exportSessionData(coordinator: SessionCoordinator, pin: SessionEx
     placeHolder: "Choose a file format"
   });
   if (!selected) return false;
+  const confirmedBeforePolicy = pinnedExportSnapshot(coordinator, pin);
+  if (!confirmedBeforePolicy || confirmedBeforePolicy.metadata.draftStep) {
+    if (confirmedBeforePolicy?.metadata.draftStep) {
+      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+    }
+    return false;
+  }
+  const rowAxisPolicy = await selectPandasRowAxisExportPolicy(confirmedBeforePolicy);
+  if (confirmedBeforePolicy.metadata.backend === "pandas" && rowAxisPolicy === undefined) return false;
   const confirmedBeforeSave = pinnedExportSnapshot(coordinator, pin);
   if (!confirmedBeforeSave || confirmedBeforeSave.metadata.draftStep) {
     if (confirmedBeforeSave?.metadata.draftStep) {
       void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
     }
+    return false;
+  }
+  if ((confirmedBeforeSave.metadata.backend === "pandas") !== (rowAxisPolicy !== undefined)) {
+    void vscode.window.showWarningMessage(
+      "The dataframe backend changed while export was open. Review the current data and try again."
+    );
     return false;
   }
   const stillSupported =
@@ -1258,10 +1273,19 @@ async function exportSessionData(coordinator: SessionCoordinator, pin: SessionEx
     void vscode.window.showWarningMessage("The selected export format is no longer available for this dataframe.");
     return false;
   }
+  if ((confirmedBeforeDispatch.metadata.backend === "pandas") !== (rowAxisPolicy !== undefined)) {
+    void vscode.window.showWarningMessage(
+      "The dataframe backend changed while export was open. Review the current data and try again."
+    );
+    return false;
+  }
   try {
     const exported = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
-      () => coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, selected.format)
+      () =>
+        rowAxisPolicy === undefined
+          ? coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, selected.format)
+          : coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, selected.format, rowAxisPolicy)
     );
     void vscode.window.showInformationMessage(
       `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`
@@ -1271,6 +1295,41 @@ async function exportSessionData(coordinator: SessionCoordinator, pin: SessionEx
     void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     return false;
   }
+}
+
+async function selectPandasRowAxisExportPolicy(
+  snapshot: ActiveSessionSnapshot
+): Promise<RowAxisExportPolicy | undefined> {
+  if (snapshot.metadata.backend !== "pandas") return undefined;
+  const rowAxis = snapshot.metadata.rowAxis;
+  if (!rowAxis) {
+    void vscode.window.showWarningMessage("The Pandas session did not provide row-index metadata for export.");
+    return undefined;
+  }
+  const defaultPolicy: RowAxisExportPolicy = rowAxis.kind === "positional" ? "omit" : "preserve";
+  const choices = (
+    [
+      {
+        label: "Preserve index",
+        description: "Write the Pandas index to the exported file",
+        policy: "preserve" as const
+      },
+      {
+        label: "Omit index",
+        description: "Export only ordinary dataframe columns",
+        policy: "omit" as const
+      }
+    ] satisfies Array<{
+      label: string;
+      description: string;
+      policy: RowAxisExportPolicy;
+    }>
+  ).sort((left, right) => Number(right.policy === defaultPolicy) - Number(left.policy === defaultPolicy));
+  const selected = await vscode.window.showQuickPick(choices, {
+    title: "Export Pandas Index",
+    placeHolder: "Choose whether to preserve the dataframe index"
+  });
+  return selected?.policy;
 }
 
 function pinnedExportSnapshot(

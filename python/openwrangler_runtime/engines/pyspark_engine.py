@@ -20,6 +20,7 @@ from .base import (
     EngineError,
     EngineRequestFailure,
     PageColumnProjection,
+    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     categorical_visualization,
@@ -1006,8 +1007,10 @@ class PySparkEngine(DataFrameEngine):
         frame: Any,
         path: str | os.PathLike[str],
         format_name: Literal["csv", "parquet"],
+        *,
+        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> None:
-        del frame, path, format_name
+        del frame, path, format_name, row_axis_policy
         raise EngineError("PySpark notebook sessions do not export data.")
 
     def close(self) -> None:

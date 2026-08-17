@@ -1926,7 +1926,8 @@ export function App() {
       ...metadata,
       shape,
       filteredShape: shape,
-      schema: stepInspection.outputSchema
+      schema: stepInspection.outputSchema,
+      ...(metadata.backend === "pandas" ? { rowAxis: stepInspection.outputRowAxis } : {})
     };
   }, [metadata, stepInspection]);
   const displayPage = inspectionMode

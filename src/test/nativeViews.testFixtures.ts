@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
-import type { SessionMetadata, TransformStep } from "../shared/protocol";
+import type { RowAxisExportPolicy, SessionMetadata, TransformStep } from "../shared/protocol";
 import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
 
@@ -241,7 +241,13 @@ function register(
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
   const sessions = new Map<string, ActiveSessionSnapshot>([[snapshot.sessionId, snapshot]]);
   const exportData = vi.fn(
-    async (sessionId: string, revision: number, destination: string, format: "csv" | "parquet") => ({
+    async (
+      sessionId: string,
+      revision: number,
+      destination: string,
+      format: "csv" | "parquet",
+      _rowAxisPolicy?: RowAxisExportPolicy
+    ) => ({
       kind: "dataExported" as const,
       revision,
       path: destination,
@@ -366,6 +372,17 @@ function exportableSnapshot(sessionId: string, label: string, revision: number):
   };
 }
 
+function pandasExportableSnapshot(
+  sessionId: string,
+  label: string,
+  revision: number,
+  rowAxis: SessionMetadata["rowAxis"]
+): ActiveSessionSnapshot {
+  const result = exportableSnapshot(sessionId, label, revision);
+  result.metadata = { ...result.metadata, backend: "pandas", rowAxis };
+  return result;
+}
+
 function notebookVariableSnapshot(): ActiveSessionSnapshot {
   const result = noDraftSnapshot();
   result.metadata = {
@@ -391,9 +408,11 @@ function notebookVariableSnapshot(): ActiveSessionSnapshot {
 
 function rNotebookSnapshot(): ActiveSessionSnapshot {
   const result = noDraftSnapshot();
+  const { rowAxis: _rowAxis, ...nonPandasMetadata } = result.metadata;
+  void _rowAxis;
   result.code = "clean_data <- function(df) {\n  df\n}\n";
   result.metadata = {
-    ...result.metadata,
+    ...nonPandasMetadata,
     backend: "r",
     rDataframeFlavor: "r.data.frame",
     mode: "editing",
@@ -418,9 +437,11 @@ function rNotebookSnapshot(): ActiveSessionSnapshot {
 
 function rDocumentSnapshot(): ActiveSessionSnapshot {
   const result = noDraftSnapshot();
+  const { rowAxis: _rowAxis, ...nonPandasMetadata } = result.metadata;
+  void _rowAxis;
   result.code = "clean_data <- function(df) {\n  df\n}\n";
   result.metadata = {
-    ...result.metadata,
+    ...nonPandasMetadata,
     backend: "r",
     rDataframeFlavor: "r.data.frame",
     mode: "editing",
@@ -463,9 +484,10 @@ function snapshot(
       sessionId: "session",
       revision: 0,
       backend: "pandas",
+      rowAxis: { kind: "positional", levelNames: [] },
       source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
       ...plan
-    } as SessionMetadata,
+    } as unknown as SessionMetadata,
     viewState: {
       filterModel: { filters: [], sort: [] },
       columnWidths: {},
@@ -478,6 +500,7 @@ export {
   appliedStep,
   command,
   exportableSnapshot,
+  pandasExportableSnapshot,
   nativeMocks,
   noDraftSnapshot,
   nodePresentation,

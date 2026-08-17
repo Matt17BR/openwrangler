@@ -467,6 +467,27 @@
         "columns": { "type": "integer", "minimum": 0 }
       }
     },
+    "RowAxisKind": {
+      "description": "How a dataframe's row axis is presented without exposing it as ordinary columns.",
+      "type": "string",
+      "enum": ["positional", "index", "multiIndex"]
+    },
+    "RowAxis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "levelNames"],
+      "properties": {
+        "kind": { "$ref": "#/definitions/RowAxisKind" },
+        "levelNames": {
+          "description": "Ordered row-axis level names. Null represents an unnamed level.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "oneOf": [{ "type": "string", "maxLength": 1024 }, { "type": "null" }]
+          }
+        }
+      }
+    },
     "SessionDataShape": {
       "description": "Live-session shape. A null row count means the backend deliberately has not run a full count.",
       "type": "object",
@@ -1850,6 +1871,15 @@
             }
           },
           {
+            "required": ["backend"],
+            "properties": { "backend": { "const": "pandas" } },
+            "not": { "required": ["rowAxis"] }
+          },
+          {
+            "required": ["backend", "rowAxis"],
+            "properties": { "backend": { "not": { "const": "pandas" } } }
+          },
+          {
             "required": ["backend", "source"],
             "properties": {
               "backend": { "not": { "const": "r" } },
@@ -1919,6 +1949,7 @@
         "shape": { "$ref": "#/definitions/SessionDataShape" },
         "filteredShape": { "$ref": "#/definitions/SessionDataShape" },
         "schema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
+        "rowAxis": { "$ref": "#/definitions/RowAxis" },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
         "steps": { "type": "array", "items": { "$ref": "#/definitions/RetainedTransformStep" } },
         "latestStepInputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
@@ -2178,6 +2209,11 @@
         "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
+    "RowAxisExportPolicy": {
+      "description": "Explicit Pandas CSV/Parquet export treatment for the dataframe index.",
+      "type": "string",
+      "enum": ["preserve", "omit"]
+    },
     "ExportDataRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -2188,6 +2224,7 @@
         "revision": { "type": "integer", "minimum": 0 },
         "path": { "type": "string", "minLength": 1 },
         "format": { "type": "string", "enum": ["csv", "parquet"] },
+        "rowAxisPolicy": { "$ref": "#/definitions/RowAxisExportPolicy" },
         "targetIdentity": { "$ref": "#/definitions/ExportTargetIdentity" }
       }
     },
@@ -2334,6 +2371,8 @@
         "outputPage",
         "inputSchema",
         "outputSchema",
+        "inputRowAxis",
+        "outputRowAxis",
         "diff",
         "code"
       ],
@@ -2346,6 +2385,8 @@
         "outputPage": { "$ref": "#/definitions/GridPage" },
         "inputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "outputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
+        "inputRowAxis": { "$ref": "#/definitions/RowAxis" },
+        "outputRowAxis": { "$ref": "#/definitions/RowAxis" },
         "diff": { "$ref": "#/definitions/DataDiff" },
         "code": { "type": "string" }
       }

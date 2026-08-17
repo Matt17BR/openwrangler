@@ -83,7 +83,7 @@ describe("notebook output", () => {
     expect(
       normalizeNotebookOutputPayload({
         mimeVersion: 2,
-        metadata: { ...metadata, backend: "pandas" },
+        metadata: { ...metadata, backend: "pandas", rowAxis: { kind: "positional", levelNames: [] } },
         page,
         summaries: []
       })?.metadata.backend

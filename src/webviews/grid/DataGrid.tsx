@@ -196,6 +196,11 @@ export function DataGrid({
   const logicalRowExtent = liveGridLogicalRowExtent(page);
   const hasMoreRows = liveGridPageHasMore(page);
   const pageHasRowLabels = page.rows.some((row) => row.rowLabel !== undefined);
+  const rowAxisHeader = rowAxisHeaderLabel(metadata);
+  const rowAxisSignature = metadata.rowAxis
+    ? `${metadata.rowAxis.kind}:${metadata.rowAxis.levelNames.map((name) => name ?? "").join("\u0000")}`
+    : "legacy";
+  const currentHasRowLabels = pageHasRowLabels || rowAxisHeader !== undefined;
   const summaryByColumnId = useMemo(
     () => new Map(summaries.map((summary) => [summary.columnId, summary])),
     [summaries]
@@ -209,20 +214,22 @@ export function DataGrid({
   const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
   const headerProfilesButtonRef = useRef<HTMLButtonElement>(null);
   const profileFitDescriptionId = useId();
-  const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows);
+  const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows, rowAxisHeader);
   const [rowHeaderState, setRowHeaderState] = useState({
     sessionId: metadata.sessionId,
-    hasLabels: pageHasRowLabels,
+    axisSignature: rowAxisSignature,
+    hasLabels: currentHasRowLabels,
     width: nextRowHeaderWidth
   });
   let resolvedRowHeaderState = rowHeaderState;
-  if (rowHeaderState.sessionId !== metadata.sessionId) {
+  if (rowHeaderState.sessionId !== metadata.sessionId || rowHeaderState.axisSignature !== rowAxisSignature) {
     resolvedRowHeaderState = {
       sessionId: metadata.sessionId,
-      hasLabels: pageHasRowLabels,
+      axisSignature: rowAxisSignature,
+      hasLabels: currentHasRowLabels,
       width: nextRowHeaderWidth
     };
-  } else if (pageHasRowLabels) {
+  } else if (currentHasRowLabels) {
     const width = Math.max(rowHeaderState.width, nextRowHeaderWidth);
     if (!rowHeaderState.hasLabels || width !== rowHeaderState.width) {
       resolvedRowHeaderState = { ...rowHeaderState, hasLabels: true, width };
@@ -1267,10 +1274,10 @@ export function DataGrid({
             <tr>
               <th
                 className={`rowHeader${hasRowLabels ? " labeledRowHeader" : ""}`}
-                aria-label={hasRowLabels ? "Row label" : "Row number"}
+                aria-label={rowAxisHeader ? `${rowAxisHeader} row labels` : hasRowLabels ? "Row label" : "Row number"}
                 style={{ width: rowHeaderWidth, maxWidth: rowHeaderWidth }}
               >
-                {hasRowLabels ? "Row" : "#"}
+                {rowAxisHeader ?? (hasRowLabels ? "Row" : "#")}
               </th>
               {leftSpacerWidth > 0 && <th className="virtualSpacer" aria-hidden="true" />}
               {visibleColumns.map((column) => {
@@ -1332,7 +1339,7 @@ export function DataGrid({
                   aria-label={
                     row.rowLabel === undefined
                       ? `Row ${row.rowNumber + 1}`
-                      : `Row ${row.rowNumber + 1}, label ${row.rowLabel}`
+                      : `Row ${row.rowNumber + 1}, ${rowAxisHeader ?? "label"} ${row.rowLabel}`
                   }
                   title={
                     row.rowLabel === undefined
@@ -2481,16 +2488,24 @@ function columnRange(
   };
 }
 
-function rowHeaderWidthForRows(rows: readonly { readonly rowLabel?: string }[]): number {
+function rowHeaderWidthForRows(rows: readonly { readonly rowLabel?: string }[], header?: string): number {
   const longestLabel = rows.reduce(
     (longest, row) => Math.max(longest, row.rowLabel === undefined ? 0 : Array.from(row.rowLabel).length),
-    0
+    header === undefined ? 0 : Array.from(header).length
   );
   if (longestLabel === 0) return numericRowHeaderWidth;
   return Math.min(
     maximumLabeledRowHeaderWidth,
     Math.max(numericRowHeaderWidth, longestLabel * rowLabelCharacterWidth + rowLabelHorizontalPadding)
   );
+}
+
+function rowAxisHeaderLabel(metadata: SessionMetadata): string | undefined {
+  const rowAxis = metadata.rowAxis;
+  if (!rowAxis || rowAxis.kind === "positional") return undefined;
+  const names = rowAxis.levelNames.filter((name): name is string => name !== null && name.length > 0);
+  if (rowAxis.kind === "index") return names[0] ?? "Index";
+  return names.length > 0 ? names.join(" / ") : "Index";
 }
 
 function centeredColumnScrollLeft(

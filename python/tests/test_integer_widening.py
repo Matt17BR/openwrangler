@@ -309,7 +309,7 @@ def test_pandas_wide_integer_remains_numeric_for_followup_grouping_and_parquet_e
     assert isinf(column_values(divided_generated, "ratio")[1]) and column_values(divided_generated, "ratio")[1] < 0
 
     destination = tmp_path / "wide-integers.parquet"
-    engine.export_data(transformed, str(destination), "parquet")
+    engine.export_data(transformed, str(destination), "parquet", row_axis_policy="omit")
     exported = pd.read_parquet(destination)
     assert [int(value) for value in exported["previous"]] == [-(2**63) - 1, -(2**63)]
     assert engine.schema(exported)[1]["type"] == "decimal"

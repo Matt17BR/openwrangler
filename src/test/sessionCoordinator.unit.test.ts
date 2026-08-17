@@ -125,6 +125,56 @@ describe("SessionCoordinator", () => {
     expect(firstDelegate).toHaveBeenCalledTimes(2);
   });
 
+  it("requires and forwards an explicit Pandas row-axis export policy only for Pandas", async () => {
+    const delegate = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        const opened = openedResponse("runtime-pandas", "pandas");
+        opened.metadata = { ...opened.metadata, source: request.source };
+        return opened;
+      }
+      if (request.kind === "exportData") {
+        return {
+          kind: "dataExported",
+          revision: request.revision,
+          path: request.path,
+          format: request.format,
+          shape: { rows: 2, columns: 1 }
+        };
+      }
+      throw new Error(`Unexpected Pandas export request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegate });
+    const opened = await bridge.request({ ...openRequest, backend: "pandas" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the Pandas session to open.");
+
+    await expect(
+      coordinator.exportData(opened.metadata.sessionId, opened.metadata.revision, "/tmp/missing.csv", "csv")
+    ).rejects.toThrow("explicit preserve-or-omit");
+    expect(delegate).toHaveBeenCalledOnce();
+
+    await expect(
+      coordinator.exportData(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        "/tmp/preserved.csv",
+        "csv",
+        "preserve"
+      )
+    ).resolves.toMatchObject({ kind: "dataExported", path: "/tmp/preserved.csv" });
+    expect(delegate).toHaveBeenLastCalledWith(
+      {
+        kind: "exportData",
+        sessionId: "runtime-pandas",
+        revision: 0,
+        path: "/tmp/preserved.csv",
+        format: "csv",
+        rowAxisPolicy: "preserve"
+      },
+      undefined
+    );
+  });
+
   it.each(["pyspark_connect_unavailable", "pyspark_connect_state_lost"] as const)(
     "keeps the confirmed PySpark view after %s",
     async (code) => {

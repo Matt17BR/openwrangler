@@ -1782,7 +1782,8 @@ describe("kernel data export publication", () => {
           sessionId: opened.metadata.sessionId,
           revision: 0,
           path: destinationPath,
-          format: "parquet"
+          format: "parquet",
+          rowAxisPolicy: "preserve"
         })
       ).resolves.toMatchObject({ kind: "dataExported", path: destinationPath });
 
@@ -2389,6 +2390,7 @@ function openedResponse(sessionId: string, backend: TestBackend = "polars"): Ope
       shape: { rows: 0, columns: 0 },
       filteredShape: { rows: 0, columns: 0 },
       schema: [],
+      ...(backend === "pandas" ? { rowAxis: { kind: "positional" as const, levelNames: [] } } : {}),
       filterModel: { logic: "and", filters: [], sort: [] },
       steps: []
     },

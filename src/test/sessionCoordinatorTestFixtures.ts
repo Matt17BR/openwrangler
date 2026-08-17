@@ -50,6 +50,7 @@ export function openedResponse(
     },
     shape: { rows: 0, columns: 0 },
     filteredShape: { rows: 0, columns: 0 },
+    ...(backend === "pandas" ? { rowAxis: { kind: "positional" as const, levelNames: [] } } : {}),
     schema: [],
     filterModel: { filters: [], sort: [] },
     steps: []
@@ -171,6 +172,8 @@ export function stepInspectionResponse(
     stepIndex,
     inputPage: inspectionPage,
     outputPage: inspectionPage,
+    inputRowAxis: { kind: "positional", levelNames: [] },
+    outputRowAxis: { kind: "positional", levelNames: [] },
     inputSchema: [],
     outputSchema: [],
     diff: {

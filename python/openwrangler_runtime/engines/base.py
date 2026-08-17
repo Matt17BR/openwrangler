@@ -35,6 +35,8 @@ ColumnType = Literal[
 ]
 EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
+RowAxisKind = Literal["positional", "index", "multiIndex"]
+RowAxisExportPolicy = Literal["preserve", "omit"]
 EngineRequestFailure = Literal["temporarily_unavailable", "state_lost"]
 PageColumnProjection = Sequence[tuple[int, str]]
 SummaryColumnProjection = Sequence[tuple[int, str]]
@@ -44,6 +46,11 @@ ExcelSheetSelector = tuple[Literal["sheetName"], str] | tuple[Literal["sheetInde
 class SessionDataShape(TypedDict):
     rows: int | None
     columns: int
+
+
+class RowAxis(TypedDict):
+    kind: RowAxisKind
+    levelNames: list[str | None]
 
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
@@ -873,8 +880,15 @@ class DataFrameEngine(ABC):
         frame: Any,
         path: str | os.PathLike[str],
         format_name: Literal["csv", "parquet"],
+        *,
+        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> None:
         raise NotImplementedError
+
+    def row_axis(self, frame: Any) -> RowAxis:
+        """Describe row presentation without exposing row identities as columns."""
+
+        return {"kind": "positional", "levelNames": []}
 
 
 def normalize_page_projection(

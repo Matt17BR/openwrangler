@@ -252,6 +252,7 @@ def _dispatch(
             request["path"],
             request["format"],
             request["targetIdentity"],
+            request.get("rowAxisPolicy"),
         )
     if kind == "closeSession":
         return manager.close_session(request["sessionId"], int(request["revision"]))

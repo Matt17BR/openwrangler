@@ -2859,6 +2859,8 @@ describe("OpenWranglerPanel retained view state", () => {
       stepIndex: 0,
       inputPage: inspectionPage,
       outputPage: inspectionPage,
+      inputRowAxis: { kind: "positional", levelNames: [] },
+      outputRowAxis: { kind: "positional", levelNames: [] },
       inputSchema: metadata.schema,
       outputSchema: metadata.schema,
       diff: {

@@ -256,6 +256,7 @@ import { createFocusedReleasedRAcceptanceHandlers } from "./focusedReleasedRAcce
 import { releasedRAcceptanceCoverageProfile } from "./releasedRAcceptanceCoverage";
 import type { ExtensionApi, TestApi } from "./extensionHostTestApi";
 import { assertNumericSummarySum, exerciseNumericSummaryPandasJourney } from "./numericSummaryJourney";
+import { exercisePandasIndexFidelityJourney, pandasIndexFixtureSetupCode } from "./pandasIndexFidelityJourney";
 
 interface ReleasedJupyterVariableAction {
   readonly action: Locator;
@@ -14848,6 +14849,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "identity_frame = duplicate_frame.copy(deep=True)",
       "identity_frame.iloc[:, 2] = ['alpha', 'bravo', 'charlie', 'delta']",
       "identity_frame_source = identity_frame.copy(deep=True)",
+      ...pandasIndexFixtureSetupCode(),
       "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})",
       "renderer_frame = pl.DataFrame({'value': [101]})"
     ].join("\n");
@@ -14937,6 +14939,29 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:pandas-basic:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the Pandas notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
+
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      const workbench = await connectToEditorWorkbench();
+      await exercisePandasIndexFidelityJourney({
+        testing,
+        notebookUri: notebook.uri,
+        executeNotebook: (code) => jupyter.testing.execute(notebook.uri, code),
+        workbench,
+        sessionApp: (sessionId, description) =>
+          synchronizedSessionApp(
+            workbench,
+            testing,
+            sessionId,
+            `${description} must render its confirmed shared-webview state.`
+          ),
+        disposeSession: disposePackagedSessionPanel,
+        createTemporaryDirectory: () => mkdtempSync(path.join(tmpdir(), "openwrangler-pandas-index-")),
+        cleanupTemporaryDirectory: cleanupAcceptanceTemporaryDirectory,
+        recordProgress: recordAcceptanceProgress,
+        waitFor,
+        sessionOpenTimeoutMs: SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS
+      });
+    }
 
     recordAcceptanceProgress("verify:notebook:pandas-duplicates:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {

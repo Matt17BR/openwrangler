@@ -155,6 +155,8 @@ const responses: OpenWranglerResponse[] = [
     stepIndex: 0,
     inputPage: page,
     outputPage: page,
+    inputRowAxis: { kind: "positional", levelNames: [] },
+    outputRowAxis: { kind: "positional", levelNames: [] },
     inputSchema: metadata.schema,
     outputSchema: metadata.schema,
     diff: {

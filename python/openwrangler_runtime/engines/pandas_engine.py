@@ -20,6 +20,8 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    RowAxis,
+    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
@@ -59,6 +61,9 @@ _INT64_MIN = -(2**63)
 _INT64_MAX = (2**63) - 1
 _PORTABLE_INTEGER_LIMIT = 10**38
 _MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS = 65_536
+_MAX_ROW_AXIS_LEVELS = 64
+_MAX_ROW_AXIS_TEXT_CHARACTERS = 1_024
+_ROW_AXIS_SEPARATOR = " · "
 
 
 class PandasEngine(DataFrameEngine):
@@ -129,15 +134,40 @@ class PandasEngine(DataFrameEngine):
         frame: Any,
         path: str | os.PathLike[str],
         format_name: Literal["csv", "parquet"],
+        *,
+        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> None:
+        if row_axis_policy not in {"preserve", "omit"}:
+            raise EngineError("Pandas export requires an explicit preserve-or-omit index choice.")
         df = self._visible_frame(self.normalize(frame))
+        preserve_index = row_axis_policy == "preserve"
         if format_name == "csv":
-            df.to_csv(path, index=False)
+            df.to_csv(path, index=preserve_index)
             return
         if format_name == "parquet":
-            _pandas_parquet_frame(df).to_parquet(path, index=False)
+            _pandas_parquet_frame(df).to_parquet(path, index=preserve_index)
             return
         raise EngineError(f"Unsupported Pandas export format: {format_name}")
+
+    def row_axis(self, frame: Any) -> RowAxis:
+        import pandas as pd
+
+        df = self.normalize(frame)
+        index = df.index
+        if index.nlevels > _MAX_ROW_AXIS_LEVELS:
+            raise EngineError(f"Pandas row indexes may contain at most {_MAX_ROW_AXIS_LEVELS} levels.")
+        if (
+            isinstance(index, pd.RangeIndex)
+            and index.name is None
+            and index.start == 0
+            and index.stop == len(df)
+            and index.step == 1
+        ):
+            return {"kind": "positional", "levelNames": []}
+        return {
+            "kind": "multiIndex" if isinstance(index, pd.MultiIndex) else "index",
+            "levelNames": [_pandas_row_axis_level_name(name) for name in index.names],
+        }
 
     def shape(self, frame: Any) -> SessionDataShape:
         df = self.normalize(frame)
@@ -255,12 +285,21 @@ class PandasEngine(DataFrameEngine):
         value_offset = 1 if row_id_position is not None else 0
         row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
-        for row_number, row in enumerate(sliced.itertuples(index=False, name=None), start=offset):
+        row_axis = self.row_axis(df)
+        for row_number, (row_label, row) in enumerate(
+            zip(sliced.index, sliced.itertuples(index=False, name=None), strict=True),
+            start=offset,
+        ):
             identity = self._page_row_identity(row[0]) if row_id_position is not None else row_number
             rows.append(
                 {
                     "id": f"r:{row_id_token}:{identity}" if row_id_token is not None else f"r:{row_number}",
                     "rowNumber": row_number,
+                    **(
+                        {"rowLabel": _pandas_row_axis_label(row_label, row_axis)}
+                        if row_axis["kind"] != "positional"
+                        else {}
+                    ),
                     "values": [normalize_cell(row[value_offset + index]) for index in range(len(positions))],
                 }
             )
@@ -1946,6 +1985,33 @@ def _pandas_parquet_frame(df: Any) -> Any:
         )
         result.isetitem(position, converted)
     return result
+
+
+def _pandas_row_axis_level_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _pandas_row_axis_value(value, "Pandas index level name")
+
+
+def _pandas_row_axis_value(value: Any, purpose: str) -> str:
+    cell = normalize_cell(value)
+    display = "null" if cell["isNull"] else cell["display"]
+    if not isinstance(display, str) or len(display) > _MAX_ROW_AXIS_TEXT_CHARACTERS:
+        raise EngineError(f"{purpose} exceeds {_MAX_ROW_AXIS_TEXT_CHARACTERS} characters.")
+    return display
+
+
+def _pandas_row_axis_label(value: Any, row_axis: RowAxis) -> str:
+    if row_axis["kind"] == "multiIndex":
+        if not isinstance(value, tuple) or len(value) != len(row_axis["levelNames"]):
+            raise EngineError("Pandas returned a malformed MultiIndex row label.")
+        parts = [_pandas_row_axis_value(part, "Pandas row-index label") for part in value]
+        label = _ROW_AXIS_SEPARATOR.join(parts)
+    else:
+        label = _pandas_row_axis_value(value, "Pandas row-index label")
+    if len(label) > _MAX_ROW_AXIS_TEXT_CHARACTERS:
+        raise EngineError(f"Pandas row-index label exceeds {_MAX_ROW_AXIS_TEXT_CHARACTERS} characters.")
+    return label
 
 
 def _pandas_float_nan_mask(series: Any) -> Any:

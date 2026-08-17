@@ -23,6 +23,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
@@ -890,7 +891,11 @@ class DuckDBEngine(DataFrameEngine):
         frame: Any,
         path: str | os.PathLike[str],
         format_name: Literal["csv", "parquet"],
+        *,
+        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> None:
+        if row_axis_policy is not None:
+            raise EngineError("DuckDB export does not accept a Pandas row-axis policy.")
         if format_name not in self.capabilities.export_formats:
             raise EngineError(f"Unsupported DuckDB export format: {format_name}")
         frame = self.normalize(frame)
