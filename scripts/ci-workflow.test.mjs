@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
 import test from "node:test";
@@ -46,6 +47,30 @@ const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
   ["cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
   ["codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ]);
+const APPROVED_EXTERNAL_ACTIONS = new Set([
+  "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809",
+  "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809",
+  "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e",
+  "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+  "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+  "github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd",
+  "github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd",
+  "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6",
+  "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6"
+]);
+const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
+  Object.freeze(["release.yml", "$.jobs.candidate-acceptance.uses", "./.github/workflows/candidate-acceptance.yml"]),
+  Object.freeze([
+    "stable-release.yml",
+    "$.jobs.candidate-acceptance.uses",
+    "./.github/workflows/candidate-acceptance.yml"
+  ])
+]);
+const WORKFLOW_USE_INVENTORY_SHA256 = "00f2d74bc4d7b44de8d6de1a96e470fd5dc76884d1b292092999b055b50a3c18";
 
 function stepsUsing(job, prefix) {
   return (job?.steps ?? []).filter((step) => typeof step?.uses === "string" && step.uses.startsWith(prefix));
@@ -55,18 +80,53 @@ function stepRunning(job, command) {
   return (job?.steps ?? []).find((step) => step?.run === command);
 }
 
-function allExternalUses(value, path = "$", results = []) {
+function allWorkflowUses(value, path = "$", results = []) {
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => allExternalUses(entry, `${path}[${index}]`, results));
+    value.forEach((entry, index) => allWorkflowUses(entry, `${path}[${index}]`, results));
     return results;
   }
   if (value === null || typeof value !== "object") return results;
   for (const [key, entry] of Object.entries(value)) {
     const next = `${path}.${key}`;
-    if (key === "uses" && typeof entry === "string" && !entry.startsWith("./")) results.push([next, entry]);
-    allExternalUses(entry, next, results);
+    if (key === "uses") results.push([next, entry]);
+    allWorkflowUses(entry, next, results);
   }
   return results;
+}
+
+function allExternalUses(value) {
+  return allWorkflowUses(value).filter(([, uses]) => typeof uses === "string" && !uses.startsWith("./"));
+}
+
+function workflowUseRows(entries) {
+  return entries
+    .flatMap(([name, document]) => allWorkflowUses(document).map(([path, uses]) => [name, path, uses]))
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
+  const external = [];
+  const local = [];
+  for (const [name, path, uses] of rows) {
+    if (typeof uses !== "string") throw new Error(`${name}:${path} uses must be a string.`);
+    if (uses.startsWith("./")) {
+      local.push([name, path, uses]);
+      continue;
+    }
+    if (!/^[A-Za-z0-9_.-]+[/][A-Za-z0-9_.-]+(?:[/][A-Za-z0-9_./-]+)?@[0-9a-f]{40}$/u.test(uses)) {
+      throw new Error(`${name}:${path} has a malformed external action use: ${uses}.`);
+    }
+    if (!APPROVED_EXTERNAL_ACTIONS.has(uses)) {
+      throw new Error(`${name}:${path} uses an unreviewed external action: ${uses}.`);
+    }
+    external.push([name, path, uses]);
+  }
+  if (!exactInventory) return Object.freeze({ external, local });
+  assert.equal(external.length, 146);
+  assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
+  const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
+  assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
+  return Object.freeze({ external, local });
 }
 
 function normalizedCommand(value) {
@@ -170,6 +230,8 @@ test("sole classifier emits exactly four conservative Tier-B owner outputs", () 
     "src/extension/r/rKernelBridge.ts",
     "src/test/rKernelBridge.unit.test.ts",
     "src/test/releasedRAcceptanceCoverage.unit.test.ts",
+    "python/openwrangler_runtime/session.py",
+    "protocol/openwrangler.v2.schema.json",
     "schemas/operation-catalog.v1.json",
     "src/shared/operationCatalog.generated.ts"
   ]) {
@@ -194,13 +256,31 @@ test("sole classifier emits exactly four conservative Tier-B owner outputs", () 
   );
   for (const path of [
     "python/pyproject.toml",
+    "python/openwrangler_runtime/engines/base.py",
+    "python/openwrangler_runtime/engines/duckdb_engine.py",
+    "python/openwrangler_runtime/error_causality.py",
     "src/extension/files/safeFileExport.ts",
     "src/extension/files/safePythonDataExport.ts",
+    "src/test/extensionHost/index.ts",
     "src/test/safeFileExportHardlink.unit.test.ts"
   ]) {
     const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
     assert.equal(result.windowsUniqueRequired, true, `${path} must select the Windows unique-risk owner`);
     if (path === "python/pyproject.toml") assert.deepEqual(result, BOOLEAN_OUTPUTS);
+  }
+  for (const path of ["python/openwrangler_runtime/session_helpers.py", "protocol/openwrangler.v1.schema.json"]) {
+    const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
+    assert.equal(result.rContractRequired, false, `${path} must not broaden the exact R owner map`);
+    assert.equal(result.canonicalEditorRequired, true);
+  }
+  for (const path of [
+    "python/openwrangler_runtime/engines/pandas_engine.py",
+    "python/openwrangler_runtime/error_types.py",
+    "src/test/extensionHost/extensionHostTestApi.ts"
+  ]) {
+    const result = classifyCiChange({ eventName: "pull_request", changedPaths: [path] });
+    assert.equal(result.windowsUniqueRequired, false, `${path} must not broaden the exact Windows owner map`);
+    assert.equal(result.canonicalEditorRequired, true);
   }
   assert.deepEqual(
     classifyCiChange({
@@ -304,11 +384,18 @@ test("both R 4.5 owners and the retained R 4.4 PR carrier consume exact locks wi
     assert.match(source, /r-dependency-lock\.mjs prepare/u);
     assert.match(source, /r-dependency-lock\.mjs install/u);
     assert.match(source, /cache-hit/u);
+    assert.match(source, /--archives/u);
     assert.doesNotMatch(source, /setup-r-dependencies/u);
     assert.doesNotMatch(source, /\/latest\//u);
-    assert.equal(stepsUsing(job, "actions/cache/restore@")[0].uses, CACHE_RESTORE);
-    assert.equal(stepsUsing(job, "actions/cache/save@")[0].uses, CACHE_SAVE);
-    assert.equal(stepsUsing(job, "actions/cache/restore@")[0].with["restore-keys"], undefined);
+    const restore = stepsUsing(job, "actions/cache/restore@")[0];
+    const save = stepsUsing(job, "actions/cache/save@")[0];
+    assert.equal(restore.uses, CACHE_RESTORE);
+    assert.equal(save.uses, CACHE_SAVE);
+    assert.equal(restore.with["restore-keys"], undefined);
+    assert.equal(restore.with.path, "${{ steps.r_prepare.outputs.archives }}");
+    assert.equal(save.with.path, "${{ steps.r_prepare.outputs.archives }}");
+    assert.doesNotMatch(JSON.stringify(restore.with.path), /library|receipt/u);
+    assert.doesNotMatch(JSON.stringify(save.with.path), /library|receipt/u);
   }
   assert.ok(stepRunning(ci.jobs["r-contract-kernel"], "npm run test:r-contract -- --shard kernel-agent"));
   assert.ok(stepRunning(ci.jobs["r-contract-protocol"], "npm run test:r-contract:protocol"));
@@ -427,6 +514,8 @@ test("Cross preserves every legacy context, reuses only the four-output classifi
   assert.match(scheduled.if, /event_name != 'pull_request'/u);
   assert.match(JSON.stringify(scheduled), /ubuntu-24\.04-x86_64-r-4\.4\.lock\.json/u);
   assert.match(JSON.stringify(scheduled), /r-dependency-lock\.mjs install/u);
+  assert.equal(stepsUsing(scheduled, "actions/cache/restore@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
+  assert.equal(stepsUsing(scheduled, "actions/cache/save@")[0].with.path, "${{ steps.r_prepare.outputs.archives }}");
   assert.ok(stepRunning(scheduled, "npm run test:r-contract"));
 });
 
@@ -452,25 +541,59 @@ test("CodeQL has two always-on explicit analyzers, preserves required names, and
   assert.equal(codeql.jobs.classify, undefined);
 });
 
-test("every non-local workflow action is recursively pinned to an immutable 40-hex revision", () => {
-  const problems = [];
-  for (const name of readdirSync(".github/workflows")
-    .filter((entry) => entry.endsWith(".yml"))
-    .sort()) {
-    const document = workflow(name);
-    for (const [path, uses] of allExternalUses(document)) {
-      if (!/^[^@\s]+@[0-9a-f]{40}$/u.test(uses)) problems.push(`${name}:${path}=${uses}`);
-    }
-  }
-  assert.deepEqual(problems, []);
-  const sources = readdirSync(".github/workflows")
-    .filter((entry) => entry.endsWith(".yml"))
-    .map((entry) => readFileSync(workflowPath(entry), "utf8"))
-    .join("\n");
+test("workflow action inventory is exact, immutable, recursive, and fail closed", () => {
+  const names = readdirSync(".github/workflows")
+    .filter((entry) => /\.ya?ml$/u.test(entry))
+    .sort();
+  const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
+  const inventory = validateWorkflowUseRows(rows);
+  assert.equal(inventory.external.length, 146);
+  assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
+
+  const sources = names.map((entry) => readFileSync(workflowPath(entry), "utf8")).join("\n");
   assert.doesNotMatch(sources, /@(v[0-9]+|main|master)(?:\s|$)/u);
   const rejectedSetupJava = ["f2beeba1d6a0d932", "cac8325f70a8ce911775ff96"].join("");
   assert.equal(sources.includes(rejectedSetupJava), false);
   assert.ok(sources.includes(SETUP_JAVA));
+
+  for (const uses of [42, null, { image: "alpine" }]) {
+    assert.throws(
+      () => validateWorkflowUseRows([["mutated.yaml", "$.jobs.test.steps[0].uses", uses]], { exactInventory: false }),
+      /must be a string/u
+    );
+  }
+  for (const uses of [
+    "docker://alpine@sha256:abc",
+    "owner/repository@v1",
+    "owner/repository@0123456789abcdef0123456789abcdef01234567:command",
+    "owner//repository@0123456789abcdef0123456789abcdef01234567"
+  ]) {
+    assert.throws(
+      () => validateWorkflowUseRows([["mutated.yml", "$.jobs.test.steps[0].uses", uses]], { exactInventory: false }),
+      /malformed external action/u
+    );
+  }
+  assert.throws(
+    () =>
+      validateWorkflowUseRows(
+        [["mutated.yml", "$.jobs.test.steps[0].uses", "different/action@0123456789abcdef0123456789abcdef01234567"]],
+        { exactInventory: false }
+      ),
+    /unreviewed external action/u
+  );
+
+  const inserted = [...rows, ["ci.yml", "$.jobs.intruder.steps[0].uses", CHECKOUT]].sort((left, right) =>
+    JSON.stringify(left).localeCompare(JSON.stringify(right))
+  );
+  assert.throws(() => validateWorkflowUseRows(inserted));
+  const replaced = rows.map((row, index) => (index === 0 ? [row[0], row[1], SETUP_NODE] : row));
+  assert.throws(() => validateWorkflowUseRows(replaced));
+  const localDrift = rows.map((row) =>
+    row[2] === "./.github/workflows/candidate-acceptance.yml"
+      ? [row[0], row[1], "./.github/workflows/unreviewed.yml"]
+      : row
+  );
+  assert.throws(() => validateWorkflowUseRows(localDrift));
 });
 
 test("dated R locks are distinct, canonical, complete 31-package binary graphs", () => {

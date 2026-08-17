@@ -104,33 +104,30 @@ jobs:
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
           --rscript "$(command -v Rscript)"
           --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-library"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-archives"
           --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-receipt.json"
       - id: r_cache
-        name: Restore the untrusted exact R library cache
+        name: Restore the untrusted exact R archive cache
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
           fail-on-cache-miss: false
       - id: r_install
-        name: Cold-install or reverify the exact R library
+        name: Verify archives and cold-install the exact R library
         run: >-
           node scripts/r-dependency-lock.mjs install
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
           --rscript "$(command -v Rscript)"
           --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-archives"
+          --archives "${{ steps.r_prepare.outputs.archives }}"
           --receipt "${{ steps.r_prepare.outputs.receipt }}"
           --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - name: Save only a newly verified R library
+      - name: Save only a newly authenticated R archive cache
         if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
       - run: npm run test:r-contract -- --shard kernel-agent
         env:
@@ -171,32 +168,29 @@ jobs:
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
           --rscript "$(command -v Rscript)"
           --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-library"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-archives"
           --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-receipt.json"
       - id: r_cache
-        name: Restore the untrusted exact R library cache
+        name: Restore the untrusted exact R archive cache
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
           fail-on-cache-miss: false
-      - name: Cold-install or reverify the exact R library
+      - name: Verify archives and cold-install the exact R library
         run: >-
           node scripts/r-dependency-lock.mjs install
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
           --rscript "$(command -v Rscript)"
           --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-archives"
+          --archives "${{ steps.r_prepare.outputs.archives }}"
           --receipt "${{ steps.r_prepare.outputs.receipt }}"
           --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - name: Save only a newly verified R library
+      - name: Save only a newly authenticated R archive cache
         if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
       - name: Run both independent protocol shards fail-complete
         run: npm run test:r-contract:protocol
@@ -238,32 +232,29 @@ jobs:
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
           --rscript "$(command -v Rscript)"
           --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-library"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-archives"
           --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-receipt.json"
       - id: r_cache
-        name: Restore the untrusted exact R library cache
+        name: Restore the untrusted exact R archive cache
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
           fail-on-cache-miss: false
-      - name: Cold-install or reverify the exact R library
+      - name: Verify archives and cold-install the exact R library
         run: >-
           node scripts/r-dependency-lock.mjs install
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
           --rscript "$(command -v Rscript)"
           --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-pr-archives"
+          --archives "${{ steps.r_prepare.outputs.archives }}"
           --receipt "${{ steps.r_prepare.outputs.receipt }}"
           --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - name: Save only a newly verified R library
+      - name: Save only a newly authenticated R archive cache
         if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: |
-            ${{ steps.r_prepare.outputs.library }}
-            ${{ steps.r_prepare.outputs.receipt }}
+          path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
       - run: npm run test:r-contract
         env:

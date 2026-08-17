@@ -17,10 +17,12 @@ matrix for release candidates or changes that cross those boundaries.
 - `npm run check:r-dependency-lock` strictly validates both native-R lock registries without network or filesystem
   mutation. `node scripts/r-dependency-lock.mjs generate ... --check true` is the explicit networked byte-regeneration
   operation; it must reproduce the dated archive graph exactly. The workflow `prepare` command validates the lock and
-  exact R runtime before cache or network mutation. `install --cache-hit false` downloads the bounded archive set,
-  verifies every size and SHA-256, installs only the local archives into an empty private library, and seals the exact
-  package and file-tree receipt. `install --cache-hit true` performs no download or install and recomputes that same
-  receipt from the untrusted restored library. Neither path has a repository fallback or retry.
+  exact R runtime before cache or network mutation. The cache contains only the lock-pinned package archives. On a
+  cache miss, `install --cache-hit false` downloads the bounded archive set; on a cache hit,
+  `install --cache-hit true` independently revalidates the complete archive inventory, descriptor identities, sizes,
+  and SHA-256 values before any package code can run. Both paths install only those authenticated local archives into
+  a fresh empty private library, then verify every namespace and seal a new exact package and file-tree receipt.
+  Installed libraries and receipts are never restored from cache. Neither path has a repository fallback or retry.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
@@ -334,7 +336,7 @@ metadata, inventory, URL, and size failures remain single-attempt and occur befo
 Filesystem failures are also never retried and may retain only their partial output in the disposable recovery
 workspace. Existing tests independently pin the downloader's narrow pending-versus-fatal HTTP status policy.
 
-[GitHub reports a conditionally skipped job as a successful check](https://docs.github.com/en/pull-requests/reference/status-checks), including when that check is required. Drafts therefore report `Draft feedback` under a different name; the protected `validate` check appears only after `ready_for_review` starts the merge tier at the same commit. Directly protected cross-platform and CodeQL matrices still expand small carrier cells for documentation-only, package-only, and draft changes so their required names remain stable. When multiple ready branches share one base, finish and merge one matrix before updating and starting the next. Routine Dependabot version updates are staggered on separate UTC days and group compatible minor and patch updates by ecosystem; major and security updates remain separate.
+[GitHub reports a conditionally skipped job as a successful check](https://docs.github.com/en/pull-requests/reference/status-checks), including when that check is required. Stage A therefore keeps conditional owners and legacy compatibility carriers present while the sole `validate` owner distinguishes exact selected success from an intentional skip. Draft and ready pull requests share the same workflow triggers; readiness is not a classifier output. Cross retains its required platform names, and both CodeQL language analyzers remain always-on behind `CodeQL gate`. When multiple ready branches share one base, finish and merge one matrix before updating and starting the next. Routine Dependabot version updates are staggered on separate UTC days and group compatible minor and patch updates by ecosystem; major and security updates remain separate.
 
 Standalone backend preparation is a release-blocking engine-lifecycle contract. Tests require a separately owned transient adapter, cleanup on success and failure, propagation of the exact source descriptor, explicit-backend selection or the automatic Polars file default without guessing an unresolved notebook variable, and a structured engine error when preparation fails. Server transport tests prove preparation runs on the process-owned stdin reader thread before the real open is dispatched to a worker. Polars preparation tests require discoverable PyArrow to be preloaded only for Excel sources across the supported `fastexcel` range, while CSV, notebook, and PyArrow-absent environments remain unchanged. A fresh subprocess must then open a real Polars CSV and a real Pandas TSV in the same server, return both correlated sessions within the open bound, close both, and exit on EOF; Windows runtime CI is the authority for the cold native-import order.
 
@@ -1512,7 +1514,10 @@ Every success or failure path waits for or terminates only its exact spawned edi
 
 Attestation uncertainty is permanently latched: a later matching marker, exit, close, or error cannot upgrade an ambiguous launch to verified ownership. The native Windows smoke exercises the compiled C# supervisor, proves its compile-once contract, natural-exit descendant containment, and explicit termination, and rejects malformed launch framing.
 
-Pull-request CI runs the extension-host suite on the minimum declared VS Code 1.106.0 and current stable VS Code on isolated Linux profiles. The existing macOS and Windows runtime cells also run the stable extension host; Windows owns the process-supervisor contract. Preview and stable release candidates add packaged VS Code and Cursor journeys on macOS and Windows. VS Code 1.106 is the minimum because 1.105 did not render the custom-editor tab icon used by Open Wrangler.
+Stage-A pull-request CI runs one canonical stable VS Code extension-host owner on isolated Linux and retains the
+stable macOS and Windows extension-host compatibility cells in Cross. The Windows owners also retain the native
+process-supervisor and dependency-guard contracts. Minimum-editor and broader packaged VS Code/Cursor evidence remain
+release qualification; Stage A does not claim that those lanes moved into the canonical pull-request owner.
 
 The Windows cross-platform cell runs `npm run test:scripts:native`, so the real Windows supervisor is checked without adding another setup job or repeating the portable script suite. Phase deadlines include supervisor preparation, receipt validation, process spawn, and the cancellable private debugging-port reservation; a stalled reservation aborts and closes its unreferenced server before the phase can launch an editor. Windows CLI-only setup never invokes a `.cmd` file or command shell: it requires the wrapper to identify the editor's own `bin` directory, resolves exactly one regular contained `resources/app/out/cli.js` from either the legacy root or one 10-hex version directory, and launches the verified editor executable with that path prepended. Only this CLI child receives the fixed `ELECTRON_RUN_AS_NODE=1`; workbench launches continue to strip inherited Electron mode flags.
 
@@ -1608,7 +1613,20 @@ explicit for both channels and must select `--pre-release` only from verified pu
 not claim that a `publish: false` hosted run exercised live environment approval, secrets, GitHub mutation, Azure
 federation, or registry propagation.
 
-Pull-request classification is covered by `npm run test:scripts:workflow`. Drafts run static feedback under the `Draft feedback` name, so they do not publish the protected `validate` context at the same commit. Marking a draft ready reruns all pull-request workflows and creates the real `validate` check. Documentation-only changes skip product jobs; README, changelog, license, and notices changes still build and inspect the VSIX. A ready release-infrastructure-only change must include an exact registered release production or test path and may include only the exact registered adjunct documents. The workflow test pins every allowlist entry to executable evidence, uses the TypeScript parser to walk static and literal dynamic imports, rejects computed imports and CommonJS loading surfaces, recognizes only the reviewed embedded repository-root Node import form, and requires every out-of-tier local dependency to equal the exported fail-full shared-dependency list. It also proves that mixed, unlisted, malformed, classifier, shared-dependency, candidate-acceptance, Open VSX promotion, preview-release, stable-release, and Azure Marketplace pipeline paths select full CI, including the Azure pipeline paired with its hash-owning inspector. No workflow or pipeline YAML is eligible until an exact inventory is enforced independently of every allowlisted hash owner. Missing, failed, or unexpectedly skipped focused results block `validate`, and required CodeQL contexts perform JavaScript/TypeScript analysis while Python uses only its carrier. The fixed release job runs all classification-allowed release tests, both media tests, and the additional remote-Jupyter-lock and editor-acceptance-artifact contracts. Those two additional test source paths deliberately remain outside the classification allowlist. Run the job's two executable test commands locally with the fixed `node --test --test-concurrency=4 ...` file list from `.github/workflows/ci.yml` and `npm run test:scripts:media`. All other ready changes targeting protected `main` run the required product, platform, and CodeQL checks. Remote SSH remains opt-in through the `acceptance:remote-ssh` label.
+Pull-request classification is covered by `npm run test:scripts:workflow`. Stage A has no draft-only context or legacy
+release-infrastructure/package/full-matrix classifier mode: the sole classifier emits exactly
+`r_contract_required`, `canonical_editor_required`, `visual_accessibility_required`, and `windows_unique_required`.
+Control-plane changes, malformed or missing output, unmatched substantive paths, and non-pull-request events select
+the complete four-owner union. Documentation-only changes may select no conditional owner, while the unconditional
+`invariant-core` still runs the complete portable, TypeScript, Python 3.10, audit, schema, documentation, and license
+boundary. The selected R owners include the temporary lock-backed R 4.4 pull-request carrier; Cross keeps the existing
+macOS/Windows and Windows dependency contexts and adds only a scheduled R 4.4 qualification. Missing, failed,
+cancelled, or unexpectedly skipped selected results block the sole `validate` owner. CodeQL independently runs the
+always-on JavaScript/TypeScript and Python analyzers and requires both through `CodeQL gate`. Every external workflow
+action occurrence and both local reusable-workflow targets are an exact reviewed inventory. These compatibility
+carriers remain until hosted Stage-A evidence and a separate mechanical ruleset migration are green; no Stage-B job,
+context, compute, or wall-time reduction is claimed here. Remote SSH remains opt-in through the
+`acceptance:remote-ssh` label.
 
 Pushes to protected `main` run complete JavaScript/TypeScript and Python CodeQL analysis so the Security tab is
 refreshed from the default branch. A successful `Analyze` job is only execution evidence: security acceptance queries

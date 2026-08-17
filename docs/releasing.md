@@ -410,25 +410,22 @@ The same installed-editor report must prove that the production renderer and for
 
 ## GitHub workflow
 
-Each coherent change uses a feature branch and pull request. Drafts run `Fast feedback` and report a separate `Draft
-feedback` check; the protected `validate` context appears only when the pull request is marked ready. Ready code
-changes targeting `main` run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native
-extension-host, platform, and security checks. The slower native editor, Jupyter, Remote SSH, and
-installed-performance checks run against the exact release candidate before publication. Pushes to `main` repeat
-fast feedback and run complete JavaScript/TypeScript and Python CodeQL analysis; publication remains restricted to
-`main`. [CI and release checks](ci.md) has the current map.
-Ready pull requests run formatting, ESLint, and TypeScript concurrently inside `Fast feedback`. The native R matrix
-starts after that static preflight and overlaps `Contract tests`; the required `validate` fan-in still accepts only
-when both succeed. The remaining heavier UI, engine, package, and editor jobs start after both preflights. An early
-preflight failure stops those jobs without removing any check from a green pull request.
-Changes confined to registered release scripts, focused tests, and exact adjunct documents use the narrower release
-contract lane instead of
-`Contract tests` and the unrelated product/runtime/editor matrix. They still build and verify the canonical VSIX,
-run the fixed release and media contract inventory, and perform JavaScript/TypeScript CodeQL analysis. Required
-platform and Python CodeQL names are preserved by carrier cells. At least one registered release production or test
-path is mandatory; exact adjunct release documents may accompany it, while any unlisted, shared-dependency,
-classifier, or mixed product path fails closed to full CI. This pull-request optimization does not weaken or replace
-complete exact-artifact release-candidate acceptance.
+Each coherent change uses a feature branch and pull request. Stage A applies the same pull-request triggers to draft
+and ready changes; there is no separate draft-only feedback context. The unconditional `invariant-core` owns the
+portable, TypeScript, Python 3.10, audit, schema, documentation, and license boundary. Four conservative classifier
+outputs select the paired R 4.5 owners plus temporary R 4.4 compatibility carrier, canonical package/editor owner,
+visual/accessibility owner, and Windows unique-risk owner. Missing or malformed classification fails open to all four,
+and the sole `validate` fan-in fails closed on every required result. Cross retains its legacy macOS/Windows and
+Windows dependency contexts, while scheduled R 4.4 is additive. CodeQL runs explicit always-on JavaScript/TypeScript
+and Python analyzers and joins them through `CodeQL gate`. Pushes to `main` retain CI and both CodeQL analyzers;
+publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
+
+Stage A has no release-infrastructure-only, package-only, allowlist, or full-matrix classifier branch and no fixed
+release job in pull-request CI. Control-plane and unmatched substantive changes select the full owner union. The
+slower native editor, Jupyter, Remote SSH, installed-performance, canary, and publication checks remain separate exact
+candidate or release evidence. The compatibility carriers stay in place until hosted Stage-A evidence and a separate
+mechanical ruleset migration are green; this topology does not claim the later job, context, compute, or wall-time
+reductions. It does not weaken or replace complete exact-artifact release-candidate acceptance.
 
 The active `main` ruleset keeps its existing rebase-only pull-request, thread-resolution, linear-history, deletion,
 force-push, and required-status protections. Its CodeQL merge rule blocks non-security errors and high-or-higher
@@ -631,7 +628,11 @@ Microsoft can accept a VSIX while `vsce publish` still returns a nonzero status.
 an ambiguous submission and continues to the exact public-package check. Missing or conflicting public bytes still
 fail after the bounded wait; identity, authentication, and artifact checks remain fail-fast.
 
-Draft pull requests report `Draft feedback`, not the protected `validate` context. Marking a draft ready reruns all three pull-request workflows at the same commit and starts the required merge checks. When several ready pull requests share a base, merge them one at a time so strict up-to-date protection does not spend time on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days, groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.
+Draft and ready pull requests share the Stage-A CI, Cross, and CodeQL triggers; Stage A defines no draft-only check
+name. Readiness and merge eligibility remain repository-policy decisions outside the four-output classifier. When
+several ready pull requests share a base, merge them one at a time so strict up-to-date protection does not spend time
+on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days,
+groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.
 
 Dispatch **Preview release** from protected `main` with the exact numeric manifest version, for example `v1.99.0`.
 Use `publish: false` only for an optional rehearsal; a later dispatch cannot promote its artifact. A `publish: true`

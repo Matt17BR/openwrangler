@@ -156,8 +156,9 @@ collapse, viewing, Rename, and Drop owner, while `kernel-restart` owns restart/r
 Value and categorical ownership is unchanged, and Cursor, macOS, and Windows retain their representative
 core/editor/platform and native-frame seams.
 
-The Native R performance runner's unit contracts and report validators are portable script contracts owned by the
-existing `npm run test:scripts:portable` command in the ordinary `contract-tests` job. Those tests exercise
+The Native R performance runner's unit contracts and report validators are portable script contracts owned by
+`npm run test:scripts:portable`, which the unconditional Stage-A `invariant-core` job runs through `check:tier-a`.
+Those tests exercise
 exact-candidate/source/executable binding, the 250,000×20 fixture and fixed 5/20 workload schedules, response
 accounting, bounded path-free reporting, atomic output, resource proofs, and cleanup failures without running the
 Linux-only benchmark against a mutable CI workspace. The hosted R 4.4/4.5 frame-contract process parses the tracked R
