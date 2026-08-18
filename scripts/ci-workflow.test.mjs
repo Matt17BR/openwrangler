@@ -794,24 +794,32 @@ const R_45_OWNER_CONTRACTS = Object.freeze([
 ]);
 
 const R_45_ARTIFACT_MANIFEST = Object.freeze([
+  "libbz2-1.0_1.0.8-5.1build0.1_amd64.deb|libbz2-1.0|1.0.8-5.1build0.1|amd64|34370|d557ab12b42ab370249142099fae3cbb979948934e4dfa58c2ab59bf5bbbda73|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-1.0_1.0.8-5.1build0.1_amd64.deb",
   "libbz2-dev_1.0.8-5.1build0.1_amd64.deb|libbz2-dev|1.0.8-5.1build0.1|amd64|33608|012b1118932f20ae3fa706fa44f8ebe203a21f4765893bc7a9f6861aa09fa4c5|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-dev_1.0.8-5.1build0.1_amd64.deb",
+  "libdeflate0_1.19-1build1.1_amd64.deb|libdeflate0|1.19-1build1.1|amd64|43914|8e7dfa9e63a9b5058071b84da48bb2e30dea07de169e80fbc759fe0e68639269|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate0_1.19-1build1.1_amd64.deb",
   "libdeflate-dev_1.19-1build1.1_amd64.deb|libdeflate-dev|1.19-1build1.1|amd64|50936|78eed26d8875d0e5457d08c18d1ace9ba784f6cf84665cd2d4cba30530fb11c7|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate-dev_1.19-1build1.1_amd64.deb",
+  "liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma5|5.6.1+really5.4.5-1ubuntu0.3|amd64|127352|d2eabd41ca77d2c2dd9d5d4ef478cccb64ffde6279c47cf4699a857d46785a52|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb",
   "liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma-dev|5.6.1+really5.4.5-1ubuntu0.3|amd64|176166|a36f21970809e5ec58b6fb1186b1a819276f92c081eb109aeebf00e82e78d068|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb",
-  "libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-dev|0.3.26+ds-1ubuntu0.1|amd64|19590|3e4f39838e163d35bc7778fb3bec4f4d5ce2ae3e8e081dec49759217282c4770|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb",
-  "libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-pthread-dev|0.3.26+ds-1ubuntu0.1|amd64|4898570|01ae4d0433927e4109ae614c047f9df55dc3c8515e6369423f36f5e18d59101e|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb",
-  "libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0|0.3.26+ds-1ubuntu0.1|amd64|6190|ecadb5ba865e59a3eeafdad7f15908e59cdd827a80033d12bcc54ebddc72f5ae|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb",
   "libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0-pthread|0.3.26+ds-1ubuntu0.1|amd64|7183128|7dc3b4384c02aecb87eb8b70fa26c5843a08af242f4638aa4b36922bdc4f5b04|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb",
-  "libpaper-utils_1.1.29build1_amd64.deb|libpaper-utils|1.1.29build1|amd64|8650|364e323bc54ecf17c0301ee51a07b1bdc9fe6646e5126b8ddb3bed6ff008b2e9|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper-utils_1.1.29build1_amd64.deb",
+  "libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0|0.3.26+ds-1ubuntu0.1|amd64|6190|ecadb5ba865e59a3eeafdad7f15908e59cdd827a80033d12bcc54ebddc72f5ae|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb",
+  "libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-pthread-dev|0.3.26+ds-1ubuntu0.1|amd64|4898570|01ae4d0433927e4109ae614c047f9df55dc3c8515e6369423f36f5e18d59101e|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb",
+  "libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-dev|0.3.26+ds-1ubuntu0.1|amd64|19590|3e4f39838e163d35bc7778fb3bec4f4d5ce2ae3e8e081dec49759217282c4770|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb",
   "libpaper1_1.1.29build1_amd64.deb|libpaper1|1.1.29build1|amd64|13414|63d0cc29eda7adc7d9269273e9b5542b8b6aacabc5e7caaa859995269bfe3cff|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper1_1.1.29build1_amd64.deb",
+  "libpaper-utils_1.1.29build1_amd64.deb|libpaper-utils|1.1.29build1|amd64|8650|364e323bc54ecf17c0301ee51a07b1bdc9fe6646e5126b8ddb3bed6ff008b2e9|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper-utils_1.1.29build1_amd64.deb",
   "libpthread-stubs0-dev_0.4-1build3_amd64.deb|libpthread-stubs0-dev|0.4-1build3|amd64|4746|b8f278da7b1907d3014c01f9bc89748208a8cd3b770f0f55f1528afcc98dc6c0|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpthread-stubs/libpthread-stubs0-dev_0.4-1build3_amd64.deb",
+  "libtirpc3t64_1.3.4+ds-1.1build1_amd64.deb|libtirpc3t64|1.3.4+ds-1.1build1|amd64|82558|3a3cd37160399ab235fdf2f13159fd288940abb9660e0ed1afb418b44c73d43a|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc3t64_1.3.4+ds-1.1build1_amd64.deb",
   "libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb|libtirpc-dev|1.3.4+ds-1.1build1|amd64|193418|439322bbb8d0b1d44f92593edb6c8ba9693bcfb3b5f1f3bd152998f42cdf7a5d|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb",
-  "libx11-dev_1.8.7-1build1_amd64.deb|libx11-dev|2:1.8.7-1build1|amd64|732214|1969e200607ffe34070b92fe1bd3ba76ac2e2bd2f3a54530800c5872076fad24|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-dev_1.8.7-1build1_amd64.deb",
-  "libxau-dev_1.0.9-1build6_amd64.deb|libxau-dev|1:1.0.9-1build6|amd64|9570|46783c6af2d87c06394d55dfaa21dac07396f13cfc5ea6afbd9313ab49fc0e50|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau-dev_1.0.9-1build6_amd64.deb",
-  "libxcb1-dev_1.15-1ubuntu2_amd64.deb|libxcb1-dev|1.15-1ubuntu2|amd64|85790|1bafe3432feafc9e57f858721da524dfb3ee1f6fc4ef6b0c73023e79eadb9c28|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1-dev_1.15-1ubuntu2_amd64.deb",
-  "libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb|libxdmcp-dev|1:1.1.3-0ubuntu6|amd64|26546|ba2f2230b391c292f5f399d6e04d48181be6b3100556f7870591ca95c9d00667|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb",
-  "x11proto-dev_2023.2-1_all.deb|x11proto-dev|2023.2-1|all|602398|3bf13a2ffb79ecd4014d438936014e5863f79eb59ebf76e8f43356271c90e7ce|https://archive.ubuntu.com/ubuntu/pool/main/x/xorgproto/x11proto-dev_2023.2-1_all.deb",
+  "libxau6_1.0.9-1build6_amd64.deb|libxau6|1:1.0.9-1build6|amd64|7160|e40d29f1d1a62393bacaedebe0da3d9006084152a9f7e5e029293f08ce1c5c80|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau6_1.0.9-1build6_amd64.deb",
+  "libxdmcp6_1.1.3-0ubuntu6_amd64.deb|libxdmcp6|1:1.1.3-0ubuntu6|amd64|10254|bcd336fce11ce2a45f34d0f95e6980af22529f22147e8f98c156e5cee8ee42bb|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp6_1.1.3-0ubuntu6_amd64.deb",
+  "libxcb1_1.15-1ubuntu2_amd64.deb|libxcb1|1.15-1ubuntu2|amd64|47730|e1c6611d11ad7398326f1bf028afc34c3b14c51d917a3426b966ed4b9687fa58|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1_1.15-1ubuntu2_amd64.deb",
+  "libx11-6_1.8.7-1build1_amd64.deb|libx11-6|2:1.8.7-1build1|amd64|649780|397f84347476a3c5786b39f3ff6f0f82866eb3d8be6d2ad3efeadf019efe5b80|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-6_1.8.7-1build1_amd64.deb",
   "xorg-sgml-doctools_1.11-1.1_all.deb|xorg-sgml-doctools|1:1.11-1.1|all|10936|277f662c6d94606c22078f2af82ac1b6e01386d5a4dec6ca7487bca4c5b23c07|https://archive.ubuntu.com/ubuntu/pool/main/x/xorg-sgml-doctools/xorg-sgml-doctools_1.11-1.1_all.deb",
+  "x11proto-dev_2023.2-1_all.deb|x11proto-dev|2023.2-1|all|602398|3bf13a2ffb79ecd4014d438936014e5863f79eb59ebf76e8f43356271c90e7ce|https://archive.ubuntu.com/ubuntu/pool/main/x/xorgproto/x11proto-dev_2023.2-1_all.deb",
+  "libxau-dev_1.0.9-1build6_amd64.deb|libxau-dev|1:1.0.9-1build6|amd64|9570|46783c6af2d87c06394d55dfaa21dac07396f13cfc5ea6afbd9313ab49fc0e50|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau-dev_1.0.9-1build6_amd64.deb",
+  "libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb|libxdmcp-dev|1:1.1.3-0ubuntu6|amd64|26546|ba2f2230b391c292f5f399d6e04d48181be6b3100556f7870591ca95c9d00667|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb",
+  "libxcb1-dev_1.15-1ubuntu2_amd64.deb|libxcb1-dev|1.15-1ubuntu2|amd64|85790|1bafe3432feafc9e57f858721da524dfb3ee1f6fc4ef6b0c73023e79eadb9c28|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1-dev_1.15-1ubuntu2_amd64.deb",
   "xtrans-dev_1.4.0-1_all.deb|xtrans-dev|1.4.0-1|all|68900|45277c51d5d83db351b61859314b59595c9626ac372fbb2fc0d5542e169d9086|https://archive.ubuntu.com/ubuntu/pool/main/x/xtrans/xtrans-dev_1.4.0-1_all.deb",
+  "libx11-dev_1.8.7-1build1_amd64.deb|libx11-dev|2:1.8.7-1build1|amd64|732214|1969e200607ffe34070b92fe1bd3ba76ac2e2bd2f3a54530800c5872076fad24|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-dev_1.8.7-1build1_amd64.deb",
   "r-4.5.3_1_amd64.deb|r-4.5.3|1|amd64|67491866|93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8|https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"
 ]);
 
@@ -839,18 +847,20 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   const run = provisioning.run;
   assert.equal(typeof run, "string");
   assert.ok(run.startsWith("set -euo pipefail\nexport LC_ALL=C\n"));
-  assert.match(run, /^readonly artifact_count="19"$/mu);
-  assert.match(run, /^readonly artifact_bytes="81616636"$/mu);
+  assert.match(run, /^readonly artifact_count="27"$/mu);
+  assert.match(run, /^readonly artifact_bytes="82619754"$/mu);
   assert.match(run, /^readonly artifact_dir="\$\(mktemp -d "\$\{RUNNER_TEMP\}\/openwrangler-r-4\.5\.3-XXXXXX"\)"$/mu);
   const manifestMatch = run.match(/readonly artifact_manifest="\$\(cat <<'ARTIFACTS'\n([\s\S]+?)\nARTIFACTS\n\)"/u);
   assert.ok(manifestMatch);
   const manifest = manifestMatch[1].split("\n");
   assert.deepEqual(manifest, R_45_ARTIFACT_MANIFEST);
-  assert.equal(manifest.length, 19);
+  assert.equal(manifest.length, 27);
   assert.equal(
     manifest.reduce((total, line) => total + Number(line.split("|")[4]), 0),
-    81_616_636
+    82_619_754
   );
+  assert.equal(new Set(manifest.map((line) => line.split("|")[0])).size, manifest.length);
+  assert.equal(new Set(manifest.map((line) => line.split("|")[1])).size, manifest.length);
   for (const line of manifest) {
     const [filename, packageName, version, architecture, size, digest, url] = line.split("|");
     assert.equal(filename.endsWith(".deb"), true);
@@ -866,11 +876,19 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
     }
   }
   assert.equal(manifest.filter((line) => line.includes("|libx11-dev|2:1.8.7-1build1|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libbz2-1.0|1.0.8-5.1build0.1|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libdeflate0|1.19-1build1.1|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|liblzma5|5.6.1+really5.4.5-1ubuntu0.3|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libtirpc3t64|1.3.4+ds-1.1build1|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libx11-6|2:1.8.7-1build1|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libxau6|1:1.0.9-1build6|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libxcb1|1.15-1ubuntu2|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|libxdmcp6|1:1.1.3-0ubuntu6|amd64|")).length, 1);
   assert.equal(manifest.filter((line) => line.includes("|r-4.5.3|1|amd64|67491866|")).length, 1);
   assert.match(run, /timeout --signal=TERM --kill-after=10s 300s bash -c '\n[ ]{2}set -euo pipefail/u);
   assert.match(
     run,
-    /timeout --signal=TERM --kill-after=5s 180s \\\n+[ ]{6}curl --fail --location --proto "=https" --tlsv1\.2 --connect-timeout 20 --max-time 175 \\\n+[ ]{6}--output "\$artifact_path" "\$url"/u
+    /timeout --signal=TERM --kill-after=5s 180s \\\n+[ ]{6}curl --fail --location --proto "=https" --tlsv1\.2 --connect-timeout 20 --max-time 175 --max-filesize "\$size" \\\n+[ ]{6}--output "\$artifact_path" "\$url"/u
   );
   assert.equal(run.match(/read -r actual_sha256 _ < <\(sha256sum -- "\$artifact_path"\)/gu)?.length, 2);
   assert.equal(run.match(/dpkg-deb --field "\$artifact_path" Package/gu)?.length, 2);
@@ -888,7 +906,10 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
     /test "\$verified_count" = "\$artifact_count"\ntest "\$verified_bytes" = "\$artifact_bytes"\ntest "\$\(find "\$artifact_dir" -mindepth 1 -maxdepth 1 \| wc -l\)" = "\$artifact_count"\nsudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \\\n+[ ]{2}dpkg --install -- "\$\{install_paths\[@\]\}"/u
   );
   assert.equal(run.match(/\bdpkg --install\b/gu)?.length, 1);
-  assert.match(run, /^test -z "\$\(dpkg --audit\)"$/mu);
+  assert.match(
+    run,
+    /^dpkg_audit_path="\$\{artifact_dir\}\/dpkg-audit\.txt"\ntimeout --signal=TERM --kill-after=5s 30s dpkg --audit \| head --bytes=65537 > "\$dpkg_audit_path"\ndpkg_audit_size="\$\(stat --format='%s' -- "\$dpkg_audit_path"\)"\ntest "\$dpkg_audit_size" -le 65536\ntest ! -s "\$dpkg_audit_path"$/mu
+  );
   assert.match(
     run,
     /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' "\$package"\)" = \\\n+[ ]{4}"install ok installed\|\$\{version\}\|\$\{architecture\}"/u
@@ -901,7 +922,10 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
     run,
     /for r_binary in \/opt\/R\/4\.5\.3\/lib\/R\/bin\/exec\/R \/opt\/R\/4\.5\.3\/lib\/R\/lib\/libR\.so; do/u
   );
-  assert.match(run, /test -z "\$\(ldd "\$r_binary" \| sed -n '\/not found\/p'\)"/u);
+  assert.match(
+    run,
+    /ldd_index=0\nfor r_binary[\s\S]+?ldd_output_path="\$\{artifact_dir\}\/ldd-\$\{ldd_index\}\.txt"\n[ ]{2}timeout --signal=TERM --kill-after=5s 30s ldd "\$r_binary" \| head --bytes=65537 > "\$ldd_output_path"\n[ ]{2}ldd_output_size="\$\(stat --format='%s' -- "\$ldd_output_path"\)"\n[ ]{2}test "\$ldd_output_size" -le 65536\n[ ]{2}while IFS= read -r dependency_line; do\n[ ]{4}case "\$dependency_line" in \*"not found"\*\) exit 1 ;; esac\n[ ]{2}done < "\$ldd_output_path"\n[ ]{2}ldd_index=\$\(\(ldd_index \+ 1\)\)\ndone\ntest "\$ldd_index" = "2"/u
+  );
   assert.match(
     run,
     /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' r-4\.5\.3\)" = \\\n+[ ]{2}"install ok installed\|1\|amd64"/u
@@ -976,6 +1000,8 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
       ),
     (job) => mutateProvisioning(job, (run) => run.replace("|libx11-dev|", "|libx11-devel|")),
     (job) => mutateProvisioning(job, (run) => run.replace("|2:1.8.7-1build1|", "|2:1.8.7-1build2|")),
+    (job) =>
+      mutateProvisioning(job, (run) => run.replace("|libbz2-1.0|1.0.8-5.1build0.1|", "|libbz2-1.0|1.0.8-5.1build0.2|")),
     (job) => mutateProvisioning(job, (run) => run.replace("|amd64|732214|", "|all|732214|")),
     (job) => mutateProvisioning(job, (run) => run.replace("|732214|1969e200", "|732215|1969e200")),
     (job) =>
@@ -990,10 +1016,10 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
         )
       ),
     (job) =>
-      mutateProvisioning(job, (run) => run.replace('readonly artifact_count="19"', 'readonly artifact_count="18"')),
+      mutateProvisioning(job, (run) => run.replace('readonly artifact_count="27"', 'readonly artifact_count="26"')),
     (job) =>
       mutateProvisioning(job, (run) =>
-        run.replace('readonly artifact_bytes="81616636"', 'readonly artifact_bytes="81616635"')
+        run.replace('readonly artifact_bytes="82619754"', 'readonly artifact_bytes="82619753"')
       ),
     (job) =>
       mutateProvisioning(job, (run) => run.replace("timeout --signal=TERM --kill-after=10s 300s bash -c", "bash -c")),
@@ -1001,6 +1027,8 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
       mutateProvisioning(job, (run) =>
         run.replace("timeout --signal=TERM --kill-after=5s 180s \\\n      curl", "curl")
       ),
+    (job) => mutateProvisioning(job, (run) => run.replace(' --max-filesize "$size"', "")),
+    (job) => mutateProvisioning(job, (run) => run.replace('--max-filesize "$size"', '--max-filesize "1"')),
     (job) =>
       mutateProvisioning(job, (run) =>
         removeSecond(run, 'test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"\n')
@@ -1013,7 +1041,19 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
           "sudo --non-interactive dpkg --install"
         )
       ),
-    (job) => mutateProvisioning(job, (run) => run.replace('test -z "$(dpkg --audit)"\n', "")),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'timeout --signal=TERM --kill-after=5s 30s dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"\n',
+          'true > "$dpkg_audit_path"\n'
+        )
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace('head --bytes=65537 > "$dpkg_audit_path"', 'head --bytes=65536 > "$dpkg_audit_path"')
+      ),
+    (job) => mutateProvisioning(job, (run) => run.replace('test "$dpkg_audit_size" -le 65536\n', "")),
+    (job) => mutateProvisioning(job, (run) => run.replace('test ! -s "$dpkg_audit_path"\n', "")),
     (job) =>
       mutateProvisioning(job, (run) =>
         run.replace(
@@ -1029,7 +1069,16 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
         )
       ),
     (job) =>
-      mutateProvisioning(job, (run) => run.replace('test -z "$(ldd "$r_binary" | sed -n \'/not found/p\')"\n', "")),
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'timeout --signal=TERM --kill-after=5s 30s ldd "$r_binary" | head --bytes=65537 > "$ldd_output_path"\n',
+          'true > "$ldd_output_path"\n'
+        )
+      ),
+    (job) => mutateProvisioning(job, (run) => run.replace('test "$ldd_output_size" -le 65536\n', "")),
+    (job) =>
+      mutateProvisioning(job, (run) => run.replace('case "$dependency_line" in *"not found"*) exit 1 ;; esac\n', "")),
+    (job) => mutateProvisioning(job, (run) => run.replace('test "$ldd_index" = "2"\n', "")),
     (job) =>
       mutateProvisioning(job, (run) =>
         run.replace(
