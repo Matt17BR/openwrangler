@@ -159,10 +159,10 @@ function fullSelection() {
 
 export function classifyCiChange({ eventName, changedPaths }) {
   if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
-  if (!["pull_request", "push", "schedule", "workflow_dispatch"].includes(eventName)) {
+  if (!["pull_request", "merge_group", "push", "schedule", "workflow_dispatch"].includes(eventName)) {
     throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
   }
-  if (eventName !== "pull_request") return fullSelection();
+  if (eventName !== "pull_request" && eventName !== "merge_group") return fullSelection();
   if (changedPaths.length === 0 || changedPaths.some((path) => !canonicalPath(path))) return fullSelection();
   if (changedPaths.some((path) => selfSelectingPath(path))) return fullSelection();
 
@@ -204,9 +204,9 @@ export function parseChangedPathBuffer(buffer) {
   return paths;
 }
 
-function readPullRequestPaths({ baseSha, headSha }) {
+function readIntegrationPaths({ baseSha, headSha }) {
   if (!COMMIT_SHA.test(baseSha ?? "") || !COMMIT_SHA.test(headSha ?? "")) {
-    throw new Error("Pull-request base and head revisions must be exact lowercase commit SHAs.");
+    throw new Error("Integration base and head revisions must be exact lowercase commit SHAs.");
   }
   return parseChangedPathBuffer(
     execFileSync(
@@ -220,8 +220,8 @@ function readPullRequestPaths({ baseSha, headSha }) {
 function main(environment) {
   const eventName = environment.CI_EVENT_NAME;
   const changedPaths =
-    eventName === "pull_request"
-      ? readPullRequestPaths({ baseSha: environment.CI_BASE_SHA, headSha: environment.CI_HEAD_SHA })
+    eventName === "pull_request" || eventName === "merge_group"
+      ? readIntegrationPaths({ baseSha: environment.CI_BASE_SHA, headSha: environment.CI_HEAD_SHA })
       : [];
   const classification = classifyCiChange({ eventName, changedPaths });
   if (!environment.GITHUB_OUTPUT) throw new Error("GITHUB_OUTPUT is required.");

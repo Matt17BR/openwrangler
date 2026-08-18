@@ -43,7 +43,9 @@ const BOOLEAN_OUTPUTS = Object.freeze({
   windowsUniqueRequired: true
 });
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
-const VALIDATE_CONDITION = "${{ always() && github.event_name == 'pull_request' }}";
+const INTEGRATION_EVENT_EXPRESSION = "github.event_name == 'pull_request' || github.event_name == 'merge_group'";
+const INTEGRATION_STEP_CONDITION = `\${{ ${INTEGRATION_EVENT_EXPRESSION} }}`;
+const VALIDATE_CONDITION = `\${{ always() && (${INTEGRATION_EVENT_EXPRESSION}) }}`;
 const VALIDATE_NEEDS = Object.freeze([
   "classify",
   "invariant-core",
@@ -290,9 +292,9 @@ function assertChangedAreaOwnersStartAfterClassification(document) {
     assert.deepEqual(job?.needs, ["classify"], `${jobId} must start after classification only`);
     assert.equal(
       normalizeWorkflowExpression(job?.if),
-      "${{ !cancelled() && github.event_name == 'pull_request' && " +
+      `\${{ !cancelled() && (${INTEGRATION_EVENT_EXPRESSION}) && ` +
         `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`,
-      `${jobId} must retain its exact PR-only fail-open selection condition`
+      `${jobId} must retain its exact integration fail-open selection condition`
     );
     assert.doesNotMatch(
       JSON.stringify(job),
@@ -396,6 +398,12 @@ test("sole classifier emits exactly four conservative changed-area owner outputs
     "windows_unique_required"
   ]);
   assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: ["docs/architecture.md"] }), {
+    rContractRequired: false,
+    canonicalEditorRequired: false,
+    visualAccessibilityRequired: false,
+    windowsUniqueRequired: false
+  });
+  assert.deepEqual(classifyCiChange({ eventName: "merge_group", changedPaths: ["docs/architecture.md"] }), {
     rContractRequired: false,
     canonicalEditorRequired: false,
     visualAccessibilityRequired: false,
@@ -529,6 +537,7 @@ test("classifier self-selects and fails open for control-plane, malformed, empty
     ["../escape"]
   ]) {
     assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths }), BOOLEAN_OUTPUTS);
+    assert.deepEqual(classifyCiChange({ eventName: "merge_group", changedPaths }), BOOLEAN_OUTPUTS);
   }
   for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
     assert.deepEqual(classifyCiChange({ eventName, changedPaths: [] }), BOOLEAN_OUTPUTS);
@@ -601,7 +610,7 @@ function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   assert.equal(python[0].uses, SETUP_PYTHON);
   assert.equal(python[0].with["python-version"], "3.10");
   assert.ok(stepRunning(job, 'python -m pip install -e "python[dev]"'));
-  assert.equal(stepRunning(job, pullRequestCommand).if, "${{ github.event_name == 'pull_request' }}");
+  assert.equal(stepRunning(job, pullRequestCommand).if, INTEGRATION_STEP_CONDITION);
   assert.equal(
     stepRunning(job, pullRequestCommand).env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
@@ -753,8 +762,8 @@ test("changed-area owners start beside the invariant core and reject a restored 
 
     const serialCondition = structuredClone(ci);
     serialCondition.jobs[jobId].if = serialCondition.jobs[jobId].if.replace(
-      "github.event_name == 'pull_request' &&",
-      "github.event_name == 'pull_request' && needs.invariant-core.result == 'success' &&"
+      `(${INTEGRATION_EVENT_EXPRESSION}) &&`,
+      `(${INTEGRATION_EVENT_EXPRESSION}) && needs.invariant-core.result == 'success' &&`
     );
     assert.throws(() => assertChangedAreaOwnersStartAfterClassification(serialCondition));
 
@@ -768,7 +777,7 @@ test("changed-area owners start beside the invariant core and reject a restored 
   }
 });
 
-test("validate always evaluates the exact PR-only result fan-in", () => {
+test("validate always evaluates the exact integration result fan-in", () => {
   for (const condition of [
     "${{ !cancelled() && github.event_name == 'pull_request' }}",
     "${{ success() && github.event_name == 'pull_request' }}",
@@ -1080,8 +1089,15 @@ test("performance and standalone released-Jupyter retain triggers and semantics 
 test("protected branch triggers and obsolete classifier vocabulary are absent from current PR workflow owners", () => {
   for (const document of [ci, codeql]) {
     assert.deepEqual(document.on.pull_request.branches ?? ["main"], ["main"]);
+    assert.deepEqual(document.on.merge_group.types, ["checks_requested"]);
     assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
   }
+  const classifier = ci.jobs.classify.steps.find((step) => step.id === "classify");
+  assert.deepEqual(classifier.env, {
+    CI_EVENT_NAME: "${{ github.event_name }}",
+    CI_BASE_SHA: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
+  });
   assert.equal(cross.on.pull_request, undefined);
   assert.ok(Object.hasOwn(cross.on, "workflow_dispatch"));
   assert.ok(Object.hasOwn(cross.on, "schedule"));
@@ -1182,13 +1198,14 @@ test("every Vitest entry point retains an effective worker ceiling", async () =>
   assert.equal(smoke.config.test?.fileParallelism, false);
 });
 
-test("pull-request workflows cancel only obsolete heads while both required result gates remain fail-complete", () => {
+test("integration workflows cancel only obsolete PR heads while both required result gates remain fail-complete", () => {
   const alwaysEvaluatedJobs = [];
   for (const [name, group] of REPLACEABLE_PULL_REQUEST_WORKFLOWS) {
     const document = workflow(name);
     assert.equal(document.concurrency.group, group);
     assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
     assert.ok(document.on.pull_request);
+    assert.deepEqual(document.on.merge_group.types, ["checks_requested"]);
     assert.ok(Object.keys(document.on).some((eventName) => eventName !== "pull_request"));
     for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
       if (String(job.if ?? "").includes("always()")) alwaysEvaluatedJobs.push(`${name}:${jobId}`);
