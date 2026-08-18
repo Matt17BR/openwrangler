@@ -98,6 +98,9 @@ jobs:
         run: |
           set -euo pipefail
           export LC_ALL=C
+          provisioning_checkpoint() {
+            printf 'R 4.5.3 provisioning checkpoint: %s\n' "$1"
+          }
           readonly artifact_count="27"
           readonly artifact_bytes="82619754"
           readonly artifact_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"
@@ -180,35 +183,58 @@ jobs:
           test "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 | wc -l)" = "$artifact_count"
           sudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \
             dpkg --install -- "${install_paths[@]}"
+          provisioning_checkpoint "offline install complete"
           dpkg_audit_path="${artifact_dir}/dpkg-audit.txt"
+          provisioning_checkpoint "package database audit command"
           timeout --signal=TERM --kill-after=5s 30s dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"
           dpkg_audit_size="$(stat --format='%s' -- "$dpkg_audit_path")"
+          provisioning_checkpoint "package database audit output bound"
           test "$dpkg_audit_size" -le 65536
+          provisioning_checkpoint "package database audit output empty"
           test ! -s "$dpkg_audit_path"
           while IFS="|" read -r filename package version architecture size sha256 url; do
+            provisioning_checkpoint "package ${package}"
             test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' "$package")" = \
               "install ok installed|${version}|${architecture}"
           done <<< "$artifact_manifest"
+          provisioning_checkpoint "libx11-dev package"
           test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' libx11-dev)" = \
             "install ok installed|2:1.8.7-1build1|amd64"
+          readonly r_library_dir="/opt/R/4.5.3/lib/R/lib"
+          provisioning_checkpoint "R library directory not a symlink"
+          test ! -L "$r_library_dir"
+          provisioning_checkpoint "R library directory type"
+          test -d "$r_library_dir"
           ldd_index=0
           for r_binary in /opt/R/4.5.3/lib/R/bin/exec/R /opt/R/4.5.3/lib/R/lib/libR.so; do
+            provisioning_checkpoint "R shared object ${ldd_index} not a symlink"
             test ! -L "$r_binary"
+            provisioning_checkpoint "R shared object ${ldd_index} type"
             test -f "$r_binary"
             ldd_output_path="${artifact_dir}/ldd-${ldd_index}.txt"
-            timeout --signal=TERM --kill-after=5s 30s ldd "$r_binary" | head --bytes=65537 > "$ldd_output_path"
+            provisioning_checkpoint "R shared object ${ldd_index} dependency command"
+            timeout --signal=TERM --kill-after=5s 30s \
+              env LD_LIBRARY_PATH="${r_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "$r_binary" | \
+              head --bytes=65537 > "$ldd_output_path"
             ldd_output_size="$(stat --format='%s' -- "$ldd_output_path")"
+            provisioning_checkpoint "R shared object ${ldd_index} output bound"
             test "$ldd_output_size" -le 65536
+            provisioning_checkpoint "R shared object ${ldd_index} dependencies resolved"
             while IFS= read -r dependency_line; do
               case "$dependency_line" in *"not found"*) exit 1 ;; esac
             done < "$ldd_output_path"
             ldd_index=$((ldd_index + 1))
           done
+          provisioning_checkpoint "R shared object count"
           test "$ldd_index" = "2"
+          provisioning_checkpoint "R package status"
           test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' r-4.5.3)" = \
             "install ok installed|1|amd64"
+          provisioning_checkpoint "R version"
           test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"
+          provisioning_checkpoint "R executable path export"
           printf '%s\n' '/opt/R/4.5.3/bin' >> "$GITHUB_PATH"
+          provisioning_checkpoint "complete"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
           r-version: "4.5.3"
@@ -272,6 +298,9 @@ jobs:
         run: |
           set -euo pipefail
           export LC_ALL=C
+          provisioning_checkpoint() {
+            printf 'R 4.5.3 provisioning checkpoint: %s\n' "$1"
+          }
           readonly artifact_count="27"
           readonly artifact_bytes="82619754"
           readonly artifact_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"
@@ -354,35 +383,58 @@ jobs:
           test "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 | wc -l)" = "$artifact_count"
           sudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \
             dpkg --install -- "${install_paths[@]}"
+          provisioning_checkpoint "offline install complete"
           dpkg_audit_path="${artifact_dir}/dpkg-audit.txt"
+          provisioning_checkpoint "package database audit command"
           timeout --signal=TERM --kill-after=5s 30s dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"
           dpkg_audit_size="$(stat --format='%s' -- "$dpkg_audit_path")"
+          provisioning_checkpoint "package database audit output bound"
           test "$dpkg_audit_size" -le 65536
+          provisioning_checkpoint "package database audit output empty"
           test ! -s "$dpkg_audit_path"
           while IFS="|" read -r filename package version architecture size sha256 url; do
+            provisioning_checkpoint "package ${package}"
             test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' "$package")" = \
               "install ok installed|${version}|${architecture}"
           done <<< "$artifact_manifest"
+          provisioning_checkpoint "libx11-dev package"
           test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' libx11-dev)" = \
             "install ok installed|2:1.8.7-1build1|amd64"
+          readonly r_library_dir="/opt/R/4.5.3/lib/R/lib"
+          provisioning_checkpoint "R library directory not a symlink"
+          test ! -L "$r_library_dir"
+          provisioning_checkpoint "R library directory type"
+          test -d "$r_library_dir"
           ldd_index=0
           for r_binary in /opt/R/4.5.3/lib/R/bin/exec/R /opt/R/4.5.3/lib/R/lib/libR.so; do
+            provisioning_checkpoint "R shared object ${ldd_index} not a symlink"
             test ! -L "$r_binary"
+            provisioning_checkpoint "R shared object ${ldd_index} type"
             test -f "$r_binary"
             ldd_output_path="${artifact_dir}/ldd-${ldd_index}.txt"
-            timeout --signal=TERM --kill-after=5s 30s ldd "$r_binary" | head --bytes=65537 > "$ldd_output_path"
+            provisioning_checkpoint "R shared object ${ldd_index} dependency command"
+            timeout --signal=TERM --kill-after=5s 30s \
+              env LD_LIBRARY_PATH="${r_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "$r_binary" | \
+              head --bytes=65537 > "$ldd_output_path"
             ldd_output_size="$(stat --format='%s' -- "$ldd_output_path")"
+            provisioning_checkpoint "R shared object ${ldd_index} output bound"
             test "$ldd_output_size" -le 65536
+            provisioning_checkpoint "R shared object ${ldd_index} dependencies resolved"
             while IFS= read -r dependency_line; do
               case "$dependency_line" in *"not found"*) exit 1 ;; esac
             done < "$ldd_output_path"
             ldd_index=$((ldd_index + 1))
           done
+          provisioning_checkpoint "R shared object count"
           test "$ldd_index" = "2"
+          provisioning_checkpoint "R package status"
           test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' r-4.5.3)" = \
             "install ok installed|1|amd64"
+          provisioning_checkpoint "R version"
           test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"
+          provisioning_checkpoint "R executable path export"
           printf '%s\n' '/opt/R/4.5.3/bin' >> "$GITHUB_PATH"
+          provisioning_checkpoint "complete"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
           r-version: "4.5.3"
