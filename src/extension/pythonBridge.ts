@@ -59,6 +59,7 @@ import {
 } from "./pythonDependencyState";
 import { PythonSessionOwnership } from "./pythonSessionOwnership";
 import { PythonRuntimeTransport } from "./pythonRuntimeTransport";
+import { PythonRuntimeScopeRegistry } from "./pythonRuntimeScopeRegistry";
 import { BoundedPythonStdoutLineFramer } from "./pythonStdoutLineFramer";
 
 interface MissingDependencies {
@@ -179,11 +180,6 @@ type DependencyRecoveryTarget = DependencyEnvironmentUncertainty & {
 };
 
 const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple Python runtime shutdown failures.";
-// Inactive scopes are retained as a small LRU so repeated external-file opens can
-// reuse dependency/environment work without allowing arbitrary resource URIs to
-// grow the bridge maps forever. Live or explicitly leased scopes may temporarily
-// exceed this bound; the next ownership release trims back to it.
-const MAX_RETAINED_INACTIVE_SCOPES = 128;
 const MAX_RETAINED_DEPENDENCY_UNCERTAINTIES = 128;
 
 async function joinProcessStops(previous: Promise<void>, current: Promise<void>): Promise<void> {
@@ -199,13 +195,32 @@ async function joinProcessStops(previous: Promise<void>, current: Promise<void>)
   if (failures.length > 1) throw new AggregateError(failures, PROCESS_SHUTDOWN_AGGREGATE_MESSAGE);
 }
 
+function createRuntimeSlot(key: string): RuntimeSlot {
+  return {
+    key,
+    pendingIds: new Set(),
+    provisionalSessionIds: new Set(),
+    sessionIds: new Set(),
+    stoppingProcesses: new Map(),
+    leaseCount: 0,
+    process: undefined,
+    processStart: undefined,
+    processSelection: undefined,
+    processStartSelection: undefined,
+    processStop: undefined,
+    runtimeExitError: undefined,
+    stderrBuffer: "",
+    runtimeEpoch: 0
+  };
+}
+
 export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private shutdownPromise: Promise<void> | undefined;
-  private readonly runtimeSlots = new Map<string, RuntimeSlot>();
   private readonly sessionOwnership = new PythonSessionOwnership<RuntimeSlot>((runtime, reason) =>
     this.restartRuntime(runtime, reason)
   );
   private readonly runtimeTransport: PythonRuntimeTransport<RuntimeSlot>;
+  private readonly runtimeScopes: PythonRuntimeScopeRegistry<RuntimeSlot, EnvironmentSelection>;
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private readonly spawnProcess = spawn;
 
@@ -230,8 +245,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly configurationSubscription: vscode.Disposable;
   private readonly environmentApiBroker: PythonEnvironmentApiBroker;
   private generation = 0;
-  private scopeUseClock = 0;
-  private readonly scopeRecency = new Map<string, number>();
   private selectionEpoch = 0;
   private dependencyAuthorizationEpoch = 0;
   private readonly selectionEpochs = new Map<string, number>();
@@ -263,6 +276,17 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       runtimeUnavailableError: (runtime, error) => this.runtimeUnavailableError(runtime, error),
       reportDiagnostic: (message) => this.output.appendLine(message)
     });
+    this.runtimeScopes = new PythonRuntimeScopeRegistry({
+      createRuntime: createRuntimeSlot,
+      environmentSelections: this.environmentSelections,
+      selectionEpochs: this.selectionEpochs,
+      activeMissingSelection: () => this.lastMissingDependencies?.selection,
+      abortSelection: (selection) => {
+        this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionSupersededError());
+      },
+      hasExternalOwnership: (runtime) =>
+        this.runtimeTransport.hasOwnership(runtime) || this.sessionOwnership.hasClaimsFor(runtime)
+    });
     this.environmentApiBroker = new PythonEnvironmentApiBroker((event) =>
       this.handlePythonEnvironmentSelectionChange(event)
     );
@@ -288,6 +312,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   get runtimeGeneration(): number {
     return this.generation;
+  }
+
+  private get runtimeSlots(): Map<string, RuntimeSlot> {
+    return this.runtimeScopes.slots;
   }
 
   get runtimeRunning(): boolean {
@@ -1616,142 +1644,23 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private runtimeSlot(key: string): RuntimeSlot {
-    const existing = this.runtimeSlots.get(key);
-    if (existing) {
-      this.markScopeUsed(key);
-      return existing;
-    }
-    const runtime: RuntimeSlot = {
-      key,
-      pendingIds: new Set(),
-      provisionalSessionIds: new Set(),
-      sessionIds: new Set(),
-      stoppingProcesses: new Map(),
-      leaseCount: 0,
-      process: undefined,
-      processStart: undefined,
-      processSelection: undefined,
-      processStartSelection: undefined,
-      processStop: undefined,
-      runtimeExitError: undefined,
-      stderrBuffer: "",
-      runtimeEpoch: 0
-    };
-    this.runtimeSlots.set(key, runtime);
-    this.markScopeUsed(key);
-    return runtime;
-  }
-
-  private markScopeUsed(key: string): void {
-    this.scopeUseClock += 1;
-    this.scopeRecency.set(key, this.scopeUseClock);
+    return this.runtimeScopes.runtime(key);
   }
 
   private retainRuntime(runtime: RuntimeSlot): () => void {
-    if (this.runtimeSlots.get(runtime.key) !== runtime) {
-      throw new Error(`Open Wrangler refused to lease detached Python scope ${runtime.key}.`);
-    }
-    runtime.leaseCount += 1;
-    this.markScopeUsed(runtime.key);
-    let retained = true;
-    return () => {
-      if (!retained) return;
-      retained = false;
-      runtime.leaseCount = Math.max(0, runtime.leaseCount - 1);
-      if (this.runtimeSlots.get(runtime.key) === runtime) this.trimInactiveScopes();
-    };
+    return this.runtimeScopes.retain(runtime);
   }
 
   private trimInactiveScopes(): void {
-    const retainedKeys = (): Set<string> =>
-      new Set([
-        ...this.runtimeSlots.keys(),
-        ...this.environmentSelections.keys(),
-        ...this.selectionEpochs.keys(),
-        ...this.scopeRecency.keys()
-      ]);
-    let keys = retainedKeys();
-    while (keys.size > MAX_RETAINED_INACTIVE_SCOPES) {
-      const ordered = [...keys].sort(
-        (left, right) =>
-          (this.scopeRecency.get(left) ?? 0) - (this.scopeRecency.get(right) ?? 0) || left.localeCompare(right)
-      );
-      let evicted = false;
-      for (const key of ordered) {
-        const runtime = this.runtimeSlots.get(key);
-        if (runtime ? this.evictInactiveScope(runtime) : this.evictOrphanedScope(key)) {
-          evicted = true;
-          break;
-        }
-      }
-      if (!evicted) return;
-      keys = retainedKeys();
-    }
+    this.runtimeScopes.trimInactive();
   }
 
   private evictInactiveScope(runtime: RuntimeSlot): boolean {
-    if (this.runtimeSlots.get(runtime.key) !== runtime || !this.isInactiveScope(runtime)) return false;
-
-    const selection = this.environmentSelections.get(runtime.key);
-    const selectionEpoch = this.selectionEpochs.get(runtime.key);
-    const recency = this.scopeRecency.get(runtime.key);
-    if (!this.runtimeSlots.delete(runtime.key)) return false;
-    if (selection && this.environmentSelections.get(runtime.key) === selection) {
-      this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionSupersededError());
-      this.environmentSelections.delete(runtime.key);
-    }
-    if (this.selectionEpochs.get(runtime.key) === selectionEpoch) {
-      this.selectionEpochs.delete(runtime.key);
-    }
-    if (this.scopeRecency.get(runtime.key) === recency) {
-      this.scopeRecency.delete(runtime.key);
-    }
-    runtime.stderrBuffer = "";
-    runtime.runtimeExitError = undefined;
-    runtime.processSelection = undefined;
-    runtime.processStartSelection = undefined;
-    return true;
-  }
-
-  private evictOrphanedScope(key: string): boolean {
-    if (this.runtimeSlots.has(key)) return false;
-    const selection = this.environmentSelections.get(key);
-    // A selection without its owning slot violates the scope-retention
-    // invariant. Its promise may still be resolving, so fail closed rather than
-    // guessing that it is safe to detach.
-    if (selection) return false;
-    if (this.lastMissingDependencies?.selection.key === key) return false;
-    const selectionEpoch = this.selectionEpochs.get(key);
-    const recency = this.scopeRecency.get(key);
-    if (this.selectionEpochs.get(key) === selectionEpoch) {
-      this.selectionEpochs.delete(key);
-    }
-    if (this.scopeRecency.get(key) === recency) {
-      this.scopeRecency.delete(key);
-    }
-    return true;
+    return this.runtimeScopes.evictInactive(runtime);
   }
 
   private isInactiveScope(runtime: RuntimeSlot): boolean {
-    const selection = this.environmentSelections.get(runtime.key);
-    if (
-      runtime.leaseCount > 0 ||
-      runtime.process ||
-      runtime.processStart ||
-      runtime.processStop ||
-      runtime.processSelection ||
-      runtime.processStartSelection ||
-      runtime.stoppingProcesses.size > 0 ||
-      runtime.pendingIds.size > 0 ||
-      runtime.provisionalSessionIds.size > 0 ||
-      runtime.sessionIds.size > 0 ||
-      Boolean(this.lastMissingDependencies && this.lastMissingDependencies.selection === selection)
-    ) {
-      return false;
-    }
-    if (this.runtimeTransport.hasOwnership(runtime)) return false;
-    if (this.sessionOwnership.hasClaimsFor(runtime)) return false;
-    return true;
+    return this.runtimeScopes.isInactive(runtime);
   }
 
   private restartRuntime(runtime: RuntimeSlot, reason: string): void {
