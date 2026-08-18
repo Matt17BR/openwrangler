@@ -6,80 +6,50 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
   BoundedDependencyGuardFrameReader,
-  DEPENDENCY_GUARD_MAX_FRAME_BYTES,
   DependencyGuardProtocolError,
   type DependencyGuardMode
 } from "./dependencyGuardFrameReader";
+import {
+  DEPENDENCY_GUARD_EXIT_CODES,
+  DEPENDENCY_GUARD_PROTOCOL,
+  DependencyGuardCommandError,
+  decodeDependencyGuardError,
+  decodeDependencyGuardReady,
+  decodeDependencyGuardStatus,
+  decodeDependencyGuardValidation,
+  dependencyGuardCodeForExit,
+  dependencyGuardDependencyWire,
+  dependencyGuardEnvironmentWire,
+  encodeDependencyGuardFrame,
+  isCanonicalDependencyGuardToken,
+  validateDependencyGuardTarget,
+  type DependencyGuardReady,
+  type DependencyGuardStatus,
+  type DependencyGuardValidation
+} from "./dependencyGuardProtocol";
 import type { PythonEnvironment } from "./pythonEnvironment";
 import type { PythonDependency } from "./pythonEnvironmentModel";
-import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 
-export const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
 export {
   DEPENDENCY_GUARD_MAX_FRAME_BYTES,
   DependencyGuardProtocolError,
   type DependencyGuardMode
 } from "./dependencyGuardFrameReader";
+export {
+  DEPENDENCY_GUARD_PROTOCOL,
+  DependencyGuardCommandError,
+  type DependencyGuardErrorCode,
+  type DependencyGuardReady,
+  type DependencyGuardStatus,
+  type DependencyGuardValidation
+} from "./dependencyGuardProtocol";
 export const DEPENDENCY_GUARD_COMMAND_TIMEOUT_MS = 30_000;
 export const DEPENDENCY_INSTALL_READY_TIMEOUT_MS = 30_000;
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export const DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS = 5_000;
 
-export type DependencyGuardErrorCode =
-  | "invalid_request"
-  | "busy"
-  | "malformed_state"
-  | "validation_failed"
-  | "pip_failed"
-  | "stale_or_missing_marker"
-  | "environment_changed"
-  | "internal_error";
-
-const DEPENDENCY_GUARD_EXIT_CODES: Readonly<Record<DependencyGuardErrorCode, number>> = {
-  invalid_request: 10,
-  busy: 11,
-  malformed_state: 12,
-  validation_failed: 13,
-  pip_failed: 14,
-  stale_or_missing_marker: 15,
-  environment_changed: 16,
-  internal_error: 17
-};
-
-const DEPENDENCY_GUARD_CODES_BY_EXIT = new Map<number, DependencyGuardErrorCode>(
-  Object.entries(DEPENDENCY_GUARD_EXIT_CODES).map(([code, exitCode]) => [exitCode, code as DependencyGuardErrorCode])
-);
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
 export type DependencyInstallSpawner = (executable: string, args: string[], options: SpawnOptions) => ChildProcess;
-
-export interface DependencyGuardReady {
-  readonly protocol: typeof DEPENDENCY_GUARD_PROTOCOL;
-  readonly kind: "ready";
-  readonly token: string;
-}
-
-export type DependencyGuardStatus =
-  | {
-      readonly protocol: typeof DEPENDENCY_GUARD_PROTOCOL;
-      readonly kind: "status";
-      readonly state: "clean";
-      readonly token: null;
-    }
-  | {
-      readonly protocol: typeof DEPENDENCY_GUARD_PROTOCOL;
-      readonly kind: "status";
-      readonly state: "dirty";
-      readonly token: string;
-    };
-
-export interface DependencyGuardValidation {
-  readonly protocol: typeof DEPENDENCY_GUARD_PROTOCOL;
-  readonly kind: "validated";
-  readonly token: string;
-}
 
 export interface OwnedDependencyInstall {
   readonly child: ChildProcess;
@@ -116,21 +86,6 @@ export interface DependencyGuardClientOptions {
 
 export interface StartDependencyInstallOptions extends Omit<DependencyGuardClientOptions, "timeoutMs"> {
   readonly readyTimeoutMs?: number;
-}
-
-export class DependencyGuardCommandError extends Error {
-  readonly exitCode: number;
-
-  constructor(
-    readonly mode: DependencyGuardMode,
-    readonly code: DependencyGuardErrorCode,
-    readonly executable: string
-  ) {
-    const exitCode = DEPENDENCY_GUARD_EXIT_CODES[code];
-    super(`Open Wrangler dependency guard ${mode} with ${executable} failed with ${code} (exit code ${exitCode}).`);
-    this.name = "DependencyGuardCommandError";
-    this.exitCode = exitCode;
-  }
 }
 
 export class DependencyInstallAbortedError extends Error {
@@ -184,7 +139,7 @@ export function startDependencyInstall(
   dependencies: readonly PythonDependency[],
   options: StartDependencyInstallOptions
 ): OwnedDependencyInstall {
-  validateGuardTarget(environment, options.helperPath);
+  validateDependencyGuardTarget(environment, options.helperPath);
   if (dependencies.length === 0) {
     throw new Error("Python dependency installation requires at least one dependency.");
   }
@@ -250,7 +205,7 @@ export function startDependencyGuardStatus(
   environment: PythonEnvironment,
   options: DependencyGuardClientOptions
 ): OwnedDependencyGuardCommand<DependencyGuardStatus> {
-  validateGuardTarget(environment, options.helperPath);
+  validateDependencyGuardTarget(environment, options.helperPath);
   const requestFrame = encodeDependencyGuardFrame({
     protocol: DEPENDENCY_GUARD_PROTOCOL,
     kind: "status",
@@ -278,8 +233,8 @@ export function startDependencyGuardValidation(
   expectedToken: string,
   options: DependencyGuardClientOptions
 ): OwnedDependencyGuardCommand<DependencyGuardValidation> {
-  validateGuardTarget(environment, options.helperPath);
-  if (!isCanonicalUuid(expectedToken)) {
+  validateDependencyGuardTarget(environment, options.helperPath);
+  if (!isCanonicalDependencyGuardToken(expectedToken)) {
     throw new Error("Dependency validation requires a canonical lowercase UUID.");
   }
   const requestFrame = encodeDependencyGuardFrame({
@@ -635,7 +590,7 @@ function dependencyInstallCloseFailure(state: DependencyInstallCloseState): Erro
     return new DependencyGuardProtocolError("install", "the helper closed without an explicit GO authorization");
   }
   if (state.code === 0 && !state.signal) return undefined;
-  const guardCode = state.code === null ? undefined : DEPENDENCY_GUARD_CODES_BY_EXIT.get(state.code);
+  const guardCode = state.code === null ? undefined : dependencyGuardCodeForExit(state.code);
   if (guardCode && !state.signal) return new DependencyGuardCommandError("install", guardCode, state.executable);
   return new Error(
     `Open Wrangler dependency installation with ${state.executable} ended with ${dependencyGuardCloseDetail(
@@ -885,156 +840,10 @@ function dependencyGuardCommandCloseFailure(state: DependencyGuardCommandCloseSt
   );
 }
 
-function decodeDependencyGuardReady(frame: Record<string, unknown>, token: string): DependencyGuardReady {
-  requireExactFrameKeys(frame, ["protocol", "kind", "token"], "install");
-  if (
-    frame.protocol !== DEPENDENCY_GUARD_PROTOCOL ||
-    frame.kind !== "ready" ||
-    frame.token !== token ||
-    !isCanonicalUuid(frame.token)
-  ) {
-    throw new DependencyGuardProtocolError("install", "the helper published an invalid or mis-correlated READY frame");
-  }
-  return { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "ready", token };
-}
-
-function decodeDependencyGuardStatus(frame: Record<string, unknown>): DependencyGuardStatus {
-  requireExactFrameKeys(frame, ["protocol", "kind", "state", "token"], "status");
-  if (frame.protocol !== DEPENDENCY_GUARD_PROTOCOL || frame.kind !== "status") {
-    throw new DependencyGuardProtocolError("status", "the helper published an invalid status frame");
-  }
-  if (frame.state === "clean" && frame.token === null) {
-    return { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "status", state: "clean", token: null };
-  }
-  if (frame.state === "dirty" && typeof frame.token === "string" && isCanonicalUuid(frame.token)) {
-    return { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "status", state: "dirty", token: frame.token };
-  }
-  throw new DependencyGuardProtocolError("status", "the helper published an inconsistent status state/token pair");
-}
-
-function decodeDependencyGuardValidation(
-  frame: Record<string, unknown>,
-  expectedToken: string
-): DependencyGuardValidation {
-  requireExactFrameKeys(frame, ["protocol", "kind", "token"], "validate");
-  if (
-    frame.protocol !== DEPENDENCY_GUARD_PROTOCOL ||
-    frame.kind !== "validated" ||
-    typeof frame.token !== "string" ||
-    !isCanonicalUuid(frame.token) ||
-    frame.token !== expectedToken
-  ) {
-    throw new DependencyGuardProtocolError(
-      "validate",
-      "the helper published an invalid or mis-correlated validation frame"
-    );
-  }
-  return { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "validated", token: frame.token };
-}
-
-function decodeDependencyGuardError(
-  frame: Record<string, unknown>,
-  mode: DependencyGuardMode,
-  executable: string
-): DependencyGuardCommandError {
-  requireExactFrameKeys(frame, ["protocol", "kind", "code"], mode);
-  if (
-    frame.protocol !== DEPENDENCY_GUARD_PROTOCOL ||
-    frame.kind !== "error" ||
-    typeof frame.code !== "string" ||
-    !isDependencyGuardErrorCode(frame.code)
-  ) {
-    throw new DependencyGuardProtocolError(mode, "the helper published an invalid error frame");
-  }
-  return new DependencyGuardCommandError(mode, frame.code, executable);
-}
-
-function requireExactFrameKeys(
-  frame: Record<string, unknown>,
-  expected: readonly string[],
-  mode: DependencyGuardMode
-): void {
-  const actual = Object.keys(frame);
-  if (actual.length !== expected.length || expected.some((key) => !Object.hasOwn(frame, key))) {
-    throw new DependencyGuardProtocolError(mode, "the helper frame had an unexpected shape");
-  }
-}
-
-function dependencyGuardEnvironmentWire(environment: PythonEnvironment): {
-  executable: string;
-  executableIdentity: {
-    device: string;
-    inode: string;
-    size: string;
-    mtimeNs: string;
-    ctimeNs: string;
-  };
-  packageRoot: string;
-  packageRootIdentity: { device: string; inode: string };
-  pythonVersion: string;
-} {
-  return {
-    executable: environment.executable,
-    executableIdentity: {
-      device: environment.executableIdentity.device,
-      inode: environment.executableIdentity.inode,
-      size: environment.executableIdentity.size,
-      mtimeNs: environment.executableIdentity.mtimeNs,
-      ctimeNs: environment.executableIdentity.ctimeNs
-    },
-    packageRoot: environment.packageRoot,
-    packageRootIdentity: {
-      device: environment.packageRootIdentity.device,
-      inode: environment.packageRootIdentity.inode
-    },
-    pythonVersion: environment.version
-  };
-}
-
-function dependencyGuardDependencyWire(dependency: PythonDependency): {
-  importModule: string;
-  distribution: string;
-  installSpec: string;
-  exactVersion: string | null;
-  minimumVersion: string | null;
-  maximumVersionExclusive: string | null;
-} {
-  return {
-    importModule: dependency.importModule,
-    distribution: dependency.distribution,
-    installSpec: dependency.installSpec,
-    exactVersion: dependency.exactVersion ?? null,
-    minimumVersion: dependency.minimumVersion ?? null,
-    maximumVersionExclusive: dependency.maximumVersionExclusive ?? null
-  };
-}
-
-function validateGuardTarget(environment: PythonEnvironment, helperPath: string): void {
-  if (!isFullyQualifiedPythonPath(environment.executable)) {
-    throw new Error("Python dependency guard requires an absolute executable path.");
-  }
-  if (!isFullyQualifiedPythonPath(environment.packageRoot)) {
-    throw new Error("Python dependency guard requires an absolute package-root path.");
-  }
-  if (!isFullyQualifiedPythonPath(helperPath)) {
-    throw new Error("Python dependency guard requires an absolute helper path.");
-  }
-}
-
 function validateTimeout(timeoutMs: number, label: string): void {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
     throw new Error(`${label} must be a finite non-negative number.`);
   }
-}
-
-function encodeDependencyGuardFrame(payload: unknown): Buffer {
-  const encoded = Buffer.from(`${JSON.stringify(payload)}\n`, "utf8");
-  if (encoded.length > DEPENDENCY_GUARD_MAX_FRAME_BYTES) {
-    throw new Error(
-      `Dependency guard request exceeds ${DEPENDENCY_GUARD_MAX_FRAME_BYTES} bytes including its LF terminator.`
-    );
-  }
-  return encoded;
 }
 
 function dependencyGuardStdio(child: ChildProcess): (ChildProcess & { stdin: Writable; stdout: Readable }) | undefined {
@@ -1079,14 +888,6 @@ function unrefDependencyGuardProcess(
 
 function isUnrefableDependencyGuardPipe(value: object): value is UnrefableDependencyGuardPipe {
   return "unref" in value && typeof value.unref === "function";
-}
-
-function isCanonicalUuid(value: unknown): value is string {
-  return typeof value === "string" && UUID_PATTERN.test(value);
-}
-
-function isDependencyGuardErrorCode(value: string): value is DependencyGuardErrorCode {
-  return Object.hasOwn(DEPENDENCY_GUARD_EXIT_CODES, value);
 }
 
 function dependencyGuardCloseDetail(code: number | null, signal: NodeJS.Signals | null): string {
