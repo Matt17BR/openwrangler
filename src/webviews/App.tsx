@@ -10,10 +10,8 @@ import {
 import { flushSync } from "react-dom";
 import type {
   ColumnSummary,
-  ColumnSchema,
   DataDiff,
   OpenWranglerResponse,
-  GridPage,
   LiveGridPage,
   OperationKind,
   SessionMetadata,
@@ -38,7 +36,7 @@ import {
   type FilterModel
 } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
-import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
+import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
 import { sessionModeAction } from "../shared/sessionMode";
 import { ActiveFilterBar, type FilterBarRequestLifecycle } from "./filters/ActiveFilterBar";
@@ -49,8 +47,7 @@ import {
   latestConfirmedFilterUndo,
   recordConfirmedFilterTransition,
   sameConfirmedFilters,
-  type ConfirmedFilterHistory,
-  type ConfirmedFilterState
+  type ConfirmedFilterHistory
 } from "./filters/filterHistory";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
@@ -61,6 +58,49 @@ import { draftDiffLabels, fillMissingResultLabel } from "./draftResultPresentati
 import { StepInspectionPanel } from "./StepInspectionPanel";
 import { SessionModeControl } from "./SessionModeControl";
 import { vscode } from "./vscodeApi";
+import {
+  alignedColumnWindow,
+  backgroundDiagnosticKey,
+  cloneBackgroundDiagnostics,
+  columnWindowFromPage,
+  filterModelForColumnValues,
+  isSessionOpenProgressStage,
+  isSwitchableFileBackend,
+  pageCoversColumnWindow,
+  sameFilterModel,
+  sameFilterRules,
+  sameSortRules,
+  sessionOpenProgressHeading,
+  withoutDatasetStats,
+  type ApplyFilterOptions,
+  type BackgroundDiagnostic,
+  type ColumnRevealRequest,
+  type ColumnRevealSynchronization,
+  type ColumnWindow,
+  type ConfirmedView,
+  type ConfirmedViewState,
+  type DiffBeforeState,
+  type EditorActionMessage,
+  type ImportOptionsStateMessage,
+  type OperationIntent,
+  type PageRequestOptions,
+  type PendingBackgroundRequest,
+  type PendingPageRequest,
+  type PendingStepInspection,
+  type QueuedOperationIntent,
+  type QueuedStepSelection,
+  type RendererSynchronizationMessage,
+  type RequestImportOptionsChangeMessage,
+  type RuntimeDependencyInstallStateMessage,
+  type SessionModeChangeStateMessage,
+  type SessionOpenProgressMessage,
+  type SessionPresentationMessage,
+  type StepInspectionClearedMessage,
+  type StepInspectionResultMessage,
+  type SummaryRequestOwner,
+  type ViewSortActionTarget,
+  type ViewStateMessage
+} from "./appState";
 
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
@@ -1521,7 +1561,7 @@ export function App() {
         storeMetadata(response.metadata);
         storeFilterModel(response.metadata.filterModel);
         storePage(response.page);
-        const openedWindow = columnWindowFromPage(response.metadata, response.page);
+        const openedWindow = columnWindowFromPage(response.metadata, response.page, initialColumnWindow());
         confirmedColumnWindow.current = openedWindow;
         desiredColumnWindow.current = openedWindow;
         inspectionColumnWindow.current = openedWindow;
@@ -3049,241 +3089,6 @@ export function App() {
   );
 }
 
-type NonSortEditorAction =
-  | "openOperation"
-  | "editLatest"
-  | "selectStep"
-  | "clearFilterColumn"
-  | "openFilters"
-  | "applyDraft"
-  | "discardDraft"
-  | "undoStep";
-
-type EditorActionMessage =
-  | {
-      kind: "editorAction";
-      action: "changeViewSort";
-      column: string;
-      sortAction: "moveUp" | "moveDown" | "remove";
-      expectedSessionId: string;
-      expectedSortModelSignature: string;
-      expectedSortIndex: number;
-    }
-  | {
-      kind: "editorAction";
-      action: NonSortEditorAction;
-      expectedSessionId?: string;
-      expectedRevision?: number;
-      operationKind?: OperationKind;
-      stepId?: string;
-      column?: string;
-    };
-
-interface ViewSortActionTarget {
-  column: string;
-  action: "moveUp" | "moveDown" | "remove";
-  expectedSessionId: string;
-  expectedSortModelSignature: string;
-  expectedSortIndex: number;
-}
-
-interface QueuedStepSelection {
-  sessionId: string;
-  revision: number;
-  stepId?: string;
-}
-
-type OperationIntent = { action: "open"; operationKind?: OperationKind } | { action: "editLatest" };
-
-type QueuedOperationIntent = OperationIntent & {
-  sessionId: string;
-  revision: number;
-};
-
-interface RequestImportOptionsChangeMessage {
-  kind: "requestImportOptionsChange";
-  actionId: string;
-}
-
-interface RendererSynchronizationMessage {
-  kind: "rendererSynchronization";
-  syncId: string;
-  sessionId: string | null;
-  revision: number | null;
-  layoutTransitionPending: boolean;
-}
-
-interface ImportOptionsStateMessage {
-  kind: "importOptionsState";
-  busy: boolean;
-}
-
-interface RuntimeDependencyInstallStateMessage {
-  kind: "runtimeDependencyInstallState";
-  busy: boolean;
-}
-
-interface SessionModeChangeStateMessage {
-  kind: "sessionModeChangeState";
-  busy: boolean;
-  mode: SessionMode;
-}
-
-interface SessionOpenProgressMessage {
-  kind: "sessionOpenProgress";
-  stage: unknown;
-}
-
-interface SessionPresentationMessage {
-  kind: "sessionPresentation";
-  presentation: {
-    sessionId: string;
-    revision: number;
-    code: string;
-    draft?: {
-      diff: DataDiff;
-      remainingMissingCells?: number;
-      warnings: string[];
-      beforeSchema: ColumnSchema[];
-    };
-  };
-}
-
-interface ViewStateMessage {
-  kind: "viewState";
-  state: unknown;
-}
-
-interface StepInspectionResultMessage {
-  kind: "stepInspectionResult";
-  stepId: string;
-  offset: number;
-  limit: number;
-  columnOffset: number;
-  columnLimit: number;
-  response: OpenWranglerResponse;
-}
-
-interface StepInspectionClearedMessage {
-  kind: "stepInspectionCleared";
-  resumeProfiling: boolean;
-}
-
-interface ConfirmedView {
-  viewContextId: string;
-  sessionId: string;
-  revision: number;
-}
-
-interface ConfirmedViewState {
-  view: ConfirmedView;
-  metadata: SessionMetadata;
-  page: LiveGridPage;
-  columnWindow: ColumnWindow;
-  summaries: ColumnSummary[];
-  columnValues: ReadonlyMap<string, ValuesResponse>;
-  backgroundDiagnostics: ReadonlyMap<string, BackgroundDiagnostic>;
-}
-
-interface PendingStepInspection {
-  stepId: string;
-  offset: number;
-  columnWindow: ColumnWindow;
-  reason: "selection" | "row" | "projection";
-}
-
-interface DiffBeforeState {
-  schema: ColumnSchema[];
-  page?: GridPage;
-}
-
-interface PendingPageRequest {
-  viewRequestId: string;
-  viewContextId: string;
-  changesView: boolean;
-  offset: number;
-  model: FilterModel;
-  columnWindow: ColumnWindow;
-  reason: PageRequestReason;
-  previousConfirmedState?: ConfirmedViewState;
-  filterHistoryUndoTarget?: ConfirmedFilterState;
-}
-
-export interface ColumnWindow {
-  offset: number;
-  limit: number;
-}
-
-interface ColumnRevealSynchronization {
-  sessionId: string;
-  revision: number;
-}
-
-interface ColumnRevealRequest {
-  columnId: string;
-  requestId: number;
-  retainUntilSynchronization?: ColumnRevealSynchronization;
-}
-
-type PageRequestReason = "view" | "row" | "projection";
-
-type SummaryRequestOwner = "grid" | "drawer";
-
-type PendingBackgroundRequest =
-  | {
-      kind: "summary";
-      viewContextId: string;
-      columnId: string;
-      attempt: number;
-      owners: Set<SummaryRequestOwner>;
-    }
-  | { kind: "stats"; viewContextId: string; attempt: number }
-  | { kind: "values"; viewContextId: string; column: string };
-
-interface BackgroundDiagnostic {
-  message: string;
-  pending: PendingBackgroundRequest;
-}
-
-interface PageRequestOptions {
-  changesView?: boolean;
-  viewContextId?: string;
-  columnWindow?: ColumnWindow;
-  reason?: PageRequestReason;
-  filterHistoryUndoTarget?: ConfirmedFilterState;
-}
-
-interface ApplyFilterOptions {
-  filterHistoryUndoTarget?: ConfirmedFilterState;
-}
-
-function backgroundDiagnosticKey(pending: PendingBackgroundRequest): string {
-  if (pending.kind === "stats") return "stats";
-  return `${pending.kind}:${pending.kind === "summary" ? pending.columnId : pending.column}`;
-}
-
-function cloneBackgroundDiagnostics(
-  diagnostics: ReadonlyMap<string, BackgroundDiagnostic>
-): ReadonlyMap<string, BackgroundDiagnostic> {
-  return new Map(
-    [...diagnostics].map(([key, diagnostic]) => [
-      key,
-      {
-        ...diagnostic,
-        pending:
-          diagnostic.pending.kind === "summary"
-            ? { ...diagnostic.pending, owners: new Set(diagnostic.pending.owners) }
-            : { ...diagnostic.pending }
-      }
-    ])
-  );
-}
-
-function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
-  const { stats: _stats, ...rest } = metadata;
-  return rest;
-}
-
 function isEditableKeyboardTarget(target: EventTarget): boolean {
   return (
     target instanceof HTMLElement &&
@@ -3291,99 +3096,8 @@ function isEditableKeyboardTarget(target: EventTarget): boolean {
   );
 }
 
-function sameFilterModel(left: FilterModel, right: FilterModel): boolean {
-  return filterModelScope(left) === filterModelScope(right);
-}
-
-function sameFilterRules(left: FilterModel, right: FilterModel): boolean {
-  return (
-    JSON.stringify({ logic: left.logic ?? "and", filters: left.filters }) ===
-    JSON.stringify({ logic: right.logic ?? "and", filters: right.filters })
-  );
-}
-
-function sameSortRules(left: FilterModel, right: FilterModel): boolean {
-  return JSON.stringify(left.sort) === JSON.stringify(right.sort);
-}
-
-function filterModelForColumnValues(model: FilterModel, column: string): FilterModel {
-  return {
-    ...model,
-    filters: model.filters.filter((filter) => filter.column !== column)
-  };
-}
-
-function isSwitchableFileBackend(backend: SessionMetadata["backend"]): boolean {
-  return backend === "pandas" || backend === "polars" || backend === "duckdb";
-}
-
-function filterModelScope(model: FilterModel): string {
-  return JSON.stringify({ logic: model.logic ?? "and", filters: model.filters, sort: model.sort });
-}
-
 function initialColumnWindow(): ColumnWindow {
   return { offset: 0, limit: webviewConfig.fetchColumnBlockSize };
-}
-
-export function alignedColumnWindow(range: VisibleColumnRange, totalColumns: number, blockSize: number): ColumnWindow {
-  const boundedBlockSize = Math.max(1, Math.min(256, Math.floor(blockSize)));
-  if (totalColumns <= 0) return { offset: 0, limit: boundedBlockSize };
-  const start = Math.max(0, Math.min(Math.floor(range.start), totalColumns - 1));
-  const end = Math.max(start + 1, Math.min(Math.ceil(range.end), totalColumns));
-  const offset = Math.floor(start / boundedBlockSize) * boundedBlockSize;
-  const alignedEnd = Math.min(totalColumns, Math.ceil(end / boundedBlockSize) * boundedBlockSize);
-  if (alignedEnd - offset <= 256) return { offset, limit: Math.max(1, alignedEnd - offset) };
-
-  const shiftedOffset = Math.min(start, Math.max(0, totalColumns - 256));
-  return { offset: shiftedOffset, limit: Math.max(1, Math.min(256, totalColumns - shiftedOffset)) };
-}
-
-function columnWindowFromPage(
-  metadata: SessionMetadata,
-  page: LiveGridPage,
-  fallback: ColumnWindow = initialColumnWindow()
-): ColumnWindow {
-  if (!metadata.schema.length) return { offset: 0, limit: Math.max(1, fallback.limit) };
-  const firstId = page.columnIds[0];
-  const firstPosition = firstId === undefined ? -1 : metadata.schema.findIndex((column) => column.id === firstId);
-  if (firstPosition < 0 || page.columnIds.length === 0) {
-    return {
-      offset: Math.max(0, Math.min(fallback.offset, metadata.schema.length - 1)),
-      limit: Math.max(1, Math.min(256, fallback.limit))
-    };
-  }
-  return { offset: firstPosition, limit: Math.max(1, Math.min(256, page.columnIds.length)) };
-}
-
-function sessionOpenProgressHeading(stage: SessionOpenProgressStage): string {
-  switch (stage) {
-    case "acquiringKernel":
-      return "Connecting to the notebook kernel…";
-    case "bootstrappingRuntime":
-      return "Preparing Open Wrangler in the kernel…";
-    case "openingNotebookVariable":
-      return "Opening the live notebook variable…";
-    case "preparingSparkView":
-      return "Preparing PySpark 4.2 (viewing only)…";
-  }
-}
-
-function isSessionOpenProgressStage(value: unknown): value is SessionOpenProgressStage {
-  return typeof value === "string" && (SESSION_OPEN_PROGRESS_STAGES as readonly string[]).includes(value);
-}
-
-function pageCoversColumnWindow(metadata: SessionMetadata, page: LiveGridPage, window: ColumnWindow): boolean {
-  if (!metadata.schema.length) return page.columnIds.length === 0;
-  const expectedIds = metadata.schema
-    .slice(window.offset, Math.min(metadata.schema.length, window.offset + window.limit))
-    .map((column) => column.id);
-  if (!expectedIds.length) return false;
-  const first = page.columnIds.indexOf(expectedIds[0]);
-  return (
-    first >= 0 &&
-    first + expectedIds.length <= page.columnIds.length &&
-    expectedIds.every((columnId, index) => page.columnIds[first + index] === columnId)
-  );
 }
 
 function readWebviewConfig(): {
