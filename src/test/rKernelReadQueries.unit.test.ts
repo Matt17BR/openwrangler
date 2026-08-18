@@ -127,7 +127,7 @@ describe("R kernel read queries", () => {
     const transport = fakeTransport(contract);
     const queries = new RKernelReadQueries(transport, new Map([[sessionId, session]]));
 
-    await expect(queries.getSummary(summaryRequest("summary-empty", []), {})).resolves.toEqual({
+    await expect(queries.getSummary(malformedEmptySummaryRequest("summary-empty"), {})).resolves.toEqual({
       kind: "summary",
       revision: 0,
       viewRequestId: "summary-empty",
@@ -208,7 +208,7 @@ function pageRequest(viewRequestId: string, filterModel: FilterModel = emptyFilt
   };
 }
 
-function summaryRequest(viewRequestId: string, columnIds: readonly string[] = ["r:c:0"]): SummaryRequest {
+function summaryRequest(viewRequestId: string, columnIds: readonly [string, ...string[]] = ["r:c:0"]): SummaryRequest {
   return {
     kind: "getSummary",
     sessionId,
@@ -217,6 +217,10 @@ function summaryRequest(viewRequestId: string, columnIds: readonly string[] = ["
     columnIds: [...columnIds],
     filterModel: emptyFilterModel()
   };
+}
+
+function malformedEmptySummaryRequest(viewRequestId: string): SummaryRequest {
+  return { ...summaryRequest(viewRequestId), columnIds: [] as never };
 }
 
 function datasetStatsRequest(viewRequestId: string): DatasetStatsRequest {
@@ -318,7 +322,7 @@ function frameContract(): RFramePageContract {
     contractVersion: 5,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: [
       {
         id: "r:c:0",

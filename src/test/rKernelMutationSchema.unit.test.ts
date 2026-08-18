@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ColumnSchema, DataDiff } from "../shared/protocol";
+import type {
+  ColumnSchema,
+  DataDiff,
+  GroupByTransformStep,
+  OneHotEncodeTransformStep,
+  SortRowsTransformStep
+} from "../shared/protocol";
 import type { RColumnSchema, RFramePageContract } from "../extension/r/rFrameContract";
 import type { RKernelTransformStep } from "../extension/r/rKernelProtocol";
 import {
@@ -104,7 +110,7 @@ describe("R kernel mutation schema", () => {
 
   it("validates runtime-derived categorical and custom-code lineage", () => {
     const inputRSchema = frameContract(schema).schema;
-    const categoricalStep = {
+    const categoricalStep: OneHotEncodeTransformStep = {
       id: "encode",
       kind: "oneHotEncode" as const,
       params: { columns: [reference(0)], dropOriginal: true }
@@ -187,18 +193,28 @@ function rowDiff(removedRows: number): DataDiff {
 }
 
 function frameContract(columns: readonly ColumnSchema[], rowIds: readonly string[] = []): RFramePageContract {
-  const rSchema = columns.map((column): RColumnSchema => ({
-    ...column,
-    semantics:
-      column.rawType === "character"
-        ? { kind: "character", classes: ["character"] }
-        : { kind: "integer", storageMode: "integer", classes: ["integer"] }
-  }));
+  const rSchema = columns.map((column): RColumnSchema => {
+    if (column.type === "string") {
+      return {
+        ...column,
+        type: "string",
+        semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+      };
+    }
+    if (column.type === "integer") {
+      return {
+        ...column,
+        type: "integer",
+        semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+      };
+    }
+    throw new Error(`Unsupported R test column type: ${column.type}`);
+  });
   return {
     contractVersion: 5,
     dataframeFlavor: "r.data.frame",
     shape: { rows: rowIds.length, columns: columns.length },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: rSchema,
     page: {
       offset: 0,
@@ -217,7 +233,7 @@ const schema = Object.freeze([
   Object.freeze({ id: "b", name: "count", position: 1, rawType: "integer", type: "integer" as const, nullable: true })
 ]);
 
-const sortStep = {
+const sortStep: SortRowsTransformStep = {
   id: "sort",
   kind: "sortRows" as const,
   params: { rules: [{ column: { id: "a", name: "group" }, direction: "asc" as const, nulls: "last" as const }] }
@@ -228,7 +244,7 @@ const cloneStep = {
   kind: "cloneColumn" as const,
   params: { column: { id: "a", name: "group" }, newName: "copy" }
 };
-const groupStep = {
+const groupStep: GroupByTransformStep = {
   id: "group",
   kind: "groupBy" as const,
   params: {
