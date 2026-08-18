@@ -32,7 +32,6 @@ import {
 } from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
 import { columnTypePresentation } from "../columnTypes";
-import { numericExtremumDisplay } from "../numericSummary";
 import { ProfileValueToggle } from "../ProfileValueToggle";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 import {
@@ -41,6 +40,7 @@ import {
   profileDistributionDenominator,
   type ProfileValueMode
 } from "../profileValueMode";
+import { CompactExtremum, HeaderProfileValue } from "./GridHeaderProfileValues";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -136,7 +136,7 @@ const compactHeaderProfilesDescription =
   "Header profile distributions are temporarily hidden until the grid has enough room.";
 const restoredHeaderProfilesDescription = "Header profile distributions are visible again.";
 const gridSelectionInstructions =
-  "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
+  "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Select a column header or press Ctrl/Cmd+Space on it to prepare the whole filtered and sorted column for copying. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
 const pointerAutoScrollEdge = 32;
 const maximumPointerAutoScrollStep = gridRowHeight;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
@@ -320,9 +320,12 @@ export function DataGrid({
   });
   const gridClipboard = useGridClipboard({
     contextId: logicalViewContext,
+    metadata,
+    pageSize,
     schema: metadata.schema,
     page,
-    initialCoordinate: focusedCell
+    initialCoordinate: focusedCell,
+    viewContextId
   });
   const resetGridClipboardSelection = gridClipboard.resetSelection;
   const selectGridClipboardCell = gridClipboard.selectCell;
@@ -1355,6 +1358,7 @@ export function DataGrid({
                     ariaColumnIndex={column.position + 2}
                     width={widths[column.position]}
                     selected={viewState.selectedColumnId === column.id}
+                    clipboardSelected={gridClipboard.isColumnSelected(column.id)}
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                     showInsights={showInsights}
                     compactInsights={compactHeaderProfiles}
@@ -1376,7 +1380,12 @@ export function DataGrid({
                     }}
                     onSortColumn={onSortColumn}
                     onClearSortColumn={onClearSortColumn}
-                    onSelect={() => reportViewState({ ...viewStateRef.current, selectedColumnId: column.id })}
+                    onActivate={() => reportViewState({ ...viewStateRef.current, selectedColumnId: column.id })}
+                    onSelect={() => {
+                      reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                      gridClipboard.selectColumn(column);
+                    }}
+                    onCopy={() => void gridClipboard.copyColumn()}
                     onApplyProfileFilter={onApplyProfileFilter}
                     onResize={(width) =>
                       reportViewState({
@@ -2149,6 +2158,7 @@ function ColumnHeader({
   ariaColumnIndex,
   width,
   selected,
+  clipboardSelected,
   added,
   showInsights,
   compactInsights,
@@ -2167,7 +2177,9 @@ function ColumnHeader({
   onOpenFilter,
   onSortColumn,
   onClearSortColumn,
+  onActivate,
   onSelect,
+  onCopy,
   onApplyProfileFilter,
   onResize
 }: {
@@ -2175,6 +2187,7 @@ function ColumnHeader({
   ariaColumnIndex: number;
   width: number;
   selected: boolean;
+  clipboardSelected: boolean;
   added: boolean;
   showInsights: boolean;
   compactInsights: boolean;
@@ -2193,7 +2206,9 @@ function ColumnHeader({
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn(column: string): void;
+  onActivate(): void;
   onSelect(): void;
+  onCopy(): void;
   onApplyProfileFilter?: (filter: ColumnFilter) => void;
   onResize(width: number): void;
 }) {
@@ -2220,7 +2235,7 @@ function ColumnHeader({
     !filterUnavailable && !comparisonUnavailable && onApplyProfileFilter !== undefined;
   const applyProfileFilter = (filter: ColumnFilter) => {
     if (!distributionFilterAvailable || !onApplyProfileFilter) return;
-    onSelect();
+    onActivate();
     onApplyProfileFilter(filter);
   };
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -2263,7 +2278,7 @@ function ColumnHeader({
       data-column={column.name}
       data-grid-column={column.position}
       aria-colindex={ariaColumnIndex}
-      aria-selected={selected}
+      aria-selected={selected || clipboardSelected}
       aria-sort={
         activeSortIndex === 0
           ? activeSort?.direction === "asc"
@@ -2273,11 +2288,23 @@ function ColumnHeader({
               : undefined
           : undefined
       }
-      aria-label={[column.name, added ? "added column" : "", activeSortLabel ? `sorted ${activeSortLabel}` : ""]
+      aria-label={[
+        column.name,
+        clipboardSelected ? "whole filtered and sorted column selected" : "",
+        added ? "added column" : "",
+        activeSortLabel ? `sorted ${activeSortLabel}` : ""
+      ]
         .filter(Boolean)
         .join(", ")}
       data-diff-state={added ? "added" : undefined}
-      className={[selected ? "selectedColumn" : "", added ? "diffAddedColumn" : ""].filter(Boolean).join(" ")}
+      data-clipboard-selected={clipboardSelected ? "true" : undefined}
+      className={[
+        selected ? "selectedColumn" : "",
+        clipboardSelected ? "gridClipboardSelected" : "",
+        added ? "diffAddedColumn" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
       tabIndex={0}
       onClick={(event) => {
@@ -2285,7 +2312,13 @@ function ColumnHeader({
         onSelect();
       }}
       onKeyDown={(event) => {
-        if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.target !== event.currentTarget) return;
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+          event.preventDefault();
+          onCopy();
+          return;
+        }
+        if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onSelect();
       }}
@@ -2461,32 +2494,6 @@ function ColumnHeader({
   );
 }
 
-function HeaderProfileValue({
-  label,
-  value,
-  denominator,
-  mode
-}: {
-  label: string;
-  value: number | undefined;
-  denominator: number;
-  mode: ProfileValueMode;
-}) {
-  if (value === undefined) {
-    return (
-      <span title={`${label} is unavailable`} aria-label={`${label} is unavailable`}>
-        {label} n/a
-      </span>
-    );
-  }
-  const description = describeProfileValue(label, value, denominator);
-  return (
-    <span title={description} aria-label={description}>
-      {label} {formatProfileValue(value, denominator, mode)}
-    </span>
-  );
-}
-
 function columnHeaderControlTarget(target: EventTarget, header: HTMLTableCellElement): boolean {
   if (!(target instanceof Element)) return false;
   const control = target.closest("button, details, summary, a, input, select, textarea, [role='button']");
@@ -2497,29 +2504,6 @@ function gridCellControlTarget(target: EventTarget, cell: HTMLTableCellElement):
   if (!(target instanceof Element)) return false;
   const control = target.closest("button, [role='menu'], [role='menuitem']");
   return control !== null && control !== cell;
-}
-
-function CompactExtremum({
-  label,
-  summary,
-  bound
-}: {
-  label: "Min" | "Max";
-  summary: NonNullable<ColumnSummary["numeric"]>;
-  bound: "min" | "max";
-}) {
-  const value = numericExtremumDisplay(summary, bound);
-  if (!value) return null;
-  const accessibleLabel = `${label === "Min" ? "Minimum" : "Maximum"} ${value.display}`;
-  return (
-    <span
-      className={value.exact ? "exactNumericExtremum" : undefined}
-      title={accessibleLabel}
-      aria-label={accessibleLabel}
-    >
-      {label} {value.display}
-    </span>
-  );
 }
 
 function MiniChart({

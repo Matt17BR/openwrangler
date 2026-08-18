@@ -13,6 +13,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Selecting a grid column header now prepares its complete filtered and sorted data column for **Copy column**.
+  Preparation reads one projected page at a time, leaves the visible page unchanged, and retains the existing
+  100,000-cell and 4 MiB clipboard limits.
 - The data grid now selects rectangular ranges by mouse or pen drag without native text selection. Shift-modified
   pointer and keyboard selection still extend the current anchor; Ctrl/Cmd+click explicitly starts a new rectangle
   because non-contiguous selections are not supported.

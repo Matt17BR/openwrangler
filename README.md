@@ -136,10 +136,12 @@ action without changing the source._
 
 Hover or right-click a scalar grid cell to keep or exclude its exact value. Null and NaN have separate actions.
 Drag across cells with a mouse or pen, or extend the focused selection with Shift+click or Shift+Arrow, to select a
-rectangle. Ctrl/Cmd+click starts a new rectangle; non-contiguous selections are not supported. The grid footer copies
-one cell, the loaded columns in its row, or the selected range as tab-separated displayed values; Ctrl/Cmd+C copies
-the selection. An off-block keyboard rectangle remains selected, but Copy range and Ctrl/Cmd+C report that every
-selected row and column must be loaded before copying. They do not copy a partial rectangle.
+rectangle. Ctrl/Cmd+click starts a new rectangle; non-contiguous selections are not supported. Select a column header,
+or press Ctrl/Cmd+Space while it is focused, to prepare the whole filtered and sorted data column. The grid footer
+copies one cell, the loaded columns in its row, the selected range, or the prepared column as tab-separated displayed
+values; Ctrl/Cmd+C copies the current cell range or prepared column. An off-block keyboard rectangle remains selected,
+but Copy range and Ctrl/Cmd+C report that every selected row and column must be loaded before copying. They do not copy
+a partial rectangle.
 
 <table>
   <tr>

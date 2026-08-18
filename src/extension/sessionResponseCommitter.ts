@@ -163,6 +163,27 @@ export class SessionResponseCommitter {
         requestViewId(publicRequest)
       );
     }
+    if (pageRequest && options?.ephemeralPage === true) {
+      if (!isCurrentLogicalView(session, options) || response.revision !== requestRuntimeRevision) {
+        return protocolError(
+          "stale_response",
+          "Ignored a clipboard page from a stale or superseded logical view.",
+          true,
+          session.publicId,
+          pageRequest.viewRequestId
+        );
+      }
+      return {
+        ...response,
+        revision: session.publicRevision,
+        metadata: publicMetadata(
+          response.metadata,
+          session.publicId,
+          session.publicRevision,
+          session.openRequest.source
+        )
+      };
+    }
     if (pageRequest && !isCurrentPageRequest(session, pageRequest, options)) {
       return protocolError(
         "stale_response",

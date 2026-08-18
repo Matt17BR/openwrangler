@@ -1,4 +1,4 @@
-import type { ColumnSchema, LiveGridPage } from "../../shared/protocol";
+import type { CellValue, ColumnSchema, LiveGridPage } from "../../shared/protocol";
 
 export interface GridCellCoordinate {
   row: number;
@@ -23,8 +23,8 @@ export interface GridClipboardPayload {
 
 export type GridClipboardResult = { ok: true; payload: GridClipboardPayload } | { ok: false; reason: string };
 
-const maximumClipboardCells = 100_000;
-const maximumClipboardBytes = 4 * 1024 * 1024;
+export const maximumClipboardCells = 100_000;
+export const maximumClipboardBytes = 4 * 1024 * 1024;
 const spreadsheetFormulaPrefix = /^[\s\p{Cc}\uFEFF]*[=+\-@]/u;
 const clipboardQuotingCharacter = /["\t\r\n]/u;
 
@@ -32,6 +32,62 @@ interface ClipboardFieldPlan {
   byteLength: number;
   neutralizeFormula: boolean;
   quote: boolean;
+}
+
+export interface GridClipboardColumnAccumulator {
+  readonly rowCount: number;
+  append(cell: CellValue): GridClipboardResult | undefined;
+  finish(): GridClipboardResult;
+}
+
+/**
+ * Accumulates one logical column without ever constructing an output above
+ * the shared clipboard byte or cell limit.
+ */
+export function createGridClipboardColumnAccumulator(): GridClipboardColumnAccumulator {
+  const fields: string[] = [];
+  let outputBytes = 0;
+  let failure: GridClipboardResult | undefined;
+
+  return {
+    get rowCount() {
+      return fields.length;
+    },
+    append(cell) {
+      if (failure) return failure;
+      if (fields.length >= maximumClipboardCells) {
+        failure = clipboardCellLimitError();
+        return failure;
+      }
+      const separatorBytes = fields.length === 0 ? 0 : 1;
+      const plan = planClipboardField(
+        cell.display,
+        cell.kind === "string",
+        maximumClipboardBytes - outputBytes - separatorBytes
+      );
+      if (!plan) {
+        failure = clipboardByteLimitError();
+        return failure;
+      }
+      outputBytes += separatorBytes + plan.byteLength;
+      fields.push(renderClipboardField(cell.display, plan));
+      return undefined;
+    },
+    finish() {
+      if (failure) return failure;
+      if (fields.length === 0) return { ok: false, reason: "There are no rows in the current data view." };
+      return {
+        ok: true,
+        payload: {
+          text: fields.join("\n"),
+          rowCount: fields.length,
+          columnCount: 1,
+          includesRowLabel: false,
+          completeRow: false
+        }
+      };
+    }
+  };
 }
 
 export function collapsedGridClipboardSelection(
@@ -149,10 +205,7 @@ export function buildGridClipboardPayload({
   const columnCount = columnIds.length;
   if (columnCount === 0) return { ok: false, reason: "There are no loaded cells to copy." };
   if (rowCount * columnCount > maximumClipboardCells) {
-    return {
-      ok: false,
-      reason: `Copy is limited to ${maximumClipboardCells.toLocaleString()} cells. Select a smaller range.`
-    };
+    return clipboardCellLimitError();
   }
 
   const rowsByNumber = new Map(page.rows.map((row) => [row.rowNumber, row]));
@@ -278,4 +331,11 @@ function renderClipboardField(value: string, plan: ClipboardFieldPlan): string {
 
 function clipboardByteLimitError(): GridClipboardResult {
   return { ok: false, reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range." };
+}
+
+export function clipboardCellLimitError(): GridClipboardResult {
+  return {
+    ok: false,
+    reason: `Copy is limited to ${maximumClipboardCells.toLocaleString()} cells. Select a smaller range.`
+  };
 }

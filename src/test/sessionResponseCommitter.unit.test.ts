@@ -145,6 +145,69 @@ describe("SessionResponseCommitter", () => {
     expect(update).toHaveBeenCalledOnce();
   });
 
+  it("returns a current ephemeral clipboard page without committing visible view state", async () => {
+    const session = responseState({
+      publicRevision: 4,
+      activeViewContextId: "current-view",
+      latestRequestedViewContextId: "current-view",
+      latestRequestedPageRequestId: "visible-page"
+    });
+    const request = pageRequest(session, "clipboard-page", emptyFilter, 100);
+    const callbacks = callbackSpies();
+    const before = {
+      activeViewContextId: session.activeViewContextId,
+      latestRequestedPageRequestId: session.latestRequestedPageRequestId,
+      metadata: session.metadata,
+      publicRevision: session.publicRevision,
+      runtimeRevision: session.runtimeRevision,
+      viewState: session.viewState
+    };
+    const response = pageResponse(request, metadata({ filteredShape: { rows: 240, columns: 1 } }), 240);
+    const committer = new SessionResponseCommitter(new SessionPersistenceStore());
+
+    await expect(
+      committer.commit(
+        session,
+        request,
+        response,
+        0,
+        emptyFilter,
+        { viewContextId: "current-view", ephemeralPage: true },
+        callbacks
+      )
+    ).resolves.toMatchObject({
+      kind: "page",
+      revision: 4,
+      viewRequestId: "clipboard-page",
+      metadata: { sessionId: "public-session", revision: 4, filteredShape: { rows: 240 } }
+    });
+    expect(session).toMatchObject(before);
+    expect(callbacks.activate).not.toHaveBeenCalled();
+
+    await expect(
+      committer.commit(
+        session,
+        request,
+        response,
+        0,
+        emptyFilter,
+        { viewContextId: "stale-view", ephemeralPage: true },
+        callbacks
+      )
+    ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "clipboard-page" });
+    await expect(
+      committer.commit(
+        session,
+        request,
+        { ...response, revision: 1 },
+        0,
+        emptyFilter,
+        { viewContextId: "current-view", ephemeralPage: true },
+        callbacks
+      )
+    ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "clipboard-page" });
+  });
+
   it("publishes preview, apply, and undo as one public revision stream", async () => {
     const committer = new SessionResponseCommitter(new SessionPersistenceStore());
     const callbacks = callbackSpies();

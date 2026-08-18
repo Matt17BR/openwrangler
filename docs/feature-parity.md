@@ -1283,11 +1283,14 @@ Shared profile values, 2026-08-10:
 - Focused React tests cover both directions of synchronization, count-mode defaults, unavailable profiles, bar-width
   stability, accessible descriptions, and the bounded 100-value request.
 
-Grid clipboard selection, 2026-08-16:
+Grid clipboard selection, updated 2026-08-18:
 
 - Pointer and keyboard users can select one cell or extend an inclusive rectangular range with Shift+click or
   Shift+Arrow. The footer exposes **Copy cell**, **Copy row**, and **Copy range**; Ctrl/Cmd+C copies the current
   cell selection.
+- A pointer click, Enter/Space, or Ctrl/Cmd+Space on a column header selects and prepares that whole filtered and sorted
+  data column. The footer states the exact scope and enables **Copy column** only after sequential one-column pages are
+  ready. The visible page and retained view stay unchanged; headers and row labels are not included.
 - Copy uses full displayed cell values and spreadsheet-safe TSV quoting. String-typed cells and row labels whose
   first active character after whitespace, control characters, or a BOM is `=`, `+`, `-`, or `@` receive a leading
   apostrophe; typed numeric negatives remain unchanged. A row copy follows the current bounded column projection and
@@ -1299,6 +1302,9 @@ Grid clipboard selection, 2026-08-16:
 - Focused pure and React owners cover TSV escaping, formula neutralization, typed negatives, row labels, projected
   rows, exact UTF-8 boundaries, payload-free rejection, stale and oversized selections, pointer and keyboard range
   extension, the platform copy shortcut, view replacement, and clipboard denial.
+- Production Chromium acceptance covers multi-page whole-column preparation, pointer and keyboard header paths, exact
+  hostile and typed-negative text, the exact 4 MiB boundary, oversized zero-write rejection, focus restoration, and
+  payload-free adapter errors.
 
 Pandas index fidelity, 2026-08-17:
 
