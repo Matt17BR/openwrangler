@@ -1,17 +1,16 @@
-name: Stable release
+name: Stable release promotion
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: Stable tag matching package.json, for example v1.0.0
+      candidate_run_id:
+        description: Successful first-attempt release-candidate workflow run ID
         required: true
         type: string
-      publish:
-        description: Publish to GitHub and Open VSX and trigger Marketplace promotion
+      release_tag:
+        description: Stable tag qualified by that candidate, for example v2.0.0
         required: true
-        default: false
-        type: boolean
+        type: string
 
 permissions:
   contents: read
@@ -21,22 +20,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  package:
+  select:
+    name: Select the soaked candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
     outputs:
-      artifact-id: ${{ steps.canonical_artifact.outputs.artifact-id }}
+      candidate-artifact-id: ${{ steps.candidate.outputs.candidate_artifact_id }}
+      candidate-run-id: ${{ steps.candidate.outputs.candidate_run_id }}
+      candidate-source-sha: ${{ steps.candidate.outputs.source_sha }}
+      performance-artifact-id: ${{ steps.candidate.outputs.performance_artifact_id }}
+      qualification-artifact-id: ${{ steps.candidate.outputs.qualification_artifact_id }}
     steps:
-      - name: Require a recognized protected release source
+      - name: Require a first-attempt dispatch from protected main
         env:
           EVENT_REF: ${{ github.ref }}
           EVENT_REF_TYPE: ${{ github.ref_type }}
-          EXPECTED_SHA: ${{ github.sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          set -euo pipefail
           test "$EVENT_REF_TYPE" = "branch"
           test "$EVENT_REF" = "refs/heads/main"
-          case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
-          test "${#EXPECTED_SHA}" -eq 40
+          test "$RUN_ATTEMPT" = "1"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ github.sha }}
@@ -46,219 +53,28 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - id: release_metadata
-        name: Validate stable release metadata
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/release-metadata.mjs
-      - name: Reject preview metadata
-        if: ${{ steps.release_metadata.outputs.prerelease != 'false' }}
-        run: exit 1
-      - name: Require the exact protected main commit
-        env:
-          EVENT_REF: ${{ github.ref }}
-          EXPECTED_SHA: ${{ github.sha }}
-          EXPECTED_SOURCE_BRANCH: ${{ steps.release_metadata.outputs.source_branch }}
-          EXPECTED_SOURCE_REF: ${{ steps.release_metadata.outputs.source_ref }}
-        run: |
-          test "$EXPECTED_SOURCE_BRANCH" = "main"
-          test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"
-          test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"
-          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
-          test -z "$(git status --porcelain --untracked-files=no)"
-          test "$(git rev-parse --verify refs/remotes/origin/$EXPECTED_SOURCE_BRANCH^{commit})" = "$EXPECTED_SHA"
-      - name: Require the remote release tag to be absent or exact
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-          cache: pip
       - run: npm ci
-      - name: Preflight immutable public README media
+      - id: candidate
+        name: Select one fully qualified soaked candidate
         env:
-          RELEASE_SOURCE_SHA: ${{ github.sha }}
-          RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
-        run: node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
-      - name: Prepare exact local release tag
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/prepare-stable-candidate-tag.mjs
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-      - run: npm run lock:remote-jupyter:check
-      - name: Build and package the ordinary stable VSIX once
-        run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix
-      - run: npm run verify:vsix -- openwrangler.candidate.vsix
-      - name: Publish the canonical stable artifact set
+        run: node scripts/release-candidate.mjs select
+      - name: Require the candidate source to remain on protected main
         env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/create-canonical-release-artifact.mjs
-          openwrangler.candidate.vsix
-          --out-dir canonical-release
-      - id: canonical
-        name: Revalidate the canonical stable artifact set
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - id: canonical_artifact
-        name: Upload the canonical stable artifact set
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: openwrangler-stable-release
-          path: |
-            canonical-release/openwrangler.vsix
-            canonical-release/openwrangler.vsix.sha256
-            canonical-release/openwrangler.vsix.provenance.json
-          if-no-files-found: error
-          retention-days: 90
-          compression-level: 0
-          include-hidden-files: false
-
-  candidate-acceptance:
-    name: Candidate acceptance
-    needs: package
-    uses: ./.github/workflows/candidate-acceptance.yml
-    permissions:
-      contents: read
-    with:
-      artifact_id: ${{ needs.package.outputs.artifact-id }}
-      channel: stable
-      expected_sha: ${{ github.sha }}
-      release_tag: ${{ inputs.release_tag }}
-  remote-ssh:
-    name: Remote SSH acceptance
-    needs: package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Prepare namespace-capable acceptance host
+          CANDIDATE_SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          CURRENT_MAIN_SHA: ${{ github.sha }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            bubblewrap \
-            busybox-static \
-            coreutils \
-            iproute2 \
-            libtomcrypt1 \
-            libtommath1 \
-            openssh-client \
-            procps \
-            python3-venv \
-            x11-xkb-utils
-          system_runtime_ancestors=(
-            /usr
-            /etc
-          )
-          runner_uid="$(id -u)"
-          for directory in "${system_runtime_ancestors[@]}"; do
-            test -d "$directory"
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            owner="$(stat --format='%u' "$directory")"
-            test "$owner" = "0" || test "$owner" = "$runner_uid"
-          done
-          sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"
-          sudo chmod go-w -- "${system_runtime_ancestors[@]}"
-          for directory in / "${system_runtime_ancestors[@]}"; do
-            test -d "$directory"
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u:%g' "$directory")" = "0:0"
-            test -z "$(find "$directory" -maxdepth 0 -perm /022 -print -quit)"
-            test ! -w "$directory"
-          done
-          system_runtime_roots=(
-            /usr/share/fontconfig
-            /usr/share/fonts
-            /usr/share/glib-2.0
-            /usr/share/icons
-            /usr/share/mime
-            /usr/share/X11
-            /usr/share/zoneinfo
-          )
-          test ! -L /usr/share
-          test "$(realpath /usr/share)" = "/usr/share"
-          test "$(stat --format='%u' /usr/share)" = "0"
-          sudo chmod go-w -- /usr/share
-          test ! -w /usr/share
-          for directory in "${system_runtime_roots[@]}"; do
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u' "$directory")" = "0"
-          done
-          sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"
-          for directory in "${system_runtime_roots[@]}"; do
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u' "$directory")" = "0"
-            unsafe_owner="$(find "$directory" -xdev ! -user root -print -quit)"
-            unsafe_mode="$(find "$directory" -xdev \( -type d -o -type f \) -perm /022 -print -quit)"
-            unsafe_type="$(find "$directory" -xdev ! -type d ! -type f ! -type l -print -quit)"
-            test -z "$unsafe_owner"
-            test -z "$unsafe_mode"
-            test -z "$unsafe_type"
-          done
-          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
-          sudo sysctl --write kernel.unprivileged_userns_clone=1
-          test "$(sysctl --values kernel.apparmor_restrict_unprivileged_userns)" = "0"
-          test "$(sysctl --values kernel.unprivileged_userns_clone)" = "1"
-          test "$(sysctl --values user.max_user_namespaces)" -gt 0
-      - run: npm ci
-      - run: /usr/bin/python3 -m venv .remote-venv
-      - run: .remote-venv/bin/python -m pip install --upgrade pip
-      - run: .remote-venv/bin/python -m pip install ./python
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.package.outputs.artifact-id }}
-          path: canonical-release
-          merge-multiple: true
-      - id: canonical
-        name: Verify the exact canonical stable artifact
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - id: canonical_remote
-        name: Reverify the exact canonical stable artifact for Remote SSH
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - id: remote_workspace
-        name: Test packaged VS Code over Remote SSH
-        run: >-
-          npm run test:remote-workspace --
-          ${{ steps.canonical_remote.outputs.candidate_path }}
-          ${{ steps.canonical_remote.outputs.candidate_sha256 }}
-          ${{ steps.canonical_remote.outputs.candidate_bytes }}
-        env:
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
-          OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
-      # The Remote SSH runner intentionally exposes no artifact path yet. Uploading its private
-      # workspace or raw output would violate the sealed, receipt-bound evidence contract.
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD^{commit})" = "$CURRENT_MAIN_SHA"
+          git cat-file -e "$CANDIDATE_SOURCE_SHA^{commit}"
+          git merge-base --is-ancestor "$CANDIDATE_SOURCE_SHA" "$CURRENT_MAIN_SHA"
 
-  release:
-    name: Publish GitHub and registries
-    needs: [package, candidate-acceptance, remote-ssh]
-    if: ${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}
+  promote:
+    name: Promote the exact candidate bytes
+    needs: select
     runs-on: ubuntu-24.04
     timeout-minutes: 105
     environment: publishing
@@ -267,11 +83,13 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Check out the historical candidate source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.select.outputs.candidate-source-sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -279,43 +97,92 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Require the exact historical candidate source
+        env:
+          CANDIDATE_SOURCE_SHA: ${{ needs.select.outputs.candidate-source-sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD^{commit})" = "$CANDIDATE_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - id: release_metadata
+        name: Validate the historical stable metadata
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release-metadata.mjs
+      - name: Require stable metadata
+        if: ${{ steps.release_metadata.outputs.prerelease != 'false' }}
+        run: exit 1
+      - name: Download the exact candidate artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          artifact-ids: ${{ needs.select.outputs.candidate-artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.select.outputs.candidate-run-id }}
           path: canonical-release
           merge-multiple: true
+      - name: Download the bounded candidate manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.select.outputs.qualification-artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.select.outputs.candidate-run-id }}
+          path: qualification
+          merge-multiple: true
+      - name: Download the exact installed-performance report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.select.outputs.performance-artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.select.outputs.candidate-run-id }}
+          path: performance
+          merge-multiple: true
       - id: canonical
-        name: Revalidate the exact artifact before release
+        name: Verify the exact candidate artifact
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - name: Verify the candidate manifest and performance evidence
+        env:
+          CANDIDATE_ARTIFACT_ID: ${{ needs.select.outputs.candidate-artifact-id }}
+          CANDIDATE_BYTES: ${{ steps.canonical.outputs.candidate_bytes }}
+          CANDIDATE_RUN_ID: ${{ needs.select.outputs.candidate-run-id }}
+          CANDIDATE_SHA256: ${{ steps.canonical.outputs.candidate_sha256 }}
+          CANDIDATE_SOURCE_SHA: ${{ needs.select.outputs.candidate-source-sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PERFORMANCE_ARTIFACT_ID: ${{ needs.select.outputs.performance-artifact-id }}
+          PERFORMANCE_REPORT: performance/release-candidate-performance.json
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release-candidate.mjs verify qualification/release-candidate.json
       - name: Recheck that the remote release tag is absent or exact
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
       - id: canonical_release
-        name: Reverify the exact canonical artifact for final publication
+        name: Reverify the exact candidate bytes before publication
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - name: Publish or verify the exact lightweight release tag
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/push-stable-release-tag.mjs
       - name: Prepare the exact local release tag for registry verification
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs
       - name: Publish or verify the exact GitHub stable release
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -325,72 +192,47 @@ jobs:
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
-          if [ -z "${OVSX_PAT:-}" ]; then
-            echo "OVSX_PAT is unavailable in the publishing environment." >&2
-            exit 1
-          fi
-          if output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"; then
-            :
-          else
-            status=$?
-            printf '%s\n' "$output"
-            exit "$status"
-          fi
+          set -euo pipefail
+          test -n "${OVSX_PAT:-}"
+          output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"
           printf '%s\n' "$output"
-          if ! grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"; then
-            echo "ovsx did not confirm the Matt17BR publisher token." >&2
-            exit 1
-          fi
+          grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"
       - name: Reject a conflicting Open VSX stable release
         env:
-          AUTOMATION_SHA: ${{ github.sha }}
-          EXPECTED_SHA: ${{ github.sha }}
+          AUTOMATION_SHA: ${{ needs.select.outputs.candidate-source-sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_PRERELEASE: "false"
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight
-      - name: Reverify the stable artifact before Open VSX publication
+      - name: Reverify the candidate before Open VSX publication
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Publish the exact stable VSIX to Open VSX
+      - name: Publish the exact candidate VSIX to Open VSX
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
           RELEASE_PRERELEASE: "false"
           RELEASE_VERSION: ${{ steps.canonical_release.outputs.extension_version }}
         run: |
-          if [ -z "${OVSX_PAT:-}" ]; then
-            echo "OVSX_PAT is unavailable in the publishing environment." >&2
-            exit 1
-          fi
-          case "$RELEASE_PRERELEASE" in
-            true|false) ;;
-            *) exit 1 ;;
-          esac
-          if output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"; then
-            :
-          else
-            status=$?
-            printf '%s\n' "$output"
-            exit "$status"
-          fi
+          set -euo pipefail
+          test -n "${OVSX_PAT:-}"
+          test "$RELEASE_PRERELEASE" = "false"
+          output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"
           printf '%s\n' "$output"
           published="Published Matt17BR.openwrangler v$RELEASE_VERSION"
           duplicate="Extension Matt17BR.openwrangler $RELEASE_VERSION is already published. Skipping publish."
-          if ! grep -Fq "$published" <<< "$output" && ! grep -Fq "$duplicate" <<< "$output"; then
-            echo "ovsx did not confirm publication or an exact duplicate." >&2
-            exit 1
-          fi
+          grep -Fq "$published" <<< "$output" || grep -Fq "$duplicate" <<< "$output"
       - name: Verify the exact public Open VSX stable release
         env:
-          AUTOMATION_SHA: ${{ github.sha }}
-          EXPECTED_SHA: ${{ github.sha }}
+          AUTOMATION_SHA: ${{ needs.select.outputs.candidate-source-sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_PRERELEASE: "false"
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-open-vsx-github-release.mjs canonical-release --verify
       - name: Recheck the immutable public stable tag
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs --require-remote
       - id: public_media_contract
@@ -406,6 +248,10 @@ jobs:
       - name: Verify public README media after registry propagation
         if: ${{ steps.public_media_contract.outputs.required == 'true' }}
         env:
-          RELEASE_SOURCE_SHA: ${{ github.sha }}
+          RELEASE_SOURCE_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_VERSION: ${{ steps.canonical_release.outputs.extension_version }}
-        run: node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation
+        run: >-
+          node scripts/verify-public-media-surfaces.mjs
+          --source-sha "$RELEASE_SOURCE_SHA"
+          --version "$RELEASE_VERSION"
+          --wait-for-propagation

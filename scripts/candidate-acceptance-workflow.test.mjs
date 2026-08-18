@@ -51,13 +51,13 @@ test("rejects invalid or oversized workflow text", () => {
   assert.match(inspectCandidateAcceptanceWorkflow("x".repeat(2 * 1024 * 1024 + 1))[0], /bounded YAML/u);
 });
 
-test("requires exactly four inputs, no outputs, and eight fixed jobs", () => {
+test("requires exactly three inputs, three performance outputs, and eight fixed jobs", () => {
   expectRejected((value) => {
-    value.on.workflow_call.outputs = { accepted: { value: "true" } };
-  }, /four required inputs, no outputs/u);
+    delete value.on.workflow_call.outputs.performance_sha256;
+  }, /three required inputs, three bounded performance outputs/u);
   expectRejected((value) => {
     value.on.workflow_call.inputs.lane = { required: true, type: "string" };
-  }, /four required inputs/u);
+  }, /three required inputs/u);
   expectRejected((value) => {
     delete value.jobs.acceptance;
   }, /eight fixed jobs/u);
@@ -135,22 +135,25 @@ test("generic platform acceptance does not rerun pull-request source or harness 
   }
 });
 
-test("r_platform owns the exact non-cancelling macOS and Windows matrix", () => {
+test("r_platform owns one R 4.4 compatibility row and the R 4.5 platform rows", () => {
   expectRejected((value) => {
     value.jobs.r_platform.strategy["fail-fast"] = true;
-  }, /hosted-R macOS and Windows matrix/u);
+  }, /R 4\.4 compatibility and R 4\.5 platform matrix/u);
   expectRejected((value) => {
     value.jobs.r_platform.strategy["max-parallel"] = 1;
-  }, /hosted-R macOS and Windows matrix/u);
+  }, /R 4\.4 compatibility and R 4\.5 platform matrix/u);
   expectRejected((value) => {
     value.jobs.r_platform.strategy.matrix.include[0].python = "3.14";
-  }, /hosted-R macOS and Windows matrix/u);
+  }, /R 4\.4 compatibility and R 4\.5 platform matrix/u);
+  expectRejected((value) => {
+    value.jobs.r_platform.strategy.matrix.include[0].r = "4.5.2";
+  }, /R 4\.4 compatibility and R 4\.5 platform matrix/u);
   expectRejected((value) => {
     value.jobs.r_platform["runs-on"] = "ubuntu-24.04";
-  }, /fixed runner|hosted-R macOS and Windows/u);
+  }, /fixed runner|R 4\.4 compatibility/u);
   expectRejected((value) => {
     step(value.jobs.r_platform, (entry) => entry.id === "rscript").shell = "bash";
-  }, /hosted-R macOS and Windows matrix/u);
+  }, /R 4\.4 compatibility and R 4\.5 platform matrix/u);
 });
 
 test("r_platform uses exact focused selectors in one VS Code runner per operating system", () => {
@@ -293,6 +296,17 @@ test("performance prepares one authoritative remote tar-inspection interpreter b
   }, /one pinned setup-python/u);
 });
 
+test("performance publishes one digest-bound VS Code report to the caller", () => {
+  const value = workflow();
+  assert.equal(value.jobs.performance.outputs["artifact-id"], "${{ steps.performance_artifact.outputs.artifact-id }}");
+  expectRejected((mutated) => {
+    mutated.jobs.performance.steps.find((entry) => entry.id === "performance_artifact").with.name = "other";
+  }, /digest-bound successful report/u);
+  expectRejected((mutated) => {
+    mutated.jobs.performance.steps.find((entry) => entry.id === "performance_report").run = "true";
+  }, /digest-bound successful report/u);
+});
+
 test("linux acceptance does not rerun pull-request suites or their private setup", () => {
   const value = workflow();
   assert.equal(
@@ -351,6 +365,21 @@ test("Linux VS Code is the sole full generic owner and Cursor is a pinned compat
     step(mutated.jobs.linux, (entry) => entry.name === "Upload pinned Cursor compatibility failure diagnostics").name =
       "Upload Cursor failure diagnostics";
   }, /verifier.*packaged phase.*upload/u);
+});
+
+test("Cursor runs exactly one lifecycle seam and never owns operation, Jupyter, or performance semantics", () => {
+  const value = workflow();
+  const cursorSteps = Object.values(value.jobs).flatMap((job) =>
+    (job.steps ?? []).filter((entry) => String(entry?.env?.OPEN_WRANGLER_PACKAGED_EDITORS ?? "").includes("cursor"))
+  );
+  assert.deepEqual(
+    cursorSteps.map((entry) => entry.id),
+    ["packaged_cursor"]
+  );
+  expectRejected((mutated) => {
+    step(mutated.jobs.jupyter, (entry) => entry.id === "packaged_editor").env.OPEN_WRANGLER_PACKAGED_EDITORS =
+      "vscode,cursor";
+  }, /exactly one pinned Cursor lifecycle seam/u);
 });
 
 test("candidate consumers rely on canonical reverification without repeating full VSIX verification", () => {
@@ -453,11 +482,11 @@ test("r_local uses exactly two balanced, non-cancelling shards", () => {
 
 test("every local phase uses its explicit selector and exact editor ownership", () => {
   for (const [id, journey, editors] of [
-    ["packaged_editor_r_core", "core-operations", "vscode,cursor"],
-    ["packaged_editor_r_restart", "kernel-restart", "vscode,cursor"],
-    ["packaged_editor_r_interactive", "interactive-terminal", "vscode,cursor"],
-    ["packaged_editor_r_literate", "literate-documents", "vscode,cursor"],
-    ["packaged_editor_r_native", "native-frames", "vscode,cursor"],
+    ["packaged_editor_r_core", "core-operations", "vscode"],
+    ["packaged_editor_r_restart", "kernel-restart", "vscode"],
+    ["packaged_editor_r_interactive", "interactive-terminal", "vscode"],
+    ["packaged_editor_r_literate", "literate-documents", "vscode"],
+    ["packaged_editor_r_native", "native-frames", "vscode"],
     ["packaged_editor_r_values", "value-operations", "vscode"],
     ["packaged_editor_r_categorical", "categorical-operations", "vscode"]
   ]) {
@@ -470,7 +499,7 @@ test("every local phase uses its explicit selector and exact editor ownership", 
     step(value.jobs.r_local, (entry) => entry.id === "packaged_editor_r_core").env.OPEN_WRANGLER_PACKAGED_R_JOURNEY =
       "value-operations";
   }, /verifier.*packaged phase.*upload/u);
-  for (const id of ["packaged_editor_r_values", "packaged_editor_r_categorical"]) {
+  for (const id of ["packaged_editor_r_core", "packaged_editor_r_values", "packaged_editor_r_categorical"]) {
     expectRejected((value) => {
       step(value.jobs.r_local, (entry) => entry.id === id).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode,cursor";
     }, /verifier.*packaged phase.*upload/u);
@@ -583,7 +612,7 @@ test("all action references remain immutable and diagnostics channel-scoped", ()
   expectRejected((value) => {
     step(value.jobs.r_local, (entry) => entry.name === "Upload local R-Jupyter failure diagnostics").with.name =
       "local-r-failure";
-  }, /namespaced by the requested release channel/u);
+  }, /namespaced to the release candidate/u);
 });
 
 test("all artifact consumers use the numeric ID and never rebuild", () => {

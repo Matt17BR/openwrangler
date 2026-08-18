@@ -242,8 +242,8 @@ export function parseInstalledPerformanceArguments(arguments_) {
   if (consumesCandidate && options.smoke) {
     throw new Error("Canonical candidate consumption is release evidence and cannot use --smoke.");
   }
-  if (consumesCandidate && editorsExplicit) {
-    throw new Error("Canonical candidate consumption always runs both first-class editors and cannot use --editors.");
+  if (consumesCandidate && (!editorsExplicit || JSON.stringify(options.editors) !== JSON.stringify(["vscode"]))) {
+    throw new Error("Canonical candidate consumption requires the exact semantic owner --editors vscode.");
   }
   if (consumesCandidate && !options.pinnedEditors) {
     throw new Error("Canonical candidate consumption requires --pinned-editors.");
@@ -284,7 +284,7 @@ export function installedPerformanceReportGateForOptions(
     options?.artifactKind === STABLE_RELEASE_ARTIFACT_KIND ||
     options?.artifactKind === PREVIEW_RELEASE_ARTIFACT_KIND
   ) {
-    return releaseGate;
+    return (report) => releaseGate(report, { requiredEditors: options.editors });
   }
   throw new TypeError("Installed performance options contain an unknown artifact kind.");
 }
@@ -1005,7 +1005,7 @@ export async function prepareInstalledPerformanceCandidate({
       typeof options.candidateProvenance !== "string" ||
       options.candidateOutput !== undefined ||
       options.smoke !== false ||
-      JSON.stringify(options.editors) !== JSON.stringify(["vscode", "cursor"])
+      JSON.stringify(options.editors) !== JSON.stringify(["vscode"])
     ) {
       throw new Error("Canonical candidate consumption received an inconsistent option set.");
     }

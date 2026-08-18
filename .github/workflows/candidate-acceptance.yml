@@ -6,15 +6,22 @@ on:
       artifact_id:
         required: true
         type: string
-      channel:
-        required: true
-        type: string
       expected_sha:
         required: true
         type: string
       release_tag:
         required: true
         type: string
+    outputs:
+      performance_artifact_id:
+        description: Exact installed-performance artifact ID
+        value: ${{ jobs.performance.outputs.artifact-id }}
+      performance_bytes:
+        description: Installed-performance report byte size
+        value: ${{ jobs.performance.outputs.report-bytes }}
+      performance_sha256:
+        description: Installed-performance report SHA-256
+        value: ${{ jobs.performance.outputs.report-sha256 }}
 
 permissions:
   contents: read
@@ -28,7 +35,6 @@ jobs:
       - name: Require one supported candidate invocation
         env:
           ARTIFACT_ID: ${{ inputs.artifact_id }}
-          CHANNEL: ${{ inputs.channel }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
@@ -37,7 +43,6 @@ jobs:
           case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
           test "${#EXPECTED_SHA}" -eq 40
           test -n "$RELEASE_TAG"
-          case "$CHANNEL" in preview|stable) ;; *) exit 1 ;; esac
 
   platform:
     name: Platform acceptance (${{ matrix.os }})
@@ -81,7 +86,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run build:test-extension
       - id: canonical_vscode
         name: Reverify the candidate for cross-platform VS Code
@@ -89,7 +94,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test packaged VS Code
         continue-on-error: true
@@ -102,7 +107,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-vscode-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -119,13 +124,18 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 3
       matrix:
         include:
+          - os: ubuntu-24.04
+            python: "3.12"
+            r: "4.4.3"
           - os: macos-latest
             python: "3.12"
+            r: "4.5.2"
           - os: windows-latest
             python: "3.14"
+            r: "4.5.2"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -142,14 +152,17 @@ jobs:
           cache: pip
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          r-version: "4.5.2"
+          r-version: ${{ matrix.r }}
           use-public-rspm: true
       - id: rscript
         name: Locate hosted Rscript
         shell: Rscript {0}
+        env:
+          EXPECTED_R_VERSION: ${{ matrix.r }}
         run: |
           version <- as.character(getRversion())
-          if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
+          expected <- Sys.getenv("EXPECTED_R_VERSION")
+          if (!identical(version, expected)) stop("Expected hosted R ", expected, ", got ", version, ".")
           executable <- normalizePath(
             file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
             winslash = "/",
@@ -173,7 +186,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run build:test-extension
       - id: r_platform_setup
         name: Confirm native R platform setup
@@ -186,7 +199,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_core
         name: Test platform R core operations in a fresh packaged editor phase
         if: ${{ always() && steps.canonical_r_core.outcome == 'success' }}
@@ -204,7 +217,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor_r_core.outcome == 'failure' && steps.packaged_editor_r_core.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-platform-core-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-platform-core-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_core.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -217,7 +230,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_native
         name: Test platform native R frames in a fresh packaged editor phase
         if: ${{ always() && steps.canonical_r_native.outcome == 'success' }}
@@ -235,7 +248,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor_r_native.outcome == 'failure' && steps.packaged_editor_r_native.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-platform-native-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-platform-native-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_native.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -248,7 +261,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_restart
         name: Test platform R kernel restart in a fresh packaged editor phase
         if: ${{ always() && steps.canonical_r_restart.outcome == 'success' }}
@@ -266,7 +279,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor_r_restart.outcome == 'failure' && steps.packaged_editor_r_restart.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-platform-restart-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-platform-restart-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_restart.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -318,7 +331,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - name: Verify live repository metadata
         run: npm run repository:check-live
       - run: npm audit --omit=dev
@@ -331,7 +344,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_vscode
         name: Test the full package in headless VS Code
         continue-on-error: true
@@ -343,7 +356,7 @@ jobs:
         if: ${{ always() && steps.packaged_vscode.outcome == 'failure' && steps.packaged_vscode.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-vscode-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_vscode.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -383,7 +396,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_cursor
         name: Test the pinned Cursor compatibility smoke seam
         continue-on-error: true
@@ -398,7 +411,7 @@ jobs:
         if: ${{ always() && steps.packaged_cursor.outcome == 'failure' && steps.packaged_cursor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-cursor-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-cursor-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_cursor.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -413,6 +426,10 @@ jobs:
     needs: contract
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    outputs:
+      artifact-id: ${{ steps.performance_artifact.outputs.artifact-id }}
+      report-bytes: ${{ steps.performance_report.outputs.performance_bytes }}
+      report-sha256: ${{ steps.performance_report.outputs.performance_sha256 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -432,7 +449,6 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - name: Prepare exact local release tag
-        if: ${{ inputs.channel == 'stable' }}
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -448,28 +464,27 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: installed_performance
         name: Test the ordinary candidate artifact in pinned editors
         continue-on-error: true
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ steps.inspection_python.outputs.python-path }}
-          PREVIEW_FLAG: ${{ inputs.channel == 'preview' && '--preview-release' || '' }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           /usr/bin/dbus-run-session -- npm run benchmark:installed --
           --pinned-editors
-          $PREVIEW_FLAG
+          --editors vscode
           --candidate-in canonical-release/openwrangler.vsix
           --candidate-checksum canonical-release/openwrangler.vsix.sha256
           --candidate-provenance canonical-release/openwrangler.vsix.provenance.json
-          --out ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json
+          --out ${{ runner.temp }}/release-candidate-performance.json
       - name: Upload failed numeric installed-performance evidence
         if: ${{ always() && steps.installed_performance.outcome == 'failure' && steps.installed_performance.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-installed-performance-numeric-failure
+          name: candidate-installed-performance-numeric-failure
           path: ${{ steps.installed_performance.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -478,12 +493,19 @@ jobs:
       - name: Fail after installed-performance diagnostics
         if: ${{ always() && steps.installed_performance.outcome == 'failure' }}
         run: exit 1
-      - name: Upload installed-performance evidence
+      - id: performance_report
+        name: Bind the successful installed-performance report
+        if: ${{ steps.installed_performance.outcome == 'success' }}
+        run: >-
+          node scripts/release-candidate.mjs performance
+          ${{ runner.temp }}/release-candidate-performance.json
+      - id: performance_artifact
+        name: Upload installed-performance evidence
         if: ${{ steps.installed_performance.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-installed-performance
-          path: ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json
+          name: openwrangler-release-candidate-performance
+          path: ${{ runner.temp }}/release-candidate-performance.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 9
@@ -534,7 +556,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run build:test-extension
       - id: prepare_xvfb
         name: Prepare pinned private Xvfb
@@ -568,14 +590,14 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test released Jupyter in the exact packaged VSIX
         if: ${{ matrix.phase == 'python' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: candidate-one-owner
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
@@ -586,7 +608,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-jupyter-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-jupyter-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -602,7 +624,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_remote
         name: Test remote R Jupyter in the exact packaged VSIX
         if: ${{ matrix.phase == 'r-remote' }}
@@ -621,7 +643,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor_r_remote.outcome == 'failure' && steps.packaged_editor_r_remote.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-remote-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-remote-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_remote.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -709,7 +731,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run build:test-extension
       - id: prepare_xvfb
         name: Prepare pinned private Xvfb
@@ -746,7 +768,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_core
         name: Test core R operations in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_core.outcome == 'success' }}
@@ -755,7 +777,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: core-operations
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -766,7 +788,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_core.outcome == 'failure' && steps.packaged_editor_r_core.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_core.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -779,7 +801,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_restart
         name: Test R kernel restart in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_restart.outcome == 'success' }}
@@ -788,7 +810,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: kernel-restart
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -799,7 +821,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_restart.outcome == 'failure' && steps.packaged_editor_r_restart.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-restart-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-restart-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_restart.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -812,7 +834,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_interactive
         name: Test the active R terminal in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_interactive.outcome == 'success' }}
@@ -821,7 +843,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: interactive-terminal
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -832,7 +854,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_interactive.outcome == 'failure' && steps.packaged_editor_r_interactive.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -845,7 +867,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_literate
         name: Test R Markdown and Quarto in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_literate.outcome == 'success' }}
@@ -854,7 +876,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: literate-documents
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -865,7 +887,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_literate.outcome == 'failure' && steps.packaged_editor_r_literate.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_literate.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -878,7 +900,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_native
         name: Test native R frames in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'editing' && steps.canonical_r_native.outcome == 'success' }}
@@ -887,7 +909,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: native-frames
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -898,7 +920,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'editing' && steps.packaged_editor_r_native.outcome == 'failure' && steps.packaged_editor_r_native.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-native-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-native-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_native.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -911,7 +933,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_values
         name: Test value R operations in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'editing' && steps.canonical_r_values.outcome == 'success' }}
@@ -931,7 +953,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'editing' && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_values.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
@@ -944,7 +966,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+          node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_categorical
         name: Test categorical R operations in fresh packaged editor phases
         if: ${{ always() && matrix.shard == 'editing' && steps.canonical_r_categorical.outcome == 'success' }}
@@ -964,7 +986,7 @@ jobs:
         if: ${{ always() && matrix.shard == 'editing' && steps.packaged_editor_r_categorical.outcome == 'failure' && steps.packaged_editor_r_categorical.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-categorical-${{ runner.os }}-${{ github.run_attempt }}
+          name: candidate-r-jupyter-categorical-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
