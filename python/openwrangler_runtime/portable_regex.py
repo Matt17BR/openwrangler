@@ -220,6 +220,13 @@ def _consume_character_class(pattern: str, start: int) -> tuple[int, int]:
             index += 1
             token = pattern[index]
             escaped = True
+        if (
+            token == "["
+            or (token == "&" and pattern[index + 1 : index + 2] == "&")
+            or (token == "~" and pattern[index + 1 : index + 2] == "~")
+            or (token == "|" and pattern[index + 1 : index + 2] == "|")
+        ):
+            raise PortableRegexError("Regex extraction character classes do not permit dialect-specific set operators.")
         if token == "-" and not escaped:
             endpoint = pattern[index + 1] if index + 1 < len(pattern) else None
             if previous is None or endpoint in (None, "]", "\\"):

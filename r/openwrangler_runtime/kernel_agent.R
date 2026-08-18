@@ -135,6 +135,15 @@ openwrangler_r_kernel_agent <- local({
             member <- chars[[cursor]]
             escaped <- TRUE
           }
+          next_member <- if (cursor < length(chars)) chars[[cursor + 1L]] else NULL
+          if (
+            identical(member, "[") ||
+              (identical(member, "&") && identical(next_member, "&")) ||
+              (identical(member, "~") && identical(next_member, "~")) ||
+              (identical(member, "|") && identical(next_member, "|"))
+          ) {
+            abort("invalid_request", "Regex extraction character classes do not permit dialect-specific set operators")
+          }
           if (identical(member, "-") && !escaped) {
             endpoint <- if (cursor < length(chars)) chars[[cursor + 1L]] else NULL
             if (
