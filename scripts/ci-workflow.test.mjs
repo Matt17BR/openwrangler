@@ -794,6 +794,7 @@ const R_45_OWNER_CONTRACTS = Object.freeze([
 ]);
 
 function assertR45PullRequestOwner(job, { lockName, testCommand }) {
+  assert.equal(job["runs-on"], "ubuntu-24.04");
   assert.equal(job["timeout-minutes"], 20);
   assert.match(job.if, /classify\.result != 'success'/u);
   assert.match(job.if, /r_contract_required != 'false'/u);
@@ -815,6 +816,7 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   assert.equal(provisioning["continue-on-error"], undefined);
   const run = provisioning.run;
   assert.equal(typeof run, "string");
+  assert.ok(run.startsWith("set -euo pipefail\nexport LC_ALL=C\n"));
   for (const exactToken of [
     'readonly r_package_url="https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"',
     'readonly r_package_size="67491866"',
@@ -858,7 +860,15 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
     cursor = run.indexOf(check, cursor + 1);
     assert.ok(cursor > updateIndex && cursor < installIndex, `missing immediate preinstall check: ${check}`);
   }
-  assert.doesNotMatch(run.slice(updateIndex + "apt-get update".length, installIndex), /\b(?:curl|sleep)\b/u);
+  const installCommandStart = run.lastIndexOf(
+    "sudo --non-interactive env DEBIAN_FRONTEND=noninteractive",
+    installIndex
+  );
+  assert.ok(installCommandStart > updateIndex);
+  assert.equal(
+    run.slice(updateIndex + "apt-get update".length, installCommandStart),
+    `\n${immediatePreinstallChecks.join("\n")}\n`
+  );
   assert.match(run, /test "\$\(dpkg-query --show --showformat='\$\{Version\}' r-4\.5\.3\)" = "1"/u);
   assert.match(
     run,
@@ -895,10 +905,15 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
   }
 
   const mutations = [
+    (job) => (job["runs-on"] = "ubuntu-latest"),
     (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["r-version"] = "4.5"),
     (job) => delete stepsUsing(job, "r-lib/actions/setup-r@")[0].with["install-r"],
     (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["install-r"] = true),
     (job) => (job["timeout-minutes"] = 21),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("set -euo pipefail\n", "")),
     (job) =>
       (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
         .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
@@ -931,6 +946,13 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
       (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
         .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
         .run.replace('"$r_package_path" libx11-dev', '"$r_package_path" libx11-dev jq')),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace(
+          'test "$(dpkg-deb --field "$r_package_path" Version)" = "1"\n',
+          'test "$(dpkg-deb --field "$r_package_path" Version)" = "1"\necho interposed\n'
+        )),
     (job) =>
       (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run +=
         "sudo apt-get install gdebi-core devscripts qpdf ghostscript\n"),
