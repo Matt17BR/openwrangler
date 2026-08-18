@@ -847,6 +847,34 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   const run = provisioning.run;
   assert.equal(typeof run, "string");
   assert.ok(run.startsWith("set -euo pipefail\nexport LC_ALL=C\n"));
+  assert.equal(
+    run.split("provisioning_checkpoint() {\n  printf 'R 4.5.3 provisioning checkpoint: %s\\n' \"$1\"\n}\n").length - 1,
+    1
+  );
+  assert.deepEqual(
+    [...run.matchAll(/^[ ]*provisioning_checkpoint "([^"]+)"$/gmu)].map((match) => match[1]),
+    [
+      "offline install complete",
+      "package database audit command",
+      "package database audit output bound",
+      "package database audit output empty",
+      "package ${package}",
+      "libx11-dev package",
+      "R library directory not a symlink",
+      "R library directory type",
+      "R shared object ${ldd_index} not a symlink",
+      "R shared object ${ldd_index} type",
+      "R shared object ${ldd_index} dependency command",
+      "R shared object ${ldd_index} output bound",
+      "R shared object ${ldd_index} dependencies resolved",
+      "R shared object count",
+      "R package status",
+      "R version",
+      "R executable path export",
+      "complete"
+    ]
+  );
+  assert.doesNotMatch(run, /provisioning_checkpoint[^\n]*(?:\|\||;)[ ]*(?:true|:)/u);
   assert.match(run, /^readonly artifact_count="27"$/mu);
   assert.match(run, /^readonly artifact_bytes="82619754"$/mu);
   assert.match(run, /^readonly artifact_dir="\$\(mktemp -d "\$\{RUNNER_TEMP\}\/openwrangler-r-4\.5\.3-XXXXXX"\)"$/mu);
@@ -912,7 +940,7 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   );
   assert.match(
     run,
-    /^dpkg_audit_path="\$\{artifact_dir\}\/dpkg-audit\.txt"\ntimeout --signal=TERM --kill-after=5s 30s dpkg --audit \| head --bytes=65537 > "\$dpkg_audit_path"\ndpkg_audit_size="\$\(stat --format='%s' -- "\$dpkg_audit_path"\)"\ntest "\$dpkg_audit_size" -le 65536\ntest ! -s "\$dpkg_audit_path"$/mu
+    /^provisioning_checkpoint "offline install complete"\ndpkg_audit_path="\$\{artifact_dir\}\/dpkg-audit\.txt"\nprovisioning_checkpoint "package database audit command"\ntimeout --signal=TERM --kill-after=5s 30s dpkg --audit \| head --bytes=65537 > "\$dpkg_audit_path"\ndpkg_audit_size="\$\(stat --format='%s' -- "\$dpkg_audit_path"\)"\nprovisioning_checkpoint "package database audit output bound"\ntest "\$dpkg_audit_size" -le 65536\nprovisioning_checkpoint "package database audit output empty"\ntest ! -s "\$dpkg_audit_path"$/mu
   );
   const auditIndex = run.indexOf('dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"');
   const bareDpkgInvocations = [...run.matchAll(/(?<![A-Za-z0-9_-])dpkg(?=\s)/gu)];
@@ -922,11 +950,15 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   );
   assert.match(
     run,
-    /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' "\$package"\)" = \\\n+[ ]{4}"install ok installed\|\$\{version\}\|\$\{architecture\}"/u
+    /[ ]{2}provisioning_checkpoint "package \$\{package\}"\n[ ]{2}test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' "\$package"\)" = \\\n+[ ]{4}"install ok installed\|\$\{version\}\|\$\{architecture\}"/u
   );
   assert.match(
     run,
-    /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' libx11-dev\)" = \\\n+[ ]{2}"install ok installed\|2:1\.8\.7-1build1\|amd64"/u
+    /provisioning_checkpoint "libx11-dev package"\ntest "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' libx11-dev\)" = \\\n+[ ]{2}"install ok installed\|2:1\.8\.7-1build1\|amd64"/u
+  );
+  assert.match(
+    run,
+    /readonly r_library_dir="\/opt\/R\/4\.5\.3\/lib\/R\/lib"\nprovisioning_checkpoint "R library directory not a symlink"\ntest ! -L "\$r_library_dir"\nprovisioning_checkpoint "R library directory type"\ntest -d "\$r_library_dir"/u
   );
   assert.match(
     run,
@@ -934,7 +966,7 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   );
   assert.match(
     run,
-    /ldd_index=0\nfor r_binary[\s\S]+?ldd_output_path="\$\{artifact_dir\}\/ldd-\$\{ldd_index\}\.txt"\n[ ]{2}timeout --signal=TERM --kill-after=5s 30s ldd "\$r_binary" \| head --bytes=65537 > "\$ldd_output_path"\n[ ]{2}ldd_output_size="\$\(stat --format='%s' -- "\$ldd_output_path"\)"\n[ ]{2}test "\$ldd_output_size" -le 65536\n[ ]{2}while IFS= read -r dependency_line; do\n[ ]{4}case "\$dependency_line" in \*"not found"\*\) exit 1 ;; esac\n[ ]{2}done < "\$ldd_output_path"\n[ ]{2}ldd_index=\$\(\(ldd_index \+ 1\)\)\ndone\ntest "\$ldd_index" = "2"/u
+    /ldd_index=0\nfor r_binary[\s\S]+?provisioning_checkpoint "R shared object \$\{ldd_index\} dependency command"\n[ ]{2}timeout --signal=TERM --kill-after=5s 30s \\\n[ ]{4}env LD_LIBRARY_PATH="\$\{r_library_dir\}\$\{LD_LIBRARY_PATH:\+:\$\{LD_LIBRARY_PATH\}\}" ldd "\$r_binary" \| \\\n[ ]{4}head --bytes=65537 > "\$ldd_output_path"\n[ ]{2}ldd_output_size="\$\(stat --format='%s' -- "\$ldd_output_path"\)"\n[ ]{2}provisioning_checkpoint "R shared object \$\{ldd_index\} output bound"\n[ ]{2}test "\$ldd_output_size" -le 65536\n[ ]{2}provisioning_checkpoint "R shared object \$\{ldd_index\} dependencies resolved"\n[ ]{2}while IFS= read -r dependency_line; do\n[ ]{4}case "\$dependency_line" in \*"not found"\*\) exit 1 ;; esac\n[ ]{2}done < "\$ldd_output_path"\n[ ]{2}ldd_index=\$\(\(ldd_index \+ 1\)\)\ndone\nprovisioning_checkpoint "R shared object count"\ntest "\$ldd_index" = "2"/u
   );
   assert.match(
     run,
@@ -1094,6 +1126,17 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
     (job) =>
       mutateProvisioning(job, (run) =>
         run.replace(
+          "printf 'R 4.5.3 provisioning checkpoint: %s\\n' \"$1\"\n",
+          "printf 'R 4.5.3 provisioning checkpoint: %s\\n' \"$1\" || true\n"
+        )
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace('provisioning_checkpoint "package database audit output empty"\n', "")
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
           'test "$(dpkg-query --show --showformat=\'${Status}|${Version}|${Architecture}\' "$package")" = \\\n    "install ok installed|${version}|${architecture}"\n',
           ""
         )
@@ -1108,9 +1151,21 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
     (job) =>
       mutateProvisioning(job, (run) =>
         run.replace(
-          'timeout --signal=TERM --kill-after=5s 30s ldd "$r_binary" | head --bytes=65537 > "$ldd_output_path"\n',
+          'timeout --signal=TERM --kill-after=5s 30s \\\n    env LD_LIBRARY_PATH="${r_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "$r_binary" | \\\n    head --bytes=65537 > "$ldd_output_path"\n',
           'true > "$ldd_output_path"\n'
         )
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'env LD_LIBRARY_PATH="${r_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "$r_binary"',
+          'ldd "$r_binary"'
+        )
+      ),
+    (job) => mutateProvisioning(job, (run) => run.replace('readonly r_library_dir="/opt/R/4.5.3/lib/R/lib"\n', "")),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace('provisioning_checkpoint "R shared object ${ldd_index} dependencies resolved"\n', "")
       ),
     (job) => mutateProvisioning(job, (run) => run.replace('test "$ldd_output_size" -le 65536\n', "")),
     (job) =>
