@@ -2697,6 +2697,19 @@ regex_group_nine <- openwrangler_r_frame_contract$extract_regex_group_at(
   "ninth"
 )
 assert_identical(regex_group_nine$ninth, c("i", NA_character_), "Regex extraction changed capture-group nine")
+regex_literal_class_punctuation <- openwrangler_r_frame_contract$extract_regex_group_at(
+  data.frame(value = c("a&~b", "none"), check.names = FALSE),
+  1L,
+  "value",
+  "([a&~b]+)",
+  1L,
+  "punctuation"
+)
+assert_identical(
+  regex_literal_class_punctuation$punctuation,
+  c("a&~b", NA_character_),
+  "Regex extraction changed literal single class-punctuation semantics"
+)
 assert_error(
   openwrangler_r_frame_contract$extract_regex_group_at(
     data.frame(value = "abcdefghij", check.names = FALSE),

@@ -16,6 +16,7 @@ from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
     PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
+    portable_regex_contract,
 )
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -674,6 +675,7 @@ class PandasEngine(DataFrameEngine):
             )
             return pd.concat([df, generated], axis=1)
         if kind == "extractRegexGroup":
+            portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
             ensure_output_columns_available(df.columns, [params["newColumn"]], "Regex extraction")
             source = df.iloc[:, position].astype("string")
@@ -1545,6 +1547,7 @@ class PandasEngine(DataFrameEngine):
                 ),
             ]
         if kind == "extractRegexGroup":
+            portable_regex_contract(params["pattern"], params["group"])
             position = bound_column_position(params["column"], kind)
             output = params["newColumn"]
             collisions = f"_regex_collisions_{index}"

@@ -256,6 +256,14 @@ function consumePortableCharacterClass(
       index += 1;
       escaped = true;
     }
+    if (
+      token === "[" ||
+      (token === "&" && codePoints[index + 1] === "&") ||
+      (token === "~" && codePoints[index + 1] === "~") ||
+      (token === "|" && codePoints[index + 1] === "|")
+    ) {
+      throw new TypeError("Regex extraction character classes do not permit dialect-specific set operators.");
+    }
     if (token === "-" && !escaped) {
       const endpoint = codePoints[index + 1];
       if (previousRangeEndpoint === undefined || endpoint === undefined || endpoint === "]" || endpoint === "\\") {

@@ -1018,6 +1018,35 @@ regex_edge_hyphen_rejection <- dispatch(
 )
 assert_identical(regex_edge_hyphen_rejection$kind, "error", "R Regex extraction accepted an edge hyphen")
 assert_identical(regex_edge_hyphen_rejection$code, "invalid_request", "R Regex extraction changed its range diagnostic")
+for (pattern in c("([a&&b]+)", "([a~~b]+)", "([a||b]+)", "([[ab]]+)")) {
+  regex_class_operator_rejection <- dispatch(
+    "previewStep",
+    list(
+      sessionId = text_cleanup_session_id,
+      revision = 15L,
+      step = text_transform_step(
+        "extractRegexGroup",
+        "regex-class-operator-rejection",
+        "r:c:0",
+        "text",
+        new_column = "regex class rejected",
+        pattern = pattern,
+        group = 1L
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    regex_class_operator_rejection$kind,
+    "error",
+    "R Regex extraction accepted a dialect-specific character-class operator"
+  )
+  assert_identical(
+    regex_class_operator_rejection$code,
+    "invalid_request",
+    "R Regex extraction changed its dialect-specific class diagnostic"
+  )
+}
 regex_width_session_id <- "55555555-5555-4555-8555-555555555555"
 source_environment$regex_width_frame <- source_environment$text_cleanup_frame
 regex_width_open <- dispatch(

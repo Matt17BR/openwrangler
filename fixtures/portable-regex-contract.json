@@ -12,6 +12,7 @@
     { "pattern": "😀([é]+)", "group": 1, "captures": 1, "participationPattern": "😀([é]+)" },
     { "pattern": "([\\-]+)", "group": 1, "captures": 1, "participationPattern": "([\\-]+)" },
     { "pattern": "([A\\-Z]+)", "group": 1, "captures": 1, "participationPattern": "([A\\-Z]+)" },
+    { "pattern": "([a&~b]+)", "group": 1, "captures": 1, "participationPattern": "([a&~b]+)" },
     { "pattern": "a?", "group": 0, "captures": 0, "participationPattern": "a?" },
     {
       "pattern": "(a)(b)(c)(d)(e)(f)(g)(h)(i)",
@@ -38,6 +39,10 @@
     { "pattern": "[z-a]", "group": 0 },
     { "pattern": "[-A]", "group": 0 },
     { "pattern": "[A-]", "group": 0 },
+    { "pattern": "([a&&b]+)", "group": 1 },
+    { "pattern": "([a~~b]+)", "group": 1 },
+    { "pattern": "([a||b]+)", "group": 1 },
+    { "pattern": "([[ab]]+)", "group": 1 },
     { "pattern": "a**", "group": 0 },
     { "pattern": "a*a*a*a*a*a*a*a*b", "group": 0 },
     { "pattern": "a*aa+b", "group": 0 },

@@ -16,6 +16,7 @@ from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
     PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
+    portable_regex_contract,
 )
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -1237,6 +1238,7 @@ class PolarsEngine(DataFrameEngine):
                 [parts.list.get(index, null_on_oob=True).alias(name) for index, name in enumerate(output_names)]
             )
         if kind == "extractRegexGroup":
+            portable_regex_contract(params["pattern"], params["group"])
             column = bound_column_name(params["column"], kind)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             ensure_output_columns_available(schema.names(), [params["newColumn"]], "Regex extraction")
@@ -1912,6 +1914,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}])",
             ]
         if kind == "extractRegexGroup":
+            portable_regex_contract(params["pattern"], params["group"])
             column = bound_column_name(params["column"], kind)
             output = params["newColumn"]
             schema = f"_regex_schema_{index}"

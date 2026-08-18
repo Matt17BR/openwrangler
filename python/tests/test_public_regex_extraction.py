@@ -72,6 +72,7 @@ def frames(values: list[str | None]) -> list[tuple[Any, Any]]:
         ("a?", 0, ["ba", "a", None], ["", "a", None]),
         ("(é{1,4})", 1, ["😀ééz", "none"], ["éé", None]),
         ("([A\\-Z]+)", 1, ["A-Z", "---", "none"], ["A-Z", "---", None]),
+        ("([a&~b]+)", 1, ["a&~b", "none"], ["a&~b", None]),
         ("([a-z]{1,4})", 1, ["one two"], ["one"]),
         ("(a)(b)(c)(d)(e)(f)(g)(h)(i)", 9, ["abcdefghi", "none"], ["i", None]),
     ],
@@ -106,6 +107,18 @@ def test_public_regex_live_and_generated_semantics(
 def test_public_regex_decoder_rejects_nonportable_or_nullable_optional_patterns(pattern: str) -> None:
     with pytest.raises(OperationError):
         validate_step(regex_step(pattern, 1 if "(" in pattern else 0))
+
+
+@pytest.mark.parametrize("pattern", ["([a&&b]+)", "([a~~b]+)", "([a||b]+)", "([[ab]]+)"])
+def test_public_regex_dialect_specific_classes_fail_before_live_or_generated_execution(pattern: str) -> None:
+    step = regex_step(pattern, 1)
+    for engine, frame in frames(["a&~b"]):
+        baseline = rows(frame)
+        with pytest.raises(Exception, match="dialect-specific set operators"):
+            engine.apply_transform(frame, step)
+        with pytest.raises(Exception, match="dialect-specific set operators"):
+            execute_generated(engine, frame, step)
+        assert rows(frame) == baseline
 
 
 def test_public_regex_shared_contract_rejects_lone_surrogates_and_nul() -> None:

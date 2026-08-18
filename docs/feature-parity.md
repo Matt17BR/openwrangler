@@ -175,15 +175,15 @@ both ends, or the default whitespace when no set is supplied. Native-R generated
 set from Unicode code points, so mixed control/Unicode sets remain parse-safe and equivalent to live execution. Split
 text uses a literal delimiter, adds a new column, and returns `NA` when the requested part is missing. Split text
 into columns is a distinct operation that retains the source, creates 2–64 ordered outputs atomically, preserves
-empty parts, returns null for missing parts, and ignores extra parts beyond the fixed output count. Convert type
+empty parts, returns null for missing parts, and ignores extra parts beyond the fixed output count.
 Regex extraction is a distinct one-output operation that retains the source and selects group 0 or one of at most
 nine captures from the first leftmost match. Its public single-line pattern subset rejects nonportable dialect and
 resource-dangerous constructs before dispatch. Null source values, no match, and unmatched optional groups return
 null, while participating empty captures remain empty strings. Pandas, Polars, DuckDB, and Native R execute the same
 bounded live and generated contract without conversion; PySpark remains viewing-only. The installed shared-webview
-journey covers invalid-pattern rejection, preview, apply, persisted reopen, undo, generated code, exact source bytes,
-stable identities, and final session cleanup for Pandas and Native R.
-replaces one column under the same identity and supports string, integer, float, boolean, date, and datetime targets.
+journey covers invalid-pattern rejection, preview, apply, undo, generated code, exact source bytes, stable identities,
+and final session cleanup for Pandas and Native R; Pandas additionally proves persisted close/reopen before undo.
+Convert type replaces one column under the same identity and supports string, integer, float, boolean, date, and datetime targets.
 Failed parses become `NA`. It rejects active data-table keys and conversions that would lose units or `integer64`
 precision. Formula appends a numeric column from one exact
 input and either a finite scalar or a second exact numeric input. Addition, subtraction, multiplication, and modulo
