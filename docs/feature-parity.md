@@ -122,7 +122,7 @@ both direct packaged-frame and real Node-to-owned-`Rscript` stdin/stdout boundar
 untimed dataset-statistics, greater-than-one-million-row summary, keyed-`data.table`, resource, response-accounting,
 session/process, and cleanup proofs. It deliberately defines no reviewed numeric threshold and cannot emit a release
 pass. It is infrastructure rather than recorded evidence: no row advances until a fresh immutable candidate supplies
-the separately reviewed performance record, the installed all-28 matrix passes, and the following stable-authoring
+the separately reviewed performance record, the installed all-29 matrix passes, and the following stable-authoring
 change resolves that record's source/candidate ordering.
 
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source

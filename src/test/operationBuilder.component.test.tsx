@@ -454,6 +454,41 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledTimes(2);
   });
 
+  it("allocates unique split output defaults after removing and reordering rows", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="splitTextColumns"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add output column" }));
+    expect(screen.getByLabelText("Output column 3")).toHaveValue("split_part_3");
+    fireEvent.click(screen.getByRole("button", { name: "Remove output column 2" }));
+    expect(screen.getByLabelText("Output column 2")).toHaveValue("split_part_3");
+    fireEvent.click(screen.getByRole("button", { name: "Add output column" }));
+    expect(screen.getByLabelText("Output column 3")).toHaveValue("split_part_4");
+    fireEvent.click(screen.getByRole("button", { name: "Move output column 3 up" }));
+    expect(screen.getByLabelText("Output column 2")).toHaveValue("split_part_4");
+    expect(screen.getByLabelText("Output column 3")).toHaveValue("split_part_3");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "splitTextColumns",
+        params: expect.objectContaining({
+          delimiter: ",",
+          newColumns: ["split_part_1", "split_part_4", "split_part_3"]
+        })
+      }),
+      undefined
+    );
+  });
+
   it("uses stable duplicate-safe references for drop-duplicates columns", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [
