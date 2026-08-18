@@ -9,15 +9,13 @@ import type {
   OpenSessionRequest,
   PageResponse,
   RowAxisExportPolicy,
-  SessionMetadata,
   SessionMode,
   SessionSource,
-  SessionBoundRequest,
-  StepInspectionResponse
+  SessionBoundRequest
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
 import { sessionModeAction } from "../shared/sessionMode";
-import type { GridViewState, PersistedViewingState } from "../shared/viewState";
+import type { GridViewState } from "../shared/viewState";
 import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresentation } from "./dataBridge";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import {
@@ -30,8 +28,8 @@ import {
   type TextDocumentSessionOrigin
 } from "./sessionOrigin";
 import { SessionPersistenceStore } from "./sessionPersistenceStore";
-import { protocolError, publicMetadata, SessionResponseCommitter, stepInspectionKey } from "./sessionResponseCommitter";
-import { requestViewId, type SessionRequestExecutionLane } from "./sessionRequestScheduler";
+import { protocolError, SessionResponseCommitter, stepInspectionKey } from "./sessionResponseCommitter";
+import { requestViewId } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
 import { SessionRuntimeEstablisher, type RuntimeEstablishedSession } from "./sessionRuntimeEstablisher";
 import { SessionRuntimeRecovery, type RuntimeRecoveryHooks } from "./sessionRuntimeRecovery";
@@ -46,53 +44,31 @@ import {
   SessionRuntimeRequestExecutor
 } from "./sessionRuntimeRequestExecutor";
 import { gridState, reconcileViewingState, SessionRuntimeStateRestorer } from "./sessionRuntimeStateRestorer";
+import {
+  activeSessionSnapshot,
+  sessionCoordinatorDiagnostics,
+  sessionModeName,
+  sessionRequestExecutionCheckpoint,
+  sessionSchedulerState,
+  type ActiveSessionSnapshot,
+  type SessionCoordinatorDiagnostics,
+  type SessionRequestExecutionCheckpoint,
+  type SessionSchedulerState
+} from "./sessionCoordinatorState";
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
+export type {
+  ActiveSessionSnapshot,
+  SessionCoordinatorDiagnostics,
+  SessionRequestExecutionCheckpoint,
+  SessionSchedulerState
+} from "./sessionCoordinatorState";
 
 type CoordinatedSession = RuntimeEstablishedSession;
 
 export type { TextDocumentSessionOrigin } from "./sessionOrigin";
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
-
-export interface ActiveSessionSnapshot {
-  sessionId: string;
-  metadata: SessionMetadata;
-  code: string;
-  viewState: PersistedViewingState;
-  stepInspectionActive?: boolean;
-  stepInspection?: StepInspectionResponse;
-}
-
-export interface SessionCoordinatorDiagnostics {
-  activeSessionId?: string;
-  sessionCount: number;
-  sessions: Array<{
-    publicId: string;
-    runtimeId: string;
-    publicRevision: number;
-    runtimeRevision: number;
-    sourceLabel: string;
-  }>;
-}
-
-export interface SessionRequestExecutionCheckpoint {
-  sessionId: string;
-  state: "active" | "queued";
-  lane: SessionRequestExecutionLane;
-  requestKind: SessionBoundRequest["kind"];
-  viewRequestId: string;
-}
-
-export interface SessionSchedulerState {
-  sessionId: string;
-  quiescent: boolean;
-  activeForegroundOperation: boolean;
-  activeBackgroundOperation: boolean;
-  interactiveQueueLength: number;
-  backgroundQueueLength: number;
-  terminalOperation: boolean;
-}
 
 export class SessionCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, CoordinatedSession>();
@@ -214,17 +190,17 @@ export class SessionCoordinator implements vscode.Disposable {
     }
     this.activeSessionId = sessionId;
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
-    this.activeSessionEmitter.fire(session ? activeSnapshot(session) : undefined);
+    this.activeSessionEmitter.fire(session ? activeSessionSnapshot(session) : undefined);
   }
 
   activeSession(): ActiveSessionSnapshot | undefined {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
-    return session ? activeSnapshot(session) : undefined;
+    return session ? activeSessionSnapshot(session) : undefined;
   }
 
   sessionSnapshot(sessionId: string): ActiveSessionSnapshot | undefined {
     const session = this.sessions.get(sessionId);
-    return session && !session.closing ? activeSnapshot(session) : undefined;
+    return session && !session.closing ? activeSessionSnapshot(session) : undefined;
   }
 
   activeNotebookDocument(): vscode.NotebookDocument | undefined {
@@ -276,7 +252,7 @@ export class SessionCoordinator implements vscode.Disposable {
     const changed = Boolean(session.stepInspection || session.latestStepInspectionKey);
     this.invalidateStepInspection(session);
     if (changed && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
-      this.activeSessionEmitter.fire(activeSnapshot(session));
+      this.activeSessionEmitter.fire(activeSessionSnapshot(session));
     }
   }
 
@@ -290,17 +266,7 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   diagnostics(): SessionCoordinatorDiagnostics {
-    return {
-      activeSessionId: this.activeSessionId,
-      sessionCount: this.sessions.size,
-      sessions: [...this.sessions.values()].map((session) => ({
-        publicId: session.publicId,
-        runtimeId: session.runtimeId,
-        publicRevision: session.publicRevision,
-        runtimeRevision: session.runtimeRevision,
-        sourceLabel: session.openRequest.source.label
-      }))
-    };
+    return sessionCoordinatorDiagnostics(this.activeSessionId, this.sessions.values());
   }
 
   testingRequestExecutionCheckpoint(
@@ -308,16 +274,11 @@ export class SessionCoordinator implements vscode.Disposable {
     requestKind: SessionBoundRequest["kind"],
     viewRequestId: string
   ): SessionRequestExecutionCheckpoint | undefined {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.closing || viewRequestId.length === 0) return undefined;
-    const checkpoint = session.scheduler.checkpoint(requestKind, viewRequestId);
-    return checkpoint ? { sessionId, ...checkpoint } : undefined;
+    return sessionRequestExecutionCheckpoint(sessionId, this.sessions.get(sessionId), requestKind, viewRequestId);
   }
 
   testingSessionSchedulerState(sessionId: string): SessionSchedulerState | undefined {
-    const session = this.sessions.get(sessionId);
-    if (!session) return undefined;
-    return { sessionId, ...session.scheduler.snapshot() };
+    return sessionSchedulerState(sessionId, this.sessions.get(sessionId));
   }
 
   async exportActiveData(
@@ -453,7 +414,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (inspectionChanged) session.stepInspection = undefined;
       session.latestStepInspectionKey = stepInspectionKey(request);
       if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
-        this.activeSessionEmitter.fire(activeSnapshot(session));
+        this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
     } else if (isRuntimeStateMutation(request)) {
       this.clearStepInspection(session.publicId);
@@ -634,7 +595,7 @@ export class SessionCoordinator implements vscode.Disposable {
         !session.closing &&
         this.activeSessionId === session.publicId
       ) {
-        this.activeSessionEmitter.fire(activeSnapshot(session));
+        this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
@@ -667,7 +628,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
-        `${modeName(mode)} mode was not opened because the session advanced to revision ${session.publicRevision}.`,
+        `${sessionModeName(mode)} mode was not opened because the session advanced to revision ${session.publicRevision}.`,
         true,
         session.publicId
       );
@@ -694,7 +655,7 @@ export class SessionCoordinator implements vscode.Disposable {
         `${mode}_mode_unavailable`,
         action?.target === mode && action.disabledReason
           ? action.disabledReason
-          : `This session cannot be reopened in ${modeName(mode)} mode.`,
+          : `This session cannot be reopened in ${sessionModeName(mode)} mode.`,
         true,
         session.publicId
       );
@@ -720,8 +681,8 @@ export class SessionCoordinator implements vscode.Disposable {
         return protocolError(
           this.disposed ? "coordinator_disposed" : "session_closing",
           this.disposed
-            ? `The Open Wrangler session coordinator was disposed while ${modeName(mode)} mode was opening.`
-            : `Open Wrangler session ${session.publicId} closed while ${modeName(mode)} mode was opening.`,
+            ? `The Open Wrangler session coordinator was disposed while ${sessionModeName(mode)} mode was opening.`
+            : `Open Wrangler session ${session.publicId} closed while ${sessionModeName(mode)} mode was opening.`,
           false,
           session.publicId
         );
@@ -729,7 +690,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (revision !== session.publicRevision) {
         return protocolError(
           "stale_request",
-          `${modeName(mode)} mode was not opened because the session advanced to revision ${session.publicRevision}.`,
+          `${sessionModeName(mode)} mode was not opened because the session advanced to revision ${session.publicRevision}.`,
           true,
           session.publicId
         );
@@ -754,7 +715,7 @@ export class SessionCoordinator implements vscode.Disposable {
         !session.closing &&
         this.activeSessionId === session.publicId
       ) {
-        this.activeSessionEmitter.fire(activeSnapshot(session));
+        this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
@@ -813,7 +774,7 @@ export class SessionCoordinator implements vscode.Disposable {
         },
         publishInspection: () => {
           if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
-            this.activeSessionEmitter.fire(activeSnapshot(session));
+            this.activeSessionEmitter.fire(activeSessionSnapshot(session));
           }
         }
       }
@@ -976,7 +937,7 @@ export class SessionCoordinator implements vscode.Disposable {
       originMismatch: (request) => sessionOriginMismatch(request, session.origin),
       clearPublishedStepInspection: () => this.clearPublishedStepInspection(session),
       publishActive: () => {
-        if (this.activeSessionId === session.publicId) this.activeSessionEmitter.fire(activeSnapshot(session));
+        if (this.activeSessionId === session.publicId) this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       },
       replayAfterRuntimeLoss: (failedRuntimeId, options, requiredSchema, onRestoredPage) =>
         this.replayAfterRuntimeLoss(session, failedRuntimeId, options, requiredSchema, undefined, onRestoredPage)
@@ -986,20 +947,4 @@ export class SessionCoordinator implements vscode.Disposable {
   private isLiveSession(session: CoordinatedSession): boolean {
     return !this.disposed && this.sessions.get(session.publicId) === session;
   }
-}
-
-function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
-  const stepInspection = session.stepInspection;
-  return {
-    sessionId: session.publicId,
-    metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source),
-    code: stepInspection?.code ?? session.code,
-    viewState: session.viewState,
-    ...(session.latestStepInspectionKey ? { stepInspectionActive: true } : {}),
-    ...(stepInspection ? { stepInspection } : {})
-  };
-}
-
-function modeName(mode: SessionMode): "Editing" | "Viewing" {
-  return mode === "editing" ? "Editing" : "Viewing";
 }
