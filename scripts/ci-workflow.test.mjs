@@ -910,14 +910,15 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
     run,
     /test "\$verified_count" = "\$artifact_count"\ntest "\$verified_bytes" = "\$artifact_bytes"\ntest "\$\(find "\$artifact_dir" -mindepth 1 -maxdepth 1 \| wc -l\)" = "\$artifact_count"\nsudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \\\n+[ ]{2}dpkg --install -- "\$\{install_paths\[@\]\}"/u
   );
-  const packageInstallerInvocations = [...run.matchAll(/(?<![A-Za-z0-9_-])dpkg\s+(?:--install|-i|--unpack)(?=\s)/gu)];
-  assert.deepEqual(
-    packageInstallerInvocations.map((match) => match[0]),
-    ["dpkg --install"]
-  );
   assert.match(
     run,
     /^dpkg_audit_path="\$\{artifact_dir\}\/dpkg-audit\.txt"\ntimeout --signal=TERM --kill-after=5s 30s dpkg --audit \| head --bytes=65537 > "\$dpkg_audit_path"\ndpkg_audit_size="\$\(stat --format='%s' -- "\$dpkg_audit_path"\)"\ntest "\$dpkg_audit_size" -le 65536\ntest ! -s "\$dpkg_audit_path"$/mu
+  );
+  const auditIndex = run.indexOf('dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"');
+  const bareDpkgInvocations = [...run.matchAll(/(?<![A-Za-z0-9_-])dpkg(?=\s)/gu)];
+  assert.deepEqual(
+    bareDpkgInvocations.map((match) => match.index),
+    [installIndex, auditIndex]
   );
   assert.match(
     run,
@@ -1064,6 +1065,8 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
       ),
     (job) => mutateProvisioning(job, (run) => run + '\nsudo dpkg -i -- "${install_paths[@]}"\n'),
     (job) => mutateProvisioning(job, (run) => run + '\nsudo dpkg --unpack -- "${install_paths[@]}"\n'),
+    (job) => mutateProvisioning(job, (run) => run + '\nsudo dpkg --force-all --install -- "${install_paths[@]}"\n'),
+    (job) => mutateProvisioning(job, (run) => run + '\nsudo dpkg --root=/tmp --unpack -- "${install_paths[@]}"\n'),
     (job) =>
       mutateProvisioning(
         job,
@@ -1071,6 +1074,10 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
           run +
           '\nsudo --non-interactive timeout --signal=TERM --kill-after=10s 180s dpkg --install -- "${install_paths[@]}"\n'
       ),
+    (job) => mutateProvisioning(job, (run) => run.replace("dpkg --audit | head", "dpkg --root=/tmp --audit | head")),
+    (job) =>
+      mutateProvisioning(job, (run) => run.replace("dpkg --audit | head", "dpkg --admindir=/tmp --audit | head")),
+    (job) => mutateProvisioning(job, (run) => run + "\ndpkg --version\n"),
     (job) =>
       mutateProvisioning(job, (run) =>
         run.replace(
