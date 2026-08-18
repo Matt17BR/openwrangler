@@ -9,8 +9,7 @@ import {
   inspectReleaseDocumentationSource,
   performanceReportLink
 } from "./release-readiness.mjs";
-import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
-import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
+import { inspectReleaseCandidateWorkflow, inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
@@ -123,11 +122,11 @@ if (!packageJson.preview) {
     throw new Error(`Public gallery copy is stale:\n- ${galleryProblems.join("\n- ")}`);
   }
 }
-const releaseWorkflowProblems = inspectReleaseWorkflow(
-  readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8")
+const releaseCandidateWorkflowProblems = inspectReleaseCandidateWorkflow(
+  readFileSync(resolve(root, ".github/workflows/release-candidate.yml"), "utf8")
 );
-if (releaseWorkflowProblems.length > 0) {
-  throw new Error(`Release workflow contract is stale:\n- ${releaseWorkflowProblems.join("\n- ")}`);
+if (releaseCandidateWorkflowProblems.length > 0) {
+  throw new Error(`Release-candidate workflow contract is stale:\n- ${releaseCandidateWorkflowProblems.join("\n- ")}`);
 }
 const stableReleaseWorkflowProblems = inspectStableReleaseWorkflow(
   readFileSync(resolve(root, ".github/workflows/stable-release.yml"), "utf8")

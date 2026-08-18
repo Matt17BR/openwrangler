@@ -107,16 +107,14 @@ test("the lock compiler accepts only the exact resolver version output", () => {
 });
 
 test("source and release producers own the fixture lock without candidate duplication", async () => {
-  const [packageText, ci, candidateAcceptance, previewRelease, stableRelease, releasedJupyter, vscodeIgnore] =
-    await Promise.all([
-      readFile(resolve(REPOSITORY_ROOT, "package.json"), "utf8"),
-      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
-      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "candidate-acceptance.yml"), "utf8"),
-      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "release.yml"), "utf8"),
-      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "stable-release.yml"), "utf8"),
-      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "released-jupyter.yml"), "utf8"),
-      readFile(resolve(REPOSITORY_ROOT, ".vscodeignore"), "utf8")
-    ]);
+  const [packageText, ci, candidateAcceptance, releaseCandidate, releasedJupyter, vscodeIgnore] = await Promise.all([
+    readFile(resolve(REPOSITORY_ROOT, "package.json"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "candidate-acceptance.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "release-candidate.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "released-jupyter.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".vscodeignore"), "utf8")
+  ]);
   const packageJson = JSON.parse(packageText);
   assert.match(packageJson.scripts["audit:python"], /audit:remote-jupyter/u);
   assert.match(packageJson.scripts["audit:remote-jupyter"], /scripts\/remote-jupyter\/requirements\.txt/u);
@@ -127,10 +125,12 @@ test("source and release producers own the fixture lock without candidate duplic
   assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
   const uvBootstrap =
     /python -m pip install --no-deps "https:\/\/files\.pythonhosted\.org\/[^"]+\/uv-0\.11\.32-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"/u;
-  for (const owner of [ci, previewRelease, stableRelease, releasedJupyter]) {
+  for (const owner of [ci, releasedJupyter]) {
     assert.match(owner, uvBootstrap);
     assert.match(owner, /run: npm run lock:remote-jupyter:check/u);
   }
+  assert.match(releaseCandidate, /run: npm run check:pr/u);
+  assert.doesNotMatch(candidateAcceptance, uvBootstrap);
   assert.match(ci, /run: npm run audit:python/u);
   assert.match(releasedJupyter, /run: npm run audit:remote-jupyter/u);
   assert.equal((candidateAcceptance.match(/run: npm run audit:python/gu) ?? []).length, 1);

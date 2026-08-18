@@ -277,7 +277,7 @@ function ready(overrides = {}) {
     packagedPythonVersionFile: '__version__ = "1.0.0"\n',
     packagedReadme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
     trackedEvidencePaths: new Set([
-      ".github/workflows/release.yml",
+      ".github/workflows/release-candidate.yml",
       "docs/testing.md",
       "scripts/release-readiness.test.mjs"
     ]),
@@ -1682,7 +1682,7 @@ test("requires substantive completed evidence for every Done parity row", () => 
 
   for (const evidence of [
     "Exact script acceptance passed; test:scripts/release-readiness.test.mjs",
-    "Exact workflow acceptance passed; workflow:.github/workflows/release.yml",
+    "Exact workflow acceptance passed; workflow:.github/workflows/release-candidate.yml",
     "Recorded editor acceptance passed; record:docs/testing.md"
   ]) {
     assert.deepEqual(
@@ -2539,8 +2539,8 @@ test("rejects symlinked and hard-linked stable VSIX candidates", async (context)
   }
 });
 
-test("structurally gates the candidate-first preview workflow and exact artifact triple", () => {
-  const workflowSource = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+test("retains the historical 1.99.x preview recovery workflow contract", () => {
+  const workflowSource = readFileSync(new URL("./fixtures/historical-preview-release.yml", import.meta.url), "utf8");
   assert.deepEqual(inspectReleaseWorkflow(workflowSource), []);
 
   const mutate = (change) => {

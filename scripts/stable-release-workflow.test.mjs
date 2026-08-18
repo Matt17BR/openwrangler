@@ -2,135 +2,138 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
-import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
+import { inspectReleaseCandidateWorkflow, inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 
-const source = readFileSync(new URL("../.github/workflows/stable-release.yml", import.meta.url), "utf8");
+const candidateSource = readFileSync(new URL("../.github/workflows/release-candidate.yml", import.meta.url), "utf8");
+const stableSource = readFileSync(new URL("../.github/workflows/stable-release.yml", import.meta.url), "utf8");
 
-test("ordinary stable release packages once and gates publishing behind exact-artifact consumers", () => {
-  assert.deepEqual(inspectStableReleaseWorkflow(source), []);
+function mutate(source, change) {
+  const workflow = parseYaml(source);
+  change(workflow);
+  return dumpYaml(workflow);
+}
+
+test("release candidate packages once and seals read-only qualification", () => {
+  assert.deepEqual(inspectReleaseCandidateWorkflow(candidateSource), []);
 });
 
-test("stable release inspector rejects unsafe publication and artifact drift", () => {
-  const mutate = (change) => {
-    const workflow = parseYaml(source);
-    change(workflow);
-    return dumpYaml(workflow);
-  };
+test("release-candidate inspector rejects publication, rebuilding, artifact, and fan-in drift", () => {
   const cases = [
-    (workflow) => {
-      workflow.on.workflow_dispatch.inputs.publish.default = true;
-    },
     (workflow) => {
       workflow.permissions.contents = "write";
     },
     (workflow) => {
-      workflow.jobs.package.steps.find((step) => step.id === "canonical").run = "echo accepted";
+      workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("package:prepared")).run =
+        "npm run build && npm run package:prepared -- --out first.vsix && npm run package:prepared -- --out second.vsix";
     },
     (workflow) => {
-      workflow.jobs.package.steps.find(
-        (step) => step.run === "npm run verify:vsix -- openwrangler.candidate.vsix"
-      ).run = "npm run verify:vsix -- canonical-release/openwrangler.vsix";
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy = { matrix: { lane: ["linux"] } };
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].with.lane = "linux";
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].outputs = { accepted: "true" };
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].name = "Candidate acceptance (${{ matrix.name }})";
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].uses = "./.github/workflows/other.yml";
+      workflow.jobs.package.steps.find((step) => step.id === "canonical_artifact").with["retention-days"] = 6;
     },
     (workflow) => {
       workflow.jobs["candidate-acceptance"].with.channel = "preview";
     },
     (workflow) => {
-      workflow.jobs["remote-ssh"].needs = ["package", "candidate-acceptance"];
+      workflow.jobs["remote-ssh"].needs = "candidate-acceptance";
     },
     (workflow) => {
-      workflow.jobs["remote-ssh"].steps.find((step) => step.id === "remote_workspace").run = "echo skipped";
+      workflow.jobs["remote-ssh"].steps.find((step) => step.uses?.startsWith("actions/download-artifact@")).with[
+        "artifact-ids"
+      ] = "123";
     },
     (workflow) => {
-      workflow.jobs["remote-ssh"].steps.push({
-        run: "npm run verify:vsix -- canonical-release/openwrangler.vsix"
-      });
+      workflow.jobs.qualify.if = "${{ success() }}";
     },
     (workflow) => {
-      workflow.jobs["remote-ssh"].steps.find((step) => step.id === "canonical_remote").run = "echo accepted";
+      workflow.jobs.qualify.needs = ["package", "candidate-acceptance"];
     },
     (workflow) => {
-      workflow.jobs.release.needs = ["package", "candidate-acceptance"];
+      workflow.jobs.qualify.steps.find((step) => String(step.run ?? "").includes("REMOTE_SSH_RESULT")).run =
+        "echo ignored";
     },
     (workflow) => {
-      workflow.jobs.release.needs = ["package", "remote-ssh"];
+      workflow.jobs.qualify.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@")).with.name =
+        "unbounded-evidence";
     },
     (workflow) => {
-      workflow.jobs.release.needs = ["candidate-acceptance", "remote-ssh"];
-    },
-    (workflow) => {
-      workflow.jobs.release.if = "${{ inputs.publish != false }}";
-    },
-    (workflow) => {
-      workflow.jobs.release.if =
-        "${{ inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}";
-    },
-    (workflow) => {
-      workflow.jobs.release.if =
-        "${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' }}";
-    },
-    (workflow) => {
-      workflow.jobs.release.environment = "unprotected";
-    },
-    (workflow) => {
-      workflow.jobs.release["timeout-minutes"] = 19;
-    },
-    (workflow) => {
-      workflow.jobs.release.concurrency.queue = "latest";
-    },
-    (workflow) => {
-      workflow.jobs.release.steps.push({
-        run: "npm run verify:vsix -- canonical-release/openwrangler.vsix"
-      });
-    },
-    (workflow) => {
-      workflow.jobs.release.steps.find((step) => step.id === "canonical_release").run = "echo accepted";
-    },
-    (workflow) => {
-      workflow.jobs.release.steps.find((step) => step.run === "node scripts/push-stable-release-tag.mjs").run =
-        "git push --force origin ${{ inputs.release_tag }}";
-    },
-    (workflow) => {
-      workflow.jobs.release.steps.find((step) => step.env?.GITHUB_TOKEN === "${{ github.token }}").env.GITHUB_TOKEN =
-        "literal-token";
-    },
-    (workflow) => {
-      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).run =
-        "echo published";
-    },
-    (workflow) => {
-      workflow.jobs.release.steps.find((step) =>
-        String(step.run ?? "").includes("verify-public-media-surfaces.mjs")
-      ).run = "echo media verified";
-    },
-    (workflow) => {
-      workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("--prepublish")).run =
-        "echo media preflight skipped";
-    },
-    (workflow) => {
-      const packageSteps = workflow.jobs.package.steps;
-      const preflightIndex = packageSteps.findIndex((step) => String(step.run ?? "").includes("--prepublish"));
-      const [preflight] = packageSteps.splice(preflightIndex, 1);
-      packageSteps.push(preflight);
+      workflow.jobs.qualify.steps.push({ run: "node scripts/push-stable-release-tag.mjs" });
     }
   ];
   for (const [index, change] of cases.entries()) {
     assert.notDeepEqual(
-      inspectStableReleaseWorkflow(mutate(change)),
+      inspectReleaseCandidateWorkflow(mutate(candidateSource, change)),
+      [],
+      `candidate mutation ${index + 1} must fail closed`
+    );
+  }
+});
+
+test("stable release promotes only one soaked candidate without rebuilding", () => {
+  assert.deepEqual(inspectStableReleaseWorkflow(stableSource), []);
+});
+
+test("stable-release inspector rejects selection, identity, permission, download, and publication drift", () => {
+  const cases = [
+    (workflow) => {
+      workflow.on.workflow_dispatch.inputs.publish = { required: true, type: "boolean" };
+    },
+    (workflow) => {
+      workflow.permissions.contents = "write";
+    },
+    (workflow) => {
+      workflow.jobs.select.permissions.actions = "write";
+    },
+    (workflow) => {
+      workflow.jobs.select.steps.find((step) => String(step.run ?? "").includes("RUN_ATTEMPT")).run =
+        'test "$EVENT_REF" = "refs/heads/main"';
+    },
+    (workflow) => {
+      workflow.jobs.select.steps.find((step) => step.id === "candidate").env.CANDIDATE_RUN_ID = "99";
+    },
+    (workflow) => {
+      workflow.jobs.select.steps.find((step) => String(step.run ?? "").includes("merge-base")).run = "echo ancestor";
+    },
+    (workflow) => {
+      workflow.jobs.promote.environment = "unprotected";
+    },
+    (workflow) => {
+      workflow.jobs.promote.permissions.contents = "read";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => step.name === "Check out the historical candidate source").with.ref =
+        "${{ github.sha }}";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => step.name === "Download the exact candidate artifact").with["run-id"] =
+        "${{ github.run_id }}";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => step.name === "Download the bounded candidate manifest").with[
+        "artifact-ids"
+      ] = "${{ needs.select.outputs.candidate-artifact-id }}";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => String(step.run ?? "").includes("release-candidate.mjs verify")).env[
+        "CANDIDATE_SOURCE_SHA"
+      ] = "${{ github.sha }}";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.push({ run: "npm run build && npm run package -- --out rebuilt.vsix" });
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => String(step.run ?? "").includes("--preflight")).run = "echo safe";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).run =
+        "echo published";
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.find((step) => step.id === "canonical_release").env.EXPECTED_SHA =
+        "${{ github.sha }}";
+    }
+  ];
+  for (const [index, change] of cases.entries()) {
+    assert.notDeepEqual(
+      inspectStableReleaseWorkflow(mutate(stableSource, change)),
       [],
       `stable mutation ${index + 1} must fail closed`
     );

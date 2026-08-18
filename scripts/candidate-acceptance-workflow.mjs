@@ -13,8 +13,7 @@ const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const REMOTE_INSPECTION_PYTHON = "${{ steps.inspection_python.outputs.python-path }}";
-const VERIFY =
-  "node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release";
+const VERIFY = "node scripts/verify-canonical-release-artifact.mjs canonical-release";
 const EXPECTED_JOBS = [
   "contract",
   "platform",
@@ -275,7 +274,7 @@ function inspectRPackages(jobName, job, problems) {
   }
 }
 
-function localSpecification({ id, verifierId, journey, shard, editors = "vscode,cursor", uploadName, artifactSuffix }) {
+function localSpecification({ id, verifierId, journey, shard, editors = "vscode", uploadName, artifactSuffix }) {
   const verifierIf = `\${{ always() && matrix.shard == '${shard}' && steps.r_local_setup.outcome == 'success' }}`;
   const runnerIf = `\${{ always() && matrix.shard == '${shard}' && steps.${verifierId}.outcome == 'success' }}`;
   return {
@@ -297,7 +296,7 @@ function localSpecification({ id, verifierId, journey, shard, editors = "vscode,
     },
     uploadName,
     uploadIf: `\${{ always() && matrix.shard == '${shard}' && steps.${id}.outcome == 'failure' && steps.${id}.outputs.evidence_ready == 'true' }}`,
-    artifactName: `\${{ inputs.channel }}-release-r-jupyter-${artifactSuffix}-\${{ runner.os }}-\${{ github.run_attempt }}`
+    artifactName: `candidate-r-jupyter-${artifactSuffix}-\${{ runner.os }}-\${{ github.run_attempt }}`
   };
 }
 
@@ -319,7 +318,7 @@ function platformRSpecification({ id, verifierId, journey, uploadName, artifactS
     },
     uploadName,
     uploadIf: `\${{ always() && steps.${id}.outcome == 'failure' && steps.${id}.outputs.evidence_ready == 'true' }}`,
-    artifactName: `\${{ inputs.channel }}-release-r-jupyter-platform-${artifactSuffix}-\${{ runner.os }}-\${{ github.run_attempt }}`
+    artifactName: `candidate-r-jupyter-platform-${artifactSuffix}-\${{ runner.os }}-\${{ github.run_attempt }}`
   };
 }
 
@@ -353,11 +352,12 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   }
   const workflowCall = workflow?.on?.workflow_call;
   const inputs = workflowCall?.inputs;
-  const inputNames = ["artifact_id", "channel", "expected_sha", "release_tag"];
+  const inputNames = ["artifact_id", "expected_sha", "release_tag"];
+  const outputs = workflowCall?.outputs;
   if (
     !exactKeys(workflow, ["name", "on", "permissions", "jobs"]) ||
     workflow.name !== "Candidate acceptance" ||
-    !exactKeys(workflowCall, ["inputs"]) ||
+    !exactKeys(workflowCall, ["inputs", "outputs"]) ||
     !exactKeys(inputs, inputNames) ||
     inputNames.some(
       (name) =>
@@ -365,12 +365,16 @@ export function inspectCandidateAcceptanceWorkflow(source) {
         inputs[name].required !== true ||
         inputs[name].type !== "string"
     ) ||
+    !exactKeys(outputs, ["performance_artifact_id", "performance_bytes", "performance_sha256"]) ||
+    outputs.performance_artifact_id?.value !== "${{ jobs.performance.outputs.artifact-id }}" ||
+    outputs.performance_bytes?.value !== "${{ jobs.performance.outputs.report-bytes }}" ||
+    outputs.performance_sha256?.value !== "${{ jobs.performance.outputs.report-sha256 }}" ||
     !exactKeys(workflow.permissions, ["contents"]) ||
     workflow.permissions.contents !== "read" ||
     !exactKeys(workflow.jobs, EXPECTED_JOBS)
   ) {
     problems.push(
-      "candidate acceptance must expose four required inputs, no outputs, read-only permissions, and eight fixed jobs."
+      "candidate acceptance must expose three required inputs, three bounded performance outputs, read-only permissions, and eight fixed jobs."
     );
     return problems;
   }
@@ -392,16 +396,15 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     contract?.["runs-on"] !== "ubuntu-24.04" ||
     contract?.["timeout-minutes"] !== 5 ||
     contractSteps.length !== 1 ||
-    !exactKeys(contractSteps[0]?.env, ["ARTIFACT_ID", "CHANNEL", "EXPECTED_SHA", "RELEASE_TAG"]) ||
+    !exactKeys(contractSteps[0]?.env, ["ARTIFACT_ID", "EXPECTED_SHA", "RELEASE_TAG"]) ||
     contractSteps[0].env.ARTIFACT_ID !== "${{ inputs.artifact_id }}" ||
-    contractSteps[0].env.CHANNEL !== "${{ inputs.channel }}" ||
     contractSteps[0].env.EXPECTED_SHA !== "${{ inputs.expected_sha }}" ||
     contractSteps[0].env.RELEASE_TAG !== "${{ inputs.release_tag }}" ||
     !includesAll(contractRun, [
       'case "$ARTIFACT_ID" in *[!0-9]*|"") exit 1',
       'case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1',
       'test "${#EXPECTED_SHA}" -eq 40',
-      'case "$CHANNEL" in preview|stable)'
+      'test -n "$RELEASE_TAG"'
     ])
   ) {
     problems.push("contract must fail closed on every malformed shared invocation before fan-out.");
@@ -455,7 +458,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       uploadName: "Upload VS Code failure diagnostics",
       uploadIf:
         "${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}",
-      artifactName: "${{ inputs.channel }}-release-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+      artifactName: "candidate-vscode-${{ runner.os }}-${{ github.run_attempt }}",
       failureName: "Fail after VS Code diagnostics"
     },
     problems
@@ -471,28 +474,31 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     rPlatform?.name !== "Native R platform acceptance (${{ matrix.os }})" ||
     !exactKeys(rPlatform?.strategy, ["fail-fast", "max-parallel", "matrix"]) ||
     rPlatform.strategy["fail-fast"] !== false ||
-    rPlatform.strategy["max-parallel"] !== 2 ||
+    rPlatform.strategy["max-parallel"] !== 3 ||
     !exactKeys(rPlatform.strategy.matrix, ["include"]) ||
     JSON.stringify(rPlatform.strategy.matrix.include) !==
       JSON.stringify([
-        { os: "macos-latest", python: "3.12" },
-        { os: "windows-latest", python: "3.14" }
+        { os: "ubuntu-24.04", python: "3.12", r: "4.4.3" },
+        { os: "macos-latest", python: "3.12", r: "4.5.2" },
+        { os: "windows-latest", python: "3.14", r: "4.5.2" }
       ]) ||
     steps(rPlatform).filter((step) => step?.uses === SETUP_PYTHON).length !== 1 ||
     steps(rPlatform).find((step) => step?.uses === SETUP_PYTHON)?.with?.["python-version"] !== "${{ matrix.python }}" ||
     steps(rPlatform).filter((step) => step?.uses === SETUP_R).length !== 1 ||
-    steps(rPlatform).find((step) => step?.uses === SETUP_R)?.with?.["r-version"] !== "4.5.2" ||
+    steps(rPlatform).find((step) => step?.uses === SETUP_R)?.with?.["r-version"] !== "${{ matrix.r }}" ||
     steps(rPlatform).find((step) => step?.uses === SETUP_R)?.with?.["use-public-rspm"] !== true ||
     steps(rPlatform).filter((step) => step?.id === "rscript").length !== 1 ||
     platformRscript?.shell !== "Rscript {0}" ||
+    platformRscript?.env?.EXPECTED_R_VERSION !== "${{ matrix.r }}" ||
     !includesAll(platformRscriptRun, [
-      'if (!identical(version, "4.5.2"))',
+      'expected <- Sys.getenv("EXPECTED_R_VERSION")',
+      "if (!identical(version, expected))",
       'if (!nzchar(executable) || grepl("[\\r\\n]", executable))',
       'cat(sprintf("executable=%s\\nversion=%s\\n"'
     ]) ||
     steps(rPlatform).some((step) => step?.uses === SETUP_R_DEPENDENCIES)
   ) {
-    problems.push("r_platform must run the exact non-cancelling hosted-R macOS and Windows matrix.");
+    problems.push("r_platform must run the exact non-cancelling R 4.4 compatibility and R 4.5 platform matrix.");
   }
   inspectCanonicalConsumer("r_platform", rPlatform, problems);
   const platformRSetupMarkers = steps(rPlatform).filter((step) => step?.id === "r_platform_setup");
@@ -608,7 +614,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       uploadName: "Upload VS Code failure diagnostics",
       uploadIf:
         "${{ always() && steps.packaged_vscode.outcome == 'failure' && steps.packaged_vscode.outputs.evidence_ready == 'true' }}",
-      artifactName: "${{ inputs.channel }}-release-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+      artifactName: "candidate-vscode-${{ runner.os }}-${{ github.run_attempt }}",
       failureName: "Fail after full VS Code diagnostics"
     },
     problems
@@ -632,7 +638,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       uploadName: "Upload pinned Cursor compatibility failure diagnostics",
       uploadIf:
         "${{ always() && steps.packaged_cursor.outcome == 'failure' && steps.packaged_cursor.outputs.evidence_ready == 'true' }}",
-      artifactName: "${{ inputs.channel }}-release-cursor-${{ runner.os }}-${{ github.run_attempt }}",
+      artifactName: "candidate-cursor-${{ runner.os }}-${{ github.run_attempt }}",
       failureName: "Fail after pinned Cursor compatibility diagnostics"
     },
     problems
@@ -659,11 +665,30 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       "linux/packaged_vscode must be the sole full generic editor owner and every other generic editor consumer must use platform-smoke."
     );
   }
+  const cursorRunners = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+    steps(job)
+      .filter((step) =>
+        String(step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS ?? "")
+          .split(",")
+          .includes("cursor")
+      )
+      .map((step) => ({ jobName, step }))
+  );
+  if (
+    cursorRunners.length !== 1 ||
+    cursorRunners[0].jobName !== "linux" ||
+    cursorRunners[0].step?.id !== "packaged_cursor" ||
+    cursorRunners[0].step?.env?.OPEN_WRANGLER_PACKAGED_MODE !== "platform-smoke"
+  ) {
+    problems.push("candidate acceptance must retain exactly one pinned Cursor lifecycle seam.");
+  }
 
   inspectJobEnvelope("performance", performance, { runner: "ubuntu-24.04", timeout: 120 }, problems);
   inspectCanonicalConsumer("performance", performance, problems);
   const performanceSteps = steps(performance);
   const performanceRunner = performanceSteps.find((step) => step?.id === "installed_performance");
+  const performanceReport = performanceSteps.find((step) => step?.id === "performance_report");
+  const performanceArtifact = performanceSteps.find((step) => step?.id === "performance_artifact");
   const performancePythonSetups = performanceSteps.filter(
     (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-python@")
   );
@@ -681,12 +706,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     performancePythonSetupIndex < 0 ||
     performanceRunnerIndex < 0 ||
     performancePythonSetupIndex >= performanceRunnerIndex ||
-    !exactKeys(performanceRunner?.env, [
-      "EXPECTED_SHA",
-      "OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON",
-      "PREVIEW_FLAG",
-      "RELEASE_TAG"
-    ]) ||
+    !exactKeys(performanceRunner?.env, ["EXPECTED_SHA", "OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON", "RELEASE_TAG"]) ||
     performanceRunner?.env?.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON !== REMOTE_INSPECTION_PYTHON
   ) {
     problems.push(
@@ -695,15 +715,31 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   }
   if (
     performanceRunner?.["continue-on-error"] !== true ||
-    performanceRunner?.env?.PREVIEW_FLAG !== "${{ inputs.channel == 'preview' && '--preview-release' || '' }}" ||
     !command(performanceRunner?.run).includes("--pinned-editors") ||
+    !command(performanceRunner?.run).includes("--editors vscode") ||
     !command(performanceRunner?.run).includes(
       "--candidate-provenance canonical-release/openwrangler.vsix.provenance.json"
     ) ||
     steps(performance).find((step) => command(step?.run) === "node scripts/prepare-stable-candidate-tag.mjs")?.if !==
-      "${{ inputs.channel == 'stable' }}"
+      undefined
   ) {
-    problems.push("performance must benchmark the exact candidate in both channels without rebuilding it.");
+    problems.push("performance must benchmark the exact candidate in VS Code without rebuilding it.");
+  }
+  if (
+    !exactKeys(performance?.outputs, ["artifact-id", "report-bytes", "report-sha256"]) ||
+    performance.outputs["artifact-id"] !== "${{ steps.performance_artifact.outputs.artifact-id }}" ||
+    performance.outputs["report-bytes"] !== "${{ steps.performance_report.outputs.performance_bytes }}" ||
+    performance.outputs["report-sha256"] !== "${{ steps.performance_report.outputs.performance_sha256 }}" ||
+    command(performanceReport?.run) !==
+      "node scripts/release-candidate.mjs performance ${{ runner.temp }}/release-candidate-performance.json" ||
+    performanceReport?.if !== "${{ steps.installed_performance.outcome == 'success' }}" ||
+    performanceArtifact?.uses !== UPLOAD ||
+    performanceArtifact?.if !== "${{ steps.installed_performance.outcome == 'success' }}" ||
+    performanceArtifact?.with?.name !== "openwrangler-release-candidate-performance" ||
+    performanceSteps.indexOf(performanceRunner) >= performanceSteps.indexOf(performanceReport) ||
+    performanceSteps.indexOf(performanceReport) >= performanceSteps.indexOf(performanceArtifact)
+  ) {
+    problems.push("performance must expose one digest-bound successful report artifact to the candidate manifest.");
   }
 
   inspectJobEnvelope("jupyter", jupyter, { runner: "ubuntu-24.04", timeout: 120 }, problems);
@@ -743,7 +779,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       runnerIf: "${{ matrix.phase == 'python' }}",
       run: "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
       env: {
-        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
         OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: "candidate-one-owner",
         OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
         OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
@@ -754,7 +790,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       uploadName: "Upload released-Jupyter failure diagnostics",
       uploadIf:
         "${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}",
-      artifactName: "${{ inputs.channel }}-release-jupyter-${{ runner.os }}-${{ github.run_attempt }}",
+      artifactName: "candidate-jupyter-${{ runner.os }}-${{ github.run_attempt }}",
       failureName: "Fail after released-Jupyter diagnostics"
     },
     problems
@@ -781,7 +817,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       uploadName: "Upload remote R-Jupyter failure diagnostics",
       uploadIf:
         "${{ always() && steps.packaged_editor_r_remote.outcome == 'failure' && steps.packaged_editor_r_remote.outputs.evidence_ready == 'true' }}",
-      artifactName: "${{ inputs.channel }}-release-r-jupyter-remote-${{ runner.os }}-${{ github.run_attempt }}",
+      artifactName: "candidate-r-jupyter-remote-${{ runner.os }}-${{ github.run_attempt }}",
       failureName: "Fail after remote R-Jupyter diagnostics"
     },
     problems
@@ -976,9 +1012,10 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       if (
         step?.uses === UPLOAD &&
         typeof step?.with?.name === "string" &&
-        !step.with.name.startsWith("${{ inputs.channel }}-release-")
+        !step.with.name.startsWith("candidate-") &&
+        step.with.name !== "openwrangler-release-candidate-performance"
       ) {
-        problems.push(`${jobName} diagnostics must be namespaced by the requested release channel.`);
+        problems.push(`${jobName} diagnostics must be namespaced to the release candidate.`);
       }
     }
   }

@@ -616,6 +616,8 @@ test("installed performance arguments support explicit smoke editor sharding", (
 test("installed performance arguments keep canonical release channels explicit", () => {
   const parsed = parseInstalledPerformanceArguments([
     "--pinned-editors",
+    "--editors",
+    "vscode",
     "--candidate-in",
     "release/openwrangler.vsix",
     "--candidate-checksum",
@@ -633,9 +635,11 @@ test("installed performance arguments keep canonical release channels explicit",
   assert.match(parsed.candidateInput, /release[/\\]openwrangler\.vsix$/u);
   assert.match(parsed.candidateChecksum, /release[/\\]openwrangler\.vsix\.sha256$/u);
   assert.match(parsed.candidateProvenance, /release[/\\]openwrangler\.vsix\.provenance\.json$/u);
-  assert.deepEqual(parsed.editors, ["vscode", "cursor"]);
+  assert.deepEqual(parsed.editors, ["vscode"]);
   const evidence = parseInstalledPerformanceArguments([
     "--pinned-editors",
+    "--editors",
+    "vscode",
     "--performance-evidence",
     "--candidate-in",
     "release/openwrangler.vsix",
@@ -647,6 +651,8 @@ test("installed performance arguments keep canonical release channels explicit",
   assert.equal(evidence.artifactKind, PERFORMANCE_EVIDENCE_ARTIFACT_KIND);
   const preview = parseInstalledPerformanceArguments([
     "--pinned-editors",
+    "--editors",
+    "vscode",
     "--preview-release",
     "--candidate-in",
     "release/openwrangler.vsix",
@@ -656,11 +662,11 @@ test("installed performance arguments keep canonical release channels explicit",
     "release/openwrangler.vsix.provenance.json"
   ]);
   assert.equal(preview.artifactKind, PREVIEW_RELEASE_ARTIFACT_KIND);
-  const releaseGate = () => "release";
+  const releaseGate = (_report, options) => options.requiredEditors.join(",");
   const evidenceGate = () => "evidence";
   assert.equal(installedPerformanceReportGateForOptions(evidence, { releaseGate, evidenceGate }), evidenceGate);
-  assert.equal(installedPerformanceReportGateForOptions(parsed, { releaseGate, evidenceGate }), releaseGate);
-  assert.equal(installedPerformanceReportGateForOptions(preview, { releaseGate, evidenceGate }), releaseGate);
+  assert.equal(installedPerformanceReportGateForOptions(parsed, { releaseGate, evidenceGate })({}), "vscode");
+  assert.equal(installedPerformanceReportGateForOptions(preview, { releaseGate, evidenceGate })({}), "vscode");
   assert.throws(
     () => installedPerformanceReportGateForOptions({ artifactKind: "unknown" }, { releaseGate, evidenceGate }),
     /unknown artifact kind/u
@@ -675,7 +681,7 @@ test("installed performance arguments keep canonical release channels explicit",
         "--candidate-provenance",
         "openwrangler.vsix.provenance.json"
       ]),
-    /requires --pinned-editors/u
+    /exact semantic owner/u
   );
   assert.throws(
     () => parseInstalledPerformanceArguments(["--pinned-editors", "--pinned-editors"]),
@@ -733,11 +739,13 @@ test("installed performance arguments keep canonical release channels explicit",
       ]),
     /cannot be combined/u
   );
-  for (const forbidden of [["--smoke"], ["--editors", "vscode"], ["--editors", "vscode,cursor"]]) {
+  for (const forbidden of [["--smoke"], ["--editors", "vscode,cursor"], ["--editors", "cursor"]]) {
     assert.throws(
       () =>
         parseInstalledPerformanceArguments([
           "--pinned-editors",
+          "--editors",
+          "vscode",
           "--candidate-in",
           "openwrangler.vsix",
           "--candidate-checksum",
@@ -746,7 +754,7 @@ test("installed performance arguments keep canonical release channels explicit",
           "openwrangler.vsix.provenance.json",
           ...forbidden
         ]),
-      /cannot use --smoke|cannot use --editors/u
+      /cannot use --smoke|exact semantic owner/u
     );
   }
   assert.throws(
@@ -786,6 +794,8 @@ test("installed performance arguments keep canonical release channels explicit",
       () =>
         parseInstalledPerformanceArguments([
           "--pinned-editors",
+          "--editors",
+          "vscode",
           "--candidate-in",
           "openwrangler.vsix",
           "--candidate-checksum",
@@ -800,6 +810,8 @@ test("installed performance arguments keep canonical release channels explicit",
     () =>
       parseInstalledPerformanceArguments([
         "--pinned-editors",
+        "--editors",
+        "vscode",
         "--candidate-in",
         "openwrangler.vsix",
         "--candidate-checksum",
@@ -2178,7 +2190,7 @@ test("consume-only preparation builds only the acceptance harness and retains al
     options: {
       mode: "consume",
       smoke: false,
-      editors: ["vscode", "cursor"],
+      editors: ["vscode"],
       candidateInput: candidatePath,
       candidateChecksum: checksumPath,
       candidateProvenance: provenancePath,
@@ -2241,7 +2253,7 @@ test("candidate preparation rejects programmatically inconsistent consume and pa
     {
       mode: "consume",
       smoke: false,
-      editors: ["vscode"],
+      editors: ["cursor"],
       candidateInput: resolve("release", "openwrangler.vsix"),
       candidateChecksum: resolve("release", "openwrangler.vsix.sha256"),
       candidateProvenance: resolve("release", "openwrangler.vsix.provenance.json"),
