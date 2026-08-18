@@ -1960,7 +1960,7 @@ class DuckDBEngine(DataFrameEngine):
 
     def _split_text_columns(self, frame: Any, params: Mapping[str, Any]) -> Any:
         output_names = list(params["newColumns"])
-        ensure_output_columns_available(self._columns(frame), output_names, "Splitting text into columns")
+        _ensure_duckdb_output_columns_available(self._columns(frame), output_names, "Splitting text into columns")
         value = f"CAST({_quote_ident(params['column'])} AS VARCHAR)"
         delimiter = _sql_literal(params["delimiter"])
         result = frame
@@ -2464,6 +2464,29 @@ def _unique_internal(existing: Iterable[str], base: str) -> str:
         index += 1
         candidate = f"{base}_{index}"
     return candidate
+
+
+def _ensure_duckdb_output_columns_available(existing: Iterable[Any], generated: Iterable[Any], operation: str) -> None:
+    existing_names = [str(name) for name in existing]
+    generated_names = [str(name) for name in generated]
+    ensure_output_columns_available(existing_names, generated_names, operation)
+    existing_folded = {name.casefold() for name in existing_names}
+    generated_by_fold: dict[str, str] = {}
+    collisions: set[str] = set()
+    for name in generated_names:
+        folded = name.casefold()
+        if folded in existing_folded:
+            collisions.add(name)
+        previous = generated_by_fold.get(folded)
+        if previous is not None:
+            collisions.update((previous, name))
+        else:
+            generated_by_fold[folded] = name
+    if collisions:
+        raise EngineError(
+            f"{operation} would create DuckDB column names that differ only by case: "
+            f"{', '.join(sorted(collisions))}. Choose distinct output names."
+        )
 
 
 def _bound_duckdb_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
@@ -3818,6 +3841,23 @@ def _ow_split_text_columns(df, params):
     })
     if collisions:
         raise ValueError("Splitting text into columns would create duplicate column names: " + ", ".join(collisions))
+    existing_folded = {str(name).casefold() for name in _ow_columns(df)}
+    generated_by_fold = {}
+    case_collisions = set()
+    for name in output_names:
+        folded = name.casefold()
+        if folded in existing_folded:
+            case_collisions.add(name)
+        previous = generated_by_fold.get(folded)
+        if previous is not None:
+            case_collisions.update((previous, name))
+        else:
+            generated_by_fold[folded] = name
+    if case_collisions:
+        raise ValueError(
+            "Splitting text into columns would create DuckDB column names that differ only by case: "
+            + ", ".join(sorted(case_collisions))
+        )
     value = "CAST(" + _ow_ident(params["column"]) + " AS VARCHAR)"
     delimiter = _ow_literal(params["delimiter"])
     for index, name in enumerate(output_names, start=1):

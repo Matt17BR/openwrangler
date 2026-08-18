@@ -439,7 +439,9 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
               <TextField
                 name="newColumns"
                 label={`Output column ${index + 1}`}
-                defaultValue={outputNamesById.get(rowId) ?? `split_part_${index + 1}`}
+                defaultValue={
+                  outputNamesById.get(rowId) ?? `split_part_${Number(rowId.slice("split-output-".length)) + 1}`
+                }
                 required
               />
               <RowActions

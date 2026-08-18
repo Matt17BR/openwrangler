@@ -49,9 +49,9 @@ def rows(frame: Any) -> list[tuple[Any, ...]]:
     return frame.fetchall()
 
 
-def execute_generated(engine: Any, frame: Any) -> Any:
+def execute_generated(engine: Any, frame: Any, step: dict[str, Any] | None = None) -> Any:
     namespace: dict[str, Any] = {}
-    exec(engine.compile_plan([split_step()]), namespace, namespace)
+    exec(engine.compile_plan([step or split_step()]), namespace, namespace)
     return namespace["clean_data"](frame)
 
 
@@ -94,6 +94,28 @@ def test_split_text_columns_duckdb_live_and_generated_preserve_literal_parts_and
 
     assert rows(DuckDBEngine().apply_transform(frame, split_step())) == expected
     assert rows(execute_generated(DuckDBEngine(), frame)) == expected
+
+
+@pytest.mark.parametrize(
+    ("frame", "new_columns"),
+    [
+        (duckdb.sql("SELECT 'a||b' AS value, 'keep' AS SECOND"), ["first", "second"]),
+        (duckdb.sql("SELECT 'a||b' AS value"), ["part", "PART"]),
+    ],
+)
+def test_split_text_columns_duckdb_rejects_case_folded_output_collisions_before_dispatch(
+    frame: Any, new_columns: list[str]
+) -> None:
+    step = split_step()
+    step["params"]["newColumns"] = new_columns
+    baseline = rows(frame)
+
+    with pytest.raises(Exception, match="differ only by case"):
+        DuckDBEngine().apply_transform(frame, step)
+    assert rows(frame) == baseline
+    with pytest.raises(Exception, match="differ only by case"):
+        execute_generated(DuckDBEngine(), frame, step)
+    assert rows(frame) == baseline
 
 
 def test_split_text_columns_assigns_stable_output_lineage_by_step_ordinal() -> None:
