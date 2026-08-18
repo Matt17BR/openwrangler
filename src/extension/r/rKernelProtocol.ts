@@ -15,11 +15,17 @@ import type {
   ColumnSummary,
   DataDiff,
   DatasetStats,
+  ExportOptions,
   FillMissingReplacement,
   PredicateFilter,
   ValueCount
 } from "../../shared/protocol";
-import { isOpenWranglerResponse, isRetainedTransformStep, isTransformStep } from "../../shared/protocolValidation";
+import {
+  isExportOptions,
+  isOpenWranglerResponse,
+  isRetainedTransformStep,
+  isTransformStep
+} from "../../shared/protocolValidation";
 
 export const R_KERNEL_TRANSPORT_VERSION = 14 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
@@ -622,7 +628,7 @@ export type RKernelRequest =
         sessionId: string;
         revision: number;
         exportId: string;
-        format: RKernelExportFormat;
+        options: ExportOptions;
       }>;
     }>
   | Readonly<{
@@ -1281,13 +1287,13 @@ function validateRequest(request: RKernelRequest): void {
   if (record.kind === "exportData") {
     const payload = exactRecord(
       record.payload,
-      ["sessionId", "revision", "exportId", "format"],
+      ["sessionId", "revision", "exportId", "options"],
       "R kernel data-export payload"
     );
     identifier(payload.sessionId, "request.payload.sessionId");
     boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
     identifier(payload.exportId, "request.payload.exportId");
-    decodeExportFormat(payload.format, "request.payload.format");
+    if (!isExportOptions(payload.options)) fail("request.payload.options must contain valid export options.");
     return;
   }
   if (record.kind === "readDataExport") {

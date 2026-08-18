@@ -8342,6 +8342,87 @@ openwrangler_r_frame_contract <- local({
     unname(formats)
   }
 
+  normalize_export_options <- function(options, format = NULL) {
+    if (is.null(format)) {
+      if (
+        !is.list(options) ||
+          is.object(options) ||
+          is.null(names(options)) ||
+          !"format" %in% names(options) ||
+          !is.character(options$format) ||
+          length(options$format) != 1L ||
+          is.na(options$format) ||
+          !options$format %in% c("csv", "parquet")
+      ) {
+        abort("invalid-export-options", "export options must identify CSV or Parquet")
+      }
+      format <- options$format
+    }
+    defaults <- if (identical(format, "csv")) {
+      list(format = "csv", delimiter = ",", quoteChar = "\"", encoding = "utf-8", header = TRUE)
+    } else {
+      list(format = "parquet")
+    }
+    if (missing(options) || is.null(options)) options <- defaults
+    required <- names(defaults)
+    if (
+      !is.list(options) ||
+        is.object(options) ||
+        is.null(names(options)) ||
+        anyNA(names(options)) ||
+        any(!nzchar(names(options))) ||
+        anyDuplicated(names(options)) ||
+        !setequal(names(options), required)
+    ) {
+      abort("invalid-export-options", sprintf("%s export options must contain exactly %s", format, paste(required, collapse = ", ")))
+    }
+    if (!is.character(options$format) || length(options$format) != 1L || !identical(options$format, format)) {
+      abort("invalid-export-options", sprintf("export format must be %s", format))
+    }
+    if (identical(format, "parquet")) return(list(format = "parquet"))
+
+    for (field in c("delimiter", "quoteChar", "encoding")) {
+      if (!is.character(options[[field]]) || length(options[[field]]) != 1L || is.na(options[[field]])) {
+        abort("invalid-export-options", sprintf("CSV export %s must be text", field))
+      }
+    }
+    delimiter <- bounded_utf8(options$delimiter, "export delimiter", 8L)
+    quote_char <- bounded_utf8(options$quoteChar, "export quoteChar", 8L)
+    encoding <- bounded_utf8(options$encoding, "export encoding", 64L)
+    if (
+      nchar(delimiter, type = "chars", allowNA = FALSE, keepNA = FALSE) != 1L ||
+        delimiter %in% c("\r", "\n")
+    ) {
+      abort("invalid-export-options", "CSV export delimiter must contain one non-line-break Unicode code point")
+    }
+    if (
+      nchar(quote_char, type = "chars", allowNA = FALSE, keepNA = FALSE) != 1L ||
+        quote_char %in% c("\r", "\n")
+    ) {
+      abort("invalid-export-options", "CSV export quoteChar must contain one non-line-break Unicode code point")
+    }
+    if (identical(delimiter, quote_char)) {
+      abort("invalid-export-options", "CSV export delimiter and quoteChar must differ")
+    }
+    normalized_encoding <- tolower(gsub("_", "-", encoding, fixed = TRUE))
+    if (!(normalized_encoding %in% c("utf-8", "utf8"))) {
+      abort("invalid-export-options", "R CSV export supports UTF-8 encoding only")
+    }
+    if (!identical(quote_char, "\"")) {
+      abort("invalid-export-options", "R CSV export supports the double-quote character only")
+    }
+    if (!is.logical(options$header) || length(options$header) != 1L || is.na(options$header)) {
+      abort("invalid-export-options", "CSV export header must be true or false")
+    }
+    list(
+      format = "csv",
+      delimiter = delimiter,
+      quoteChar = quote_char,
+      encoding = "utf-8",
+      header = options$header
+    )
+  }
+
   validate_export_target <- function(target_path) {
     target_path <- bounded_utf8(target_path, "target_path", 32768L)
     if (
@@ -8360,8 +8441,9 @@ openwrangler_r_frame_contract <- local({
     target_path
   }
 
-  write_csv <- function(capture, target_path) {
+  write_csv <- function(capture, target_path, options = NULL) {
     validate_capture(capture)
+    options <- normalize_export_options(options, "csv")
     if (capture$descriptor$shape$columns == 0L) {
       abort(
         "export-write-failed",
@@ -8385,12 +8467,12 @@ openwrangler_r_frame_contract <- local({
         utils::write.table(
           frame,
           file = connection,
-          sep = ",",
+          sep = options$delimiter,
           eol = "\n",
           na = "",
           dec = ".",
           row.names = FALSE,
-          col.names = TRUE,
+          col.names = options$header,
           quote = TRUE,
           qmethod = "double"
         )
@@ -8423,8 +8505,9 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  write_parquet <- function(capture, target_path) {
+  write_parquet <- function(capture, target_path, options = NULL) {
     validate_capture(capture)
+    options <- normalize_export_options(options, "parquet")
     target_path <- validate_export_target(target_path)
     if (!parquet_export_available()) {
       abort(
@@ -9116,6 +9199,7 @@ openwrangler_r_frame_contract <- local({
     nanoparquet_version_supported = nanoparquet_version_supported,
     parquet_export_available = parquet_export_available,
     export_formats = export_formats,
+    normalize_export_options = normalize_export_options,
     write_csv = write_csv,
     write_parquet = write_parquet,
     capture_metrics = capture_metrics,

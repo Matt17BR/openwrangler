@@ -29,7 +29,7 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
   assert.equal(testing.diagnostics().sessionCount, 0, "Pandas index fidelity must start without a retained session.");
 
   const directory = options.createTemporaryDirectory();
-  const preservedCsvPath = path.join(directory, "pandas-index-preserved.csv");
+  const preservedCsvPath = path.join(directory, "pandas-index-configured.csv");
   const omittedParquetPath = path.join(directory, "pandas-index-omitted.parquet");
   let sessionId: string | undefined;
   let operationError: unknown;
@@ -106,15 +106,26 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
 
     options.recordProgress("verify:notebook:pandas-index:export-preserve-csv");
     await exportCleanedDataThroughWorkbench(app, options.workbench, preservedCsvPath, "csv", {
-      rowAxisPolicy: "preserve"
+      rowAxisPolicy: "preserve",
+      csvSettings: {
+        mode: "configure",
+        delimiter: ";",
+        encoding: "utf-16le",
+        header: false,
+        quoteChar: "'"
+      }
     });
-    const csvText = readFileSync(preservedCsvPath, "utf8").replace(/\r\n/gu, "\n");
+    const csvBytes = readFileSync(preservedCsvPath);
+    assert.equal(
+      csvBytes.includes(0),
+      true,
+      "The configured Pandas export must use the selected UTF-16LE encoding rather than UTF-8."
+    );
+    const csvText = csvBytes.toString("utf16le").replace(/\r\n/gu, "\n");
     assert.equal(
       csvText,
-      ["region,account,amount,city", "north,acct-b,10,Oslo", "south,acct-a,30,Rome", "north,acct-c,20,Lima", ""].join(
-        "\n"
-      ),
-      "Preserving the Pandas index must serialize its exact named levels before ordinary columns."
+      ["north;acct-b;10;Oslo", "south;acct-a;30;'Rome;''central'", "north;acct-c;20;Lima", ""].join("\n"),
+      "The live Pandas export must apply the selected delimiter, quote, encoding, header, and index policy."
     );
 
     options.recordProgress("verify:notebook:pandas-index:export-omit-parquet");
@@ -127,7 +138,7 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
         "assert list(index_omitted_export.columns) == ['amount', 'city']",
         "assert isinstance(index_omitted_export.index, pd.RangeIndex)",
         "assert index_omitted_export.index.tolist() == [0, 1, 2]",
-        "assert index_omitted_export.to_dict(orient='list') == {'amount': [10, 30, 20], 'city': ['Oslo', 'Rome', 'Lima']}",
+        "assert index_omitted_export.to_dict(orient='list') == {'amount': [10, 30, 20], 'city': ['Oslo', \"Rome;'central\", 'Lima']}",
         "print('PANDAS_INDEX_EXPORT_OK')"
       ].join("\n")
     );
@@ -306,7 +317,7 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
 export function pandasIndexFixtureSetupCode(): readonly string[] {
   return [
     "index_frame = pd.DataFrame(",
-    "    {'amount': [10, 30, 20], 'city': ['Oslo', 'Rome', 'Lima']},",
+    `    {'amount': [10, 30, 20], 'city': ['Oslo', "Rome;'central", 'Lima']},`,
     "    index=pd.MultiIndex.from_tuples(",
     "        [('north', 'acct-b'), ('south', 'acct-a'), ('north', 'acct-c')],",
     "        names=['region', 'account'],",

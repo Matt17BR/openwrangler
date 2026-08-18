@@ -5,6 +5,7 @@ import type { AtomicFileTransaction } from "../extension/files/safeFileExport";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
 import type { RKernelBridgeTransport } from "../extension/r/rKernelBridgeTransport";
 import type { RFramePageContract } from "../extension/r/rFrameContract";
+import { rExportOptions } from "./rExportTestOptions";
 
 const sessionId = "91919191-9191-4191-8191-919191919191";
 
@@ -66,7 +67,13 @@ describe("active R-terminal cleaned-data export", () => {
         ["parquet", "/workspace/base-orders.cleaned.parquet"]
       ] as const) {
         await expect(
-          bridge.request({ kind: "exportData", sessionId, revision: 0, path: destination, format })
+          bridge.request({
+            kind: "exportData",
+            sessionId,
+            revision: 0,
+            path: destination,
+            options: rExportOptions(format)
+          })
         ).resolves.toEqual({
           kind: "dataExported",
           revision: 0,
@@ -99,7 +106,7 @@ describe("active R-terminal cleaned-data export", () => {
         1,
         sessionId,
         0,
-        "csv",
+        rExportOptions("csv"),
         expect.any(Function),
         expect.objectContaining({ timeoutMs: 30 * 60_000 })
       );
@@ -107,7 +114,7 @@ describe("active R-terminal cleaned-data export", () => {
         2,
         sessionId,
         0,
-        "parquet",
+        rExportOptions("parquet"),
         expect.any(Function),
         expect.objectContaining({ timeoutMs: 30 * 60_000 })
       );
@@ -166,7 +173,8 @@ function activeExportTransport(contract: RFramePageContract): RKernelBridgeTrans
     throw new Error("Unexpected active R-terminal transport request.");
   };
   const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(
-    async (openedSessionId, revision, format, writeChunk) => {
+    async (openedSessionId, revision, exportOptions, writeChunk) => {
+      const format = exportOptions.format;
       const bytes =
         format === "csv"
           ? new TextEncoder().encode("order_id\n3400001\n3400002\n")

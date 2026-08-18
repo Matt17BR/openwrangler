@@ -943,7 +943,12 @@ def test_every_lazy_data_request_validates_the_source_fingerprint(tmp_path, requ
             return manager.discard_draft(session_id, revision, 0, 2)
         if request_kind == "undo":
             return manager.undo_step(session_id, revision, 0, 2)
-        return manager.export_data(session_id, revision, str(tmp_path / "cleaned.csv"), "csv")
+        return manager.export_data(
+            session_id,
+            revision,
+            str(tmp_path / "cleaned.csv"),
+            {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True},
+        )
 
     with pytest.raises(EngineError, match=r"Reopen the file"):
         make_request()

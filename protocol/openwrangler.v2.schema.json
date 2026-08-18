@@ -2214,17 +2214,56 @@
       "type": "string",
       "enum": ["preserve", "omit"]
     },
+    "CsvExportOptions": {
+      "description": "Explicit CSV serialization choices. The host offers confirmed import options as defaults without making them immutable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "delimiter", "quoteChar", "encoding", "header"],
+      "properties": {
+        "format": { "const": "csv" },
+        "delimiter": {
+          "description": "Exactly one non-NUL, non-line-break Unicode scalar value, distinct from quoteChar.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1,
+          "pattern": "^[^\\u0000\\r\\n\\uD800-\\uDFFF]$"
+        },
+        "quoteChar": {
+          "description": "Exactly one non-NUL, non-line-break Unicode scalar value, distinct from delimiter.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1,
+          "pattern": "^[^\\u0000\\r\\n\\uD800-\\uDFFF]$"
+        },
+        "encoding": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^.*\\S.*$" },
+        "header": { "type": "boolean" },
+        "rowAxisPolicy": { "$ref": "#/definitions/RowAxisExportPolicy" }
+      }
+    },
+    "ParquetExportOptions": {
+      "description": "Parquet serialization choices. CSV-only dialect fields are invalid.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format"],
+      "properties": {
+        "format": { "const": "parquet" },
+        "rowAxisPolicy": { "$ref": "#/definitions/RowAxisExportPolicy" }
+      }
+    },
+    "ExportOptions": {
+      "description": "One format-discriminated export serialization contract.",
+      "oneOf": [{ "$ref": "#/definitions/CsvExportOptions" }, { "$ref": "#/definitions/ParquetExportOptions" }]
+    },
     "ExportDataRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "path", "format"],
+      "required": ["kind", "sessionId", "revision", "path", "options"],
       "properties": {
         "kind": { "const": "exportData" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "path": { "type": "string", "minLength": 1 },
-        "format": { "type": "string", "enum": ["csv", "parquet"] },
-        "rowAxisPolicy": { "$ref": "#/definitions/RowAxisExportPolicy" },
+        "options": { "$ref": "#/definitions/ExportOptions" },
         "targetIdentity": { "$ref": "#/definitions/ExportTargetIdentity" }
       }
     },

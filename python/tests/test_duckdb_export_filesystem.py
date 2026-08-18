@@ -47,22 +47,27 @@ def test_duckdb_native_export_streams_to_exact_writer_without_conversion(
     private_row_id = f"{INTERNAL_ROW_ID_PREFIX}fixture"
     engine = DuckDBEngine()
     frame = engine._relation_from_sql(
-        f"SELECT 7 AS value, 'native' AS label, 19 AS \"{private_row_id}\" UNION ALL "
-        f"SELECT 8 AS value, 'stream' AS label, 20 AS \"{private_row_id}\""
+        f"SELECT 7 AS value, 'native|safe' AS label, 19 AS \"{private_row_id}\" UNION ALL "
+        f"SELECT 8 AS value, 'stream''line' AS label, 20 AS \"{private_row_id}\""
     )
     destination = tmp_path / f"reserved.{format_name}"
     writer_path = reserved_writer_path(destination)
     identity = (writer_path.device, writer_path.inode)
 
-    engine.export_data(frame, writer_path, format_name)  # type: ignore[arg-type]
+    options = (
+        {"format": "csv", "delimiter": "|", "quoteChar": "'", "encoding": "utf-8", "header": False}
+        if format_name == "csv"
+        else {"format": "parquet"}
+    )
+    engine.export_data(frame, writer_path, options)  # type: ignore[arg-type]
 
     assert _regular_file_identity(destination) == identity
     if format_name == "csv":
-        assert destination.read_text() == "value,label\n7,native\n8,stream\n"
+        assert destination.read_text() == "7|'native|safe'\n8|'stream''line'\n"
     else:
         connection = duckdb.connect()
         try:
-            assert connection.read_parquet(str(destination)).fetchall() == [(7, "native"), (8, "stream")]
+            assert connection.read_parquet(str(destination)).fetchall() == [(7, "native|safe"), (8, "stream'line")]
             assert connection.read_parquet(str(destination)).columns == ["value", "label"]
         finally:
             connection.close()
@@ -291,8 +296,19 @@ def test_relation_is_released_before_filesystem_unregisters(tmp_path: Path) -> N
         def __init__(self, connection: Connection) -> None:
             self.connection = connection
 
-        def write_csv(self, uri: str, *, use_tmp_file: bool) -> None:
+        def write_csv(
+            self,
+            uri: str,
+            *,
+            use_tmp_file: bool,
+            sep: str,
+            quotechar: str,
+            escapechar: str,
+            encoding: str,
+            header: bool,
+        ) -> None:
             assert use_tmp_file is False
+            assert (sep, quotechar, escapechar, encoding, header) == (",", '"', '"', "utf-8", True)
             filesystem = self.connection.filesystem
             assert filesystem is not None
             filesystem.info(uri)
@@ -331,7 +347,12 @@ def test_relation_is_released_before_filesystem_unregisters(tmp_path: Path) -> N
     connection = Connection()
     destination = tmp_path / "reserved.csv"
     path = reserved_writer_path(destination)
-    _write_relation_export(connection, "SELECT 1", path, "csv")
+    _write_relation_export(
+        connection,
+        "SELECT 1",
+        path,
+        {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True},
+    )
 
     assert events == ["listed", "registered", "relation released", "unregistered"]
     assert destination.read_bytes() == b"value\n1\n"

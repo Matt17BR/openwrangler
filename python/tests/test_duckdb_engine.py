@@ -36,6 +36,14 @@ def bound_step(kind: str, **params: Any) -> dict[str, Any]:
     return {"id": f"duckdb-{kind}", "kind": kind, "params": params}
 
 
+def export_options(format_name: str) -> dict[str, object]:
+    return (
+        {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+        if format_name == "csv"
+        else {"format": "parquet"}
+    )
+
+
 def source_relation() -> Any:
     return duckdb.sql(
         """
@@ -612,8 +620,8 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     identified = engine.ensure_row_ids(csv_frame, "export")
     csv_export = tmp_path / "cleaned.csv"
     parquet_export = tmp_path / "cleaned.parquet"
-    engine.export_data(identified, str(csv_export), "csv")
-    engine.export_data(identified, str(parquet_export), "parquet")
+    engine.export_data(identified, str(csv_export), export_options("csv"))
+    engine.export_data(identified, str(parquet_export), export_options("parquet"))
     assert duckdb.read_csv(str(csv_export)).columns == ["city", "value"]
     assert duckdb.read_parquet(str(parquet_export)).fetchall() == [("Milan", 1), ("Berlin", 2)]
 
@@ -814,7 +822,9 @@ def test_duckdb_session_releases_every_temporary_relation_before_connection_clos
         assert isinstance(session.filtered, DuckDBSqlPlan)
         assert_fully_detached()
 
-        manager.export_data(session_id, 2, str(destination), "parquet", reserve_export_target(destination))
+        manager.export_data(
+            session_id, 2, str(destination), export_options("parquet"), reserve_export_target(destination)
+        )
         assert rows(duckdb.read_parquet(str(destination))) == [(2,), (3,)]
         assert_fully_detached()
     finally:
@@ -1007,7 +1017,7 @@ def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(
             session_id,
             0,
             str(exported_path),
-            "parquet",
+            export_options("parquet"),
             reserve_export_target(exported_path),
         )["shape"] == {
             "rows": 3,
@@ -1790,7 +1800,7 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
         session_id,
         2,
         str(destination),
-        "parquet",
+        export_options("parquet"),
         reserve_export_target(destination),
     )
     assert exported["shape"] == {"rows": 3, "columns": 3}
@@ -1882,7 +1892,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
                 10,
             )
         with pytest.raises(EngineError, match="viewing mode"):
-            manager.export_data(session_id, 0, str(tmp_path / "must-not-export.csv"), "csv")
+            manager.export_data(session_id, 0, str(tmp_path / "must-not-export.csv"), export_options("csv"))
 
         assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
         assert owner.closed is True

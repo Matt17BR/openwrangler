@@ -20,6 +20,7 @@ import {
   buildRKernelBootstrapCode,
   buildRKernelTeardownCode
 } from "../extension/r/rKernelRuntimeBundle";
+import { rCsvExportOptions, rExportOptions, rParquetExportOptions } from "./rExportTestOptions";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const openRequestId = "22222222-2222-4222-8222-222222222222";
@@ -398,7 +399,7 @@ describe("native R kernel protocol", () => {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: exportRequestId,
       kind: "exportData",
-      payload: { sessionId, revision: 4, exportId, format: "csv" }
+      payload: { sessionId, revision: 4, exportId, options: rCsvExportOptions }
     };
     expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
     expect(
@@ -432,7 +433,7 @@ describe("native R kernel protocol", () => {
 
     const parquetRequest = {
       ...request,
-      payload: { ...request.payload, format: "parquet" as const }
+      payload: { ...request.payload, options: rParquetExportOptions }
     };
     expect(JSON.parse(encodeRKernelRequest(parquetRequest))).toEqual(parquetRequest);
     expect(
@@ -2894,7 +2895,7 @@ describe("exact IRkernel session transport", () => {
 
       await transport.open("frame", pageWindow());
       await expect(
-        transport.exportData(sessionId, 0, format, async (chunk) => {
+        transport.exportData(sessionId, 0, rExportOptions(format), async (chunk) => {
           chunks.push(chunk);
         })
       ).resolves.toEqual({ sessionId, revision: 0, format, rows: 1, columns: 1 });
@@ -2969,7 +2970,7 @@ describe("exact IRkernel session transport", () => {
 
     await transport.open("frame", pageWindow());
     const exporting = transport
-      .exportData(sessionId, 0, "csv", async () => undefined, { timeoutMs: 30 })
+      .exportData(sessionId, 0, rCsvExportOptions, async () => undefined, { timeoutMs: 30 })
       .catch((error: unknown) => error);
     await beginStarted.promise;
     await vi.advanceTimersByTimeAsync(30);
@@ -3034,7 +3035,7 @@ describe("exact IRkernel session transport", () => {
 
     await transport.open("frame", pageWindow());
     const exporting = transport
-      .exportData(sessionId, 0, "csv", async () => undefined, { timeoutMs: 30 })
+      .exportData(sessionId, 0, rCsvExportOptions, async () => undefined, { timeoutMs: 30 })
       .catch((error: unknown) => error);
     await beginStarted.promise;
     await vi.advanceTimersByTimeAsync(30);
@@ -3100,7 +3101,7 @@ describe("exact IRkernel session transport", () => {
 
     await transport.open("frame", pageWindow());
     const exporting = transport
-      .exportData(sessionId, 0, "csv", async () => undefined, { timeoutMs: 30 })
+      .exportData(sessionId, 0, rCsvExportOptions, async () => undefined, { timeoutMs: 30 })
       .catch((error: unknown) => error);
     await beginStarted.promise;
     await vi.advanceTimersByTimeAsync(30);

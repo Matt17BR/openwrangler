@@ -12910,6 +12910,7 @@ missing_package_contract <- list(
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
   materialize_column_values = function(...) stop("unexpected column values", call. = FALSE),
   export_formats = function() "csv",
+  normalize_export_options = openwrangler_r_frame_contract$normalize_export_options,
   write_csv = function(...) stop("unexpected CSV export", call. = FALSE),
   write_parquet = function(...) stop("unexpected Parquet export", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
@@ -12965,7 +12966,7 @@ for (required_categorical_tool in c(
     stop(sprintf("the R agent accepted a frame contract without %s", required_categorical_tool), call. = FALSE)
   }
 }
-for (required_export_tool in c("export_formats", "write_csv", "write_parquet")) {
+for (required_export_tool in c("export_formats", "normalize_export_options", "write_csv", "write_parquet")) {
   incomplete_export_contract <- missing_package_contract
   incomplete_export_contract[[required_export_tool]] <- NULL
   incomplete_export_error <- tryCatch(
@@ -13288,7 +13289,7 @@ export_pending <- dispatch(
 )
 blocked_export <- dispatch(
   "exportData",
-  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, format = "csv")
+  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, options = csv_export_options)
 )
 assert_identical(blocked_export$kind, "error", "the R agent exported a pending draft")
 export_discard <- dispatch(
@@ -13297,7 +13298,7 @@ export_discard <- dispatch(
 )
 stale_export <- dispatch(
   "exportData",
-  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, format = "csv")
+  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, options = csv_export_options)
 )
 assert_identical(stale_export$kind, "error", "the R agent accepted a stale export revision")
 assert_identical(stale_export$code, "stale_revision", "the stale export diagnostic changed")
@@ -13322,7 +13323,7 @@ invisible(dispatch(
 ))
 export_ready <- dispatch(
   "exportData",
-  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, format = "csv")
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, options = csv_export_options)
 )
 assert_identical(export_ready$kind, "dataExported", "the R agent did not prepare a CSV export")
 assert_identical(export_ready$rows, 3L, "viewing state changed the exported row count")
@@ -13405,7 +13406,7 @@ parquet_ready <- dispatch(
     sessionId = export_session_id,
     revision = export_discard$revision,
     exportId = parquet_export_id,
-    format = "parquet"
+    options = parquet_export_options
   )
 )
 assert_identical(parquet_ready$kind, "dataExported", "the R agent did not prepare a Parquet export")
@@ -13466,7 +13467,12 @@ assert_identical(parquet_closed$kind, "dataExportClosed", "the R Parquet export 
 
 cleanup_ready <- dispatch(
   "exportData",
-  list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, format = "csv")
+  list(
+    sessionId = export_session_id,
+    revision = export_discard$revision,
+    exportId = cleanup_export_id,
+    options = csv_export_options
+  )
 )
 assert_identical(cleanup_ready$kind, "dataExported", "the cleanup export was not prepared")
 export_session_closed <- dispatch("closeSession", list(sessionId = export_session_id))
@@ -13502,7 +13508,7 @@ unavailable_parquet <- dispatch_with(
     sessionId = unavailable_export_session_id,
     revision = 0L,
     exportId = parquet_export_id,
-    format = "parquet"
+    options = parquet_export_options
   )
 )
 assert_identical(unavailable_parquet$kind, "error", "the R agent accepted unavailable Parquet export")
@@ -13515,6 +13521,68 @@ invisible(dispatch_with(
   list(sessionId = unavailable_export_session_id)
 ))
 unavailable_parquet_agent$dispose()
+
+configured_write_count <- 0L
+configured_write_options <- NULL
+configured_export_contract <- openwrangler_r_frame_contract
+configured_export_contract$write_csv <- function(capture, target_path, options) {
+  configured_write_count <<- configured_write_count + 1L
+  configured_write_options <<- options
+  writeBin(charToRaw("configured-r-export"), target_path)
+  list(
+    rows = capture$descriptor$shape$rows,
+    columns = capture$descriptor$shape$columns,
+    bytes = as.double(file.info(target_path)$size[[1L]])
+  )
+}
+configured_export_agent <- openwrangler_r_kernel_agent$new_agent(
+  configured_export_contract,
+  source_environment
+)
+configured_open <- dispatch_with(
+  configured_export_agent,
+  "openSession",
+  list(sessionId = unavailable_export_session_id, variableName = "export_frame", page = page_window())
+)
+assert_identical(configured_open$kind, "page", "the configurable-export R session did not open")
+invalid_configured_export <- dispatch_with(
+  configured_export_agent,
+  "exportData",
+  list(
+    sessionId = unavailable_export_session_id,
+    revision = 0L,
+    exportId = cleanup_export_id,
+    options = list(format = "csv", delimiter = ";", quoteChar = "'", encoding = "utf-8", header = TRUE)
+  )
+)
+assert_identical(invalid_configured_export$kind, "error", "the R agent accepted unsupported CSV options")
+assert_identical(invalid_configured_export$code, "invalid_request", "unsupported R CSV options changed diagnostic")
+assert_identical(configured_write_count, 0L, "unsupported R CSV options reached the writer")
+configured_options <- list(format = "csv", delimiter = "§", quoteChar = "\"", encoding = "utf-8", header = FALSE)
+configured_export <- dispatch_with(
+  configured_export_agent,
+  "exportData",
+  list(
+    sessionId = unavailable_export_session_id,
+    revision = 0L,
+    exportId = cleanup_export_id,
+    options = configured_options
+  )
+)
+assert_identical(configured_export$kind, "dataExported", "the R agent rejected supported CSV options")
+assert_identical(configured_write_count, 1L, "the R agent did not call the configured writer exactly once")
+assert_identical(configured_write_options, configured_options, "the R agent changed canonical export options")
+invisible(dispatch_with(
+  configured_export_agent,
+  "closeDataExport",
+  list(sessionId = unavailable_export_session_id, revision = 0L, exportId = cleanup_export_id)
+))
+invisible(dispatch_with(
+  configured_export_agent,
+  "closeSession",
+  list(sessionId = unavailable_export_session_id)
+))
+configured_export_agent$dispose()
 
 source("r/tests/kernel_agent_custom_code.R", local = FALSE)
 

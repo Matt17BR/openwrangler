@@ -434,7 +434,7 @@ group_by_parquet_ready <- dispatch(
     sessionId = group_by_session_id,
     revision = group_by_edit_apply$revision,
     exportId = group_by_export_id,
-    format = "parquet"
+    options = parquet_export_options
   )
 )
 assert_identical(group_by_parquet_ready$kind, "dataExported", "the grouped R result did not export to Parquet")

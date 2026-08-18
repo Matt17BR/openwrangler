@@ -869,19 +869,83 @@ def test_protocol_v2_validates_export_format() -> None:
             "sessionId": "session-1",
             "revision": 2,
             "path": "/tmp/cleaned.csv",
-            "format": "csv",
-            "rowAxisPolicy": "preserve",
+            "options": {
+                "format": "csv",
+                "delimiter": ";",
+                "quoteChar": "'",
+                "encoding": "latin-1",
+                "header": False,
+                "rowAxisPolicy": "preserve",
+            },
             "targetIdentity": {"device": "7", "inode": "11"},
         },
     }
-    assert decode_envelope(envelope)[2]["format"] == "csv"
-    assert decode_envelope(envelope)[2]["rowAxisPolicy"] == "preserve"
-    envelope["request"]["format"] = "xlsx"
+    assert decode_envelope(envelope)[2]["options"] == {
+        "format": "csv",
+        "delimiter": ";",
+        "quoteChar": "'",
+        "encoding": "latin-1",
+        "header": False,
+        "rowAxisPolicy": "preserve",
+    }
+    envelope["request"]["options"]["format"] = "xlsx"
     with pytest.raises(ProtocolError, match="csv or parquet"):
         decode_envelope(envelope)
-    envelope["request"]["format"] = "csv"
-    envelope["request"]["rowAxisPolicy"] = "automatic"
+    envelope["request"]["options"]["format"] = "csv"
+    envelope["request"]["options"]["rowAxisPolicy"] = "automatic"
     with pytest.raises(ProtocolError, match="rowAxisPolicy must be preserve or omit"):
+        decode_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8"}, "header"),
+        (
+            {"format": "csv", "delimiter": "::", "quoteChar": '"', "encoding": "utf-8", "header": True},
+            "delimiter",
+        ),
+        (
+            {"format": "csv", "delimiter": ",", "quoteChar": ",", "encoding": "utf-8", "header": True},
+            "must differ",
+        ),
+        (
+            {"format": "csv", "delimiter": "\n", "quoteChar": '"', "encoding": "utf-8", "header": True},
+            "non-NUL, non-line-break",
+        ),
+        (
+            {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": " ", "header": True},
+            "encoding",
+        ),
+        (
+            {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "x" * 65, "header": True},
+            "at most 64",
+        ),
+        (
+            {"format": "parquet", "delimiter": ","},
+            "invalid for parquet",
+        ),
+        (
+            {"format": "parquet", "rowAxisPolicy": []},
+            "rowAxisPolicy",
+        ),
+    ],
+)
+def test_protocol_v2_rejects_incomplete_or_cross_format_export_options(options, message) -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "export-options-invalid",
+        "priority": "interactive",
+        "request": {
+            "kind": "exportData",
+            "sessionId": "session-1",
+            "revision": 2,
+            "path": "/tmp/.openwrangler-target.tmp",
+            "options": options,
+            "targetIdentity": {"device": "7", "inode": "11"},
+        },
+    }
+    with pytest.raises(ProtocolError, match=message):
         decode_envelope(envelope)
 
 
@@ -908,7 +972,13 @@ def test_protocol_v2_requires_the_host_owned_export_target_identity(identity) ->
             "sessionId": "session-1",
             "revision": 2,
             "path": "/tmp/.openwrangler-target.tmp",
-            "format": "csv",
+            "options": {
+                "format": "csv",
+                "delimiter": ",",
+                "quoteChar": '"',
+                "encoding": "utf-8",
+                "header": True,
+            },
             "targetIdentity": identity,
         },
     }

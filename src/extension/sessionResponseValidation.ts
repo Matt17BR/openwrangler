@@ -110,7 +110,7 @@ export function responseMismatch(
     }
     case "exportData":
       if (response.kind !== "dataExported") return `runtime returned ${response.kind}`;
-      if (response.format !== request.format) return `runtime reported ${response.format} export`;
+      if (response.format !== request.options.format) return `runtime reported ${response.format} export`;
       if (response.path !== request.path) return "runtime reported a different export path";
       return response.revision === request.revision
         ? undefined

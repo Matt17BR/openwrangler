@@ -62,6 +62,8 @@ grouped_factor_session_id <- "48484848-4848-4848-8848-484848484848"
 grouped_table_session_id <- "49494949-4949-4949-8949-494949494949"
 grouped_collapse_session_id <- "50505050-5050-4050-8050-505050505050"
 export_session_id <- "41414141-4141-4141-8141-414141414141"
+csv_export_options <- list(format = "csv", delimiter = ",", quoteChar = "\"", encoding = "utf-8", header = TRUE)
+parquet_export_options <- list(format = "parquet")
 export_id <- "42424242-4242-4242-8242-424242424242"
 cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
 parquet_export_id <- "53535353-5353-4353-8353-535353535353"

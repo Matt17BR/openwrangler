@@ -42,7 +42,7 @@ describe("host-owned Python data export", () => {
           device: expect.stringMatching(/^(?:0|[1-9][0-9]*)$/u),
           inode: expect.stringMatching(/^(?:0|[1-9][0-9]*)$/u)
         });
-        expect(request.rowAxisPolicy).toBe("preserve");
+        expect(request.options.rowAxisPolicy).toBe("preserve");
         await writeFile(request.path, EXPORTED_BYTES);
         return exportedResponse(request);
       }
@@ -288,8 +288,14 @@ describe("host-owned Python data export", () => {
       sessionId: "python-session",
       revision: 4,
       path: destination,
-      format: "csv",
-      rowAxisPolicy: "preserve"
+      options: {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true,
+        rowAxisPolicy: "preserve"
+      }
     };
   }
 
@@ -298,7 +304,7 @@ describe("host-owned Python data export", () => {
       kind: "dataExported",
       revision: request.revision,
       path: request.path,
-      format: request.format,
+      format: request.options.format,
       shape: { rows: 2, columns: 3 }
     };
   }

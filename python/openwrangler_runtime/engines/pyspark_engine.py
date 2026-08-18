@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from math import isfinite
-from typing import Any, Literal
+from typing import Any
 
 from .base import (
     INTERNAL_ROW_ID_PREFIX,
@@ -19,8 +19,8 @@ from .base import (
     EngineCapabilities,
     EngineError,
     EngineRequestFailure,
+    ExportOptions,
     PageColumnProjection,
-    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     categorical_visualization,
@@ -29,6 +29,7 @@ from .base import (
     infer_semantic_type,
     is_internal_row_id_label,
     normalize_cell,
+    normalize_export_options,
     normalize_page_projection,
     normalize_summary_projection,
     normalized_numeric_sum,
@@ -1006,11 +1007,10 @@ class PySparkEngine(DataFrameEngine):
         self,
         frame: Any,
         path: str | os.PathLike[str],
-        format_name: Literal["csv", "parquet"],
-        *,
-        row_axis_policy: RowAxisExportPolicy | None = None,
+        options: ExportOptions,
     ) -> None:
-        del frame, path, format_name, row_axis_policy
+        del frame, path
+        normalize_export_options(options)
         raise EngineError("PySpark notebook sessions do not export data.")
 
     def close(self) -> None:

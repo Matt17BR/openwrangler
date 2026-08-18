@@ -9,13 +9,13 @@ from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
 from .engines.base import (
+    ExportOptions,
     PageColumnProjection,
-    RowAxisExportPolicy,
     SummaryColumnProjection,
     reconcile_view_filter_model,
 )
@@ -1002,9 +1002,8 @@ class SessionManager:
         session_id: str,
         revision: int,
         path: str,
-        format_name: Literal["csv", "parquet"],
+        options: ExportOptions,
         target_identity: Mapping[str, Any] | None = None,
-        row_axis_policy: RowAxisExportPolicy | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._exclusive_session_read(session):
@@ -1012,15 +1011,8 @@ class SessionManager:
             self._assert_editable(session)
             if session.draft_step is not None:
                 raise EngineError("Apply or discard the draft step before exporting cleaned data.")
-            if format_name not in {"csv", "parquet"}:
-                raise EngineError(f"Unsupported export format: {format_name}")
-            if format_name not in session.engine.capabilities.export_formats:
-                raise EngineError(f"The {session.backend} backend cannot export {format_name} data.")
-            if session.backend == "pandas":
-                if row_axis_policy not in {"preserve", "omit"}:
-                    raise EngineError("Pandas export requires an explicit preserve-or-omit index choice.")
-            elif row_axis_policy is not None:
-                raise EngineError(f"The {session.backend} backend does not accept a Pandas row-axis policy.")
+            normalized_options = session.engine.validate_export_options(options)
+            format_name = normalized_options["format"]
 
             source_path = session.source.get("path")
             if source_path and Path(path).absolute() == Path(str(source_path)).absolute():
@@ -1037,8 +1029,7 @@ class SessionManager:
                     session.engine.export_data(
                         session.committed,
                         writer_path,
-                        format_name,
-                        row_axis_policy=row_axis_policy,
+                        normalized_options,
                     )
             except ExportTargetError as error:
                 raise EngineError(str(error)) from error

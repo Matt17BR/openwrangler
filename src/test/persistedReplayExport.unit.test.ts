@@ -14,8 +14,17 @@ describe("persisted replay export requests", () => {
       sessionId: "pandas-session",
       revision: 7,
       path: `/tmp/replayed.${format}`,
-      format,
-      rowAxisPolicy: "omit"
+      options:
+        format === "csv"
+          ? {
+              format,
+              delimiter: ",",
+              quoteChar: '"',
+              encoding: "utf-8",
+              header: true,
+              rowAxisPolicy: "omit"
+            }
+          : { format, rowAxisPolicy: "omit" }
     });
   });
 
@@ -31,8 +40,8 @@ describe("persisted replay export requests", () => {
       sessionId: `${backend}-session`,
       revision: 3,
       path: `/tmp/${backend}.csv`,
-      format: "csv"
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
     });
-    expect(request).not.toHaveProperty("rowAxisPolicy");
+    expect(request.options).not.toHaveProperty("rowAxisPolicy");
   });
 });

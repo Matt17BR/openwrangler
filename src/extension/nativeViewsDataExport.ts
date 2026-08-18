@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { RowAxisExportPolicy } from "../shared/protocol";
 import type { ActiveSessionSnapshot, SessionCoordinator } from "./sessionCoordinator";
+import { selectNativeExportOptions } from "./nativeViewsExportOptions";
 
 interface NativeViewsDataExportDependencies {
   readonly defaultExportUri: (snapshot: ActiveSessionSnapshot, suffix: string) => vscode.Uri;
@@ -30,13 +31,14 @@ async function exportSessionData(
   if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
   const initial = pinnedExportSnapshot(coordinator, pin);
   if (!initial) return false;
+  const backend = initial.metadata.backend;
   if (initial.metadata.draftStep) {
     void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
     return false;
   }
   const choices = [
     initial.metadata.capabilities.exportCsv
-      ? { label: "CSV", description: "Comma-separated values", format: "csv" as const }
+      ? { label: "CSV", description: "Delimited text", format: "csv" as const }
       : undefined,
     initial.metadata.capabilities.exportParquet
       ? { label: "Parquet", description: "Typed columnar data", format: "parquet" as const }
@@ -58,8 +60,19 @@ async function exportSessionData(
     }
     return false;
   }
+  if (!hasSameExportBackend(confirmedBeforePolicy, backend)) return false;
   const rowAxisPolicy = await selectPandasRowAxisExportPolicy(confirmedBeforePolicy);
   if (confirmedBeforePolicy.metadata.backend === "pandas" && rowAxisPolicy === undefined) return false;
+  const confirmedBeforeOptions = pinnedExportSnapshot(coordinator, pin);
+  if (!confirmedBeforeOptions || confirmedBeforeOptions.metadata.draftStep) {
+    if (confirmedBeforeOptions?.metadata.draftStep) {
+      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+    }
+    return false;
+  }
+  if (!hasSameExportBackend(confirmedBeforeOptions, backend)) return false;
+  const exportOptions = await selectNativeExportOptions(confirmedBeforeOptions, selected.format, rowAxisPolicy);
+  if (!exportOptions) return false;
   const confirmedBeforeSave = pinnedExportSnapshot(coordinator, pin);
   if (!confirmedBeforeSave || confirmedBeforeSave.metadata.draftStep) {
     if (confirmedBeforeSave?.metadata.draftStep) {
@@ -67,12 +80,7 @@ async function exportSessionData(
     }
     return false;
   }
-  if ((confirmedBeforeSave.metadata.backend === "pandas") !== (rowAxisPolicy !== undefined)) {
-    void vscode.window.showWarningMessage(
-      "The dataframe backend changed while export was open. Review the current data and try again."
-    );
-    return false;
-  }
+  if (!hasSameExportBackend(confirmedBeforeSave, backend)) return false;
   const stillSupported =
     selected.format === "csv"
       ? confirmedBeforeSave.metadata.capabilities.exportCsv
@@ -109,19 +117,11 @@ async function exportSessionData(
     void vscode.window.showWarningMessage("The selected export format is no longer available for this dataframe.");
     return false;
   }
-  if ((confirmedBeforeDispatch.metadata.backend === "pandas") !== (rowAxisPolicy !== undefined)) {
-    void vscode.window.showWarningMessage(
-      "The dataframe backend changed while export was open. Review the current data and try again."
-    );
-    return false;
-  }
+  if (!hasSameExportBackend(confirmedBeforeDispatch, backend)) return false;
   try {
     const exported = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
-      () =>
-        rowAxisPolicy === undefined
-          ? coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, selected.format)
-          : coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, selected.format, rowAxisPolicy)
+      () => coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, exportOptions)
     );
     void vscode.window.showInformationMessage(
       `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`
@@ -131,6 +131,17 @@ async function exportSessionData(
     void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     return false;
   }
+}
+
+function hasSameExportBackend(
+  snapshot: ActiveSessionSnapshot,
+  backend: ActiveSessionSnapshot["metadata"]["backend"]
+): boolean {
+  if (snapshot.metadata.backend === backend) return true;
+  void vscode.window.showWarningMessage(
+    "The dataframe backend changed while export was open. Review the current data and try again."
+  );
+  return false;
 }
 
 async function selectPandasRowAxisExportPolicy(

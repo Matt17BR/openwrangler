@@ -9,6 +9,7 @@ import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RProcessSessionTransport } from "../extension/r/rProcessTransport";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
+import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -222,24 +223,24 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
       );
       const draftChunks: Uint8Array[] = [];
       await expect(
-        transport.exportData(plainSession, preview.revision, "csv", async (chunk) => {
+        transport.exportData(plainSession, preview.revision, rCsvExportOptions, async (chunk) => {
           draftChunks.push(Uint8Array.from(chunk));
         })
       ).rejects.toThrow("Apply or discard");
       expect(draftChunks).toEqual([]);
 
       const applied = await transport.applyDraft(plainSession, preview.revision, pageWindow());
-      await expect(transport.exportData(plainSession, preview.revision, "csv", async () => undefined)).rejects.toThrow(
-        "revision"
-      );
       await expect(
-        transport.exportData(plainSession, applied.revision, "csv", async () => {
+        transport.exportData(plainSession, preview.revision, rCsvExportOptions, async () => undefined)
+      ).rejects.toThrow("revision");
+      await expect(
+        transport.exportData(plainSession, applied.revision, rCsvExportOptions, async () => {
           throw new Error("host sink failed");
         })
       ).rejects.toThrow("host sink failed");
 
       const csvChunks: Uint8Array[] = [];
-      const exported = await transport.exportData(plainSession, applied.revision, "csv", async (chunk) => {
+      const exported = await transport.exportData(plainSession, applied.revision, rCsvExportOptions, async (chunk) => {
         csvChunks.push(Uint8Array.from(chunk));
       });
       expect(exported).toEqual({
@@ -265,7 +266,7 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
       const largeSession = randomUUID();
       await transport.open("large_frame", pageWindow(), { requestedSessionId: largeSession });
       const largeChunkSizes: number[] = [];
-      const large = await transport.exportData(largeSession, 0, "csv", async (chunk) => {
+      const large = await transport.exportData(largeSession, 0, rCsvExportOptions, async (chunk) => {
         largeChunkSizes.push(chunk.byteLength);
       });
       expect(large).toMatchObject({ rows: 150, columns: 1 });
@@ -275,7 +276,7 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
       const complexSession = randomUUID();
       await transport.open("complex_frame", pageWindow(), { requestedSessionId: complexSession });
       const complexChunks: Uint8Array[] = [];
-      const complex = await transport.exportData(complexSession, 0, "csv", async (chunk) => {
+      const complex = await transport.exportData(complexSession, 0, rCsvExportOptions, async (chunk) => {
         complexChunks.push(Uint8Array.from(chunk));
       });
       expect(complex).toMatchObject({ rows: 3, columns: 5 });
@@ -290,7 +291,7 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
       const emptySession = randomUUID();
       await transport.open("empty_frame", pageWindow(), { requestedSessionId: emptySession });
       const emptyChunks: Uint8Array[] = [];
-      const empty = await transport.exportData(emptySession, 0, "csv", async (chunk) => {
+      const empty = await transport.exportData(emptySession, 0, rCsvExportOptions, async (chunk) => {
         emptyChunks.push(Uint8Array.from(chunk));
       });
       expect(empty).toMatchObject({ rows: 0, columns: 2 });
@@ -384,7 +385,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
       expect(zeroColumn.exportFormats).toEqual(["csv", "parquet"]);
       const zeroColumnChunks: Uint8Array[] = [];
       await expect(
-        transport.exportData(zeroColumnSession, 0, "csv", async (chunk) => {
+        transport.exportData(zeroColumnSession, 0, rCsvExportOptions, async (chunk) => {
           zeroColumnChunks.push(Uint8Array.from(chunk));
         })
       ).rejects.toThrow("CSV export requires at least one column");
@@ -430,7 +431,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
       const sessionId = randomUUID();
       await transport.open("frame", pageWindow(), { requestedSessionId: sessionId });
       await expect(
-        transport.exportData(sessionId, 0, "csv", async () => {
+        transport.exportData(sessionId, 0, rCsvExportOptions, async () => {
           const [processRoot] = await readdir(temporaryParent);
           const exportRoot = resolve(temporaryParent, processRoot!, "exports");
           const [artifact] = await readdir(exportRoot);
@@ -465,7 +466,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
       await transport.open("frame", pageWindow(), { requestedSessionId: sessionId });
       let rewritten = false;
       await expect(
-        transport.exportData(sessionId, 0, "csv", async () => {
+        transport.exportData(sessionId, 0, rCsvExportOptions, async () => {
           if (rewritten) return;
           const [processRoot] = await readdir(temporaryParent);
           const exportRoot = resolve(temporaryParent, processRoot!, "exports");
@@ -1036,7 +1037,7 @@ async function exportedBytes(
   revision = 0
 ): Promise<Buffer> {
   const chunks: Uint8Array[] = [];
-  await transport.exportData(sessionId, revision, format, async (chunk) => {
+  await transport.exportData(sessionId, revision, rExportOptions(format), async (chunk) => {
     chunks.push(Uint8Array.from(chunk));
   });
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));

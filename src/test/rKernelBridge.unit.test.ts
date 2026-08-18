@@ -52,6 +52,7 @@ import {
   rKernelTestCell as rCell,
   rKernelWithColumnNullable as withColumnNullable
 } from "./rKernelBridgeTestFixtures";
+import { rCsvExportOptions } from "./rExportTestOptions";
 
 describe("canonical R kernel bridge", () => {
   it("checks the opened frame flavor against the verified picker selection", async () => {
@@ -695,7 +696,7 @@ describe("canonical R kernel bridge", () => {
         sessionId,
         revision: 0,
         path: "/tmp/out.csv",
-        format: "csv"
+        options: rCsvExportOptions
       }
     ];
 

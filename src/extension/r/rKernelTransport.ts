@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
-import type { ColumnSummary, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import {
@@ -320,12 +320,13 @@ export class RKernelSessionTransport {
   async exportData(
     sessionId: string,
     revision: number,
-    format: RKernelExportFormat,
+    exportOptions: ExportOptions,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelDataExportResult> {
     this.assertActive();
     if (typeof writeChunk !== "function") throw new TypeError("The R export chunk writer must be a function.");
+    const format = exportOptions.format;
     const kernel = this.requireMappedKernel(sessionId);
     const exportId = this.createId();
     const started = performance.now();
@@ -338,7 +339,7 @@ export class RKernelSessionTransport {
     let result: RKernelDataExportResult | undefined;
 
     try {
-      const begin = this.request("exportData", { sessionId, revision, exportId, format });
+      const begin = this.request("exportData", { sessionId, revision, exportId, options: exportOptions });
       encodeRKernelRequest(begin);
       const ready = await this.executeMappedRequest(sessionId, begin, remainingOptions());
       if (ready.kind === "error") throw new RKernelDiagnosticError(ready);

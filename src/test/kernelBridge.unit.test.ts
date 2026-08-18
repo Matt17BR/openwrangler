@@ -1764,7 +1764,7 @@ describe("kernel data export publication", () => {
             kind: "dataExported",
             revision: request.revision,
             path: request.path,
-            format: request.format,
+            format: request.options.format,
             shape: { rows: 1, columns: 1 }
           };
         }
@@ -1782,8 +1782,7 @@ describe("kernel data export publication", () => {
           sessionId: opened.metadata.sessionId,
           revision: 0,
           path: destinationPath,
-          format: "parquet",
-          rowAxisPolicy: "preserve"
+          options: { format: "parquet", rowAxisPolicy: "preserve" }
         })
       ).resolves.toMatchObject({ kind: "dataExported", path: destinationPath });
 

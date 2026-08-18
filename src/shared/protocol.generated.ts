@@ -387,6 +387,10 @@ export type CustomCodeTransformStep = TransformStepTemplate & {
   [k: string]: unknown;
 };
 /**
+ * One format-discriminated export serialization contract.
+ */
+export type ExportOptions = CsvExportOptions | ParquetExportOptions;
+/**
  * Explicit Pandas CSV/Parquet export treatment for the dataframe index.
  */
 export type RowAxisExportPolicy = "preserve" | "omit";
@@ -1029,9 +1033,32 @@ export interface ExportDataRequest {
   sessionId: string;
   revision: number;
   path: string;
-  format: "csv" | "parquet";
-  rowAxisPolicy?: RowAxisExportPolicy;
+  options: ExportOptions;
   targetIdentity?: ExportTargetIdentity;
+}
+/**
+ * Explicit CSV serialization choices. The host offers confirmed import options as defaults without making them immutable.
+ */
+export interface CsvExportOptions {
+  format: "csv";
+  /**
+   * Exactly one non-NUL, non-line-break Unicode scalar value, distinct from quoteChar.
+   */
+  delimiter: string;
+  /**
+   * Exactly one non-NUL, non-line-break Unicode scalar value, distinct from delimiter.
+   */
+  quoteChar: string;
+  encoding: string;
+  header: boolean;
+  rowAxisPolicy?: RowAxisExportPolicy;
+}
+/**
+ * Parquet serialization choices. CSV-only dialect fields are invalid.
+ */
+export interface ParquetExportOptions {
+  format: "parquet";
+  rowAxisPolicy?: RowAxisExportPolicy;
 }
 export interface ExportTargetIdentity {
   device: string;

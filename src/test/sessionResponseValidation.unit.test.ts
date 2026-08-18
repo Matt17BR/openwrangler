@@ -210,7 +210,7 @@ describe("session response validation", () => {
       sessionId: runtimeSessionId,
       revision: 4,
       path: "/tmp/export.csv",
-      format: "csv"
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
     };
     expect(
       responseMismatch(

@@ -19,8 +19,8 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    ExportOptions,
     PageColumnProjection,
-    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
@@ -169,14 +169,12 @@ class PolarsEngine(DataFrameEngine):
         self,
         frame: Any,
         path: str | os.PathLike[str],
-        format_name: Literal["csv", "parquet"],
-        *,
-        row_axis_policy: RowAxisExportPolicy | None = None,
+        options: ExportOptions,
     ) -> None:
         import polars as pl
 
-        if row_axis_policy is not None:
-            raise EngineError("Polars export does not accept a Pandas row-axis policy.")
+        normalized = self.validate_export_options(options)
+        format_name = normalized["format"]
         row_id = self._row_id_column(frame)
         if row_id is not None:
             frame = frame.drop(row_id)
@@ -184,7 +182,12 @@ class PolarsEngine(DataFrameEngine):
             if isinstance(path, ExportWriterPath):
                 with path.open_binary_writer() as writer:
                     if format_name == "csv":
-                        frame.sink_csv(writer)
+                        frame.sink_csv(
+                            writer,
+                            separator=normalized["delimiter"],
+                            quote_char=normalized["quoteChar"],
+                            include_header=normalized["header"],
+                        )
                         return
                     if format_name == "parquet":
                         frame.sink_parquet(writer)
@@ -192,7 +195,12 @@ class PolarsEngine(DataFrameEngine):
             else:
                 destination = os.fspath(path)
                 if format_name == "csv":
-                    frame.sink_csv(destination)
+                    frame.sink_csv(
+                        destination,
+                        separator=normalized["delimiter"],
+                        quote_char=normalized["quoteChar"],
+                        include_header=normalized["header"],
+                    )
                     return
                 if format_name == "parquet":
                     frame.sink_parquet(destination)
@@ -200,12 +208,28 @@ class PolarsEngine(DataFrameEngine):
         else:
             df = self.normalize(frame)
             if format_name == "csv":
-                df.write_csv(path)
+                df.write_csv(
+                    path,
+                    separator=normalized["delimiter"],
+                    quote_char=normalized["quoteChar"],
+                    include_header=normalized["header"],
+                )
                 return
             if format_name == "parquet":
                 df.write_parquet(path)
                 return
         raise EngineError(f"Unsupported Polars export format: {format_name}")
+
+    def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:
+        normalized = super().validate_export_options(options)
+        if normalized["format"] == "csv":
+            encoding = normalized["encoding"].lower().replace("_", "-")
+            if encoding not in {"utf-8", "utf8"}:
+                raise EngineError("Polars CSV export supports UTF-8 encoding only.")
+            for field in ("delimiter", "quoteChar"):
+                if len(normalized[field].encode("utf-8")) != 1:
+                    raise EngineError(f"Polars CSV export {field} must encode as exactly one UTF-8 byte.")
+        return normalized
 
     def shape(self, frame: Any) -> SessionDataShape:
         import polars as pl

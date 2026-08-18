@@ -15,6 +15,7 @@ import {
   readRRuntimeFiles
 } from "../extension/r/rKernelRuntimeBundle";
 import { assertReleasedRGeneratedSourceBoundary } from "./extensionHost/releasedRGeneratedCode";
+import { rParquetExportOptions } from "./rExportTestOptions";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(__dirname, "../..");
@@ -257,7 +258,7 @@ ${namedRows.code}
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: parquetExportRequestId,
       kind: "exportData",
-      payload: { sessionId: parquetSessionId, revision: 0, exportId: parquetExportId, format: "parquet" }
+      payload: { sessionId: parquetSessionId, revision: 0, exportId: parquetExportId, options: rParquetExportOptions }
     });
     const read = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

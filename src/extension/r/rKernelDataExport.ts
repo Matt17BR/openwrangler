@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ExportDataRequest, OpenWranglerResponse } from "../../shared/protocol";
+import { isExportOptions } from "../../shared/protocolValidation";
 import type { BridgeRequestOptions } from "../dataBridge";
 import { beginAtomicFileTransaction, type AtomicFileTransaction } from "../files/safeFileExport";
 import {
@@ -45,7 +46,12 @@ export class RKernelDataExport {
     const session = this.sessions.get(request.sessionId);
     if (!session) return unknownSessionError(request.sessionId);
     if (session.invalidated) return kernelChangedError(request.sessionId);
-    if (request.rowAxisPolicy !== undefined) {
+    if (!isExportOptions(request.options)) {
+      return errorResponse("invalid_request", "R export options are invalid.", true, request.sessionId);
+    }
+    const exportOptions = request.options;
+    const format = exportOptions.format;
+    if (exportOptions.rowAxisPolicy !== undefined) {
       return errorResponse(
         "invalid_request",
         "R export does not accept a Pandas row-axis policy.",
@@ -53,12 +59,23 @@ export class RKernelDataExport {
         request.sessionId
       );
     }
+    if (format === "csv" && !["utf-8", "utf8"].includes(exportOptions.encoding.toLowerCase().replaceAll("_", "-"))) {
+      return errorResponse("invalid_request", "R CSV export supports UTF-8 encoding only.", true, request.sessionId);
+    }
+    if (format === "csv" && exportOptions.quoteChar !== '"') {
+      return errorResponse(
+        "invalid_request",
+        "R CSV export supports the double-quote character only.",
+        true,
+        request.sessionId
+      );
+    }
     const writer = this.transport.exportData;
-    const supportsFormat = request.format === "csv" ? session.exportCsv : session.exportParquet;
+    const supportsFormat = format === "csv" ? session.exportCsv : session.exportParquet;
     if (!supportsFormat || !writer) {
       return errorResponse(
         "unsupported_operation",
-        request.format === "parquet"
+        format === "parquet"
           ? "Parquet export requires nanoparquet 0.5.1 or newer in the selected local R runtime."
           : "Cleaned-data export is available for local R notebook and document sessions opened in Editing mode.",
         true,
@@ -123,7 +140,7 @@ export class RKernelDataExport {
         this.transport,
         request.sessionId,
         expectedRevision,
-        request.format,
+        exportOptions,
         (chunk) => output.write(chunk),
         transportOptions({
           ...options,
@@ -146,14 +163,14 @@ export class RKernelDataExport {
         settled = true;
         return staleResponseError(request.sessionId);
       }
-      assertRExportResult(result, request.sessionId, expectedRevision, request.format, expectedRows, expectedColumns);
+      assertRExportResult(result, request.sessionId, expectedRevision, format, expectedRows, expectedColumns);
       await transaction.commit();
       settled = true;
       return {
         kind: "dataExported",
         revision: expectedRevision,
         path: request.path,
-        format: request.format,
+        format,
         shape: { rows: result.rows, columns: result.columns }
       };
     } catch (error) {

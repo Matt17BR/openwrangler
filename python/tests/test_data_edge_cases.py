@@ -240,7 +240,18 @@ def test_pandas_multiindex_columns_keep_the_private_row_identity_hidden(tmp_path
     assert [len(row["values"]) for row in page["rows"]] == [2, 2]
 
     destination = tmp_path / "multi-index.csv"
-    engine.export_data(identified, str(destination), "csv", row_axis_policy="omit")
+    engine.export_data(
+        identified,
+        str(destination),
+        {
+            "format": "csv",
+            "delimiter": ",",
+            "quoteChar": '"',
+            "encoding": "utf-8",
+            "header": True,
+            "rowAxisPolicy": "omit",
+        },
+    )
     assert INTERNAL_ROW_ID_PREFIX not in destination.read_text(encoding="utf-8")
 
     reserved = frame.copy()

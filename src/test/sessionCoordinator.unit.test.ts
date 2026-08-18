@@ -80,7 +80,7 @@ describe("SessionCoordinator", () => {
             kind: "dataExported",
             revision: request.revision,
             path: request.path,
-            format: request.format,
+            format: request.options.format,
             shape: { rows: 2, columns: 1 }
           };
         }
@@ -105,7 +105,13 @@ describe("SessionCoordinator", () => {
     expect(coordinator.activeSession()?.sessionId).toBe(second.metadata.sessionId);
 
     await expect(
-      coordinator.exportData(first.metadata.sessionId, first.metadata.revision, "/tmp/first.csv", "csv")
+      coordinator.exportData(first.metadata.sessionId, first.metadata.revision, "/tmp/first.csv", {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true
+      })
     ).resolves.toMatchObject({ kind: "dataExported", path: "/tmp/first.csv", format: "csv" });
     expect(firstDelegate).toHaveBeenLastCalledWith(
       {
@@ -113,14 +119,32 @@ describe("SessionCoordinator", () => {
         sessionId: "runtime-first",
         revision: 0,
         path: "/tmp/first.csv",
-        format: "csv"
+        options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
       },
       undefined
     );
     expect(secondDelegate).toHaveBeenCalledOnce();
 
     await expect(
-      coordinator.exportData(first.metadata.sessionId, first.metadata.revision + 1, "/tmp/stale.csv", "csv")
+      coordinator.exportData(first.metadata.sessionId, first.metadata.revision, "/tmp/invalid-index.csv", {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true,
+        rowAxisPolicy: "preserve"
+      })
+    ).rejects.toThrow("polars backend does not accept a Pandas row-axis policy");
+    expect(firstDelegate).toHaveBeenCalledTimes(2);
+
+    await expect(
+      coordinator.exportData(first.metadata.sessionId, first.metadata.revision + 1, "/tmp/stale.csv", {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true
+      })
     ).rejects.toThrow("Ignored stale request revision");
     expect(firstDelegate).toHaveBeenCalledTimes(2);
   });
@@ -137,7 +161,7 @@ describe("SessionCoordinator", () => {
           kind: "dataExported",
           revision: request.revision,
           path: request.path,
-          format: request.format,
+          format: request.options.format,
           shape: { rows: 2, columns: 1 }
         };
       }
@@ -149,18 +173,25 @@ describe("SessionCoordinator", () => {
     if (opened.kind !== "sessionOpened") throw new Error("Expected the Pandas session to open.");
 
     await expect(
-      coordinator.exportData(opened.metadata.sessionId, opened.metadata.revision, "/tmp/missing.csv", "csv")
+      coordinator.exportData(opened.metadata.sessionId, opened.metadata.revision, "/tmp/missing.csv", {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true
+      })
     ).rejects.toThrow("explicit preserve-or-omit");
     expect(delegate).toHaveBeenCalledOnce();
 
     await expect(
-      coordinator.exportData(
-        opened.metadata.sessionId,
-        opened.metadata.revision,
-        "/tmp/preserved.csv",
-        "csv",
-        "preserve"
-      )
+      coordinator.exportData(opened.metadata.sessionId, opened.metadata.revision, "/tmp/preserved.csv", {
+        format: "csv",
+        delimiter: ";",
+        quoteChar: "'",
+        encoding: "utf-16le",
+        header: false,
+        rowAxisPolicy: "preserve"
+      })
     ).resolves.toMatchObject({ kind: "dataExported", path: "/tmp/preserved.csv" });
     expect(delegate).toHaveBeenLastCalledWith(
       {
@@ -168,8 +199,14 @@ describe("SessionCoordinator", () => {
         sessionId: "runtime-pandas",
         revision: 0,
         path: "/tmp/preserved.csv",
-        format: "csv",
-        rowAxisPolicy: "preserve"
+        options: {
+          format: "csv",
+          delimiter: ";",
+          quoteChar: "'",
+          encoding: "utf-16le",
+          header: false,
+          rowAxisPolicy: "preserve"
+        }
       },
       undefined
     );

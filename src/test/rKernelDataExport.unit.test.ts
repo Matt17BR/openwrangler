@@ -15,6 +15,7 @@ import {
   rKernelRenameDiff as renameDiff,
   rKernelRenamePreviewRequest as renamePreviewRequest
 } from "./rKernelBridgeTestFixtures";
+import { rCsvExportOptions, rParquetExportOptions } from "./rExportTestOptions";
 
 describe("R kernel data export", () => {
   it("exports the committed result of an editing R document through an extension-owned atomic CSV transaction", async () => {
@@ -45,18 +46,33 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/rejected.csv",
-        format: "csv",
-        rowAxisPolicy: "preserve"
+        options: { ...rCsvExportOptions, rowAxisPolicy: "preserve" }
       })
     ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
     expect(beginTransaction).not.toHaveBeenCalled();
+    for (const invalidOptions of [
+      { ...rCsvExportOptions, encoding: "windows-1252" },
+      { ...rCsvExportOptions, quoteChar: "'" }
+    ] as const) {
+      await expect(
+        bridge.request({
+          kind: "exportData",
+          sessionId,
+          revision: 0,
+          path: "/workspace/rejected.csv",
+          options: invalidOptions
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+    }
+    expect(beginTransaction).not.toHaveBeenCalled();
+    expect(exportData).not.toHaveBeenCalled();
     await expect(
       bridge.request({
         kind: "exportData",
         sessionId,
         revision: 0,
         path: "/workspace/orders.cleaned.csv",
-        format: "csv"
+        options: rCsvExportOptions
       })
     ).resolves.toEqual({
       kind: "dataExported",
@@ -73,7 +89,7 @@ describe("R kernel data export", () => {
     expect(exportData).toHaveBeenCalledWith(
       sessionId,
       0,
-      "csv",
+      rCsvExportOptions,
       expect.any(Function),
       expect.objectContaining({ timeoutMs: 30 * 60_000 })
     );
@@ -122,7 +138,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/orders.cleaned.csv",
-        format: "csv"
+        options: rCsvExportOptions
       })
     ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/orders.cleaned.csv", format: "csv" });
 
@@ -162,7 +178,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/orders.cleaned.parquet",
-        format: "parquet"
+        options: rParquetExportOptions
       })
     ).resolves.toEqual({
       kind: "dataExported",
@@ -175,7 +191,7 @@ describe("R kernel data export", () => {
     expect(exportData).toHaveBeenCalledWith(
       sessionId,
       0,
-      "parquet",
+      rParquetExportOptions,
       expect.any(Function),
       expect.objectContaining({ timeoutMs: 30 * 60_000 })
     );
@@ -208,7 +224,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/out.csv",
-        format: "csv"
+        options: rCsvExportOptions
       })
     ).resolves.toMatchObject({ kind: "error", code: "unsupported_mode" });
 
@@ -225,7 +241,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/out.parquet",
-        format: "parquet"
+        options: rParquetExportOptions
       })
     ).resolves.toMatchObject({
       kind: "error",
@@ -238,7 +254,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/out.csv",
-        format: "csv"
+        options: rCsvExportOptions
       })
     ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/out.csv", format: "csv" });
 
@@ -252,7 +268,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 0,
         path: "/workspace/out.csv",
-        format: "csv"
+        options: rCsvExportOptions
       })
     ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation" });
 
@@ -291,7 +307,7 @@ describe("R kernel data export", () => {
       sessionId,
       revision: 0,
       path: "/workspace/out.csv",
-      format: "csv"
+      options: rCsvExportOptions
     });
     await expect(exportRequest).rejects.toBeInstanceOf(DetachedBridgeRequestError);
     expect(atomic.rollback).toHaveBeenCalledOnce();
@@ -327,7 +343,7 @@ describe("R kernel data export", () => {
       sessionId,
       revision: 0,
       path: "/workspace/out.csv",
-      format: "csv"
+      options: rCsvExportOptions
     });
     await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
     transport.invalidate();
@@ -369,7 +385,7 @@ describe("R kernel data export", () => {
       sessionId,
       revision: 0,
       path: "/workspace/out.csv",
-      format: "csv"
+      options: rCsvExportOptions
     });
     await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
     transport.queuePreview({
@@ -416,7 +432,7 @@ describe("R kernel data export", () => {
         sessionId,
         revision: 1,
         path: "/workspace/out.csv",
-        format: "csv"
+        options: rCsvExportOptions
       })
     ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
     expect(beginTransaction).not.toHaveBeenCalled();
