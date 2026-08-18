@@ -15,12 +15,23 @@ import {
   dependencyGuardDependencyWire,
   dependencyGuardEnvironmentWire,
   encodeDependencyGuardFrame,
-  isCanonicalDependencyGuardToken
+  isCanonicalDependencyGuardToken,
+  type DependencyGuardErrorCode
 } from "../extension/dependencyGuardProtocol";
 import type { PythonEnvironment } from "../extension/pythonEnvironment";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
 
 const TOKEN = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const EXPECTED_DEPENDENCY_GUARD_EXIT_CODES = {
+  invalid_request: 10,
+  busy: 11,
+  malformed_state: 12,
+  validation_failed: 13,
+  pip_failed: 14,
+  stale_or_missing_marker: 15,
+  environment_changed: 16,
+  internal_error: 17
+} as const satisfies Readonly<Record<DependencyGuardErrorCode, number>>;
 const ENVIRONMENT: PythonEnvironment = {
   executable: "/env/bin/python",
   executableIdentity: {
@@ -153,7 +164,8 @@ describe("dependency guard protocol", () => {
   });
 
   it("owns the complete stable helper-error to exit-code mapping", () => {
-    for (const [code, exitCode] of Object.entries(DEPENDENCY_GUARD_EXIT_CODES)) {
+    expect(DEPENDENCY_GUARD_EXIT_CODES).toEqual(EXPECTED_DEPENDENCY_GUARD_EXIT_CODES);
+    for (const [code, exitCode] of Object.entries(EXPECTED_DEPENDENCY_GUARD_EXIT_CODES)) {
       const error = decodeDependencyGuardError(
         { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "error", code },
         "status",
