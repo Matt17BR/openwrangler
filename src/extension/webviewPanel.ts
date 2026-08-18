@@ -10,10 +10,8 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
-import { supportsOperation } from "../shared/operations";
 import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionMode";
-import { isOpenWranglerRequest } from "../shared/protocolValidation";
-import { decodeGridViewState, type GridViewState } from "../shared/viewState";
+import type { GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
@@ -25,6 +23,7 @@ import {
   type RendererImportPreparation,
   type RendererSynchronizationIdentity
 } from "./rendererSynchronizationCoordinator";
+import { decodeWebviewMessage } from "./webviewMessage";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
@@ -421,7 +420,11 @@ export class OpenWranglerPanel {
   }
 
   private async handleMessage(message: unknown): Promise<void> {
-    const decoded = this.decodeWebviewMessage(message);
+    const decoded = decodeWebviewMessage(message, {
+      sessionId: this.sessionId,
+      sessionRevision: this.sessionRevision,
+      snapshot: this.snapshot
+    });
     if (!decoded) {
       return;
     }
@@ -1541,129 +1544,6 @@ export class OpenWranglerPanel {
     }
   }
 
-  private decodeWebviewMessage(message: unknown): WebviewRequest | undefined {
-    if (!isRecord(message) || typeof message.kind !== "string") return undefined;
-    if (message.kind === "ready") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "ready" } : undefined;
-    }
-    if (message.kind === "requestSessionSnapshot") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "requestSessionSnapshot" } : undefined;
-    }
-    if (message.kind === "rendererSynchronized") {
-      const hasSessionIdentity =
-        isNonEmptyString(message.sessionId) && Number.isSafeInteger(message.revision) && Number(message.revision) >= 0;
-      const hasNoSessionIdentity = message.sessionId === null && message.revision === null;
-      return hasExactKeys(message, ["kind", "syncId", "sessionId", "revision"]) &&
-        isRendererControlId(message.syncId) &&
-        (hasSessionIdentity || hasNoSessionIdentity)
-        ? {
-            kind: "rendererSynchronized",
-            syncId: message.syncId,
-            sessionId: hasSessionIdentity ? String(message.sessionId) : null,
-            revision: hasSessionIdentity ? Number(message.revision) : null
-          }
-        : undefined;
-    }
-    if (message.kind === "rendererRetiring") {
-      const hasSessionIdentity =
-        isNonEmptyString(message.sessionId) && Number.isSafeInteger(message.revision) && Number(message.revision) >= 0;
-      const hasNoSessionIdentity = message.sessionId === null && message.revision === null;
-      return hasExactKeys(message, ["kind", "syncId", "sessionId", "revision"]) &&
-        isRendererControlId(message.syncId) &&
-        (hasSessionIdentity || hasNoSessionIdentity)
-        ? {
-            kind: "rendererRetiring",
-            syncId: message.syncId,
-            sessionId: hasSessionIdentity ? String(message.sessionId) : null,
-            revision: hasSessionIdentity ? Number(message.revision) : null
-          }
-        : undefined;
-    }
-    if (message.kind === "setViewContext") {
-      return hasExactKeys(message, ["kind", "viewContextId"]) && isNonEmptyString(message.viewContextId)
-        ? { kind: "setViewContext", viewContextId: message.viewContextId }
-        : undefined;
-    }
-    if (message.kind === "cancelViewRequests") {
-      return hasExactKeys(message, ["kind", "viewRequestIds"]) &&
-        Array.isArray(message.viewRequestIds) &&
-        message.viewRequestIds.every(isNonEmptyString)
-        ? { kind: "cancelViewRequests", viewRequestIds: [...message.viewRequestIds] }
-        : undefined;
-    }
-    if (message.kind === "prioritizeViewRequest") {
-      return hasExactKeys(message, ["kind", "viewRequestId"]) && isNonEmptyString(message.viewRequestId)
-        ? { kind: "prioritizeViewRequest", viewRequestId: message.viewRequestId }
-        : undefined;
-    }
-    if (message.kind === "updateViewState") {
-      if (!hasExactKeys(message, ["kind", "state"])) return undefined;
-      const state = decodeGridViewState(message.state);
-      return state ? { kind: "updateViewState", state } : undefined;
-    }
-    if (message.kind === "clearStepInspection") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "clearStepInspection" } : undefined;
-    }
-    if (message.kind === "changeImportOptions") {
-      return hasExactKeys(message, ["kind"], ["actionId"]) &&
-        (message.actionId === undefined || isRendererControlId(message.actionId))
-        ? {
-            kind: "changeImportOptions",
-            ...(message.actionId === undefined ? {} : { actionId: message.actionId })
-          }
-        : undefined;
-    }
-    if (message.kind === "changeBackend") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "changeBackend" } : undefined;
-    }
-    if (message.kind === "installRuntimeDependencies") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;
-    }
-    if (message.kind === "exportData") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
-    }
-    if (message.kind === "switchSessionMode") {
-      if (!hasExactKeys(message, ["kind", "mode", "state"]) || !isSessionMode(message.mode)) return undefined;
-      const state = decodeGridViewState(message.state);
-      return state ? { kind: "switchSessionMode", mode: message.mode, state } : undefined;
-    }
-    if (message.kind === "reconnectLiveSource") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "reconnectLiveSource" } : undefined;
-    }
-    if (
-      message.kind !== "runtimeRequest" ||
-      !hasExactKeys(message, ["kind", "request"], ["viewContextId", "priority"]) ||
-      !isRecord(message.request) ||
-      Object.prototype.hasOwnProperty.call(message.request, "sessionId") ||
-      Object.prototype.hasOwnProperty.call(message.request, "revision") ||
-      (message.viewContextId !== undefined && !isNonEmptyString(message.viewContextId)) ||
-      (message.priority !== undefined && message.priority !== "interactive" && message.priority !== "background")
-    ) {
-      return undefined;
-    }
-    const request = {
-      ...message.request,
-      sessionId: this.sessionId ?? "pending-session",
-      revision: this.sessionRevision
-    };
-    if (!isOpenWranglerRequest(request) || !WEBVIEW_RUNTIME_REQUEST_KINDS.has(request.kind)) return undefined;
-    if (message.priority !== undefined && request.kind !== "getSummary" && request.kind !== "getDatasetStats") {
-      return undefined;
-    }
-    if (
-      request.kind === "previewStep" &&
-      (!this.snapshot || !supportsOperation(this.snapshot.metadata.capabilities, request.step.kind))
-    ) {
-      return undefined;
-    }
-    return {
-      kind: "runtimeRequest",
-      request,
-      ...(message.viewContextId === undefined ? {} : { viewContextId: message.viewContextId }),
-      ...(message.priority === undefined ? {} : { priority: message.priority })
-    };
-  }
-
   private renderHtml(): string {
     const webview = this.panel.webview;
     const scriptUri = webview.asWebviewUri(
@@ -1736,63 +1616,6 @@ function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
   return rest;
 }
 
-type WebviewRequest =
-  | { kind: "ready" }
-  | { kind: "requestSessionSnapshot" }
-  | {
-      kind: "rendererSynchronized";
-      syncId: string;
-      sessionId: string | null;
-      revision: number | null;
-    }
-  | {
-      kind: "rendererRetiring";
-      syncId: string;
-      sessionId: string | null;
-      revision: number | null;
-    }
-  | { kind: "setViewContext"; viewContextId: string }
-  | { kind: "cancelViewRequests"; viewRequestIds: string[] }
-  | { kind: "prioritizeViewRequest"; viewRequestId: string }
-  | { kind: "updateViewState"; state: GridViewState }
-  | { kind: "clearStepInspection" }
-  | { kind: "changeImportOptions"; actionId?: string }
-  | { kind: "changeBackend" }
-  | { kind: "installRuntimeDependencies" }
-  | { kind: "exportData" }
-  | { kind: "switchSessionMode"; mode: SessionMode; state: GridViewState }
-  | { kind: "reconnectLiveSource" }
-  | {
-      kind: "runtimeRequest";
-      request: OpenWranglerRequest;
-      viewContextId?: string;
-      priority?: "interactive" | "background";
-    };
-
-const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
-  "getPage",
-  "getSummary",
-  "getDatasetStats",
-  "getColumnValues",
-  "inspectStep",
-  "previewStep",
-  "applyDraft",
-  "discardDraft",
-  "undoStep"
-]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isRendererControlId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9]{32}$/u.test(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
 function canChangeImportOptions(source: SessionSource): boolean {
   if (source.kind !== "file") return false;
   const extension = path.extname(source.path ?? source.uri ?? "").toLowerCase();
@@ -1807,10 +1630,6 @@ function backendDisplayName(backend: DataBackend): string {
   return "R";
 }
 
-function isSessionMode(value: unknown): value is SessionMode {
-  return value === "viewing" || value === "editing";
-}
-
 function modeName(mode: SessionMode): "Editing" | "Viewing" {
   return mode === "editing" ? "Editing" : "Viewing";
 }
@@ -1823,18 +1642,6 @@ function fileSourceUri(source: SessionSource): vscode.Uri | undefined {
 
 function reconfigurationCancelledResponse(): OpenWranglerResponse {
   return { kind: "cancelled", targetRequestId: "change-import-options" };
-}
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[] = []
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
-    Object.keys(value).every((key) => allowed.has(key))
-  );
 }
 
 type NonSortEditorAction =
