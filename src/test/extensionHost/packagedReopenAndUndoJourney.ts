@@ -65,6 +65,7 @@ export function createPackagedReopenAndUndoJourney(
     sessionId: string,
     stepId: string
   ): Promise<Locator> {
+    await dismissStaleWorkbenchHover(workbench);
     await app.getByRole("button", { name: "Edit latest", exact: true }).click();
     const dialog = app.getByRole("dialog", { name: "Edit cleaning step" });
     await dialog.waitFor({ state: "visible", timeout: 10_000 });
