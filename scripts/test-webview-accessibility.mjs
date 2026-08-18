@@ -812,6 +812,30 @@ async function verifyInsightsDrawerWorkflow(browser) {
         `${JSON.stringify({ interactiveChartBounds, histogramControlBounds })}.`
     );
   }
+  await histogramControl.hover({ position: { x: histogramControlBounds.width / 40, y: 1 } });
+  const pointerHoverState = await interactiveHistogram.evaluate((element) => {
+    const control = element.querySelector(".numericHistogramHitTarget");
+    const bars = [...element.querySelectorAll(".numericHistogramBar")];
+    if (!control) return undefined;
+    return {
+      activeBins: element.querySelectorAll(".numericHistogramBin.active").length,
+      controlBackground: getComputedStyle(control).backgroundColor,
+      totalBars: bars.length
+    };
+  });
+  const pointerStatus = (await interactiveHistogram.locator(".miniChartCaption").textContent())?.trim();
+  if (
+    !pointerHoverState ||
+    pointerHoverState.activeBins !== 1 ||
+    !["rgba(0, 0, 0, 0)", "transparent"].includes(pointerHoverState.controlBackground) ||
+    pointerHoverState.totalBars === 0 ||
+    !pointerStatus?.includes("row")
+  ) {
+    throw new Error(
+      `${interactiveHarness} painted its full-chart pointer target over the histogram distribution: ` +
+        `${JSON.stringify({ pointerHoverState, pointerStatus })}.`
+    );
+  }
   const firstLabel = await histogramControl.getAttribute("aria-label");
   await histogramControl.focus();
   const interactiveStatus = interactiveHistogram.locator(".miniChartCaption");
