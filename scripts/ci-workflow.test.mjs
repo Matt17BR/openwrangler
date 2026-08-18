@@ -886,6 +886,9 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   assert.equal(manifest.filter((line) => line.includes("|libxdmcp6|1:1.1.3-0ubuntu6|amd64|")).length, 1);
   assert.equal(manifest.filter((line) => line.includes("|r-4.5.3|1|amd64|67491866|")).length, 1);
   assert.match(run, /timeout --signal=TERM --kill-after=10s 300s bash -c '\n[ ]{2}set -euo pipefail/u);
+  const curlInvocations = [...run.matchAll(/(?<![A-Za-z0-9_-])curl(?=\s)/gu)];
+  assert.equal(curlInvocations.length, 1);
+  const curlIndex = curlInvocations[0].index;
   assert.match(
     run,
     /timeout --signal=TERM --kill-after=5s 180s \\\n+[ ]{6}curl --fail --location --proto "=https" --tlsv1\.2 --connect-timeout 20 --max-time 175 --max-filesize "\$size" \\\n+[ ]{6}--output "\$artifact_path" "\$url"/u
@@ -899,13 +902,19 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
     ...run.matchAll(/while IFS="\|" read -r filename package version architecture size sha256 url; do/gu)
   ].map((match) => match.index);
   assert.equal(validationStarts.length, 3);
+  const downloadLoopEnd = run.indexOf(`' bash "$artifact_dir" <<< "$artifact_manifest"`);
+  assert.ok(validationStarts[0] < curlIndex && curlIndex < downloadLoopEnd);
   const installIndex = run.indexOf('dpkg --install -- "${install_paths[@]}"');
   assert.ok(validationStarts[1] < installIndex && installIndex < validationStarts[2]);
   assert.match(
     run,
     /test "\$verified_count" = "\$artifact_count"\ntest "\$verified_bytes" = "\$artifact_bytes"\ntest "\$\(find "\$artifact_dir" -mindepth 1 -maxdepth 1 \| wc -l\)" = "\$artifact_count"\nsudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \\\n+[ ]{2}dpkg --install -- "\$\{install_paths\[@\]\}"/u
   );
-  assert.equal(run.match(/\bdpkg --install\b/gu)?.length, 1);
+  const packageInstallerInvocations = [...run.matchAll(/(?<![A-Za-z0-9_-])dpkg\s+(?:--install|-i|--unpack)(?=\s)/gu)];
+  assert.deepEqual(
+    packageInstallerInvocations.map((match) => match[0]),
+    ["dpkg --install"]
+  );
   assert.match(
     run,
     /^dpkg_audit_path="\$\{artifact_dir\}\/dpkg-audit\.txt"\ntimeout --signal=TERM --kill-after=5s 30s dpkg --audit \| head --bytes=65537 > "\$dpkg_audit_path"\ndpkg_audit_size="\$\(stat --format='%s' -- "\$dpkg_audit_path"\)"\ntest "\$dpkg_audit_size" -le 65536\ntest ! -s "\$dpkg_audit_path"$/mu
@@ -1030,6 +1039,18 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
     (job) => mutateProvisioning(job, (run) => run.replace(' --max-filesize "$size"', "")),
     (job) => mutateProvisioning(job, (run) => run.replace('--max-filesize "$size"', '--max-filesize "1"')),
     (job) =>
+      mutateProvisioning(
+        job,
+        (run) => run + '\ncurl --output "${artifact_dir}/unbounded.deb" "https://example.invalid/unbounded.deb"\n'
+      ),
+    (job) =>
+      mutateProvisioning(
+        job,
+        (run) =>
+          run +
+          '\ntimeout --signal=TERM --kill-after=5s 180s /usr/bin/curl --fail --max-time 175 --max-filesize "1" --output "${artifact_dir}/alias.deb" "https://example.invalid/alias.deb"\n'
+      ),
+    (job) =>
       mutateProvisioning(job, (run) =>
         removeSecond(run, 'test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"\n')
       ),
@@ -1040,6 +1061,15 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
           "sudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \\\n  dpkg --install",
           "sudo --non-interactive dpkg --install"
         )
+      ),
+    (job) => mutateProvisioning(job, (run) => run + '\nsudo dpkg -i -- "${install_paths[@]}"\n'),
+    (job) => mutateProvisioning(job, (run) => run + '\nsudo dpkg --unpack -- "${install_paths[@]}"\n'),
+    (job) =>
+      mutateProvisioning(
+        job,
+        (run) =>
+          run +
+          '\nsudo --non-interactive timeout --signal=TERM --kill-after=10s 180s dpkg --install -- "${install_paths[@]}"\n'
       ),
     (job) =>
       mutateProvisioning(job, (run) =>
