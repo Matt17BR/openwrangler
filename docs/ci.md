@@ -56,6 +56,28 @@ The ruleset requires only integration-bound `validate` and `CodeQL gate`. The ex
 and 53.5% observed runner-time reduction. It is one controlled exact-head comparison, not a p95 or reliability claim;
 the rolling wall-time and first-attempt reliability gates remain open.
 
+### Base freshness and integration
+
+A protected-main advance does not by itself invalidate a reviewed pull-request head. Before replaying a candidate,
+compare its changed paths, overlapping hunks, and behavior ownership with the new base, then inspect the virtual merge
+tree. Keep a clean head, its reviews, and its successful checks when that audit finds no relevant collision.
+This preserves evidence while the candidate waits; it does not make a behind head mergeable. The current ruleset
+requires branches to be up to date, and the repository does not currently use a merge queue. At the candidate's
+actual landing slot, update a behind head once onto the exact protected-main head and qualify that changed integration
+object.
+
+True overlaps and dependencies need an explicit landing order. The first lander keeps its reviewed head. The second
+lander replays onto the exact landed tree and owns the conflict resolution. A replay whose per-commit
+`git range-diff` entries are all `=` transfers the existing reviews when its commit mapping, scope, and semantics are
+unchanged. Rerun the checks affected by a changed base or an adaptation. Disjoint work may proceed through local
+implementation, review, publication, and hosted qualification in parallel; only protected-main writes and true
+stacks are serialized.
+
+Required checks must describe the tree that will land. A separately reviewed workflow and settings change may enable
+a merge queue instead of the final branch update. Its required workflows must run on the `merge_group` event and bind
+their results to that merge-group SHA. A successful check on the pull-request head does not prove the queued merge
+result.
+
 Superseded pull-request runs are cancelled. Release jobs are never cancelled this way.
 
 ## Failure-signal policy

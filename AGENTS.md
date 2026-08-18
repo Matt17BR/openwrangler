@@ -34,6 +34,25 @@ preparing a release. The release commit contains only the version bump, changelo
 metadata. Use rebase merge when a pull request has several reviewable commits. Squash only when the pull request is
 already one coherent commit.
 
+## Base freshness and integration
+
+A protected-main advance does not by itself require a reviewed branch to be replayed. First compare changed-path
+ownership, overlapping hunks and behavior contracts, and the candidate's virtual merge tree against the new base.
+Preserve a clean head, its reviews, and its successful checks when that audit finds no relevant collision.
+This preserves review and qualification evidence; it does not make a behind head mergeable. The current ruleset
+requires branches to be up to date, and no merge queue is enabled. Keep the reviewed head unchanged until its actual
+landing slot. If it is then behind, update it once onto the exact protected-main head and qualify that changed
+integration object.
+
+When candidates truly overlap or form a dependency, record their landing order. The first lander keeps its reviewed
+head; the second lander replays onto the exact landed tree and resolves the real overlap. An exact replay whose
+per-commit `git range-diff` entries are all `=` transfers the existing reviews when its commit mapping, scope, and
+semantics are unchanged. Rerun the gates affected by a changed base or an adaptation. Disjoint candidates may be
+implemented, reviewed, published, and qualified concurrently. Serialize only protected-main writes and true stacks.
+A separately reviewed workflow and settings change may replace that final update with a merge queue. Required checks
+must then run on and bind the `merge_group` result SHA; successful pull-request head checks are not a substitute for
+that merged-tree proof.
+
 ## Non-negotiable invariants
 
 1. Pandas, Polars, DuckDB, and PySpark paths remain engine-native. Polars code must never call `to_pandas()`; DuckDB code must never convert through Pandas, Polars, or Arrow. PySpark is a live-notebook, viewing-only backend: it must never call `toPandas()`, `toArrow()`, convert through a local dataframe engine, or perform an unbounded `collect()`/iterator. Projection, filtering, sorting, counting, and aggregation stay in Spark. Container profiles use canonical orderable native keys. A page must pass its Spark-side transport-byte preflight before value collection and then remain within its cell, strict-protocol-byte, complex-node, and nesting-depth limits; only that bounded page/value sample or a fixed-size aggregate result may cross into the kernel process.
