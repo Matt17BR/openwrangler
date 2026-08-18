@@ -9,6 +9,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - **Extract regex group** retains its source column and creates one stable output from the selected capture group in
   the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
   engine-native live and generated execution; PySpark remains viewing-only.
+- **Split text into columns** retains its source column and atomically creates 2–64 ordered output columns from one
+  non-empty literal delimiter. Null and missing parts stay null, participating empty parts stay empty, and extra parts
+  are ignored across engine-native Pandas, Polars, DuckDB, and Native R execution; PySpark remains viewing-only.
 
 ### Security
 
