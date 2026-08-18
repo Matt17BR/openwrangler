@@ -190,7 +190,7 @@ independently of the response and session counts.
 This v1 infrastructure is intentionally non-promotional: `releaseGate` is always false, it defines no numeric release
 threshold, and readiness does not consume its output. A subsequent reviewed change must define how an immutable
 release-candidate run authors the required R performance record and resolves the stable-source/candidate circularity
-without reusing, rebuilding, or blessing a diagnostic candidate. Until that record and the installed all-29 evidence
+without reusing, rebuilding, or blessing a diagnostic candidate. Until that record and the installed all-30 evidence
 exist, no 2.x stable source is ready.
 
 Every candidate core cell runs that same Clone lifecycle; Linux VS Code retains all-block grid depth, while macOS and
@@ -271,11 +271,11 @@ That top-level section contains only the canonical table, so preview-era or cont
 an all-Done matrix. Every exact ordered row must be Done, must use the reviewed stable availability and `Stable release` cells, and must
 say `Exact stable acceptance passed and is recorded` alongside exactly its row-specific tracked evidence references plus
 the packaged extension-host, candidate-workflow, and testing-record references. The stable scope explicitly includes ordinary base `data.frame`, tibble, `data.table`, and
-`collapse::qDF()`/`qTBL()`/`qDT()` frames; all 29 catalog operations and their generated-code surfaces; R transport,
+`collapse::qDF()`/`qTBL()`/`qDT()` frames; all 30 catalog operations and their generated-code surfaces; R transport,
 document, insertion, and export journeys; a release-candidate R performance record; complete VS Code acceptance; and
 the bounded Cursor lifecycle/responsive-grid/reveal-state compatibility seam. The active R-terminal transport and export rows claim Linux only, matching the platform where the
 candidate installs and exercises the native R editor tooling. Cursor does not own an R literate-document row. The current prior-27 suites plus
-focused Custom Code and multi-output split contracts cannot satisfy either all-29 catalog row by themselves. The dedicated
+focused Custom Code, multi-output split, and public regex extraction contracts cannot satisfy either all-30 catalog row by themselves. The dedicated
 `r/tests/complete_catalog_contract.R` runtime/generated-code contract and
 `src/test/rCompleteCatalogCodeExport.unit.test.ts` code-export contract now provide the required local-source
 owners; the rows still cannot become Done without their tracked candidate record and the remaining stable gates.

@@ -510,7 +510,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /Switch between counts and percentages from the grid or column panel\. Hover or focus a bin for both, or click a value or bin to filter\./u
   );
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
-  assert.match(readme, /Choose from 29 operations/u);
+  assert.match(readme, /Choose from 30 operations/u);
   assert.match(readme, /Edit and cleaning Undo target only the most recent step/u);
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
