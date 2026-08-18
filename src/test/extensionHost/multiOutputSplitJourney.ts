@@ -77,6 +77,7 @@ export async function exerciseMultiOutputSplitJourney(
     /pl\.col\('market'\)\.cast\(pl\.String\)\.str\.split\('-'\)\.list\.get\(item, null_on_oob=True\)\.alias\(name\)/u
   );
   assert.match(preview.code ?? "", /for item, name in enumerate\(\['market_part', 'market_remainder'\]\)/u);
+  const previewApp = await reacquireApp("Multi-output split preview");
   const previewPage = await testing.request({
     kind: "getPage",
     sessionId,
@@ -93,7 +94,6 @@ export async function exerciseMultiOutputSplitJourney(
   assert.deepEqual(previewPage.page.columnIds, [firstOutput.id, secondOutput.id]);
   assert.deepEqual(previewPage.page.rows[0]?.values[0], sourceValue);
   assert.equal(previewPage.page.rows[0]?.values[1]?.isNull, true, "A missing literal part must remain null.");
-  const previewApp = await reacquireApp("Multi-output split preview");
   const review = previewApp.getByRole("region", { name: "Draft review" });
   await review.getByText("Split text into columns", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await review.locator('[aria-label="Data diff summary"]').getByText("+2 columns", { exact: true }).waitFor({
