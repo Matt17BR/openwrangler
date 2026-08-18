@@ -8,7 +8,8 @@ vi.mock("../webviews/vscodeApi", () => ({
   vscode: { postMessage, getState: () => undefined, setState: () => undefined }
 }));
 
-import { App, alignedColumnWindow } from "../webviews/App";
+import { App } from "../webviews/App";
+import { alignedColumnWindow } from "../webviews/appState";
 
 const step: TransformStep = {
   id: "round-column",
