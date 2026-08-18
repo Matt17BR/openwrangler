@@ -19,6 +19,22 @@ describe("protocol-v2 request validation", () => {
     }
   );
 
+  it("requires an exact requested runtime identity for session clones", () => {
+    const request = requests.find((candidate) => candidate.kind === "openSession");
+    if (!request || request.kind !== "openSession" || !request.cloneFrom) {
+      throw new Error("Expected the canonical cloned-session fixture.");
+    }
+    const { requestedSessionId: _requestedSessionId, ...withoutRequestedSessionId } = request;
+
+    expect(isOpenWranglerRequest(request)).toBe(true);
+    expect(isOpenWranglerRequest(withoutRequestedSessionId)).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, cloneFrom: { sessionId: "", revision: 3 } })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, cloneFrom: { sessionId: "session-1", revision: -1 } })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, cloneFrom: { sessionId: "session-1", revision: 3, extra: true } })).toBe(
+      false
+    );
+  });
+
   it("keeps host runtime identity outside every protocol-v2 payload", () => {
     const runtimeIdentity = runtimeIdentityForDataBackend("polars");
     const openRequest = requests.find((request) => request.kind === "openSession");

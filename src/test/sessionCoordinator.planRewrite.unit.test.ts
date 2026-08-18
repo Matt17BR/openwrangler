@@ -55,6 +55,12 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     });
     expect(harness.replayedStepIds()).toEqual([first.id, second.id, third.id]);
     expect(harness.replayedSteps()[0]).toEqual(replacement);
+    expect(harness.candidateOpenRequests()).toEqual([
+      expect.objectContaining({
+        cloneFrom: { sessionId: "runtime-old", revision: 7 },
+        requestedSessionId: expect.any(String)
+      })
+    ]);
     expect(coordinator.activeSession()).toMatchObject({
       sessionId: opened.metadata.sessionId,
       metadata: { steps: [replacement, second, third] },
@@ -107,6 +113,62 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(harness.closedRuntimeIds()).not.toContain("runtime-old");
   });
 
+  it("rejects a candidate whose backend drifts during suffix replay", async () => {
+    const harness = rewriteHarness({ draft: replacement, replayBackend: "pandas" });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: harness.request });
+    const opened = await open(bridge, initialSource);
+    const before = coordinator.activeSession();
+
+    const response = await bridge.rewriteCleaningPlan?.(
+      opened.metadata.sessionId,
+      opened.metadata.revision,
+      first.id,
+      "applyDraft",
+      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+    );
+
+    expect(response).toMatchObject({ kind: "error", code: "plan_rewrite_failed", recoverable: true });
+    expect(coordinator.activeSession()).toEqual(before);
+    expect(harness.closedRuntimeIds()).toHaveLength(1);
+  });
+
+  it("keeps a confirmed view change that arrives after the replacement draft", async () => {
+    const harness = rewriteHarness({ draft: replacement });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: harness.request });
+    const opened = await open(bridge, initialSource);
+    const currentFilter = {
+      logic: "and" as const,
+      filters: [],
+      sort: [{ column: "value", direction: "asc" as const, nulls: "last" as const }]
+    };
+
+    const page = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      offset: 0,
+      limit: 100,
+      columnOffset: 0,
+      columnLimit: 16,
+      filterModel: currentFilter,
+      viewRequestId: "view-after-preview"
+    });
+    expect(page).toMatchObject({ kind: "page", metadata: { filterModel: currentFilter } });
+
+    const response = await bridge.rewriteCleaningPlan?.(
+      opened.metadata.sessionId,
+      opened.metadata.revision,
+      first.id,
+      "applyDraft",
+      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+    );
+
+    expect(response).toMatchObject({ kind: "planUpdated", metadata: { filterModel: currentFilter } });
+    expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: currentFilter })]);
+  });
+
   it("persists the complete candidate before publishing it once", async () => {
     const harness = rewriteHarness({ draft: replacement });
     let stored: Record<string, unknown> = {};
@@ -117,7 +179,7 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       get: <T>(_key: string, defaultValue?: T): T | undefined =>
         (Object.keys(stored).length > 0 ? stored : defaultValue) as T | undefined,
       update: vi.fn(async (_key: string, value: unknown) => {
-        activeStepsDuringPersistence = coordinatorRef.current?.activeSession()?.metadata.steps;
+        activeStepsDuringPersistence ??= coordinatorRef.current?.activeSession()?.metadata.steps;
         stored = value as Record<string, unknown>;
       })
     } as unknown as Memento;
@@ -143,7 +205,9 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
   });
 });
 
-function rewriteHarness(options: { draft?: TransformStep; rejectStepId?: string } = {}) {
+function rewriteHarness(
+  options: { draft?: TransformStep; rejectStepId?: string; replayBackend?: "pandas" | "polars" } = {}
+) {
   const requests: OpenWranglerRequest[] = [];
   const closed: string[] = [];
   const replayed: TransformStep[] = [];
@@ -170,6 +234,9 @@ function rewriteHarness(options: { draft?: TransformStep; rejectStepId?: string 
       candidateSteps = [];
       return openedFor(message, metadataFor({ runtimeId: candidateId, source: initialSource }));
     }
+    if (message.kind === "getPage" && message.sessionId === "runtime-old") {
+      return pageFor(message, { ...initialMetadata, filterModel: message.filterModel });
+    }
     if (message.kind === "previewStep" && message.sessionId === candidateId) {
       replayed.push(message.step);
       if (message.step.id === options.rejectStepId) {
@@ -187,6 +254,7 @@ function rewriteHarness(options: { draft?: TransformStep; rejectStepId?: string 
           ...metadataFor({
             runtimeId: candidateId,
             source: initialSource,
+            backend: options.replayBackend,
             revision: message.revision + 1,
             steps: candidateSteps,
             draftStep: message.step
@@ -205,6 +273,7 @@ function rewriteHarness(options: { draft?: TransformStep; rejectStepId?: string 
         metadataFor({
           runtimeId: candidateId,
           source: initialSource,
+          backend: options.replayBackend,
           revision: message.revision + 1,
           steps: candidateSteps
         }),
@@ -217,6 +286,7 @@ function rewriteHarness(options: { draft?: TransformStep; rejectStepId?: string 
         metadataFor({
           runtimeId: candidateId,
           source: initialSource,
+          backend: options.replayBackend,
           revision: message.revision,
           steps: candidateSteps,
           filterModel: message.filterModel
@@ -233,6 +303,16 @@ function rewriteHarness(options: { draft?: TransformStep; rejectStepId?: string 
     request,
     replayedStepIds: () => replayed.map((step) => step.id),
     replayedSteps: () => replayed,
-    closedRuntimeIds: () => closed
+    closedRuntimeIds: () => closed,
+    candidateOpenRequests: () =>
+      requests.filter(
+        (request): request is Extract<OpenWranglerRequest, { kind: "openSession" }> =>
+          request.kind === "openSession" && request.requestedSessionId !== undefined
+      ),
+    candidatePageRequests: () =>
+      requests.filter(
+        (request): request is Extract<OpenWranglerRequest, { kind: "getPage" }> =>
+          request.kind === "getPage" && request.sessionId === candidateId
+      )
   };
 }

@@ -809,11 +809,16 @@ Selected earlier-step edit/delete slice, 2026-08-18:
   publication. Any open, bind, replay, schema, generated-code, view, or source-identity failure closes
   the candidate and leaves the confirmed runtime, plan, draft, view, revision, code, caches, and source unchanged.
 - Pandas, Polars, and DuckDB preview an earlier replacement from the exact selected prefix and refuse direct partial
-  publication. Native R enforces the same prefix and host-transaction boundary without crossing Python. Focused host
-  tests prove full suffix replay, atomic rejection, stable IDs, one cleanup, and source isolation.
+  publication. Native R enforces the same prefix and host-transaction boundary without crossing Python. Exact-source
+  clone tests cover lazy-file drift plus eager-file and live-variable rebinding; every editing engine executes the
+  generated replacement-plus-suffix program. Focused host tests prove full suffix replay, atomic rejection, stable
+  IDs, backend/source validation, persistence rollback safety, authoritative view restoration, and one cleanup.
 - Webview and Activity Bar edit/delete entry points share the transaction. Applied-step inspection, recovery,
   persisted cleaning and viewing state, and session disposal keep their existing owners. Reordering remains deferred;
   there is no move request, command, or hidden index-only fallback.
+- Installed extension-host acceptance uses the real custom editor to replace and delete the first committed step,
+  preserves a later stable-ID suffix, verifies the rebuilt grid and generated code, restores the original plan, and
+  proves the source file remains byte-identical.
 
 This completes the P1 arbitrary earlier-step edit/delete slice. It does not claim or implement committed-step
 reordering.

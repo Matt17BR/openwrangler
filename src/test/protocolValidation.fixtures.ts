@@ -191,6 +191,7 @@ const requests: OpenWranglerRequest[] = [
     kind: "openSession",
     source: metadata.source,
     requestedSessionId: "runtime-candidate",
+    cloneFrom: { sessionId: "session-1", revision: 3 },
     backend: "polars",
     mode: "editing",
     pageSize: 200,

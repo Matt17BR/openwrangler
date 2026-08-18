@@ -540,7 +540,13 @@ export type RKernelRequest =
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
       kind: "openSession";
-      payload: Readonly<{ sessionId: string; variableName: string; page: RKernelPageWindow }>;
+      payload: Readonly<{
+        sessionId: string;
+        variableName: string;
+        page: RKernelPageWindow;
+        cloneFromSessionId?: string;
+        cloneFromRevision?: number;
+      }>;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -1187,7 +1193,12 @@ function validateRequest(request: RKernelRequest): void {
   if (record.transportVersion !== R_KERNEL_TRANSPORT_VERSION) fail("R kernel request version is unsupported.");
   identifier(record.requestId, "request.requestId");
   if (record.kind === "openSession") {
-    const payload = exactRecord(record.payload, ["sessionId", "variableName", "page"], "R kernel open payload");
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "variableName", "page"],
+      ["cloneFromSessionId", "cloneFromRevision"],
+      "R kernel open payload"
+    );
     identifier(payload.sessionId, "request.payload.sessionId");
     const variableName = boundedText(
       payload.variableName,
@@ -1196,6 +1207,13 @@ function validateRequest(request: RKernelRequest): void {
       false
     );
     if (variableName.length === 0) fail("R variable name may not be empty.");
+    if ((payload.cloneFromSessionId === undefined) !== (payload.cloneFromRevision === undefined)) {
+      fail("R kernel clone source fields must be provided together.");
+    }
+    if (payload.cloneFromSessionId !== undefined) {
+      identifier(payload.cloneFromSessionId, "request.payload.cloneFromSessionId");
+      boundedInteger(payload.cloneFromRevision, "request.payload.cloneFromRevision", Number.MAX_SAFE_INTEGER);
+    }
     validatePage(payload.page);
     return;
   }

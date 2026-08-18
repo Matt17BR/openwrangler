@@ -100,6 +100,7 @@ export class SessionRuntimeEstablisher {
       metadata: response.metadata,
       code: "",
       viewState: initialViewingState(response.metadata),
+      viewChangeEpoch: 0,
       closing: false,
       reconfiguring: false,
       reconnecting: false,

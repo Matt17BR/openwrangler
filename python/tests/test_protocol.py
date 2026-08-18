@@ -47,6 +47,33 @@ def test_open_session_accepts_only_a_non_empty_requested_session_identity() -> N
         decode_envelope(envelope)
 
 
+def test_open_session_clone_source_is_exact_and_requires_a_host_session_identity() -> None:
+    request = {
+        "kind": "openSession",
+        "source": {"kind": "file", "label": "sample.csv", "path": "/tmp/sample.csv"},
+        "requestedSessionId": "candidate-session",
+        "cloneFrom": {"sessionId": "confirmed-session", "revision": 7},
+        "pageSize": 200,
+        "columnOffset": 0,
+        "columnLimit": 64,
+    }
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "open-clone",
+        "priority": "interactive",
+        "request": request,
+    }
+
+    assert decode_envelope(envelope)[2]["cloneFrom"] == {"sessionId": "confirmed-session", "revision": 7}
+    del request["requestedSessionId"]
+    with pytest.raises(ProtocolError, match="cloneFrom requires requestedSessionId"):
+        decode_envelope(envelope)
+    request["requestedSessionId"] = "candidate-session"
+    request["cloneFrom"] = {"sessionId": "confirmed-session", "revision": 7, "legacy": True}
+    with pytest.raises(ProtocolError, match="exactly sessionId and revision"):
+        decode_envelope(envelope)
+
+
 def test_open_session_accepts_supported_backends_and_scopes_pyspark_to_live_notebooks() -> None:
     envelope = {
         "protocolVersion": 2,

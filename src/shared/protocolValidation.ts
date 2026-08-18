@@ -122,13 +122,15 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       const candidate = exactRecord(
         value,
         ["kind", "source", "pageSize", "columnOffset", "columnLimit"],
-        ["requestedSessionId", "backend", "mode"]
+        ["requestedSessionId", "cloneFrom", "backend", "mode"]
       );
       return (
         candidate !== undefined &&
         candidate.kind === "openSession" &&
         isSessionSource(candidate.source) &&
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
+        optional(candidate, "cloneFrom", isSessionCloneSource) &&
+        (candidate.cloneFrom === undefined || candidate.requestedSessionId !== undefined) &&
         optional(candidate, "backend", (backend) => isOneOf(backend, DATA_BACKENDS)) &&
         (candidate.backend !== "pyspark" ||
           (isRecord(candidate.source) &&
@@ -284,6 +286,11 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
     default:
       return false;
   }
+}
+
+function isSessionCloneSource(value: unknown): boolean {
+  const candidate = exactRecord(value, ["sessionId", "revision"]);
+  return candidate !== undefined && isNonEmptyString(candidate.sessionId) && isNonNegativeInteger(candidate.revision);
 }
 
 export function isExportOptions(value: unknown): value is ExportOptions {

@@ -131,6 +131,9 @@ class PandasEngine(DataFrameEngine):
             return value.to_frame()
         return value
 
+    def clone_session_source(self, frame: Any) -> Any:
+        return _isolated_object_frame(self.normalize(frame))
+
     def export_data(
         self,
         frame: Any,

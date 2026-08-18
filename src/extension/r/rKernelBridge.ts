@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import {
   PROTOCOL_VERSION,
@@ -173,6 +174,22 @@ export class RKernelBridge implements OpenWranglerBridge {
     const invalid = validateOpenRequest(request);
     if (invalid) return invalid;
     const sessionId = request.requestedSessionId as string;
+    const cloneSource = request.cloneFrom ? this.sessions.get(request.cloneFrom.sessionId) : undefined;
+    if (
+      request.cloneFrom &&
+      (!cloneSource ||
+        cloneSource.revision !== request.cloneFrom.revision ||
+        cloneSource.invalidated ||
+        cloneSource.mode !== (request.mode ?? cloneSource.mode) ||
+        !isDeepStrictEqual(cloneSource.source, request.source))
+    ) {
+      return errorResponse(
+        "stale_clone_source",
+        "The confirmed R source session changed before its private replay candidate could open.",
+        true,
+        sessionId
+      );
+    }
     if (this.verifiedVariable && request.source.variableName !== this.verifiedVariable.name) {
       return errorResponse(
         "r_variable_changed",
@@ -196,7 +213,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       const result = await this.transport.open(
         request.source.variableName as string,
         pageWindow(0, request.pageSize, request.columnOffset, request.columnLimit, emptyRViewQuery()),
-        transportOptions(options, sessionId)
+        transportOptions(options, sessionId, request.cloneFrom)
       );
       if (generation !== this.kernelGeneration) {
         return kernelChangedError(sessionId);

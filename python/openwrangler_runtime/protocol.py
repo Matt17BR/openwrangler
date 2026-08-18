@@ -46,6 +46,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "kind",
         "source",
         "requestedSessionId",
+        "cloneFrom",
         "backend",
         "mode",
         "pageSize",
@@ -205,6 +206,19 @@ def decode_request(value: Any) -> dict[str, Any]:
         requested_session_id = request.get("requestedSessionId")
         if requested_session_id is not None and (not isinstance(requested_session_id, str) or not requested_session_id):
             raise ProtocolError("requestedSessionId must be a non-empty string.")
+        clone_from = request.get("cloneFrom")
+        if clone_from is not None:
+            clone = _mapping(clone_from, "cloneFrom")
+            if set(clone) != {"sessionId", "revision"}:
+                raise ProtocolError("cloneFrom must contain exactly sessionId and revision.")
+            if not isinstance(clone.get("sessionId"), str) or not clone["sessionId"]:
+                raise ProtocolError("cloneFrom.sessionId must be a non-empty string.")
+            revision = clone.get("revision")
+            if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+                raise ProtocolError("cloneFrom.revision must be a non-negative integer.")
+            if requested_session_id is None:
+                raise ProtocolError("cloneFrom requires requestedSessionId.")
+            request["cloneFrom"] = dict(clone)
     if kind == "previewStep":
         step = _mapping(request["step"], "step")
         try:
