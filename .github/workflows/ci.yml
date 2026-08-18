@@ -94,15 +94,48 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install the authenticated R 4.5.3 runtime
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          readonly r_package_url="https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"
+          readonly r_package_size="67491866"
+          readonly r_package_sha256="93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8"
+          readonly r_package_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"
+          readonly r_package_path="${r_package_dir}/r-4.5.3_1_amd64.deb"
+          timeout --signal=TERM --kill-after=5s 180s \
+            curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 175 \
+            --output "$r_package_path" "$r_package_url"
+          test ! -L "$r_package_path"
+          test -f "$r_package_path"
+          test "$(stat --format='%F' -- "$r_package_path")" = "regular file"
+          test "$(stat --format='%h' -- "$r_package_path")" = "1"
+          readonly r_package_identity="$(stat --format='%d:%i:%f:%h' -- "$r_package_path")"
+          test "$(stat --format='%s' -- "$r_package_path")" = "$r_package_size"
+          read -r actual_sha256 _ < <(sha256sum -- "$r_package_path")
+          test "$actual_sha256" = "$r_package_sha256"
+          sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=10s 180s apt-get update
+          test ! -L "$r_package_path"
+          test -f "$r_package_path"
+          test "$(stat --format='%F' -- "$r_package_path")" = "regular file"
+          test "$(stat --format='%d:%i:%f:%h' -- "$r_package_path")" = "$r_package_identity"
+          test "$(stat --format='%s' -- "$r_package_path")" = "$r_package_size"
+          read -r actual_sha256 _ < <(sha256sum -- "$r_package_path")
+          test "$actual_sha256" = "$r_package_sha256"
+          test "$(dpkg-deb --field "$r_package_path" Package)" = "r-4.5.3"
+          test "$(dpkg-deb --field "$r_package_path" Version)" = "1"
+          sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=10s 360s \
+            apt-get install --yes --no-install-recommends "$r_package_path" libx11-dev
+          test "$(dpkg-query --show --showformat='${Version}' r-4.5.3)" = "1"
+          test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"
+          printf '%s\n' '/opt/R/4.5.3/bin' >> "$GITHUB_PATH"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          r-version: "4.5"
+          r-version: "4.5.3"
+          install-r: false
           use-public-rspm: false
-      - name: Install the declared system requirement
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libx11-dev
-          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
       - run: npm ci
       - id: r_prepare
         name: Validate the R 4.5 lock before cache or network mutation
@@ -157,15 +190,48 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install the authenticated R 4.5.3 runtime
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          readonly r_package_url="https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"
+          readonly r_package_size="67491866"
+          readonly r_package_sha256="93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8"
+          readonly r_package_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"
+          readonly r_package_path="${r_package_dir}/r-4.5.3_1_amd64.deb"
+          timeout --signal=TERM --kill-after=5s 180s \
+            curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 175 \
+            --output "$r_package_path" "$r_package_url"
+          test ! -L "$r_package_path"
+          test -f "$r_package_path"
+          test "$(stat --format='%F' -- "$r_package_path")" = "regular file"
+          test "$(stat --format='%h' -- "$r_package_path")" = "1"
+          readonly r_package_identity="$(stat --format='%d:%i:%f:%h' -- "$r_package_path")"
+          test "$(stat --format='%s' -- "$r_package_path")" = "$r_package_size"
+          read -r actual_sha256 _ < <(sha256sum -- "$r_package_path")
+          test "$actual_sha256" = "$r_package_sha256"
+          sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=10s 180s apt-get update
+          test ! -L "$r_package_path"
+          test -f "$r_package_path"
+          test "$(stat --format='%F' -- "$r_package_path")" = "regular file"
+          test "$(stat --format='%d:%i:%f:%h' -- "$r_package_path")" = "$r_package_identity"
+          test "$(stat --format='%s' -- "$r_package_path")" = "$r_package_size"
+          read -r actual_sha256 _ < <(sha256sum -- "$r_package_path")
+          test "$actual_sha256" = "$r_package_sha256"
+          test "$(dpkg-deb --field "$r_package_path" Package)" = "r-4.5.3"
+          test "$(dpkg-deb --field "$r_package_path" Version)" = "1"
+          sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=10s 360s \
+            apt-get install --yes --no-install-recommends "$r_package_path" libx11-dev
+          test "$(dpkg-query --show --showformat='${Version}' r-4.5.3)" = "1"
+          test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"
+          printf '%s\n' '/opt/R/4.5.3/bin' >> "$GITHUB_PATH"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          r-version: "4.5"
+          r-version: "4.5.3"
+          install-r: false
           use-public-rspm: false
-      - name: Install the declared system requirement
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libx11-dev
-          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
       - run: npm ci
       - id: r_prepare
         name: Validate the R 4.5 lock before cache or network mutation

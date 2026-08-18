@@ -100,7 +100,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "7872dcc22dd04c11cdfe2e7f33b9b64211bb49b1d48e15a074d6a3b13861dee3";
+const WORKFLOW_USE_INVENTORY_SHA256 = "4b2abcd42fa01a0537eb54e70536508b00c99698c7c74a3fcee446837dbec029";
 
 function stepsUsing(job, prefix) {
   return (job?.steps ?? []).filter((step) => typeof step?.uses === "string" && step.uses.startsWith(prefix));
@@ -780,40 +780,165 @@ test("Python build and development metadata retain the setuptools security floor
   assert.equal(pythonProjectMetadata.match(/fsspec==2026\.7\.0/gu)?.length, 1);
 });
 
-test("both R 4.5 pull-request owners consume the exact lock without repository fallback", () => {
-  const owners = [
-    ["r-contract-kernel", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"],
-    ["r-contract-protocol", "4.5", "ubuntu-24.04-x86_64-r-4.5.lock.json"]
-  ];
-  for (const [jobId, version, lockName] of owners) {
-    const job = ci.jobs[jobId];
-    assert.match(job.if, /classify\.result != 'success'/u);
-    assert.match(job.if, /r_contract_required != 'false'/u);
-    const setup = stepsUsing(job, "r-lib/actions/setup-r@");
-    assert.equal(setup.length, 1);
-    assert.equal(setup[0].uses, SETUP_R);
-    assert.equal(setup[0].with["r-version"], version);
-    assert.equal(setup[0].with["use-public-rspm"], false);
-    const source = JSON.stringify(job);
-    assert.match(source, new RegExp(lockName.replaceAll(".", "\\."), "u"));
-    assert.match(source, /r-dependency-lock\.mjs prepare/u);
-    assert.match(source, /r-dependency-lock\.mjs install/u);
-    assert.match(source, /cache-hit/u);
-    assert.match(source, /--archives/u);
-    assert.doesNotMatch(source, /setup-r-dependencies/u);
-    assert.doesNotMatch(source, /\/latest\//u);
-    const restore = stepsUsing(job, "actions/cache/restore@")[0];
-    const save = stepsUsing(job, "actions/cache/save@")[0];
-    assert.equal(restore.uses, CACHE_RESTORE);
-    assert.equal(save.uses, CACHE_SAVE);
-    assert.equal(restore.with["restore-keys"], undefined);
-    assert.equal(restore.with.path, "${{ steps.r_prepare.outputs.archives }}");
-    assert.equal(save.with.path, "${{ steps.r_prepare.outputs.archives }}");
-    assert.doesNotMatch(JSON.stringify(restore.with.path), /library|receipt/u);
-    assert.doesNotMatch(JSON.stringify(save.with.path), /library|receipt/u);
+const R_45_OWNER_CONTRACTS = Object.freeze([
+  Object.freeze({
+    jobId: "r-contract-kernel",
+    lockName: "ubuntu-24.04-x86_64-r-4.5.lock.json",
+    testCommand: "npm run test:r-contract -- --shard kernel-agent"
+  }),
+  Object.freeze({
+    jobId: "r-contract-protocol",
+    lockName: "ubuntu-24.04-x86_64-r-4.5.lock.json",
+    testCommand: "npm run test:r-contract:protocol"
+  })
+]);
+
+function assertR45PullRequestOwner(job, { lockName, testCommand }) {
+  assert.equal(job["timeout-minutes"], 20);
+  assert.match(job.if, /classify\.result != 'success'/u);
+  assert.match(job.if, /r_contract_required != 'false'/u);
+
+  const setup = stepsUsing(job, "r-lib/actions/setup-r@");
+  assert.equal(setup.length, 1);
+  assert.equal(setup[0].uses, SETUP_R);
+  assert.deepEqual(setup[0].with, {
+    "r-version": "4.5.3",
+    "install-r": false,
+    "use-public-rspm": false
+  });
+
+  const provisioningSteps = job.steps.filter((step) => step.name === "Install the authenticated R 4.5.3 runtime");
+  assert.equal(provisioningSteps.length, 1);
+  const provisioning = provisioningSteps[0];
+  assert.ok(job.steps.indexOf(provisioning) < job.steps.indexOf(setup[0]));
+  assert.equal(provisioning.if, undefined);
+  assert.equal(provisioning["continue-on-error"], undefined);
+  const run = provisioning.run;
+  assert.equal(typeof run, "string");
+  for (const exactToken of [
+    'readonly r_package_url="https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"',
+    'readonly r_package_size="67491866"',
+    'readonly r_package_sha256="93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8"',
+    'readonly r_package_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"',
+    'readonly r_package_path="${r_package_dir}/r-4.5.3_1_amd64.deb"'
+  ]) {
+    assert.equal(run.split(exactToken).length - 1, 1, `missing or repeated R provisioning token: ${exactToken}`);
   }
-  assert.ok(stepRunning(ci.jobs["r-contract-kernel"], "npm run test:r-contract -- --shard kernel-agent"));
-  assert.ok(stepRunning(ci.jobs["r-contract-protocol"], "npm run test:r-contract:protocol"));
+  assert.match(
+    run,
+    /timeout --signal=TERM --kill-after=5s 180s \\\n+[ ]{2}curl --fail --location --proto '=https' --tlsv1\.2 --connect-timeout 20 --max-time 175 \\\n+[ ]{2}--output "\$r_package_path" "\$r_package_url"/u
+  );
+  assert.equal(run.match(/\bapt-get update\b/gu)?.length, 1);
+  assert.equal(run.match(/\bapt-get install\b/gu)?.length, 1);
+  assert.match(
+    run,
+    /sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \\\n+[ ]{2}timeout --signal=TERM --kill-after=10s 180s apt-get update/u
+  );
+  assert.match(
+    run,
+    /sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \\\n+[ ]{2}timeout --signal=TERM --kill-after=10s 360s \\\n+[ ]{2}apt-get install --yes --no-install-recommends "\$r_package_path" libx11-dev/u
+  );
+
+  const updateIndex = run.indexOf("apt-get update");
+  const installIndex = run.indexOf("apt-get install");
+  assert.ok(updateIndex >= 0 && installIndex > updateIndex);
+  const immediatePreinstallChecks = [
+    'test ! -L "$r_package_path"',
+    'test -f "$r_package_path"',
+    'test "$(stat --format=\'%F\' -- "$r_package_path")" = "regular file"',
+    'test "$(stat --format=\'%d:%i:%f:%h\' -- "$r_package_path")" = "$r_package_identity"',
+    'test "$(stat --format=\'%s\' -- "$r_package_path")" = "$r_package_size"',
+    'read -r actual_sha256 _ < <(sha256sum -- "$r_package_path")',
+    'test "$actual_sha256" = "$r_package_sha256"',
+    'test "$(dpkg-deb --field "$r_package_path" Package)" = "r-4.5.3"',
+    'test "$(dpkg-deb --field "$r_package_path" Version)" = "1"'
+  ];
+  let cursor = updateIndex;
+  for (const check of immediatePreinstallChecks) {
+    cursor = run.indexOf(check, cursor + 1);
+    assert.ok(cursor > updateIndex && cursor < installIndex, `missing immediate preinstall check: ${check}`);
+  }
+  assert.doesNotMatch(run.slice(updateIndex + "apt-get update".length, installIndex), /\b(?:curl|sleep)\b/u);
+  assert.match(run, /test "\$\(dpkg-query --show --showformat='\$\{Version\}' r-4\.5\.3\)" = "1"/u);
+  assert.match(
+    run,
+    /test "\$\(\/opt\/R\/4\.5\.3\/bin\/Rscript --vanilla -e 'cat\(as\.character\(getRversion\(\)\)\)'\)" = "4\.5\.3"/u
+  );
+  assert.match(run, /printf '%s\\n' '\/opt\/R\/4\.5\.3\/bin' >> "\$GITHUB_PATH"/u);
+  assert.doesNotMatch(run, /\b(?:gdebi-core|devscripts|qpdf|ghostscript)\b/u);
+
+  const source = JSON.stringify(job);
+  assert.match(source, new RegExp(lockName.replaceAll(".", "\\."), "u"));
+  assert.match(source, /r-dependency-lock\.mjs prepare/u);
+  assert.match(source, /r-dependency-lock\.mjs install/u);
+  assert.match(source, /cache-hit/u);
+  assert.match(source, /--archives/u);
+  assert.doesNotMatch(source, /setup-r-dependencies/u);
+  assert.doesNotMatch(source, /\/latest\//u);
+  const restore = stepsUsing(job, "actions/cache/restore@")[0];
+  const save = stepsUsing(job, "actions/cache/save@")[0];
+  assert.equal(restore.uses, CACHE_RESTORE);
+  assert.equal(save.uses, CACHE_SAVE);
+  assert.equal(restore.with["restore-keys"], undefined);
+  assert.equal(restore.with.path, "${{ steps.r_prepare.outputs.archives }}");
+  assert.equal(save.with.path, "${{ steps.r_prepare.outputs.archives }}");
+  assert.doesNotMatch(JSON.stringify(restore.with.path), /library|receipt/u);
+  assert.doesNotMatch(JSON.stringify(save.with.path), /library|receipt/u);
+  assert.deepEqual(stepRunning(job, testCommand).env, {
+    R_LIBS_USER: "${{ steps.r_prepare.outputs.library }}"
+  });
+}
+
+test("both R 4.5 pull-request owners install the authenticated runtime and preserve the exact lock", () => {
+  for (const contract of R_45_OWNER_CONTRACTS) {
+    assertR45PullRequestOwner(ci.jobs[contract.jobId], contract);
+  }
+
+  const mutations = [
+    (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["r-version"] = "4.5"),
+    (job) => delete stepsUsing(job, "r-lib/actions/setup-r@")[0].with["install-r"],
+    (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["install-r"] = true),
+    (job) => (job["timeout-minutes"] = 21),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("r-4.5.3_1_amd64.deb", "r-4.5.2_1_amd64.deb")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("67491866", "67491865")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8", "0".repeat(64))),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace('test "$(stat --format=\'%d:%i:%f:%h\' -- "$r_package_path")" = "$r_package_identity"\n', "")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("timeout --signal=TERM --kill-after=5s 180s \\\n  curl", "curl")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("timeout --signal=TERM --kill-after=10s 180s apt-get update", "apt-get update")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace("apt-get install --yes --no-install-recommends", "apt-get install --yes")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run +=
+        "sudo apt-get install gdebi-core devscripts qpdf ghostscript\n"),
+    (job) => (stepRunning(job, "npm run test:r-contract -- --shard kernel-agent").run = "npm run test:r-contract"),
+    (job) => (stepsUsing(job, "actions/cache/restore@")[0].with.path = "${{ steps.r_prepare.outputs.library }}")
+  ];
+  for (const mutate of mutations) {
+    const document = structuredClone(ci);
+    const job = document.jobs["r-contract-kernel"];
+    mutate(job);
+    assert.throws(() => assertR45PullRequestOwner(job, R_45_OWNER_CONTRACTS[0]));
+  }
 });
 
 test("conditional owners fail open to run while sole validate owner requires exact selected outcomes", () => {
