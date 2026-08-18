@@ -11,6 +11,7 @@ export async function exerciseMultiOutputSplitJourney(
   app: Locator,
   testing: TestApi,
   sessionId: string,
+  reacquireApp: (phase: string) => Promise<Locator>,
   dependencies: MultiOutputSplitJourneyDependencies
 ): Promise<void> {
   const { recordAcceptanceProgress, waitFor } = dependencies;
@@ -92,7 +93,8 @@ export async function exerciseMultiOutputSplitJourney(
   assert.deepEqual(previewPage.page.columnIds, [firstOutput.id, secondOutput.id]);
   assert.deepEqual(previewPage.page.rows[0]?.values[0], sourceValue);
   assert.equal(previewPage.page.rows[0]?.values[1]?.isNull, true, "A missing literal part must remain null.");
-  const review = app.getByRole("region", { name: "Draft review" });
+  const previewApp = await reacquireApp("Multi-output split preview");
+  const review = previewApp.getByRole("region", { name: "Draft review" });
   await review.getByText("Split text into columns", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await review.locator('[aria-label="Data diff summary"]').getByText("+2 columns", { exact: true }).waitFor({
     state: "visible",
@@ -104,7 +106,8 @@ export async function exerciseMultiOutputSplitJourney(
     30_000,
     "applying multi-output literal split"
   );
-  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  const appliedApp = await reacquireApp("Multi-output split apply");
+  await appliedApp.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
     () => {
       const active = testing.activeSession();
