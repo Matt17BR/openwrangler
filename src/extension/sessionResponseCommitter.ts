@@ -38,6 +38,16 @@ export class SessionResponseCommitter {
     await this.persistence.save(session.openRequest.source, state);
   }
 
+  async commitRuntimeReplacement(
+    session: RuntimeSessionState,
+    source: SessionSource,
+    isCurrent: () => boolean,
+    commit: () => void
+  ): Promise<boolean> {
+    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
+    return this.persistence.commitCurrent(source, state, isCurrent, commit);
+  }
+
   async commit(
     session: SessionResponseState,
     publicRequest: SessionBoundRequest,

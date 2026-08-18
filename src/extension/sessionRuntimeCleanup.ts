@@ -5,6 +5,7 @@ const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 
 export type RuntimeCleanupRole =
   | "import candidate"
+  | "plan rewrite candidate"
   | "recovery candidate"
   | "retired runtime"
   | "saved-plan fallback runtime"

@@ -205,6 +205,10 @@ export function sessionFromContract(
 }
 
 export function metadataFor(session: RBridgeSession, filteredRows: number = session.rows): SessionMetadata {
+  const replacementIndex = session.draftReplacesStepId
+    ? session.steps.findIndex((step) => step.id === session.draftReplacesStepId)
+    : -1;
+  const inputSchemaIndex = replacementIndex >= 0 ? replacementIndex : session.planInputSchemas.length - 1;
   return {
     protocolVersion: PROTOCOL_VERSION,
     sessionId: session.sessionId,
@@ -223,8 +227,8 @@ export function metadataFor(session: RBridgeSession, filteredRows: number = sess
     schema: copySchema(session.schema),
     filterModel: copyFilterModel(session.filterModel),
     steps: session.steps.map(copyRetainedStep),
-    ...(session.planInputSchemas.length > 0
-      ? { latestStepInputSchema: copySchema(session.planInputSchemas.at(-1) as readonly ColumnSchema[]) }
+    ...(inputSchemaIndex >= 0
+      ? { latestStepInputSchema: copySchema(session.planInputSchemas[inputSchemaIndex] as readonly ColumnSchema[]) }
       : {}),
     ...(session.draftStep ? { draftStep: copyRTransformStep(session.draftStep) } : {}),
     ...(session.draftReplacesStepId ? { draftReplacesStepId: session.draftReplacesStepId } : {})

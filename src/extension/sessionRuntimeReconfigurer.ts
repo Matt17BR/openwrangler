@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type {
   DataBackend,
   OpenSessionRequest,
@@ -7,8 +8,10 @@ import type {
   SessionMetadata,
   SessionMode,
   SessionOpenedResponse,
-  SessionSource
+  SessionSource,
+  TransformStep
 } from "../shared/protocol";
+import type { PersistedViewingState } from "../shared/viewState";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import type { BridgeRequestOptions } from "./dataBridge";
 import { persistedSessionState } from "./sessionPersistence";
@@ -182,7 +185,6 @@ export class SessionRuntimeReconfigurer {
         session.publicId
       );
     }
-
     const publicRevision = session.publicRevision + 1;
     publishCandidate(session, candidate, candidateRequest, publicRevision);
     session.draftPresentation = undefined;
@@ -198,6 +200,198 @@ export class SessionRuntimeReconfigurer {
       publicRevision,
       session.openRequest.source
     );
+  }
+
+  async rewriteCleaningPlan(
+    session: RuntimeReconfigurationSession,
+    steps: readonly TransformStep[],
+    view: PersistedViewingState,
+    pageWindow: { offset: number; limit: number; columnOffset: number; columnLimit: number },
+    options: BridgeRequestOptions | undefined,
+    hooks: RuntimeReconfigurationHooks
+  ): Promise<OpenWranglerResponse> {
+    if (!hooks.isCurrent()) {
+      return protocolError(
+        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+        "The session closed before its cleaning plan could be changed.",
+        false,
+        session.publicId
+      );
+    }
+    const originMismatch = hooks.originMismatch(session.openRequest);
+    if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
+
+    const previous = runtimeState(session);
+    const candidateSessionId = randomUUID();
+    const candidateRequest: OpenSessionRequest = {
+      ...session.openRequest,
+      backend: session.metadata.backend,
+      mode: session.metadata.mode,
+      requestedSessionId: candidateSessionId
+    };
+    let candidate: RuntimeSessionState | undefined;
+    let candidateCleanupAttempted = false;
+    const cleanupCandidate = async (): Promise<void> => {
+      if (candidateCleanupAttempted) return;
+      candidateCleanupAttempted = true;
+      await this.runtimeCleanup.close(
+        candidate ?? candidateShell(session, candidateSessionId),
+        "plan rewrite candidate",
+        runtimeCleanupOptions(),
+        true
+      );
+    };
+    const candidateOptions: BridgeRequestOptions = {
+      ...options,
+      ...(session.openRequest.source.kind === "file" ? {} : { requiredKernelSessionId: previous.runtimeId })
+    };
+
+    let response: OpenWranglerResponse;
+    try {
+      response = await session.delegate.request(candidateRequest, candidateOptions);
+    } catch (error) {
+      await cleanupCandidate();
+      return protocolError(
+        "plan_rewrite_open_failed",
+        `Open Wrangler could not open the private plan candidate: ${error instanceof Error ? error.message : String(error)}`,
+        true,
+        session.publicId
+      );
+    }
+    if (response.kind === "error" || response.kind === "cancelled") {
+      await cleanupCandidate();
+      return response.kind === "error" && response.sessionId ? { ...response, sessionId: session.publicId } : response;
+    }
+    if (response.kind !== "sessionOpened") {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        `The runtime returned ${response.kind} while opening the private plan candidate.`,
+        true,
+        session.publicId
+      );
+    }
+    candidate = runtimeCandidate(session, candidateSessionId, response.metadata);
+    const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
+    if (openedMismatch) {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        `Ignored an invalid plan-candidate openSession response: ${openedMismatch}`,
+        true,
+        session.publicId
+      );
+    }
+
+    const assertCandidateCurrent = (): void => {
+      if (options?.cancellation?.isCancellationRequested) throw new ReconfigurationCancelledError();
+      if (!hooks.isCurrent() || hooks.originMismatch(candidateRequest)) throw new ReconfigurationSupersededError();
+    };
+    const assertCandidatePlan = (): void => {
+      const currentCandidate = candidate;
+      if (
+        !currentCandidate ||
+        currentCandidate.metadata.draftStep !== undefined ||
+        !isDeepStrictEqual(currentCandidate.metadata.steps, steps) ||
+        (steps.length > 0 && currentCandidate.code.trim().length === 0)
+      ) {
+        throw new RuntimeStateRestoreError(
+          "Open Wrangler could not validate the rebuilt cleaning plan and generated code."
+        );
+      }
+    };
+    let page: PageResponse;
+    try {
+      await this.runtimeStateRestorer.restoreCleaningState(
+        candidate,
+        { steps: [...steps] },
+        pageWindow.columnOffset,
+        pageWindow.columnLimit,
+        candidateOptions,
+        assertCandidateCurrent
+      );
+      assertCandidateCurrent();
+      assertCandidatePlan();
+      page = await this.runtimeStateRestorer.restoreOneViewingState(
+        candidate,
+        view,
+        pageWindow.limit,
+        pageWindow.columnOffset,
+        pageWindow.columnLimit,
+        "saved",
+        candidateOptions,
+        assertCandidateCurrent
+      );
+      assertCandidateCurrent();
+      assertCandidatePlan();
+    } catch (error) {
+      await cleanupCandidate();
+      if (error instanceof ReconfigurationCancelledError || options?.cancellation?.isCancellationRequested) {
+        return { kind: "cancelled", targetRequestId: `rewrite-plan:${session.publicId}` };
+      }
+      return protocolError(
+        error instanceof ReconfigurationSupersededError ? "invalid_source_origin" : "plan_rewrite_failed",
+        error instanceof ReconfigurationSupersededError
+          ? "The dataframe source changed while its cleaning plan was being rebuilt."
+          : `Open Wrangler could not replay the selected step and every later step: ${
+              error instanceof Error ? error.message : String(error)
+            }. The confirmed session was left unchanged.`,
+        true,
+        session.publicId
+      );
+    }
+    if (!hooks.isCurrent()) {
+      await cleanupCandidate();
+      return protocolError(
+        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+        "The session closed before its rebuilt cleaning plan could be published.",
+        false,
+        session.publicId
+      );
+    }
+
+    if (page.page.totalRows === null) {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        "The editing runtime returned a page without an exact row count.",
+        true,
+        session.publicId
+      );
+    }
+    const publicRevision = session.publicRevision + 1;
+    const committed = await this.responseCommitter.commitRuntimeReplacement(
+      candidate,
+      candidateRequest.source,
+      () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
+      () => {
+        if (!candidate) return;
+        publishCandidate(session, candidate, candidateRequest, publicRevision);
+        session.draftPresentation = undefined;
+        session.draftBaseFilterModel = undefined;
+        hooks.invalidateStepInspection();
+        candidateCleanupAttempted = true;
+        candidate = undefined;
+      }
+    );
+    if (!committed) {
+      await cleanupCandidate();
+      return protocolError(
+        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+        "The session changed before its rebuilt cleaning plan could be persisted and published.",
+        false,
+        session.publicId
+      );
+    }
+    this.runtimeCleanup.track(previous, "retired runtime");
+    return {
+      kind: "planUpdated",
+      action: "apply",
+      revision: publicRevision,
+      metadata: publicMetadata(session.metadata, session.publicId, publicRevision, session.openRequest.source),
+      page: page.page,
+      code: session.code
+    };
   }
 
   async replaceFileSession(

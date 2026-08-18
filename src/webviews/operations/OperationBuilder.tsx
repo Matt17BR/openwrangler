@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery } from "../../shared/filterModel";
-import type { OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
+import type { ColumnSchema, OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
 import {
   operationGroups,
   operationByKind,
@@ -19,6 +19,7 @@ interface OperationBuilderProps {
   filterModel: FilterModel;
   initialKind?: OperationKind;
   initialStep?: TransformStep;
+  editInputSchema?: readonly ColumnSchema[];
   busy?: boolean;
   onClose(): void;
   onPreview(step: TransformStep, replaceStepId?: string): void;
@@ -64,6 +65,7 @@ export function OperationBuilder({
   filterModel,
   initialKind,
   initialStep,
+  editInputSchema,
   busy = false,
   onClose,
   onPreview
@@ -88,8 +90,12 @@ export function OperationBuilder({
       : availableCatalog;
   }, [availableCatalog, search]);
   const activeInitial = initialStep?.kind === selectedKind ? initialStep : undefined;
-  const availableColumns = initialStep ? (metadata.latestStepInputSchema ?? []) : metadata.schema;
-  const editPreflightError = initialStep ? savedStepEditError(initialStep, metadata.latestStepInputSchema) : undefined;
+  const availableColumns = initialStep
+    ? [...(editInputSchema ?? metadata.latestStepInputSchema ?? [])]
+    : metadata.schema;
+  const editPreflightError = initialStep
+    ? savedStepEditError(initialStep, editInputSchema ?? metadata.latestStepInputSchema)
+    : undefined;
   const savedFilterModel = activeInitial?.kind === "filterRows" ? activeInitial.params.filterModel : undefined;
   const selectedFilterQueryIsEmpty =
     selectedKind === "filterRows" &&

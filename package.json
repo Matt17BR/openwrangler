@@ -187,6 +187,8 @@
     "onCommand:openWrangler.applyStep",
     "onCommand:openWrangler.discardStep",
     "onCommand:openWrangler.editLatestStep",
+    "onCommand:openWrangler.editSelectedStep",
+    "onCommand:openWrangler.deleteSelectedStep",
     "onCommand:openWrangler.selectStep",
     "onCommand:openWrangler.undoStep",
     "onCommand:openWrangler.openViewSort",
@@ -376,6 +378,16 @@
         "command": "openWrangler.editLatestStep",
         "title": "Open Wrangler: Edit Latest Step",
         "icon": "$(edit)"
+      },
+      {
+        "command": "openWrangler.editSelectedStep",
+        "title": "Open Wrangler: Edit Selected Step",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "openWrangler.deleteSelectedStep",
+        "title": "Open Wrangler: Delete Selected Step",
+        "icon": "$(trash)"
       },
       {
         "command": "openWrangler.selectStep",
@@ -796,6 +808,16 @@
           "command": "openWrangler.editLatestStep",
           "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
           "group": "inline@10"
+        },
+        {
+          "command": "openWrangler.editSelectedStep",
+          "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.cleaningStep && openWrangler.canChangePlan",
+          "group": "inline@10"
+        },
+        {
+          "command": "openWrangler.deleteSelectedStep",
+          "when": "view == openWrangler.cleaningSteps && (viewItem == openWrangler.cleaningStep || viewItem == openWrangler.latestCleaningStep) && openWrangler.canChangePlan",
+          "group": "inline@11"
         },
         {
           "command": "openWrangler.moveViewSortUp",

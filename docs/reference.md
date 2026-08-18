@@ -32,6 +32,8 @@
 | `openWrangler.applyStep`                      | Open Wrangler: Apply Draft Step                                |
 | `openWrangler.discardStep`                    | Open Wrangler: Discard Draft Step                              |
 | `openWrangler.editLatestStep`                 | Open Wrangler: Edit Latest Step                                |
+| `openWrangler.editSelectedStep`               | Open Wrangler: Edit Selected Step                              |
+| `openWrangler.deleteSelectedStep`             | Open Wrangler: Delete Selected Step                            |
 | `openWrangler.selectStep`                     | Open Wrangler: Inspect Applied Step                            |
 | `openWrangler.undoStep`                       | Open Wrangler: Undo Latest Step                                |
 | `openWrangler.openViewSort`                   | Open Wrangler: Edit View Sorts                                 |

@@ -45,6 +45,14 @@ matrix for release candidates or changes that cross those boundaries.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
+- Selected earlier-step editing tests bind one exact committed step ID and revision, open its operation form against
+  the inspection input schema, and route both the webview and Activity Bar through one host rewrite transaction. The
+  transaction replays the complete candidate plan in order, requires unchanged suffix IDs plus valid generated code
+  and metadata, restores the confirmed view, and publishes only after the private runtime and persisted state commit.
+  Rejected suffix references, source drift, stale lifecycle state, malformed responses, or candidate cleanup leave
+  the confirmed plan, draft, view, revision, code, caches, and source unchanged. Focused Pandas, Polars, DuckDB, and
+  Native R owners cover selected-prefix preview and executable generated code; host tests cover suffix replay,
+  deletion, rollback, and at-most-once cleanup. Reordering is not supported and has no request or command.
 - `npm run test:r-contract` sources the production R module, runs native R assertions, and then sends real base
   `data.frame`, tibble, and `data.table` pages through the strict private transport-v14 TypeScript decoder. The R assertions cover snapshot
   isolation, `data.table` by-reference mutation, duplicate and non-syntactic names, factors, ordered factors, dates,
@@ -93,8 +101,8 @@ matrix for release candidates or changes that cross those boundaries.
   `Inf`, `-Inf`, R's ties-to-even rounding, derived output, and keyed-data-table rejection for in-place changes.
   Find and replace tests cover literal and regular-expression matching, blank patterns, factors, Unicode text, and the
   same output and key rules. The kernel-agent cases cover preview, apply,
-  discard, applied-step inspection, latest-step
-  replacement, undo, stale revisions, unsupported operations, and an encoding failure before state publication. The date, datetime, and duration cases
+  discard, applied-step inspection, selected earlier-step prefix preview, latest-step replacement, undo, stale
+  revisions, unsupported operations, and an encoding failure before state publication. The date, datetime, and duration cases
   are read from `fixtures/view-literal-contract.json`; signed-zero tests
   require one emitted selection to match both `-0` and `+0`. Ambient `OutDec` and `TZ` settings must not change a cell,
   including POSIXct columns with null or empty-string timezone metadata. The TypeScript decoder rejects the reserved R

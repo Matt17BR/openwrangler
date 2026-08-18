@@ -489,6 +489,51 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "rewriteCleaningPlan") {
+      if (!this.sessionId || !this.snapshot || !this.bridge.rewriteCleaningPlan) return;
+      try {
+        const response = await this.bridge.rewriteCleaningPlan(
+          this.sessionId,
+          this.sessionRevision,
+          decoded.stepId,
+          decoded.action,
+          {
+            offset: decoded.offset,
+            limit: decoded.limit,
+            columnOffset: decoded.columnOffset,
+            columnLimit: decoded.columnLimit
+          }
+        );
+        if (response.kind === "planUpdated") {
+          this.invalidateRendererSynchronization();
+          this.sessionId = response.metadata.sessionId;
+          this.sessionRevision = response.revision;
+          this.latestPageViewRequestId = undefined;
+          this.snapshotViewContextId = undefined;
+          this.snapshot = {
+            ...this.snapshot,
+            metadata: withoutDatasetStats(response.metadata),
+            page: response.page,
+            summaries: []
+          };
+        }
+        let published = await this.post(response);
+        if (published && response.kind === "planUpdated") {
+          published = await this.postViewState();
+          if (published && this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+        }
+      } catch (error) {
+        await this.post({
+          kind: "error",
+          code: "bridge_error",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          sessionId: this.sessionId
+        });
+      }
+      return;
+    }
+
     if (decoded.kind === "changeImportOptions") {
       let task: Promise<void>;
       if (decoded.actionId !== undefined) {
@@ -1647,6 +1692,8 @@ function reconfigurationCancelledResponse(): OpenWranglerResponse {
 type NonSortEditorAction =
   | "openOperation"
   | "editLatest"
+  | "editStep"
+  | "deleteStep"
   | "selectStep"
   | "clearFilterColumn"
   | "openFilters"

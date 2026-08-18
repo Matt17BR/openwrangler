@@ -355,6 +355,48 @@ describe("native state and presentation commands", () => {
     });
   });
 
+  it("routes selected-step edit and confirmed delete through the exact active session", async () => {
+    const registered = register(noDraftSnapshot());
+    const stepNode = treeChildren("openWrangler.cleaningSteps").find(
+      (node) => (node.cleaningStepHandle as { stepId?: unknown } | undefined)?.stepId === appliedStep.id
+    );
+    expect(stepNode).toBeDefined();
+
+    await command("openWrangler.editSelectedStep")(stepNode);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "editStep",
+      stepId: appliedStep.id,
+      expectedSessionId: "session",
+      expectedRevision: 0
+    });
+
+    nativeMocks.sendEditorActionForSession.mockClear();
+    nativeMocks.showWarningMessage.mockResolvedValueOnce("Delete step");
+    await command("openWrangler.deleteSelectedStep")(stepNode);
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Delete Drop missing rows and replay every later cleaning step?",
+      { modal: true },
+      "Delete step"
+    );
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "deleteStep",
+      stepId: appliedStep.id,
+      expectedSessionId: "session",
+      expectedRevision: 0
+    });
+
+    nativeMocks.sendEditorActionForSession.mockClear();
+    nativeMocks.showWarningMessage.mockResolvedValueOnce(undefined);
+    await command("openWrangler.deleteSelectedStep")(stepNode);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+
+    const advanced = noDraftSnapshot();
+    advanced.metadata = { ...advanced.metadata, revision: 1 };
+    registered.setActiveSession(advanced);
+    await command("openWrangler.editSelectedStep")(stepNode);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+  });
+
   it("makes each effective native filter node remove that column filter", async () => {
     const filtered = noDraftSnapshot();
     filtered.viewState.filterModel = {

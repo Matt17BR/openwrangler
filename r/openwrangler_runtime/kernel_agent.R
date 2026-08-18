@@ -9078,16 +9078,22 @@ openwrangler_r_kernel_agent <- local({
         retained_bound_plan <- session$boundPlan
         base <- session$committed
         if (!is.null(replace_step_id)) {
-          if (
-            length(session$plan) == 0L ||
-              !identical(session$plan[[length(session$plan)]]$id, replace_step_id)
-          ) {
-            abort("invalid_request", "Only the latest applied R step can be edited", TRUE)
+          replace_indexes <- which(vapply(
+            session$plan,
+            function(applied) identical(applied$id, replace_step_id),
+            logical(1L)
+          ))
+          if (length(replace_indexes) == 0L) {
+            abort("invalid_request", "The selected applied R step no longer exists", TRUE)
+          }
+          if (length(replace_indexes) != 1L) {
+            abort("invalid_request", "Applied R step IDs must be unique", TRUE)
           }
           if (!identical(step$id, replace_step_id)) {
             abort("invalid_request", "An edited R step must retain its applied step ID", TRUE)
           }
-          retained_plan <- session$plan[-length(session$plan)]
+          replace_index <- replace_indexes[[1L]]
+          retained_plan <- if (replace_index > 1L) session$plan[seq_len(replace_index - 1L)] else list()
           replayed <- replay_plan(
             frame_contract,
             session$original,
@@ -9273,6 +9279,17 @@ openwrangler_r_kernel_agent <- local({
         assert_revision(session, payload$revision)
         if (is.null(session$draft) || is.null(session$draftStep) || is.null(session$draftBound)) {
           abort("invalid_request", "There is no R draft step to apply", TRUE)
+        }
+        if (
+          !is.null(session$replaceStepId) &&
+            (length(session$plan) == 0L ||
+              !identical(session$plan[[length(session$plan)]]$id, session$replaceStepId))
+        ) {
+          abort(
+            "invalid_request",
+            "An earlier R step must be applied through the host plan-rewrite transaction",
+            TRUE
+          )
         }
         page <- decode_page(payload$page, frame_contract$limits)
         candidate <- session

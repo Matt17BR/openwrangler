@@ -168,6 +168,7 @@ unsupported_step <- dispatch(
 assert_identical(unsupported_step$kind, "error", "malformed R one-hot parameters were accepted")
 assert_identical(unsupported_step$code, "invalid_request", "the malformed one-hot diagnostic changed")
 assert_identical(source_environment$rename_frame, rename_source_before, "the R editing lifecycle mutated its source")
+source("r/tests/kernel_agent_earlier_step.R", local = FALSE)
 
 source_environment$categorical_frame <- data.frame(
   zeta = factor(c("b", "a", NA, ""), levels = c("a", "b", "", "unused")),

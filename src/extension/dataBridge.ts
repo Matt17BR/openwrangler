@@ -112,6 +112,19 @@ export interface OpenWranglerBridge {
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse>;
   /**
+   * Replays one stable-ID cleaning-plan replacement or deletion in a private
+   * runtime and publishes it only after the complete suffix and view succeed.
+   * This host-owned atomic transaction is intentionally absent from protocol v2.
+   */
+  rewriteCleaningPlan?(
+    sessionId: string,
+    revision: number,
+    stepId: string,
+    action: "applyDraft" | "deleteStep",
+    page: { offset: number; limit: number; columnOffset: number; columnLimit: number },
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse>;
+  /**
    * Rebinds a live notebook variable after its remote Spark Connect state was
    * lost. This is a host-only, user-initiated recovery operation.
    */
