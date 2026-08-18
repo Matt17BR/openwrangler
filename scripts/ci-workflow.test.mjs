@@ -25,6 +25,7 @@ const codeql = workflow("codeql.yml");
 const performance = workflow("performance.yml");
 const releasedJupyter = workflow("released-jupyter.yml");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
@@ -108,6 +109,92 @@ function stepsUsing(job, prefix) {
 
 function stepRunning(job, command) {
   return (job?.steps ?? []).find((step) => step?.run === command);
+}
+
+function assertVisualAccessibilityBrowserOwnership(document, manifest = packageJson, lock = packageLock) {
+  const job = document.jobs["visual-accessibility"];
+  assert.equal(job["runs-on"], "ubuntu-24.04");
+  assert.equal(job["timeout-minutes"], 20);
+
+  const orderedCommands = [
+    "npm ci",
+    'python -m pip install -e "python[dev]"',
+    "npx playwright-core install chromium",
+    "env -u CHROME_BIN npm run test:webview-acceptance"
+  ];
+  const commandIndexes = orderedCommands.map((command) => job.steps.findIndex((step) => step?.run === command));
+  assert.ok(commandIndexes.every((index) => index >= 0));
+  assert.deepEqual(
+    commandIndexes,
+    [...commandIndexes].sort((left, right) => left - right)
+  );
+  const browserInstall = stepRunning(job, "npx playwright-core install chromium");
+  const acceptance = stepRunning(job, "env -u CHROME_BIN npm run test:webview-acceptance");
+  assert.equal(job.steps.filter((step) => step?.run === "npx playwright-core install chromium").length, 1);
+  assert.equal(manifest.scripts?.["test:webview-acceptance"], "npm run test:webview-acceptance:run");
+  const acceptanceOwners = new Set(["test:webview-acceptance", "test:webview-acceptance:run"]);
+  const acceptanceSteps = job.steps.filter(
+    (step) =>
+      typeof step?.run === "string" &&
+      [...referencedPackageScripts(step.run, manifest.scripts)].some((name) => acceptanceOwners.has(name))
+  );
+  assert.equal(acceptanceSteps.length, 1);
+  assert.equal(acceptanceSteps[0], acceptance);
+  assert.equal(browserInstall.if, undefined);
+  assert.equal(browserInstall["continue-on-error"], undefined);
+  assert.equal(acceptance.if, undefined);
+  assert.equal(acceptance["continue-on-error"], undefined);
+  assert.equal(acceptance.env, undefined);
+  assert.equal(document.env?.CHROME_BIN, undefined);
+  assert.equal(job.env?.CHROME_BIN, undefined);
+  for (const step of job.steps) {
+    if (step !== acceptance) assert.equal(step?.env?.CHROME_BIN, undefined);
+  }
+
+  const runSource = job.steps
+    .filter((step) => typeof step?.run === "string")
+    .map((step) => step.run)
+    .join("\n");
+  assert.doesNotMatch(runSource, /--with-deps|\binstall-deps\b/u);
+  assert.doesNotMatch(runSource, /(?:^|[\s;&|])(?:sudo|apt|apt-get)(?:[\s;&|]|$)/u);
+  assert.doesNotMatch(runSource, /\/usr\/bin\/(?:chromium|chromium-browser|google-chrome)/u);
+  const otherRunSource = job.steps
+    .filter((step) => step !== acceptance && typeof step?.run === "string")
+    .map((step) => step.run)
+    .join("\n");
+  assert.doesNotMatch(otherRunSource, /CHROME_BIN|PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH/u);
+  assert.doesNotMatch(JSON.stringify(document.env ?? {}), /PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH/u);
+  assert.doesNotMatch(JSON.stringify(job.env ?? {}), /PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH/u);
+  assert.doesNotMatch(JSON.stringify(job.steps.map((step) => step?.env)), /PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH/u);
+
+  const declared = manifest.devDependencies?.["playwright-core"];
+  const lockedDeclaration = lock.packages?.[""]?.devDependencies?.["playwright-core"];
+  const lockedPackage = lock.packages?.["node_modules/playwright-core"];
+  assert.equal(typeof declared, "string");
+  assert.equal(lockedDeclaration, declared);
+  assert.equal(lockedPackage?.dev, true);
+  assert.match(lockedPackage?.version ?? "", /^\d+\.\d+\.\d+$/u);
+  assert.equal(
+    lockedPackage?.resolved,
+    `https://registry.npmjs.org/playwright-core/-/playwright-core-${lockedPackage.version}.tgz`
+  );
+  assert.match(lockedPackage?.integrity ?? "", /^sha512-[A-Za-z0-9+/]+={0,2}$/u);
+
+  const uploads = job.steps.filter(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
+  );
+  assert.equal(uploads.length, 1);
+  const upload = uploads[0];
+  assert.ok(job.steps.indexOf(upload) > commandIndexes.at(-1));
+  assert.equal(job.steps.indexOf(upload), job.steps.length - 1);
+  assert.equal(upload.if, "${{ failure() && !cancelled() }}");
+  assert.deepEqual(upload.with, {
+    name: "webview-visual-evidence",
+    path: "tmp/screenshots-actual/\ntmp/screenshots-diff/\n",
+    "if-no-files-found": "ignore",
+    "retention-days": 7,
+    "include-hidden-files": false
+  });
 }
 
 function referencedPackageScripts(command, scripts) {
@@ -1042,6 +1129,95 @@ test("package scripts bind lock checks and fail-complete named R protocol shards
     assert.throws(() => assertSequentialProtocolCommand(mutation));
   }
   assert.match(packageJson.scripts["test:scripts:portable:run"], /scripts\/r-dependency-lock\.test\.mjs/u);
+});
+
+test("visual acceptance installs only the lockfile-owned Chromium before its fail-closed artifact owner", () => {
+  assertVisualAccessibilityBrowserOwnership(ci);
+
+  const workflowMutations = [
+    (document) => {
+      stepRunning(document.jobs["visual-accessibility"], "npx playwright-core install chromium").run =
+        "npx playwright-core install --with-deps chromium";
+    },
+    (document) => {
+      stepRunning(document.jobs["visual-accessibility"], "npx playwright-core install chromium").run =
+        "npx playwright-core install-deps chromium";
+    },
+    (document) => {
+      const job = document.jobs["visual-accessibility"];
+      const acceptance = job.steps.findIndex(
+        (step) => step?.run === "env -u CHROME_BIN npm run test:webview-acceptance"
+      );
+      job.steps.splice(acceptance, 0, { run: "sudo apt-get install chromium" });
+    },
+    (document) => {
+      document.jobs["visual-accessibility"].env = { CHROME_BIN: "/usr/bin/chromium" };
+    },
+    (document) => {
+      document.env = { CHROME_BIN: "/usr/bin/google-chrome" };
+    },
+    (document) => {
+      stepRunning(document.jobs["visual-accessibility"], "env -u CHROME_BIN npm run test:webview-acceptance").run =
+        "npm run test:webview-acceptance";
+    },
+    (document) => {
+      const job = document.jobs["visual-accessibility"];
+      const acceptance = job.steps.findIndex(
+        (step) => step?.run === "env -u CHROME_BIN npm run test:webview-acceptance"
+      );
+      job.steps.splice(acceptance, 0, { run: 'echo "CHROME_BIN=/usr/bin/google-chrome" >> "$GITHUB_ENV"' });
+    },
+    (document) => {
+      stepRunning(document.jobs["visual-accessibility"], "env -u CHROME_BIN npm run test:webview-acceptance").if =
+        "${{ false }}";
+    },
+    (document) => {
+      stepRunning(document.jobs["visual-accessibility"], "env -u CHROME_BIN npm run test:webview-acceptance")[
+        "continue-on-error"
+      ] = true;
+    },
+    (document) => {
+      document.jobs["visual-accessibility"].steps.push({ run: "npm run test:webview-acceptance" });
+    },
+    (document) => {
+      document.jobs["visual-accessibility"].steps.push({ run: "npm run test:webview-acceptance:run" });
+    },
+    (document) => {
+      document.jobs["visual-accessibility"].steps.push({ run: "npm run test:webview-acceptance;" });
+    },
+    (document) => {
+      document.jobs["visual-accessibility"].steps.push({ run: "true" });
+    },
+    (document) => {
+      const steps = document.jobs["visual-accessibility"].steps;
+      const install = steps.findIndex((step) => step?.run === "npx playwright-core install chromium");
+      const acceptance = steps.findIndex((step) => step?.run === "env -u CHROME_BIN npm run test:webview-acceptance");
+      [steps[install], steps[acceptance]] = [steps[acceptance], steps[install]];
+    },
+    (document) => {
+      const upload = document.jobs["visual-accessibility"].steps.find(
+        (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
+      );
+      upload.with["retention-days"] = 30;
+    }
+  ];
+  for (const mutate of workflowMutations) {
+    const document = structuredClone(ci);
+    mutate(document);
+    assert.throws(() => assertVisualAccessibilityBrowserOwnership(document));
+  }
+
+  const missingManifestOwner = structuredClone(packageJson);
+  delete missingManifestOwner.devDependencies["playwright-core"];
+  assert.throws(() => assertVisualAccessibilityBrowserOwnership(ci, missingManifestOwner, packageLock));
+
+  const changedLockDeclaration = structuredClone(packageLock);
+  changedLockDeclaration.packages[""].devDependencies["playwright-core"] = "^999.0.0";
+  assert.throws(() => assertVisualAccessibilityBrowserOwnership(ci, packageJson, changedLockDeclaration));
+
+  const missingIntegrity = structuredClone(packageLock);
+  delete missingIntegrity.packages["node_modules/playwright-core"].integrity;
+  assert.throws(() => assertVisualAccessibilityBrowserOwnership(ci, packageJson, missingIntegrity));
 });
 
 test("CI retains failure-only ordinary artifacts and no success artifact producer", () => {
