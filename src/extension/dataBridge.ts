@@ -56,6 +56,11 @@ export interface BridgeRequestOptions {
   /** Opaque identifier for the logical view that owns a profiling request. */
   viewContextId?: string;
   /**
+   * Host-only page classification for bounded renderer reads that must not
+   * replace or persist the visible grid page.
+   */
+  ephemeralPage?: boolean;
+  /**
    * Host-only file backend selection provenance. A confirmed backend may be
    * pinned for recovery while the user's logical selection remains automatic.
    */

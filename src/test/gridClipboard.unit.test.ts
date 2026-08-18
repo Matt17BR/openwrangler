@@ -3,6 +3,7 @@ import type { ColumnSchema, GridPage } from "../shared/protocol";
 import {
   buildGridClipboardPayload,
   collapsedGridClipboardSelection,
+  createGridClipboardColumnAccumulator,
   extendGridClipboardSelection,
   gridClipboardSelectionContains,
   gridClipboardSelectionDescription
@@ -297,6 +298,71 @@ describe("grid clipboard contract", () => {
         expect(JSON.stringify(result)).not.toContain("😀");
       }
     }
+  });
+
+  it("accumulates a logical column with exact quoting, formula safety, and typed negatives", () => {
+    const accumulator = createGridClipboardColumnAccumulator();
+    expect(accumulator.append(cell(" \t+cmd"))).toBeUndefined();
+    expect(accumulator.append(cell('contains\t"quote"'))).toBeUndefined();
+    expect(
+      accumulator.append({ kind: "decimal", raw: "-42.5", display: "-42.5", isNull: false, isNaN: false })
+    ).toBeUndefined();
+
+    expect(accumulator.finish()).toEqual({
+      ok: true,
+      payload: {
+        text: '"\' \t+cmd"\n"contains\t""quote"""\n-42.5',
+        rowCount: 3,
+        columnCount: 1,
+        includesRowLabel: false,
+        completeRow: false
+      }
+    });
+  });
+
+  it("enforces the exact UTF-8 cap incrementally across many logical-column pages", () => {
+    const maximumBytes = 4 * 1024 * 1024;
+    const fieldCount = 4_096;
+    const unicodeChunk = "😀".repeat(255);
+    const baseBytes = fieldCount * 255 * 4 + fieldCount - 1;
+    const exactPadding = maximumBytes - baseBytes;
+
+    for (const delta of [-1, 0, 1]) {
+      const accumulator = createGridClipboardColumnAccumulator();
+      let failure;
+      for (let index = 0; index < fieldCount; index += 1) {
+        failure = accumulator.append(
+          cell(unicodeChunk + (index === fieldCount - 1 ? "x".repeat(exactPadding + delta) : ""))
+        );
+        if (failure) break;
+      }
+      if (delta <= 0) {
+        expect(failure).toBeUndefined();
+        const result = accumulator.finish();
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(new TextEncoder().encode(result.payload.text).byteLength).toBe(maximumBytes + delta);
+      } else {
+        expect(failure).toEqual({
+          ok: false,
+          reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range."
+        });
+        expect(failure).not.toHaveProperty("payload");
+        expect(JSON.stringify(failure)).not.toContain("😀");
+      }
+    }
+  });
+
+  it("rejects a 100,001st logical-column cell without returning accumulated data", () => {
+    const accumulator = createGridClipboardColumnAccumulator();
+    for (let index = 0; index < 100_000; index += 1) expect(accumulator.append(cell("x"))).toBeUndefined();
+
+    const rejection = accumulator.append(cell("hostile-payload"));
+    expect(rejection).toEqual({
+      ok: false,
+      reason: "Copy is limited to 100,000 cells. Select a smaller range."
+    });
+    expect(rejection).not.toHaveProperty("payload");
+    expect(JSON.stringify(rejection)).not.toContain("hostile-payload");
   });
 });
 

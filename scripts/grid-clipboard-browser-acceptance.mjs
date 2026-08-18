@@ -108,13 +108,157 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
     if ((await copyRange.isEnabled()) || (await copyRange.getAttribute("title")) !== clipboardLimitReason) {
       throw new Error("The oversized clipboard fixture did not retain the bounded disabled control contract.");
     }
+
+    await exerciseWholeColumnClipboard(page, harnessDirectory);
   } finally {
     await page.close();
   }
 
   console.log(
-    "Grid clipboard formula neutralization, adapter availability/failure fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
+    "Grid clipboard formula neutralization, whole filtered-column paging, exact caps, adapter fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
   );
+}
+
+async function exerciseWholeColumnClipboard(page, harnessDirectory) {
+  await page.goto(pathToFileURL(resolve(harnessDirectory, "grid-column-clipboard.html")).href, { waitUntil: "load" });
+  const copyColumn = page.getByRole("button", { name: "Copy column" });
+  const headers = page.locator("th[data-grid-column]");
+  await headers.first().waitFor();
+
+  await headers.nth(0).locator(".columnTitle").click();
+  await copyColumn.waitFor();
+  await page.waitForFunction(
+    () => document.querySelector('[aria-label="Copy column"]')?.hasAttribute("disabled") === false
+  );
+  await configureClipboardBoundary(page, { navigatorMode: "unavailable", fallbackMode: "success" });
+  await copyColumn.click();
+  const hostileExpected = wholeColumnHostileExpected();
+  await page.waitForFunction(
+    (expected) =>
+      globalThis.openWranglerClipboardBoundary.fallbackWrites[0] === expected &&
+      document.activeElement?.getAttribute("aria-label") === "Copy column",
+    hostileExpected
+  );
+  const hostileActual = await readClipboardBoundary(page);
+  if (
+    !arraysEqual(hostileActual.fallbackAttempts, [hostileExpected]) ||
+    !arraysEqual(hostileActual.fallbackWrites, [hostileExpected]) ||
+    hostileActual.navigatorAttempts.length !== 0 ||
+    hostileActual.announcement !== "Copied 64 cells from column hostile_text." ||
+    hostileActual.fallbackTextareaCount !== 0
+  ) {
+    throw new Error("Whole-column fallback copy did not preserve the exact hostile TSV and focus contract.");
+  }
+
+  await headers.nth(1).focus();
+  await page.keyboard.press("Control+Space");
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[aria-label="Grid selection"]')?.textContent ===
+      "Whole filtered and sorted column typed_negative selected, 64 rows."
+  );
+  await configureClipboardBoundary(page, { navigatorMode: "success", fallbackMode: "throw" });
+  await page.keyboard.press("Control+C");
+  const typedExpected = Array.from({ length: 64 }, (_, index) => String(-(index + 1))).join("\n");
+  await page.waitForFunction(
+    (expected) =>
+      globalThis.openWranglerClipboardBoundary.navigatorWrites[0] === expected &&
+      document.activeElement?.getAttribute("data-grid-column") === "1",
+    typedExpected
+  );
+
+  await headers.nth(2).locator(".columnTitle").click();
+  await page.waitForFunction(
+    () => document.querySelector('[aria-label="Copy column"]')?.hasAttribute("disabled") === false
+  );
+  await configureClipboardBoundary(page, { navigatorMode: "success", fallbackMode: "throw" });
+  await copyColumn.click();
+  await page.waitForFunction(() => globalThis.openWranglerClipboardBoundary.navigatorWrites.length === 1);
+  const exactCap = await page.evaluate(() => {
+    const boundary = globalThis.openWranglerClipboardBoundary;
+    return {
+      attemptCount: boundary.navigatorAttempts.length,
+      attemptLength: boundary.navigatorAttempts[0]?.length,
+      fallbackAttemptCount: boundary.fallbackAttempts.length,
+      writeCount: boundary.navigatorWrites.length,
+      writeLength: boundary.navigatorWrites[0]?.length,
+      announcement: document.querySelector('[aria-label="Clipboard copy result"]')?.textContent ?? "",
+      activeAriaLabel: document.activeElement?.getAttribute("aria-label")
+    };
+  });
+  if (
+    exactCap.attemptCount !== 1 ||
+    exactCap.writeCount !== 1 ||
+    exactCap.attemptLength !== 4 * 1024 * 1024 ||
+    exactCap.writeLength !== 4 * 1024 * 1024 ||
+    exactCap.fallbackAttemptCount !== 0 ||
+    exactCap.announcement !== "Copied 64 cells from column exact_cap." ||
+    exactCap.activeAriaLabel !== "Copy column"
+  ) {
+    throw new Error(`The exact-cap whole-column copy failed: ${JSON.stringify(exactCap)}.`);
+  }
+
+  await configureClipboardBoundary(page, { navigatorMode: "throw", fallbackMode: "throw" });
+  await headers.nth(3).locator(".columnTitle").click();
+  await page.waitForFunction(
+    (reason) =>
+      document.querySelector('[aria-label="Clipboard copy result"]')?.textContent === reason &&
+      document.querySelector('[aria-label="Copy column"]')?.getAttribute("title") === reason,
+    clipboardLimitReason
+  );
+  const rejection = await readClipboardRejection(page);
+  if (
+    rejection.navigatorAttemptCount !== 0 ||
+    rejection.navigatorWriteCount !== 0 ||
+    rejection.fallbackAttemptCount !== 0 ||
+    rejection.fallbackWriteCount !== 0 ||
+    rejection.announcement !== clipboardLimitReason
+  ) {
+    throw new Error(`The oversized whole-column rejection reached an adapter: ${JSON.stringify(rejection)}.`);
+  }
+
+  const paging = await page.evaluate(() => ({
+    errors: [...globalThis.openWranglerHarnessErrors],
+    responses: globalThis.openWranglerProjectedResponses.map((response) => ({
+      offset: response.offset,
+      limit: response.limit,
+      columnOffset: response.columnOffset,
+      columnLimit: response.columnLimit,
+      rowWidths: response.rowWidths
+    }))
+  }));
+  const expectedWindows = [
+    { offset: 0, limit: 25 },
+    { offset: 25, limit: 25 },
+    { offset: 50, limit: 14 }
+  ];
+  for (const columnOffset of [0, 1, 2, 3]) {
+    const responses = paging.responses.filter((response) => response.columnOffset === columnOffset);
+    if (
+      responses.length !== expectedWindows.length ||
+      !responses.every(
+        (response, index) =>
+          response.offset === expectedWindows[index].offset &&
+          response.limit === expectedWindows[index].limit &&
+          response.columnLimit === 1 &&
+          response.rowWidths.every((width) => width === 1)
+      )
+    ) {
+      throw new Error(`Whole-column paging for column ${columnOffset} was not sequential and projected.`);
+    }
+  }
+  if (paging.errors.length !== 0) {
+    throw new Error(`Whole-column harness errors: ${JSON.stringify(paging.errors)}.`);
+  }
+}
+
+function wholeColumnHostileExpected() {
+  return Array.from({ length: 64 }, (_, rowNumber) => {
+    if (rowNumber === 0) return "' \u0000=SUM(A1:A2)";
+    if (rowNumber === 1) return '"\'\t\uFEFF@IMPORT()"';
+    if (rowNumber === 2) return '"contains\t""quote"""';
+    return `value-${rowNumber + 1}`;
+  }).join("\n");
 }
 
 function installClipboardBoundary() {

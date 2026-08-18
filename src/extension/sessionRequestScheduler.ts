@@ -34,8 +34,10 @@ type ExecuteSessionRequest = (
 export class SessionRequestScheduler {
   private activeForegroundOperation: Promise<void> | undefined;
   private activeForegroundRequest: SessionBoundRequest | undefined;
+  private activeForegroundOptions: BridgeRequestOptions | undefined;
   private activeBackgroundOperation: Promise<void> | undefined;
   private activeBackgroundRequest: SessionBoundRequest | undefined;
+  private activeBackgroundOptions: BridgeRequestOptions | undefined;
   private interactiveQueue: QueuedSessionOperation[] = [];
   private backgroundQueue: QueuedSessionOperation[] = [];
   private terminalOperation: QueuedSessionOperation | undefined;
@@ -78,9 +80,12 @@ export class SessionRequestScheduler {
   cancelViewRequests(viewRequestIds: readonly string[]): void {
     if (viewRequestIds.length === 0) return;
     const cancelled = new Set(viewRequestIds);
-    for (const active of [this.activeForegroundRequest, this.activeBackgroundRequest]) {
+    for (const [active, options] of [
+      [this.activeForegroundRequest, this.activeForegroundOptions],
+      [this.activeBackgroundRequest, this.activeBackgroundOptions]
+    ] as const) {
       const viewRequestId = active ? requestViewId(active) : undefined;
-      if (active && viewRequestId && cancelled.has(viewRequestId) && isCancellableQueuedViewRequest(active)) {
+      if (active && viewRequestId && cancelled.has(viewRequestId) && isCancellableViewRequest(active, options)) {
         this.cancelledActiveViewRequestIds.add(viewRequestId);
       }
     }
@@ -88,7 +93,11 @@ export class SessionRequestScheduler {
     const retainUncancelled = (queue: QueuedSessionOperation[]): QueuedSessionOperation[] =>
       queue.filter((operation) => {
         const viewRequestId = requestViewId(operation.request);
-        if (viewRequestId && cancelled.has(viewRequestId) && isCancellableQueuedViewRequest(operation.request)) {
+        if (
+          viewRequestId &&
+          cancelled.has(viewRequestId) &&
+          isCancellableViewRequest(operation.request, operation.options)
+        ) {
           discarded.push(operation);
           return false;
         }
@@ -103,7 +112,8 @@ export class SessionRequestScheduler {
   prioritizeViewRequest(viewRequestId: string): void {
     const index = this.backgroundQueue.findIndex(
       (operation) =>
-        requestViewId(operation.request) === viewRequestId && isCancellableQueuedViewRequest(operation.request)
+        requestViewId(operation.request) === viewRequestId &&
+        isCancellableViewRequest(operation.request, operation.options)
     );
     if (index < 0) return;
     const [operation] = this.backgroundQueue.splice(index, 1);
@@ -189,18 +199,25 @@ export class SessionRequestScheduler {
   }
 
   private startOperation(operation: QueuedSessionOperation, lane: SessionRequestExecutionLane): void {
-    if (lane === "foreground") this.activeForegroundRequest = operation.request;
-    else this.activeBackgroundRequest = operation.request;
+    if (lane === "foreground") {
+      this.activeForegroundRequest = operation.request;
+      this.activeForegroundOptions = operation.options;
+    } else {
+      this.activeBackgroundRequest = operation.request;
+      this.activeBackgroundOptions = operation.options;
+    }
     const activeOperation = this.execute(operation.request, operation.options)
       .then(operation.resolve, operation.reject)
       .finally(() => {
         if (lane === "foreground" && this.activeForegroundOperation === activeOperation) {
           this.activeForegroundOperation = undefined;
           this.activeForegroundRequest = undefined;
+          this.activeForegroundOptions = undefined;
         }
         if (lane === "background" && this.activeBackgroundOperation === activeOperation) {
           this.activeBackgroundOperation = undefined;
           this.activeBackgroundRequest = undefined;
+          this.activeBackgroundOptions = undefined;
         }
         const viewRequestId = requestViewId(operation.request);
         if (viewRequestId) this.cancelledActiveViewRequestIds.delete(viewRequestId);
@@ -265,6 +282,11 @@ function canRunAlongsideBackground(
   );
 }
 
-function isCancellableQueuedViewRequest(request: SessionBoundRequest): boolean {
-  return request.kind === "getSummary" || request.kind === "getDatasetStats" || request.kind === "getColumnValues";
+function isCancellableViewRequest(request: SessionBoundRequest, options?: BridgeRequestOptions): boolean {
+  return (
+    request.kind === "getSummary" ||
+    request.kind === "getDatasetStats" ||
+    request.kind === "getColumnValues" ||
+    (request.kind === "getPage" && options?.ephemeralPage === true)
+  );
 }

@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
+const vscodePostMessage = vi.hoisted(() => vi.fn());
+vi.mock("../webviews/vscodeApi", () => ({
+  vscode: { postMessage: vscodePostMessage, getState: vi.fn(), setState: vi.fn() }
+}));
+
 const metadata: SessionMetadata = {
   protocolVersion: 2,
   sessionId: "clipboard-session",
@@ -55,6 +60,7 @@ let writeText: ReturnType<typeof vi.fn>;
 
 describe("DataGrid clipboard interactions", () => {
   beforeEach(() => {
+    vscodePostMessage.mockClear();
     clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
     writeText = vi.fn(async () => undefined);
@@ -199,7 +205,149 @@ describe("DataGrid clipboard interactions", () => {
     ).toBeTruthy();
     expect(screen.queryByText(/denied/u)).toBeNull();
   });
+
+  it("prepares and copies a whole filtered and sorted column across projected pages", async () => {
+    const threeRowMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 3, columns: 2 },
+      filteredShape: { rows: 3, columns: 2 }
+    };
+    const visiblePage: GridPage = { ...page, totalRows: 3 };
+    renderGrid("view-a", visiblePage, threeRowMetadata);
+
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    const firstRequest = latestColumnRequest();
+    expect(firstRequest).toMatchObject({
+      purpose: "clipboardColumn",
+      viewContextId: "view-a",
+      request: { kind: "getPage", offset: 0, limit: 2, columnOffset: 0, columnLimit: 1 }
+    });
+    expect(screen.getByText("Whole filtered and sorted column city selected. Preparing copy.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy column" })).toBeDisabled();
+
+    dispatchPage(firstRequest, threeRowMetadata, 0, 2, 3, [cell("=2+2"), cell("\t@cmd")]);
+    const secondRequest = latestColumnRequest();
+    expect(secondRequest.request).toMatchObject({ offset: 2, limit: 1, columnOffset: 0, columnLimit: 1 });
+    dispatchPage(secondRequest, threeRowMetadata, 2, 1, 3, [cell("contains\nline")]);
+
+    const copyColumn = await screen.findByRole("button", { name: "Copy column" });
+    expect(copyColumn).toBeEnabled();
+    expect(screen.getByText("Whole filtered and sorted column city selected, 3 rows.")).toBeTruthy();
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(3);
+    fireEvent.click(copyColumn);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('\'=2+2\n"\'\t@cmd"\n"contains\nline"'));
+    expect(screen.getByText("Copied 3 cells from column city.")).toBeTruthy();
+  });
+
+  it("uses Ctrl+Space and Ctrl+C for a typed-negative whole column", async () => {
+    renderGrid();
+    const salesHeader = screen.getByRole("columnheader", { name: "sales" });
+    act(() => salesHeader.focus());
+    fireEvent.keyDown(salesHeader, { key: " ", ctrlKey: true });
+    const request = latestColumnRequest();
+    dispatchPage(request, metadata, 0, 2, 2, [numberCell(-10.5), numberCell(-20)]);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy column" })).toBeEnabled());
+    fireEvent.keyDown(salesHeader, { key: "c", ctrlKey: true });
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("-10.5\n-20"));
+    expect(document.activeElement).toBe(salesHeader);
+  });
+
+  it("rejects a known oversized column before any page or clipboard adapter call", () => {
+    renderGrid("view-a", page, {
+      ...metadata,
+      shape: { rows: 100_001, columns: 2 },
+      filteredShape: { rows: 100_001, columns: 2 }
+    });
+
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+
+    expect(vscodePostMessage).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Copy column" })).toHaveAttribute(
+      "title",
+      "Copy is limited to 100,000 cells. Select a smaller range."
+    );
+    expect(screen.getByText("Copy is limited to 100,000 cells. Select a smaller range.")).toBeTruthy();
+  });
+
+  it("cancels preparation and ignores its page when the logical view changes", () => {
+    const rendered = renderGrid("view-a");
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    const staleRequest = latestColumnRequest();
+
+    rendered.rerender(grid("view-b"));
+
+    expect(vscodePostMessage).toHaveBeenCalledWith({
+      kind: "cancelViewRequests",
+      viewRequestIds: [staleRequest.request.viewRequestId]
+    });
+    dispatchPage(staleRequest, metadata, 0, 2, 2, [cell("stale-secret"), cell("stale-secret")]);
+    expect(screen.getByRole("button", { name: "Copy column" })).toBeDisabled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.queryByText(/stale-secret/u)).toBeNull();
+  });
 });
+
+interface PostedColumnRequest {
+  kind: "runtimeRequest";
+  purpose: "clipboardColumn";
+  viewContextId: string;
+  request: {
+    kind: "getPage";
+    viewRequestId: string;
+    offset: number;
+    limit: number;
+    columnOffset: number;
+    columnLimit: number;
+  };
+}
+
+function latestColumnRequest(): PostedColumnRequest {
+  const requests = vscodePostMessage.mock.calls
+    .map(([message]) => message as Partial<PostedColumnRequest>)
+    .filter((message): message is PostedColumnRequest => message.kind === "runtimeRequest");
+  const request = requests.at(-1);
+  if (!request) throw new Error("Expected a clipboard-column request.");
+  return request;
+}
+
+function dispatchPage(
+  message: PostedColumnRequest,
+  activeMetadata: SessionMetadata,
+  offset: number,
+  limit: number,
+  totalRows: number,
+  values: ReturnType<typeof cell>[] | ReturnType<typeof numberCell>[]
+): void {
+  const column = activeMetadata.schema[message.request.columnOffset];
+  act(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: window.location.origin,
+        data: {
+          kind: "page",
+          revision: activeMetadata.revision,
+          viewRequestId: message.request.viewRequestId,
+          metadata: activeMetadata,
+          page: {
+            offset,
+            limit,
+            totalRows,
+            columnIds: [column.id],
+            rows: values.map((value, index) => ({
+              id: `clipboard:${offset + index}`,
+              rowNumber: offset + index,
+              values: [value]
+            }))
+          }
+        }
+      })
+    );
+  });
+}
 
 function renderGrid(viewContextId = "view-a", activePage = page, activeMetadata = metadata) {
   return render(grid(viewContextId, activePage, activeMetadata));

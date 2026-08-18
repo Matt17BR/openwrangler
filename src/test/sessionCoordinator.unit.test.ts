@@ -67,6 +67,106 @@ describe("SessionCoordinator", () => {
     expect(listExcelSheets).toHaveBeenCalledOnce();
   });
 
+  it("returns an ephemeral clipboard page without committing its metadata", async () => {
+    const runtimeOpened = openedResponse("runtime-clipboard");
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      shape: { rows: 2, columns: 1 },
+      filteredShape: { rows: 2, columns: 1 },
+      schema: [{ id: "c:value", name: "value", position: 0, rawType: "String", type: "string", nullable: false }]
+    };
+    runtimeOpened.page = {
+      offset: 0,
+      limit: 100,
+      totalRows: 2,
+      columnIds: ["c:value"],
+      rows: []
+    };
+    const blockingPage = deferred<OpenWranglerResponse>();
+    let blockingRuntimeRequest: Extract<OpenWranglerRequest, { kind: "getPage" }> | undefined;
+    const delegateRequest = vi.fn(
+      async (request: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return runtimeOpened;
+        if (request.kind !== "getPage") throw new Error(`Unexpected clipboard page request: ${request.kind}`);
+        if (request.viewRequestId === "blocking-page") {
+          blockingRuntimeRequest = request;
+          return blockingPage.promise;
+        }
+        return pageResponseForMetadata(
+          request,
+          request.viewRequestId === "clipboard-page"
+            ? {
+                ...runtimeOpened.metadata,
+                shape: { rows: 99, columns: 1 },
+                filteredShape: { rows: 99, columns: 1 }
+              }
+            : runtimeOpened.metadata
+        );
+      }
+    );
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") {
+      throw new Error(`Expected the clipboard session to open: ${JSON.stringify(opened)}.`);
+    }
+    bridge.setViewContext?.(opened.metadata.sessionId, "view-a");
+    const pageRequest = (viewRequestId: string) => ({
+      kind: "getPage" as const,
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId,
+      offset: 0,
+      limit: 2,
+      columnOffset: 0,
+      columnLimit: 1,
+      filterModel: opened.metadata.filterModel
+    });
+
+    await expect(bridge.request(pageRequest("visible-page"), { viewContextId: "view-a" })).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "visible-page"
+    });
+    await expect(
+      bridge.request(pageRequest("clipboard-page"), { viewContextId: "view-a", ephemeralPage: true })
+    ).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "clipboard-page",
+      metadata: { filteredShape: { rows: 99 } }
+    });
+    expect(coordinator.activeSession()?.metadata.filteredShape.rows).toBe(2);
+
+    expect(delegateRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "getPage", viewRequestId: "clipboard-page" }),
+      { viewContextId: "view-a", ephemeralPage: true }
+    );
+
+    const activeVisiblePage = bridge.request(pageRequest("blocking-page"), { viewContextId: "view-a" });
+    await vi.waitFor(() =>
+      expect(delegateRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "getPage", viewRequestId: "blocking-page" }),
+        { viewContextId: "view-a" }
+      )
+    );
+    const queuedClipboardPage = bridge.request(pageRequest("clipboard-cancelled"), {
+      viewContextId: "view-a",
+      ephemeralPage: true
+    });
+    bridge.cancelViewRequests?.(opened.metadata.sessionId, ["clipboard-cancelled"]);
+    await expect(queuedClipboardPage).resolves.toEqual({
+      kind: "cancelled",
+      targetRequestId: "session-queue:getPage",
+      viewRequestId: "clipboard-cancelled"
+    });
+    expect(delegateRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "getPage", viewRequestId: "clipboard-cancelled" }),
+      expect.anything()
+    );
+    if (!blockingRuntimeRequest) throw new Error("Expected the blocking runtime page request to start.");
+    blockingPage.resolve(pageResponseForMetadata(blockingRuntimeRequest, runtimeOpened.metadata));
+    await expect(activeVisiblePage).resolves.toMatchObject({ kind: "page", viewRequestId: "blocking-page" });
+  });
+
   it("exports through an exact public session and revision instead of the later active session", async () => {
     const makeDelegate = (runtimeId: string) =>
       vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {

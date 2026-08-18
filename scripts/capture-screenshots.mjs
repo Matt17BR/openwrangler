@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
 import { createFilterPanelScreenshotReadiness } from "./capture-screenshots-readiness.mjs";
+import { createGridColumnClipboardHarness } from "./grid-column-clipboard-harness.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
 import {
@@ -584,6 +585,7 @@ const byExamplePreviewReadiness = createWebviewSelectorReadiness({
 const filterPanelReadiness = createFilterPanelScreenshotReadiness();
 
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
+writeWebviewHarness(...createGridColumnClipboardHarness(payloads.opened));
 writeWebviewHarness(
   "operation-dialog.html",
   payloads.opened,
@@ -939,6 +941,8 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const openColumnFilter = appearance.openColumnFilter;
   const stepInspections = appearance.stepInspections ?? {};
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
+  const fetchRowBlockSize = appearance.fetchRowBlockSize ?? 200;
+  const clipboardColumnFixture = appearance.clipboardColumnFixture === true;
   const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
   const pixelRatio = appearance.pixelRatio ?? 1;
   const strictProjectedPages = appearance.strictProjectedPages === true;
@@ -978,6 +982,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     const pages = ${stringifyForInlineScript(suppliedPages)};
     const stepInspections = ${stringifyForInlineScript(stepInspections)};
     const strictProjectedPages = ${stringifyForInlineScript(strictProjectedPages)};
+    const clipboardColumnFixture = ${stringifyForInlineScript(clipboardColumnFixture)};
     window.openWranglerMessages = [];
     window.openWranglerHarnessErrors = [];
     window.openWranglerProjectedResponses = [];
@@ -1036,7 +1041,9 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           const metadata = { ...sessionPayload.metadata, filterModel: message.request.filterModel };
           const request = message.request;
           const pageKey = [request.offset, request.limit, request.columnOffset, request.columnLimit].join(":");
-          const page = strictProjectedPages ? pages[pageKey] : (pages[String(request.offset)] ?? sessionPayload.page);
+          const page = message.purpose === "clipboardColumn" && clipboardColumnFixture
+            ? clipboardColumnPage(metadata, request)
+            : strictProjectedPages ? pages[pageKey] : (pages[String(request.offset)] ?? sessionPayload.page);
           if (!page) {
             window.openWranglerHarnessErrors.push(
               "No projected fixture page exists for row/column window " + pageKey + "."
@@ -1111,9 +1118,42 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
       getState() { return undefined; },
       setState() {}
     });
+    function clipboardColumnPage(metadata, request) {
+      const rows = Array.from({ length: Math.min(request.limit, 64 - request.offset) }, (_, index) => {
+        const rowNumber = request.offset + index;
+        const column = request.columnOffset;
+        let value;
+        if (column === 0) {
+          const display = rowNumber === 0
+            ? " \\u0000=SUM(A1:A2)"
+            : rowNumber === 1
+              ? "\\t\\uFEFF@IMPORT()"
+              : rowNumber === 2
+                ? 'contains\\t"quote"'
+                : "value-" + String(rowNumber + 1);
+          value = { kind: "string", display, isNull: false, isNaN: false };
+        } else if (column === 1) {
+          const display = String(-(rowNumber + 1));
+          value = { kind: "integer", raw: display, display, isNull: false, isNaN: false };
+        } else {
+          const extra = column === 2
+            ? (rowNumber === 63 ? 1 : 0)
+            : (rowNumber >= 62 ? 1 : 0);
+          value = { kind: "string", display: "x".repeat(65_535 + extra), isNull: false, isNaN: false };
+        }
+        return { id: "r:clipboard-column:" + String(rowNumber), rowNumber, values: [value] };
+      });
+      return {
+        offset: request.offset,
+        limit: request.limit,
+        totalRows: 64,
+        columnIds: [metadata.schema[request.columnOffset].id],
+        rows
+      };
+    }
   </script>
 </head>
-<body data-fetch-block-size="200" data-fetch-column-block-size="${fetchColumnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="true" data-filter-mode="advanced">
+<body data-fetch-block-size="${fetchRowBlockSize}" data-fetch-column-block-size="${fetchColumnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="true" data-filter-mode="advanced">
   <div id="root"></div>
   <script type="module" src="${mediaDir}/webview.js"></script>
 </body>

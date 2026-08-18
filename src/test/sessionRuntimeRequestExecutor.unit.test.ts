@@ -328,6 +328,39 @@ describe("SessionRuntimeRequestExecutor", () => {
     ).resolves.toMatchObject({ kind: "error", code: "stale_response" });
   });
 
+  it("suppresses a settled cancelled ephemeral page without cancelling a visible page", async () => {
+    const clipboardRequest = pageRequest("clipboard-page", 0);
+    const clipboardSession = runtimeSession(
+      bridge(requestMock(async () => pageResponse(clipboardRequest, metadata()))),
+      {
+        scheduler: schedulerStub(() => true),
+        activeViewContextId: "view",
+        latestRequestedViewContextId: "view",
+        latestRequestedPageRequestId: "visible-page"
+      }
+    );
+
+    await expect(
+      runtimeExecutor().execute(
+        clipboardSession,
+        clipboardRequest,
+        { viewContextId: "view", ephemeralPage: true },
+        hooks()
+      )
+    ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "clipboard-page" });
+
+    const visibleRequest = pageRequest("visible-page", 0);
+    const visibleSession = runtimeSession(bridge(requestMock(async () => pageResponse(visibleRequest, metadata()))), {
+      scheduler: schedulerStub(() => true),
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view",
+      latestRequestedPageRequestId: "visible-page"
+    });
+    await expect(
+      runtimeExecutor().execute(visibleSession, visibleRequest, { viewContextId: "view" }, hooks())
+    ).resolves.toMatchObject({ kind: "page", viewRequestId: "visible-page" });
+  });
+
   it("rejects a response from a runtime replaced during dispatch", async () => {
     const request = statsRequest(0);
     const session = runtimeSession(

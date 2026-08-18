@@ -602,11 +602,13 @@ export class OpenWranglerPanel {
     }
 
     const request = decoded.request;
-    await this.forward(
-      request,
-      decoded.viewContextId,
-      decoded.priority === undefined ? undefined : { priority: decoded.priority }
-    );
+    const requestOptions: BridgeRequestOptions | undefined =
+      decoded.purpose === "clipboardColumn"
+        ? { ephemeralPage: true }
+        : decoded.priority === undefined
+          ? undefined
+          : { priority: decoded.priority };
+    await this.forward(request, decoded.viewContextId, requestOptions);
   }
 
   private switchSessionMode(mode: SessionMode, viewState: GridViewState): Promise<void> {
@@ -1212,15 +1214,12 @@ export class OpenWranglerPanel {
       });
       return;
     }
-    if (request.kind === "getPage") this.latestPageViewRequestId = request.viewRequestId;
+    const ephemeralPage = request.kind === "getPage" && requestOptions?.ephemeralPage === true;
+    if (request.kind === "getPage" && !ephemeralPage) this.latestPageViewRequestId = request.viewRequestId;
     try {
-      const bridgeOptions: BridgeRequestOptions | undefined =
-        viewContextId || requestOptions
-          ? {
-              ...requestOptions,
-              ...(viewContextId ? { viewContextId } : {})
-            }
-          : undefined;
+      const bridgeOptions: BridgeRequestOptions | undefined = viewContextId
+        ? { ...requestOptions, viewContextId }
+        : requestOptions;
       const response = correlateViewError(request, await this.bridge.request(request, bridgeOptions));
       if (
         request.kind === "openSession" &&
@@ -1271,15 +1270,16 @@ export class OpenWranglerPanel {
         if (response.kind !== "page") this.invalidateRendererSynchronization();
         const acceptsPage =
           response.kind !== "page" ||
+          (ephemeralPage && request.kind === "getPage" && response.viewRequestId === request.viewRequestId) ||
           (request.kind === "getPage" &&
             response.viewRequestId === request.viewRequestId &&
             this.latestPageViewRequestId === response.viewRequestId);
-        if (acceptsPage) {
+        if (acceptsPage && !ephemeralPage) {
           this.sessionId = response.metadata.sessionId;
           this.sessionRevision = response.revision;
           if (response.kind !== "page") this.latestPageViewRequestId = undefined;
         }
-        if (this.snapshot && acceptsPage) {
+        if (this.snapshot && acceptsPage && !ephemeralPage) {
           const sameView =
             response.kind === "page" && viewContextId !== undefined && viewContextId === this.snapshotViewContextId;
           const metadata =

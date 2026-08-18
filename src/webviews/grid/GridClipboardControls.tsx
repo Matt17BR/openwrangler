@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ColumnSchema, LiveGridPage } from "../../shared/protocol";
+import type { ColumnSchema, LiveGridPage, SessionMetadata } from "../../shared/protocol";
 import {
   buildGridClipboardPayload,
   collapsedGridClipboardSelection,
@@ -11,32 +11,45 @@ import {
   type GridClipboardResult,
   writeGridClipboardText
 } from "./gridClipboard";
+import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
 
 export interface GridClipboardController {
   announcement: string;
   copy(mode: GridClipboardMode): Promise<void>;
+  copyColumn(): Promise<void>;
   focusCell(coordinate: GridCellCoordinate): void;
+  isColumnSelected(columnId: string): boolean;
   isSelected(coordinate: GridCellCoordinate): boolean;
   resetSelection(coordinate: GridCellCoordinate): void;
   results: Record<GridClipboardMode, GridClipboardResult>;
   selectCell(coordinate: GridCellCoordinate, extend: boolean): void;
+  selectColumn(column: ColumnSchema): void;
   selectionDescription: string;
+  wholeColumnResult: GridClipboardResult;
 }
 
 export function useGridClipboard({
   contextId,
+  metadata,
+  pageSize,
   schema,
   page,
-  initialCoordinate
+  initialCoordinate,
+  viewContextId
 }: {
   contextId: string;
+  metadata: SessionMetadata;
+  pageSize: number;
   schema: readonly ColumnSchema[];
   page: LiveGridPage;
   initialCoordinate: GridCellCoordinate;
+  viewContextId?: string;
 }): GridClipboardController {
   const [selection, setSelection] = useState(() => collapsedGridClipboardSelection(contextId, initialCoordinate));
   const [announcement, setAnnouncement] = useState("");
   const contextIdRef = useRef(contextId);
+  const wholeColumn = useWholeColumnClipboard({ metadata, pageSize, viewContextId });
+  const resetWholeColumn = wholeColumn.reset;
   useLayoutEffect(() => {
     contextIdRef.current = contextId;
   }, [contextId]);
@@ -48,12 +61,17 @@ export function useGridClipboard({
     }),
     [contextId, page, schema, selection]
   );
-  const resetSelection = useCallback((coordinate: GridCellCoordinate): void => {
-    setSelection(collapsedGridClipboardSelection(contextIdRef.current, coordinate));
-    setAnnouncement("");
-  }, []);
+  const resetSelection = useCallback(
+    (coordinate: GridCellCoordinate): void => {
+      resetWholeColumn();
+      setSelection(collapsedGridClipboardSelection(contextIdRef.current, coordinate));
+      setAnnouncement("");
+    },
+    [resetWholeColumn]
+  );
   const selectCell = useCallback(
     (coordinate: GridCellCoordinate, extend: boolean): void => {
+      resetWholeColumn();
       setSelection((current) =>
         extend
           ? extendGridClipboardSelection(current, contextId, coordinate)
@@ -61,10 +79,11 @@ export function useGridClipboard({
       );
       setAnnouncement("");
     },
-    [contextId]
+    [contextId, resetWholeColumn]
   );
   const focusCell = useCallback(
     (coordinate: GridCellCoordinate): void => {
+      resetWholeColumn();
       setSelection((current) =>
         current.contextId === contextId &&
         current.focus.row === coordinate.row &&
@@ -74,7 +93,7 @@ export function useGridClipboard({
       );
       setAnnouncement("");
     },
-    [contextId]
+    [contextId, resetWholeColumn]
   );
   const copy = useCallback(
     async (mode: GridClipboardMode): Promise<void> => {
@@ -100,17 +119,25 @@ export function useGridClipboard({
   );
 
   return {
-    announcement,
+    announcement: wholeColumn.selectedColumnId ? wholeColumn.announcement : announcement,
     copy,
+    copyColumn: wholeColumn.copy,
     focusCell,
-    isSelected: (coordinate) => gridClipboardSelectionContains(selection, contextId, coordinate),
+    isColumnSelected: wholeColumn.isColumnSelected,
+    isSelected: (coordinate) =>
+      wholeColumn.selectedColumnId
+        ? wholeColumn.isColumnSelected(schema[coordinate.column]?.id ?? "")
+        : gridClipboardSelectionContains(selection, contextId, coordinate),
     resetSelection,
     results,
     selectCell,
+    selectColumn: wholeColumn.selectColumn,
     selectionDescription:
-      schema.length === 0 || page.rows.length === 0
+      wholeColumn.selectionDescription ||
+      (schema.length === 0 || page.rows.length === 0
         ? "No cells selected"
-        : gridClipboardSelectionDescription(selection, contextId)
+        : gridClipboardSelectionDescription(selection, contextId)),
+    wholeColumnResult: wholeColumn.result
   };
 }
 
@@ -145,6 +172,21 @@ export function GridClipboardControls({ controller }: { controller: GridClipboar
           </button>
         );
       })}
+      <button
+        type="button"
+        className="gridClipboardButton"
+        aria-label="Copy column"
+        disabled={!controller.wholeColumnResult.ok}
+        title={
+          controller.wholeColumnResult.ok
+            ? "Copy whole filtered and sorted column"
+            : controller.wholeColumnResult.reason
+        }
+        onClick={() => void controller.copyColumn()}
+      >
+        <span className="codicon codicon-copy" aria-hidden="true" />
+        <span className="gridClipboardButtonLabel">Copy column</span>
+      </button>
       <span
         className="gridClipboardAnnouncement"
         role="status"

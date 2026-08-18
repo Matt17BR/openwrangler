@@ -91,7 +91,11 @@ export class SessionRuntimeRequestExecutor {
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
     const liveSourceRecoveryIsCurrent = (): boolean => {
       if (requestWasCancelled()) return false;
-      if (publicRequest.kind === "getPage") return isCurrentPageRequest(session, publicRequest, options);
+      if (publicRequest.kind === "getPage") {
+        return options?.ephemeralPage === true
+          ? isCurrentLogicalView(session, options)
+          : isCurrentPageRequest(session, publicRequest, options);
+      }
       return isCurrentLogicalView(session, options);
     };
     const staleBackgroundResponse = (): OpenWranglerResponse =>
@@ -224,6 +228,15 @@ export class SessionRuntimeRequestExecutor {
     if (mismatch) {
       if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
       return invalidRuntimeResponse(publicRequest, session.publicId, mismatch);
+    }
+    if (options?.ephemeralPage === true && requestWasCancelled()) {
+      return protocolError(
+        "stale_response",
+        "Ignored a cancelled clipboard page after its correlated runtime request settled.",
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
     }
     if (isPySparkConnectStateLost(response, requestRuntimeId)) {
       session.liveReconnectRequired = true;

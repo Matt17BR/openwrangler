@@ -416,7 +416,7 @@ export class SessionCoordinator implements vscode.Disposable {
     } else if (isRuntimeStateMutation(request)) {
       this.clearStepInspection(session.publicId);
     }
-    if (request.kind === "getPage") {
+    if (request.kind === "getPage" && options?.ephemeralPage !== true) {
       session.latestRequestedPageRequestId = request.viewRequestId;
       session.latestRequestedViewContextId = options?.viewContextId;
     }

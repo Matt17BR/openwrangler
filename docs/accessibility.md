@@ -42,6 +42,12 @@ cell. **Copy row** copies the loaded columns in the focused row and says when th
 columns. A keyboard rectangle can cross a fetched block and remains selected, but **Copy range** and `Ctrl/Cmd+C`
 report that every selected row and column must be loaded before copying. They do not copy a partial rectangle.
 
+Select a column header with the pointer or `Enter`/`Space`; `Ctrl/Cmd+Space` is the explicit spreadsheet-style
+shortcut. The footer reports that the whole filtered and sorted column is selected while Open Wrangler prepares it one
+projected page at a time. **Copy column** becomes available only after preparation succeeds. A later click or
+`Ctrl/Cmd+C` writes the prepared data in that user gesture, and moving to another cell or data view discards the
+prepared column. Column copy does not include the header or row labels.
+
 PySpark traversal remains contiguous even after the total becomes exact. In that backend, `Ctrl/Cmd+End` advances
 only to the next permitted block instead of skipping directly to the final row.
 

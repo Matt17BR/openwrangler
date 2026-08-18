@@ -142,6 +142,49 @@ describe("webview message decoding", () => {
     ).toBeUndefined();
   });
 
+  it("accepts only an exact current-view clipboard-column page purpose", () => {
+    const request = {
+      kind: "getPage",
+      viewRequestId: "clipboard-column-a",
+      offset: 0,
+      limit: 200,
+      columnOffset: 3,
+      columnLimit: 1,
+      filterModel: { filters: [], sort: [] }
+    } as const;
+    expect(
+      decodeWebviewMessage(
+        { kind: "runtimeRequest", purpose: "clipboardColumn", viewContextId: "view-a", request },
+        context()
+      )
+    ).toEqual({
+      kind: "runtimeRequest",
+      purpose: "clipboardColumn",
+      viewContextId: "view-a",
+      request: { ...request, sessionId: "public-session", revision: 7 }
+    });
+
+    for (const invalid of [
+      { kind: "runtimeRequest", purpose: "clipboardColumn", request },
+      {
+        kind: "runtimeRequest",
+        purpose: "clipboardColumn",
+        priority: "interactive",
+        viewContextId: "view-a",
+        request
+      },
+      {
+        kind: "runtimeRequest",
+        purpose: "clipboardColumn",
+        viewContextId: "view-a",
+        request: { kind: "getDatasetStats", viewRequestId: "stats", filterModel: { filters: [], sort: [] } }
+      },
+      { kind: "runtimeRequest", purpose: "export", viewContextId: "view-a", request }
+    ]) {
+      expect(decodeWebviewMessage(invalid, context())).toBeUndefined();
+    }
+  });
+
   it("fails closed on preview capability before exposing a runtime request", () => {
     const preview = {
       kind: "runtimeRequest",

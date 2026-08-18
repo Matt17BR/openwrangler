@@ -49,6 +49,7 @@ export type WebviewRequest =
       request: OpenWranglerRequest;
       viewContextId?: string;
       priority?: "interactive" | "background";
+      purpose?: "clipboardColumn";
     };
 
 const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
@@ -176,12 +177,13 @@ export function decodeWebviewMessage(
   }
   if (
     message.kind !== "runtimeRequest" ||
-    !hasExactKeys(message, ["kind", "request"], ["viewContextId", "priority"]) ||
+    !hasExactKeys(message, ["kind", "request"], ["viewContextId", "priority", "purpose"]) ||
     !isRecord(message.request) ||
     Object.prototype.hasOwnProperty.call(message.request, "sessionId") ||
     Object.prototype.hasOwnProperty.call(message.request, "revision") ||
     (message.viewContextId !== undefined && !isNonEmptyString(message.viewContextId)) ||
-    (message.priority !== undefined && message.priority !== "interactive" && message.priority !== "background")
+    (message.priority !== undefined && message.priority !== "interactive" && message.priority !== "background") ||
+    (message.purpose !== undefined && message.purpose !== "clipboardColumn")
   ) {
     return undefined;
   }
@@ -195,6 +197,12 @@ export function decodeWebviewMessage(
     return undefined;
   }
   if (
+    message.purpose !== undefined &&
+    (request.kind !== "getPage" || message.viewContextId === undefined || message.priority !== undefined)
+  ) {
+    return undefined;
+  }
+  if (
     request.kind === "previewStep" &&
     (!context.snapshot || !supportsOperation(context.snapshot.metadata.capabilities, request.step.kind))
   ) {
@@ -204,7 +212,8 @@ export function decodeWebviewMessage(
     kind: "runtimeRequest",
     request,
     ...(message.viewContextId === undefined ? {} : { viewContextId: message.viewContextId }),
-    ...(message.priority === undefined ? {} : { priority: message.priority })
+    ...(message.priority === undefined ? {} : { priority: message.priority }),
+    ...(message.purpose === undefined ? {} : { purpose: message.purpose })
   };
 }
 

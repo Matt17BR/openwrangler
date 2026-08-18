@@ -55,6 +55,7 @@ describe("SessionRequestScheduler", () => {
     const obsoleteProfile = scheduler.enqueue(summary("profile-obsolete"));
     const obsolete = scheduler.enqueue(columnValues("values-obsolete"));
     const retainedPage = scheduler.enqueue(pageRequest("page-retained"));
+    const obsoleteClipboardPage = scheduler.enqueue(pageRequest("clipboard-obsolete"), { ephemeralPage: true });
     expect(execution.options.get("summary-selected")).toEqual({ priority: "interactive", timeoutMs: 12_000 });
     expect(scheduler.checkpoint("getSummary", "summary-selected")).toEqual({
       state: "active",
@@ -67,7 +68,13 @@ describe("SessionRequestScheduler", () => {
       lane: "foreground"
     });
 
-    scheduler.cancelViewRequests(["summary-selected", "profile-obsolete", "values-obsolete", "page-retained"]);
+    scheduler.cancelViewRequests([
+      "summary-selected",
+      "profile-obsolete",
+      "values-obsolete",
+      "page-retained",
+      "clipboard-obsolete"
+    ]);
     expect(scheduler.isCancelled("summary-selected")).toBe(true);
     await expect(obsolete).resolves.toEqual({
       kind: "cancelled",
@@ -79,7 +86,13 @@ describe("SessionRequestScheduler", () => {
       targetRequestId: "session-queue:getSummary",
       viewRequestId: "profile-obsolete"
     });
+    await expect(obsoleteClipboardPage).resolves.toEqual({
+      kind: "cancelled",
+      targetRequestId: "session-queue:getPage",
+      viewRequestId: "clipboard-obsolete"
+    });
     expect(scheduler.checkpoint("getPage", "page-retained")).toMatchObject({ state: "queued" });
+    expect(scheduler.checkpoint("getPage", "clipboard-obsolete")).toBeUndefined();
 
     execution.resolve("summary-selected");
     await selected;
@@ -89,6 +102,27 @@ describe("SessionRequestScheduler", () => {
     await vi.waitFor(() => expect(execution.order.at(-1)).toBe("page-retained"));
     execution.resolve("page-retained");
     await retainedPage;
+    expect(execution.order).not.toContain("clipboard-obsolete");
+  });
+
+  it("marks only an active ephemeral page as cancelled", async () => {
+    const execution = controlledExecution();
+    const scheduler = new SessionRequestScheduler(execution.execute);
+
+    const visiblePage = scheduler.enqueue(pageRequest("visible-page"));
+    await vi.waitFor(() => expect(execution.order).toEqual(["visible-page"]));
+    scheduler.cancelViewRequests(["visible-page"]);
+    expect(scheduler.isCancelled("visible-page")).toBe(false);
+    execution.resolve("visible-page");
+    await visiblePage;
+
+    const clipboardPage = scheduler.enqueue(pageRequest("clipboard-page"), { ephemeralPage: true });
+    await vi.waitFor(() => expect(execution.order).toEqual(["visible-page", "clipboard-page"]));
+    scheduler.cancelViewRequests(["clipboard-page"]);
+    expect(scheduler.isCancelled("clipboard-page")).toBe(true);
+    execution.resolve("clipboard-page");
+    await clipboardPage;
+    await vi.waitFor(() => expect(scheduler.isCancelled("clipboard-page")).toBe(false));
   });
 
   it("holds terminal close behind accepted work and resolves idle waiters only after close", async () => {
