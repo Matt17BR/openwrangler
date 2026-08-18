@@ -1,5 +1,24 @@
 # Testing
 
+## Release qualification ownership
+
+Daily previews are disposable protected-`main` artifacts, retained for 14 days and checked with the authoritative
+pull-request command plus one representative installed VS Code journey. They create no tag or public channel.
+
+Manual release-candidate qualification packages once and retains one canonical VSIX/checksum/provenance triple for 21
+days. The reusable acceptance workflow consumes only its numeric artifact ID. VS Code owns the semantic editor,
+Python/Jupyter, R, and installed-performance journeys; Cursor owns one pinned Linux
+lifecycle/renderer-replacement/narrow-grid/reveal-state seam. R 4.4 and 4.5 compatibility, Remote SSH, and the bounded
+performance report remain release evidence. Every phase has its existing 300-second hard and 180-second inactivity
+deadlines, produces diagnostics only on failure, and has no retry. The manifest fan-in fails on any missing, skipped,
+cancelled, or failed owner.
+
+Stable promotion runs no product test, build, or package command. Tests mutate its candidate-run selection, 168–336h
+soak bounds, newer-same-tag rejection, historical-source checkout, cross-run numeric artifact downloads, manifest and
+performance digests, write permission boundary, exact-byte reverification, and public conflict checks. Historical
+preview workflow inspectors remain unit-test fixtures for 1.99.x recovery only and are not current release entry
+points.
+
 ## Automated layers
 
 Use `npm run check:pr` as the authoritative local gate for an ordinary change. It runs the complete static
@@ -176,7 +195,7 @@ matrix for release candidates or changes that cross those boundaries.
   180-second inactivity deadline, and it does not retry a failed phase.
 
 - `npm run test:scripts` runs the focused cross-platform contracts for editor environment isolation, private home/config/runtime trees, fresh correlated phase outcomes, progress-aware deadlines, classified failures, sanitized evidence retention, POSIX process-group cleanup, the Windows Job Object supervisor and parent lease, genuine Restricted Mode launches, the explicit visible-debug opt-out, pinned private-Xvfb preparation and lifecycle, Remote SSH child-error latching, exact Xvfb socket/lock identity receipts, candidate provenance, exact staged-file receipts, bounded staged-tree manifests, fail-fast Jupyter VSIX target/native-payload compatibility, the container-isolated remote-Jupyter runner, and structural release readiness. Release-document fixtures include fenced, commented, raw-HTML, duplicate, placeholder, future-action, untracked-reference, empty-changelog, and contradictory-README decoys. The checked-in Native R preview table has an exact 20-row topology while allowing truthful Partial rows. Synthetic stable-major-2-or-newer fixtures require a dedicated top-level section containing only the distinct exact 23-row all-Done Native R scope, the exact completion sentence, explicit ordinary `collapse::qDF()`/`qTBL()`/`qDT()` coverage, the complete 28-operation catalog, the R performance record, exact row-specific tracked evidence, and both source and immutable-candidate enforcement. The active-terminal and Cursor literate rows claim only their Linux candidate coverage, and the two all-28 rows require dedicated complete-catalog tests rather than treating the current prior-27 suites plus focused Custom Code contracts as sufficient. Deleting, duplicating, reordering, hiding, deferring, or weakening any row, availability, status, evidence reference, or release-gate cell must fail; stable 1.x recovery remains outside this content gate. Crafted VSIX fixtures cover omitted legal files, symlink-mode entries, missing manifest-referenced assets, oversized expansion, encrypted flags, and CRC corruption through the same streaming validator used by both package verification and stable readiness. Descriptor-bound VSIX file fixtures reject hard links, symbolic links, empty or sparse oversized inputs, and named-path inode swaps around the read. Pinned Cursor and Remote SSH acquisition additionally read product metadata, package metadata, runtime files, and licenses through bounded no-follow descriptors whose named path, containment, identity, and complete snapshot must remain stable; their adversarial fixtures cover replacement, in-place mutation, and hard links. Cursor network bytes enter only a random mode-`0600` quarantine descriptor and cannot be published until exact status, one unambiguous length, SHA-256, descriptor identity, and named-path identity all agree; a rejected status, header, or body is explicitly disposed. Stable-publication fixtures also require immutable Git-commit source reads and reject content or parent-identity changes in either final output, including a same-size first-output mutation while the second output is read. Parsed-YAML fixtures bind the complete dispatch and job graph through a bounded, cycle-safe canonical digest in addition to semantic validation; they move or duplicate readiness/upload steps, remove the event-commit binding, alter shell/failure/condition controls, add workflow/job execution overrides or permission escalation, insert post-readiness mutations, weaken commands, change runners or action inputs, remove required evidence, add broad uploads, expose publisher credentials, remove the locked CLI guard, add a preview registry flag, or place mutations between canonical verification and a publisher boundary. None may satisfy the canonical stable workflow. Stable-tag fixtures require the exact protected `origin/main` source, require canonical version binding, one non-force atomic single-ref push, a private credential that never enters arguments or child environment, cleanup after success or failure, exact recognition and scrubbing of Git credential-store's atomic approval and rejection rewrites, rejection of any other replacement, and exact lightweight post-push verification; conflicting, annotated, ambiguous, stale, dirty, wildcard, force, and delete forms fail. GitHub publication tests accept absent, exact partial, and exact complete releases while rejecting conflicting tags, metadata, assets, digests, and bytes. Publisher unit tests retain the migration-false compatibility case, while the checked-in stable and preview workflows require exact `immutable: true`; false or missing state blocks registry promotion. Open VSX tests require the exact stable identity, publisher login, public checksum, and downloaded VSIX; retry is bounded to missing or transient post-publish metadata, and the default contract proves all ninety-one attempts in the fifteen-minute window. Marketplace tests separately enforce the pipeline's explicit maximum reviewed forty-attempt public-verification bound. Stable-candidate fixtures additionally require the complete pinned ordered step allowlists, reject every removal plus inserted/replaced/mutable actions, exercise the producer's real package-source composition, accept only the expected post-write directory-link-count transition while every owned file receipt stays fixed, and prove stable consume mode cannot fall back to a moving editor download. Platform-specific cases are skipped only where the host cannot provide the primitive under test.
-  Release-document fixtures also require the preview and stable README sections to retain the same editor-support matrix.
+  Historical 1.99.x recovery fixtures also require the retired preview and stable README sections to retain the same editor-support matrix.
   This local command remains the complete superset of the four disjoint CI groups below.
 - `npm run test:scripts:workflow` runs `scripts/ci-workflow.test.mjs` beside the candidate workflow contract in the
   unconditional invariant core. It owns the sole four-output classifier, exact result fan-in, changed-area owner topology,
@@ -243,14 +262,14 @@ not select a fifth classifier output or launch the benchmark. Actual comparisons
 - `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment, including the PEP 440 runtime version in `python/openwrangler_runtime/version.py` against `package.json`.
 - `npm run check:remote-jupyter-lock` validates the remote-server fixture's canonical exact pins, complete sorted hash closure, and Jupyter Server security floor without network access. `npm run audit:python` audits both the active development environment and that lock against the live advisory database without suppressions; this gate is network-dependent by design so later disclosures fail an unchanged commit.
-- Release metadata tests bind numeric versions to channels before any build: only `0.<odd-minor>.x` may set `preview: true`, those versions must do so, and the canonical preview author/validator requires one immutable VSIX/checksum/provenance triple with exact source, package, runtime, tag, commit, candidate-byte, and pre-release metadata binding. The preview workflow is a manual protected-`main` candidate transaction whose default `publish: false` run packages once, gives the complete Linux suite one owner, and sends the same artifact to exactly one non-matrix shared-candidate call plus Remote SSH. Its semantic inspector rejects a second package or complete-suite owner, a caller matrix, artifact-name downloads, omitted literal publication dependencies, unpinned actions, a write-capable validation job, and any release path that is not immediately bound to the reverified candidate triple. It also proves that `publish: false` has no publication environment, write permission, tag mutation, registry step, or secret-bearing publisher command; this structural result does not claim that protected-environment configuration, workload identity, registry credentials, or public propagation have been exercised. The opt-in release job is pinned to `prerelease: true`, enters the global non-cancelling publication queue, uses the generic exact-tag transaction through the protected-main preview wrapper, and invokes Open VSX through the explicit reusable workflow. Stable and preview publication now require GitHub's exact `immutable: true` response; false or missing state blocks registry promotion. Stable behavior remains independently covered. The candidate author tests reject symlink/hard-link candidates, replace the staging path after its pinned read, and prove archive inspection, final read-only bytes, and SHA-256 remain bound to the one owned snapshot. Content tests cover active top-level Markdown rather than fenced/commented decoys; exactly one complete ordered parity scope with substantive evidence; fixed package/publisher identity; duplicate-key and malformed JSON; complete source/packaged manifest equality with no currently allowed transformation; tag/source/packaged/Python/VSIX identity drift; preview metadata; real unfenced changelog dates; the exact positive README release/install section; and ambiguous XML identity.
+- Release metadata tests still bind numeric versions to the historical stable/preview channel policy, and the preview artifact author/validator remains covered for recovery. Current automation instead treats the daily build as disposable, requires the manual release-candidate workflow to package once without publication, and allows stable promotion only from the exact soaked candidate run and manifest. Mutation tests reject a second package, any candidate write permission, preview-channel input, artifact-name download, missing fan-in owner, rerun, changed or expired artifact, source drift, newer same-tag candidate, stable rebuild, and public conflict-verification drift.
   The shared candidate-workflow inspector requires a fixed internal graph and `fail-fast: false` on the two-cell local-R
   shard matrix; mutation tests prove that an unknown shard or sibling cancellation blocks the candidate. The only steps
   allowed to use `continue-on-error` are named diagnostic producers, and each must be followed immediately by its upload
   while the shard's explicit raw-outcome failure is deferred until all assigned phases finish.
-  Protected pull-request CI owns the direct R 4.5 contracts; scheduled/manual Cross owns the direct R 4.4 contract.
-  Preview and stable candidates instead install the exact candidate VSIX in the requested editors and prove the
-  distinct native-R package/platform seams.
+  Protected pull-request CI owns the direct R 4.5 contracts; scheduled/manual Cross owns direct R 4.4 evidence. The
+  release-candidate workflow additionally installs the exact candidate VSIX against both R 4.4 and R 4.5 platform
+  seams before any later stable promotion can select it.
 - Microsoft Marketplace tests parse and pin the complete Azure Pipeline, require its WIF service connection and
   protected environment, and reject PATs, rebuilds, mutable artifact paths, channel omissions, and intervening
   commands. Before AzureCLI, one anonymous single-attempt exact-byte probe either proves the complete existing public
@@ -303,35 +322,18 @@ is never cancelled, and a failed phase is never retried automatically. Protected
 invariant core and both always-on CodeQL analyzers. The manually dispatched Released Jupyter and performance workflows
 remain outside pull-request CI with unchanged product semantics and newly immutable action references.
 
-Preview and stable candidates invoke the shared candidate workflow once from a non-matrix caller. Fixed Python,
-remote-R, generic-platform, `r_platform`, and performance jobs run beside a two-cell Linux local-R shard
-matrix. Generic macOS/Windows platform cells perform no R setup or native-R tail. Each parallel `r_platform` cell
-prepares R once, then orders fresh VS Code-only `core-operations`, `native-frames`, and `kernel-restart` phases with
-distinct immediate uploads and a deferred literal three-outcome guard. Linux lifecycle runs `core-operations`,
-`kernel-restart`, `interactive-terminal`, then `literate-documents`; editing runs `native-frames`, `value-operations`,
-then `categorical-operations`. Each shard sets up dependencies and editors once, but every phase freshly verifies the
-same candidate VSIX and starts new requested-editor invocations with private roots. Each runner immediately uploads its
-own sealed failure evidence, and the cell checks every raw result only after all assigned runners and uploads have
-finished. Explicit candidate core skips embedded native-frame and restart work on Linux, macOS, and Windows because the
-dedicated selectors own it under the same 300-second hard, 180-second inactivity, and no-retry policy. Linux runs those
-selectors in VS Code and Cursor; macOS and Windows run them in VS Code. Focused value and categorical selectors also
-omit native frames and remain restart-free. Default/unset manual core retains the full catalog, while the remote R
-journey retains representative embedded behavior, so no platform loses coverage. The
-remote R job uses only VS Code and the five-phase Docker fixture, retains that restart journey and its independent
-`lowerText` (Lowercase) operation check, and skips hosted R, local kernel preparation, Cursor, and native R/Quarto
-tooling. The R 4.5 source contract remains in protected pull-request CI and R 4.4 remains in scheduled/manual Cross
-rather than becoming a release sibling. A
-reported failure identifies its owner without cancelling sibling cleanup. Every native phase keeps the 300-second hard and 180-second
-inactivity deadlines and is never retried.
+Release candidates invoke the shared acceptance workflow once from a non-matrix caller. Fixed Python, remote-R,
+generic-platform, R 4.4/4.5 platform, performance, and two local-R shard owners consume the same artifact ID in
+parallel. Candidate R phases omit duplicated embedded native-frame/restart work when a dedicated selector owns it.
+Local and platform R run in VS Code only; Cursor is limited to the single generic Linux lifecycle seam. Every phase
+freshly revalidates the candidate, retains the 300-second hard and 180-second inactivity deadlines, emits only
+failure diagnostics, and is never retried.
 
-The manual stable workflow is the final exact-artifact gate, not another pull-request matrix. With `publish: false`,
-it packages once from the exact protected `main` commit, uploads one VSIX/checksum/provenance set, and runs every
-stable consumer against that artifact ID. Protected pull-request CI is the sole complete source-suite owner; stable
-Linux runs only live repository/dependency/runtime checks and exact-artifact packaged-editor acceptance. The other
-jobs add Cursor, installed performance, released and remote Jupyter, Remote SSH, and macOS/Windows compatibility.
-With `publish: true`,
-the final job accepts only an absent or exact lightweight tag, pushes it immediately before GitHub Release creation,
-and promotes the accepted VSIX to Open VSX. The tag event starts Marketplace promotion.
+The manual release-candidate workflow is the final acceptance matrix. It packages once from a first-attempt
+protected-main dispatch and seals success plus installed-performance identity in the bounded manifest. Stable promotion
+is not another matrix: after 168–336 hours it selects one candidate run, checks out that historical source, downloads
+the exact candidate, manifest, and performance artifact IDs, and verifies their binding before public mutation. The
+promotion job contains no build, package, editor, runtime, Remote SSH, R, Jupyter, or benchmark command.
 
 For stable major 2 and later, the canonical artifact author passes the linked `report.json` bytes from that same
 immutable source snapshot and the already-owned candidate VSIX SHA-256 into readiness. Its end-to-end fixture proves
@@ -347,7 +349,7 @@ mutation tests reject a moving source, missing root/identity/cleanliness checks,
 across canonical verification, source materialization, media preflight, existing-public probing, authentication, and
 public verification.
 
-The separate `.github/workflows/open-vsx-promotion.yml` contract is the explicit reusable publisher for both preview and stable GitHub release jobs, as well as the protected recovery dispatch. Each caller must retain a direct `needs: release` reusable-workflow call so automation does not depend on GitHub delivering a second workflow event for a release created with `GITHUB_TOKEN`; mutation tests reject removing or redirecting either call. Promotion checks out reviewed `main` automation separately from the exact immutable release tag, derives stable versus preview from that tag's tracked manifest, requires the public tag at the bound commit before and after promotion, and downloads the canonical VSIX/checksum/provenance triple for either channel. Only the protected token-verification and publish steps receive `OVSX_PAT`; no step rebuilds, retags, or mutates the artifact. The reusable job and both public GitHub release owners share the global non-cancelling `openwrangler-release-publication` queue with `queue: max`; preview publication adds `ovsx --pre-release`, while stable publication must not. Preflight accepts only an absent or byte-identical registry version, and postflight uses a bounded fifteen-minute propagation window before downloading the public Open VSX VSIX and checksum and verifying its exact channel and publisher. Parsed-YAML mutation tests reject trigger, permission, timeout, checkout, channel, queue, token, command-order, and public-verification drift. Remote SSH currently emits no failure artifact: its raw private workspace is never uploaded, and adding diagnostics requires a separately sealed, redacted, receipt-bound implementation that satisfies invariant 40. This absence does not weaken the Remote SSH result. It remains an unconditional fail-closed release job.
+The separate `.github/workflows/open-vsx-promotion.yml` remains a protected recovery publisher for an already-public exact GitHub release; the current stable promotion performs its fail-closed Open VSX preflight, same-byte upload, and public verification directly after GitHub publication. Both paths forbid rebuilds and conflicting public bytes. Remote SSH emits no success artifact and remains an unconditional release-candidate owner; its raw private workspace is never uploaded.
 
 Marketplace recovery downloader tests distinguish a direct synchronous fetch throw from a returned promise that
 rejects before an HTTP response. Only the latter re-enters the existing bounded release poll. Metadata and asset
@@ -1311,95 +1313,9 @@ invocation installs the pinned R and Quarto tooling. This manually dispatched Re
 backward-compatible, and non-authoritative. Release-candidate acceptance instead uses the fixed two-shard topology
 described below and adds separately verified native-frame, kernel-restart, and literate-document phases there.
 
-Preview release run #72 published nothing. Its local R core hit the unchanged 300-second hard deadline at numeric
-Round, Cursor's categorical phase lost the bounded Multi-label Undo wait, and macOS failed the Drop Columns Code Preview
-generation/diagnostic bound. The remediation does not convert or retry those results: candidate macOS remains
-authoritative, and release evidence requires a new fresh Preview attempt from the exact remediated `main` commit.
-
-Preview release [run #73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) from protected `main`
-commit `c7e1635` also published nothing. macOS artifact `9223912246` failed from
-`jupyter-r:editing:drop-code-preview:reveal-start` because bare `label` selected the generic 384-character `.ow_label`
-helper; its wrapped 210.0157-pixel line could not fit the exact 183-pixel scroller, while the pinned code receipt and
-renderer generation remained exact. Linux core artifact `9223997830` published correlated `{ok:true}` and
-`jupyter-r:complete` at about 299.5 seconds, but its outer process did not settle before the unchanged 300-second
-deadline, so Cursor core did not run. The independent value invocation passed both editors in 6m34s total. Focused
-regressions therefore require the Drop reveal's unique complete `.ow_drop_names` logical line, receipt-only selector
-failures, exact DOM-line equality, and Formula's value-owned start/complete plus restored-clean-state checkpoints. No
-deadline, coverage assertion, or retry is relaxed; the candidate workflow edges are deliberately redesigned, and run
-#73 cannot be promoted as evidence.
-
-Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) from protected `main`
-commit `b521f52` measured the two-shard redesign at 21m57s versus run #73's 33m15s (34% lower). Its slower local-R
-shard took 15m19s versus the former 31m15s serial lane (51% lower), while runner use rose from 119.75 to 130.78 minutes
-(9.2%). macOS was the measured bottleneck at 19m54s. Every raw outcome except lifecycle core passed; core reached
-`restart:start` before its outer process crossed the unchanged 300-second hard deadline. The fan-in failed,
-publication was skipped, and no `v1.99.6` was created.
-
-Preview release [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) from protected `main`
-commit `917341a` finished in 21m18s and used 134.07 positive-duration runner-minutes. Its sole raw candidate blocker was
-Linux lifecycle core: VS Code 1.133.0 crossed the outer deadline at about 300.012 seconds after
-`jupyter-r:orders_table:editing-renderer-ready`, with no product/runtime exception. The dedicated Linux restart phase
-passed in both VS Code and Cursor, value and categorical editing passed, and the macOS and Windows native-R platform
-journeys passed with their then-embedded restart coverage. macOS nevertheless used about 289.66 of its 300-second
-native-editor budget. The fan-in failed, publication was skipped, and no `v1.99.6` was created. It does not reinterpret
-#75.
-
-Preview release [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) exercised the
-core/native/restart split from exact protected `main` commit `ab6c5815`. It finished in 19m19s and used 95m20s of
-positive-duration runner time; the first raw red arrived at 9m57s. The canonical package triple was sound, and all raw
-lanes passed except installed performance's auxiliary `/proc` enumeration and Linux Cursor's literate phase. Cursor
-3.13.10 retained the exact 21,013-byte generated-R document receipt, connected CodeMirror content, and exact scroller,
-but the scroller bounds, `clientHeight`, and renderer viewport were still 0×0 at the single immediate layout read. That
-is a harness-settlement failure, not evidence that Rename generated incorrect code. The fan-in failed, publication was
-skipped, and no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open VSX package was created. The process-RSS,
-Quarto-ownership, and post-draft layout remediations documented above have focused local evidence only; a fresh hosted
-candidate must pass them under the unchanged 300-second/180-second/no-retry policy.
-
-Preview release [run #77](https://github.com/Matt17BR/openwrangler/actions/runs/31852540354) exercised those
-remediations from exact protected `main` commit `fdebcc96`. Installed performance, Cursor literate acceptance, and
-every other raw lane passed. Linux VS Code literate acceptance retained the exact semantic Quarto preview tab in its
-owning group, but the final harness assertion required that preserve-focus tab to be active. That focus assertion was
-not a product or release invariant and contradicted the unfocused packaged-editor journey. Run #77 remains failed
-evidence; run #78 below exercised the immediate correction and exposed a separate deterministic tab-identity defect.
-
-Preview release [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected
-`main` commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` authored canonical artifact `9238748514`. Its exact
-1,132,638-byte VSIX has SHA-256 `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`,
-and checksum/provenance verification passed; installed-performance artifact `9238855519` also passed. Three raw reds
-blocked acceptance. Cursor `platform-smoke` artifact `9238818316` proved a product renderer-lifecycle defect: the host
-reported the new CSV session hydrated while exhaustive frame inspection found no physical session grid. Native-R
-core artifact `9238867261` stopped while applying an edited Clone Column step after a long accumulated catalog
-journey, but lacked decisive dispatch, scheduler, and final-state receipts; it is indeterminate harness evidence, not
-proof that the product mutation failed. Linux VS Code literate artifact `9238988590` was a deterministic harness
-failure because it waited for external `quarto.previewView`, while VS Code exposes WebviewPanel tabs through `TabInputWebview` as
-`mainThreadWebview-quarto.previewView`; its later `ERR_CONNECTION_REFUSED` observation followed missed ownership and
-cleanup rather than proving an Open Wrangler failure. The fan-in failed, publication was skipped, and no `v1.99.6`
-tag, GitHub prerelease, Azure Marketplace package, or Open VSX package was created.
-
-Run #78 remains failed hosted evidence. Locally frozen follow-ups add exact graceful renderer retirement, replace only
-explicit candidate core's accumulated catalog with the full Clone lifecycle, and remove third-party preview ownership
-from ordinary `.qmd` acceptance while retaining it only for Linux media capture. They add no selector, job, phase,
-deadline, retry, heartbeat, or runtime reopen. A fresh exact candidate is required to turn those corrections into
-release evidence.
-
-Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
-`main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the complete candidate and Remote SSH graph and
-published `v1.99.6` successfully. Canonical artifact `9240263388` contained the 109-entry VSIX with SHA-256
-`5a9c6eb7531ccd521c20a08ab2fd3a7d99776ea10d5e48a5eb5756d03b553404`, and installed-performance artifact
-`9240376365` passed. The public-media gate then emitted 24 retry observations before success: five genuine Marketplace
-stale-version observations and 19 GitHub exact-source Playwright DOM detachments misclassified as propagation. This
-is a verifier-classification defect, not a product or publication failure.
-
-Regression coverage must prove that GitHub exact source is rendered once and a same-evaluation A-to-B image
-replacement resets the bounded stability candidate before requiring two identical post-scroll frames. Source or
-escaped browser, DOM, evaluation, scroll, or animation-frame failures, navigation without an HTTP response, and
-exhaustion after disappearance, continuing churn, CSS-hidden state, invalid geometry, or a complete positive proof
-that fails to stabilize must stop without invoking the retry controller. No GitHub whole-attempt or context retry is
-allowed. Marketplace and Open VSX may consume up to forty fresh registry contexts only for stale version, README
-content, or immutable image source; initial exact-alt absence or incompleteness; or an actual non-OK HTTP response.
-The source check and registry attempts share the unchanged 30-minute deadline. The correction adds no timeout, retry
-count, job, phase, or topology. Stable v2 remains blocked on this verifier gate until it lands on protected `main` and
-a fresh preview supplies corrected public evidence.
+Failed-run narratives are not release contracts. Historical workflow behavior remains covered by the bounded fixture
+and inspectors; current candidate failures are preserved in their immutable workflow logs and failure-only artifacts.
+Documentation records only the stable ownership, timeout, no-retry, artifact, and promotion policies above.
 
 ```bash
 npm run build:test-extension &&
@@ -1619,54 +1535,18 @@ Same-group notebook switches may retry discovery only for a proven-retired rende
 
 The main/release runtime matrix must pass on Linux/Python 3.10, macOS/Python 3.12, and Windows/Python 3.14. Test fixtures must build filesystem expectations with the host path implementation, mixed-label Pandas fixtures use an object `Index` so supported Python/Pandas type environments agree on the constructor contract, and `.gitattributes` keeps text checkouts LF-normalized while exempting binary release/test assets.
 
-Preview-workflow contract tests parse behavior rather than pinning the complete YAML text or its SHA-256. They require
-manual protected-main dispatch, default `publish: false`, one package producer and canonical triple, one exact-artifact
-Linux VS Code full packaged-editor owner, a focused Linux Cursor `platform-smoke`, and exactly one non-matrix caller of
-the shared candidate workflow. That reusable workflow owns
-fixed parallel generic-platform, `r_platform`, performance, Python, remote-R, and Linux local-R jobs.
-Generic macOS/Windows platform cells must set `platform-smoke` for VS Code and must not prepare R, run a native-R tail,
-or repeat the Cursor fork seam owned by the single pinned Linux smoke. No generic consumer other than Linux VS Code may run the full packaged journey. The `r_platform` matrix must contain the
-macOS and Windows cells, prepare R once per cell, order VS Code-only `core-operations`, `native-frames`, then
-`kernel-restart`, perform a fresh exact verifier and distinct immediate upload for each, and defer a literal-success
-verdict for all three raw outcomes until all uploads have run. Local R is exactly two non-cancelling shard matrix cells: lifecycle orders
-`core-operations` before `kernel-restart` before `interactive-terminal` before `literate-documents`, while editing
-orders `native-frames` before `value-operations` before `categorical-operations`. Tests require setup once per shard,
-then for every phase a fresh exact-candidate verifier, a fresh explicit-editor invocation/private-root owner, an
-immediate sealed diagnostic upload, and a shard-local deferred check of every raw outcome. They require explicit
-candidate core on Linux, macOS, and Windows to omit embedded native-frame and restart work, the dedicated selectors to
-give Linux VS Code comprehensive native-frame ownership plus representative native/restart seams to every other
-candidate platform/editor, focused value and categorical selectors to omit native-frame work and remain restart-free,
-explicit candidate core to run the exact Clone preview/apply/inspection/edit-same-step/reapply/undo lifecycle, and
-default/unset manual core plus remote R to retain their full-catalog and representative embedded behavior respectively.
-They reject losing a named compatibility seam, expanding candidate core back into exhaustive catalog semantics, a
-phase moved to the wrong job or shard, missing coverage, timeout or
-retry relaxation, unknown shard, or an early failure edge that can suppress later evidence. They also reject
-reintroducing the pull-request-owned direct R contract into candidate acceptance.
+Release-workflow contract tests parse behavior rather than pinning complete YAML. Candidate tests require first-attempt
+protected-main dispatch, one package producer and canonical triple, one non-matrix reusable acceptance caller, an
+independent Remote SSH owner, and an always-evaluated success-only manifest fan-in. They prove every consumer uses
+the numeric artifact ID, candidate jobs remain read-only, VS Code owns semantic acceptance, Cursor runs exactly one
+generic Linux lifecycle seam, R 4.4 and 4.5 platform evidence remains present, performance emits one digest-bound
+report, and no current candidate path publishes.
 
-Remote SSH runs from only the package dependency alongside candidate acceptance. The shared workflow's output-free
-fan-in must run after all internal jobs and require literal `success` from each; publication must explicitly require
-package, candidate-acceptance, and Remote SSH success. If a lane fails, unrelated siblings may finish so cleanup is
-not interrupted, but the candidate cannot publish. Mutations reject a caller matrix, caller-invented lanes, outputs
-that could substitute for literal job results, missing jobs, and removal of any publication dependency. They also
-prove that validation-only jobs cannot gain an environment, secret route, write permission, tag push, registry call,
-or rebuild. The shared-workflow tests reject unbound artifacts, missing diagnostic failure steps, and changes that
-disable required editor/runtime checks. The manual Released Jupyter workflow remains its existing non-authoritative
-serial diagnostic and is tested against that truthful contract rather than the candidate fan-out. Preview run #74
-measured the prior two-shard graph at 21m57s overall versus #73's 33m15s (34% lower), and 15m19s for its slower R shard
-versus 31m15s (51% lower); runner use rose from 119.75 to 130.78 minutes (9.2%), and macOS was the 19m54s bottleneck.
-Its lifecycle core nevertheless exceeded the unchanged outer deadline after `restart:start`. Preview run #75 measured
-21m18s and 134.07 runner-minutes. Dedicated Linux restart, value/categorical editing, and both native-R platform lanes
-passed, but Linux core was the sole raw blocker when VS Code crossed the outer deadline after
-`jupyter-r:orders_table:editing-renderer-ready`; macOS passed after using about 289.66 of its 300 seconds. Both runs
-skipped publication and created no `v1.99.6`. Preview run #76 exercised the split graph in 19m19s with 95m20s of runner
-time, but auxiliary process enumeration and Cursor's 0×0 generated-code layout race still blocked its fan-in and
-publication. Contract tests establish topology and policy only: the frozen performance and literate remediations have
-not passed hosted candidate acceptance.
-Separate contracts require stable, preview, and reusable Open
-VSX public mutation owners to use the same non-cancelling `queue: max` publication group; the Open VSX call must be
-explicit for both channels and must select `--pre-release` only from verified public release metadata. These tests do
-not claim that a `publish: false` hosted run exercised live environment approval, secrets, GitHub mutation, Azure
-federation, or registry propagation.
+Stable tests require a two-job selector/promoter graph. They reject a rerun, soak outside 168–336 hours, missing or
+expired artifacts, newer successful same-tag candidate, dispatch-source checkout, cross-run/artifact-ID drift, manifest
+or performance mismatch, write permission outside the protected promotion job, any rebuild/repackage, missing canonical
+reverification, and weakened tag/GitHub/Open-VSX/public-media conflict checks. Failed-run histories are intentionally
+absent from stable documentation; workflow logs and failure-only artifacts retain that operational evidence.
 
 Pull-request classification is covered by `npm run test:scripts:workflow`. The current PR workflow has no draft-only context or legacy
 release-infrastructure/package/full-matrix classifier mode: the sole classifier emits exactly
@@ -1869,7 +1749,7 @@ For the strict Polars report, the CSV/Parquet cold-source stdio first-grid limit
 
 The Playwright wide-grid acceptance independently measures rendered scrolling against the same 100ms cached and 500ms uncached p95 limits. Its generated host accepts only exact row-and-column-keyed fixture pages, checks ordered IDs and row cardinality before dispatch, and records the bounded response that supplies the final known column value. This is production webview-bundle evidence in the pinned browser, not VS Code/Cursor workbench paint timing. Repeated extension-host and installed-package runs verify process/session cleanup; a benchmark is not accepted if `SessionManager.sessions` retains an entry after close.
 
-The opt-in Linux installed-editor benchmark has a local preview path and two release paths. Local preview development may self-package with `npm run benchmark:installed -- --candidate-out tmp/openwrangler-candidate.vsix`; it requires a clean exact HEAD, runs the clean production/test build, and requires the checked-in preview channel. Preview release acceptance uses `--preview-release` to consume the canonical VSIX/checksum/provenance triple from `.github/workflows/release.yml`. Stable release acceptance consumes the corresponding triple from `.github/workflows/stable-release.yml`. Neither release path rebuilds the extension. The retired v1.0 evidence bridge is recorded below only as historical evidence.
+The opt-in Linux installed-editor benchmark has a local self-package path and one canonical release-candidate intake path. Candidate qualification invokes the canonical intake with explicit VS Code ownership and uploads one bounded JSON report whose bytes and SHA-256 are sealed into the qualification manifest. Stable promotion downloads and verifies that exact report; it never reruns the benchmark or rebuilds the VSIX. Historical preview/stable intake modes remain unit-tested only for recovery compatibility.
 
 The hosted job runs on `ubuntu-24.04`. It downloads the evidence set by exact run-scoped artifact ID, verifies the exact lowercase checksum and bounded provenance, and builds only `build:test-extension`; it never rebuilds the production VSIX. A bounded pre-compiler tree guard rejects a linked or noncanonical `dist-test` before TypeScript can write through it. Cross-platform guard fixtures first resolve their owned OS temporary directories to the same canonical spelling, while explicit alias/junction regressions still prove that production inputs fail closed. The build then stages the fixed, declaration-shadowed CommonJS runtime asset set byte-for-byte through no-follow descriptors. A bounded no-editor Node preflight stubs only `vscode`, loads the exact compiled installed-performance entrypoint, requires its `run` export, and descriptor-revalidates the entrypoint, its four compiled local helpers, and every runtime asset after the child exits. That initial preflight finishes before the run acquires official VS Code 1.130.0 Linux x64 (`356,926,919` bytes, SHA-256 `7d6ad3d3a78ac4551c14631f78d7e03c85282ab505c3ce8b1bc04e01fafe88ea`) and Cursor 3.13.10 Linux x64 (`209,277,476` bytes, SHA-256 `8a5b734be3bccc3de6daf96c536daa644c715e5fe3e5eaf21721538072ea104c`) into the run's mode-0700 private root; the same complete preflight then repeats immediately before every editor phase. Exact size and SHA-256 validation precedes extraction and launch. Cursor runs inside an isolated `dbus-run-session`; VS Code uses zero-window headless Ozone and Cursor uses the owned private-display path. The run may not reuse a preinstalled editor, moving download channel, caller session bus, normal profile, current desktop, or implicit local-display fallback. Downloaded packages and extracted editor trees are temporary test inputs only: they are deleted with the owned private root and are never bundled, cached as release outputs, uploaded, published, or redistributed.
 
