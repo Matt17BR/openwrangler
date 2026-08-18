@@ -474,8 +474,8 @@ const {
 const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInteractionJourney({
   clearReleasedJupyterScreenshotTransientUi,
   columnReference,
-  exerciseMultiOutputSplitJourney: (app, testing, sessionId, reacquireApp) =>
-    exerciseMultiOutputSplitJourney(app, testing, sessionId, reacquireApp, { recordAcceptanceProgress, waitFor }),
+  exerciseMultiOutputSplitJourney: (app, testing, sessionId, synchronizeApp) =>
+    exerciseMultiOutputSplitJourney(app, testing, sessionId, synchronizeApp, { recordAcceptanceProgress, waitFor }),
   previewAndDiscardPreviousRevenue,
   previewApplyAndUndoGroupedRevenue,
   previewMostCommonAccountNote,
