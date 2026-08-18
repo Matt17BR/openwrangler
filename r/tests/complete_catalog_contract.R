@@ -174,7 +174,7 @@ catalog_kinds <- c(
   "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates",
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
-  "capitalizeText", "lowerText", "upperText", "minMaxScale", "roundNumber", "floorNumber",
+  "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "minMaxScale", "roundNumber", "floorNumber",
   "ceilNumber", "formatDatetime", "groupBy", "byExample", "customCode"
 )
 
@@ -335,6 +335,16 @@ catalog_cases <- list(
       assert_identical(output[["text second"]][c(2L, 3L, 6L)], c("2", "3", "2"), "Split Text into Columns changed second parts")
     }
   ),
+  extractRegexGroup = list(
+    step = function(frame, id) step_with(id, "extractRegexGroup", list(
+      column = column_reference(frame, "text"), pattern = "([A-Za-z]+)-([0-9]{1})", group = 1L,
+      newColumn = "regex word"
+    )),
+    verify = function(output, input) assert_identical(
+      output[["regex word"]], c("Alpha", "BETA", "gamma", NA_character_, "Delta", "beta"),
+      "Regex extraction changed first-match capture or null semantics"
+    )
+  ),
   capitalizeText = list(
     step = function(frame, id) text_step(frame, id, "capitalizeText", "capitalized word"),
     verify = function(output, input) assert_identical(
@@ -434,7 +444,7 @@ catalog_cases <- list(
 )
 
 assert_identical(names(catalog_cases), catalog_kinds, "the complete R catalog owner is not in canonical order")
-assert_identical(length(catalog_cases), 29L, "the complete R catalog owner does not contain 29 operations")
+assert_identical(length(catalog_cases), 30L, "the complete R catalog owner does not contain 30 operations")
 
 catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(catalog_cases))
 
@@ -1172,6 +1182,6 @@ remove("complete_composition", envir = source_environment)
 
 agent$dispose()
 cat(paste0(
-  "complete native-R catalog contract passed: 29 live/generated/replayed operations; ",
+  "complete native-R catalog contract passed: 30 live/generated/replayed operations; ",
   "inspection, undo, flavors, attributes, zero-row, >1024 chunk, and cardinality composition\n"
 ))

@@ -469,6 +469,48 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </>
     );
   }
+  if (kind === "extractRegexGroup") {
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="column"
+          label="Text column"
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
+        />
+        <TextField
+          name="pattern"
+          label="Portable regex pattern"
+          defaultValue={param("pattern", "([A-Za-z]+)")}
+          maxCodePoints={4096}
+          maxUtf8Bytes={16384}
+          description="Uses the first leftmost match and Open Wrangler's portable regex subset."
+          required
+        />
+        <TextField
+          name="group"
+          label="Capture group (0 is the full match)"
+          type="number"
+          min={0}
+          max={9}
+          step={1}
+          defaultValue={param("group", "1")}
+          required
+        />
+        <TextField
+          name="newColumn"
+          label="New column"
+          defaultValue={param("newColumn", "extracted_text")}
+          maxLength={1024}
+          maxUtf8Bytes={1024}
+          description="Use a single-line Unicode scalar name of at most 1,024 UTF-8 bytes."
+          required
+        />
+      </>
+    );
+  }
   if (kind === "capitalizeText" || kind === "lowerText" || kind === "upperText") {
     const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (

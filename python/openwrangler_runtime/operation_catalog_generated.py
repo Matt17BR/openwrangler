@@ -141,6 +141,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=(),
     ),
     OperationDefinition(
+        kind="extractRegexGroup",
+        title="Extract regex group",
+        group="Categorical / text",
+        required=("column", "pattern", "group", "newColumn"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="capitalizeText",
         title="Capitalize",
         group="Categorical / text",

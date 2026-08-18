@@ -8,6 +8,7 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import { buildFillMissingParams } from "./fillMissingModel";
+import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 
 export type OperationParamsFor<Kind extends OperationKind> = Extract<TransformStep, { kind: Kind }>["params"];
 
@@ -151,6 +152,18 @@ export function buildParams(
         column: columnReference("column"),
         delimiter,
         newColumns
+      };
+    }
+    case "extractRegexGroup": {
+      const pattern = value("pattern");
+      const group = Number(value("group"));
+      portableRegexContract(pattern, group);
+      validatePortableRegexOutputName(value("newColumn"));
+      return {
+        column: columnReference("column"),
+        pattern,
+        group,
+        newColumn: value("newColumn")
       };
     }
     case "capitalizeText":

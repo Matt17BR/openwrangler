@@ -306,6 +306,7 @@ export function TextField({
   step,
   inputMode,
   maxLength,
+  maxCodePoints,
   maxUtf8Bytes,
   description,
   normalizeOnBlur
@@ -320,16 +321,21 @@ export function TextField({
   step?: number | "any";
   inputMode?: "numeric" | "decimal";
   maxLength?: number;
+  maxCodePoints?: number;
   maxUtf8Bytes?: number;
   description?: ReactNode;
   normalizeOnBlur?: (value: string) => string;
 }) {
   const helpId = useId();
-  const validateByteLength = (input: HTMLInputElement) => {
-    if (maxUtf8Bytes === undefined) return;
+  const validateTextBounds = (input: HTMLInputElement) => {
+    const codePoints = Array.from(input.value).length;
     const byteLength = new TextEncoder().encode(input.value).byteLength;
     input.setCustomValidity(
-      byteLength > maxUtf8Bytes ? `Use at most ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.` : ""
+      maxCodePoints !== undefined && codePoints > maxCodePoints
+        ? `Use at most ${maxCodePoints.toLocaleString()} Unicode scalar values.`
+        : maxUtf8Bytes !== undefined && byteLength > maxUtf8Bytes
+          ? `Use at most ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.`
+          : ""
     );
   };
   return (
@@ -346,20 +352,27 @@ export function TextField({
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
-        aria-describedby={maxUtf8Bytes === undefined && description === undefined ? undefined : helpId}
-        onInput={(event) => validateByteLength(event.currentTarget)}
+        aria-describedby={
+          maxCodePoints === undefined && maxUtf8Bytes === undefined && description === undefined ? undefined : helpId
+        }
+        onInput={(event) => validateTextBounds(event.currentTarget)}
         onBlur={
-          normalizeOnBlur || maxUtf8Bytes !== undefined
+          normalizeOnBlur || maxCodePoints !== undefined || maxUtf8Bytes !== undefined
             ? (event) => {
                 if (normalizeOnBlur) event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
-                validateByteLength(event.currentTarget);
+                validateTextBounds(event.currentTarget);
               }
             : undefined
         }
       />
-      {(description !== undefined || maxUtf8Bytes !== undefined) && (
+      {(description !== undefined || maxCodePoints !== undefined || maxUtf8Bytes !== undefined) && (
         <small id={helpId}>
-          {description ?? `R text replacements can use up to ${maxUtf8Bytes?.toLocaleString()} UTF-8 bytes.`}
+          {description ??
+            (maxCodePoints === undefined
+              ? `R text replacements can use up to ${maxUtf8Bytes?.toLocaleString()} UTF-8 bytes.`
+              : `Use at most ${maxCodePoints.toLocaleString()} Unicode scalar values${
+                  maxUtf8Bytes === undefined ? "." : ` and ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.`
+                }`)}
         </small>
       )}
     </label>

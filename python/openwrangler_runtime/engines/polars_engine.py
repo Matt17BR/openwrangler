@@ -12,6 +12,11 @@ from typing import Any, Literal
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..export_target import ExportWriterPath
+from ..portable_regex import (
+    MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
+    MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
+    PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
+)
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -1231,6 +1236,26 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(
                 [parts.list.get(index, null_on_oob=True).alias(name) for index, name in enumerate(output_names)]
             )
+        if kind == "extractRegexGroup":
+            column = bound_column_name(params["column"], kind)
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            ensure_output_columns_available(schema.names(), [params["newColumn"]], "Regex extraction")
+            source = pl.col(column).cast(pl.String)
+            oversize_query = df.select(
+                (
+                    (source.str.len_chars() > MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
+                    | (source.str.len_bytes() > MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
+                )
+                .fill_null(False)
+                .any()
+                .alias("oversized")
+            )
+            oversized = (
+                oversize_query.collect().item() if isinstance(oversize_query, pl.LazyFrame) else oversize_query.item()
+            )
+            if bool(oversized):
+                raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
+            return df.with_columns(source.str.extract(params["pattern"], params["group"]).alias(params["newColumn"]))
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
@@ -1885,6 +1910,51 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}    for item, name in enumerate({output_names!r})",
                 f"{prefix}])",
+            ]
+        if kind == "extractRegexGroup":
+            column = bound_column_name(params["column"], kind)
+            output = params["newColumn"]
+            schema = f"_regex_schema_{index}"
+            collisions = f"_regex_collisions_{index}"
+            reserved = f"_regex_reserved_{index}"
+            return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                (
+                    f"{prefix}if (not {output!r} or '\\0' in {output!r} or '\\r' in {output!r} or "
+                    f"'\\n' in {output!r} or any(0xD800 <= ord(char) <= 0xDFFF for char in {output!r}) or "
+                    f"len({output!r}.encode('utf-8')) > 1024):"
+                ),
+                (
+                    f"{prefix}    raise ValueError('Regex extraction output name must be bounded "
+                    "single-line Unicode scalar text.')"
+                ),
+                (f"{prefix}{reserved} = {output!r}.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})"),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError(\"Regex extraction would create Open Wrangler's "
+                    'reserved private row-identity column.")'
+                ),
+                f"{prefix}{collisions} = sorted(set({schema}.names()) & {{{output!r}}})",
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('Regex extraction would create a duplicate column name: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                (
+                    f"{prefix}_regex_oversized_{index} = df.select(((pl.col({column!r}).cast(pl.String)"
+                    f".str.len_chars() > {MAX_PORTABLE_REGEX_TEXT_CODE_POINTS}) | "
+                    f"(pl.col({column!r}).cast(pl.String).str.len_bytes() > {MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES}))"
+                    f".fill_null(False).any().alias('oversized'))"
+                ),
+                (
+                    f"{prefix}if bool((_regex_oversized_{index}.collect() if isinstance(_regex_oversized_{index}, "
+                    f"pl.LazyFrame) else _regex_oversized_{index}).item()):"
+                ),
+                f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
+                (
+                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
+                    f".str.extract({params['pattern']!r}, {params['group']}).alias({output!r}))"
+                ),
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)

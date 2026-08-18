@@ -181,6 +181,13 @@ class _BindingContext:
                 "by-example sources must be portable scalar columns."
             )
 
+    def require_text_source(self, reference: Mapping[str, Any], label: str) -> None:
+        column = self._column_for(reference, label)
+        if column.semantic_type != "string":
+            raise ColumnBindingError(
+                f"{label} has unsupported {column.semantic_type!r} type; regex extraction requires a text column."
+            )
+
     def by_example_type(self, reference: Mapping[str, Any], label: str) -> str:
         return self._column_for(reference, label).semantic_type
 
@@ -408,6 +415,7 @@ def bind_step(
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractRegexGroup",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -518,6 +526,7 @@ def bind_step(
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractRegexGroup",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -602,6 +611,9 @@ def bind_step(
     elif kind == "splitTextColumns":
         for index, output_name in enumerate(params.get("newColumns", [])):
             context.reject_output_collision(output_name, f"splitTextColumns.newColumns[{index}]")
+    elif kind == "extractRegexGroup":
+        context.require_text_source(params["column"], "extractRegexGroup.column")
+        context.reject_output_collision(params.get("newColumn"), "extractRegexGroup.newColumn")
     elif (
         kind
         in {

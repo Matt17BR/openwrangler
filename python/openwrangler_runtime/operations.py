@@ -10,6 +10,7 @@ from .by_example import SynthesisError, normalize_by_example
 from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operation_catalog_generated import OPERATION_DEFINITIONS
+from .portable_regex import PortableRegexError, portable_regex_contract, validate_portable_regex_output_name
 
 
 class OperationError(ValueError):
@@ -69,6 +70,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "stripText": ("column",),
     "splitText": ("column",),
     "splitTextColumns": ("column",),
+    "extractRegexGroup": ("column",),
     "capitalizeText": ("column",),
     "lowerText": ("column",),
     "upperText": ("column",),
@@ -234,6 +236,12 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("splitTextColumns.newColumns must contain between 2 and 64 non-empty names.")
         if len(new_columns) != len(set(new_columns)):
             raise OperationError("splitTextColumns.newColumns must contain unique names.")
+    elif kind == "extractRegexGroup":
+        try:
+            portable_regex_contract(params.get("pattern"), params.get("group"))
+            validate_portable_regex_output_name(params.get("newColumn"))
+        except PortableRegexError as error:
+            raise OperationError(str(error)) from error
     elif kind == "roundNumber" and (
         isinstance(params.get("decimals", 0), bool) or not isinstance(params.get("decimals", 0), int)
     ):
@@ -641,6 +649,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractRegexGroup",
         "capitalizeText",
         "lowerText",
         "upperText",

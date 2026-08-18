@@ -43,7 +43,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(29);
+    expect(operationCatalog).toHaveLength(30);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -487,6 +487,131 @@ describe("OperationBuilder", () => {
       }),
       undefined
     );
+  });
+
+  it("hydrates and submits public regex extraction separately from literal split", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "regex-city",
+      kind: "extractRegexGroup",
+      params: {
+        column: { id: "c:0", name: "city" },
+        pattern: "([A-Za-z]{4})?-([0-9]{2})",
+        group: 1,
+        newColumn: "city_prefix"
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Extract regex group" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Text column")).toHaveValue("c:0");
+    expect(screen.getByLabelText("Portable regex pattern")).toHaveValue("([A-Za-z]{4})?-([0-9]{2})");
+    expect(screen.getByLabelText("Capture group (0 is the full match)")).toHaveValue(1);
+    expect(screen.getByLabelText("New column")).toHaveValue("city_prefix");
+    expect(screen.getByText("Use a single-line Unicode scalar name of at most 1,024 UTF-8 bytes.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+
+    fireEvent.change(screen.getByLabelText("Portable regex pattern"), {
+      target: { value: "a{0,20}b{0,20}" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("variable-width quantifier");
+    expect(onPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts portable regex patterns by Unicode scalar rather than UTF-16 code unit", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="extractRegexGroup"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const pattern = screen.getByLabelText("Portable regex pattern") as HTMLInputElement;
+    expect(pattern).not.toHaveAttribute("maxlength");
+    fireEvent.change(screen.getByLabelText("Capture group (0 is the full match)"), { target: { value: "0" } });
+    fireEvent.input(pattern, { target: { value: `[A${"😀".repeat(4_093)}]` } });
+    expect(pattern.checkValidity()).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+
+    fireEvent.input(pattern, { target: { value: `[A${"😀".repeat(4_094)}]` } });
+    expect(pattern.checkValidity()).toBe(false);
+    expect(pattern.validationMessage).toContain("4,096 Unicode scalar values");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed before hydrating a saved multiline regex pattern into a single-line control", () => {
+    const onPreview = vi.fn();
+    const invalidStep = {
+      id: "regex-multiline",
+      kind: "extractRegexGroup",
+      params: {
+        column: { id: "c:0", name: "city" },
+        pattern: "first\nsecond",
+        group: 0,
+        newColumn: "match"
+      }
+    } as TransformStep;
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [invalidStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={invalidStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("saved regex-extraction step is not portable");
+    expect(screen.getByRole("alert")).toHaveTextContent("single-line text");
+    expect(screen.queryByLabelText("Portable regex pattern")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before hydrating a saved multiline regex output name into a single-line control", () => {
+    const onPreview = vi.fn();
+    const invalidStep = {
+      id: "regex-multiline-output",
+      kind: "extractRegexGroup",
+      params: {
+        column: { id: "c:0", name: "city" },
+        pattern: "([A-Za-z]+)",
+        group: 1,
+        newColumn: "first\nsecond"
+      }
+    } as TransformStep;
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [invalidStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={invalidStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("saved regex-extraction step is not portable");
+    expect(screen.getByRole("alert")).toHaveTextContent("single-line Unicode scalar text");
+    expect(screen.queryByLabelText("New column")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+    expect(onPreview).not.toHaveBeenCalled();
   });
 
   it("uses stable duplicate-safe references for drop-duplicates columns", () => {

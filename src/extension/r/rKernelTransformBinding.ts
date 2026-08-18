@@ -11,6 +11,7 @@ import type {
   DropColumnsTransformStep,
   DropDuplicatesTransformStep,
   DropMissingRowsTransformStep,
+  ExtractRegexGroupTransformStep,
   FillMissingReplacement,
   FillMissingValuesTransformStep,
   FilterRowsTransformStep,
@@ -66,6 +67,7 @@ export type RTransformStepWithoutByExample =
   | StripTextTransformStep
   | SplitTextTransformStep
   | SplitTextColumnsTransformStep
+  | ExtractRegexGroupTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
@@ -670,6 +672,18 @@ export function rTransformStep(
         column: Object.freeze({ ...step.params.column }),
         delimiter: step.params.delimiter,
         newColumns: Object.freeze([...step.params.newColumns])
+      })
+    });
+  }
+  if (step.kind === "extractRegexGroup") {
+    return Object.freeze({
+      id: step.id,
+      kind: "extractRegexGroup" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        pattern: step.params.pattern,
+        group: step.params.group,
+        newColumn: step.params.newColumn
       })
     });
   }

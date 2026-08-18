@@ -19,6 +19,7 @@ import {
   schemaAfterClone,
   schemaAfterDrop,
   schemaAfterFillMissing,
+  schemaAfterRegexExtraction,
   schemaAfterSelect,
   schemaAfterSplitTextColumns,
   schemaAfterTextLength,
@@ -85,6 +86,7 @@ export function schemaAfterRStep(
   if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (step.kind === "splitTextColumns") return schemaAfterSplitTextColumns(inputSchema, step);
+  if (step.kind === "extractRegexGroup") return schemaAfterRegexExtraction(inputSchema, step);
   if (isRCategoricalTransformStep(step)) {
     throw new TypeError("Categorical R operations require a runtime-derived output schema.");
   }

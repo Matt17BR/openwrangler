@@ -206,6 +206,16 @@ const validCases: ParamsCases = {
     ],
     expected: { column: city, delimiter: "-", newColumns: ["first", "second"] }
   },
+  extractRegexGroup: {
+    kind: "extractRegexGroup",
+    fields: [
+      ["column", "c:city"],
+      ["pattern", "([A-Za-z]+)"],
+      ["group", "1"],
+      ["newColumn", "word"]
+    ],
+    expected: { column: city, pattern: "([A-Za-z]+)", group: 1, newColumn: "word" }
+  },
   capitalizeText: optionalOutputCase("capitalizeText", "c:city", "capitalized", city),
   lowerText: optionalOutputCase("lowerText", "c:city", "lowered", city),
   upperText: optionalOutputCase("upperText", "c:city", "uppered", city),

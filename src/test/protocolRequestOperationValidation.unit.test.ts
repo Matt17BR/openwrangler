@@ -8,6 +8,30 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v2 operation request validation", () => {
+  it("makes the canonical schema reject terminal CR/LF in public regex fields", () => {
+    const preview = requests.find((candidate) => candidate.kind === "previewStep");
+    expect(preview?.kind).toBe("previewStep");
+    if (preview?.kind !== "previewStep") return;
+    const step = {
+      id: "regex-schema-single-line",
+      kind: "extractRegexGroup",
+      params: { column: valueReference, pattern: "([A-Za-z]+)", group: 1, newColumn: "word" }
+    };
+    const envelope = (candidateStep: typeof step) => ({
+      protocolVersion: 2,
+      requestId: "regex-schema-single-line",
+      priority: "interactive",
+      request: { ...preview, step: candidateStep }
+    });
+    expect(validateTransportSchema(envelope(step))).toBe(true);
+    for (const pattern of ["([A-Za-z]+)\n", "([A-Za-z]+)\r\n"]) {
+      expect(validateTransportSchema(envelope({ ...step, params: { ...step.params, pattern } }))).toBe(false);
+    }
+    for (const newColumn of ["word\n", "word\r\n"]) {
+      expect(validateTransportSchema(envelope({ ...step, params: { ...step.params, newColumn } }))).toBe(false);
+    }
+  });
+
   it("accepts only unique, non-empty stable IDs in summary projections", () => {
     const request = requests.find((candidate) => candidate.kind === "getSummary");
     expect(request?.kind).toBe("getSummary");
@@ -656,6 +680,16 @@ describe("protocol-v2 operation request validation", () => {
       kind: "splitTextColumns",
       params: { column: valueReference, delimiter: ",", newColumns: ["first", "second"] }
     },
+    {
+      id: "regex-extraction",
+      kind: "extractRegexGroup",
+      params: {
+        column: valueReference,
+        pattern: "([A-Za-z]+)",
+        group: 1,
+        newColumn: "word"
+      }
+    },
     { id: "capitalize", kind: "capitalizeText", params: { column: valueReference } },
     { id: "lower", kind: "lowerText", params: { column: valueReference, newColumn: "lower" } },
     { id: "upper", kind: "upperText", params: { column: valueReference } },
@@ -809,6 +843,26 @@ describe("protocol-v2 operation request validation", () => {
       id: "split-columns-duplicate",
       kind: "splitTextColumns",
       params: { column: valueReference, delimiter: ",", newColumns: ["same", "same"] }
+    },
+    {
+      id: "regex-extraction-legacy-column",
+      kind: "extractRegexGroup",
+      params: { column: "value", pattern: "([A-Za-z]+)", group: 1, newColumn: "word" }
+    },
+    {
+      id: "regex-extraction-nonportable",
+      kind: "extractRegexGroup",
+      params: { column: valueReference, pattern: "a{0,20}b{0,20}", group: 0, newColumn: "word" }
+    },
+    {
+      id: "regex-extraction-multiline-pattern",
+      kind: "extractRegexGroup",
+      params: { column: valueReference, pattern: "first\nsecond", group: 0, newColumn: "word" }
+    },
+    {
+      id: "regex-extraction-multiline-output",
+      kind: "extractRegexGroup",
+      params: { column: valueReference, pattern: "([A-Za-z]+)", group: 1, newColumn: "first\nsecond" }
     },
     { id: "capitalize-string", kind: "capitalizeText", params: { column: "value" } },
     { id: "lower-string", kind: "lowerText", params: { column: "value" } },

@@ -23,6 +23,16 @@ openwrangler_r_kernel_agent <- local({
   maximum_by_example_string_bytes <- 8L * 1024L
   maximum_by_example_text_bytes <- 64L * 1024L
   maximum_custom_code_bytes <- 64L * 1024L
+  maximum_portable_regex_pattern_characters <- 4096L
+  maximum_portable_regex_pattern_bytes <- 16384L
+  maximum_portable_regex_capture_groups <- 9L
+  maximum_portable_regex_repeat <- 1000L
+  maximum_portable_regex_text_characters <- 8192L
+  maximum_portable_regex_text_bytes <- 8192L
+  portable_regex_text_limit_message <- paste0(
+    "Regex extraction source values must contain at most 8,192 Unicode scalar values ",
+    "and 8,192 UTF-8 bytes."
+  )
   maximum_by_example_slice_source_characters <- 128L
   by_example_delimiters <- c(" ", "-", "_", "/", ".", ",", ":")
   by_example_regex_patterns <- c("(\\d+)", "([A-Za-z]+)", "([A-Za-z0-9]+)")
@@ -58,6 +68,198 @@ openwrangler_r_kernel_agent <- local({
       class = c("openwrangler_r_kernel_error", "error", "condition")
     )
     stop(condition)
+  }
+
+  portable_regex_contract <- function(pattern, group) {
+    pattern <- bounded_text(pattern, "request.payload.step.params.pattern", maximum_portable_regex_pattern_bytes)
+    if (
+      identical(pattern, "") || nchar(pattern, type = "chars") > maximum_portable_regex_pattern_characters ||
+        any(utf8ToInt(pattern) == 0L) || grepl("[\r\n]", pattern, perl = TRUE)
+    ) {
+      abort("invalid_request", "Regex extraction pattern must be bounded single-line portable text")
+    }
+    group <- whole_number(group, "request.payload.step.params.group", maximum_portable_regex_capture_groups)
+    chars <- strsplit(pattern, "", fixed = TRUE)[[1L]]
+    capture_count <- 0L
+    open_group <- NULL
+    previous <- NULL
+    optional_markers <- list()
+    variable_width <- 0L
+    minimum_required_width <- 0L
+    minimum_required_bytes <- 0L
+    escapable <- c("\\", ".", "[", "]", "(", ")", "{", "}", "*", "+", "?", "|", "^", "$", "-")
+    index <- 1L
+    record_atom <- function(atom) {
+      previous <<- atom
+      if (!is.null(open_group)) {
+        open_group$atoms[[length(open_group$atoms) + 1L]] <<- atom
+      } else {
+        minimum_required_width <<- minimum_required_width + atom$minimum_width
+        minimum_required_bytes <<- minimum_required_bytes + atom$minimum_bytes
+      }
+    }
+    while (index <= length(chars)) {
+      token <- chars[[index]]
+      if (identical(token, "\\")) {
+        if (index == length(chars) || !chars[[index + 1L]] %in% escapable) {
+          abort("invalid_request", "Regex extraction permits escapes only for literal regex punctuation")
+        }
+        index <- index + 2L
+        record_atom(list(
+          kind = "scalar", empty = FALSE, nullable = FALSE, quantified = FALSE,
+          minimum_width = 1L, minimum_bytes = 1L
+        ))
+        next
+      }
+      if (identical(token, "[")) {
+        cursor <- index + 1L
+        negated <- cursor <= length(chars) && identical(chars[[cursor]], "^")
+        if (negated) cursor <- cursor + 1L
+        members <- 0L
+        minimum_class_bytes <- if (negated) 1L else .Machine$integer.max
+        prior <- NULL
+        closed <- FALSE
+        while (cursor <= length(chars)) {
+          member <- chars[[cursor]]
+          escaped <- FALSE
+          if (identical(member, "]")) {
+            if (members == 0L) abort("invalid_request", "Regex extraction character classes may not be empty")
+            closed <- TRUE
+            break
+          }
+          if (identical(member, "\\")) {
+            if (cursor == length(chars) || !chars[[cursor + 1L]] %in% c("\\", "]", "-")) {
+              abort("invalid_request", "Regex extraction character-class escape is not portable")
+            }
+            cursor <- cursor + 1L
+            member <- chars[[cursor]]
+            escaped <- TRUE
+          }
+          if (identical(member, "-") && !escaped) {
+            endpoint <- if (cursor < length(chars)) chars[[cursor + 1L]] else NULL
+            if (
+              is.null(prior) || is.null(endpoint) || endpoint %in% c("]", "\\") ||
+                utf8ToInt(prior) >= 128L || utf8ToInt(endpoint) >= 128L || utf8ToInt(prior) > utf8ToInt(endpoint)
+            ) abort("invalid_request", "Regex extraction character-class range is not portable")
+            members <- members + 1L
+            minimum_class_bytes <- 1L
+            prior <- endpoint
+            cursor <- cursor + 2L
+            next
+          }
+          members <- members + 1L
+          minimum_class_bytes <- min(minimum_class_bytes, nchar(member, type = "bytes"))
+          prior <- member
+          cursor <- cursor + 1L
+        }
+        if (!closed) abort("invalid_request", "Regex extraction character class is unclosed")
+        index <- cursor + 1L
+        record_atom(list(
+          kind = "scalar", empty = FALSE, nullable = FALSE, quantified = FALSE,
+          minimum_width = 1L, minimum_bytes = as.integer(minimum_class_bytes)
+        ))
+        next
+      }
+      if (identical(token, "(")) {
+        if (!is.null(open_group)) abort("invalid_request", "Regex extraction capture groups may not be nested")
+        capture_count <- capture_count + 1L
+        if (capture_count > maximum_portable_regex_capture_groups) {
+          abort("invalid_request", "Regex extraction has too many capture groups")
+        }
+        open_group <- list(group = capture_count, atoms = list())
+        previous <- NULL
+        index <- index + 1L
+        next
+      }
+      if (identical(token, ")")) {
+        if (is.null(open_group)) abort("invalid_request", "Regex extraction closing parenthesis is unmatched")
+        previous <- list(
+          kind = "group", group = open_group$group, empty = length(open_group$atoms) == 0L,
+          nullable = all(vapply(open_group$atoms, `[[`, logical(1L), "nullable")), quantified = FALSE,
+          minimum_width = sum(vapply(open_group$atoms, `[[`, integer(1L), "minimum_width")),
+          minimum_bytes = sum(vapply(open_group$atoms, `[[`, integer(1L), "minimum_bytes"))
+        )
+        open_group <- NULL
+        minimum_required_width <- minimum_required_width + previous$minimum_width
+        minimum_required_bytes <- minimum_required_bytes + previous$minimum_bytes
+        index <- index + 1L
+        next
+      }
+      if (token %in% c("?", "*", "+", "{")) {
+        if (is.null(previous) || isTRUE(previous$quantified)) {
+          abort("invalid_request", "Regex extraction quantifier has no unquantified atom")
+        }
+        end <- index
+        minimum <- if (identical(token, "+")) 1L else 0L
+        is_variable_width <- token %in% c("?", "*", "+")
+        if (identical(token, "{")) {
+          closes <- which(chars == "}" & seq_along(chars) > index)
+          if (length(closes) == 0L) abort("invalid_request", "Regex extraction bounded quantifier is unclosed")
+          end <- closes[[1L]]
+          body <- paste0(chars[(index + 1L):(end - 1L)], collapse = "")
+          if (!grepl("^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))?$", body)) {
+            abort("invalid_request", "Regex extraction bounded quantifier is invalid")
+          }
+          counts <- as.integer(strsplit(body, ",", fixed = TRUE)[[1L]])
+          minimum <- counts[[1L]]
+          maximum <- counts[[length(counts)]]
+          if (minimum > maximum || maximum > maximum_portable_regex_repeat) {
+            abort("invalid_request", "Regex extraction bounded quantifier exceeds the portable limit")
+          }
+          is_variable_width <- minimum != maximum
+        }
+        if (identical(previous$kind, "group") && !identical(token, "?")) {
+          abort("invalid_request", "Regex extraction capture groups may use only optional ?")
+        }
+        if (isTRUE(previous$empty) && !identical(token, "?")) {
+          abort("invalid_request", "Regex extraction may not repeat an empty atom")
+        }
+        if (identical(previous$kind, "group") && identical(token, "?") && isTRUE(previous$nullable)) {
+          abort("invalid_request", "Regex extraction optional capture groups may not match empty text")
+        }
+        if (is_variable_width) {
+          variable_width <- variable_width + 1L
+          if (variable_width > 1L) {
+            abort("invalid_request", "Regex extraction permits one variable-width quantifier")
+          }
+        }
+        prior_minimum_width <- previous$minimum_width
+        prior_minimum_bytes <- previous$minimum_bytes
+        previous$quantified <- TRUE
+        previous$nullable <- token %in% c("?", "*") || minimum == 0L || isTRUE(previous$nullable)
+        previous$minimum_width <- prior_minimum_width * minimum
+        previous$minimum_bytes <- prior_minimum_bytes * minimum
+        if (!is.null(open_group) && length(open_group$atoms) > 0L) {
+          open_group$atoms[[length(open_group$atoms)]] <- previous
+        } else {
+          minimum_required_width <- minimum_required_width + previous$minimum_width - prior_minimum_width
+          minimum_required_bytes <- minimum_required_bytes + previous$minimum_bytes - prior_minimum_bytes
+        }
+        if (identical(previous$kind, "group")) optional_markers[[as.character(previous$group)]] <- index
+        index <- end + 1L
+        next
+      }
+      if (token %in% c("]", "}", "|", "^", "$")) {
+        abort("invalid_request", "Regex extraction contains unsupported unescaped punctuation")
+      }
+      record_atom(list(
+        kind = "scalar", empty = FALSE, nullable = FALSE, quantified = FALSE,
+        minimum_width = 1L, minimum_bytes = nchar(token, type = "bytes")
+      ))
+      index <- index + 1L
+    }
+    if (!is.null(open_group)) abort("invalid_request", "Regex extraction capture group is unclosed")
+    if (
+      minimum_required_width > maximum_portable_regex_text_characters ||
+        minimum_required_bytes > maximum_portable_regex_text_bytes
+    ) {
+      abort("invalid_request", "Regex extraction minimum match width exceeds the portable source limit")
+    }
+    if (group > capture_count) abort("invalid_request", "Regex extraction capture group does not exist")
+    marker_key <- as.character(group)
+    marker <- if (marker_key %in% names(optional_markers)) optional_markers[[marker_key]] else NULL
+    participation <- if (group == 0L || is.null(marker)) pattern else paste0(chars[-marker], collapse = "")
+    list(captureCount = capture_count, participationPattern = participation)
   }
 
   diagnostic_message <- function(error, fallback) {
@@ -2737,6 +2939,46 @@ openwrangler_r_kernel_agent <- local({
         outputIds = output_ids
       ))
     }
+    if (identical(kind, "extractRegexGroup")) {
+      params <- exact_record(
+        step$params,
+        c("column", "pattern", "group", "newColumn"),
+        "request.payload.step.params"
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      contract <- portable_regex_contract(params$pattern, params$group)
+      new_column <- bounded_text(
+        params$newColumn,
+        "request.payload.step.params.newColumn",
+        maximum_variable_name_bytes
+      )
+      if (
+        identical(new_column, "") || any(utf8ToInt(new_column) == 0L) ||
+          grepl("[\r\n]", new_column, perl = TRUE)
+      ) {
+        abort("invalid_request", "Regex extraction output name is invalid")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = column,
+          pattern = params$pattern,
+          group = as.integer(params$group),
+          newColumn = new_column
+        ),
+        participationPattern = contract$participationPattern,
+        outputId = bounded_text(
+          paste0("c:step:", step_id, ":0"),
+          "the derived R regex-extraction column identity",
+          limits$columnIdBytes
+        )
+      ))
+    }
     if (identical(kind, "findReplace")) {
       params <- exact_record(
         step$params,
@@ -3022,6 +3264,7 @@ openwrangler_r_kernel_agent <- local({
       "stripText",
       "splitText",
       "splitTextColumns",
+      "extractRegexGroup",
       "findReplace",
       "minMaxScale",
       "roundNumber",
@@ -3275,6 +3518,34 @@ openwrangler_r_kernel_agent <- local({
       delimiter = step$params$delimiter,
       newNames = step$params$newColumns,
       outputIds = step$outputIds
+    )
+  }
+
+  bind_regex_extraction_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, step$params$column$name)) {
+      abort("stale_column", "The regex-extraction column reference no longer matches the active R dataframe", TRUE)
+    }
+    position <- as.integer(matches[[1L]])
+    if (!schema[[position]]$semantics$kind %in% c("character", "factor")) {
+      abort("invalid_request", "Regex extraction requires an R character or factor column", TRUE)
+    }
+    names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (step$params$newColumn %in% names || step$outputId %in% ids) {
+      abort("invalid_request", "The regex-extraction output column already exists", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = position,
+      oldName = step$params$column$name,
+      pattern = step$params$pattern,
+      group = step$params$group,
+      newName = step$params$newColumn,
+      participationPattern = step$participationPattern,
+      outputId = step$outputId
     )
   }
 
@@ -4801,6 +5072,31 @@ openwrangler_r_kernel_agent <- local({
           source_positions = source_positions,
           output_ids = output_ids,
           text_transform_positions = transform_positions
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "extractRegexGroup")) {
+      bound <- bind_regex_extraction_step(capture, step)
+      result <- frame_contract$extract_regex_group_at(
+        source,
+        bound$position,
+        bound$oldName,
+        bound$pattern,
+        bound$group,
+        bound$newName,
+        bound$participationPattern
+      )
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = c(seq_along(capture$descriptor$schema), bound$position),
+          output_ids = c(
+            vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+            bound$outputId
+          ),
+          text_transform_positions = length(capture$descriptor$schema) + 1L
         ),
         bound = bound
       ))
@@ -7804,6 +8100,54 @@ openwrangler_r_kernel_agent <- local({
           "  }",
           sprintf("  .ow_result_ids <- c(.ow_result_ids, c(%s))", output_ids)
         )
+      } else if (identical(step$kind, "extractRegexGroup")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_regex_position <- %dL", step$position),
+          sprintf("  .ow_regex_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_regex_pattern <- %s", r_string(step$pattern)),
+          sprintf("  .ow_regex_participation <- %s", r_string(step$participationPattern)),
+          sprintf("  .ow_regex_group <- %dL", step$group),
+          sprintf("  .ow_regex_name <- %s", r_string(step$newName)),
+          "  if (ncol(.ow_result) < .ow_regex_position || !identical(names(.ow_result)[[.ow_regex_position]], .ow_regex_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (!is.character(.ow_result[[.ow_regex_position]]) && !is.factor(.ow_result[[.ow_regex_position]])) stop(\"Open Wrangler Regex extraction requires a character or factor column\", call. = FALSE)",
+          "  if (.ow_regex_name == \"\" || nchar(.ow_regex_name, type = \"bytes\") > 1024L || grepl(\"[\\r\\n]\", .ow_regex_name, perl = TRUE) || startsWith(tolower(.ow_regex_name), \"__open_wrangler_internal_row_id_\") || .ow_regex_name %in% names(.ow_result)) stop(\"Open Wrangler regex output name is invalid, reserved, or already exists\", call. = FALSE)",
+          "  .ow_regex_source <- as.character(.ow_result[[.ow_regex_position]])",
+          "  .ow_regex_values <- vapply(seq_along(.ow_regex_source), function(.ow_index) {",
+          "    .ow_value <- .ow_regex_source[[.ow_index]]",
+          "    if (is.na(.ow_value)) return(NA_character_)",
+          "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Regex extraction requires valid UTF-8 text\", call. = FALSE)",
+          "    .ow_encoding <- Encoding(.ow_value)",
+          "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          "    if (is.na(.ow_utf8)) stop(\"Open Wrangler Regex extraction requires valid UTF-8 text\", call. = FALSE)",
+          sprintf(
+            "    if (nchar(.ow_utf8, type = \"chars\") > 8192L || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(%s, call. = FALSE)",
+            r_string(portable_regex_text_limit_message)
+          ),
+          "    .ow_match <- regexec(.ow_regex_pattern, .ow_utf8, perl = TRUE, useBytes = FALSE)[[1L]]",
+          "    if (length(.ow_match) == 1L && identical(as.integer(.ow_match[[1L]]), -1L)) return(NA_character_)",
+          "    .ow_selected <- .ow_regex_group + 1L",
+          "    .ow_starts <- as.integer(.ow_match)",
+          "    .ow_lengths <- as.integer(attr(.ow_match, \"match.length\", exact = TRUE))",
+          "    if (!identical(.ow_regex_participation, .ow_regex_pattern)) {",
+          "      .ow_full <- if (.ow_lengths[[1L]] == 0L) \"\" else substr(.ow_utf8, .ow_starts[[1L]], .ow_starts[[1L]] + .ow_lengths[[1L]] - 1L)",
+          "      .ow_participation <- regexec(paste0(\"^(?:\", .ow_regex_participation, \")$\"), .ow_full, perl = TRUE, useBytes = FALSE)[[1L]]",
+          "      if (length(.ow_participation) == 1L && identical(as.integer(.ow_participation[[1L]]), -1L)) return(NA_character_)",
+          "    }",
+          "    if (.ow_selected > length(.ow_starts) || .ow_starts[[.ow_selected]] < 0L) return(NA_character_)",
+          "    if (.ow_lengths[[.ow_selected]] == 0L) return(\"\")",
+          "    substr(.ow_utf8, .ow_starts[[.ow_selected]], .ow_starts[[.ow_selected]] + .ow_lengths[[.ow_selected]] - 1L)",
+          "  }, character(1L), USE.NAMES = FALSE)",
+          "  if (inherits(.ow_result, \"data.table\")) {",
+          "    data.table::set(.ow_result, j = .ow_regex_name, value = .ow_regex_values)",
+          "  } else {",
+          "    .ow_existing_names <- names(.ow_result)",
+          "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_regex_values",
+          "    names(.ow_result) <- c(.ow_existing_names, .ow_regex_name)",
+          "  }",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
+        )
       } else if (step$kind %in% c(
         "lowerText",
         "upperText",
@@ -8513,7 +8857,7 @@ openwrangler_r_kernel_agent <- local({
     } else if (identical(bound$kind, "splitTextColumns")) {
       bound$newNames
     } else if (
-      bound$kind %in% c("cloneColumn", "formula", "textLength", "byExample") ||
+      bound$kind %in% c("cloneColumn", "formula", "textLength", "byExample", "extractRegexGroup") ||
         (
           bound$kind %in% c(
             "lowerText",
