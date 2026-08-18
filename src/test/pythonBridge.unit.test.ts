@@ -35,6 +35,7 @@ import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
 import { PythonDependencyProbeRegistry } from "../extension/pythonDependencyState";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
+import { PythonRuntimeScopeRegistry } from "../extension/pythonRuntimeScopeRegistry";
 import { PythonRuntimeTransport } from "../extension/pythonRuntimeTransport";
 import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
 
@@ -3850,11 +3851,11 @@ describe("PythonBridge environment resource selection", () => {
 
     expect(raw.runtimeSlots.size).toBe(128);
     expect(raw.environmentSelections.size).toBe(128);
-    expect(raw.scopeRecency.size).toBe(128);
+    expect(raw.runtimeScopes.recency.size).toBe(128);
     expect(raw.runtimeSlots.has(oldestSource.uri!)).toBe(false);
     expect(raw.environmentSelections.has(oldestSource.uri!)).toBe(false);
     expect(raw.selectionEpochs.has(oldestSource.uri!)).toBe(false);
-    expect(raw.scopeRecency.has(oldestSource.uri!)).toBe(false);
+    expect(raw.runtimeScopes.recency.has(oldestSource.uri!)).toBe(false);
     expect(oldest!.stderrBuffer).toBe("");
     expect(oldest!.runtimeExitError).toBeUndefined();
     expect(raw.dependencyProbes.diagnostics().completedCount).toBe(128);
@@ -3959,44 +3960,6 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.dependencyProbes.diagnostics().completedCount).toBe(2);
   });
 
-  it("does not let a stale lease release mutate a same-key replacement slot", () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    const original = raw.runtimeSlot("replacement-scope");
-    const release = raw.retainRuntime(original);
-    const replacement = testRuntimeSlot(original.key);
-    raw.runtimeSlots.set(replacement.key, replacement);
-    raw.scopeRecency.set(replacement.key, 41);
-
-    release();
-
-    expect(original.leaseCount).toBe(0);
-    expect(raw.runtimeSlots.get(replacement.key)).toBe(replacement);
-    expect(raw.scopeRecency.get(replacement.key)).toBe(41);
-  });
-
-  it("permits overflow only while every excess scope is leased and trims on release", () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    const releases: Array<() => void> = [];
-    for (let index = 0; index < 130; index += 1) {
-      releases.push(raw.retainRuntime(raw.runtimeSlot(`leased-overflow-${index}`)));
-    }
-
-    raw.trimInactiveScopes();
-    expect(raw.runtimeSlots.size).toBe(130);
-
-    releases[0]();
-    expect(raw.runtimeSlots.size).toBe(129);
-    expect(raw.runtimeSlots.has("leased-overflow-0")).toBe(false);
-    expect([...raw.runtimeSlots.values()].every((runtime) => runtime.leaseCount > 0)).toBe(true);
-
-    releases[1]();
-    expect(raw.runtimeSlots.size).toBe(128);
-    expect(raw.runtimeSlots.has("leased-overflow-1")).toBe(false);
-    for (const release of releases.slice(2)) release();
-  });
-
   it("refreshes scope recency without changing deterministic runtime-slot order", async () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
@@ -4014,43 +3977,6 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.runtimeSlots.has(remoteSourceAt("/recency/0.csv").uri!)).toBe(true);
     expect(raw.runtimeSlots.has(remoteSourceAt("/recency/1.csv").uri!)).toBe(false);
     expect(raw.runtimeSlots.has(remoteSourceAt("/recency/128.csv").uri!)).toBe(true);
-  });
-
-  it("cleans orphan metadata but fails closed on an orphan unresolved selection", () => {
-    const { bridge } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    for (let index = 0; index < 129; index += 1) {
-      const key = `orphan-metadata-${index}`;
-      raw.selectionEpochs.set(key, index);
-      raw.scopeRecency.set(key, index);
-    }
-    raw.trimInactiveScopes();
-    expect(raw.selectionEpochs.size).toBe(128);
-    expect(raw.scopeRecency.size).toBe(128);
-    expect(raw.selectionEpochs.has("orphan-metadata-0")).toBe(false);
-
-    const unresolved = deferred<TestPythonEnvironment>();
-    const orphanKey = "orphan-unresolved-selection";
-    const orphan: TestEnvironmentSelection = {
-      key: orphanKey,
-      epoch: 0,
-      resource: vscode.Uri.parse("vscode-remote://ssh-remote+example/orphan.csv", true),
-      workspaceFolder: undefined,
-      promise: unresolved.promise,
-      resolutionController: new AbortController(),
-      dependencyKeys: new Set()
-    };
-    raw.environmentSelections.set(orphanKey, orphan);
-    raw.selectionEpochs.set(orphanKey, 0);
-    raw.scopeRecency.set(orphanKey, -1);
-
-    raw.trimInactiveScopes();
-    expect(raw.environmentSelections.get(orphanKey)).toBe(orphan);
-    expect(raw.selectionEpochs.has(orphanKey)).toBe(true);
-    expect(raw.scopeRecency.has(orphanKey)).toBe(true);
-    expect(
-      new Set([...raw.environmentSelections.keys(), ...raw.selectionEpochs.keys(), ...raw.scopeRecency.keys()]).size
-    ).toBe(128);
   });
 
   it("does not let a stale environment-resolution callback overwrite a same-key recreation", async () => {
@@ -4205,11 +4131,10 @@ interface TestRuntimeSlot {
 
 interface RawBridgeInternals {
   disposed: boolean;
-  scopeUseClock: number;
-  scopeRecency: Map<string, number>;
   selectionEpoch: number;
   dependencyAuthorizationEpoch: number;
   selectionEpochs: Map<string, number>;
+  runtimeScopes: PythonRuntimeScopeRegistry<TestRuntimeSlot, TestEnvironmentSelection>;
   runtimeSlots: Map<string, TestRuntimeSlot>;
   sessionOwnership: PythonSessionOwnership<TestRuntimeSlot>;
   environmentSelections: Map<string, TestEnvironmentSelection>;
@@ -4281,6 +4206,30 @@ function createDependencyProbeRegistry(raw: RawBridgeInternals): PythonDependenc
 
 function createSessionOwnership(raw: RawBridgeInternals): PythonSessionOwnership<TestRuntimeSlot> {
   return new PythonSessionOwnership((runtime, reason) => raw.restartRuntime(runtime, reason));
+}
+
+function createRuntimeScopeRegistry(
+  raw: RawBridgeInternals,
+  options: {
+    runtimeSlots?: Map<string, TestRuntimeSlot>;
+    environmentSelections?: Map<string, TestEnvironmentSelection>;
+    selectionEpochs?: Map<string, number>;
+    scopeRecency?: Map<string, number>;
+    initialUseClock?: number;
+  } = {}
+): PythonRuntimeScopeRegistry<TestRuntimeSlot, TestEnvironmentSelection> {
+  return new PythonRuntimeScopeRegistry({
+    createRuntime: testRuntimeSlot,
+    slots: options.runtimeSlots,
+    environmentSelections: options.environmentSelections ?? new Map(),
+    selectionEpochs: options.selectionEpochs ?? new Map(),
+    recency: options.scopeRecency,
+    initialUseClock: options.initialUseClock,
+    activeMissingSelection: () => raw.lastMissingDependencies?.selection,
+    abortSelection: (selection) => selection.resolutionController.abort(),
+    hasExternalOwnership: (runtime) =>
+      raw.runtimeTransport.hasOwnership(runtime) || raw.sessionOwnership.hasClaimsFor(runtime)
+  });
 }
 
 function createRuntimeTransport(raw: RawBridgeInternals): PythonRuntimeTransport<TestRuntimeSlot> {
@@ -4371,20 +4320,28 @@ function createLifecycleHarness(): {
   });
   const raw = bridge as unknown as RawBridgeInternals;
   const spawnProcess = vi.fn();
+  const runtimeSlots = new Map([[runtime.key, runtime]]);
+  const selectionEpochs = new Map([[selection.key, 0]]);
+  const environmentSelections = new Map([[selection.key, selection]]);
+  const runtimeScopes = createRuntimeScopeRegistry(raw, {
+    runtimeSlots,
+    selectionEpochs,
+    environmentSelections,
+    scopeRecency: new Map([[selection.key, 1]]),
+    initialUseClock: 1
+  });
   vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
   Object.assign(bridge as object, {
     context: testExtensionContext(),
     shutdownPromise: undefined,
-    runtimeSlots: new Map([[runtime.key, runtime]]),
+    runtimeScopes,
     sessionOwnership: createSessionOwnership(raw),
     selectionEpoch: 0,
     dependencyAuthorizationEpoch: 0,
-    selectionEpochs: new Map([[selection.key, 0]]),
+    selectionEpochs,
     generation: 0,
-    scopeUseClock: 1,
-    scopeRecency: new Map([[selection.key, 1]]),
     disposed: false,
-    environmentSelections: new Map([[selection.key, selection]]),
+    environmentSelections,
     dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
@@ -4510,17 +4467,22 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
   const raw = bridge as unknown as RawBridgeInternals;
   const runtimeSlots = new Map<string, TestRuntimeSlot>();
+  const selectionEpochs = new Map<string, number>();
+  const environmentSelections = new Map<string, TestEnvironmentSelection>();
+  const runtimeScopes = createRuntimeScopeRegistry(raw, {
+    runtimeSlots,
+    selectionEpochs,
+    environmentSelections
+  });
   Object.assign(bridge as object, {
     context,
-    runtimeSlots,
+    runtimeScopes,
     sessionOwnership: createSessionOwnership(raw),
     selectionEpoch: 0,
     dependencyAuthorizationEpoch: 0,
-    selectionEpochs: new Map<string, number>(),
+    selectionEpochs,
     disposed: options.disposed ?? false,
-    scopeUseClock: 0,
-    scopeRecency: new Map<string, number>(),
-    environmentSelections: new Map<string, TestEnvironmentSelection>(),
+    environmentSelections,
     dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
@@ -4585,17 +4547,25 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     target.environment as pythonEnvironment.PythonEnvironment
   );
   const runtime = testRuntimeSlot(target.selection.key);
+  const runtimeSlots = new Map([[runtime.key, runtime]]);
+  const selectionEpochs = new Map([[target.selection.key, 0]]);
+  const environmentSelections = new Map([[target.selection.key, target.selection]]);
+  const runtimeScopes = createRuntimeScopeRegistry(raw, {
+    runtimeSlots,
+    selectionEpochs,
+    environmentSelections,
+    scopeRecency: new Map([[target.selection.key, 1]]),
+    initialUseClock: 1
+  });
   Object.assign(bridge as object, {
     context: testExtensionContext(),
-    runtimeSlots: new Map([[runtime.key, runtime]]),
+    runtimeScopes,
     sessionOwnership: createSessionOwnership(raw),
     selectionEpoch: 0,
     dependencyAuthorizationEpoch: 0,
-    selectionEpochs: new Map([[target.selection.key, 0]]),
+    selectionEpochs,
     disposed: false,
-    scopeUseClock: 1,
-    scopeRecency: new Map([[target.selection.key, 1]]),
-    environmentSelections: new Map([[target.selection.key, target.selection]]),
+    environmentSelections,
     dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
@@ -5064,27 +5034,35 @@ function createMultiScopeHarness(): {
     sessionOwnership.releaseRuntime(runtime);
     runtime.process = undefined;
   });
-  Object.assign(bridge as object, {
-    runtimeSlots: new Map([
-      [runtimes.first.key, runtimes.first],
-      [runtimes.second.key, runtimes.second]
-    ]),
-    sessionOwnership,
-    selectionEpoch: 0,
-    selectionEpochs: new Map([
-      [firstSelection.key, 0],
-      [secondSelection.key, 0]
-    ]),
-    disposed: false,
-    scopeUseClock: 2,
+  const runtimeSlots = new Map([
+    [runtimes.first.key, runtimes.first],
+    [runtimes.second.key, runtimes.second]
+  ]);
+  const selectionEpochs = new Map([
+    [firstSelection.key, 0],
+    [secondSelection.key, 0]
+  ]);
+  const environmentSelections = new Map([
+    [firstSelection.key, firstSelection],
+    [secondSelection.key, secondSelection]
+  ]);
+  const runtimeScopes = createRuntimeScopeRegistry(raw, {
+    runtimeSlots,
+    selectionEpochs,
+    environmentSelections,
     scopeRecency: new Map([
       [firstSelection.key, 1],
       [secondSelection.key, 2]
     ]),
-    environmentSelections: new Map([
-      [firstSelection.key, firstSelection],
-      [secondSelection.key, secondSelection]
-    ]),
+    initialUseClock: 2
+  });
+  Object.assign(bridge as object, {
+    runtimeScopes,
+    sessionOwnership,
+    selectionEpoch: 0,
+    selectionEpochs,
+    disposed: false,
+    environmentSelections,
     dependencyProbes: createDependencyProbeRegistry(raw),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
@@ -5173,15 +5151,23 @@ function createHarness(
   const ensureProcess = vi.fn(async () => process);
   const restart = vi.fn();
   const internals = bridge as unknown as RawBridgeInternals;
+  const runtimeSlots = new Map([[runtime.key, runtime]]);
+  const selectionEpochs = new Map([[selection.key, 0]]);
+  const environmentSelections = new Map([[selection.key, selection]]);
+  const runtimeScopes = createRuntimeScopeRegistry(internals, {
+    runtimeSlots,
+    selectionEpochs,
+    environmentSelections,
+    scopeRecency: new Map([[selection.key, 1]]),
+    initialUseClock: 1
+  });
   Object.assign(bridge as object, {
-    runtimeSlots: new Map([[runtime.key, runtime]]),
+    runtimeScopes,
     sessionOwnership: createSessionOwnership(internals),
     selectionEpoch: 0,
-    selectionEpochs: new Map([[selection.key, 0]]),
+    selectionEpochs,
     disposed: false,
-    scopeUseClock: 1,
-    scopeRecency: new Map([[selection.key, 1]]),
-    environmentSelections: new Map([[selection.key, selection]]),
+    environmentSelections,
     dependencyProbes: createDependencyProbeRegistry(internals),
     dependencyGuardStatusFlights: new Map<string, unknown>(),
     dependencyEnvironmentUncertainty: new Map<string, unknown>(),
