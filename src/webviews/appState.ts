@@ -18,6 +18,8 @@ import type { VisibleColumnRange } from "./grid/DataGrid";
 export type NonSortEditorAction =
   | "openOperation"
   | "editLatest"
+  | "editStep"
+  | "deleteStep"
   | "selectStep"
   | "clearFilterColumn"
   | "openFilters"
@@ -59,7 +61,8 @@ export interface QueuedStepSelection {
   stepId?: string;
 }
 
-export type OperationIntent = { action: "open"; operationKind?: OperationKind } | { action: "editLatest" };
+export type OperationIntent =
+  { action: "open"; operationKind?: OperationKind } | { action: "editLatest" } | { action: "editStep"; stepId: string };
 
 export type QueuedOperationIntent = OperationIntent & {
   sessionId: string;

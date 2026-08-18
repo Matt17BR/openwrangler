@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { DataDiff } from "../shared/protocol";
 
 interface StepInspectionPanelProps {
@@ -6,6 +7,9 @@ interface StepInspectionPanelProps {
   pageSize: number;
   error?: string;
   diff?: DataDiff;
+  canModify?: boolean;
+  onEdit?: () => void;
+  onDelete?: () => void;
   onClear: () => void;
 }
 
@@ -15,8 +19,12 @@ export function StepInspectionPanel({
   pageSize,
   error,
   diff,
+  canModify = false,
+  onEdit = () => undefined,
+  onDelete = () => undefined,
   onClear
 }: StepInspectionPanelProps) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   return (
     <section className="inspectionPanel" aria-label="Selected applied-step inspection">
       <header>
@@ -28,9 +36,32 @@ export function StepInspectionPanel({
             This is that step&apos;s input → output boundary. The confirmed dataframe view and filters are unchanged.
           </span>
         </div>
-        <button type="button" className="secondaryButton" onClick={() => onClear()}>
-          Show confirmed data
-        </button>
+        <div className="inspectionActions">
+          {canModify && !confirmingDelete && (
+            <>
+              <button type="button" className="secondaryButton" onClick={onEdit}>
+                Edit step
+              </button>
+              <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(true)}>
+                Delete step
+              </button>
+            </>
+          )}
+          {canModify && confirmingDelete && (
+            <div role="group" aria-label="Confirm step deletion">
+              <span>Delete this step and replay every later step?</span>
+              <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(false)}>
+                Cancel
+              </button>
+              <button type="button" onClick={onDelete}>
+                Delete
+              </button>
+            </div>
+          )}
+          <button type="button" className="secondaryButton" onClick={() => onClear()}>
+            Show confirmed data
+          </button>
+        </div>
       </header>
       {pendingOffset !== undefined && (
         <div role="status" aria-live="polite">

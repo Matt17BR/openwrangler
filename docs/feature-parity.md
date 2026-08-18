@@ -20,7 +20,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Multi-column viewing sorts                           |    Yes |    Yes | Done   | Quick and ordered sort journeys green; record:docs/testing.md                         |
 | Editing mode and operation catalog                   |    Yes |    Yes | Done   | Structural duplicate/non-string packaged matrix green; record:docs/testing.md         |
 | Draft preview and data diff                          |    Yes |    Yes | Done   | Typed/identity diff and packaged previews green; record:docs/testing.md               |
-| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done   | Installed selection/diff/clear and shortcuts green; record:docs/testing.md            |
+| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done   | Stable-ID earlier edit/delete and suffix replay green; record:docs/testing.md         |
 | Generated code preview and editing                   |    Yes |    Yes | Done   | Native code plus edited packaged exports green; record:docs/testing.md                |
 | Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md           |
 | Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md              |
@@ -794,7 +794,29 @@ Applied-step inspection slice, 2026-07-16:
 - Focused runtime, coordinator, panel-decoder, React, and DataGrid tests cover all three engines, no Polars conversion, paging, strict mismatch rejection, supersession, local errors, mutation clearing, keyboard clear, confirmed-view restoration, transport-failure replay/retry, and diff accessibility.
 - Extension-host and installed-VSIX acceptance drive `openWrangler.selectStep` through the real custom editor, assert the selected input/output schema, added-column diff, prefix code, and unchanged revision, then select Original Data and verify exact restoration of filter/sort state, widths, selected column, vertical/horizontal viewport, metadata, and full-plan code.
 
-This makes cleaning-step history/edit/discard/undo **Done**. At this checkpoint, broader duplicate/non-string operation acceptance, released-Jupyter integration, Restricted Mode, column-projected transport, installed-editor first-grid timing, and cross-platform packaged UI evidence remained incomplete; the later projection slice below closes only the column-transport item.
+This established the bounded inspection and latest-step history surface. At this checkpoint, arbitrary earlier-step
+replacement and deletion were not yet included; the later selected-step transaction slice below closes that history
+gap without adding reorder semantics.
+
+Selected earlier-step edit/delete slice, 2026-08-18:
+
+- The webview inspection panel and the native Cleaning Steps view identify one committed step by its stable ID. Edit
+  first obtains that step's recorded input schema; Delete requires an explicit confirmation. Both enter the same
+  host-owned rewrite transaction, and stale session, revision, step, draft, or lifecycle state fails before replay.
+- The host opens one private candidate on the confirmed source and backend, replays the ordered candidate plan, then
+  restores the independent confirmed view. Unchanged suffix steps retain their IDs, derived-output identities stay
+  deterministic, and runtime metadata plus generated code must describe the exact candidate before one correlated
+  publication. Any open, bind, replay, schema, generated-code, view, or source-identity failure closes
+  the candidate and leaves the confirmed runtime, plan, draft, view, revision, code, caches, and source unchanged.
+- Pandas, Polars, and DuckDB preview an earlier replacement from the exact selected prefix and refuse direct partial
+  publication. Native R enforces the same prefix and host-transaction boundary without crossing Python. Focused host
+  tests prove full suffix replay, atomic rejection, stable IDs, one cleanup, and source isolation.
+- Webview and Activity Bar edit/delete entry points share the transaction. Applied-step inspection, recovery,
+  persisted cleaning and viewing state, and session disposal keep their existing owners. Reordering remains deferred;
+  there is no move request, command, or hidden index-only fallback.
+
+This completes the P1 arbitrary earlier-step edit/delete slice. It does not claim or implement committed-step
+reordering.
 
 Stable-ID structural-operation slice, 2026-07-16:
 

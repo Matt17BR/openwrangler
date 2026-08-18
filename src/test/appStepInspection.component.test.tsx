@@ -253,13 +253,119 @@ describe("App applied-step inspection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show confirmed data" }));
     expect(screen.getByRole("cell", { name: "10.5" })).toBeVisible();
   });
+
+  it("edits an inspected earlier step against its inspected input schema and stable ID", async () => {
+    const suffix: TransformStep = {
+      id: "clone-sales",
+      kind: "cloneColumn",
+      params: { column: { id: "c:sales", name: "sales" }, newName: "sales copy" }
+    };
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, steps: [step, suffix] },
+      page: confirmedPage,
+      summaries: []
+    });
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    await screen.findByLabelText("Selected applied-step inspection");
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
+    expect(postMessage).toHaveBeenCalledWith({ kind: "clearStepInspection" });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onlyRuntimeRequest("previewStep")).toMatchObject({
+      replaceStepId: step.id,
+      step: { id: step.id, kind: step.kind }
+    });
+  });
+
+  it("requires confirmation before deleting one inspected stable-ID step", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    await screen.findByLabelText("Selected applied-step inspection");
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Delete step" }));
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(screen.getByText("Delete this step and replay every later step?")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "rewriteCleaningPlan",
+      action: "deleteStep",
+      stepId: step.id,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2
+    });
+  });
+
+  it("shares the stable-ID edit and delete transaction with host entry points", async () => {
+    const suffix: TransformStep = {
+      id: "clone-sales",
+      kind: "cloneColumn",
+      params: { column: { id: "c:sales", name: "sales" }, newName: "sales copy" }
+    };
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, steps: [step, suffix] },
+      page: confirmedPage,
+      summaries: []
+    });
+    postMessage.mockClear();
+
+    dispatch({
+      kind: "editorAction",
+      action: "editStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision,
+      stepId: step.id
+    });
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: step.id });
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    expect(await screen.findByRole("button", { name: "Preview changes" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
+    postMessage.mockClear();
+    dispatch({
+      kind: "editorAction",
+      action: "deleteStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision + 1,
+      stepId: step.id
+    });
+    expect(postMessage).not.toHaveBeenCalled();
+    dispatch({
+      kind: "editorAction",
+      action: "deleteStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision,
+      stepId: step.id
+    });
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "rewriteCleaningPlan",
+      action: "deleteStep",
+      stepId: step.id,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2
+    });
+  });
 });
 
 type HostMessage =
   | OpenWranglerResponse
   | {
       kind: "editorAction";
-      action: "selectStep";
+      action: "selectStep" | "editStep" | "deleteStep";
       expectedSessionId?: string;
       expectedRevision?: number;
       stepId?: string;

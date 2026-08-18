@@ -621,7 +621,17 @@ class SessionManager:
                 raise EngineError(str(error)) from error
             self._assert_bound_history(session)
 
-            retained_steps = session.plan if replace_step_id is None else session.plan[:-1]
+            replace_index: int | None = None
+            if replace_step_id is not None:
+                matches = [index for index, applied in enumerate(session.plan) if applied["id"] == replace_step_id]
+                if not matches:
+                    raise EngineError(f"Unknown applied step: {replace_step_id}")
+                if len(matches) != 1:
+                    raise EngineError(f"Applied step ID is not unique: {replace_step_id}")
+                replace_index = matches[0]
+                if normalized["id"] != replace_step_id:
+                    raise EngineError("An edited step must retain the applied step ID it replaces.")
+            retained_steps = session.plan if replace_index is None else session.plan[:replace_index]
             if any(applied["id"] == normalized["id"] for applied in retained_steps):
                 raise EngineError(f"Applied step IDs must be unique: {normalized['id']}")
 
@@ -634,13 +644,25 @@ class SessionManager:
             base = session.committed
             base_lineage = session.committed_lineage
             base_schema = session.committed_schema
-            retained_bound_steps = session.bound_plan if replace_step_id is None else session.bound_plan[:-1]
-            if replace_step_id is not None:
-                if not session.plan or session.plan[-1]["id"] != replace_step_id:
-                    raise EngineError("Only the latest applied step can be edited.")
-                if normalized["id"] != replace_step_id:
-                    raise EngineError("An edited step must retain the applied step ID it replaces.")
-                base, base_lineage, _, base_schema = self._replay(session, session.bound_plan[:-1])
+            retained_bound_steps = session.bound_plan if replace_index is None else session.bound_plan[:replace_index]
+            if replace_index is not None:
+                base, base_lineage, _base_shape, base_schema = self._replay(session, session.bound_plan[:replace_index])
+                original_bound_step = session.bound_plan[replace_index]
+                diff_base = self._apply_transform_with_row_ids(session, base, original_bound_step)
+                diff_base_shape = session.engine.shape(diff_base)
+                diff_base_schema = self._schema_after_transform(session.engine.schema(diff_base), original_bound_step)
+                diff_base_lineage = derive_lineage(base_lineage, diff_base_schema, original_bound_step)
+                reconciled_before_filter = reconcile_view_filter_model(
+                    session.filter_model, diff_base_schema, session.committed_schema
+                )
+                diff_base_view = (
+                    session.engine.apply_filter_model(diff_base, reconciled_before_filter)
+                    if reconciled_before_filter["filters"] or reconciled_before_filter["sort"]
+                    else diff_base
+                )
+                diff_base_view_shape = (
+                    session.engine.shape(diff_base_view) if reconciled_before_filter["filters"] else diff_base_shape
+                )
 
             try:
                 bound_step = bind_step(normalized, base_schema, base_lineage)
@@ -863,6 +885,10 @@ class SessionManager:
             filter_model_before_draft = deepcopy(session.draft_base_filter_model)
             view_change_epoch_before_draft = session.draft_base_view_change_epoch
             replace_step_id = session.replace_step_id
+            if replace_step_id is not None and (not session.plan or session.plan[-1]["id"] != replace_step_id):
+                raise EngineError(
+                    "An earlier-step replacement must be applied through the host plan-rewrite transaction."
+                )
             previous_restore = deepcopy(session.last_applied_view_restore)
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
@@ -1385,7 +1411,14 @@ class SessionManager:
         if session.backend == "pandas":
             metadata["rowAxis"] = session.engine.row_axis(session.display_frame)
         if session.plan_input_schemas:
-            metadata["latestStepInputSchema"] = session.plan_input_schemas[-1]
+            input_schema_index = len(session.plan_input_schemas) - 1
+            if session.replace_step_id is not None:
+                matching_indexes = [
+                    index for index, step in enumerate(session.plan) if step["id"] == session.replace_step_id
+                ]
+                if len(matching_indexes) == 1:
+                    input_schema_index = matching_indexes[0]
+            metadata["latestStepInputSchema"] = session.plan_input_schemas[input_schema_index]
         if session.draft_step is not None:
             metadata["draftStep"] = session.draft_step
         if session.replace_step_id is not None:

@@ -80,6 +80,28 @@ describe("webview message decoding", () => {
     expect(decodeWebviewMessage({ kind: "prioritizeViewRequest", viewRequestId: "" }, context())).toBeUndefined();
   });
 
+  it("accepts only an exact bounded host-owned plan rewrite", () => {
+    const message = {
+      kind: "rewriteCleaningPlan",
+      action: "deleteStep",
+      stepId: "stable-step-id",
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 32
+    } as const;
+    expect(decodeWebviewMessage(message, context())).toEqual(message);
+    for (const invalid of [
+      { ...message, stepId: "" },
+      { ...message, action: "moveStep" },
+      { ...message, limit: 0 },
+      { ...message, columnLimit: 257 },
+      { ...message, unexpected: true }
+    ]) {
+      expect(decodeWebviewMessage(invalid, context())).toBeUndefined();
+    }
+  });
+
   it("stamps runtime requests with host-owned identity and limits scheduling hints", () => {
     const request = {
       kind: "getSummary",

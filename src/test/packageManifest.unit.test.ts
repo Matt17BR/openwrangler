@@ -127,11 +127,21 @@ describe("operation command contributions", () => {
     ).toBe(true);
   });
 
-  it("hides edit-latest from cleaning-step context menus while plan changes are unavailable", () => {
+  it("hides step edit and delete actions while plan changes are unavailable", () => {
     expect(manifest.contributes?.menus?.["view/item/context"]).toContainEqual({
       command: "openWrangler.editLatestStep",
       when: "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
       group: "inline@10"
+    });
+    expect(manifest.contributes?.menus?.["view/item/context"]).toContainEqual({
+      command: "openWrangler.editSelectedStep",
+      when: "view == openWrangler.cleaningSteps && viewItem == openWrangler.cleaningStep && openWrangler.canChangePlan",
+      group: "inline@10"
+    });
+    expect(manifest.contributes?.menus?.["view/item/context"]).toContainEqual({
+      command: "openWrangler.deleteSelectedStep",
+      when: "view == openWrangler.cleaningSteps && (viewItem == openWrangler.cleaningStep || viewItem == openWrangler.latestCleaningStep) && openWrangler.canChangePlan",
+      group: "inline@11"
     });
   });
 

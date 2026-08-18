@@ -127,22 +127,27 @@ export class RKernelMutationLifecycle {
     let inputRowNames: RFramePageContract["frameSemantics"]["rowNames"];
     let inputCustomRowIdentities: RCustomRowIdentityConstraint | undefined;
     if (request.replaceStepId !== undefined) {
-      const latest = confirmed.steps.at(-1);
-      if (!latest || latest.id !== request.replaceStepId || request.step.id !== request.replaceStepId) {
+      const matches = confirmed.steps.flatMap((step, index) => (step.id === request.replaceStepId ? [index] : []));
+      if (matches.length !== 1 || request.step.id !== request.replaceStepId) {
         return errorResponse(
           "invalid_request",
-          "Only the latest applied R step can be edited, and it must retain its step ID.",
+          matches.length === 0
+            ? "The selected applied R step no longer exists."
+            : matches.length > 1
+              ? "Applied R step IDs must be unique."
+              : "An edited R step must retain its step ID.",
           true,
           request.sessionId
         );
       }
-      inputSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.committedSchema;
-      inputRSchema = confirmed.planInputRSchemas.at(-1) ?? confirmed.committedRSchema;
-      inputRows = confirmed.planInputRows.at(-1) ?? confirmed.committedRows;
-      inputIdentityRows = confirmed.planInputIdentityRows.at(-1) ?? confirmed.committedIdentityRows;
-      inputKeyColumnIds = confirmed.planInputKeyColumnIds.at(-1) ?? confirmed.committedKeyColumnIds;
-      inputRowNames = confirmed.planInputRowNames.at(-1) ?? confirmed.sourceRowNames;
-      inputCustomRowIdentities = confirmed.planInputCustomRowIdentities.at(-1);
+      const replaceIndex = matches[0];
+      inputSchema = confirmed.planInputSchemas[replaceIndex] ?? confirmed.sourceSchema;
+      inputRSchema = confirmed.planInputRSchemas[replaceIndex] ?? confirmed.sourceRSchema;
+      inputRows = confirmed.planInputRows[replaceIndex] ?? confirmed.sourceRows;
+      inputIdentityRows = confirmed.planInputIdentityRows[replaceIndex] ?? confirmed.sourceRows;
+      inputKeyColumnIds = confirmed.planInputKeyColumnIds[replaceIndex] ?? confirmed.sourceKeyColumnIds;
+      inputRowNames = confirmed.planInputRowNames[replaceIndex] ?? confirmed.sourceRowNames;
+      inputCustomRowIdentities = confirmed.planInputCustomRowIdentities[replaceIndex];
     } else {
       if (confirmed.steps.some((step) => step.id === request.step.id)) {
         return errorResponse("invalid_request", "Applied R step IDs must be unique.", true, request.sessionId);
@@ -382,6 +387,14 @@ export class RKernelMutationLifecycle {
         confirmed.draftInputRowNames === undefined
       ) {
         return errorResponse("invalid_request", "There is no R draft step to apply.", true, request.sessionId);
+      }
+      if (confirmed.draftReplacesStepId !== undefined && confirmed.steps.at(-1)?.id !== confirmed.draftReplacesStepId) {
+        return errorResponse(
+          "invalid_request",
+          "An earlier R step must be applied through the host plan-rewrite transaction.",
+          true,
+          request.sessionId
+        );
       }
       targetSchema = confirmed.schema;
       targetRSchema = confirmed.rSchema;

@@ -9,6 +9,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import type {
+  ColumnSchema,
   ColumnSummary,
   DataDiff,
   OpenWranglerResponse,
@@ -162,6 +163,7 @@ export function App() {
   const [operationOpen, setOperationOpen] = useState(false);
   const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
   const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
+  const [editingStepInputSchema, setEditingStepInputSchema] = useState<readonly ColumnSchema[] | undefined>();
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
@@ -394,6 +396,7 @@ export function App() {
         setQueuedOperationIntent(undefined);
         setOperationOpen(false);
         setEditingStep(undefined);
+        setEditingStepInputSchema(undefined);
         setOperationKind(undefined);
         setLoading(true);
       } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
@@ -912,10 +915,18 @@ export function App() {
   const requestOperationIntent = useCallback(
     (intent: OperationIntent, expectedSessionId?: string, expectedRevision?: number) => {
       const currentMetadata = metadataRef.current;
+      const selectedStep =
+        intent.action === "editStep"
+          ? currentMetadata?.steps.find((step) => step.id === intent.stepId)
+          : intent.action === "editLatest"
+            ? currentMetadata?.steps.at(-1)
+            : undefined;
       const canOpen =
         intent.action === "open"
           ? canStartOperation(currentMetadata, intent.operationKind)
-          : canEditLatestStep(currentMetadata);
+          : intent.action === "editLatest"
+            ? canEditLatestStep(currentMetadata)
+            : selectedStep !== undefined && canStartOperation(currentMetadata, selectedStep.kind);
       if (
         !currentMetadata ||
         (expectedSessionId !== undefined && expectedSessionId !== currentMetadata.sessionId) ||
@@ -950,12 +961,17 @@ export function App() {
       }
       setQueuedStepSelection(undefined);
       setQueuedOperationIntent(undefined);
+      const selectedInputSchema =
+        intent.action === "editStep" && stepInspectionRef.current?.stepId === intent.stepId
+          ? stepInspectionRef.current.inputSchema
+          : undefined;
+      if (intent.action === "editStep" && !selectedInputSchema) return;
       if (stepInspectionTargetRef.current) clearStepInspection();
-      const latest = intent.action === "editLatest" ? currentMetadata.steps.at(-1) : undefined;
-      if (intent.action === "editLatest" && !latest) return;
+      if (intent.action !== "open" && !selectedStep) return;
       rememberOperationReturnFocus();
-      setEditingStep(latest);
-      setOperationKind(intent.action === "open" ? intent.operationKind : latest?.kind);
+      setEditingStep(selectedStep);
+      setEditingStepInputSchema(selectedInputSchema);
+      setOperationKind(intent.action === "open" ? intent.operationKind : selectedStep?.kind);
       setOperationOpen(true);
     },
     [clearStepInspection, rememberOperationReturnFocus]
@@ -1057,6 +1073,24 @@ export function App() {
     storeFailedPageRequest,
     storeMetadata
   ]);
+
+  const deleteStep = useCallback(
+    (stepId: string) => {
+      const currentMetadata = metadataRef.current;
+      if (!currentMetadata?.steps.some((step) => step.id === stepId) || !beginMutation()) return;
+      const columnWindow = desiredColumnWindow.current;
+      vscode.postMessage({
+        kind: "rewriteCleaningPlan",
+        action: "deleteStep",
+        stepId,
+        offset: 0,
+        limit: pageSize,
+        columnOffset: columnWindow.offset,
+        columnLimit: columnWindow.limit
+      });
+    },
+    [beginMutation]
+  );
 
   const pruneSummaryOwners = useCallback(
     (nextMetadata: SessionMetadata) => {
@@ -1314,6 +1348,47 @@ export function App() {
           );
         } else if (response.action === "editLatest") {
           requestOperationIntent({ action: "editLatest" }, response.expectedSessionId, response.expectedRevision);
+        } else if (response.action === "editStep") {
+          const currentMetadata = metadataRef.current;
+          if (
+            !currentMetadata ||
+            typeof response.stepId !== "string" ||
+            typeof response.expectedSessionId !== "string" ||
+            !Number.isInteger(response.expectedRevision) ||
+            response.expectedSessionId !== currentMetadata?.sessionId ||
+            response.expectedRevision !== currentMetadata.revision ||
+            !currentMetadata.steps.some((step) => step.id === response.stepId)
+          ) {
+            return;
+          }
+          if (stepInspectionRef.current?.stepId === response.stepId) {
+            requestOperationIntent(
+              { action: "editStep", stepId: response.stepId },
+              response.expectedSessionId,
+              response.expectedRevision
+            );
+          } else {
+            setQueuedOperationIntent({
+              action: "editStep",
+              stepId: response.stepId,
+              sessionId: currentMetadata.sessionId,
+              revision: currentMetadata.revision
+            });
+            requestStepInspection(response.stepId);
+          }
+        } else if (response.action === "deleteStep") {
+          const currentMetadata = metadataRef.current;
+          if (
+            !currentMetadata ||
+            typeof response.stepId !== "string" ||
+            typeof response.expectedSessionId !== "string" ||
+            !Number.isInteger(response.expectedRevision) ||
+            response.expectedSessionId !== currentMetadata?.sessionId ||
+            response.expectedRevision !== currentMetadata.revision
+          ) {
+            return;
+          }
+          deleteStep(response.stepId);
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
           clearFilterColumnActionRef.current(response.column);
@@ -1517,6 +1592,7 @@ export function App() {
           setQueuedStepSelection(undefined);
           setOperationOpen(false);
           setEditingStep(undefined);
+          setEditingStepInputSchema(undefined);
           setOperationKind(undefined);
         }
         latestPageRequest.current = undefined;
@@ -1708,6 +1784,7 @@ export function App() {
         );
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") setOperationOpen(false);
+        else clearStepInspection(false, false);
         restartProfilingAfterMutation();
         if (shouldRestoreUndoFocus) {
           scheduleWebviewFocusRestoration(() => {
@@ -1808,6 +1885,7 @@ export function App() {
     clearBackgroundDiagnostic,
     clearStepInspection,
     confirmView,
+    deleteStep,
     nextViewRequestId,
     pruneSummaryOwners,
     releaseBackgroundRequest,
@@ -1853,15 +1931,22 @@ export function App() {
     ) {
       return;
     }
-    setQueuedOperationIntent(undefined);
-    requestOperationIntent(queuedOperationIntent, queuedOperationIntent.sessionId, queuedOperationIntent.revision);
+    if (queuedOperationIntent.action === "editStep" && stepInspection?.stepId !== queuedOperationIntent.stepId) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setQueuedOperationIntent(undefined);
+      requestOperationIntent(queuedOperationIntent, queuedOperationIntent.sessionId, queuedOperationIntent.revision);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [
     importOptionsPending,
     loading,
     mutationPending,
     projectionLoading,
     queuedOperationIntent,
-    requestOperationIntent
+    requestOperationIntent,
+    stepInspection
   ]);
 
   useEffect(() => {
@@ -2345,6 +2430,20 @@ export function App() {
         ? undoReturnTarget
         : null;
     const columnWindow = desiredColumnWindow.current;
+    const draftTarget = metadataRef.current?.draftReplacesStepId;
+    const latestStepId = metadataRef.current?.steps.at(-1)?.id;
+    if (action === "applyDraft" && draftTarget !== undefined && draftTarget !== latestStepId) {
+      vscode.postMessage({
+        kind: "rewriteCleaningPlan",
+        action,
+        stepId: draftTarget,
+        offset: 0,
+        limit: pageSize,
+        columnOffset: columnWindow.offset,
+        columnLimit: columnWindow.limit
+      });
+      return;
+    }
     vscode.postMessage({
       kind: "runtimeRequest",
       request: {
@@ -2355,6 +2454,11 @@ export function App() {
         columnLimit: columnWindow.limit
       }
     });
+  };
+
+  const deleteInspectedStep = () => {
+    const target = stepInspectionTargetRef.current;
+    if (target) deleteStep(target.stepId);
   };
 
   const selectSummaryPanelView = (view: SummaryPanelView) => {
@@ -2820,6 +2924,20 @@ export function App() {
             pageSize={pageSize}
             error={stepInspectionError}
             diff={stepInspection?.diff}
+            canModify={Boolean(
+              selectedInspectionStep &&
+              stepInspection &&
+              metadata.mode === "editing" &&
+              !metadata.draftStep &&
+              !loading &&
+              !projectionLoading &&
+              !importOptionsPending
+            )}
+            onEdit={() => {
+              if (selectedInspectionStep)
+                requestOperationIntent({ action: "editStep", stepId: selectedInspectionStep.id });
+            }}
+            onDelete={deleteInspectedStep}
             onClear={clearStepInspection}
           />
         )}
@@ -3078,6 +3196,7 @@ export function App() {
           filterModel={filterModel}
           initialKind={operationKind}
           initialStep={editingStep}
+          editInputSchema={editingStepInputSchema}
           busy={loading || mutationPending || projectionLoading || importOptionsPending}
           onClose={() => {
             if (foregroundRequest.current !== "mutation") setOperationOpen(false);

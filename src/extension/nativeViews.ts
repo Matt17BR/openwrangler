@@ -146,7 +146,8 @@ class ViewNode extends vscode.TreeItem {
     command?: vscode.Command,
     contextValue?: string,
     disabledReason?: string,
-    readonly viewSortHandle?: ViewSortHandle
+    readonly viewSortHandle?: ViewSortHandle,
+    readonly cleaningStepHandle?: CleaningStepHandle
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
@@ -170,6 +171,12 @@ interface ViewSortTarget {
 interface ViewSortHandle {
   readonly kind: typeof VIEW_SORT_HANDLE_KIND;
   readonly token: string;
+}
+
+interface CleaningStepHandle {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly stepId: string;
 }
 
 type ViewSortTargetResolution =
@@ -543,6 +550,69 @@ export function registerNativeViews(
       ) {
         void vscode.window.showInformationMessage(
           "Open the active dataframe editor before editing the latest cleaning step."
+        );
+      }
+    }),
+    vscode.commands.registerCommand("openWrangler.editSelectedStep", async (target?: unknown) => {
+      const snapshot = coordinator.activeSession();
+      const handle = selectedCleaningStepHandle(target);
+      const step =
+        snapshot && handle?.sessionId === snapshot.sessionId && handle.revision === snapshot.metadata.revision
+          ? snapshot.metadata.steps.find((candidate) => candidate.id === handle.stepId)
+          : undefined;
+      if (!snapshot || !step || !canStartOperation(snapshot.metadata, step.kind)) {
+        void vscode.window.showInformationMessage(
+          snapshot?.metadata.draftStep
+            ? "Apply or discard the current draft before editing an applied step."
+            : "Select an available cleaning step before editing it."
+        );
+        return;
+      }
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "editStep",
+          stepId: step.id,
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision
+        }))
+      ) {
+        void vscode.window.showInformationMessage(
+          "Open the active dataframe editor before editing the selected cleaning step."
+        );
+      }
+    }),
+    vscode.commands.registerCommand("openWrangler.deleteSelectedStep", async (target?: unknown) => {
+      const snapshot = coordinator.activeSession();
+      const handle = selectedCleaningStepHandle(target);
+      const step =
+        snapshot && handle?.sessionId === snapshot.sessionId && handle.revision === snapshot.metadata.revision
+          ? snapshot.metadata.steps.find((candidate) => candidate.id === handle.stepId)
+          : undefined;
+      if (!snapshot || !step || !canStartOperation(snapshot.metadata, step.kind)) {
+        void vscode.window.showInformationMessage(
+          snapshot?.metadata.draftStep
+            ? "Apply or discard the current draft before deleting an applied step."
+            : "Select an available cleaning step before deleting it."
+        );
+        return;
+      }
+      const title = operationByKind(step.kind).title;
+      const confirmation = await vscode.window.showWarningMessage(
+        `Delete ${title} and replay every later cleaning step?`,
+        { modal: true },
+        "Delete step"
+      );
+      if (confirmation !== "Delete step") return;
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "deleteStep",
+          stepId: step.id,
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision
+        }))
+      ) {
+        void vscode.window.showInformationMessage(
+          "Open the active dataframe editor before deleting the selected cleaning step."
         );
       }
     }),
@@ -953,7 +1023,10 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
           title: `Inspect ${operation.title}`,
           arguments: [step.id]
         },
-        isLatest && !metadata.draftStep ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep"
+        isLatest && !metadata.draftStep ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep",
+        undefined,
+        undefined,
+        { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: step.id }
       );
     })
   );
@@ -1179,6 +1252,16 @@ function sourceUris(snapshot: ActiveSessionSnapshot): vscode.Uri[] {
           other.fsPath === candidate.fsPath
       ) === index
   );
+}
+
+function selectedCleaningStepHandle(value: unknown): CleaningStepHandle | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const handle = (value as { cleaningStepHandle?: unknown }).cleaningStepHandle;
+  if (!handle || typeof handle !== "object") return undefined;
+  const { sessionId, revision, stepId } = handle as Record<string, unknown>;
+  return typeof sessionId === "string" && Number.isSafeInteger(revision) && typeof stepId === "string"
+    ? { sessionId, revision: Number(revision), stepId }
+    : undefined;
 }
 
 async function requireTrustedWorkspace(action: string): Promise<boolean> {

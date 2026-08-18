@@ -11,7 +11,8 @@ import type {
   PageResponse,
   SessionMode,
   SessionSource,
-  SessionBoundRequest
+  SessionBoundRequest,
+  TransformStep
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
 import { sessionModeAction } from "../shared/sessionMode";
@@ -122,6 +123,8 @@ export class SessionCoordinator implements vscode.Disposable {
         this.reconfigureFileSession(delegate, sessionId, revision, source, options),
       reconfigureLiveSessionMode: (sessionId, revision, mode, viewState, options) =>
         this.reconfigureLiveSessionMode(delegate, sessionId, revision, mode, viewState, options),
+      rewriteCleaningPlan: (sessionId, revision, stepId, action, page, options) =>
+        this.rewriteCleaningPlan(delegate, sessionId, revision, stepId, action, page, options),
       reconnectLiveSession: (sessionId, revision, options) =>
         this.reconnectLiveSession(delegate, sessionId, revision, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
@@ -589,6 +592,141 @@ export class SessionCoordinator implements vscode.Disposable {
         !session.closing &&
         this.activeSessionId === session.publicId
       ) {
+        this.activeSessionEmitter.fire(activeSessionSnapshot(session));
+      }
+      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
+      else this.pendingOpens.delete(delegate);
+      this.resolvePendingOpenWaitersIfIdle();
+      this.runtimeCleanup.releaseIfIdle(delegate);
+    }
+  }
+
+  private async rewriteCleaningPlan(
+    delegate: OpenWranglerBridge,
+    sessionId: string,
+    revision: number,
+    stepId: string,
+    action: "applyDraft" | "deleteStep",
+    page: { offset: number; limit: number; columnOffset: number; columnLimit: number },
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    if (this.disposed) {
+      return protocolError(
+        "coordinator_disposed",
+        "The Open Wrangler session coordinator has been disposed.",
+        false,
+        sessionId
+      );
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session || session.delegate !== delegate) {
+      return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
+    }
+    if (revision !== session.publicRevision) {
+      return protocolError(
+        "stale_request",
+        `The cleaning plan was not changed because the session advanced to revision ${session.publicRevision}.`,
+        true,
+        session.publicId
+      );
+    }
+    if (session.closing || session.reconfiguring || session.reconnecting) {
+      return protocolError(
+        session.closing ? "session_closing" : "session_reconfiguring",
+        session.closing
+          ? `Open Wrangler session ${session.publicId} is already closing.`
+          : `Open Wrangler session ${session.publicId} is already changing its runtime state.`,
+        true,
+        session.publicId
+      );
+    }
+    if (session.metadata.mode !== "editing") {
+      return protocolError(
+        "editing_mode_required",
+        "Cleaning-plan steps can be changed only in Editing mode.",
+        true,
+        session.publicId
+      );
+    }
+    const matches = session.metadata.steps.flatMap((step, index) => (step.id === stepId ? [index] : []));
+    if (matches.length !== 1) {
+      return protocolError(
+        "invalid_step",
+        matches.length === 0 ? `Unknown applied step: ${stepId}` : `Applied step ID is not unique: ${stepId}`,
+        true,
+        session.publicId
+      );
+    }
+    const stepIndex = matches[0];
+    let steps: TransformStep[];
+    if (action === "applyDraft") {
+      const draft = session.metadata.draftStep;
+      if (!draft || session.metadata.draftReplacesStepId !== stepId || draft.id !== stepId) {
+        return protocolError(
+          "invalid_draft",
+          "The selected applied step no longer owns the current replacement draft.",
+          true,
+          session.publicId
+        );
+      }
+      steps = session.metadata.steps.map((step, index) => (index === stepIndex ? draft : step));
+    } else {
+      if (session.metadata.draftStep) {
+        return protocolError(
+          "draft_active",
+          "Apply or discard the current draft before deleting a step.",
+          true,
+          session.publicId
+        );
+      }
+      steps = session.metadata.steps.filter((_step, index) => index !== stepIndex);
+    }
+
+    const view = {
+      ...session.viewState,
+      filterModel:
+        action === "applyDraft" && session.draftBaseFilterModel
+          ? session.draftBaseFilterModel
+          : session.metadata.filterModel
+    };
+    session.reconfiguring = true;
+    session.scheduler.cancelBackground();
+    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    let published = false;
+    try {
+      await session.scheduler.waitForIdle();
+      if (!this.isLiveSession(session) || session.closing) {
+        return protocolError(
+          this.disposed ? "coordinator_disposed" : "session_closing",
+          "The session closed before its cleaning plan could be changed.",
+          false,
+          session.publicId
+        );
+      }
+      if (revision !== session.publicRevision) {
+        return protocolError(
+          "stale_request",
+          `The cleaning plan was not changed because the session advanced to revision ${session.publicRevision}.`,
+          true,
+          session.publicId
+        );
+      }
+      const response = await this.serializeSessionEstablishment(delegate, () =>
+        this.runtimeReconfigurer.rewriteCleaningPlan(
+          session,
+          steps,
+          view,
+          page,
+          options,
+          this.runtimeReconfigurationHooks(session)
+        )
+      );
+      published = response.kind === "planUpdated";
+      return response;
+    } finally {
+      session.reconfiguring = false;
+      if (published && this.isLiveSession(session) && !session.closing && this.activeSessionId === session.publicId) {
         this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;

@@ -29,6 +29,15 @@ export type WebviewRequest =
   | { kind: "prioritizeViewRequest"; viewRequestId: string }
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
+  | {
+      kind: "rewriteCleaningPlan";
+      action: "applyDraft" | "deleteStep";
+      stepId: string;
+      offset: number;
+      limit: number;
+      columnOffset: number;
+      columnLimit: number;
+    }
   | { kind: "changeImportOptions"; actionId?: string }
   | { kind: "changeBackend" }
   | { kind: "installRuntimeDependencies" }
@@ -120,6 +129,25 @@ export function decodeWebviewMessage(
   if (message.kind === "clearStepInspection") {
     return hasExactKeys(message, ["kind"]) ? { kind: "clearStepInspection" } : undefined;
   }
+  if (message.kind === "rewriteCleaningPlan") {
+    return hasExactKeys(message, ["kind", "action", "stepId", "offset", "limit", "columnOffset", "columnLimit"]) &&
+      (message.action === "applyDraft" || message.action === "deleteStep") &&
+      isNonEmptyString(message.stepId) &&
+      isNonNegativeInteger(message.offset) &&
+      isPositiveBoundedInteger(message.limit, 10_000) &&
+      isNonNegativeInteger(message.columnOffset) &&
+      isPositiveBoundedInteger(message.columnLimit, 256)
+      ? {
+          kind: "rewriteCleaningPlan",
+          action: message.action,
+          stepId: message.stepId,
+          offset: message.offset,
+          limit: message.limit,
+          columnOffset: message.columnOffset,
+          columnLimit: message.columnLimit
+        }
+      : undefined;
+  }
   if (message.kind === "changeImportOptions") {
     return hasExactKeys(message, ["kind"], ["actionId"]) &&
       (message.actionId === undefined || isRendererControlId(message.actionId))
@@ -190,6 +218,14 @@ function isRendererControlId(value: unknown): value is string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isPositiveBoundedInteger(value: unknown, maximum: number): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= maximum;
 }
 
 function isSessionMode(value: unknown): value is SessionMode {

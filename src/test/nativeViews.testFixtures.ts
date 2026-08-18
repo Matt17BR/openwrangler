@@ -15,6 +15,7 @@ interface TestTreeNode {
   contextValue?: string;
   tooltip?: unknown;
   viewSortHandle?: unknown;
+  cleaningStepHandle?: unknown;
 }
 interface TestTreeProvider {
   getChildren(): TestTreeNode[];
@@ -29,7 +30,7 @@ const nativeMocks = vi.hoisted(() => ({
   sendEditorAction: vi.fn(() => true),
   sendEditorActionForSession: vi.fn(async () => true),
   showInformationMessage: vi.fn(async () => undefined),
-  showWarningMessage: vi.fn(async () => undefined),
+  showWarningMessage: vi.fn<(...args: unknown[]) => Promise<string | undefined>>(async () => undefined),
   showErrorMessage: vi.fn(async () => undefined),
   showSaveDialog: vi.fn(async () => undefined as unknown),
   showQuickPick: vi.fn<(items: readonly unknown[], options?: unknown) => Promise<unknown>>(async () => undefined),
