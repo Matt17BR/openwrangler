@@ -4,6 +4,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- **Extract regex group** retains its source column and creates one stable output from the selected capture group in
+  the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
+  engine-native live and generated execution; PySpark remains viewing-only.
+
 ### Security
 
 - The Data Wrangler comparison harness now reads requests through one bounded descriptor and rejects same-size path,

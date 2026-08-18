@@ -122,7 +122,7 @@ both direct packaged-frame and real Node-to-owned-`Rscript` stdin/stdout boundar
 untimed dataset-statistics, greater-than-one-million-row summary, keyed-`data.table`, resource, response-accounting,
 session/process, and cleanup proofs. It deliberately defines no reviewed numeric threshold and cannot emit a release
 pass. It is infrastructure rather than recorded evidence: no row advances until a fresh immutable candidate supplies
-the separately reviewed performance record, the installed all-29 matrix passes, and the following stable-authoring
+the separately reviewed performance record, the installed all-30 matrix passes, and the following stable-authoring
 change resolves that record's source/candidate ordering.
 
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
@@ -152,7 +152,7 @@ returns exact matching counts without a separate dataset-size limit; searches ex
 Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Formula, Text Length,
 One-hot encode, Multi-label binarize, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text,
-Split text into columns,
+Split text into columns, Extract regex group,
 Min-max scale, Round, Floor, Ceiling, Format Datetime, Group and aggregate, Transform by example, and Custom code. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters keep the typed distinction between `NA` and
@@ -176,6 +176,13 @@ set from Unicode code points, so mixed control/Unicode sets remain parse-safe an
 text uses a literal delimiter, adds a new column, and returns `NA` when the requested part is missing. Split text
 into columns is a distinct operation that retains the source, creates 2–64 ordered outputs atomically, preserves
 empty parts, returns null for missing parts, and ignores extra parts beyond the fixed output count. Convert type
+Regex extraction is a distinct one-output operation that retains the source and selects group 0 or one of at most
+nine captures from the first leftmost match. Its public single-line pattern subset rejects nonportable dialect and
+resource-dangerous constructs before dispatch. Null source values, no match, and unmatched optional groups return
+null, while participating empty captures remain empty strings. Pandas, Polars, DuckDB, and Native R execute the same
+bounded live and generated contract without conversion; PySpark remains viewing-only. The installed shared-webview
+journey covers invalid-pattern rejection, preview, apply, persisted reopen, undo, generated code, exact source bytes,
+stable identities, and final session cleanup for Pandas and Native R.
 replaces one column under the same identity and supports string, integer, float, boolean, date, and datetime targets.
 Failed parses become `NA`. It rejects active data-table keys and conversions that would lose units or `integer64`
 precision. Formula appends a numeric column from one exact
@@ -257,11 +264,11 @@ workbench, Rename Column draft, and generated R inserted into the originating no
 uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Explicit candidate core
 keeps its existing phase but owns one complete installed Clone Column lifecycle: preview, apply, applied-step
 inspection, edit and reapply with the same step/output identities, and undo. Direct suites own the prior 27
-operations, focused Custom Code contracts cover operation 28, and current source adds multi-output literal split as
-operation 29. A dedicated direct R contract now executes the strict ordered 29-operation catalog and each
+operations, focused Custom Code contracts cover operation 28, multi-output literal split is operation 29, and public
+regex extraction is operation 30. A dedicated direct R contract now executes the strict ordered 30-operation catalog and each
 production-generated replay, and a dedicated TypeScript contract binds
 the same order to exact copy/save bytes for distinct executable operation-labelled buffers. Exhaustive installed
-execution of all 29 operations and reviewed performance evidence remain outstanding. The focused value targeted
+execution of all 30 operations and reviewed performance evidence remain outstanding. The focused value targeted
 slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
@@ -332,11 +339,11 @@ while VS Code alone owns the complete value and categorical catalogs. Candidate 
 verification, fresh requested-editor private roots, and its own immediate sealed failure upload. The installed
 candidate `core-operations` phase owns one complete Clone Column lifecycle: preview, apply, inspect,
 edit the same step while retaining its step/output identity, reapply, and undo. Dedicated local-source contracts own
-the strict ordered 29-operation live/generated catalog and exact copy/save bytes for distinct executable
+the strict ordered 30-operation live/generated catalog and exact copy/save bytes for distinct executable
 operation-labelled buffers. The installed value and categorical slices, the complete Linux
 native-frame owner, representative native/restart seams on every hosted platform, and the 300-second hard,
 180-second inactivity, and
-no-retry contracts remain unchanged; exhaustive installed execution of all 29 operations and a reviewed performance
+no-retry contracts remain unchanged; exhaustive installed execution of all 30 operations and a reviewed performance
 record are still required.
 Preview release runs #72,
 [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383), and
@@ -412,7 +419,7 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Notebook variables and inline MIME rendering | Viewing only        | Partial | Packaged native VS Code/Cursor Jupyter relation matrix  | Large relation, OS, and repeated recovery/performance matrix                                        |
 | Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native rich-type matrix; packaged page and query slices | Large-scale mixed data and cross-platform matrix                                                    |
 | Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence                                               |
-| Complete 29-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Multi-output split installed-editor evidence, fill-missing journey, and DuckDB semantic edge matrix |
+| Complete 30-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Multi-output split installed-editor evidence, fill-missing journey, and DuckDB semantic edge matrix |
 | Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                                                         |
 | Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                                                                    |
 | CSV and Parquet cleaned-data export          | Yes                 | Partial | Native exports plus host publication failure injection  | Cross-platform installed-editor destination matrix                                                  |
