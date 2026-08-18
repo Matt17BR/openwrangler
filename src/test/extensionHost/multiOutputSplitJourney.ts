@@ -1,5 +1,6 @@
 import * as assert from "node:assert/strict";
 import type { Locator } from "playwright-core";
+import { dismissStaleWorkbenchHover } from "./cleanedDataExport";
 import type { TestApi } from "./extensionHostTestApi";
 
 export interface MultiOutputSplitJourneyDependencies {
@@ -121,4 +122,5 @@ export async function exerciseMultiOutputSplitJourney(
     30_000,
     "undoing multi-output literal split"
   );
+  await dismissStaleWorkbenchHover(appliedApp.page());
 }
