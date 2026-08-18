@@ -161,17 +161,21 @@ async function writeGeneratedFiles() {
   await writeFile(resolve(root, EVIDENCE_PATH), renderCrosswalk(crosswalk), "utf8");
 }
 
-async function checkGeneratedFiles() {
+export function assertGeneratedFilesCurrent({ source, archive, evidence, documents }) {
+  const expected = renderCrosswalk(buildCrosswalk({ source, archive, documents }));
+  if (evidence !== expected) {
+    throw new Error(`${EVIDENCE_PATH} is stale. Run node scripts/spec-invariants.mjs --write.`);
+  }
+}
+
+export async function checkGeneratedFiles() {
   const [source, archive, evidence, documents] = await Promise.all([
     readFile(resolve(root, SOURCE_PATH), "utf8"),
     readFile(resolve(root, ARCHIVE_PATH), "utf8"),
     readFile(resolve(root, EVIDENCE_PATH), "utf8"),
     readDocuments()
   ]);
-  const expected = renderCrosswalk(buildCrosswalk({ source, archive, documents }));
-  if (evidence !== expected) {
-    throw new Error(`${EVIDENCE_PATH} is stale. Run node scripts/spec-invariants.mjs --write.`);
-  }
+  assertGeneratedFilesCurrent({ source, archive, evidence, documents });
 }
 
 async function main() {
