@@ -96,6 +96,8 @@ export function inspectReleaseCandidateWorkflow(source) {
   if (
     workflow.name !== "Release candidate" ||
     workflow["run-name"] !== "Release candidate ${{ inputs.release_tag }}" ||
+    workflow.concurrency?.group !== "release-train-${{ inputs.release_tag }}" ||
+    workflow.concurrency?.["cancel-in-progress"] !== false ||
     !exactKeys(inputs, ["release_tag"]) ||
     !exactKeys(inputs?.release_tag, ["description", "required", "type"]) ||
     inputs.release_tag.required !== true ||
@@ -211,6 +213,8 @@ export function inspectStableReleaseWorkflow(source) {
   const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
     workflow.name !== "Stable release promotion" ||
+    workflow.concurrency?.group !== "release-train-${{ inputs.release_tag }}" ||
+    workflow.concurrency?.["cancel-in-progress"] !== false ||
     !exactKeys(inputs, ["candidate_run_id", "release_tag"]) ||
     !["candidate_run_id", "release_tag"].every(
       (key) =>

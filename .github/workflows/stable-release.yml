@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: stable-release-${{ inputs.release_tag }}
+  group: release-train-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:

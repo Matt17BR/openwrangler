@@ -23,6 +23,9 @@ test("release-candidate inspector rejects publication, rebuilding, artifact, and
       workflow.permissions.contents = "write";
     },
     (workflow) => {
+      workflow.concurrency.group = "release-candidate-${{ inputs.release_tag }}";
+    },
+    (workflow) => {
       workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("package:prepared")).run =
         "npm run build && npm run package:prepared -- --out first.vsix && npm run package:prepared -- --out second.vsix";
     },
@@ -78,6 +81,9 @@ test("stable-release inspector rejects selection, identity, permission, download
     },
     (workflow) => {
       workflow.permissions.contents = "write";
+    },
+    (workflow) => {
+      workflow.concurrency.group = "stable-release-${{ inputs.release_tag }}";
     },
     (workflow) => {
       workflow.jobs.select.permissions.actions = "write";
