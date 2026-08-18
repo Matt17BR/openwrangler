@@ -11,6 +11,7 @@ import type {
   LowerTextTransformStep,
   SelectColumnsTransformStep,
   SplitTextTransformStep,
+  SplitTextColumnsTransformStep,
   StripTextTransformStep,
   TextLengthTransformStep,
   UpperTextTransformStep
@@ -27,6 +28,52 @@ type RTextTransformStep =
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep;
+
+export function schemaAfterSplitTextColumns(
+  inputSchema: readonly ColumnSchema[],
+  step: SplitTextColumnsTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The split-text-columns reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.type !== "string") throw new TypeError("Split text into columns requires an R string or factor column.");
+  if (step.params.newColumns.length < 2 || step.params.newColumns.length > 64) {
+    throw new TypeError("Split text into columns requires 2 to 64 output columns.");
+  }
+  const names = [...step.params.newColumns];
+  if (new Set(names).size !== names.length) throw new TypeError("Split text output column names must be unique.");
+  if (inputSchema.length + names.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Split text into columns exceeds the R frame contract column limit.");
+  }
+  const existingNames = new Set(inputSchema.map((column) => column.name));
+  const existingIds = new Set(inputSchema.map((column) => column.id));
+  const outputs = names.map((name, index) => {
+    if (name.length === 0 || Buffer.byteLength(name, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+      throw new TypeError("A split-text output column name is empty or exceeds the frame contract limit.");
+    }
+    if (name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+      throw new TypeError("A split-text output uses Open Wrangler's reserved private row-identity prefix.");
+    }
+    if (existingNames.has(name)) throw new TypeError(`The R column name ${JSON.stringify(name)} already exists.`);
+    const id = `c:step:${step.id}:${index}`;
+    if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes || existingIds.has(id)) {
+      throw new TypeError("A split-text output column identity is invalid or already exists.");
+    }
+    return Object.freeze({
+      id,
+      name,
+      position: inputSchema.length + index,
+      rawType: "character",
+      type: "string" as const,
+      nullable: true
+    });
+  });
+  return Object.freeze([...inputSchema.map((column) => Object.freeze({ ...column })), ...outputs]);
+}
 
 export function schemaAfterFillMissing(
   inputSchema: readonly ColumnSchema[],

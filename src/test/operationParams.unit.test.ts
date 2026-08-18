@@ -196,6 +196,16 @@ const validCases: ParamsCases = {
     ],
     expected: { column: city, delimiter: "-", index: 2, newColumn: "segment" }
   },
+  splitTextColumns: {
+    kind: "splitTextColumns",
+    fields: [
+      ["column", "c:city"],
+      ["delimiter", "-"],
+      ["newColumns", "first"],
+      ["newColumns", "second"]
+    ],
+    expected: { column: city, delimiter: "-", newColumns: ["first", "second"] }
+  },
   capitalizeText: optionalOutputCase("capitalizeText", "c:city", "capitalized", city),
   lowerText: optionalOutputCase("lowerText", "c:city", "lowered", city),
   upperText: optionalOutputCase("upperText", "c:city", "uppered", city),
@@ -435,6 +445,35 @@ describe("buildParams", () => {
         schema
       )
     ).toEqual({ leftColumn: sales, operator: "add", value: 2.5, newColumn: "adjusted" });
+  });
+
+  it("rejects incomplete or ambiguous multi-output split forms before preview dispatch", () => {
+    expect(() =>
+      buildParams(
+        "splitTextColumns",
+        form([
+          ["column", "c:city"],
+          ["delimiter", ""],
+          ["newColumns", "first"],
+          ["newColumns", "second"]
+        ]),
+        emptyFilterModel,
+        schema
+      )
+    ).toThrow("requires a literal delimiter");
+    expect(() =>
+      buildParams(
+        "splitTextColumns",
+        form([
+          ["column", "c:city"],
+          ["delimiter", "-"],
+          ["newColumns", "duplicate"],
+          ["newColumns", "duplicate"]
+        ]),
+        emptyFilterModel,
+        schema
+      )
+    ).toThrow("requires 2 to 64 unique output names");
   });
 
   it.each([

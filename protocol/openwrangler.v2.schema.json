@@ -124,6 +124,13 @@
       "icon": "split-horizontal"
     },
     {
+      "kind": "splitTextColumns",
+      "title": "Split text into columns",
+      "description": "Retain the source and atomically create 2–64 ordered columns from a literal delimiter; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
+      "group": "Categorical / text",
+      "icon": "split-horizontal"
+    },
+    {
       "kind": "capitalizeText",
       "title": "Capitalize",
       "description": "Uppercase the first character and lowercase the rest.",
@@ -918,6 +925,7 @@
         "findReplace",
         "stripText",
         "splitText",
+        "splitTextColumns",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -1250,6 +1258,27 @@
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },
+    "SplitTextColumnsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "delimiter", "newColumns"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "delimiter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A non-empty literal delimiter; regular-expression interpretation is never used."
+        },
+        "newColumns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "description": "Ordered output names. Parts beyond this fixed output count are ignored.",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "ColumnOptionalOutputParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1479,6 +1508,7 @@
         { "$ref": "#/definitions/FindReplaceTransformStep" },
         { "$ref": "#/definitions/StripTextTransformStep" },
         { "$ref": "#/definitions/SplitTextTransformStep" },
+        { "$ref": "#/definitions/SplitTextColumnsTransformStep" },
         { "$ref": "#/definitions/CapitalizeTextTransformStep" },
         { "$ref": "#/definitions/LowerTextTransformStep" },
         { "$ref": "#/definitions/UpperTextTransformStep" },
@@ -1669,6 +1699,18 @@
         {
           "required": ["kind", "params"],
           "properties": { "kind": { "const": "splitText" }, "params": { "$ref": "#/definitions/SplitTextParams" } }
+        }
+      ]
+    },
+    "SplitTextColumnsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "splitTextColumns" },
+            "params": { "$ref": "#/definitions/SplitTextColumnsParams" }
+          }
         }
       ]
     },

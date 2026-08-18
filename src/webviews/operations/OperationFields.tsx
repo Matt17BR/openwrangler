@@ -38,13 +38,20 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
   const initialAggregations = Array.isArray(params.aggregations)
     ? (params.aggregations as Record<string, unknown>[])
     : [];
+  const initialSplitOutputNames = Array.isArray(params.newColumns)
+    ? params.newColumns.map(String)
+    : ["split_part_1", "split_part_2"];
   const nextSortRowId = useRef(Math.max(1, initialSortRules.length));
   const nextAggregationRowId = useRef(Math.max(1, initialAggregations.length));
+  const nextSplitOutputRowId = useRef(Math.max(2, initialSplitOutputNames.length));
   const [sortRowIds, setSortRowIds] = useState(() =>
     Array.from({ length: Math.max(1, initialSortRules.length) }, (_, index) => `sort-${index}`)
   );
   const [aggregationRowIds, setAggregationRowIds] = useState(() =>
     Array.from({ length: Math.max(1, initialAggregations.length) }, (_, index) => `aggregation-${index}`)
+  );
+  const [splitOutputRowIds, setSplitOutputRowIds] = useState(() =>
+    Array.from({ length: Math.max(2, initialSplitOutputNames.length) }, (_, index) => `split-output-${index}`)
   );
   const [formulaOperandMode, setFormulaOperandMode] = useState(params.rightColumn ? "column" : "value");
   const [multiLabelPrefixMode, setMultiLabelPrefixMode] = useState(
@@ -408,6 +415,55 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
           required
         />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "split_value")} required />
+      </>
+    );
+  }
+  if (kind === "splitTextColumns") {
+    const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
+    const outputNamesById = new Map<string, string>(
+      initialSplitOutputNames.map((name, index) => [`split-output-${index}`, name])
+    );
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="column"
+          label="Text column"
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
+        />
+        <TextField name="delimiter" label="Literal delimiter" defaultValue={param("delimiter", ",")} required />
+        <Fieldset legend="Output columns">
+          {splitOutputRowIds.map((rowId, index) => (
+            <div className="compoundRow operationInputRow" key={rowId}>
+              <TextField
+                name="newColumns"
+                label={`Output column ${index + 1}`}
+                defaultValue={outputNamesById.get(rowId) ?? `split_part_${index + 1}`}
+                required
+              />
+              <RowActions
+                label={`output column ${index + 1}`}
+                canRemove={splitOutputRowIds.length > 2}
+                canMoveUp={index > 0}
+                canMoveDown={index < splitOutputRowIds.length - 1}
+                onRemove={() => setSplitOutputRowIds((current) => current.filter((candidate) => candidate !== rowId))}
+                onMoveUp={() => setSplitOutputRowIds((current) => moveItem(current, index, index - 1))}
+                onMoveDown={() => setSplitOutputRowIds((current) => moveItem(current, index, index + 1))}
+              />
+            </div>
+          ))}
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={splitOutputRowIds.length >= 64}
+            onClick={() =>
+              setSplitOutputRowIds((current) => [...current, `split-output-${nextSplitOutputRowId.current++}`])
+            }
+          >
+            Add output column
+          </button>
+        </Fieldset>
       </>
     );
   }

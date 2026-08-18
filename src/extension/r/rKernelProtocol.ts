@@ -228,6 +228,16 @@ export interface RKernelSplitTextStep {
   }>;
 }
 
+export interface RKernelSplitTextColumnsStep {
+  readonly id: string;
+  readonly kind: "splitTextColumns";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    delimiter: string;
+    newColumns: readonly string[];
+  }>;
+}
+
 export interface RKernelFindReplaceStep {
   readonly id: string;
   readonly kind: "findReplace";
@@ -482,6 +492,7 @@ export type RKernelTransformStep =
   | RKernelCapitalizeTextStep
   | RKernelStripTextStep
   | RKernelSplitTextStep
+  | RKernelSplitTextColumnsStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
   | RKernelMinMaxScaleStep
@@ -1605,6 +1616,28 @@ function validateTransformStep(value: unknown): void {
     boundedText(params.delimiter, "request.payload.step.params.delimiter", R_FRAME_CONTRACT_LIMITS.textBytes, false);
     boundedInteger(params.index, "request.payload.step.params.index", 2_147_483_647);
     boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    return;
+  }
+  if (step.kind === "splitTextColumns") {
+    const params = exactRecord(
+      step.params,
+      ["column", "delimiter", "newColumns"],
+      "R kernel split-text-columns parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.delimiter, "request.payload.step.params.delimiter", R_FRAME_CONTRACT_LIMITS.textBytes, false);
+    if (
+      !Array.isArray(params.newColumns) ||
+      params.newColumns.length < 2 ||
+      params.newColumns.length > 64 ||
+      params.newColumns.some((name) => typeof name !== "string") ||
+      new Set(params.newColumns).size !== params.newColumns.length
+    ) {
+      fail("R kernel split-text-columns parameters require 2 to 64 unique output names.");
+    }
+    params.newColumns.forEach((name, index) =>
+      boundedText(name, `request.payload.step.params.newColumns[${index}]`, maximumVariableNameBytes, false)
+    );
     return;
   }
   if (step.kind === "findReplace") {

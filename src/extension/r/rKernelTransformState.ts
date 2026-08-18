@@ -284,6 +284,17 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "splitTextColumns") {
+    return {
+      id: step.id,
+      kind: "splitTextColumns",
+      params: {
+        column: { ...step.params.column },
+        delimiter: step.params.delimiter,
+        newColumns: [...step.params.newColumns]
+      }
+    };
+  }
   if (step.kind === "lowerText") {
     return {
       id: step.id,
@@ -397,6 +408,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "findReplace" &&
     step.kind !== "stripText" &&
     step.kind !== "splitText" &&
+    step.kind !== "splitTextColumns" &&
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&

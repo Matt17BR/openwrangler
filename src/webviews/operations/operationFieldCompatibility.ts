@@ -35,6 +35,7 @@ export type TypeRestrictedOperationKind = Extract<
   | "findReplace"
   | "stripText"
   | "splitText"
+  | "splitTextColumns"
   | "capitalizeText"
   | "lowerText"
   | "upperText"
@@ -83,6 +84,7 @@ export function operationColumnTypes(kind: TypeRestrictedOperationKind): Readonl
     case "findReplace":
     case "stripText":
     case "splitText":
+    case "splitTextColumns":
     case "capitalizeText":
     case "lowerText":
     case "upperText":

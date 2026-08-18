@@ -97,6 +97,7 @@ export class RKernelMutationLifecycle {
       request.step.kind !== "findReplace" &&
       request.step.kind !== "stripText" &&
       request.step.kind !== "splitText" &&
+      request.step.kind !== "splitTextColumns" &&
       request.step.kind !== "capitalizeText" &&
       request.step.kind !== "lowerText" &&
       request.step.kind !== "upperText" &&

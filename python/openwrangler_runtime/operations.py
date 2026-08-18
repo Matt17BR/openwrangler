@@ -68,6 +68,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "findReplace": ("column",),
     "stripText": ("column",),
     "splitText": ("column",),
+    "splitTextColumns": ("column",),
     "capitalizeText": ("column",),
     "lowerText": ("column",),
     "upperText": ("column",),
@@ -221,6 +222,18 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("splitText.delimiter must be a non-empty string.")
         if isinstance(params["index"], bool) or not isinstance(params["index"], int) or params["index"] < 0:
             raise OperationError("splitText.index must be a non-negative integer.")
+    elif kind == "splitTextColumns":
+        if not isinstance(params["delimiter"], str) or not params["delimiter"]:
+            raise OperationError("splitTextColumns.delimiter must be a non-empty string.")
+        new_columns = params.get("newColumns")
+        if (
+            not isinstance(new_columns, list)
+            or not 2 <= len(new_columns) <= 64
+            or not all(isinstance(name, str) and name for name in new_columns)
+        ):
+            raise OperationError("splitTextColumns.newColumns must contain between 2 and 64 non-empty names.")
+        if len(new_columns) != len(set(new_columns)):
+            raise OperationError("splitTextColumns.newColumns must contain unique names.")
     elif kind == "roundNumber" and (
         isinstance(params.get("decimals", 0), bool) or not isinstance(params.get("decimals", 0), int)
     ):
@@ -627,6 +640,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "findReplace",
         "stripText",
         "splitText",
+        "splitTextColumns",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -669,6 +683,8 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
     for output_field in ("newName", "newColumn"):
         if output_field in params:
             references.append((output_field, params[output_field]))
+    if kind == "splitTextColumns":
+        references.extend(("newColumns", name) for name in params["newColumns"])
     if kind == "multiLabelBinarize" and "prefix" in params:
         references.append(("prefix", params["prefix"]))
 

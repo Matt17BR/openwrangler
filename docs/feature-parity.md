@@ -152,6 +152,7 @@ returns exact matching counts without a separate dataset-size limit; searches ex
 Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Formula, Text Length,
 One-hot encode, Multi-label binarize, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text,
+Split text into columns,
 Min-max scale, Round, Floor, Ceiling, Format Datetime, Group and aggregate, Transform by example, and Custom code. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters keep the typed distinction between `NA` and
@@ -172,7 +173,9 @@ Lowercase, Uppercase, Capitalize, Strip text, and Find and replace can update th
 Find and replace supports literal text and regular expressions. Strip text removes a literal set of characters from
 both ends, or the default whitespace when no set is supplied. Native-R generated code reconstructs either character
 set from Unicode code points, so mixed control/Unicode sets remain parse-safe and equivalent to live execution. Split
-text uses a literal delimiter, adds a new column, and returns `NA` when the requested part is missing. Convert type
+text uses a literal delimiter, adds a new column, and returns `NA` when the requested part is missing. Split text
+into columns is a distinct operation that retains the source, creates 2–64 ordered outputs atomically, preserves
+empty parts, returns null for missing parts, and ignores extra parts beyond the fixed output count. Convert type
 replaces one column under the same identity and supports string, integer, float, boolean, date, and datetime targets.
 Failed parses become `NA`. It rejects active data-table keys and conversions that would lose units or `integer64`
 precision. Formula appends a numeric column from one exact
@@ -254,10 +257,11 @@ workbench, Rename Column draft, and generated R inserted into the originating no
 uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Explicit candidate core
 keeps its existing phase but owns one complete installed Clone Column lifecycle: preview, apply, applied-step
 inspection, edit and reapply with the same step/output identities, and undo. Direct suites own the prior 27
-operations, while focused Custom Code contracts cover operation 28. A dedicated direct R contract now executes the
-strict ordered 28-operation catalog and each production-generated replay, and a dedicated TypeScript contract binds
+operations, focused Custom Code contracts cover operation 28, and current source adds multi-output literal split as
+operation 29. A dedicated direct R contract now executes the strict ordered 29-operation catalog and each
+production-generated replay, and a dedicated TypeScript contract binds
 the same order to exact copy/save bytes for distinct executable operation-labelled buffers. Exhaustive installed
-execution of all 28 operations and reviewed performance evidence remain outstanding. The focused value targeted
+execution of all 29 operations and reviewed performance evidence remain outstanding. The focused value targeted
 slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
@@ -328,11 +332,11 @@ while VS Code alone owns the complete value and categorical catalogs. Candidate 
 verification, fresh requested-editor private roots, and its own immediate sealed failure upload. The installed
 candidate `core-operations` phase owns one complete Clone Column lifecycle: preview, apply, inspect,
 edit the same step while retaining its step/output identity, reapply, and undo. Dedicated local-source contracts own
-the strict ordered 28-operation live/generated catalog and exact copy/save bytes for distinct executable
+the strict ordered 29-operation live/generated catalog and exact copy/save bytes for distinct executable
 operation-labelled buffers. The installed value and categorical slices, the complete Linux
 native-frame owner, representative native/restart seams on every hosted platform, and the 300-second hard,
 180-second inactivity, and
-no-retry contracts remain unchanged; exhaustive installed execution of all 28 operations and a reviewed performance
+no-retry contracts remain unchanged; exhaustive installed execution of all 29 operations and a reviewed performance
 record are still required.
 Preview release runs #72,
 [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383), and
@@ -398,22 +402,22 @@ or either new operation.
 
 DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither converts through Pandas, Polars, or Arrow nor installs/loads DuckDB extensions automatically. **Partial** below means the native runtime path has automated evidence but the complete installed-editor and release matrix is still pending; **Planned** means the surface is intentionally unavailable in this preview.
 
-| Surface                                      | Availability        | Status  | Recorded evidence                                       | Remaining acceptance gate                                    |
-| -------------------------------------------- | ------------------- | ------- | ------------------------------------------------------- | ------------------------------------------------------------ |
-| CSV and TSV file sessions                    | Yes                 | Partial | Lazy native reads plus packaged VS Code/Cursor imports  | Malformed/options and cross-platform matrix                  |
-| Parquet file sessions                        | Yes                 | Partial | Packaged rich typed page and source invalidation        | Large-scale and full cross-platform/repeated matrix          |
-| JSONL file sessions                          | Yes                 | Partial | Native malformed-input diagnostic and packaged import   | Installed malformed/import-state interaction matrix          |
-| Excel file sessions                          | No                  | Planned | Explicit diagnostic directs users to Pandas or Polars   | Deferred; no DuckDB Excel claim                              |
-| `.duckdb` database/catalog/table browsing    | No                  | Planned | Not registered as a source kind                         | Deferred source/connection/security design                   |
-| Notebook variables and inline MIME rendering | Viewing only        | Partial | Packaged native VS Code/Cursor Jupyter relation matrix  | Large relation, OS, and repeated recovery/performance matrix |
-| Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native rich-type matrix; packaged page and query slices | Large-scale mixed data and cross-platform matrix             |
-| Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence        |
-| Complete 28-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Fill-missing editor journey and DuckDB semantic edge matrix  |
-| Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                  |
-| Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                             |
-| CSV and Parquet cleaned-data export          | Yes                 | Partial | Native exports plus host publication failure injection  | Cross-platform installed-editor destination matrix           |
-| Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix         |
-| Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate |
+| Surface                                      | Availability        | Status  | Recorded evidence                                       | Remaining acceptance gate                                                                           |
+| -------------------------------------------- | ------------------- | ------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| CSV and TSV file sessions                    | Yes                 | Partial | Lazy native reads plus packaged VS Code/Cursor imports  | Malformed/options and cross-platform matrix                                                         |
+| Parquet file sessions                        | Yes                 | Partial | Packaged rich typed page and source invalidation        | Large-scale and full cross-platform/repeated matrix                                                 |
+| JSONL file sessions                          | Yes                 | Partial | Native malformed-input diagnostic and packaged import   | Installed malformed/import-state interaction matrix                                                 |
+| Excel file sessions                          | No                  | Planned | Explicit diagnostic directs users to Pandas or Polars   | Deferred; no DuckDB Excel claim                                                                     |
+| `.duckdb` database/catalog/table browsing    | No                  | Planned | Not registered as a source kind                         | Deferred source/connection/security design                                                          |
+| Notebook variables and inline MIME rendering | Viewing only        | Partial | Packaged native VS Code/Cursor Jupyter relation matrix  | Large relation, OS, and repeated recovery/performance matrix                                        |
+| Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native rich-type matrix; packaged page and query slices | Large-scale mixed data and cross-platform matrix                                                    |
+| Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence                                               |
+| Complete 29-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Multi-output split installed-editor evidence, fill-missing journey, and DuckDB semantic edge matrix |
+| Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                                                         |
+| Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                                                                    |
+| CSV and Parquet cleaned-data export          | Yes                 | Partial | Native exports plus host publication failure injection  | Cross-platform installed-editor destination matrix                                                  |
+| Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix                                                |
+| Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate                                        |
 
 ### Native DuckDB replacement-kernel recovery evidence
 

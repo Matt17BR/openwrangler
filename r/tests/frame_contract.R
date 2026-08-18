@@ -2646,6 +2646,34 @@ assert_identical(
   c(NA_character_, NA_character_, "right", NA_character_, NA_character_),
   "splitText changed literal multi-character delimiter behavior"
 )
+split_columns <- openwrangler_r_frame_contract$split_text_columns(
+  data.frame(value = c("a||b||c||ignored", "left||||tail", "plain", NA_character_), check.names = FALSE),
+  list(id = "r:c:0", name = "value"),
+  "||",
+  c("first", "second", "third")
+)
+assert_identical(split_columns$value, c("a||b||c||ignored", "left||||tail", "plain", NA_character_), "splitTextColumns changed its source")
+assert_identical(split_columns$first, c("a", "left", "plain", NA_character_), "splitTextColumns changed first parts")
+assert_identical(split_columns$second, c("b", "", NA_character_, NA_character_), "splitTextColumns changed empty or missing parts")
+assert_identical(split_columns$third, c("c", "tail", NA_character_, NA_character_), "splitTextColumns changed extra-part truncation")
+assert_error(
+  openwrangler_r_frame_contract$split_text_columns(
+    data.frame(value = "a||b", second = "keep", check.names = FALSE),
+    list(id = "r:c:0", name = "value"),
+    "||",
+    c("first", "second")
+  ),
+  "column-name-collision"
+)
+assert_error(
+  openwrangler_r_frame_contract$split_text_columns(
+    data.frame(value = "a||b", check.names = FALSE),
+    list(id = "r:c:0", name = "value"),
+    "||",
+    c("first", "__open_wrangler_internal_row_id_0")
+  ),
+  "reserved-column-name"
+)
 non_nullable_split_source <- data.frame(text = c("plain", "also plain"), check.names = FALSE)
 non_nullable_split_capture <- openwrangler_r_frame_contract$capture_frame(non_nullable_split_source)
 non_nullable_split_result <- openwrangler_r_frame_contract$split_text_column(

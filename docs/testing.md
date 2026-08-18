@@ -194,7 +194,7 @@ matrix for release candidates or changes that cross those boundaries.
   categorical's exact two visible One-hot encode and Multi-label binarize journeys. Cursor instead retains one
   distinct generic lifecycle/responsive-grid/reveal-state seam. Every applicable local invocation
   continues to validate the advertised installed operation registry. The dedicated direct R catalog contract executes
-  the exact ordered 28-operation live/generated catalog, and the dedicated TypeScript export contract binds the same
+  the exact ordered 29-operation live/generated catalog, and the dedicated TypeScript export contract binds the same
   bridge/public order to byte-exact clipboard and atomic `.R` saves for distinct executable operation-labelled
   buffers. Fresh installed all-28 candidate/performance evidence remains outstanding. A fresh
   Linux installed-tooling invocation
@@ -458,6 +458,15 @@ By-example contract regressions must distinguish synthesis-only preview requests
 Coverage is a regression guard, not a substitute for scenario acceptance. TypeScript/webview floors are 60% statements, 55% branches, 60% functions, and 65% lines; Python runtime coverage must remain at or above 78%. The required PR coverage job and every release path that runs `npm run test:coverage` provision Temurin Java 17, exact `pyspark[connect]==4.2.0`, and Pandas `>=2.2,<3.0` before enforcing that unchanged floor. A failed PR coverage job retains any available reports for seven days; a successful job retains no coverage artifact. Workflow contracts require every same-run canonical-VSIX cache consumer to fail closed on a miss, bind restored bytes to the producer job's exact digest and size, and repeat the package inventory check. They also prohibit release and stable-performance workflows from substituting that pull-request cache for their canonical artifact-ID, checksum, and provenance contract.
 
 Protocol fixtures and engine-operation cases must run through both TypeScript and Python decoders. Transport tests must reject unknown request/response variants, extra fields, malformed preview/inspection/export/close requests, operation-kind/parameter mismatches, malformed nested metadata/pages, stale envelope IDs, mismatched request/response kinds, plan actions, runtime IDs, revisions, step IDs/indexes/page offsets, columns, export destinations, and view correlations before any coordinator state is published. Inspection pages accept at most 10,000 rows, and their diff reports truncation whenever rows exist before or after the returned block, including a nonzero final block. Applied-step tests cover Pandas, Polars, and DuckDB prefix replay, paging, duplicate IDs, supersession, idempotent transport recovery, mutation/session clearing, active-panel synchronization, and exact restoration of confirmed filters and grid state; React tests also require accessible before/after diff labels and disabled inspection-time view controls. Webview tests prove that only same-origin validated host messages and its explicit outbound intent allowlist are accepted, a recreated panel cannot retain an ephemeral inspection, and panel disposal clears active UI selection before bounded asynchronous cleanup completes. Polars tests monkeypatch `DataFrame.to_pandas` to fail. DuckDB tests make relation-to-Pandas, relation-to-Polars, and relation-to-Arrow APIs fail. Cross-engine operation tests compare normalized semantic output and separately validate engine-native generated code.
+
+Multi-output literal split has one separate `splitTextColumns` contract; legacy indexed `splitText` bytes and meaning
+remain unchanged. Decoder, UI, live-engine, generated-code, and Native-R catalog tests require 2–64 ordered unique
+output names, a non-empty literal delimiter, retained source data, null propagation, empty-part preservation,
+missing-part nulls, deterministic truncation of extra parts, stable step/output-ordinal identities, and atomic
+collision/private-name rejection before dispatch. Pandas, Polars, DuckDB, and Native R execute natively; PySpark
+remains viewing-only. The installed platform-smoke owner opens the distinct form through the shared webview, checks
+ordered stable output identities and a missing-part null in the live Polars preview, applies, undoes, and retains the
+exact source bytes. Native R's complete-catalog owner independently executes the live, generated, and replayed form.
 
 Two-dimensional grid-window tests are release-blocking. Every open/page/preview/inspection/apply/discard/undo request must reject a missing, negative, zero, or greater-than-256 column window. Every returned page must carry unique stable column IDs in the requested schema order and exactly one value per returned column in every row; unknown, reordered, duplicated, over-wide, or cardinality-mismatched blocks fail before publishing state. Runtime tests cover first/middle/final projections, zero-column frames, filters and sorts whose columns are not transported, duplicate/non-string positional Pandas selection, Polars projection before lazy collection, explicit DuckDB terminal selection, private row identity, projection-specific cache hits/eviction/invalidation, and unchanged full-width code/export results. React and coordinator tests cover aligned horizontal demand, deduplication, stale response rejection, projection-preserving row paging/retry/mutations/inspection, stable-ID diff lookup across schema reordering, full-schema ARIA indices, and far-column keyboard focus. The strict runtime benchmark requests the shipped 16-column block size and records that resolved count, cache weight, and p95 page latency; it does not measure an individual serialized response's byte size or editor paint. Packaged VS Code and Cursor acceptance makes direct extension-host protocol requests against a 300-column source, verifies exact far-column values, and bounds the returned identities and row vectors. Unlike the native editor workbench, the separate production-bundle Playwright harness starts from a projected page, scrolls to the final column, requires an exact row-and-column-keyed response, renders its known value, and rejects an unbounded or identity-misaligned block.
 
@@ -1108,7 +1117,8 @@ regression checks two pages that are valid separately but exceed the kernel resp
 dedicated complete-catalog contract uses a fresh session per exact ordered operation and executes the resulting
 production-generated R, including saved-step replay. The dedicated TypeScript export contract independently requires
 the bridge and public catalog to retain that exact order, then verifies each distinct executable operation-labelled
-buffer is copied and atomically saved byte for byte. Fresh hosted candidate and all-28 performance evidence are still outstanding.
+buffer is copied and atomically saved byte for byte. Fresh hosted candidate and installed all-29/performance evidence
+are still outstanding.
 Explicit candidate
 `core-operations` retains its existing phase but runs one full installed Clone Column lifecycle: preview, apply,
 applied-step inspection, edit and reapply with the same step/output identities, and undo. The `value-operations`
@@ -1392,7 +1402,7 @@ The value selector remains exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The categorical selector checks exact One-hot encode and Multi-label binarize preview, apply,
 generated code, and one-shot undo behavior without native R/Quarto editor tooling. Installed selectors validate the
-advertised operation registry. Dedicated local-source contracts own the strict ordered 28-operation live/generated
+advertised operation registry. Dedicated local-source contracts own the strict ordered 29-operation live/generated
 catalog and exact clipboard/atomic script export of distinct executable operation-labelled buffers; candidate
 selectors prove only the installed editor seams and do not repeat that catalog through Cursor or performance. This addition changes no selector, job,
 phase,

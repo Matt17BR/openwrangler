@@ -54,7 +54,7 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 28
+    assert len(catalog) == 29
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",
@@ -447,6 +447,7 @@ def test_fill_missing_validation_rejects_ambiguous_or_out_of_range_values(replac
         ("findReplace", {"column": "text", "find": "a", "replacement": "b"}),
         ("stripText", {"column": "text"}),
         ("splitText", {"column": "text", "delimiter": "-", "index": 0, "newColumn": "part"}),
+        ("splitTextColumns", {"column": "text", "delimiter": "-", "newColumns": ["first", "second"]}),
         ("capitalizeText", {"column": "text"}),
         ("lowerText", {"column": "text"}),
         ("upperText", {"column": "text"}),

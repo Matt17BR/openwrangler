@@ -1222,6 +1222,15 @@ class PolarsEngine(DataFrameEngine):
             if not expressions:
                 return base
             return base.hstack(eager.select(expressions))
+        if kind == "splitTextColumns":
+            column = bound_column_name(params["column"], kind)
+            output_names = list(params["newColumns"])
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            ensure_output_columns_available(schema.names(), output_names, "Splitting text into columns")
+            parts = pl.col(column).cast(pl.String).str.split(params["delimiter"])
+            return df.with_columns(
+                [parts.list.get(index, null_on_oob=True).alias(name) for index, name in enumerate(output_names)]
+            )
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
@@ -1324,7 +1333,7 @@ class PolarsEngine(DataFrameEngine):
         plan = list(steps)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
-        needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
+        needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"} for step in plan)
         lines = ["from collections import Counter"] if needs_counter else []
         if needs_filter_helpers or needs_fill_helpers:
             decimal_import = (
@@ -1840,6 +1849,42 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}    df = {base}.hstack({encoded})",
                 f"{prefix}else:",
                 f"{prefix}    df = {base}",
+            ]
+        if kind == "splitTextColumns":
+            column = bound_column_name(params["column"], kind)
+            delimiter = params["delimiter"]
+            output_names = list(params["newColumns"])
+            schema = f"_split_schema_{index}"
+            collisions = f"_split_collisions_{index}"
+            reserved = f"_split_reserved_{index}"
+            return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                (
+                    f"{prefix}{reserved} = [name for name in {output_names!r} "
+                    f"if name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError("
+                    "\"Splitting text into columns would create Open Wrangler's reserved "
+                    'private row-identity column.")'
+                ),
+                (
+                    f"{prefix}{collisions} = sorted((set({schema}.names()) & set({output_names!r})) | "
+                    f"{{name for name, count in Counter({output_names!r}).items() if count > 1}})"
+                ),
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('Splitting text into columns would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                f"{prefix}df = df.with_columns([",
+                (
+                    f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})"
+                    f".list.get(item, null_on_oob=True).alias(name)"
+                ),
+                f"{prefix}    for item, name in enumerate({output_names!r})",
+                f"{prefix}])",
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)

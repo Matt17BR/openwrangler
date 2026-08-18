@@ -12888,6 +12888,7 @@ missing_package_contract <- list(
   capitalize_text_column_at = function(...) stop("unexpected capitalize", call. = FALSE),
   strip_text_column_at = function(...) stop("unexpected strip", call. = FALSE),
   split_text_column_at = function(...) stop("unexpected split", call. = FALSE),
+  split_text_columns_at = function(...) stop("unexpected multi-output split", call. = FALSE),
   find_replace_column_at = function(...) stop("unexpected find and replace", call. = FALSE),
   round_number_column_at = function(...) stop("unexpected round", call. = FALSE),
   min_max_scale_column_at = function(...) stop("unexpected Min-max scale", call. = FALSE),

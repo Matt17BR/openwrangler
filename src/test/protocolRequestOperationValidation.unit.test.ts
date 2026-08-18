@@ -651,6 +651,11 @@ describe("protocol-v2 operation request validation", () => {
       kind: "splitText",
       params: { column: valueReference, delimiter: ",", index: 0, newColumn: "first" }
     },
+    {
+      id: "split-columns",
+      kind: "splitTextColumns",
+      params: { column: valueReference, delimiter: ",", newColumns: ["first", "second"] }
+    },
     { id: "capitalize", kind: "capitalizeText", params: { column: valueReference } },
     { id: "lower", kind: "lowerText", params: { column: valueReference, newColumn: "lower" } },
     { id: "upper", kind: "upperText", params: { column: valueReference } },
@@ -794,6 +799,16 @@ describe("protocol-v2 operation request validation", () => {
       id: "split-string",
       kind: "splitText",
       params: { column: "value", delimiter: ",", index: 0, newColumn: "first" }
+    },
+    {
+      id: "split-columns-too-few",
+      kind: "splitTextColumns",
+      params: { column: valueReference, delimiter: ",", newColumns: ["first"] }
+    },
+    {
+      id: "split-columns-duplicate",
+      kind: "splitTextColumns",
+      params: { column: valueReference, delimiter: ",", newColumns: ["same", "same"] }
     },
     { id: "capitalize-string", kind: "capitalizeText", params: { column: "value" } },
     { id: "lower-string", kind: "lowerText", params: { column: "value" } },

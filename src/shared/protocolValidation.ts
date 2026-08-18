@@ -1221,6 +1221,17 @@ export function isTransformStep(value: unknown): value is TransformStep {
         isNonEmptyString(decoded.newColumn)
       );
     }
+    case "splitTextColumns": {
+      const decoded = exactRecord(params, ["column", "delimiter", "newColumns"]);
+      return (
+        decoded !== undefined &&
+        isColumnReference(decoded.column) &&
+        isNonEmptyString(decoded.delimiter) &&
+        isUniqueNonEmptyStringArray(decoded.newColumns) &&
+        decoded.newColumns.length >= 2 &&
+        decoded.newColumns.length <= 64
+      );
+    }
     case "capitalizeText":
     case "lowerText":
     case "upperText":

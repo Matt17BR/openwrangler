@@ -134,6 +134,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=(),
     ),
     OperationDefinition(
+        kind="splitTextColumns",
+        title="Split text into columns",
+        group="Categorical / text",
+        required=("column", "delimiter", "newColumns"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="capitalizeText",
         title="Capitalize",
         group="Categorical / text",

@@ -5192,7 +5192,7 @@ openwrangler_r_frame_contract <- local({
   split_text_value <- function(value, delimiter, index) {
     matches <- gregexpr(delimiter, value, fixed = TRUE)[[1L]]
     if (length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)) {
-      return(if (identical(index, 0)) value else NA_character_)
+      return(if (index == 0) value else NA_character_)
     }
     part_count <- length(matches) + 1L
     if (index >= part_count) return(NA_character_)
@@ -5235,6 +5235,89 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     split_text_column_at(value, resolved$position, resolved$name, delimiter, index, new_name)
+  }
+
+  split_text_columns_at <- function(value, position, old_name, delimiter, new_names) {
+    delimiter <- bounded_utf8(delimiter, "delimiter")
+    if (identical(delimiter, "")) {
+      abort("invalid-view-query", "splitTextColumns.delimiter must be a non-empty literal string")
+    }
+    if (!is.character(new_names) || length(new_names) < 2L || length(new_names) > 64L || anyNA(new_names)) {
+      abort("invalid-column-name", "splitTextColumns requires 2 to 64 output column names")
+    }
+    new_names <- vapply(seq_along(new_names), function(index) {
+      name <- bounded_utf8(new_names[[index]], sprintf("new_names[%d]", index), maximum_name_bytes)
+      if (identical(name, "")) abort("invalid-column-name", "splitTextColumns output names must not be empty")
+      if (is_private_column_name(name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      name
+    }, character(1L), USE.NAMES = FALSE)
+    if (anyDuplicated(new_names)) {
+      abort("column-name-collision", "splitTextColumns output names must be unique")
+    }
+
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the splitTextColumns column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the splitTextColumns column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (!source_column$semantics$kind %in% c("character", "factor")) {
+      abort("invalid-view-query", "Split text into columns requires a character or factor column")
+    }
+    collisions <- intersect(attr(value, "names", exact = TRUE), new_names)
+    if (length(collisions) > 0L) {
+      abort("column-name-collision", sprintf("output columns already exist: %s", paste(collisions, collapse = ", ")))
+    }
+    if (column_count + length(new_names) > maximum_columns) {
+      abort("invalid-view-query", "splitTextColumns exceeds the supported R column limit")
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    source_values <- as.character(result[[position]])
+    for (output_index in seq_along(new_names)) {
+      transformed <- vapply(seq_along(source_values), function(row_index) {
+        if (is.na(source_values[[row_index]])) return(NA_character_)
+        source <- bounded_utf8(source_values[[row_index]], sprintf("Split text value %d", row_index))
+        output <- split_text_value(source, delimiter, output_index - 1L)
+        if (is.na(output)) return(NA_character_)
+        bounded_operation_output(output, "Split text into columns")
+      }, character(1L), USE.NAMES = FALSE)
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = new_names[[output_index]], value = transformed)
+      } else {
+        original_names <- names(result)
+        result[[length(result) + 1L]] <- transformed
+        names(result) <- c(original_names, new_names[[output_index]])
+      }
+    }
+    result
+  }
+
+  split_text_columns <- function(value, column_reference, delimiter, new_names) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    split_text_columns_at(value, resolved$position, resolved$name, delimiter, new_names)
   }
 
   find_replace_column_at <- function(
@@ -9171,6 +9254,8 @@ openwrangler_r_frame_contract <- local({
     strip_text_column_at = strip_text_column_at,
     split_text_column = split_text_column,
     split_text_column_at = split_text_column_at,
+    split_text_columns = split_text_columns,
+    split_text_columns_at = split_text_columns_at,
     find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,
     min_max_scale_column_at = min_max_scale_column_at,

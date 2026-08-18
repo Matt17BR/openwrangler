@@ -65,6 +65,7 @@ export type TransformStep =
   | FindReplaceTransformStep
   | StripTextTransformStep
   | SplitTextTransformStep
+  | SplitTextColumnsTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
@@ -99,6 +100,7 @@ export type OperationKind =
   | "findReplace"
   | "stripText"
   | "splitText"
+  | "splitTextColumns"
   | "capitalizeText"
   | "lowerText"
   | "upperText"
@@ -270,6 +272,11 @@ export type StripTextTransformStep = TransformStepTemplate & {
 export type SplitTextTransformStep = TransformStepTemplate & {
   kind: "splitText";
   params: SplitTextParams;
+  [k: string]: unknown;
+};
+export type SplitTextColumnsTransformStep = TransformStepTemplate & {
+  kind: "splitTextColumns";
+  params: SplitTextColumnsParams;
   [k: string]: unknown;
 };
 export type CapitalizeTextTransformStep = TransformStepTemplate & {
@@ -684,6 +691,20 @@ export interface SplitTextParams {
   delimiter: string;
   index: number;
   newColumn: string;
+}
+export interface SplitTextColumnsParams {
+  column: ColumnReference;
+  /**
+   * A non-empty literal delimiter; regular-expression interpretation is never used.
+   */
+  delimiter: string;
+  /**
+   * Ordered output names. Parts beyond this fixed output count are ignored.
+   *
+   * @minItems 2
+   * @maxItems 64
+   */
+  newColumns: [string, string, ...string[]];
 }
 export interface ColumnOptionalOutputParams {
   column: ColumnReference;
