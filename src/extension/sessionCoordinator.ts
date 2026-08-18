@@ -692,11 +692,7 @@ export class SessionCoordinator implements vscode.Disposable {
           ? session.draftBaseFilterModel
           : session.metadata.filterModel
     };
-    let resolveRewriteSettlement!: () => void;
-    const rewriteSettlement = new Promise<void>((resolve) => {
-      resolveRewriteSettlement = resolve;
-    });
-    this.installRuntimeSettlementBarrier(session, rewriteSettlement);
+    let resolveRewriteSettlement: (() => void) | undefined;
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
@@ -719,6 +715,10 @@ export class SessionCoordinator implements vscode.Disposable {
           session.publicId
         );
       }
+      const rewriteSettlement = new Promise<void>((resolve) => {
+        resolveRewriteSettlement = resolve;
+      });
+      this.installRuntimeSettlementBarrier(session, rewriteSettlement);
       const response = await this.serializeSessionEstablishment(delegate, () =>
         this.runtimeReconfigurer.rewriteCleaningPlan(
           session,
@@ -741,7 +741,7 @@ export class SessionCoordinator implements vscode.Disposable {
       else this.pendingOpens.delete(delegate);
       this.resolvePendingOpenWaitersIfIdle();
       this.runtimeCleanup.releaseIfIdle(delegate);
-      resolveRewriteSettlement();
+      resolveRewriteSettlement?.();
     }
   }
 

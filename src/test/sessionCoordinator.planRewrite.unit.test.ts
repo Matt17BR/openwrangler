@@ -255,10 +255,73 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(harness.closedRuntimeIds()).toEqual([candidateId, "runtime-old"]);
     expect(coordinator.activeSession()).toBeUndefined();
   });
+
+  it("does not deadlock close behind an active foreground request and a waiting rewrite", async () => {
+    const foregroundPage = deferred<OpenWranglerResponse>();
+    const harness = rewriteHarness({ draft: replacement, oldPage: foregroundPage.promise });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: harness.request });
+    const opened = await open(bridge, initialSource);
+    const pageRequest = {
+      kind: "getPage" as const,
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "foreground-before-rewrite",
+      offset: 0,
+      limit: 100,
+      columnOffset: 0,
+      columnLimit: 16,
+      filterModel: opened.metadata.filterModel
+    };
+
+    const page = bridge.request(pageRequest);
+    await vi.waitFor(() =>
+      expect(harness.request).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "getPage", sessionId: "runtime-old" }),
+        undefined
+      )
+    );
+    const rewrite = bridge.rewriteCleaningPlan?.(
+      opened.metadata.sessionId,
+      opened.metadata.revision,
+      first.id,
+      "applyDraft",
+      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+    );
+    const close = bridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+
+    foregroundPage.resolve(
+      pageFor(
+        { ...pageRequest, sessionId: "runtime-old" },
+        metadataFor({
+          runtimeId: "runtime-old",
+          source: initialSource,
+          revision: opened.metadata.revision,
+          steps: [first, second, third],
+          draftStep: replacement
+        })
+      )
+    );
+
+    await expect(page).resolves.toMatchObject({ kind: "page" });
+    await expect(close).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
+    await expect(rewrite).resolves.toMatchObject({ kind: "error", code: "session_closing" });
+    expect(harness.candidateOpenRequests()).toEqual([]);
+    expect(harness.closedRuntimeIds()).toEqual(["runtime-old"]);
+  });
 });
 
 function rewriteHarness(
-  options: { draft?: TransformStep; rejectStepId?: string; replayBackend?: "pandas" | "polars" } = {}
+  options: {
+    draft?: TransformStep;
+    rejectStepId?: string;
+    replayBackend?: "pandas" | "polars";
+    oldPage?: Promise<OpenWranglerResponse>;
+  } = {}
 ) {
   const requests: OpenWranglerRequest[] = [];
   const closed: string[] = [];
@@ -287,6 +350,7 @@ function rewriteHarness(
       return openedFor(message, metadataFor({ runtimeId: candidateId, source: initialSource }));
     }
     if (message.kind === "getPage" && message.sessionId === "runtime-old") {
+      if (options.oldPage) return options.oldPage;
       return pageFor(message, { ...initialMetadata, filterModel: message.filterModel });
     }
     if (message.kind === "previewStep" && message.sessionId === candidateId) {
