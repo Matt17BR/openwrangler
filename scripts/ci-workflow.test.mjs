@@ -793,6 +793,28 @@ const R_45_OWNER_CONTRACTS = Object.freeze([
   })
 ]);
 
+const R_45_ARTIFACT_MANIFEST = Object.freeze([
+  "libbz2-dev_1.0.8-5.1build0.1_amd64.deb|libbz2-dev|1.0.8-5.1build0.1|amd64|33608|012b1118932f20ae3fa706fa44f8ebe203a21f4765893bc7a9f6861aa09fa4c5|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-dev_1.0.8-5.1build0.1_amd64.deb",
+  "libdeflate-dev_1.19-1build1.1_amd64.deb|libdeflate-dev|1.19-1build1.1|amd64|50936|78eed26d8875d0e5457d08c18d1ace9ba784f6cf84665cd2d4cba30530fb11c7|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate-dev_1.19-1build1.1_amd64.deb",
+  "liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma-dev|5.6.1+really5.4.5-1ubuntu0.3|amd64|176166|a36f21970809e5ec58b6fb1186b1a819276f92c081eb109aeebf00e82e78d068|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb",
+  "libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-dev|0.3.26+ds-1ubuntu0.1|amd64|19590|3e4f39838e163d35bc7778fb3bec4f4d5ce2ae3e8e081dec49759217282c4770|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb",
+  "libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-pthread-dev|0.3.26+ds-1ubuntu0.1|amd64|4898570|01ae4d0433927e4109ae614c047f9df55dc3c8515e6369423f36f5e18d59101e|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb",
+  "libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0|0.3.26+ds-1ubuntu0.1|amd64|6190|ecadb5ba865e59a3eeafdad7f15908e59cdd827a80033d12bcc54ebddc72f5ae|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb",
+  "libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0-pthread|0.3.26+ds-1ubuntu0.1|amd64|7183128|7dc3b4384c02aecb87eb8b70fa26c5843a08af242f4638aa4b36922bdc4f5b04|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb",
+  "libpaper-utils_1.1.29build1_amd64.deb|libpaper-utils|1.1.29build1|amd64|8650|364e323bc54ecf17c0301ee51a07b1bdc9fe6646e5126b8ddb3bed6ff008b2e9|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper-utils_1.1.29build1_amd64.deb",
+  "libpaper1_1.1.29build1_amd64.deb|libpaper1|1.1.29build1|amd64|13414|63d0cc29eda7adc7d9269273e9b5542b8b6aacabc5e7caaa859995269bfe3cff|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper1_1.1.29build1_amd64.deb",
+  "libpthread-stubs0-dev_0.4-1build3_amd64.deb|libpthread-stubs0-dev|0.4-1build3|amd64|4746|b8f278da7b1907d3014c01f9bc89748208a8cd3b770f0f55f1528afcc98dc6c0|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpthread-stubs/libpthread-stubs0-dev_0.4-1build3_amd64.deb",
+  "libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb|libtirpc-dev|1.3.4+ds-1.1build1|amd64|193418|439322bbb8d0b1d44f92593edb6c8ba9693bcfb3b5f1f3bd152998f42cdf7a5d|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb",
+  "libx11-dev_1.8.7-1build1_amd64.deb|libx11-dev|2:1.8.7-1build1|amd64|732214|1969e200607ffe34070b92fe1bd3ba76ac2e2bd2f3a54530800c5872076fad24|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-dev_1.8.7-1build1_amd64.deb",
+  "libxau-dev_1.0.9-1build6_amd64.deb|libxau-dev|1:1.0.9-1build6|amd64|9570|46783c6af2d87c06394d55dfaa21dac07396f13cfc5ea6afbd9313ab49fc0e50|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau-dev_1.0.9-1build6_amd64.deb",
+  "libxcb1-dev_1.15-1ubuntu2_amd64.deb|libxcb1-dev|1.15-1ubuntu2|amd64|85790|1bafe3432feafc9e57f858721da524dfb3ee1f6fc4ef6b0c73023e79eadb9c28|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1-dev_1.15-1ubuntu2_amd64.deb",
+  "libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb|libxdmcp-dev|1:1.1.3-0ubuntu6|amd64|26546|ba2f2230b391c292f5f399d6e04d48181be6b3100556f7870591ca95c9d00667|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb",
+  "x11proto-dev_2023.2-1_all.deb|x11proto-dev|2023.2-1|all|602398|3bf13a2ffb79ecd4014d438936014e5863f79eb59ebf76e8f43356271c90e7ce|https://archive.ubuntu.com/ubuntu/pool/main/x/xorgproto/x11proto-dev_2023.2-1_all.deb",
+  "xorg-sgml-doctools_1.11-1.1_all.deb|xorg-sgml-doctools|1:1.11-1.1|all|10936|277f662c6d94606c22078f2af82ac1b6e01386d5a4dec6ca7487bca4c5b23c07|https://archive.ubuntu.com/ubuntu/pool/main/x/xorg-sgml-doctools/xorg-sgml-doctools_1.11-1.1_all.deb",
+  "xtrans-dev_1.4.0-1_all.deb|xtrans-dev|1.4.0-1|all|68900|45277c51d5d83db351b61859314b59595c9626ac372fbb2fc0d5542e169d9086|https://archive.ubuntu.com/ubuntu/pool/main/x/xtrans/xtrans-dev_1.4.0-1_all.deb",
+  "r-4.5.3_1_amd64.deb|r-4.5.3|1|amd64|67491866|93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8|https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"
+]);
+
 function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   assert.equal(job["runs-on"], "ubuntu-24.04");
   assert.equal(job["timeout-minutes"], 20);
@@ -817,68 +839,84 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   const run = provisioning.run;
   assert.equal(typeof run, "string");
   assert.ok(run.startsWith("set -euo pipefail\nexport LC_ALL=C\n"));
-  for (const exactToken of [
-    'readonly r_package_url="https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb"',
-    'readonly r_package_size="67491866"',
-    'readonly r_package_sha256="93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8"',
-    'readonly r_package_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"',
-    'readonly r_package_path="${r_package_dir}/r-4.5.3_1_amd64.deb"'
-  ]) {
-    assert.equal(run.split(exactToken).length - 1, 1, `missing or repeated R provisioning token: ${exactToken}`);
-  }
-  assert.match(
-    run,
-    /timeout --signal=TERM --kill-after=5s 180s \\\n+[ ]{2}curl --fail --location --proto '=https' --tlsv1\.2 --connect-timeout 20 --max-time 175 \\\n+[ ]{2}--output "\$r_package_path" "\$r_package_url"/u
-  );
-  assert.equal(run.match(/\bapt-get update\b/gu)?.length, 1);
-  assert.equal(run.match(/\bapt-get install\b/gu)?.length, 1);
-  assert.match(
-    run,
-    /sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \\\n+[ ]{2}timeout --signal=TERM --kill-after=10s 180s apt-get update/u
-  );
-  assert.match(
-    run,
-    /sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \\\n+[ ]{2}timeout --signal=TERM --kill-after=10s 360s \\\n+[ ]{2}apt-get install --yes --no-install-recommends "\$r_package_path" libx11-dev$/mu
-  );
-
-  const updateIndex = run.indexOf("apt-get update");
-  const installIndex = run.indexOf("apt-get install");
-  assert.ok(updateIndex >= 0 && installIndex > updateIndex);
-  const immediatePreinstallChecks = [
-    'test ! -L "$r_package_path"',
-    'test -f "$r_package_path"',
-    'test "$(stat --format=\'%F\' -- "$r_package_path")" = "regular file"',
-    'test "$(stat --format=\'%d:%i:%f:%h\' -- "$r_package_path")" = "$r_package_identity"',
-    'test "$(stat --format=\'%s\' -- "$r_package_path")" = "$r_package_size"',
-    'read -r actual_sha256 _ < <(sha256sum -- "$r_package_path")',
-    'test "$actual_sha256" = "$r_package_sha256"',
-    'test "$(dpkg-deb --field "$r_package_path" Package)" = "r-4.5.3"',
-    'test "$(dpkg-deb --field "$r_package_path" Version)" = "1"'
-  ];
-  let cursor = updateIndex;
-  for (const check of immediatePreinstallChecks) {
-    cursor = run.indexOf(check, cursor + 1);
-    assert.ok(cursor > updateIndex && cursor < installIndex, `missing immediate preinstall check: ${check}`);
-  }
-  const installCommandStart = run.lastIndexOf(
-    "sudo --non-interactive env DEBIAN_FRONTEND=noninteractive",
-    installIndex
-  );
-  assert.ok(installCommandStart > updateIndex);
+  assert.match(run, /^readonly artifact_count="19"$/mu);
+  assert.match(run, /^readonly artifact_bytes="81616636"$/mu);
+  assert.match(run, /^readonly artifact_dir="\$\(mktemp -d "\$\{RUNNER_TEMP\}\/openwrangler-r-4\.5\.3-XXXXXX"\)"$/mu);
+  const manifestMatch = run.match(/readonly artifact_manifest="\$\(cat <<'ARTIFACTS'\n([\s\S]+?)\nARTIFACTS\n\)"/u);
+  assert.ok(manifestMatch);
+  const manifest = manifestMatch[1].split("\n");
+  assert.deepEqual(manifest, R_45_ARTIFACT_MANIFEST);
+  assert.equal(manifest.length, 19);
   assert.equal(
-    run.slice(updateIndex + "apt-get update".length, installCommandStart),
-    `\n${immediatePreinstallChecks.join("\n")}\n`
+    manifest.reduce((total, line) => total + Number(line.split("|")[4]), 0),
+    81_616_636
   );
-  assert.match(run, /test "\$\(dpkg-query --show --showformat='\$\{Version\}' r-4\.5\.3\)" = "1"/u);
+  for (const line of manifest) {
+    const [filename, packageName, version, architecture, size, digest, url] = line.split("|");
+    assert.equal(filename.endsWith(".deb"), true);
+    assert.notEqual(packageName, "");
+    assert.notEqual(version, "");
+    assert.match(architecture, /^(?:all|amd64)$/u);
+    assert.match(size, /^[1-9][0-9]*$/u);
+    assert.match(digest, /^[0-9a-f]{64}$/u);
+    if (packageName === "r-4.5.3") {
+      assert.equal(url, "https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb");
+    } else {
+      assert.match(url, /^https:\/\/archive\.ubuntu\.com\/ubuntu\/pool\//u);
+    }
+  }
+  assert.equal(manifest.filter((line) => line.includes("|libx11-dev|2:1.8.7-1build1|amd64|")).length, 1);
+  assert.equal(manifest.filter((line) => line.includes("|r-4.5.3|1|amd64|67491866|")).length, 1);
+  assert.match(run, /timeout --signal=TERM --kill-after=10s 300s bash -c '\n[ ]{2}set -euo pipefail/u);
   assert.match(
     run,
-    /test "\$\(\/opt\/R\/4\.5\.3\/bin\/Rscript --vanilla -e 'cat\(as\.character\(getRversion\(\)\)\)'\)" = "4\.5\.3"/u
+    /timeout --signal=TERM --kill-after=5s 180s \\\n+[ ]{6}curl --fail --location --proto "=https" --tlsv1\.2 --connect-timeout 20 --max-time 175 \\\n+[ ]{6}--output "\$artifact_path" "\$url"/u
+  );
+  assert.equal(run.match(/read -r actual_sha256 _ < <\(sha256sum -- "\$artifact_path"\)/gu)?.length, 2);
+  assert.equal(run.match(/dpkg-deb --field "\$artifact_path" Package/gu)?.length, 2);
+  assert.equal(run.match(/dpkg-deb --field "\$artifact_path" Version/gu)?.length, 2);
+  assert.equal(run.match(/dpkg-deb --field "\$artifact_path" Architecture/gu)?.length, 2);
+  assert.equal(run.match(/stat --format=["']%d:%i:%f:%h["'] -- "\$artifact_path"/gu)?.length, 4);
+  const validationStarts = [
+    ...run.matchAll(/while IFS="\|" read -r filename package version architecture size sha256 url; do/gu)
+  ].map((match) => match.index);
+  assert.equal(validationStarts.length, 3);
+  const installIndex = run.indexOf('dpkg --install -- "${install_paths[@]}"');
+  assert.ok(validationStarts[1] < installIndex && installIndex < validationStarts[2]);
+  assert.match(
+    run,
+    /test "\$verified_count" = "\$artifact_count"\ntest "\$verified_bytes" = "\$artifact_bytes"\ntest "\$\(find "\$artifact_dir" -mindepth 1 -maxdepth 1 \| wc -l\)" = "\$artifact_count"\nsudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \\\n+[ ]{2}dpkg --install -- "\$\{install_paths\[@\]\}"/u
+  );
+  assert.equal(run.match(/\bdpkg --install\b/gu)?.length, 1);
+  assert.match(run, /^test -z "\$\(dpkg --audit\)"$/mu);
+  assert.match(
+    run,
+    /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' "\$package"\)" = \\\n+[ ]{4}"install ok installed\|\$\{version\}\|\$\{architecture\}"/u
+  );
+  assert.match(
+    run,
+    /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' libx11-dev\)" = \\\n+[ ]{2}"install ok installed\|2:1\.8\.7-1build1\|amd64"/u
+  );
+  assert.match(
+    run,
+    /for r_binary in \/opt\/R\/4\.5\.3\/lib\/R\/bin\/exec\/R \/opt\/R\/4\.5\.3\/lib\/R\/lib\/libR\.so; do/u
+  );
+  assert.match(run, /test -z "\$\(ldd "\$r_binary" \| sed -n '\/not found\/p'\)"/u);
+  assert.match(
+    run,
+    /test "\$\(dpkg-query --show --showformat='\$\{Status\}\|\$\{Version\}\|\$\{Architecture\}' r-4\.5\.3\)" = \\\n+[ ]{2}"install ok installed\|1\|amd64"/u
+  );
+  assert.equal(
+    run.split(`test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"`).length -
+      1,
+    1
   );
   assert.match(run, /printf '%s\\n' '\/opt\/R\/4\.5\.3\/bin' >> "\$GITHUB_PATH"/u);
-  assert.doesNotMatch(run, /\b(?:gdebi-core|devscripts|qpdf|ghostscript)\b/u);
+  assert.doesNotMatch(run, /\b(?:apt|apt-get|gdebi|gdebi-core|devscripts|qpdf|ghostscript)\b/u);
+  assert.doesNotMatch(run, /(?:dists\/|Packages(?:\.(?:gz|xz|zst))?|InRelease|Release\.gpg)/u);
 
   const source = JSON.stringify(job);
-  assert.match(source, new RegExp(lockName.replaceAll(".", "\\."), "u"));
+  assert.equal(source.split(lockName).length - 1, 2);
   assert.match(source, /r-dependency-lock\.mjs prepare/u);
   assert.match(source, /r-dependency-lock\.mjs install/u);
   assert.match(source, /cache-hit/u);
@@ -904,66 +942,124 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
     assertR45PullRequestOwner(ci.jobs[contract.jobId], contract);
   }
 
+  const mutateProvisioning = (job, transform) => {
+    const step = job.steps.find((candidate) => candidate.name === "Install the authenticated R 4.5.3 runtime");
+    step.run = transform(step.run);
+  };
+  const removeSecond = (source, needle) => {
+    const first = source.indexOf(needle);
+    const second = source.indexOf(needle, first + needle.length);
+    assert.ok(first >= 0 && second > first);
+    return source.slice(0, second) + source.slice(second + needle.length);
+  };
   const mutations = [
     (job) => (job["runs-on"] = "ubuntu-latest"),
     (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["r-version"] = "4.5"),
     (job) => delete stepsUsing(job, "r-lib/actions/setup-r@")[0].with["install-r"],
     (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["install-r"] = true),
+    (job) => (stepsUsing(job, "r-lib/actions/setup-r@")[0].with["use-public-rspm"] = true),
     (job) => (job["timeout-minutes"] = 21),
+    (job) => mutateProvisioning(job, (run) => run.replace("set -euo pipefail\n", "")),
+    (job) => mutateProvisioning(job, (run) => run.replace(R_45_ARTIFACT_MANIFEST[0] + "\n", "")),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("set -euo pipefail\n", "")),
+      mutateProvisioning(job, (run) => run.replace("ARTIFACTS\n)", R_45_ARTIFACT_MANIFEST[0] + "\nARTIFACTS\n)")),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("r-4.5.3_1_amd64.deb", "r-4.5.2_1_amd64.deb")),
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          R_45_ARTIFACT_MANIFEST[0] + "\n" + R_45_ARTIFACT_MANIFEST[1],
+          R_45_ARTIFACT_MANIFEST[1] + "\n" + R_45_ARTIFACT_MANIFEST[0]
+        )
+      ),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("67491866", "67491865")),
+      mutateProvisioning(job, (run) =>
+        run.replace("libx11-dev_1.8.7-1build1_amd64.deb|", "libx11-dev_1.8.7-1build2_amd64.deb|")
+      ),
+    (job) => mutateProvisioning(job, (run) => run.replace("|libx11-dev|", "|libx11-devel|")),
+    (job) => mutateProvisioning(job, (run) => run.replace("|2:1.8.7-1build1|", "|2:1.8.7-1build2|")),
+    (job) => mutateProvisioning(job, (run) => run.replace("|amd64|732214|", "|all|732214|")),
+    (job) => mutateProvisioning(job, (run) => run.replace("|732214|1969e200", "|732215|1969e200")),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8", "0".repeat(64))),
+      mutateProvisioning(job, (run) =>
+        run.replace("1969e200607ffe34070b92fe1bd3ba76ac2e2bd2f3a54530800c5872076fad24", "0".repeat(64))
+      ),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace('test "$(stat --format=\'%d:%i:%f:%h\' -- "$r_package_path")" = "$r_package_identity"\n', "")),
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          "https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/",
+          "https://example.invalid/ubuntu/pool/main/libx/libx11/"
+        )
+      ),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("timeout --signal=TERM --kill-after=5s 180s \\\n  curl", "curl")),
+      mutateProvisioning(job, (run) => run.replace('readonly artifact_count="19"', 'readonly artifact_count="18"')),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("timeout --signal=TERM --kill-after=10s 180s apt-get update", "apt-get update")),
+      mutateProvisioning(job, (run) =>
+        run.replace('readonly artifact_bytes="81616636"', 'readonly artifact_bytes="81616635"')
+      ),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace("apt-get install --yes --no-install-recommends", "apt-get install --yes")),
+      mutateProvisioning(job, (run) => run.replace("timeout --signal=TERM --kill-after=10s 300s bash -c", "bash -c")),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace('"$r_package_path" libx11-dev', '"$r_package_path" libx11-dev jq')),
+      mutateProvisioning(job, (run) =>
+        run.replace("timeout --signal=TERM --kill-after=5s 180s \\\n      curl", "curl")
+      ),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
-        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
-        .run.replace(
-          'test "$(dpkg-deb --field "$r_package_path" Version)" = "1"\n',
-          'test "$(dpkg-deb --field "$r_package_path" Version)" = "1"\necho interposed\n'
-        )),
+      mutateProvisioning(job, (run) =>
+        removeSecond(run, 'test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"\n')
+      ),
+    (job) => mutateProvisioning(job, (run) => run + "sudo apt-get update\n"),
     (job) =>
-      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run +=
-        "sudo apt-get install gdebi-core devscripts qpdf ghostscript\n"),
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          "sudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \\\n  dpkg --install",
+          "sudo --non-interactive dpkg --install"
+        )
+      ),
+    (job) => mutateProvisioning(job, (run) => run.replace('test -z "$(dpkg --audit)"\n', "")),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'test "$(dpkg-query --show --showformat=\'${Status}|${Version}|${Architecture}\' "$package")" = \\\n    "install ok installed|${version}|${architecture}"\n',
+          ""
+        )
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'test "$(dpkg-query --show --showformat=\'${Status}|${Version}|${Architecture}\' libx11-dev)" = \\\n  "install ok installed|2:1.8.7-1build1|amd64"\n',
+          ""
+        )
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) => run.replace('test -z "$(ldd "$r_binary" | sed -n \'/not found/p\')"\n', "")),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'test "$(dpkg-query --show --showformat=\'${Status}|${Version}|${Architecture}\' r-4.5.3)" = \\\n  "install ok installed|1|amd64"\n',
+          ""
+        )
+      ),
+    (job) =>
+      mutateProvisioning(job, (run) =>
+        run.replace(
+          'test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e \'cat(as.character(getRversion()))\')" = "4.5.3"\n',
+          ""
+        )
+      ),
     (job) => (stepRunning(job, "npm run test:r-contract -- --shard kernel-agent").run = "npm run test:r-contract"),
-    (job) => (stepsUsing(job, "actions/cache/restore@")[0].with.path = "${{ steps.r_prepare.outputs.library }}")
+    (job) =>
+      (job.steps.find((step) => String(step.run).includes("r-dependency-lock.mjs prepare")).run = job.steps
+        .find((step) => String(step.run).includes("r-dependency-lock.mjs prepare"))
+        .run.replace("ubuntu-24.04-x86_64-r-4.5.lock.json", "ubuntu-24.04-x86_64-r-4.4.lock.json")),
+    (job) => (stepsUsing(job, "actions/cache/restore@")[0].with.path = "${{ steps.r_prepare.outputs.library }}"),
+    (job) => (stepsUsing(job, "actions/cache/restore@")[0].with["restore-keys"] = "openwrangler-r-contract-")
   ];
-  for (const mutate of mutations) {
+  for (const [index, mutate] of mutations.entries()) {
     const document = structuredClone(ci);
     const job = document.jobs["r-contract-kernel"];
     mutate(job);
-    assert.throws(() => assertR45PullRequestOwner(job, R_45_OWNER_CONTRACTS[0]));
+    assert.throws(
+      () => assertR45PullRequestOwner(job, R_45_OWNER_CONTRACTS[0]),
+      `R 4.5 provisioning mutation ${index} was not rejected`
+    );
   }
 });
 
