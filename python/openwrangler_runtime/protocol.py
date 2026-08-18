@@ -36,7 +36,7 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "applyDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
     "discardDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
     "undoStep": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
-    "exportData": ("sessionId", "revision", "path", "format"),
+    "exportData": ("sessionId", "revision", "path", "options"),
     "closeSession": ("sessionId", "revision"),
     "cancelRequest": ("targetRequestId",),
 }
@@ -104,8 +104,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "sessionId",
         "revision",
         "path",
-        "format",
-        "rowAxisPolicy",
+        "options",
         "targetIdentity",
     },
     "closeSession": {"kind", "sessionId", "revision"},
@@ -220,15 +219,13 @@ def decode_request(value: Any) -> dict[str, Any]:
     if kind == "exportData":
         if not isinstance(request["path"], str) or not request["path"]:
             raise ProtocolError("path must be a non-empty string.")
-        if request["format"] not in {"csv", "parquet"}:
-            raise ProtocolError("format must be csv or parquet.")
-        if "rowAxisPolicy" in request and request["rowAxisPolicy"] not in {"preserve", "omit"}:
-            raise ProtocolError("rowAxisPolicy must be preserve or omit.")
+        export_options = _validate_export_options(request["options"])
         target_identity = _mapping(request.get("targetIdentity"), "targetIdentity")
         unexpected_identity = set(target_identity) - {"device", "inode"}
         if unexpected_identity or set(target_identity) != {"device", "inode"}:
             raise ProtocolError("targetIdentity must contain exactly device and inode.")
         request = dict(request)
+        request["options"] = export_options
         request["targetIdentity"] = {
             "device": _filesystem_identity_component(target_identity["device"], "targetIdentity.device"),
             "inode": _filesystem_identity_component(target_identity["inode"], "targetIdentity.inode"),
@@ -380,6 +377,50 @@ def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str,
     if "sheetIndex" in normalized:
         normalized["sheetIndex"] = int(normalized["sheetIndex"])
     return normalized
+
+
+def _validate_export_options(value: Any) -> dict[str, Any]:
+    options = _mapping(value, "options")
+    format_name = options.get("format")
+    if format_name == "csv":
+        required = {"format", "delimiter", "quoteChar", "encoding", "header"}
+        allowed = required | {"rowAxisPolicy"}
+    elif format_name == "parquet":
+        required = {"format"}
+        allowed = required | {"rowAxisPolicy"}
+    else:
+        raise ProtocolError("options.format must be csv or parquet.")
+    missing = required - options.keys()
+    if missing:
+        raise ProtocolError(f"options is missing required fields: {', '.join(sorted(missing))}")
+    unexpected = set(options) - allowed
+    if unexpected:
+        raise ProtocolError(
+            f"options contains fields that are invalid for {format_name}: {', '.join(sorted(unexpected))}"
+        )
+    if format_name == "csv":
+        for field in ("delimiter", "quoteChar"):
+            field_value = options[field]
+            if (
+                not isinstance(field_value, str)
+                or len(field_value) != 1
+                or field_value in {"\0", "\r", "\n"}
+                or 0xD800 <= ord(field_value) <= 0xDFFF
+            ):
+                raise ProtocolError(
+                    f"options.{field} must contain exactly one non-NUL, non-line-break Unicode code point."
+                )
+        if options["delimiter"] == options["quoteChar"]:
+            raise ProtocolError("options.delimiter and options.quoteChar must differ.")
+        if not _is_non_empty_trimmed_string(options["encoding"]) or len(options["encoding"]) > 64:
+            raise ProtocolError("options.encoding must be a non-empty string of at most 64 Unicode code points.")
+        if not isinstance(options["header"], bool):
+            raise ProtocolError("options.header must be a boolean.")
+    if "rowAxisPolicy" in options:
+        row_axis_policy = options["rowAxisPolicy"]
+        if not isinstance(row_axis_policy, str) or row_axis_policy not in {"preserve", "omit"}:
+            raise ProtocolError("options.rowAxisPolicy must be preserve or omit.")
+    return dict(options)
 
 
 def _is_non_empty_trimmed_string(value: Any) -> bool:

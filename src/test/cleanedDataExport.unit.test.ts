@@ -5,15 +5,29 @@ import { exportCleanedDataThroughWorkbench, type CleanedDataExportTiming } from 
 
 type LocatorKind =
   | "dialog"
+  | "delimiter"
+  | "delimiter-dialog"
+  | "delimiter-options"
+  | "encoding"
+  | "encoding-dialog"
+  | "encoding-options"
   | "export"
   | "format"
+  | "header"
+  | "header-dialog"
+  | "header-options"
   | "hover"
   | "input"
+  | "option-input"
+  | "option-input-dialog"
   | "options"
   | "policy"
   | "policy-dialog"
   | "policy-options"
-  | "progress";
+  | "progress"
+  | "settings"
+  | "settings-dialog"
+  | "settings-options";
 
 interface FakeExportSurfaceOptions {
   readonly formatAvailable?: boolean;
@@ -25,12 +39,21 @@ class FakeExportSurface {
   readonly events: string[] = [];
   readonly options: string[] = [" CSV ", " Parquet "];
   readonly policyOptions: string[] = [" Preserve index ", " Omit index "];
+  readonly settingsOptions: string[] = [" Use standard CSV settings ", " Configure CSV settings "];
+  readonly delimiterOptions: string[] = [" Comma ", " Tab ", " Semicolon ", " Pipe ", " Custom… "];
+  readonly encodingOptions: string[] = [" utf-8 ", " utf-16le "];
+  readonly headerOptions: string[] = [" Write column names ", " Omit column names "];
   readonly formatAvailable: boolean;
   readonly hoverCount: number;
   readonly progressCount: number;
   input = "destination.cleaned.csv";
+  optionInput = "";
   selectedFormat: "csv" | "parquet" = "csv";
   selectedPolicy: "preserve" | "omit" = "preserve";
+  selectedSetting: "defaults" | "configure" = "defaults";
+  selectedDelimiter = ",";
+  selectedEncoding = "utf-8";
+  selectedHeader = true;
 
   readonly app = new FakeLocator(this, "export") as unknown as Locator;
   readonly page = {
@@ -75,6 +98,29 @@ class FakeLocator {
     if (this.kind === "policy-dialog" && role === "option") {
       return new FakeLocator(this.surface, "policy-options");
     }
+    if (this.kind === "settings-dialog" && role === "option") {
+      return new FakeLocator(this.surface, "settings-options");
+    }
+    if (this.kind === "delimiter-dialog" && role === "option") {
+      return new FakeLocator(this.surface, "delimiter-options");
+    }
+    if (
+      this.kind === "encoding-dialog" &&
+      role === "option" &&
+      typeof options?.name === "string" &&
+      options.exact === true
+    ) {
+      const selected = this.surface.encodingOptions.find((option) => option.trim() === options.name);
+      if (!selected) throw new Error(`The encoding selector did not match exactly: ${options.name}`);
+      this.surface.selectedEncoding = selected.trim() === "utf-16le" ? "utf-16le" : "utf-8";
+      return new FakeLocator(this.surface, "encoding");
+    }
+    if (this.kind === "encoding-dialog" && role === "option") {
+      return new FakeLocator(this.surface, "encoding-options");
+    }
+    if (this.kind === "header-dialog" && role === "option") {
+      return new FakeLocator(this.surface, "header-options");
+    }
     throw new Error(`Unexpected role locator: ${this.kind}:${role}:${JSON.stringify(options)}`);
   }
 
@@ -83,6 +129,21 @@ class FakeLocator {
     if (this.kind === "dialog" && hasText === "Export Pandas Index") {
       return new FakeLocator(this.surface, "policy-dialog");
     }
+    if (this.kind === "dialog" && hasText === "CSV Export Settings") {
+      return new FakeLocator(this.surface, "settings-dialog");
+    }
+    if (this.kind === "dialog" && hasText === "CSV Delimiter") {
+      return new FakeLocator(this.surface, "delimiter-dialog");
+    }
+    if (this.kind === "dialog" && hasText === "CSV Encoding") {
+      return new FakeLocator(this.surface, "encoding-dialog");
+    }
+    if (this.kind === "dialog" && hasText === "CSV Header") {
+      return new FakeLocator(this.surface, "header-dialog");
+    }
+    if (this.kind === "dialog" && (hasText === "Custom CSV Delimiter" || hasText === "CSV Quote Character")) {
+      return new FakeLocator(this.surface, "option-input-dialog");
+    }
     if (this.kind === "options" && hasText instanceof RegExp) {
       this.surface.selectedFormat = hasText.test("Parquet") ? "parquet" : "csv";
       return new FakeLocator(this.surface, "format");
@@ -90,6 +151,21 @@ class FakeLocator {
     if (this.kind === "policy-options" && hasText instanceof RegExp) {
       this.surface.selectedPolicy = hasText.test("Preserve index") ? "preserve" : "omit";
       return new FakeLocator(this.surface, "policy");
+    }
+    if (this.kind === "settings-options" && hasText instanceof RegExp) {
+      this.surface.selectedSetting = hasText.test("Configure CSV settings") ? "configure" : "defaults";
+      return new FakeLocator(this.surface, "settings");
+    }
+    if (this.kind === "delimiter-options" && hasText instanceof RegExp) {
+      this.surface.selectedDelimiter =
+        [",", "\t", ";", "|"].find((value, index) =>
+          hasText.test(["Comma", "Tab", "Semicolon", "Pipe"][index] ?? "")
+        ) ?? "custom";
+      return new FakeLocator(this.surface, "delimiter");
+    }
+    if (this.kind === "header-options" && hasText instanceof RegExp) {
+      this.surface.selectedHeader = hasText.test("Write column names");
+      return new FakeLocator(this.surface, "header");
     }
     if (this.kind === "progress" && hasText === "Exporting cleaned data…") return this;
     throw new Error(`Unexpected filtered locator: ${this.kind}:${String(hasText)}`);
@@ -107,6 +183,9 @@ class FakeLocator {
     if (this.kind === "dialog" && selector === ".quick-input-box input") {
       return new FakeLocator(this.surface, "input");
     }
+    if (this.kind === "option-input-dialog" && selector === ".quick-input-box input") {
+      return new FakeLocator(this.surface, "option-input");
+    }
     throw new Error(`Unexpected nested locator: ${this.kind}:${selector}`);
   }
 
@@ -116,9 +195,19 @@ class FakeLocator {
   }
 
   async click(): Promise<void> {
-    this.surface.events.push(
-      this.kind === "policy" ? `policy:${this.surface.selectedPolicy}:click` : `${this.kind}:click`
-    );
+    const event =
+      this.kind === "policy"
+        ? `policy:${this.surface.selectedPolicy}:click`
+        : this.kind === "settings"
+          ? `settings:${this.surface.selectedSetting}:click`
+          : this.kind === "delimiter"
+            ? `delimiter:${this.surface.selectedDelimiter}:click`
+            : this.kind === "encoding"
+              ? `encoding:${this.surface.selectedEncoding}:click`
+              : this.kind === "header"
+                ? `header:${this.surface.selectedHeader ? "write" : "omit"}:click`
+                : `${this.kind}:click`;
+    this.surface.events.push(event);
     if (this.kind === "format") {
       this.surface.input = `destination.cleaned.${this.surface.selectedFormat}`;
     }
@@ -133,13 +222,16 @@ class FakeLocator {
 
   async inputValue(): Promise<string> {
     this.surface.events.push(`${this.kind}:value`);
-    if (this.kind !== "input") throw new Error(`Unexpected input value: ${this.kind}`);
-    return this.surface.input;
+    if (this.kind !== "input" && this.kind !== "option-input") {
+      throw new Error(`Unexpected input value: ${this.kind}`);
+    }
+    return this.kind === "input" ? this.surface.input : this.surface.optionInput;
   }
 
   async fill(value: string): Promise<void> {
     this.surface.events.push(`${this.kind}:fill:${value}`);
-    this.surface.input = value;
+    if (this.kind === "option-input") this.surface.optionInput = value;
+    else this.surface.input = value;
   }
 
   async press(key: string): Promise<void> {
@@ -149,6 +241,10 @@ class FakeLocator {
   async allInnerTexts(): Promise<string[]> {
     if (this.kind === "options") return this.surface.options;
     if (this.kind === "policy-options") return this.surface.policyOptions;
+    if (this.kind === "settings-options") return this.surface.settingsOptions;
+    if (this.kind === "delimiter-options") return this.surface.delimiterOptions;
+    if (this.kind === "encoding-options") return this.surface.encodingOptions;
+    if (this.kind === "header-options") return this.surface.headerOptions;
     throw new Error(`Unexpected option inventory: ${this.kind}`);
   }
 }
@@ -180,6 +276,9 @@ describe("cleaned-data workbench export", () => {
       "dialog:wait:visible:10000",
       "format:wait:visible:10000",
       "format:click",
+      ...(format === "csv"
+        ? ["settings-dialog:wait:visible:10000", "settings:wait:visible:10000", "settings:defaults:click"]
+        : []),
       "input:value",
       `input:fill:${path.resolve(destination)}`,
       "input:press:Enter",
@@ -213,6 +312,58 @@ describe("cleaned-data workbench export", () => {
       "policy-dialog:wait:visible:10000",
       "policy:wait:visible:10000",
       `policy:${policy}:click`,
+      "settings-dialog:wait:visible:10000",
+      "settings:wait:visible:10000",
+      "settings:defaults:click",
+      "input:value",
+      `input:fill:${path.resolve(destination)}`,
+      "input:press:Enter",
+      "dialog:wait:hidden:30000",
+      "progress:count"
+    ]);
+  });
+
+  it("drives exact configurable CSV controls before Save", async () => {
+    const surface = new FakeExportSurface();
+    const destination = "tmp/configured.csv";
+
+    await exportCleanedDataThroughWorkbench(surface.app, surface.page, destination, "csv", {
+      ...immediateTiming([]),
+      csvSettings: {
+        mode: "configure",
+        delimiter: "§",
+        encoding: "utf-16le",
+        header: false,
+        quoteChar: "'"
+      }
+    });
+
+    expect(surface.events).toEqual([
+      "keyboard:Escape",
+      "mouse:1,1",
+      "hover:count",
+      "export:click",
+      "dialog:wait:visible:10000",
+      "format:wait:visible:10000",
+      "format:click",
+      "settings-dialog:wait:visible:10000",
+      "settings:wait:visible:10000",
+      "settings:configure:click",
+      "delimiter-dialog:wait:visible:10000",
+      "delimiter:wait:visible:10000",
+      "delimiter:custom:click",
+      "option-input-dialog:wait:visible:10000",
+      "option-input:fill:§",
+      "option-input:press:Enter",
+      "encoding-dialog:wait:visible:10000",
+      "encoding:wait:visible:10000",
+      "encoding:utf-16le:click",
+      "header-dialog:wait:visible:10000",
+      "header:wait:visible:10000",
+      "header:omit:click",
+      "option-input-dialog:wait:visible:10000",
+      "option-input:fill:'",
+      "option-input:press:Enter",
       "input:value",
       `input:fill:${path.resolve(destination)}`,
       "input:press:Enter",

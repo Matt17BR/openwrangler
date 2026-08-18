@@ -10,7 +10,7 @@ from decimal import Decimal
 from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
@@ -22,8 +22,8 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    ExportOptions,
     PageColumnProjection,
-    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
@@ -890,25 +890,32 @@ class DuckDBEngine(DataFrameEngine):
         self,
         frame: Any,
         path: str | os.PathLike[str],
-        format_name: Literal["csv", "parquet"],
-        *,
-        row_axis_policy: RowAxisExportPolicy | None = None,
+        options: ExportOptions,
     ) -> None:
-        if row_axis_policy is not None:
-            raise EngineError("DuckDB export does not accept a Pandas row-axis policy.")
-        if format_name not in self.capabilities.export_formats:
-            raise EngineError(f"Unsupported DuckDB export format: {format_name}")
+        normalized = self.validate_export_options(options)
+        format_name = normalized["format"]
         frame = self.normalize(frame)
         row_id = self._row_id_column(frame)
         query = "SELECT * FROM ow" if row_id is None else f"SELECT * EXCLUDE ({_quote_ident(row_id)}) FROM ow"
         try:
             with self._terminal_connection(frame) as (connection, source_sql):
                 destination = path if isinstance(path, ExportWriterPath) else os.fspath(path)
-                _write_relation_export(connection, _compose_sql(source_sql, query), destination, format_name)
+                _write_relation_export(connection, _compose_sql(source_sql, query), destination, normalized)
         except EngineError:
             raise
         except Exception as error:
             raise EngineError(f"DuckDB {format_name} export failed: {error}") from error
+
+    def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:
+        normalized = super().validate_export_options(options)
+        if normalized["format"] == "csv":
+            encoding = normalized["encoding"].lower().replace("_", "-")
+            if encoding not in {"utf-8", "utf8"}:
+                raise EngineError("DuckDB CSV export supports UTF-8 encoding only.")
+            for field in ("delimiter", "quoteChar"):
+                if len(normalized[field].encode("utf-8")) != 1:
+                    raise EngineError(f"DuckDB CSV export {field} must encode as exactly one UTF-8 byte.")
+        return normalized
 
     def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
         kind = str(step["kind"])
@@ -2115,10 +2122,11 @@ def _write_relation_export(
     connection: Any,
     sql: str,
     path: str | ExportWriterPath,
-    format_name: Literal["csv", "parquet"],
+    options: ExportOptions,
 ) -> None:
     """Write through a temporary relation that dies before connection close."""
 
+    format_name = options["format"]
     relation: Any = None
     try:
         relation = connection.sql(sql)
@@ -2131,7 +2139,15 @@ def _write_relation_export(
             ):
                 try:
                     if format_name == "csv":
-                        relation.write_csv(destination, use_tmp_file=False)
+                        relation.write_csv(
+                            destination,
+                            use_tmp_file=False,
+                            sep=options["delimiter"],
+                            quotechar=options["quoteChar"],
+                            escapechar=options["quoteChar"],
+                            encoding=options["encoding"],
+                            header=options["header"],
+                        )
                     else:
                         relation.write_parquet(destination, use_tmp_file=False)
                 finally:
@@ -2141,7 +2157,15 @@ def _write_relation_export(
         # temporary-file publication would replace it before the host can
         # revalidate and commit the shared export transaction.
         if format_name == "csv":
-            relation.write_csv(path, use_tmp_file=False)
+            relation.write_csv(
+                path,
+                use_tmp_file=False,
+                sep=options["delimiter"],
+                quotechar=options["quoteChar"],
+                escapechar=options["quoteChar"],
+                encoding=options["encoding"],
+                header=options["header"],
+            )
         else:
             relation.write_parquet(path, use_tmp_file=False)
     finally:

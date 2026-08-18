@@ -26,6 +26,17 @@ def reserve_export_target(path):
     return {"device": str(device), "inode": str(inode)}
 
 
+def export_options(format_name: str, row_axis_policy: str | None = None) -> dict[str, object]:
+    options: dict[str, object] = (
+        {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+        if format_name == "csv"
+        else {"format": "parquet"}
+    )
+    if row_axis_policy is not None:
+        options["rowAxisPolicy"] = row_axis_policy
+    return options
+
+
 def assert_windows_sharing_violation(error: OSError) -> None:
     assert getattr(error, "winerror", None) == 32
 
@@ -746,9 +757,8 @@ def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
         session_id,
         2,
         str(destination),
-        "csv",
+        export_options("csv", "omit" if backend == "pandas" else None),
         reserve_export_target(destination),
-        "omit" if backend == "pandas" else None,
     )
     assert destination.read_text(encoding="utf-8").splitlines()[0] == "group,value"
     assert "open_wrangler_internal" not in destination.read_text(encoding="utf-8")
@@ -807,9 +817,8 @@ def test_export_writes_reserved_native_target_and_excludes_view_filters(tmp_path
         session_id,
         2,
         str(destination),
-        format_name,
+        export_options(format_name, "omit" if backend == "pandas" else None),
         reserve_export_target(destination),
-        "omit" if backend == "pandas" else None,
     )
     result = pl.read_csv(destination) if format_name == "csv" else pl.read_parquet(destination)
 
@@ -841,16 +850,15 @@ def test_export_rejects_pending_drafts_and_source_overwrite(tmp_path):
     )
 
     with pytest.raises(EngineError, match="Apply or discard"):
-        manager.export_data(session_id, 1, str(tmp_path / "cleaned.csv"), "csv")
+        manager.export_data(session_id, 1, str(tmp_path / "cleaned.csv"), export_options("csv", "omit"))
     manager.discard_draft(session_id, 1, 0, 10)
     with pytest.raises(EngineError, match="host-owned export target cannot be the active source"):
         manager.export_data(
             session_id,
             2,
             str(source_path),
-            "csv",
+            export_options("csv", "omit"),
             {"device": str(source_path.stat().st_dev), "inode": str(source_path.stat().st_ino)},
-            "omit",
         )
 
 
@@ -864,8 +872,8 @@ def test_failed_export_leaves_the_host_owned_target_for_host_cleanup(tmp_path, m
         {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
     )
 
-    def fail_export(_frame, path, _format, *, row_axis_policy=None):
-        assert row_axis_policy == "omit"
+    def fail_export(_frame, path, options):
+        assert options == export_options("csv", "omit")
         with open(path, "w", encoding="utf-8") as temporary:
             temporary.write("partial")
         raise EngineError("simulated export failure")
@@ -873,7 +881,13 @@ def test_failed_export_leaves_the_host_owned_target_for_host_cleanup(tmp_path, m
     session = manager.sessions[opened["metadata"]["sessionId"]]
     monkeypatch.setattr(session.engine, "export_data", fail_export)
     with pytest.raises(EngineError, match="simulated"):
-        manager.export_data(opened["metadata"]["sessionId"], 0, str(destination), "csv", target_identity, "omit")
+        manager.export_data(
+            opened["metadata"]["sessionId"],
+            0,
+            str(destination),
+            export_options("csv", "omit"),
+            target_identity,
+        )
 
     assert destination.read_text(encoding="utf-8") == "partial"
 
@@ -889,8 +903,8 @@ def test_export_rejects_a_replaced_host_owned_target_after_runtime_write(tmp_pat
         {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
     )
 
-    def replace_export(_frame, path, _format, *, row_axis_policy=None):
-        assert row_axis_policy == "omit"
+    def replace_export(_frame, path, options):
+        assert options == export_options("csv", "omit")
         if sys.platform == "win32":
             with pytest.raises(OSError) as rename_error:
                 Path(path).rename(displaced_target)
@@ -908,7 +922,9 @@ def test_export_rejects_a_replaced_host_owned_target_after_runtime_write(tmp_pat
         "prevented export target substitution" if sys.platform == "win32" else "temporary export file changed"
     )
     with pytest.raises(EngineError, match=expected_error):
-        manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity, "omit")
+        manager.export_data(
+            opened["metadata"]["sessionId"], 0, str(target), export_options("csv", "omit"), target_identity
+        )
 
     if sys.platform == "win32":
         assert target.read_bytes() == b""
@@ -931,7 +947,9 @@ def test_export_rejects_a_hard_link_added_to_the_host_owned_target(tmp_path):
         {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
     )
     with pytest.raises(EngineError, match="singly linked regular temporary file"):
-        manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity, "omit")
+        manager.export_data(
+            opened["metadata"]["sessionId"], 0, str(target), export_options("csv", "omit"), target_identity
+        )
     assert target.read_bytes() == b""
     assert target_alias.read_bytes() == b""
     assert source_path.read_text(encoding="utf-8") == "value\n1\n"
@@ -949,8 +967,8 @@ def test_export_rejects_a_hard_link_added_during_runtime_write(tmp_path, monkeyp
     )
     hardlink_created = False
 
-    def export_and_add_hardlink(_frame, path, _format, *, row_axis_policy=None):
-        assert row_axis_policy == "omit"
+    def export_and_add_hardlink(_frame, path, options):
+        assert options == export_options("csv", "omit")
         nonlocal hardlink_created
         Path(path).write_text("cleaned data", encoding="utf-8")
         try:
@@ -965,7 +983,9 @@ def test_export_rejects_a_hard_link_added_during_runtime_write(tmp_path, monkeyp
     session = manager.sessions[opened["metadata"]["sessionId"]]
     monkeypatch.setattr(session.engine, "export_data", export_and_add_hardlink)
     with pytest.raises(EngineError) as raised:
-        manager.export_data(opened["metadata"]["sessionId"], 0, str(target), "csv", target_identity, "omit")
+        manager.export_data(
+            opened["metadata"]["sessionId"], 0, str(target), export_options("csv", "omit"), target_identity
+        )
     assert target.read_text(encoding="utf-8") == "cleaned data"
     if hardlink_created:
         expected_message = (

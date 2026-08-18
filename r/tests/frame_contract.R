@@ -200,6 +200,48 @@ assert_identical(
   "the R export format probe changed"
 )
 
+configured_csv_target <- tempfile(fileext = ".csv")
+configured_csv_details <- openwrangler_r_frame_contract$write_csv(
+  openwrangler_r_frame_contract$capture_frame(data.frame(city = c("café§Nord", "Berlin"), value = c(1L, 2L))),
+  configured_csv_target,
+  list(format = "csv", delimiter = "§", quoteChar = "\"", encoding = "utf-8", header = FALSE)
+)
+assert_identical(configured_csv_details$rows, 2L, "configured CSV export changed the row count")
+assert_identical(configured_csv_details$columns, 2L, "configured CSV export changed the column count")
+assert_identical(
+  enc2utf8(readLines(configured_csv_target, encoding = "UTF-8", warn = FALSE)),
+  c("\"café§Nord\"§1", "\"Berlin\"§2"),
+  "configured CSV export changed the exact UTF-8 dialect output"
+)
+unlink(configured_csv_target)
+
+for (invalid_options in list(
+  list(format = "csv", delimiter = ";", quoteChar = "'", encoding = "utf-8", header = TRUE),
+  list(format = "csv", delimiter = ";", quoteChar = "\"", encoding = "latin-1", header = TRUE),
+  list(format = "csv", delimiter = "", quoteChar = "\"", encoding = "utf-8", header = TRUE),
+  list(format = "csv", delimiter = "\n", quoteChar = "\"", encoding = "utf-8", header = TRUE),
+  list(format = "csv", delimiter = "\"", quoteChar = "\"", encoding = "utf-8", header = TRUE),
+  list(format = "csv", delimiter = ";", quoteChar = "\"", encoding = "utf-8", header = 1L)
+)) {
+  rejected_csv_target <- tempfile(fileext = ".csv")
+  assert_error(
+    openwrangler_r_frame_contract$write_csv(base_capture, rejected_csv_target, invalid_options),
+    "invalid-export-options"
+  )
+  assert_true(!file.exists(rejected_csv_target), "invalid CSV options created an artifact")
+}
+
+rejected_parquet_target <- tempfile(fileext = ".parquet")
+assert_error(
+  openwrangler_r_frame_contract$write_parquet(
+    base_capture,
+    rejected_parquet_target,
+    list(format = "parquet", delimiter = ",")
+  ),
+  "invalid-export-options"
+)
+assert_true(!file.exists(rejected_parquet_target), "CSV-only Parquet options created an artifact")
+
 parquet_target <- tempfile(fileext = ".parquet")
 parquet_details <- openwrangler_r_frame_contract$write_parquet(base_capture, parquet_target)
 assert_identical(parquet_details$rows, 3L, "Parquet export changed the row count")

@@ -37,6 +37,7 @@ EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
 RowAxisKind = Literal["positional", "index", "multiIndex"]
 RowAxisExportPolicy = Literal["preserve", "omit"]
+ExportOptions = Mapping[str, Any]
 EngineRequestFailure = Literal["temporarily_unavailable", "state_lost"]
 PageColumnProjection = Sequence[tuple[int, str]]
 SummaryColumnProjection = Sequence[tuple[int, str]]
@@ -659,6 +660,57 @@ class AmbiguousViewColumnError(EngineError):
     """Raised when a name-addressed viewing query cannot identify one column."""
 
 
+def normalize_export_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize the one format-discriminated export contract for direct engine callers."""
+
+    if not isinstance(options, Mapping):
+        raise EngineError("Export options must be an object.")
+    if not all(isinstance(key, str) for key in options):
+        raise EngineError("Export option field names must be strings.")
+    format_name = options.get("format")
+    if format_name == "csv":
+        required = {"format", "delimiter", "quoteChar", "encoding", "header"}
+        allowed = required | {"rowAxisPolicy"}
+    elif format_name == "parquet":
+        required = {"format"}
+        allowed = required | {"rowAxisPolicy"}
+    else:
+        raise EngineError("Export options format must be csv or parquet.")
+    missing = required - options.keys()
+    if missing:
+        raise EngineError(f"Export options are missing required fields: {', '.join(sorted(missing))}.")
+    unexpected = set(options) - allowed
+    if unexpected:
+        raise EngineError(
+            f"Export options contain fields that are invalid for {format_name}: {', '.join(sorted(unexpected))}."
+        )
+    if format_name == "csv":
+        for field in ("delimiter", "quoteChar"):
+            value = options[field]
+            if (
+                not isinstance(value, str)
+                or len(value) != 1
+                or value in {"\0", "\r", "\n"}
+                or 0xD800 <= ord(value) <= 0xDFFF
+            ):
+                raise EngineError(
+                    f"CSV export {field} must contain exactly one non-NUL, non-line-break Unicode code point."
+                )
+        if options["delimiter"] == options["quoteChar"]:
+            raise EngineError("CSV export delimiter and quoteChar must differ.")
+        encoding = options["encoding"]
+        if not isinstance(encoding, str) or not encoding.strip(_IMPORT_OPTION_TRIM_CHARACTERS) or len(encoding) > 64:
+            raise EngineError("CSV export encoding must be a non-empty string of at most 64 Unicode code points.")
+        if not isinstance(options["header"], bool):
+            raise EngineError("CSV export header must be a boolean.")
+    row_axis_policy = options.get("rowAxisPolicy")
+    if row_axis_policy is not None and (
+        not isinstance(row_axis_policy, str) or row_axis_policy not in {"preserve", "omit"}
+    ):
+        raise EngineError("Export rowAxisPolicy must be preserve or omit.")
+    return dict(options)
+
+
 def resolve_excel_sheet_selector(options: Mapping[str, Any]) -> ExcelSheetSelector:
     """Validate and resolve the one public Excel sheet selector."""
 
@@ -722,6 +774,15 @@ class DataFrameEngine(ABC):
     def close(self) -> None:
         """Release resources owned by this engine instance."""
         return None
+
+    def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:
+        normalized = normalize_export_options(options)
+        format_name = normalized["format"]
+        if format_name not in self.capabilities.export_formats:
+            raise EngineError(f"The {self.name} backend cannot export {format_name} data.")
+        if normalized.get("rowAxisPolicy") is not None:
+            raise EngineError(f"The {self.name} backend does not accept a Pandas row-axis policy.")
+        return normalized
 
     @contextmanager
     def request_scope(self, request_id: str) -> Iterator[None]:
@@ -879,9 +940,7 @@ class DataFrameEngine(ABC):
         self,
         frame: Any,
         path: str | os.PathLike[str],
-        format_name: Literal["csv", "parquet"],
-        *,
-        row_axis_policy: RowAxisExportPolicy | None = None,
+        options: ExportOptions,
     ) -> None:
         raise NotImplementedError
 

@@ -280,13 +280,19 @@ const requests: OpenWranglerRequest[] = [
     columnOffset: 0,
     columnLimit: 16
   },
-  { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", format: "csv" },
+  {
+    kind: "exportData",
+    sessionId: "session-1",
+    revision: 3,
+    path: "/tmp/out.csv",
+    options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
+  },
   {
     kind: "exportData",
     sessionId: "session-1",
     revision: 3,
     path: "/tmp/.openwrangler-export.tmp",
-    format: "parquet",
+    options: { format: "parquet" },
     targetIdentity: { device: "7", inode: "11" }
   },
   { kind: "closeSession", sessionId: "session-1", revision: 3 },

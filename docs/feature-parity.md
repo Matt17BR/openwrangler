@@ -33,7 +33,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Custom engine-native code                            |    Yes |    Yes | Done   | Trusted custom code plus installed Restricted Mode; record:docs/testing.md            |
 | String/datetime/new-column by example                |    Yes |    Yes | Done   | Candidate matrix plus packaged confirmation; record:docs/testing.md                   |
 | Copy/script/notebook code export                     |    Yes |    Yes | Done   | Edited buffer, source-safe Save/alias package green; record:docs/testing.md           |
-| CSV and Parquet data export                          |    Yes |    Yes | Done   | Cross-engine atomic and packaged exports green; record:docs/testing.md                |
+| CSV and Parquet data export                          |    Yes |    Yes | Done   | Configurable engine-native, atomic, installed exports; record:docs/testing.md         |
 | Runtime selection, setup, change, clear              |    Yes |    Yes | Done   | Resolver, bounded preflight retry, exact install/reopen green; record:docs/testing.md |
 | Original icons, native views, themes, accessibility  |    N/A |    N/A | Done   | Exact-head axe plus native VS Code/Cursor gates; record:docs/testing.md               |
 | Runtime crash/reload/session replay                  |    Yes |    Yes | Done   | Packaged injected recovery/replay green; record:docs/testing.md                       |

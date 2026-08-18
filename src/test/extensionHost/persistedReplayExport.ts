@@ -9,14 +9,17 @@ export interface PersistedReplayExportTarget {
 export function persistedReplayExportRequest(
   target: PersistedReplayExportTarget,
   path: string,
-  format: ExportDataRequest["format"]
+  format: ExportDataRequest["options"]["format"]
 ): ExportDataRequest {
+  const rowAxisPolicy = target.backend === "pandas" ? { rowAxisPolicy: "omit" as const } : {};
   return {
     kind: "exportData",
     sessionId: target.sessionId,
     revision: target.revision,
     path,
-    format,
-    ...(target.backend === "pandas" ? { rowAxisPolicy: "omit" as const } : {})
+    options:
+      format === "csv"
+        ? { format, delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true, ...rowAxisPolicy }
+        : { format, ...rowAxisPolicy }
   };
 }

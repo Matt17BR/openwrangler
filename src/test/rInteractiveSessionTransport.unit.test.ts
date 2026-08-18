@@ -18,6 +18,7 @@ import {
   createNodeRPrivateArtifactOperations,
   type RPrivateArtifactOperations
 } from "../extension/r/rPrivateArtifactBoundary";
+import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -48,7 +49,7 @@ describe("interactive R session transport", () => {
       try {
         await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
         await expect(
-          transport.exportData(sessionId, 0, format, async (chunk) => {
+          transport.exportData(sessionId, 0, rExportOptions(format), async (chunk) => {
             chunks.push(Uint8Array.from(chunk));
           })
         ).resolves.toEqual({ sessionId, revision: 0, format, rows: 2, columns: 1 });
@@ -93,7 +94,7 @@ describe("interactive R session transport", () => {
     try {
       await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
       await expect(
-        transport.exportData(sessionId, 0, "csv", async () => {
+        transport.exportData(sessionId, 0, rCsvExportOptions, async () => {
           throw new Error("injected host writer failure");
         })
       ).rejects.toThrow("injected host writer failure");
@@ -128,7 +129,7 @@ describe("interactive R session transport", () => {
     });
     try {
       await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
-      await expect(transport.exportData(sessionId, 0, "csv", async () => undefined)).rejects.toThrow(
+      await expect(transport.exportData(sessionId, 0, rCsvExportOptions, async () => undefined)).rejects.toThrow(
         "mismatched data-export chunk"
       );
       expect(requestKinds).toEqual(["openSession", "exportData", "readDataExport", "closeDataExport"]);
@@ -172,7 +173,7 @@ describe("interactive R session transport", () => {
     });
     try {
       await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
-      const pending = transport.exportData(sessionId, 0, "csv", async () => undefined, {
+      const pending = transport.exportData(sessionId, 0, rCsvExportOptions, async () => undefined, {
         cancellation: token.token
       });
       await started;
@@ -250,7 +251,7 @@ describe("interactive R session transport", () => {
       const subscription = transport.onDidInvalidateKernel(invalidated);
       try {
         await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
-        const exporting = transport.exportData(sessionId, 0, "csv", async () => undefined);
+        const exporting = transport.exportData(sessionId, 0, rCsvExportOptions, async () => undefined);
         await started;
         expect(timeouts.activeBudgets).toEqual([20]);
         const scheduledRequestCount = createId.mock.calls.length;
@@ -311,7 +312,7 @@ describe("interactive R session transport", () => {
     const subscription = transport.onDidInvalidateKernel(invalidated);
     try {
       await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
-      await expect(transport.exportData(sessionId, 0, "csv", async () => undefined)).rejects.toThrow(
+      await expect(transport.exportData(sessionId, 0, rCsvExportOptions, async () => undefined)).rejects.toThrow(
         "injected export cleanup failure"
       );
       expect(invalidated).toHaveBeenCalledOnce();
@@ -1682,7 +1683,7 @@ function exportTransportResponse(
 ): string {
   if (request.kind === "openSession") return openResponse(request.requestId, sessionId);
   if (request.kind === "exportData") {
-    expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId, format });
+    expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId, options: rExportOptions(format) });
     return JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: request.requestId,

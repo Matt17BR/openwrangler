@@ -953,7 +953,12 @@ function mutationOrExportRequest(
     case "applyDraft":
       return { kind, ...base, offset: 0, limit: 100, ...columnWindow };
     case "exportData":
-      return { kind, ...base, path: "/workspace/clean.csv", format: "csv" };
+      return {
+        kind,
+        ...base,
+        path: "/workspace/clean.csv",
+        options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
+      };
   }
 }
 

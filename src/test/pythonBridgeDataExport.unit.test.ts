@@ -28,7 +28,7 @@ describe("PythonBridge data export publication", () => {
         kind: "dataExported",
         revision: request.revision,
         path: request.path,
-        format: request.format,
+        format: request.options.format,
         shape: { rows: 1, columns: 1 }
       };
     });
@@ -40,7 +40,7 @@ describe("PythonBridge data export publication", () => {
         sessionId: "session",
         revision: 0,
         path: "/workspace/cleaned.csv",
-        format: "csv"
+        options: csvOptions()
       })
     ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/cleaned.csv" });
 
@@ -83,7 +83,7 @@ describe("PythonBridge data export publication", () => {
       sessionId: "session",
       revision: 0,
       path: "/workspace/cleaned.csv",
-      format: "csv"
+      options: csvOptions()
     });
     await vi.waitFor(() => expect(requestRuntime).toHaveBeenCalledOnce());
     ownership.releaseConfirmed("session", runtime);
@@ -151,4 +151,8 @@ function testTransaction(): AtomicFileTransaction {
     rollback: vi.fn(async () => undefined),
     abandon: vi.fn(async () => undefined)
   };
+}
+
+function csvOptions() {
+  return { format: "csv" as const, delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true };
 }

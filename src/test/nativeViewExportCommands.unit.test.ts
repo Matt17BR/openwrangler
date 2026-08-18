@@ -56,15 +56,21 @@ describe("native export commands", () => {
     const origin = exportableSnapshot("origin-session", "orders.csv", 3);
     const other = exportableSnapshot("other-session", "customers.csv", 8);
     const registered = register(origin);
-    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => {
-      registered.setActiveSession(other);
-      return (items as Array<{ format: "csv" | "parquet" }>)[0];
+    nativeMocks.showQuickPick.mockImplementation(async (items) => {
+      if (nativeMocks.showQuickPick.mock.calls.length === 1) registered.setActiveSession(other);
+      return (items as unknown[])[0];
     });
     nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
 
     await expect(command("openWrangler.internal.exportSessionData")("origin-session", 3)).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith("origin-session", 3, "/workspace/orders.cleaned.csv", "csv");
+    expect(registered.exportData).toHaveBeenCalledWith("origin-session", 3, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: ",",
+      quoteChar: '"',
+      encoding: "utf-8",
+      header: true
+    });
     expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith(
       expect.objectContaining({
         defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.cleaned.csv" })
@@ -84,12 +90,9 @@ describe("native export commands", () => {
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith(
-      "origin-session",
-      3,
-      "/workspace/orders.cleaned.parquet",
-      "parquet"
-    );
+    expect(registered.exportData).toHaveBeenCalledWith("origin-session", 3, "/workspace/orders.cleaned.parquet", {
+      format: "parquet"
+    });
   });
 
   it.each([
@@ -123,13 +126,14 @@ describe("native export commands", () => {
         title: "Export Pandas Index",
         placeHolder: "Choose whether to preserve the dataframe index"
       });
-      expect(registered.exportData).toHaveBeenCalledWith(
-        "pandas-session",
-        3,
-        "/workspace/orders.cleaned.csv",
-        "csv",
-        expectedPolicy
-      );
+      expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true,
+        rowAxisPolicy: expectedPolicy
+      });
     }
   );
 
@@ -142,17 +146,164 @@ describe("native export commands", () => {
     );
     nativeMocks.showQuickPick
       .mockImplementationOnce(async (items) => (items as unknown[])[0])
-      .mockImplementationOnce(async (items) => (items as unknown[])[1]);
+      .mockImplementationOnce(async (items) => (items as unknown[])[1])
+      .mockImplementationOnce(async (items) => (items as unknown[])[0]);
     nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith(
-      "pandas-session",
-      3,
-      "/workspace/orders.cleaned.csv",
-      "csv",
-      "omit"
+    expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: ",",
+      quoteChar: '"',
+      encoding: "utf-8",
+      header: true,
+      rowAxisPolicy: "omit"
+    });
+  });
+
+  it("offers the confirmed import dialect as the CSV export default", async () => {
+    const active = pandasExportableSnapshot("pandas-session", "orders.csv", 3, {
+      kind: "index",
+      levelNames: ["account"]
+    });
+    active.metadata = {
+      ...active.metadata,
+      source: {
+        ...active.metadata.source,
+        importOptions: {
+          delimiter: ";",
+          quoteChar: "'",
+          encoding: "windows-1252",
+          hasHeader: false
+        }
+      }
+    };
+    const registered = register(active);
+    nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    const settings = nativeMocks.showQuickPick.mock.calls[2]?.[0] as Array<{ label: string; description: string }>;
+    expect(settings[0]).toMatchObject({
+      label: "Use confirmed source settings",
+      description: `";" delimiter · windows-1252 · no header · "'" quote`
+    });
+    expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: ";",
+      quoteChar: "'",
+      encoding: "windows-1252",
+      header: false,
+      rowAxisPolicy: "preserve"
+    });
+  });
+
+  it("does not reuse the import-only lossy UTF-8 sentinel as an export encoding", async () => {
+    const active = pandasExportableSnapshot("pandas-session", "orders.csv", 3, {
+      kind: "positional",
+      levelNames: []
+    });
+    active.metadata = {
+      ...active.metadata,
+      source: { ...active.metadata.source, importOptions: { encoding: "utf8-lossy" } }
+    };
+    const registered = register(active);
+    nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: ",",
+      quoteChar: '"',
+      encoding: "utf-8",
+      header: true,
+      rowAxisPolicy: "omit"
+    });
+  });
+
+  it("dispatches an explicitly configured engine-native CSV dialect", async () => {
+    const registered = register(exportableSnapshot("polars-session", "orders.csv", 3));
+    nativeMocks.showQuickPick.mockImplementation(async (items, options) => {
+      const title = (options as { title?: string } | undefined)?.title;
+      if (title === "CSV Export Settings") return (items as unknown[])[1];
+      if (title === "CSV Delimiter") {
+        return (items as Array<{ label: string }>).find(({ label }) => label === "Semicolon");
+      }
+      if (title === "CSV Header") return (items as unknown[])[1];
+      return (items as unknown[])[0];
+    });
+    nativeMocks.showInputBox.mockResolvedValueOnce("'");
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    expect(nativeMocks.showInputBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "CSV Quote Character",
+        value: '"'
+      })
+    );
+    expect(registered.exportData).toHaveBeenCalledWith("polars-session", 3, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: ";",
+      quoteChar: "'",
+      encoding: "utf-8",
+      header: false
+    });
+  });
+
+  it("rejects an unsupported multibyte Polars delimiter before Save", async () => {
+    const registered = register(exportableSnapshot("polars-session", "orders.csv", 3));
+    nativeMocks.showQuickPick.mockImplementation(async (items, options) => {
+      const title = (options as { title?: string } | undefined)?.title;
+      if (title === "CSV Export Settings") return (items as unknown[])[1];
+      if (title === "CSV Delimiter") {
+        return (items as Array<{ label: string }>).find(({ label }) => label === "Custom…");
+      }
+      return (items as unknown[])[0];
+    });
+    nativeMocks.showInputBox.mockResolvedValueOnce("§");
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(registered.exportData).not.toHaveBeenCalled();
+  });
+
+  it("does not open the Save dialog when CSV settings are cancelled", async () => {
+    const registered = register(exportableSnapshot("polars-session", "orders.csv", 3));
+    nativeMocks.showQuickPick
+      .mockImplementationOnce(async (items) => (items as unknown[])[0])
+      .mockResolvedValueOnce(undefined);
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(registered.exportData).not.toHaveBeenCalled();
+  });
+
+  it("rejects a backend change made while CSV settings are open", async () => {
+    const origin = exportableSnapshot("origin-session", "orders.csv", 3);
+    const registered = register(origin);
+    nativeMocks.showQuickPick.mockImplementation(async (items, options) => {
+      if ((options as { title?: string } | undefined)?.title === "CSV Export Settings") {
+        const replacement = exportableSnapshot("origin-session", "orders.csv", 3);
+        replacement.metadata = { ...replacement.metadata, backend: "duckdb" };
+        registered.setSession(replacement);
+      }
+      return (items as unknown[])[0];
+    });
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(registered.exportData).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The dataframe backend changed while export was open. Review the current data and try again."
     );
   });
 
@@ -203,13 +354,13 @@ describe("native export commands", () => {
       exportParquet: false
     };
     const registered = register(active);
-    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
     nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
     expect(nativeMocks.showQuickPick).toHaveBeenCalledWith(
-      [{ label: "CSV", description: "Comma-separated values", format: "csv" }],
+      [{ label: "CSV", description: "Delimited text", format: "csv" }],
       { title: "Export Cleaned Data", placeHolder: "Choose a file format" }
     );
     expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
@@ -218,13 +369,62 @@ describe("native export commands", () => {
       filters: { CSV: ["csv"] },
       saveLabel: "Export data"
     });
-    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", "csv");
+    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: ",",
+      quoteChar: '"',
+      encoding: "utf-8",
+      header: true
+    });
+  });
+
+  it("offers only R-native configurable CSV settings", async () => {
+    const active = rDocumentSnapshot();
+    active.metadata.capabilities = {
+      ...active.metadata.capabilities,
+      exportCsv: true,
+      exportParquet: false
+    };
+    const registered = register(active);
+    nativeMocks.showQuickPick.mockImplementation(async (items, options) => {
+      const title = (options as { title?: string } | undefined)?.title;
+      if (title === "CSV Export Settings") return (items as unknown[])[1];
+      if (title === "CSV Delimiter") {
+        return (items as Array<{ label: string }>).find(({ label }) => label === "Custom…");
+      }
+      if (title === "CSV Header") return (items as unknown[])[1];
+      return (items as unknown[])[0];
+    });
+    nativeMocks.showInputBox.mockResolvedValueOnce("§");
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    const settings = nativeMocks.showQuickPick.mock.calls[1]?.[0] as Array<{ label: string; description: string }>;
+    expect(settings[1]).toMatchObject({
+      label: "Configure CSV settings",
+      description: "Choose delimiter and header; R uses UTF-8 and double quotes"
+    });
+    expect(nativeMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(nativeMocks.showInputBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Custom CSV Delimiter",
+        prompt: "Enter exactly one character."
+      })
+    );
+    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", {
+      format: "csv",
+      delimiter: "§",
+      quoteChar: '"',
+      encoding: "utf-8",
+      header: false
+    });
   });
 
   it("rejects a session-bound export when its originating revision advances during the Save dialog", async () => {
     const origin = exportableSnapshot("origin-session", "orders.csv", 3);
     const registered = register(origin);
-    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
     nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
       registered.setSession(exportableSnapshot("origin-session", "orders.csv", 4));
       return vscodeUri("/workspace/orders.cleaned.csv");
@@ -240,7 +440,7 @@ describe("native export commands", () => {
 
   it("rechecks Workspace Trust after the cleaned-data Save dialog", async () => {
     const registered = register(exportableSnapshot("origin-session", "orders.csv", 3));
-    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
     nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
       nativeMocks.workspaceTrusted = false;
       return vscodeUri("/workspace/orders.cleaned.csv");

@@ -24,6 +24,14 @@ def reserve_export_target(path: Path) -> dict[str, str]:
     return {"device": str(device), "inode": str(inode)}
 
 
+def export_options(format_name: str) -> dict[str, object]:
+    return (
+        {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+        if format_name == "csv"
+        else {"format": "parquet"}
+    )
+
+
 def _write_polars_file(path: Path, extension: str, values: list[int]) -> None:
     frame = pl.DataFrame({"value": values, "label": [f"row-{index}" for index in range(len(values))]})
     if extension == "csv":
@@ -388,7 +396,7 @@ def test_lazy_polars_export_streams_to_the_exact_reserved_file_object(
         raising=False,
     )
 
-    PolarsEngine().export_data(frame, writer_path, format_name)
+    PolarsEngine().export_data(frame, writer_path, export_options(format_name))
 
     assert len(observed_writers) == 1
     assert observed_writers[0].closed is True
@@ -549,7 +557,7 @@ def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_
         session_id,
         2,
         str(export_path),
-        "parquet",
+        export_options("parquet"),
         reserve_export_target(export_path),
     )
     assert exported["shape"] == {"rows": row_count, "columns": 5}

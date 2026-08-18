@@ -8,6 +8,7 @@ import type * as vscode from "vscode";
 import { describe, expect, it } from "vitest";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
+import { rCsvExportOptions, rParquetExportOptions } from "./rExportTestOptions";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -185,7 +186,7 @@ describe.skipIf(!enabled)("official R extension interactive transport", () => {
         transport.exportData(
           sessionId,
           applied.revision,
-          "csv",
+          rCsvExportOptions,
           async (chunk) => {
             csvChunks.push(Uint8Array.from(chunk));
           },
@@ -203,7 +204,7 @@ describe.skipIf(!enabled)("official R extension interactive transport", () => {
         transport.exportData(
           sessionId,
           applied.revision,
-          "parquet",
+          rParquetExportOptions,
           async (chunk) => {
             parquetChunks.push(Uint8Array.from(chunk));
           },

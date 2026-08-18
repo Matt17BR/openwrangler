@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
-import type { RowAxisExportPolicy, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { ExportOptions, SessionMetadata, TransformStep } from "../shared/protocol";
 import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
 
@@ -33,6 +33,7 @@ const nativeMocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(async () => undefined),
   showSaveDialog: vi.fn(async () => undefined as unknown),
   showQuickPick: vi.fn<(items: readonly unknown[], options?: unknown) => Promise<unknown>>(async () => undefined),
+  showInputBox: vi.fn<(options?: unknown) => Promise<string | undefined>>(async () => undefined),
   withProgress: vi.fn(async (_options: unknown, task: () => Promise<unknown>) => task()),
   workspaceFolders: [] as Array<{ uri: unknown }>,
   workspaceTrusted: true,
@@ -131,6 +132,7 @@ vi.mock("vscode", () => {
       showErrorMessage: nativeMocks.showErrorMessage,
       showSaveDialog: nativeMocks.showSaveDialog,
       showQuickPick: nativeMocks.showQuickPick,
+      showInputBox: nativeMocks.showInputBox,
       withProgress: nativeMocks.withProgress
     },
     workspace: {
@@ -194,6 +196,8 @@ function resetNativeViewMocks(): void {
   nativeMocks.showSaveDialog.mockResolvedValue(undefined);
   nativeMocks.showQuickPick.mockReset();
   nativeMocks.showQuickPick.mockResolvedValue(undefined);
+  nativeMocks.showInputBox.mockReset();
+  nativeMocks.showInputBox.mockResolvedValue(undefined);
   nativeMocks.withProgress.mockClear();
   nativeMocks.workspaceFolders.length = 0;
   nativeMocks.workspaceTrusted = true;
@@ -241,17 +245,11 @@ function register(
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
   const sessions = new Map<string, ActiveSessionSnapshot>([[snapshot.sessionId, snapshot]]);
   const exportData = vi.fn(
-    async (
-      sessionId: string,
-      revision: number,
-      destination: string,
-      format: "csv" | "parquet",
-      _rowAxisPolicy?: RowAxisExportPolicy
-    ) => ({
+    async (sessionId: string, revision: number, destination: string, options: ExportOptions) => ({
       kind: "dataExported" as const,
       revision,
       path: destination,
-      format,
+      format: options.format,
       shape: { rows: 2, columns: 1 }
     })
   );

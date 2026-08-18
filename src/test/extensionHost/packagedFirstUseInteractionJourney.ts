@@ -640,8 +640,13 @@ export function createPackagedFirstUseInteractionJourney(
       await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
       await waitFor(() => existsSync(exportPath), 30_000, "the cleaned CSV export to appear");
       const exportedHeader = readFileSync(exportPath, "utf8").split(/\r?\n/u, 1)[0] ?? "";
-      assert.match(exportedHeader, /(?:^|,)market(?:,|$)/u);
-      assert.match(exportedHeader, /(?:^|,)market_upper(?:,|$)/u);
+      assert.match(exportedHeader, /(?:^|;)market(?:;|$)/u);
+      assert.match(exportedHeader, /(?:^|;)market_upper(?:;|$)/u);
+      assert.doesNotMatch(
+        exportedHeader,
+        /(?:^|,)market(?:,|$)/u,
+        "The default export must offer and apply the confirmed semicolon import dialect."
+      );
       assert.equal(
         readFileSync(exportPath, "utf8").split(/\r?\n/u).filter(Boolean).length,
         PACKAGED_FIRST_USE_ROW_COUNT + 1,

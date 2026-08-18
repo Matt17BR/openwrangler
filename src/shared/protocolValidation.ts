@@ -3,6 +3,7 @@ import type {
   ColumnReference,
   ColumnSchema,
   ColumnSummary,
+  ExportOptions,
   FilterModel,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -262,16 +263,11 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       );
     }
     case "exportData": {
-      const candidate = exactRecord(
-        value,
-        ["kind", "sessionId", "revision", "path", "format"],
-        ["rowAxisPolicy", "targetIdentity"]
-      );
+      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "path", "options"], ["targetIdentity"]);
       return (
         isSessionRequest(candidate, "exportData") &&
         isNonEmptyString(candidate.path) &&
-        isOneOf(candidate.format, ["csv", "parquet"]) &&
-        optional(candidate, "rowAxisPolicy", (policy) => isOneOf(policy, ["preserve", "omit"])) &&
+        isExportOptions(candidate.options) &&
         (candidate.targetIdentity === undefined || isExportTargetIdentity(candidate.targetIdentity))
       );
     }
@@ -288,6 +284,29 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
     default:
       return false;
   }
+}
+
+export function isExportOptions(value: unknown): value is ExportOptions {
+  if (!isRecord(value)) return false;
+  if (value.format === "csv") {
+    const candidate = exactRecord(value, ["format", "delimiter", "quoteChar", "encoding", "header"], ["rowAxisPolicy"]);
+    return (
+      candidate !== undefined &&
+      isCsvSyntaxCharacter(candidate.delimiter) &&
+      isCsvSyntaxCharacter(candidate.quoteChar) &&
+      candidate.delimiter !== candidate.quoteChar &&
+      isBoundedExportEncoding(candidate.encoding) &&
+      isBoolean(candidate.header) &&
+      optional(candidate, "rowAxisPolicy", (policy) => isOneOf(policy, ["preserve", "omit"]))
+    );
+  }
+  if (value.format === "parquet") {
+    const candidate = exactRecord(value, ["format"], ["rowAxisPolicy"]);
+    return (
+      candidate !== undefined && optional(candidate, "rowAxisPolicy", (policy) => isOneOf(policy, ["preserve", "omit"]))
+    );
+  }
+  return false;
 }
 
 function isExportTargetIdentity(value: unknown): boolean {
@@ -2042,6 +2061,14 @@ function isSingleCharacter(value: unknown): boolean {
   if (typeof value !== "string" || [...value].length !== 1) return false;
   const codePoint = value.codePointAt(0);
   return codePoint !== undefined && (codePoint < 0xd800 || codePoint > 0xdfff);
+}
+
+function isCsvSyntaxCharacter(value: unknown): boolean {
+  return isSingleCharacter(value) && value !== "\0" && value !== "\r" && value !== "\n";
+}
+
+function isBoundedExportEncoding(value: unknown): boolean {
+  return isNonEmptyTrimmedString(value) && [...value].length <= 64;
 }
 
 function isNullableString(value: unknown): boolean {

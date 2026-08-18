@@ -275,9 +275,14 @@ export function createPackagedReopenAndUndoJourney(
       const exportedLines = readFileSync(exportPath, "utf8").trimEnd().split(/\r?\n/u);
       const exportedHeader = exportedLines[0] ?? "";
       assert.equal(exportedLines.length, PACKAGED_FIRST_USE_ROW_COUNT + 1);
-      assert.match(exportedHeader, /(?:^|,)market(?:,|$)/u);
-      assert.match(exportedHeader, /(?:^|,)market_caps(?:,|$)/u);
-      assert.doesNotMatch(exportedHeader, /(?:^|,)market_upper(?:,|$)/u);
+      assert.match(exportedHeader, /(?:^|;)market(?:;|$)/u);
+      assert.match(exportedHeader, /(?:^|;)market_caps(?:;|$)/u);
+      assert.doesNotMatch(exportedHeader, /(?:^|;)market_upper(?:;|$)/u);
+      assert.doesNotMatch(
+        exportedHeader,
+        /(?:^|,)market(?:,|$)/u,
+        "The replayed file session must retain its confirmed semicolon export default."
+      );
     } finally {
       cleanupAcceptanceTemporaryDirectory(exportDirectory);
     }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as vscode from "vscode";
-import type { ColumnSummary, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
@@ -20,7 +20,6 @@ import {
   type RKernelColumnReference,
   type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
-  type RKernelExportFormat,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
   type RKernelRequest,
@@ -517,18 +516,18 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   exportData(
     sessionId: string,
     revision: number,
-    format: RKernelExportFormat,
+    exportOptions: ExportOptions,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelDataExportResult> {
-    const work = this.exportDataOnce(sessionId, revision, format, writeChunk, options);
+    const work = this.exportDataOnce(sessionId, revision, exportOptions, writeChunk, options);
     return this.trackExportWork(work);
   }
 
   private async exportDataOnce(
     sessionId: string,
     revision: number,
-    format: RKernelExportFormat,
+    exportOptions: ExportOptions,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options: RKernelRequestOptions
   ): Promise<RKernelDataExportResult> {
@@ -537,6 +536,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     if (!this.mappedSessions.has(sessionId)) {
       throw new Error(`Open Wrangler has no live interactive R session ${sessionId}.`);
     }
+    const format = exportOptions.format;
     const exportId = this.createId();
     const startedAt = performance.now();
     const timeoutMs = requestTimeout(options.timeoutMs);
@@ -549,7 +549,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
 
     try {
       const ready = await this.executeMapped(
-        this.request("exportData", { sessionId, revision, exportId, format }),
+        this.request("exportData", { sessionId, revision, exportId, options: exportOptions }),
         remainingOptions()
       );
       if (ready.kind === "error") throw new RKernelDiagnosticError(ready);

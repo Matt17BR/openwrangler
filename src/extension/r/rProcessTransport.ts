@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as vscode from "vscode";
-import type { ColumnSummary, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
@@ -20,7 +20,6 @@ import {
   type RKernelColumnReference,
   type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
-  type RKernelExportFormat,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
   type RKernelRequest,
@@ -305,7 +304,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
   async exportData(
     sessionId: string,
     revision: number,
-    format: RKernelExportFormat,
+    exportOptions: ExportOptions,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelDataExportResult> {
@@ -314,9 +313,10 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     if (!this.mappedSessions.has(sessionId) || !this.owned) {
       throw new Error(`Open Wrangler has no live R process session ${sessionId}.`);
     }
+    const format = exportOptions.format;
     const exportId = this.createId();
     const artifactPath = path.join(this.owned.exportRoot, `${exportId}.${format}`);
-    const request = this.request("exportData", { sessionId, revision, exportId, format });
+    const request = this.request("exportData", { sessionId, revision, exportId, options: exportOptions });
     encodeRKernelRequest(request);
     let cleanupPending = true;
     try {

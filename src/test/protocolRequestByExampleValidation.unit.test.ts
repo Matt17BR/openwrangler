@@ -317,6 +317,34 @@ describe("protocol-v2 bounded by-example request validation", () => {
     expect(isTransformStep(step)).toBe(false);
   });
 
+  it("accepts one Unicode scalar in canonical CSV options and rejects CSV fields on Parquet", () => {
+    expect(
+      isOpenWranglerRequest({
+        kind: "exportData",
+        sessionId: "session-1",
+        revision: 3,
+        path: "/tmp/out.csv",
+        options: {
+          format: "csv",
+          delimiter: "💾",
+          quoteChar: "«",
+          encoding: "utf-16le",
+          header: false,
+          rowAxisPolicy: "preserve"
+        }
+      })
+    ).toBe(true);
+    expect(
+      isOpenWranglerRequest({
+        kind: "exportData",
+        sessionId: "session-1",
+        revision: 3,
+        path: "/tmp/out.parquet",
+        options: { format: "parquet", delimiter: "," }
+      })
+    ).toBe(false);
+  });
+
   it.each([
     {
       kind: "openSession",
@@ -368,22 +396,83 @@ describe("protocol-v2 bounded by-example request validation", () => {
       columnOffset: 0,
       columnLimit: 16
     },
-    { kind: "exportData", sessionId: "session-1", revision: 3, path: "", format: "csv" },
-    { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", format: "json" },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "",
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
+    },
+    { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", options: { format: "json" } },
     {
       kind: "exportData",
       sessionId: "session-1",
       revision: 3,
       path: "/tmp/out.csv",
-      format: "csv",
-      rowAxisPolicy: "automatic"
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8" }
     },
     {
       kind: "exportData",
       sessionId: "session-1",
       revision: 3,
       path: "/tmp/out.csv",
-      format: "csv",
+      options: { format: "csv", delimiter: "", quoteChar: '"', encoding: "utf-8", header: true }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      options: { format: "csv", delimiter: ",", quoteChar: ",", encoding: "utf-8", header: true }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      options: { format: "csv", delimiter: "\n", quoteChar: '"', encoding: "utf-8", header: true }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "x".repeat(65), header: true }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      options: { format: "csv", delimiter: "\ud800", quoteChar: '"', encoding: "utf-8", header: true }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.parquet",
+      options: { format: "parquet", delimiter: "," }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      options: {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true,
+        rowAxisPolicy: "automatic"
+      }
+    },
+    {
+      kind: "exportData",
+      sessionId: "session-1",
+      revision: 3,
+      path: "/tmp/out.csv",
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true },
       targetIdentity: { device: "0", inode: "0" }
     },
     {
@@ -391,7 +480,7 @@ describe("protocol-v2 bounded by-example request validation", () => {
       sessionId: "session-1",
       revision: 3,
       path: "/tmp/out.csv",
-      format: "csv",
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true },
       targetIdentity: { device: "01", inode: "11" }
     },
     {
@@ -399,7 +488,7 @@ describe("protocol-v2 bounded by-example request validation", () => {
       sessionId: "session-1",
       revision: 3,
       path: "/tmp/out.csv",
-      format: "csv",
+      options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true },
       targetIdentity: { device: "340282366920938463463374607431768211456", inode: "11" }
     },
     { kind: "closeSession", sessionId: 17, revision: 3 },

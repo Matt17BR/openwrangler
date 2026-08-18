@@ -180,9 +180,19 @@ def test_pandas_export_requires_and_applies_the_explicit_index_policy(
         session_id,
         0,
         str(destination),
-        format_name,
+        (
+            {
+                "format": "csv",
+                "delimiter": ",",
+                "quoteChar": '"',
+                "encoding": "utf-8",
+                "header": True,
+                "rowAxisPolicy": policy,
+            }
+            if format_name == "csv"
+            else {"format": "parquet", "rowAxisPolicy": policy}
+        ),
         reserve_export_target(destination),
-        policy,
     )
 
     assert exported["shape"] == {"rows": 2, "columns": 1}
@@ -214,7 +224,12 @@ def test_export_policy_is_mandatory_for_pandas_and_rejected_by_other_backends(
     )
     pandas_session_id = str(opened["metadata"]["sessionId"])
     with pytest.raises(EngineError, match="explicit preserve-or-omit"):
-        pandas_manager.export_data(pandas_session_id, 0, str(tmp_path / "missing.csv"), "csv")
+        pandas_manager.export_data(
+            pandas_session_id,
+            0,
+            str(tmp_path / "missing.csv"),
+            {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True},
+        )
 
     source_path = tmp_path / "polars.csv"
     source_path.write_text("value\n1\n", encoding="utf-8")
@@ -228,9 +243,14 @@ def test_export_policy_is_mandatory_for_pandas_and_rejected_by_other_backends(
             str(polars_opened["metadata"]["sessionId"]),
             0,
             str(tmp_path / "polars-export.csv"),
-            "csv",
-            None,
-            "preserve",
+            {
+                "format": "csv",
+                "delimiter": ",",
+                "quoteChar": '"',
+                "encoding": "utf-8",
+                "header": True,
+                "rowAxisPolicy": "preserve",
+            },
         )
     pandas_manager.close_session(pandas_session_id, 0)
     polars_manager.close_session(str(polars_opened["metadata"]["sessionId"]), 0)

@@ -1,11 +1,10 @@
 import type * as vscode from "vscode";
-import type { ColumnSummary, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
 import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
 import type {
   RKernelColumnReference,
   RKernelDataExportResult,
   RKernelDatasetStatsResult,
-  RKernelExportFormat,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
   RKernelStepInspectionResult,
@@ -77,7 +76,7 @@ export interface RKernelBridgeTransport {
   exportData?(
     sessionId: string,
     revision: number,
-    format: RKernelExportFormat,
+    exportOptions: ExportOptions,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options?: RKernelRequestOptions
   ): Promise<RKernelDataExportResult>;

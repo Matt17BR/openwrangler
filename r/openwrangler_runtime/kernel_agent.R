@@ -8772,6 +8772,7 @@ openwrangler_r_kernel_agent <- local({
       "materialize_dataset_stats",
       "materialize_column_values",
       "export_formats",
+      "normalize_export_options",
       "write_csv",
       "write_parquet"
     )
@@ -9354,7 +9355,7 @@ openwrangler_r_kernel_agent <- local({
       if (identical(kind, "exportData")) {
         payload <- exact_record(
           request$payload,
-          c("sessionId", "revision", "exportId", "format"),
+          c("sessionId", "revision", "exportId", "options"),
           "request.payload"
         )
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
@@ -9370,10 +9371,16 @@ openwrangler_r_kernel_agent <- local({
         if (exists(export_id, envir = exports, inherits = FALSE)) {
           abort("invalid_request", "The requested R export identity is already in use", TRUE)
         }
-        format <- bounded_text(payload$format, "request.payload.format", 16L)
-        if (!format %in% c("csv", "parquet")) {
-          abort("invalid_request", "Native R data export requires CSV or Parquet", TRUE)
-        }
+        export_options <- tryCatch(
+          frame_contract$normalize_export_options(payload$options),
+          openwrangler_r_frame_error = function(error) {
+            abort("invalid_request", conditionMessage(error), TRUE)
+          },
+          error = function(error) {
+            abort("invalid_request", "Native R data export options are invalid", TRUE)
+          }
+        )
+        format <- export_options$format
         if (!format %in% supported_export_formats()) {
           abort(
             "missing_package",
@@ -9391,9 +9398,9 @@ openwrangler_r_kernel_agent <- local({
           if (!completed && file.exists(artifact_path)) try(unlink(artifact_path, force = TRUE), silent = TRUE)
         }, add = TRUE)
         exported <- if (identical(format, "csv")) {
-          frame_contract$write_csv(capture, artifact_path)
+          frame_contract$write_csv(capture, artifact_path, export_options)
         } else {
-          frame_contract$write_parquet(capture, artifact_path)
+          frame_contract$write_parquet(capture, artifact_path, export_options)
         }
         response <- list(
           transportVersion = transport_version,

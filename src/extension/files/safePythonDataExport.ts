@@ -40,7 +40,11 @@ export async function exportPythonDataSafely({
       settled = true;
       return response;
     }
-    if (response.path !== target.path || response.format !== request.format || response.revision !== request.revision) {
+    if (
+      response.path !== target.path ||
+      response.format !== request.options.format ||
+      response.revision !== request.revision
+    ) {
       throw new Error("The Python runtime returned a mismatched cleaned-data export response.");
     }
     await transaction.commit();

@@ -193,12 +193,23 @@ export function createReleasedRInteractiveTerminalSupport({
 
     recordAcceptanceProgress("jupyter-r:interactive:export-csv");
     const csvPath = path.join(directory, "base-orders.cleaned.csv");
-    await exportCleanedDataThroughWorkbench(app, workbench, csvPath, "csv");
+    await exportCleanedDataThroughWorkbench(app, workbench, csvPath, "csv", {
+      csvSettings: {
+        mode: "configure",
+        delimiter: "§",
+        encoding: "utf-8",
+        header: false
+      }
+    });
     await waitFor(() => existsSync(csvPath), 30_000, "the active R terminal CSV export to appear");
     const csvLines = readFileSync(csvPath, "utf8").trimEnd().split(/\r?\n/u);
-    assert.equal(csvLines.length, 241, "The active R terminal CSV export must contain its header and all 240 rows.");
-    assert.match(csvLines[0] ?? "", /order_id.*market.*revenue.*fulfilled.*order_date/u);
-    assert.match(csvLines[1] ?? "", /3400001/u);
+    assert.equal(csvLines.length, 240, "The configured R CSV export must omit its header and retain all 240 rows.");
+    assert.match(csvLines[0] ?? "", /^3400001§/u);
+    assert.equal(
+      csvLines[0]?.split("§").length,
+      5,
+      "The live Native-R export must apply the selected Unicode delimiter to every field."
+    );
 
     recordAcceptanceProgress("jupyter-r:interactive:export-parquet");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the CSV-exported active R terminal session");

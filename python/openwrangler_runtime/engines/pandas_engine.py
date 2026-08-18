@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -19,9 +20,9 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    ExportOptions,
     PageColumnProjection,
     RowAxis,
-    RowAxisExportPolicy,
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
@@ -40,6 +41,7 @@ from .base import (
     is_blank_delimited_file,
     is_internal_row_id_label,
     normalize_cell,
+    normalize_export_options,
     normalize_page_projection,
     normalize_summary_projection,
     normalized_numeric_sum,
@@ -133,21 +135,41 @@ class PandasEngine(DataFrameEngine):
         self,
         frame: Any,
         path: str | os.PathLike[str],
-        format_name: Literal["csv", "parquet"],
-        *,
-        row_axis_policy: RowAxisExportPolicy | None = None,
+        options: ExportOptions,
     ) -> None:
-        if row_axis_policy not in {"preserve", "omit"}:
-            raise EngineError("Pandas export requires an explicit preserve-or-omit index choice.")
+        normalized = self.validate_export_options(options)
+        format_name = normalized["format"]
         df = self._visible_frame(self.normalize(frame))
-        preserve_index = row_axis_policy == "preserve"
+        preserve_index = normalized["rowAxisPolicy"] == "preserve"
         if format_name == "csv":
-            df.to_csv(path, index=preserve_index)
+            df.to_csv(
+                path,
+                index=preserve_index,
+                sep=normalized["delimiter"],
+                quotechar=normalized["quoteChar"],
+                encoding=normalized["encoding"],
+                header=normalized["header"],
+            )
             return
         if format_name == "parquet":
             _pandas_parquet_frame(df).to_parquet(path, index=preserve_index)
             return
         raise EngineError(f"Unsupported Pandas export format: {format_name}")
+
+    def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:
+        normalized = normalize_export_options(options)
+        format_name = normalized["format"]
+        if format_name not in self.capabilities.export_formats:
+            raise EngineError(f"The Pandas backend cannot export {format_name} data.")
+        if normalized.get("rowAxisPolicy") not in {"preserve", "omit"}:
+            raise EngineError("Pandas export requires an explicit preserve-or-omit index choice.")
+        if format_name == "csv":
+            try:
+                codecs.lookup(normalized["encoding"])
+                "".encode(normalized["encoding"])
+            except LookupError as error:
+                raise EngineError(f"Pandas does not support CSV text encoding {normalized['encoding']!r}.") from error
+        return normalized
 
     def row_axis(self, frame: Any) -> RowAxis:
         import pandas as pd

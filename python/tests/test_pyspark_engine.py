@@ -83,7 +83,7 @@ def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
     with pytest.raises(EngineError, match="do not generate"):
         engine.compile_plan(())
     with pytest.raises(EngineError, match="do not export"):
-        engine.export_data(object(), "cleaned.parquet", "parquet")
+        engine.export_data(object(), "cleaned.parquet", {"format": "parquet"})
 
 
 def test_classic_request_scope_owns_jobs_and_restores_the_callers_properties() -> None:
