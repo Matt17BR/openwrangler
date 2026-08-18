@@ -11,7 +11,7 @@ export async function exerciseMultiOutputSplitJourney(
   app: Locator,
   testing: TestApi,
   sessionId: string,
-  reacquireApp: (phase: string) => Promise<Locator>,
+  synchronizeApp: (phase: string) => Promise<Locator>,
   dependencies: MultiOutputSplitJourneyDependencies
 ): Promise<void> {
   const { recordAcceptanceProgress, waitFor } = dependencies;
@@ -77,7 +77,7 @@ export async function exerciseMultiOutputSplitJourney(
     /pl\.col\('market'\)\.cast\(pl\.String\)\.str\.split\('-'\)\.list\.get\(item, null_on_oob=True\)\.alias\(name\)/u
   );
   assert.match(preview.code ?? "", /for item, name in enumerate\(\['market_part', 'market_remainder'\]\)/u);
-  const previewApp = await reacquireApp("Multi-output split preview");
+  const previewApp = await synchronizeApp("Multi-output split preview");
   const previewPage = await testing.request({
     kind: "getPage",
     sessionId,
@@ -106,7 +106,7 @@ export async function exerciseMultiOutputSplitJourney(
     30_000,
     "applying multi-output literal split"
   );
-  const appliedApp = await reacquireApp("Multi-output split apply");
+  const appliedApp = await synchronizeApp("Multi-output split apply");
   await appliedApp.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
     () => {

@@ -39,7 +39,7 @@ export interface PackagedFirstUseInteractionDependencies {
     app: Locator,
     testing: TestApi,
     sessionId: string,
-    reacquireApp: (phase: string) => Promise<Locator>
+    synchronizeApp: (phase: string) => Promise<Locator>
   ) => Promise<void>;
   readonly previewUppercaseMarket: (app: Locator, testing: TestApi, newColumn: string) => Promise<void>;
   readonly reacquireAcknowledgedSessionApp: (
@@ -607,7 +607,7 @@ export function createPackagedFirstUseInteractionJourney(
     );
     app = await reacquireApp("Uppercase draft discard");
 
-    await exerciseMultiOutputSplitJourney(app, testing, sessionId, reacquireApp);
+    await exerciseMultiOutputSplitJourney(app, testing, sessionId, rediscoverApp);
     await waitFor(
       confirmedMutationRendererReady,
       OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
