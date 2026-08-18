@@ -186,6 +186,8 @@ describe("R kernel row-reduction lifecycle", () => {
       diff: { addedRows: 0, removedRows: 0, changedCells: 0, truncated: false }
     });
     if (inspection.kind !== "stepInspection") throw new Error("Expected an R sort-step inspection.");
+    expect(inspection.inputRowAxis).toEqual({ kind: "positional", levelNames: [] });
+    expect(inspection.outputRowAxis).toEqual({ kind: "positional", levelNames: [] });
     expect(inspection.inputPage.rows.map(({ id }) => id)).toEqual(["r:r:0", "r:r:1", "r:r:2", "r:r:3"]);
     expect(inspection.outputPage.rows.map(({ id }) => id)).toEqual(["r:r:2", "r:r:0", "r:r:3", "r:r:1"]);
 
