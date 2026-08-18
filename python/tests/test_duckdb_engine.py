@@ -1400,6 +1400,12 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             index=1,
             newColumn="suffix",
         ),
+        bound_step(
+            "splitTextColumns",
+            column=bound_ref("c:source:1", "text", 1),
+            delimiter="-",
+            newColumns=["text_part", "text_remainder"],
+        ),
         bound_step("lowerText", column=bound_ref("c:source:1", "text", 1), newColumn="lower"),
         bound_step("upperText", column=bound_ref("c:source:1", "text", 1), newColumn="upper"),
         bound_step("capitalizeText", column=bound_ref("c:source:1", "text", 1), newColumn="capitalized"),

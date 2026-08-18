@@ -207,6 +207,7 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
     case "findReplace":
     case "stripText":
     case "splitText":
+    case "splitTextColumns":
     case "capitalizeText":
     case "lowerText":
     case "upperText":
@@ -363,6 +364,7 @@ function savedOperationTypeError(
     case "findReplace":
     case "stripText":
     case "splitText":
+    case "splitTextColumns":
     case "capitalizeText":
     case "lowerText":
     case "upperText":

@@ -156,7 +156,8 @@ a partial rectangle.
 
 ## Transformations
 
-Choose from 28 operations, including filling missing values, engine-native custom Python or R code, and
+Choose from 29 operations, including filling missing values, multi-output literal splitting, engine-native custom
+Python or R code, and
 transformations inferred from examples. A draft stays separate until you apply it. You can inspect any applied step.
 Edit and cleaning Undo target only the most recent step.
 

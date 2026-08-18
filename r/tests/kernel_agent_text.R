@@ -634,7 +634,8 @@ text_transform_step <- function(
   regex = NULL,
   characters = NULL,
   delimiter = NULL,
-  index = NULL
+  index = NULL,
+  new_columns = NULL
 ) {
   params <- list(column = list(id = column_id, name = column_name))
   if (!is.null(new_column)) params$newColumn <- new_column
@@ -647,6 +648,9 @@ text_transform_step <- function(
   } else if (identical(kind, "splitText")) {
     params$delimiter <- delimiter
     params$index <- index
+  } else if (identical(kind, "splitTextColumns")) {
+    params$delimiter <- delimiter
+    params$newColumns <- I(as.list(new_columns))
   }
   list(id = id, kind = kind, params = params)
 }
@@ -939,6 +943,39 @@ split_apply <- dispatch(
   list(sessionId = text_cleanup_session_id, revision = 12L, page = page_window())
 )
 assert_identical(split_apply$action, "apply", "derived R Split text did not apply")
+split_columns_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 13L,
+    step = text_transform_step(
+      "splitTextColumns",
+      "split-columns-step",
+      "r:c:0",
+      "text",
+      delimiter = "-",
+      new_columns = c("split first", "split second")
+    ),
+    page = page_window(column_offset = 6L, column_limit = 2L)
+  )
+)
+assert_identical(split_columns_preview$kind, "stepPreview", "R Split text into columns did not preview")
+assert_identical(
+  split_columns_preview$page$page$columnIds,
+  list("c:step:split-columns-step:0", "c:step:split-columns-step:1"),
+  "R Split text into columns lost stable output identities"
+)
+assert_identical(
+  vapply(split_columns_preview$page$page$rows[1:2], function(row) row$values[[2L]]$raw, character(1L)),
+  c("12", "34"),
+  "R Split text into columns changed ordered literal parts"
+)
+split_columns_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_cleanup_session_id, revision = 14L, page = page_window())
+)
+assert_identical(split_columns_apply$action, "apply", "R Split text into columns did not apply")
+split_apply <- split_columns_apply
 for (native_expression in c(
   "toupper(.ow_characters[[1L]])",
   ".ow_text_strip_characters",
@@ -958,6 +995,8 @@ assert_identical(
 )
 assert_identical(text_tools_generated$`stripped text`, c("alpha", "béta", NA_character_), "generated R Strip text changed values")
 assert_identical(text_tools_generated$suffix, c("12", "34", NA_character_), "generated R Split text changed values")
+assert_identical(text_tools_generated$`split first`, c("alpha", "béta", NA_character_), "generated R multi-output split changed first parts")
+assert_identical(text_tools_generated$`split second`, c("12", "34", NA_character_), "generated R multi-output split changed second parts")
 assert_identical(row.names(text_tools_generated), row.names(text_cleanup_before), "generated R text tools changed row names")
 assert_identical(
   get("text_cleanup_frame", envir = .GlobalEnv, inherits = FALSE),

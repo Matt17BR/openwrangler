@@ -830,6 +830,9 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "multiLabelBinarize":
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             return self._multi_label(frame, native_params)
+        if kind == "splitTextColumns":
+            native_params = {**params, "column": bound_column_name(params["column"], kind)}
+            return self._split_text_columns(frame, native_params)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             if kind == "stripText" and native_params.get("characters") is None:
@@ -1035,6 +1038,9 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "multiLabelBinarize":
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             return [f"{prefix}df = _ow_multi_label(df, {native_params!r})"]
+        if kind == "splitTextColumns":
+            native_params = {**params, "column": bound_column_name(params["column"], kind)}
+            return [f"{prefix}df = _ow_split_text_columns(df, {native_params!r})"]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             if kind == "stripText" and native_params.get("characters") is None:
@@ -1951,6 +1957,16 @@ class DuckDBEngine(DataFrameEngine):
         else:
             expression = f"upper({value})"
         return self._assign(frame, target, expression)
+
+    def _split_text_columns(self, frame: Any, params: Mapping[str, Any]) -> Any:
+        output_names = list(params["newColumns"])
+        ensure_output_columns_available(self._columns(frame), output_names, "Splitting text into columns")
+        value = f"CAST({_quote_ident(params['column'])} AS VARCHAR)"
+        delimiter = _sql_literal(params["delimiter"])
+        result = frame
+        for index, name in enumerate(output_names, start=1):
+            result = self._assign(result, name, f"string_split({value}, {delimiter})[{index}]")
+        return result
 
     def _min_max(self, frame: Any, column: str, target: str) -> Any:
         value_name = _unique_internal(self._columns(frame), "__ow_scale_value")
@@ -3786,6 +3802,27 @@ def _ow_text(df, kind, params):
     else:
         expression = "upper(" + value + ")"
     return _ow_assign(df, target, expression)
+
+
+def _ow_split_text_columns(df, params):
+    output_names = list(params["newColumns"])
+    reserved = [
+        name for name in output_names if name.casefold().startswith("__open_wrangler_internal_row_id_")
+    ]
+    if reserved:
+        raise ValueError(
+            "Splitting text into columns would create Open Wrangler's reserved private row-identity column."
+        )
+    collisions = sorted((set(_ow_columns(df)) & set(output_names)) | {
+        name for name in output_names if output_names.count(name) > 1
+    })
+    if collisions:
+        raise ValueError("Splitting text into columns would create duplicate column names: " + ", ".join(collisions))
+    value = "CAST(" + _ow_ident(params["column"]) + " AS VARCHAR)"
+    delimiter = _ow_literal(params["delimiter"])
+    for index, name in enumerate(output_names, start=1):
+        df = _ow_assign(df, name, "string_split(" + value + ", " + delimiter + ")[" + str(index) + "]")
+    return df
 
 
 def _ow_min_max(df, column, target):

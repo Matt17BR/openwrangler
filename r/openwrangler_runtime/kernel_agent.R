@@ -2691,6 +2691,52 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
+    if (identical(kind, "splitTextColumns")) {
+      params <- exact_record(
+        step$params,
+        c("column", "delimiter", "newColumns"),
+        "request.payload.step.params"
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      delimiter <- bounded_text(params$delimiter, "request.payload.step.params.delimiter", 8192L)
+      if (identical(delimiter, "")) {
+        abort("invalid_request", "request.payload.step.params.delimiter must be a non-empty literal string")
+      }
+      new_columns <- params$newColumns
+      if (
+        !is.list(new_columns) || is.object(new_columns) || !is.null(names(new_columns)) ||
+          length(new_columns) < 2L || length(new_columns) > 64L
+      ) {
+        abort("invalid_request", "request.payload.step.params.newColumns must contain 2 to 64 names")
+      }
+      new_columns <- vapply(seq_along(new_columns), function(index) {
+        name <- bounded_text(
+          new_columns[[index]],
+          sprintf("request.payload.step.params.newColumns[%d]", index),
+          maximum_variable_name_bytes
+        )
+        if (identical(name, "")) abort("invalid_request", "splitTextColumns output names may not be empty")
+        name
+      }, character(1L), USE.NAMES = FALSE)
+      if (anyDuplicated(new_columns)) abort("invalid_request", "splitTextColumns output names must be unique")
+      output_ids <- vapply(seq_along(new_columns), function(index) {
+        bounded_text(
+          paste0("c:step:", step_id, ":", index - 1L),
+          sprintf("the derived R split-text column identity %d", index),
+          limits$columnIdBytes
+        )
+      }, character(1L), USE.NAMES = FALSE)
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(column = column, delimiter = delimiter, newColumns = new_columns),
+        outputIds = output_ids
+      ))
+    }
     if (identical(kind, "findReplace")) {
       params <- exact_record(
         step$params,
@@ -2975,6 +3021,7 @@ openwrangler_r_kernel_agent <- local({
       "capitalizeText",
       "stripText",
       "splitText",
+      "splitTextColumns",
       "findReplace",
       "minMaxScale",
       "roundNumber",
@@ -3207,6 +3254,28 @@ openwrangler_r_kernel_agent <- local({
       bound$index <- step$params$index
     }
     bound
+  }
+
+  bind_split_text_columns_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, step$params$column$name)) {
+      abort("stale_column", "The split-text column reference no longer matches the active R dataframe", TRUE)
+    }
+    names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (any(step$params$newColumns %in% names) || any(step$outputIds %in% ids)) {
+      abort("invalid_request", "A split-text output column already exists", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = as.integer(matches[[1L]]),
+      oldName = step$params$column$name,
+      delimiter = step$params$delimiter,
+      newNames = step$params$newColumns,
+      outputIds = step$outputIds
+    )
   }
 
   bind_numeric_transform_step <- function(capture, step) {
@@ -4703,6 +4772,35 @@ openwrangler_r_kernel_agent <- local({
           source_positions = source_positions,
           output_ids = output_ids,
           text_transform_positions = transform_position
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "splitTextColumns")) {
+      bound <- bind_split_text_columns_step(capture, step)
+      result <- frame_contract$split_text_columns_at(
+        source,
+        bound$position,
+        bound$oldName,
+        bound$delimiter,
+        bound$newNames
+      )
+      source_positions <- c(
+        seq_along(capture$descriptor$schema),
+        rep.int(bound$position, length(bound$newNames))
+      )
+      output_ids <- c(
+        vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        bound$outputIds
+      )
+      transform_positions <- seq.int(length(capture$descriptor$schema) + 1L, length(output_ids))
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          text_transform_positions = transform_positions
         ),
         bound = bound
       ))
@@ -7660,6 +7758,52 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_result_ids <- base::.subset2(.ow_categorical_result, \"outputIds\")",
           "  base::rm(.ow_categorical_result)"
         )
+      } else if (identical(step$kind, "splitTextColumns")) {
+        output_names <- paste(vapply(step$newNames, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        output_ids <- paste(vapply(step$outputIds, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        lines <- c(
+          lines,
+          sprintf("  .ow_split_position <- %dL", step$position),
+          sprintf("  .ow_split_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_split_delimiter <- %s", r_string(step$delimiter)),
+          sprintf("  .ow_split_names <- c(%s)", output_names),
+          "  if (ncol(.ow_result) < .ow_split_position || !identical(names(.ow_result)[[.ow_split_position]], .ow_split_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (!is.character(.ow_result[[.ow_split_position]]) && !is.factor(.ow_result[[.ow_split_position]])) stop(\"Open Wrangler Split text into columns requires a character or factor column\", call. = FALSE)",
+          "  if (length(.ow_split_names) < 2L || length(.ow_split_names) > 64L || any(.ow_split_names == \"\") || anyDuplicated(.ow_split_names) || any(startsWith(tolower(.ow_split_names), \"__open_wrangler_internal_row_id_\")) || any(.ow_split_names %in% names(.ow_result))) stop(\"Open Wrangler split output names are invalid, reserved, or already exist\", call. = FALSE)",
+          sprintf("  if (ncol(.ow_result) + length(.ow_split_names) > %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)", maximum_columns),
+          "  .ow_split_source <- as.character(.ow_result[[.ow_split_position]])",
+          "  .ow_split_values <- lapply(seq_along(.ow_split_names), function(.ow_part) {",
+          "    vapply(seq_along(.ow_split_source), function(.ow_index) {",
+          "      .ow_value <- .ow_split_source[[.ow_index]]",
+          "      if (is.na(.ow_value)) return(NA_character_)",
+          "      if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Split text into columns requires valid UTF-8 text\", call. = FALSE)",
+          "      .ow_encoding <- Encoding(.ow_value)",
+          "      .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "      .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          "      if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Split text into columns requires bounded valid UTF-8 text\", call. = FALSE)",
+          "      .ow_matches <- gregexpr(.ow_split_delimiter, .ow_utf8, fixed = TRUE)[[1L]]",
+          "      .ow_part_index <- .ow_part - 1L",
+          "      if (length(.ow_matches) == 1L && identical(as.integer(.ow_matches[[1L]]), -1L)) return(if (identical(.ow_part_index, 0L)) .ow_utf8 else NA_character_)",
+          "      if (.ow_part_index >= length(.ow_matches) + 1L) return(NA_character_)",
+          "      .ow_match_lengths <- attr(.ow_matches, \"match.length\", exact = TRUE)",
+          "      .ow_start <- if (.ow_part == 1L) 1L else .ow_matches[[.ow_part - 1L]] + .ow_match_lengths[[.ow_part - 1L]]",
+          "      .ow_end <- if (.ow_part <= length(.ow_matches)) .ow_matches[[.ow_part]] - 1L else nchar(.ow_utf8, type = \"chars\")",
+          "      .ow_output <- if (.ow_start > .ow_end) \"\" else substr(.ow_utf8, .ow_start, .ow_end)",
+          "      if (nchar(.ow_output, type = \"bytes\") > 8192L) stop(\"Open Wrangler Split text into columns produced oversized text\", call. = FALSE)",
+          "      .ow_output",
+          "    }, character(1L), USE.NAMES = FALSE)",
+          "  })",
+          "  for (.ow_part in seq_along(.ow_split_names)) {",
+          "    if (inherits(.ow_result, \"data.table\")) {",
+          "      data.table::set(.ow_result, j = .ow_split_names[[.ow_part]], value = .ow_split_values[[.ow_part]])",
+          "    } else {",
+          "      .ow_existing_names <- names(.ow_result)",
+          "      .ow_result[[ncol(.ow_result) + 1L]] <- .ow_split_values[[.ow_part]]",
+          "      names(.ow_result) <- c(.ow_existing_names, .ow_split_names[[.ow_part]])",
+          "    }",
+          "  }",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, c(%s))", output_ids)
+        )
       } else if (step$kind %in% c(
         "lowerText",
         "upperText",
@@ -8366,6 +8510,8 @@ openwrangler_r_kernel_agent <- local({
       vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$generatedNames
+    } else if (identical(bound$kind, "splitTextColumns")) {
+      bound$newNames
     } else if (
       bound$kind %in% c("cloneColumn", "formula", "textLength", "byExample") ||
         (
@@ -8749,6 +8895,7 @@ openwrangler_r_kernel_agent <- local({
       "capitalize_text_column_at",
       "strip_text_column_at",
       "split_text_column_at",
+      "split_text_columns_at",
       "find_replace_column_at",
       "min_max_scale_column_at",
       "round_number_column_at",

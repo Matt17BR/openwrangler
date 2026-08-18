@@ -119,6 +119,7 @@ import {
 } from "./releasedJupyterNotebookFixture";
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import { persistedReplayExportRequest } from "./persistedReplayExport";
+import { exerciseMultiOutputSplitJourney } from "./multiOutputSplitJourney";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
   captureNotebookWorkbenchScreenshot,
@@ -473,6 +474,8 @@ const {
 const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInteractionJourney({
   clearReleasedJupyterScreenshotTransientUi,
   columnReference,
+  exerciseMultiOutputSplitJourney: (app, testing, sessionId) =>
+    exerciseMultiOutputSplitJourney(app, testing, sessionId, { recordAcceptanceProgress, waitFor }),
   previewAndDiscardPreviousRevenue,
   previewApplyAndUndoGroupedRevenue,
   previewMostCommonAccountNote,

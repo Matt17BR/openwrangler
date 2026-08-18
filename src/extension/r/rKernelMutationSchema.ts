@@ -20,6 +20,7 @@ import {
   schemaAfterDrop,
   schemaAfterFillMissing,
   schemaAfterSelect,
+  schemaAfterSplitTextColumns,
   schemaAfterTextLength,
   schemaAfterTextTransform
 } from "./rKernelColumnSchema";
@@ -83,6 +84,7 @@ export function schemaAfterRStep(
   if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
+  if (step.kind === "splitTextColumns") return schemaAfterSplitTextColumns(inputSchema, step);
   if (isRCategoricalTransformStep(step)) {
     throw new TypeError("Categorical R operations require a runtime-derived output schema.");
   }

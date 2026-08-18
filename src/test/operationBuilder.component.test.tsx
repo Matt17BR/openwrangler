@@ -43,7 +43,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(28);
+    expect(operationCatalog).toHaveLength(29);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -974,6 +974,18 @@ describe("OperationBuilder", () => {
         params: { column: { id: "c:1", name: "value" }, delimiter: ",", index: 0, newColumn: "part" }
       }
     },
+    {
+      label: "Text column",
+      step: {
+        id: "split-columns",
+        kind: "splitTextColumns",
+        params: {
+          column: { id: "c:1", name: "value" },
+          delimiter: ",",
+          newColumns: ["first", "second"]
+        }
+      }
+    },
     ...(["capitalizeText", "lowerText", "upperText"] as const).map((kind) => ({
       label: "Text column",
       step: {
@@ -1018,6 +1030,7 @@ describe("OperationBuilder", () => {
                 "findReplace",
                 "stripText",
                 "splitText",
+                "splitTextColumns",
                 "capitalizeText",
                 "lowerText",
                 "upperText"

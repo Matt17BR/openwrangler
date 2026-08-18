@@ -135,6 +135,24 @@ export function buildParams(
         index: Number(value("index")),
         newColumn: value("newColumn")
       };
+    case "splitTextColumns": {
+      const delimiter = value("delimiter");
+      const newColumns = form.getAll("newColumns").map(String);
+      if (delimiter.length === 0) throw new TypeError("Split text into columns requires a literal delimiter.");
+      if (
+        newColumns.length < 2 ||
+        newColumns.length > 64 ||
+        newColumns.some((name) => name.length === 0) ||
+        new Set(newColumns).size !== newColumns.length
+      ) {
+        throw new TypeError("Split text into columns requires 2 to 64 unique output names.");
+      }
+      return {
+        column: columnReference("column"),
+        delimiter,
+        newColumns
+      };
+    }
     case "capitalizeText":
     case "lowerText":
     case "upperText":

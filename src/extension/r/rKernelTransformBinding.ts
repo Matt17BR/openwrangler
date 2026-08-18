@@ -28,6 +28,7 @@ import type {
   SelectColumnsTransformStep,
   SortRowsTransformStep,
   SplitTextTransformStep,
+  SplitTextColumnsTransformStep,
   StripTextTransformStep,
   TextLengthTransformStep,
   UpperTextTransformStep
@@ -64,6 +65,7 @@ export type RTransformStepWithoutByExample =
   | FindReplaceTransformStep
   | StripTextTransformStep
   | SplitTextTransformStep
+  | SplitTextColumnsTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
@@ -657,6 +659,17 @@ export function rTransformStep(
         delimiter: step.params.delimiter,
         index: step.params.index,
         newColumn: step.params.newColumn
+      })
+    });
+  }
+  if (step.kind === "splitTextColumns") {
+    return Object.freeze({
+      id: step.id,
+      kind: "splitTextColumns" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        delimiter: step.params.delimiter,
+        newColumns: Object.freeze([...step.params.newColumns])
       })
     });
   }

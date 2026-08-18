@@ -149,6 +149,14 @@ export const operationCatalog = Object.freeze([
     icon: "split-horizontal"
   },
   {
+    kind: "splitTextColumns",
+    title: "Split text into columns",
+    description:
+      "Retain the source and atomically create 2–64 ordered columns from a literal delimiter; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
+    group: "Categorical / text",
+    icon: "split-horizontal"
+  },
+  {
     kind: "capitalizeText",
     title: "Capitalize",
     description: "Uppercase the first character and lowercase the rest.",

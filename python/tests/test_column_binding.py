@@ -68,6 +68,25 @@ def test_binding_rejects_unknown_stale_and_name_mismatched_references(reference,
         bind_step(step("castColumn", column=reference, dtype="float"), SCHEMA, LINEAGE)
 
 
+def test_split_text_columns_binds_one_source_and_rejects_all_output_collisions_atomically() -> None:
+    public = step(
+        "splitTextColumns",
+        column=ref("c:source:2", "value"),
+        delimiter="||",
+        newColumns=["first", "second"],
+    )
+
+    bound = bind_step(public, SCHEMA, LINEAGE)
+
+    assert bound["params"] == {
+        "column": {"id": "c:source:2", "name": "value", "position": 2},
+        "delimiter": "||",
+        "newColumns": ["first", "second"],
+    }
+    with pytest.raises(ColumnBindingError, match="collides with an existing column"):
+        bind_step({**public, "params": {**public["params"], "newColumns": ["first", "duplicate"]}}, SCHEMA, LINEAGE)
+
+
 def test_binding_rejects_duplicate_requested_and_input_identities() -> None:
     duplicate = ref("c:source:0", "duplicate")
     with pytest.raises(ColumnBindingError, match="contains duplicate column identity"):

@@ -658,6 +658,16 @@ class PandasEngine(DataFrameEngine):
             )
             ensure_output_columns_available(base.columns, encoded.columns, "Multi-label binarization")
             return pd.concat([base, encoded], axis=1)
+        if kind == "splitTextColumns":
+            position = self._bound_frame_position(df, params["column"], kind)
+            output_names = list(params["newColumns"])
+            ensure_output_columns_available(df.columns, output_names, "Splitting text into columns")
+            parts = df.iloc[:, position].astype("string").str.split(params["delimiter"], regex=False)
+            generated = pd.concat(
+                [parts.str.get(index).rename(name) for index, name in enumerate(output_names)],
+                axis=1,
+            )
+            return pd.concat([df, generated], axis=1)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -914,7 +924,7 @@ class PandasEngine(DataFrameEngine):
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         needs_counter = any(
-            step["kind"] in {"oneHotEncode", "multiLabelBinarize"}
+            step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"}
             or (
                 step["kind"] == "fillMissingValues"
                 and (
@@ -1479,6 +1489,43 @@ class PandasEngine(DataFrameEngine):
                     f"+ ', '.join({collisions}))"
                 ),
                 f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
+            ]
+        if kind == "splitTextColumns":
+            position = bound_column_position(params["column"], kind)
+            output_names = list(params["newColumns"])
+            parts = f"_split_parts_{index}"
+            generated = f"_split_generated_{index}"
+            collisions = f"_split_collisions_{index}"
+            reserved = f"_split_reserved_{index}"
+            return [
+                f"{prefix}{generated} = {output_names!r}",
+                (
+                    f"{prefix}{reserved} = [column for column in {generated} "
+                    f"if column.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError("
+                    "\"Splitting text into columns would create Open Wrangler's reserved "
+                    'private row-identity column.")'
+                ),
+                (
+                    f"{prefix}{collisions} = sorted((set(map(str, df.columns)) & set({generated})) | "
+                    f"{{column for column, count in Counter({generated}).items() if count > 1}})"
+                ),
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('Splitting text into columns would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                (
+                    f"{prefix}{parts} = df.iloc[:, {position}].astype('string')"
+                    f".str.split({params['delimiter']!r}, regex=False)"
+                ),
+                (
+                    f"{prefix}df = pd.concat([df, pd.concat(["
+                    f"{parts}.str.get(item).rename(name) for item, name in enumerate({generated})], axis=1)], axis=1)"
+                ),
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             position = bound_column_position(params["column"], kind)

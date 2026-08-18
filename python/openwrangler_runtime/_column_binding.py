@@ -407,6 +407,7 @@ def bind_step(
         "findReplace",
         "stripText",
         "splitText",
+        "splitTextColumns",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -516,6 +517,7 @@ def bind_step(
         "findReplace",
         "stripText",
         "splitText",
+        "splitTextColumns",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -597,6 +599,9 @@ def bind_step(
         context.reject_output_collision(params.get("newColumn"), "formula.newColumn")
     elif kind == "textLength":
         context.reject_output_collision(params.get("newColumn"), "textLength.newColumn")
+    elif kind == "splitTextColumns":
+        for index, output_name in enumerate(params.get("newColumns", [])):
+            context.reject_output_collision(output_name, f"splitTextColumns.newColumns[{index}]")
     elif (
         kind
         in {

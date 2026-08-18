@@ -62,6 +62,11 @@ const validSteps = {
   findReplace: step("findReplace", { column: text, find: "a", replacement: "b" }),
   stripText: step("stripText", { column: text }),
   splitText: step("splitText", { column: text, delimiter: ",", index: 0, newColumn: "part" }),
+  splitTextColumns: step("splitTextColumns", {
+    column: text,
+    delimiter: ",",
+    newColumns: ["first", "second"]
+  }),
   capitalizeText: step("capitalizeText", { column: text }),
   lowerText: step("lowerText", { column: text }),
   upperText: step("upperText", { column: text }),

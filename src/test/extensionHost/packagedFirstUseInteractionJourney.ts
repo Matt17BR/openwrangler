@@ -35,6 +35,7 @@ export interface PackagedFirstUseInteractionDependencies {
     revenue: ColumnReference
   ) => Promise<Locator>;
   readonly previewMostCommonAccountNote: (app: Locator, testing: TestApi) => Promise<void>;
+  readonly exerciseMultiOutputSplitJourney: (app: Locator, testing: TestApi, sessionId: string) => Promise<void>;
   readonly previewUppercaseMarket: (app: Locator, testing: TestApi, newColumn: string) => Promise<void>;
   readonly reacquireAcknowledgedSessionApp: (
     workbench: Page,
@@ -77,6 +78,7 @@ export function createPackagedFirstUseInteractionJourney(
   const {
     clearReleasedJupyterScreenshotTransientUi,
     columnReference,
+    exerciseMultiOutputSplitJourney,
     previewAndDiscardPreviousRevenue,
     previewApplyAndUndoGroupedRevenue,
     previewMostCommonAccountNote,
@@ -599,6 +601,15 @@ export function createPackagedFirstUseInteractionJourney(
       confirmedMutationDiagnostics
     );
     app = await reacquireApp("Uppercase draft discard");
+
+    await exerciseMultiOutputSplitJourney(app, testing, sessionId);
+    await waitFor(
+      confirmedMutationRendererReady,
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the undone multi-output split state to hydrate on its current renderer",
+      confirmedMutationDiagnostics
+    );
+    app = await reacquireApp("Multi-output split undo");
 
     recordAcceptanceProgress("platform-smoke:draft-apply");
     await previewUppercaseMarket(app, testing, "market_upper");
