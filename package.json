@@ -79,7 +79,7 @@
     "lint:python": "node scripts/run-python.mjs -m ruff check python && node scripts/run-python.mjs -m ruff format --check python && node scripts/run-pyright.mjs python",
     "format:check": "prettier --check .",
     "format:write": "prettier --write .",
-    "docs:check": "node scripts/check-docs.mjs",
+    "docs:check": "node scripts/check-docs.mjs && node scripts/spec-invariants.mjs --check",
     "repository:check": "node scripts/public-repository-metadata.mjs --local",
     "repository:check-live": "node scripts/public-repository-metadata.mjs --live",
     "generate:reference": "node scripts/generate-reference.mjs",

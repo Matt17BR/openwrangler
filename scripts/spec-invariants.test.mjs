@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  assertGeneratedFilesCurrent,
   buildCrosswalk,
+  checkGeneratedFiles,
   extractInvariantSection,
   parseInvariantEntries,
   renderCrosswalk,
@@ -37,6 +39,32 @@ test("buildCrosswalk rejects a changed archive", () => {
   const source = `# Guide\n\n${section}\n## Public writing\n`;
   const archive = section.replace("Invariant 8 text.", "Changed invariant 8 text.");
   assert.throws(() => buildCrosswalk({ source, archive, documents: {} }), /not a lossless copy/u);
+});
+
+test("the repository archive and crosswalk match their authoritative inputs", async () => {
+  await assert.doesNotReject(checkGeneratedFiles());
+});
+
+test("the generated-file check rejects stale archive and evidence bytes", () => {
+  const archive = fixtureSection();
+  const source = `# Guide\n\n${archive}\n## Public writing\n`;
+  const documents = { "docs/testing.md": "See invariant 4.\n" };
+  const evidence = renderCrosswalk(buildCrosswalk({ source, archive, documents }));
+
+  assert.throws(
+    () =>
+      assertGeneratedFilesCurrent({
+        source,
+        archive: archive.replace("Invariant 8 text.", "Changed invariant 8 text."),
+        evidence,
+        documents
+      }),
+    /not a lossless copy/u
+  );
+  assert.throws(
+    () => assertGeneratedFilesCurrent({ source, archive, evidence: `${evidence} `, documents }),
+    /is stale/u
+  );
 });
 
 test("scanExplicitReferences records only numbered references", () => {
