@@ -71,8 +71,11 @@ export async function exerciseMultiOutputSplitJourney(
   assert.ok(firstOutput && secondOutput, "The split preview must publish both ordered output columns atomically.");
   assert.equal(firstOutput.id, `c:step:${preview.metadata.draftStep.id}:0`);
   assert.equal(secondOutput.id, `c:step:${preview.metadata.draftStep.id}:1`);
-  assert.match(preview.code ?? "", /\.str\.split\('-'\)\.list\.get\(0, null_on_oob=True\)/u);
-  assert.match(preview.code ?? "", /\.str\.split\('-'\)\.list\.get\(1, null_on_oob=True\)/u);
+  assert.match(
+    preview.code ?? "",
+    /pl\.col\('market'\)\.cast\(pl\.String\)\.str\.split\('-'\)\.list\.get\(item, null_on_oob=True\)\.alias\(name\)/u
+  );
+  assert.match(preview.code ?? "", /for item, name in enumerate\(\['market_part', 'market_remainder'\]\)/u);
   const previewPage = await testing.request({
     kind: "getPage",
     sessionId,
