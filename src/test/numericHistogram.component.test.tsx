@@ -125,6 +125,9 @@ describe("NumericHistogram", () => {
     expect(stylesheet).toMatch(
       /\.miniChartCaption\.active\s*\{[^}]*color:\s*var\(--vscode-foreground\);[^}]*font-variant-numeric:\s*tabular-nums;/u
     );
+    expect(stylesheet).toMatch(
+      /\.numericHistogramHitTarget:not\(:disabled\):hover\s*\{[^}]*background:\s*transparent;/u
+    );
     expect(stylesheet).not.toContain(".numericHistogramTooltip");
   });
 });
