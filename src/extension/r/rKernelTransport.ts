@@ -53,6 +53,8 @@ export interface RKernelRequestOptions {
   readonly timeoutMs?: number;
   /** Host-owned candidate identity used for exact cleanup after an ambiguous open. */
   readonly requestedSessionId?: string;
+  /** Exact confirmed R capture used instead of resolving the live binding again. */
+  readonly cloneFrom?: Readonly<{ sessionId: string; revision: number }>;
 }
 
 export interface RKernelOpenResult {
@@ -124,12 +126,22 @@ export class RKernelSessionTransport {
       const timeoutMs = requestTimeout(options.timeoutMs);
       const sessionId = options.requestedSessionId ?? this.createId();
       this.assertSessionIdentityAvailable(sessionId);
-      const request = this.request("openSession", { sessionId, variableName, page });
+      const request = this.request("openSession", {
+        sessionId,
+        variableName,
+        page,
+        ...(options.cloneFrom
+          ? { cloneFromSessionId: options.cloneFrom.sessionId, cloneFromRevision: options.cloneFrom.revision }
+          : {})
+      });
       encodeRKernelRequest(request);
       const preparation = (async () => {
         const acquired = await this.acquireKernel();
         await this.ensureBootstrapped(acquired);
         await this.assertKernelStillSelected(acquired);
+        if (options.cloneFrom && this.sessionKernels.get(options.cloneFrom.sessionId) !== acquired.kernel) {
+          throw new Error("The confirmed R source session no longer belongs to the selected kernel.");
+        }
         return acquired;
       })();
       void preparation.catch(() => undefined);

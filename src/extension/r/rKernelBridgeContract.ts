@@ -468,11 +468,16 @@ export function staleResponseError(sessionId: string, viewRequestId?: string): E
   );
 }
 
-export function transportOptions(options: BridgeRequestOptions, requestedSessionId?: string): RKernelRequestOptions {
+export function transportOptions(
+  options: BridgeRequestOptions,
+  requestedSessionId?: string,
+  cloneFrom?: Readonly<{ sessionId: string; revision: number }>
+): RKernelRequestOptions {
   return {
     cancellation: options.cancellation,
     timeoutMs: options.timeoutMs,
-    ...(requestedSessionId ? { requestedSessionId } : {})
+    ...(requestedSessionId ? { requestedSessionId } : {}),
+    ...(cloneFrom ? { cloneFrom } : {})
   };
 }
 

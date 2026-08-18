@@ -380,6 +380,7 @@ class SessionManager:
         requested_session_id: str | None = None,
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        clone_from: Mapping[str, Any] | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
         if requested_session_id is not None and (not isinstance(requested_session_id, str) or not requested_session_id):
@@ -395,25 +396,49 @@ class SessionManager:
 
         engine: DataFrameEngine | None = None
         session: Session | None = None
+        cloned_row_id: Any | None = None
         try:
-            engine = self._engine_for_source(source, backend)
             source_kind = str(source.get("kind", ""))
-            if source_kind not in engine.capabilities.source_kinds:
-                raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
-            source_fingerprint = self._source_fingerprint(source, engine)
-            load_source = dict(source)
-            if source_fingerprint is not None:
-                load_source["path"] = source_fingerprint.resolved_path
-            frame = self._load_source(load_source, engine)
-            live_source_value = frame if engine.name == "pyspark" and source_kind == "notebookVariable" else None
-            if source.get("kind") != "file":
-                notebook_normalizer = getattr(engine, "normalize_notebook_relation", None)
-                frame = (
-                    notebook_normalizer(frame)
-                    if engine.name == "duckdb" and callable(notebook_normalizer)
-                    else getattr(engine, "normalize", lambda value: value)(frame)
-                )
-            engine.validate_internal_row_id_namespace(frame)
+            if clone_from is None:
+                engine = self._engine_for_source(source, backend)
+                if source_kind not in engine.capabilities.source_kinds:
+                    raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
+                source_fingerprint = self._source_fingerprint(source, engine)
+                load_source = dict(source)
+                if source_fingerprint is not None:
+                    load_source["path"] = source_fingerprint.resolved_path
+                frame = self._load_source(load_source, engine)
+                live_source_value = frame if engine.name == "pyspark" and source_kind == "notebookVariable" else None
+                if source.get("kind") != "file":
+                    notebook_normalizer = getattr(engine, "normalize_notebook_relation", None)
+                    frame = (
+                        notebook_normalizer(frame)
+                        if engine.name == "duckdb" and callable(notebook_normalizer)
+                        else getattr(engine, "normalize", lambda value: value)(frame)
+                    )
+            else:
+                clone_session_id = clone_from.get("sessionId")
+                clone_revision = clone_from.get("revision")
+                if not isinstance(clone_session_id, str) or not clone_session_id:
+                    raise EngineError("cloneFrom.sessionId must be a non-empty string.")
+                if not isinstance(clone_revision, int) or isinstance(clone_revision, bool) or clone_revision < 0:
+                    raise EngineError("cloneFrom.revision must be a non-negative integer.")
+                source_session = self._session(clone_session_id)
+                with self._exclusive_session_read(source_session):
+                    self._assert_revision(source_session, clone_revision)
+                    if dict(source) != source_session.source:
+                        raise EngineError("The clone source no longer matches the confirmed runtime source.")
+                    if backend not in {None, source_session.backend}:
+                        raise EngineError("The clone backend no longer matches the confirmed runtime backend.")
+                    requested_mode = mode or source_session.mode
+                    if requested_mode != source_session.mode:
+                        raise EngineError("The clone mode no longer matches the confirmed runtime mode.")
+                    engine = self.registry.create(source_session.backend)
+                    source_fingerprint = source_session.source_fingerprint
+                    live_source_value = source_session.live_source_value
+                    frame = engine.clone_session_source(source_session.original)
+                    cloned_row_id = engine.internal_row_id_column(frame)
+            engine.validate_internal_row_id_namespace(frame, cloned_row_id)
             engine.validate_column_addressability(frame)
             frame = engine.ensure_row_ids(frame, f"{session_id}:source")
             filter_model = {"logic": "and", "filters": [], "sort": []}

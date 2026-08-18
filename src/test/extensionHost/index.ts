@@ -6880,6 +6880,128 @@ async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.
     "Clearing must restore filters, sorts, widths, selection, and viewport exactly."
   );
   assert.equal(restored.code, confirmedCode, "Clearing must restore the full-plan generated code.");
+
+  const sourceBytes = readFileSync(fixture.fsPath);
+  const originalStep = confirmedMetadata.steps[0];
+  assert.ok(originalStep, "The packaged history journey requires one confirmed source step.");
+  const suffixStep: TransformStep = {
+    id: "packaged-history-suffix",
+    kind: "cloneColumn",
+    params: { column: columnReference(restored.metadata, "sales"), newName: "sales copy" }
+  };
+  const suffixPreview = await testing.request({
+    kind: "previewStep",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: restored.sessionId,
+    revision: restored.metadata.revision,
+    step: suffixStep,
+    offset: 0,
+    limit: 20
+  });
+  assert.equal(suffixPreview.kind, "stepPreview", "The packaged history suffix did not preview.");
+  if (suffixPreview.kind !== "stepPreview") return;
+  const suffixApplied = await testing.request({
+    kind: "applyDraft",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: restored.sessionId,
+    revision: suffixPreview.revision,
+    offset: 0,
+    limit: 20
+  });
+  assert.equal(suffixApplied.kind, "planUpdated", "The packaged history suffix did not apply.");
+  if (suffixApplied.kind !== "planUpdated") return;
+
+  const replacementStep: TransformStep = {
+    ...originalStep,
+    params: { ...originalStep.params, value: 4 }
+  } as TransformStep;
+  const replacementPreview = await testing.request({
+    kind: "previewStep",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: restored.sessionId,
+    revision: suffixApplied.revision,
+    step: replacementStep,
+    replaceStepId: originalStep.id,
+    offset: 0,
+    limit: 20
+  });
+  assert.equal(replacementPreview.kind, "stepPreview", "The packaged earlier replacement did not preview.");
+  if (replacementPreview.kind !== "stepPreview") return;
+  const replacementApplied = await testing.rewriteCleaningPlan(
+    restored.sessionId,
+    replacementPreview.revision,
+    originalStep.id,
+    "applyDraft"
+  );
+  assert.equal(replacementApplied?.kind, "planUpdated", "The packaged earlier replacement did not publish.");
+  if (replacementApplied?.kind !== "planUpdated") return;
+  assert.deepEqual(
+    replacementApplied.metadata.steps.map((step) => step.id),
+    [originalStep.id, suffixStep.id],
+    "The packaged earlier replacement lost or reordered the unchanged suffix."
+  );
+  assert.equal(
+    gridColumnDisplays(replacementApplied.page, columnReference(replacementApplied.metadata, "score").id)[0],
+    "48.0",
+    "The packaged earlier replacement did not rebuild the selected step."
+  );
+
+  const deleted = await testing.rewriteCleaningPlan(
+    restored.sessionId,
+    replacementApplied.revision,
+    originalStep.id,
+    "deleteStep"
+  );
+  assert.equal(deleted?.kind, "planUpdated", "The packaged earlier deletion did not publish.");
+  if (deleted?.kind !== "planUpdated") return;
+  assert.deepEqual(
+    deleted.metadata.steps.map((step) => step.id),
+    [suffixStep.id],
+    "The packaged earlier deletion did not preserve the stable suffix ID."
+  );
+  assert.equal(
+    deleted.metadata.schema.some((column) => column.name === "score"),
+    false,
+    "The packaged earlier deletion retained the deleted output."
+  );
+  assert.ok(columnReference(deleted.metadata, "sales copy"));
+
+  const suffixUndone = await testing.request({
+    kind: "undoStep",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: restored.sessionId,
+    revision: deleted.revision,
+    offset: 0,
+    limit: 20
+  });
+  assert.equal(suffixUndone.kind, "planUpdated", "The packaged history suffix did not undo during restoration.");
+  if (suffixUndone.kind !== "planUpdated") return;
+  const originalPreview = await testing.request({
+    kind: "previewStep",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: restored.sessionId,
+    revision: suffixUndone.revision,
+    step: originalStep,
+    offset: 0,
+    limit: 20
+  });
+  assert.equal(originalPreview.kind, "stepPreview", "The packaged source step did not restore.");
+  if (originalPreview.kind !== "stepPreview") return;
+  const originalApplied = await testing.request({
+    kind: "applyDraft",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: restored.sessionId,
+    revision: originalPreview.revision,
+    offset: 0,
+    limit: 20
+  });
+  assert.equal(originalApplied.kind, "planUpdated", "The packaged source plan did not restore.");
+  if (originalApplied.kind !== "planUpdated") return;
+  assert.deepEqual(originalApplied.metadata.steps, [originalStep]);
+  assert.deepEqual(originalApplied.metadata.filterModel, confirmedMetadata.filterModel);
+  assert.deepEqual(testing.activeSession()?.viewState, confirmedView);
+  assert.equal(originalApplied.code, confirmedCode);
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Packaged history rewrites must not modify the source.");
 }
 
 async function exercisePackagedTrustedPickleConversion(

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { FilterModel, PageResponse, SessionBoundRequest, SessionMetadata } from "../shared/protocol";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 import type { BridgeRequestOptions, OpenWranglerBridge, SessionPresentation } from "./dataBridge";
@@ -17,6 +18,8 @@ export interface RuntimeSessionState {
   code: string;
   draftPresentation?: SessionPresentation["draft"];
   draftBaseFilterModel?: FilterModel;
+  viewChangeEpoch?: number;
+  draftBaseViewChangeEpoch?: number;
   viewState: PersistedViewingState;
 }
 
@@ -48,6 +51,7 @@ export class SessionRuntimeStateRestorer {
   ): Promise<void> {
     session.draftPresentation = undefined;
     session.draftBaseFilterModel = undefined;
+    session.draftBaseViewChangeEpoch = undefined;
     for (const step of cleaning.steps) {
       assertCurrent?.();
       const previewRequest: SessionBoundRequest = {
@@ -127,6 +131,7 @@ export class SessionRuntimeStateRestorer {
       session.metadata = preview.metadata;
       session.code = preview.code;
       session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
+      session.draftBaseViewChangeEpoch = session.viewChangeEpoch ?? 0;
       session.draftPresentation = {
         diff: preview.diff,
         ...(preview.remainingMissingCells === undefined
@@ -254,6 +259,9 @@ export class SessionRuntimeStateRestorer {
     }
     session.runtimeRevision = page.revision;
     session.metadata = page.metadata;
+    if (session.draftBaseFilterModel && !isDeepStrictEqual(session.draftBaseFilterModel, page.metadata.filterModel)) {
+      session.viewChangeEpoch = (session.viewChangeEpoch ?? 0) + 1;
+    }
     session.viewState = reconcileViewingState(
       { ...restoredView, filterModel: page.metadata.filterModel },
       page.metadata

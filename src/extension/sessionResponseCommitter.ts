@@ -23,6 +23,8 @@ export interface SessionResponseState extends RuntimeSessionState {
   latestRequestedPageRequestId?: string;
   stepInspection?: StepInspectionResponse;
   latestStepInspectionKey?: string;
+  viewChangeEpoch?: number;
+  draftBaseViewChangeEpoch?: number;
 }
 
 export interface SessionResponseCallbacks {
@@ -42,10 +44,10 @@ export class SessionResponseCommitter {
     session: RuntimeSessionState,
     source: SessionSource,
     isCurrent: () => boolean,
-    commit: () => void
+    commit: () => () => void
   ): Promise<boolean> {
     const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
-    return this.persistence.commitCurrent(source, state, isCurrent, commit);
+    return this.persistence.commitRuntimeReplacement(source, state, isCurrent, commit);
   }
 
   async commit(
@@ -224,6 +226,14 @@ export class SessionResponseCommitter {
         : response.kind === "planUpdated"
           ? undefined
           : session.draftBaseFilterModel;
+    const currentViewChangeEpoch = session.viewChangeEpoch ?? 0;
+    const nextViewChangeEpoch = currentViewChangeEpoch + (pageRequest && filterChanged ? 1 : 0);
+    const nextDraftBaseViewChangeEpoch =
+      response.kind === "stepPreview"
+        ? currentViewChangeEpoch
+        : response.kind === "planUpdated"
+          ? undefined
+          : session.draftBaseViewChangeEpoch;
     const commitState = (): void => {
       if (pageRequest) {
         session.activeViewContextId = options?.viewContextId;
@@ -238,11 +248,13 @@ export class SessionResponseCommitter {
         session.metadata = response.metadata;
         session.viewState = nextViewState;
       }
+      session.viewChangeEpoch = nextViewChangeEpoch;
       if (viewContextChanged) session.metadata = withoutDatasetStats(session.metadata);
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
         session.code = response.code;
         session.draftPresentation = draftPresentation;
         session.draftBaseFilterModel = nextDraftBaseFilterModel;
+        session.draftBaseViewChangeEpoch = nextDraftBaseViewChangeEpoch;
       }
     };
     if (pageRequest && stateChanged) {

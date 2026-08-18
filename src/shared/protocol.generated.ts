@@ -470,6 +470,7 @@ export interface OpenSessionRequest {
   kind: "openSession";
   source: SessionSource;
   requestedSessionId?: string;
+  cloneFrom?: SessionCloneSource;
   backend?: DataBackend;
   mode?: SessionMode;
   pageSize: number;
@@ -490,6 +491,10 @@ export interface SessionSource {
     sheetName?: string;
     sheetIndex?: number;
   };
+}
+export interface SessionCloneSource {
+  sessionId: string;
+  revision: number;
 }
 export interface SessionRequestBase {
   sessionId: string;

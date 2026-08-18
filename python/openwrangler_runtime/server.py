@@ -151,6 +151,7 @@ def _dispatch(
             request.get("requestedSessionId"),
             int(request["columnOffset"]),
             int(request["columnLimit"]),
+            request.get("cloneFrom"),
             request_id,
         )
     if kind == "getPage":

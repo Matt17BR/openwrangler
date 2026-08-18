@@ -47,12 +47,17 @@ matrix for release candidates or changes that cross those boundaries.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
 - Selected earlier-step editing tests bind one exact committed step ID and revision, open its operation form against
   the inspection input schema, and route both the webview and Activity Bar through one host rewrite transaction. The
-  transaction replays the complete candidate plan in order, requires unchanged suffix IDs plus valid generated code
-  and metadata, restores the confirmed view, and publishes only after the private runtime and persisted state commit.
-  Rejected suffix references, source drift, stale lifecycle state, malformed responses, or candidate cleanup leave
-  the confirmed plan, draft, view, revision, code, caches, and source unchanged. Focused Pandas, Polars, DuckDB, and
-  Native R owners cover selected-prefix preview and executable generated code; host tests cover suffix replay,
-  deletion, rollback, and at-most-once cleanup. Reordering is not supported and has no request or command.
+  transaction clones the exact confirmed runtime capture, replays the complete candidate plan in order, requires
+  unchanged suffix IDs plus valid generated code, backend, mode, source, and metadata, restores the authoritative
+  confirmed view, and publishes only after an ignored-on-load persistence record protects the private candidate.
+  Lazy-file replacement, eager-file or live-variable rebinding, rejected suffix references, stale lifecycle state,
+  malformed responses, or candidate cleanup leave the confirmed plan, draft, view, revision, code, caches, and source
+  unchanged. Focused Pandas, Polars, DuckDB, and Native R owners cover selected-prefix preview, exact-source cloning,
+  executable replacement-plus-suffix generated code, and no-op diff parity. Host tests cover suffix replay, backend
+  drift, a view change after preview, deletion, failed persistence rollback, and at-most-once cleanup. The installed
+  extension-host custom-editor journey replaces and then deletes the first step while retaining a later stable-ID
+  suffix, verifies the rebuilt grid and generated code, restores the original persisted plan, and proves byte-exact
+  source preservation. Reordering is not supported and has no request or command.
 - `npm run test:r-contract` sources the production R module, runs native R assertions, and then sends real base
   `data.frame`, tibble, and `data.table` pages through the strict private transport-v14 TypeScript decoder. The R assertions cover snapshot
   isolation, `data.table` by-reference mutation, duplicate and non-syntactic names, factors, ordered factors, dates,

@@ -39,6 +39,12 @@ export interface OpenWranglerTestApi {
   previewPanelStep(
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<SessionOpenedResponse | undefined>;
+  rewriteCleaningPlan(
+    sessionId: string,
+    revision: number,
+    stepId: string,
+    action: "applyDraft" | "deleteStep"
+  ): Promise<OpenWranglerResponse | undefined>;
   panelHydrated(sessionId: string): boolean;
   panelSynchronizable(sessionId: string): boolean;
   panelSynchronizationReceipt(
@@ -139,6 +145,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         ensurePanelSynchronized: (sessionId, deadlineMs) =>
           OpenWranglerPanel.ensurePanelSynchronizedForSession(sessionId, deadlineMs),
         previewPanelStep: (request) => OpenWranglerPanel.previewStepForSessionForTesting(request),
+        rewriteCleaningPlan: async (sessionId, revision, stepId, action) =>
+          coordinatedBridge.rewriteCleaningPlan?.(sessionId, revision, stepId, action, {
+            offset: 0,
+            limit: 20,
+            columnOffset: 0,
+            columnLimit: 32
+          }),
         panelHydrated: (sessionId) => OpenWranglerPanel.panelHydratedForSession(sessionId),
         panelSynchronizable: (sessionId) => OpenWranglerPanel.panelSynchronizableForSession(sessionId),
         panelSynchronizationReceipt: (sessionId) => OpenWranglerPanel.panelSynchronizationReceiptForSession(sessionId),

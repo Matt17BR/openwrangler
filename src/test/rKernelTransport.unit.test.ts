@@ -558,6 +558,21 @@ describe("native R kernel protocol", () => {
   it("validates page windows and repeated stable sort identities before dispatch", () => {
     const valid = openRequest();
     expect(JSON.parse(encodeRKernelRequest(valid))).toEqual(valid);
+    const cloneRequest: RKernelRequest = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        cloneFromSessionId: "99999999-9999-4999-8999-999999999999",
+        cloneFromRevision: 7
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(cloneRequest))).toEqual(cloneRequest);
+    expect(() =>
+      encodeRKernelRequest({
+        ...cloneRequest,
+        payload: { ...cloneRequest.payload, cloneFromRevision: undefined }
+      } as unknown as RKernelRequest)
+    ).toThrow("provided together");
     const derivedSortRequest: RKernelRequest = {
       ...valid,
       payload: {

@@ -30,6 +30,12 @@ export interface TestApi {
   previewPanelStep(
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
+  rewriteCleaningPlan(
+    sessionId: string,
+    revision: number,
+    stepId: string,
+    action: "applyDraft" | "deleteStep"
+  ): Promise<OpenWranglerResponse | undefined>;
   panelHydrated(sessionId: string): boolean;
   panelSynchronizable(sessionId: string): boolean;
   panelSynchronizationReceipt(

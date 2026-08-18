@@ -128,6 +128,56 @@ describe("SessionPersistenceStore", () => {
     expect(stored).toEqual({ unrelated: "keep" });
   });
 
+  it("never reloads an unpublished runtime candidate when stale rollback storage fails", async () => {
+    const key = persistenceKey(source, "polars");
+    const previous = state("polars", 1);
+    let stored: Record<string, unknown> = { [key]: previous, unrelated: "keep" };
+    const staged = deferred<void>();
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length > 1) throw new Error("rollback storage unavailable");
+      stored = value;
+      await staged.promise;
+    });
+    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const commit = vi.fn(() => vi.fn());
+    let current = true;
+
+    const pending = persistence.commitRuntimeReplacement(source, state("polars", 2), () => current, commit);
+    await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+    current = false;
+    staged.resolve();
+
+    await expect(pending).resolves.toBe(false);
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(commit).not.toHaveBeenCalled();
+    expect(persistence.load(source, "polars")).toEqual(previous);
+    expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
+    expect(stored.unrelated).toBe("keep");
+  });
+
+  it("restores live state when final runtime replacement persistence fails", async () => {
+    const key = persistenceKey(source, "polars");
+    const previous = state("polars", 1);
+    let stored: Record<string, unknown> = { [key]: previous, unrelated: "keep" };
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 2) throw new Error("final storage unavailable");
+      stored = value;
+    });
+    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const rollback = vi.fn();
+    const commit = vi.fn(() => rollback);
+
+    await expect(persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)).resolves.toBe(
+      false
+    );
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(persistence.load(source, "polars")).toEqual(previous);
+    expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
+    expect(stored.unrelated).toBe("keep");
+  });
+
   it("publishes current live state after a best-effort write failure and keeps the queue usable", async () => {
     let stored: Record<string, unknown> = {};
     const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {

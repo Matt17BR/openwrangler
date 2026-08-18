@@ -775,6 +775,15 @@ class DataFrameEngine(ABC):
         """Release resources owned by this engine instance."""
         return None
 
+    def clone_session_source(self, frame: Any) -> Any:
+        """Return an engine-native candidate rooted in one confirmed source capture.
+
+        Immutable engines can safely share their retained source plan. Mutable
+        adapters override this hook to isolate the candidate before replay.
+        """
+
+        return frame
+
     def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:
         normalized = normalize_export_options(options)
         format_name = normalized["format"]

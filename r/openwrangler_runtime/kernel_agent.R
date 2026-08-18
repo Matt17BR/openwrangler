@@ -8891,7 +8891,12 @@ openwrangler_r_kernel_agent <- local({
       kind <- bounded_text(request$kind, "request.kind", 32L)
 
       if (identical(kind, "openSession")) {
-        payload <- exact_record(request$payload, c("sessionId", "variableName", "page"), "request.payload")
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "variableName", "page"),
+          "request.payload",
+          optional_fields = c("cloneFromSessionId", "cloneFromRevision")
+        )
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
         variable_name <- bounded_text(
           payload$variableName,
@@ -8904,24 +8909,50 @@ openwrangler_r_kernel_agent <- local({
         if (exists(session_id, envir = sessions, inherits = FALSE)) {
           abort("duplicate_session", "The requested R session identity is already in use")
         }
-        if (!exists(variable_name, envir = source_environment, inherits = FALSE)) {
-          abort("unknown_variable", "The selected R dataframe variable no longer exists", TRUE)
-        }
         page <- decode_page(payload$page, frame_contract$limits)
-        source_reader <- local({
-          source_name <- variable_name
-          source <- source_environment
-          function() {
-            if (
-              !exists(source_name, envir = source, inherits = FALSE) ||
-                bindingIsActive(source_name, source)
-            ) {
-              return(NULL)
-            }
-            get(source_name, envir = source, inherits = FALSE)
+        has_clone_session <- "cloneFromSessionId" %in% names(payload)
+        has_clone_revision <- "cloneFromRevision" %in% names(payload)
+        if (!identical(has_clone_session, has_clone_revision)) {
+          abort("invalid_request", "R clone source fields must be provided together")
+        }
+        source_capture <- if (has_clone_session) {
+          clone_session_id <- identifier(payload$cloneFromSessionId, "request.payload.cloneFromSessionId")
+          clone_revision <- whole_number(
+            payload$cloneFromRevision,
+            "request.payload.cloneFromRevision",
+            .Machine$integer.max
+          )
+          if (!exists(clone_session_id, envir = sessions, inherits = FALSE)) {
+            abort("unknown_session", "The confirmed R clone source is no longer available", TRUE)
           }
-        })
-        source_capture <- frame_contract$capture_live_frame(source_reader)
+          clone_session <- get(clone_session_id, envir = sessions, inherits = FALSE)
+          if (!identical(clone_session$revision, as.integer(clone_revision))) {
+            abort("stale_revision", "The confirmed R clone source revision changed", TRUE)
+          }
+          if (!identical(clone_session$variableName, variable_name)) {
+            abort("invalid_request", "The confirmed R clone source variable changed", TRUE)
+          }
+          confirmed_capture <- if (is.null(clone_session$original)) clone_session$source else clone_session$original
+          frame_contract$isolate_capture(confirmed_capture)
+        } else {
+          if (!exists(variable_name, envir = source_environment, inherits = FALSE)) {
+            abort("unknown_variable", "The selected R dataframe variable no longer exists", TRUE)
+          }
+          source_reader <- local({
+            source_name <- variable_name
+            source <- source_environment
+            function() {
+              if (
+                !exists(source_name, envir = source, inherits = FALSE) ||
+                  bindingIsActive(source_name, source)
+              ) {
+                return(NULL)
+              }
+              get(source_name, envir = source, inherits = FALSE)
+            }
+          })
+          frame_contract$capture_live_frame(source_reader)
+        }
         result <- materialize(frame_contract, source_capture, page)
         session <- list(
           variableName = variable_name,
@@ -9077,6 +9108,7 @@ openwrangler_r_kernel_agent <- local({
         retained_plan <- session$plan
         retained_bound_plan <- session$boundPlan
         base <- session$committed
+        diff_before <- session$committed
         if (!is.null(replace_step_id)) {
           replace_indexes <- which(vapply(
             session$plan,
@@ -9103,6 +9135,14 @@ openwrangler_r_kernel_agent <- local({
           )
           base <- replayed$capture
           retained_bound_plan <- replayed$boundPlan
+          original_selected <- apply_step(
+            frame_contract,
+            base,
+            session$plan[[replace_index]],
+            source_environment,
+            session$variableName
+          )
+          diff_before <- original_selected$capture
         }
         if (length(retained_plan) >= frame_contract$limits$columns) {
           abort("invalid_request", "The R cleaning plan has reached its supported step limit", TRUE)
@@ -9162,7 +9202,7 @@ openwrangler_r_kernel_agent <- local({
           diff = step_diff(
             applied$bound,
             frame_contract,
-            base,
+            diff_before,
             applied$capture,
             effective_page,
             after_page = draft_page

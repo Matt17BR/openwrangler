@@ -227,7 +227,8 @@ export class SessionRuntimeReconfigurer {
       ...session.openRequest,
       backend: session.metadata.backend,
       mode: session.metadata.mode,
-      requestedSessionId: candidateSessionId
+      requestedSessionId: candidateSessionId,
+      cloneFrom: { sessionId: previous.runtimeId, revision: previous.runtimeRevision }
     };
     let candidate: RuntimeSessionState | undefined;
     let candidateCleanupAttempted = false;
@@ -282,6 +283,11 @@ export class SessionRuntimeReconfigurer {
         session.publicId
       );
     }
+    const openedIdentity = {
+      backend: candidate.metadata.backend,
+      mode: candidate.metadata.mode,
+      source: candidate.metadata.source
+    };
 
     const assertCandidateCurrent = (): void => {
       if (options?.cancellation?.isCancellationRequested) throw new ReconfigurationCancelledError();
@@ -291,6 +297,9 @@ export class SessionRuntimeReconfigurer {
       const currentCandidate = candidate;
       if (
         !currentCandidate ||
+        currentCandidate.metadata.backend !== openedIdentity.backend ||
+        currentCandidate.metadata.mode !== openedIdentity.mode ||
+        !isDeepStrictEqual(currentCandidate.metadata.source, openedIdentity.source) ||
         currentCandidate.metadata.draftStep !== undefined ||
         !isDeepStrictEqual(currentCandidate.metadata.steps, steps) ||
         (steps.length > 0 && currentCandidate.code.trim().length === 0)
@@ -360,18 +369,50 @@ export class SessionRuntimeReconfigurer {
       );
     }
     const publicRevision = session.publicRevision + 1;
+    const publishableCandidate = candidate;
+    if (!publishableCandidate) {
+      return protocolError(
+        "invalid_runtime_response",
+        "The private plan candidate disappeared before it could be published.",
+        true,
+        session.publicId
+      );
+    }
+    const previousPublicRevision = session.publicRevision;
+    const previousOpenRequest = session.openRequest;
+    const previousRecoveryRequired = session.recoveryRequired;
+    const previousActiveViewContextId = session.activeViewContextId;
+    const previousLatestRequestedViewContextId = session.latestRequestedViewContextId;
+    const previousLatestRequestedPageRequestId = session.latestRequestedPageRequestId;
     const committed = await this.responseCommitter.commitRuntimeReplacement(
-      candidate,
+      publishableCandidate,
       candidateRequest.source,
       () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
       () => {
-        if (!candidate) return;
-        publishCandidate(session, candidate, candidateRequest, publicRevision);
+        publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
         session.draftPresentation = undefined;
         session.draftBaseFilterModel = undefined;
-        hooks.invalidateStepInspection();
         candidateCleanupAttempted = true;
         candidate = undefined;
+        return () => {
+          session.runtimeId = previous.runtimeId;
+          session.runtimeRevision = previous.runtimeRevision;
+          session.publicRevision = previousPublicRevision;
+          session.openRequest = previousOpenRequest;
+          session.metadata = previous.metadata;
+          session.code = previous.code;
+          session.draftPresentation = previous.draftPresentation;
+          session.draftBaseFilterModel = previous.draftBaseFilterModel;
+          session.viewChangeEpoch = previous.viewChangeEpoch;
+          session.draftBaseViewChangeEpoch = previous.draftBaseViewChangeEpoch;
+          session.viewState = previous.viewState;
+          session.recoveryRequired = previousRecoveryRequired;
+          session.activeViewContextId = previousActiveViewContextId;
+          session.latestRequestedViewContextId = previousLatestRequestedViewContextId;
+          session.latestRequestedPageRequestId = previousLatestRequestedPageRequestId;
+          candidate = publishableCandidate;
+          candidateCleanupAttempted = false;
+        };
       }
     );
     if (!committed) {
@@ -383,6 +424,7 @@ export class SessionRuntimeReconfigurer {
         session.publicId
       );
     }
+    hooks.invalidateStepInspection();
     this.runtimeCleanup.track(previous, "retired runtime");
     return {
       kind: "planUpdated",
@@ -606,7 +648,10 @@ function runtimeState(session: RuntimeReconfigurationSession): RuntimeSessionSta
     delegate: session.delegate,
     metadata: session.metadata,
     code: session.code,
+    draftPresentation: session.draftPresentation,
     draftBaseFilterModel: session.draftBaseFilterModel,
+    viewChangeEpoch: session.viewChangeEpoch,
+    draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
     viewState: session.viewState
   };
 }
@@ -653,6 +698,7 @@ function publishCandidate(
   session.code = candidate.code;
   session.draftPresentation = candidate.draftPresentation;
   session.draftBaseFilterModel = candidate.draftBaseFilterModel;
+  session.draftBaseViewChangeEpoch = undefined;
   session.viewState = candidate.viewState;
   session.recoveryRequired = false;
   session.activeViewContextId = undefined;
@@ -685,7 +731,7 @@ export function confirmedReplayOpenRequest(
   request: OpenSessionRequest,
   metadata: Pick<SessionMetadata, "backend" | "mode">
 ): OpenSessionRequest {
-  const { requestedSessionId: _requestedSessionId, ...stableRequest } = request;
+  const { requestedSessionId: _requestedSessionId, cloneFrom: _cloneFrom, ...stableRequest } = request;
   return {
     ...stableRequest,
     backend: metadata.backend,

@@ -686,7 +686,9 @@ export class SessionCoordinator implements vscode.Disposable {
     const view = {
       ...session.viewState,
       filterModel:
-        action === "applyDraft" && session.draftBaseFilterModel
+        action === "applyDraft" &&
+        session.draftBaseFilterModel &&
+        session.draftBaseViewChangeEpoch === session.viewChangeEpoch
           ? session.draftBaseFilterModel
           : session.metadata.filterModel
     };
