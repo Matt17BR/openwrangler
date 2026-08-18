@@ -836,7 +836,7 @@ function assertR45PullRequestOwner(job, { lockName, testCommand }) {
   );
   assert.match(
     run,
-    /sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \\\n+[ ]{2}timeout --signal=TERM --kill-after=10s 360s \\\n+[ ]{2}apt-get install --yes --no-install-recommends "\$r_package_path" libx11-dev/u
+    /sudo --non-interactive env DEBIAN_FRONTEND=noninteractive \\\n+[ ]{2}timeout --signal=TERM --kill-after=10s 360s \\\n+[ ]{2}apt-get install --yes --no-install-recommends "\$r_package_path" libx11-dev$/mu
   );
 
   const updateIndex = run.indexOf("apt-get update");
@@ -927,6 +927,10 @@ test("both R 4.5 pull-request owners install the authenticated runtime and prese
       (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
         .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
         .run.replace("apt-get install --yes --no-install-recommends", "apt-get install --yes")),
+    (job) =>
+      (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run = job.steps
+        .find((step) => step.name === "Install the authenticated R 4.5.3 runtime")
+        .run.replace('"$r_package_path" libx11-dev', '"$r_package_path" libx11-dev jq')),
     (job) =>
       (job.steps.find((step) => step.name === "Install the authenticated R 4.5.3 runtime").run +=
         "sudo apt-get install gdebi-core devscripts qpdf ghostscript\n"),
