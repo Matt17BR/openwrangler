@@ -1406,6 +1406,13 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             delimiter="-",
             newColumns=["text_part", "text_remainder"],
         ),
+        bound_step(
+            "extractRegexGroup",
+            column=bound_ref("c:source:1", "text", 1),
+            pattern="([A-Za-z]+)-",
+            group=1,
+            newColumn="regex_word",
+        ),
         bound_step("lowerText", column=bound_ref("c:source:1", "text", 1), newColumn="lower"),
         bound_step("upperText", column=bound_ref("c:source:1", "text", 1), newColumn="upper"),
         bound_step("capitalizeText", column=bound_ref("c:source:1", "text", 1), newColumn="capitalized"),

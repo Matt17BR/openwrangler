@@ -1,0 +1,60 @@
+{
+  "valid": [
+    {
+      "pattern": "[A-Z]{1,1000}-([0-9]{2})",
+      "group": 0,
+      "captures": 1,
+      "participationPattern": "[A-Z]{1,1000}-([0-9]{2})"
+    },
+    { "pattern": "([A-Z]{4})-([0-9]+)", "group": 2, "captures": 2, "participationPattern": "([A-Z]{4})-([0-9]+)" },
+    { "pattern": "([A-Z]{4})?-([0-9]{2})", "group": 1, "captures": 2, "participationPattern": "([A-Z]{4})-([0-9]{2})" },
+    { "pattern": "()", "group": 1, "captures": 1, "participationPattern": "()" },
+    { "pattern": "😀([é]+)", "group": 1, "captures": 1, "participationPattern": "😀([é]+)" },
+    { "pattern": "([\\-]+)", "group": 1, "captures": 1, "participationPattern": "([\\-]+)" },
+    { "pattern": "([A\\-Z]+)", "group": 1, "captures": 1, "participationPattern": "([A\\-Z]+)" },
+    { "pattern": "a?", "group": 0, "captures": 0, "participationPattern": "a?" },
+    {
+      "pattern": "(a)(b)(c)(d)(e)(f)(g)(h)(i)",
+      "group": 9,
+      "captures": 9,
+      "participationPattern": "(a)(b)(c)(d)(e)(f)(g)(h)(i)"
+    },
+    {
+      "pattern": "(a{1000})a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}",
+      "group": 1,
+      "captures": 1,
+      "participationPattern": "(a{1000})a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}"
+    }
+  ],
+  "invalid": [
+    { "pattern": "", "group": 0 },
+    { "pattern": "a|b", "group": 0 },
+    { "pattern": "^a", "group": 0 },
+    { "pattern": "(a(b))", "group": 1 },
+    { "pattern": "(?:a)", "group": 1 },
+    { "pattern": "(?=a)", "group": 1 },
+    { "pattern": "(a)+", "group": 1 },
+    { "pattern": "\\d+", "group": 0 },
+    { "pattern": "[z-a]", "group": 0 },
+    { "pattern": "[-A]", "group": 0 },
+    { "pattern": "[A-]", "group": 0 },
+    { "pattern": "a**", "group": 0 },
+    { "pattern": "a*a*a*a*a*a*a*a*b", "group": 0 },
+    { "pattern": "a*aa+b", "group": 0 },
+    { "pattern": "a{0,20}a{0,20}a{0,20}a{0,20}a{0,20}a{0,20}b", "group": 0 },
+    { "pattern": "()?", "group": 1 },
+    { "pattern": "(a*)?", "group": 1 },
+    { "pattern": "(a{0})?", "group": 1 },
+    { "pattern": "(a{0,2})?", "group": 1 },
+    { "pattern": "(a)", "group": 2 },
+    { "pattern": "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)", "group": 10 },
+    { "pattern": "(a{1000})a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}a{1000}", "group": 1 },
+    { "pattern": "😀{1000}😀{1000}😀{49}", "group": 0 },
+    { "pattern": "[😀]{1000}[😀]{1000}[😀]{49}", "group": 0 },
+    { "pattern": "\ud800", "group": 0 },
+    { "pattern": "\udfff", "group": 0 },
+    { "pattern": "\u0000", "group": 0 },
+    { "pattern": "line\nbreak", "group": 0 },
+    { "pattern": "line\rbreak", "group": 0 }
+  ]
+}

@@ -5320,6 +5320,115 @@ openwrangler_r_frame_contract <- local({
     split_text_columns_at(value, resolved$position, resolved$name, delimiter, new_names)
   }
 
+  portable_regex_text_limit_message <- paste0(
+    "Regex extraction source values must contain at most 8,192 Unicode scalar values ",
+    "and 8,192 UTF-8 bytes."
+  )
+
+  extract_regex_group_at <- function(
+    value,
+    position,
+    old_name,
+    pattern,
+    group,
+    new_name,
+    participation_pattern = pattern
+  ) {
+    pattern <- bounded_utf8(pattern, "pattern", 16384L)
+    if (
+      identical(pattern, "") || nchar(pattern, type = "chars") > 4096L ||
+        any(utf8ToInt(pattern) == 0L) || grepl("[\r\n]", pattern, perl = TRUE)
+    ) {
+      abort("invalid-view-query", "Regex extraction pattern exceeds the portable scalar or UTF-8 limit")
+    }
+    group <- whole_number(group, "group", 9L)
+    participation_pattern <- bounded_utf8(participation_pattern, "participation_pattern", 16384L)
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (
+      identical(new_name, "") || any(utf8ToInt(new_name) == 0L) ||
+        grepl("[\r\n]", new_name, perl = TRUE)
+    ) {
+      abort("invalid-column-name", "Regex extraction output name is invalid")
+    }
+    if (is_private_column_name(new_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the regex-extraction column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the regex-extraction column name no longer matches the R dataframe")
+    }
+    if (!source_column$semantics$kind %in% c("character", "factor")) {
+      abort("invalid-view-query", "Regex extraction requires a character or factor column")
+    }
+    if (new_name %in% attr(value, "names", exact = TRUE)) {
+      abort("column-name-collision", "Regex extraction output column already exists")
+    }
+    if (column_count + 1L > maximum_columns) abort("invalid-view-query", "Regex extraction exceeds the R column limit")
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    source_values <- as.character(result[[position]])
+    transformed <- vapply(seq_along(source_values), function(row_index) {
+      source <- source_values[[row_index]]
+      if (is.na(source)) return(NA_character_)
+      source <- bounded_utf8(
+        source,
+        sprintf("Regex extraction source value %d", row_index),
+        maximum_operation_output_bytes
+      )
+      if (nchar(source, type = "chars") > 8192L || nchar(source, type = "bytes") > 8192L) {
+        abort("invalid-view-query", portable_regex_text_limit_message)
+      }
+      match <- tryCatch(
+        withCallingHandlers(
+          regexec(pattern, source, perl = TRUE, useBytes = FALSE)[[1L]],
+          warning = function(warning) stop("regex evaluation failed", call. = FALSE)
+        ),
+        error = function(error) abort("invalid-view-query", "Regex extraction could not apply the portable pattern")
+      )
+      if (length(match) == 1L && identical(as.integer(match[[1L]]), -1L)) return(NA_character_)
+      selected <- group + 1L
+      starts <- as.integer(match)
+      lengths <- as.integer(attr(match, "match.length", exact = TRUE))
+      if (!identical(participation_pattern, pattern)) {
+        full_match <- if (lengths[[1L]] == 0L) "" else substr(source, starts[[1L]], starts[[1L]] + lengths[[1L]] - 1L)
+        participation <- regexec(
+          paste0("^(?:", participation_pattern, ")$"),
+          full_match,
+          perl = TRUE,
+          useBytes = FALSE
+        )[[1L]]
+        if (length(participation) == 1L && identical(as.integer(participation[[1L]]), -1L)) {
+          return(NA_character_)
+        }
+      }
+      if (selected > length(starts) || starts[[selected]] < 0L) return(NA_character_)
+      if (lengths[[selected]] == 0L) return("")
+      output <- substr(source, starts[[selected]], starts[[selected]] + lengths[[selected]] - 1L)
+      bounded_operation_output(output, "Regex extraction")
+    }, character(1L), USE.NAMES = FALSE)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = transformed)
+    } else {
+      original_names <- names(result)
+      result[[length(result) + 1L]] <- transformed
+      names(result) <- c(original_names, new_name)
+    }
+    result
+  }
+
   find_replace_column_at <- function(
     value,
     position,
@@ -9256,6 +9365,7 @@ openwrangler_r_frame_contract <- local({
     split_text_column_at = split_text_column_at,
     split_text_columns = split_text_columns,
     split_text_columns_at = split_text_columns_at,
+    extract_regex_group_at = extract_regex_group_at,
     find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,
     min_max_scale_column_at = min_max_scale_column_at,

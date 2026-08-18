@@ -295,6 +295,18 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "extractRegexGroup") {
+    return {
+      id: step.id,
+      kind: "extractRegexGroup",
+      params: {
+        column: { ...step.params.column },
+        pattern: step.params.pattern,
+        group: step.params.group,
+        newColumn: step.params.newColumn
+      }
+    };
+  }
   if (step.kind === "lowerText") {
     return {
       id: step.id,
@@ -409,6 +421,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "stripText" &&
     step.kind !== "splitText" &&
     step.kind !== "splitTextColumns" &&
+    step.kind !== "extractRegexGroup" &&
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&

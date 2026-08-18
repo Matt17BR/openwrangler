@@ -157,6 +157,14 @@ export const operationCatalog = Object.freeze([
     icon: "split-horizontal"
   },
   {
+    kind: "extractRegexGroup",
+    title: "Extract regex group",
+    description:
+      "Retain the source and extract one capture group from the first leftmost match using Open Wrangler's portable regular-expression subset.",
+    group: "Categorical / text",
+    icon: "regex"
+  },
+  {
     kind: "capitalizeText",
     title: "Capitalize",
     description: "Uppercase the first character and lowercase the rest.",

@@ -101,6 +101,7 @@
 | `stripText`          | Strip text              | Categorical / text | `column`                                    | `characters`, `newColumn`               |
 | `splitText`          | Split text              | Categorical / text | `column`, `delimiter`, `index`, `newColumn` | None                                    |
 | `splitTextColumns`   | Split text into columns | Categorical / text | `column`, `delimiter`, `newColumns`         | None                                    |
+| `extractRegexGroup`  | Extract regex group     | Categorical / text | `column`, `pattern`, `group`, `newColumn`   | None                                    |
 | `capitalizeText`     | Capitalize              | Categorical / text | `column`                                    | `newColumn`                             |
 | `lowerText`          | Lowercase               | Categorical / text | `column`                                    | `newColumn`                             |
 | `upperText`          | Uppercase               | Categorical / text | `column`                                    | `newColumn`                             |

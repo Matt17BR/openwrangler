@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..portable_regex import (
+    MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
+    MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
+    PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
+)
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -668,6 +673,18 @@ class PandasEngine(DataFrameEngine):
                 axis=1,
             )
             return pd.concat([df, generated], axis=1)
+        if kind == "extractRegexGroup":
+            position = self._bound_frame_position(df, params["column"], kind)
+            ensure_output_columns_available(df.columns, [params["newColumn"]], "Regex extraction")
+            source = df.iloc[:, position].astype("string")
+            oversized = (
+                source.str.len().gt(MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
+                | source.str.encode("utf-8").str.len().gt(MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
+            ).fillna(False)
+            if bool(oversized.any()):
+                raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
+            extracted = source.str.extract(f"({params['pattern']})", expand=True)
+            return pd.concat([df, extracted.iloc[:, params["group"]].rename(params["newColumn"])], axis=1)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -1525,6 +1542,47 @@ class PandasEngine(DataFrameEngine):
                 (
                     f"{prefix}df = pd.concat([df, pd.concat(["
                     f"{parts}.str.get(item).rename(name) for item, name in enumerate({generated})], axis=1)], axis=1)"
+                ),
+            ]
+        if kind == "extractRegexGroup":
+            position = bound_column_position(params["column"], kind)
+            output = params["newColumn"]
+            collisions = f"_regex_collisions_{index}"
+            reserved = f"_regex_reserved_{index}"
+            wrapped_pattern = f"({params['pattern']})"
+            return [
+                (
+                    f"{prefix}if (not {output!r} or '\\0' in {output!r} or '\\r' in {output!r} or "
+                    f"'\\n' in {output!r} or any(0xD800 <= ord(char) <= 0xDFFF for char in {output!r}) or "
+                    f"len({output!r}.encode('utf-8')) > 1024):"
+                ),
+                (
+                    f"{prefix}    raise ValueError('Regex extraction output name must be bounded "
+                    "single-line Unicode scalar text.')"
+                ),
+                (f"{prefix}{reserved} = {output!r}.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})"),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError(\"Regex extraction would create Open Wrangler's "
+                    'reserved private row-identity column.")'
+                ),
+                f"{prefix}{collisions} = sorted(set(map(str, df.columns)) & {{{output!r}}})",
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('Regex extraction would create a duplicate column name: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                (
+                    f"{prefix}if ((df.iloc[:, {position}].astype('string').str.len() > "
+                    f"{MAX_PORTABLE_REGEX_TEXT_CODE_POINTS}) | "
+                    f"(df.iloc[:, {position}].astype('string').str.encode('utf-8').str.len() > "
+                    f"{MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES})).fillna(False).any():"
+                ),
+                f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
+                (
+                    f"{prefix}df = pd.concat([df, df.iloc[:, {position}].astype('string')"
+                    f".str.extract({wrapped_pattern!r}, expand=True).iloc[:, {params['group']}]"
+                    f".rename({output!r})], axis=1)"
                 ),
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:

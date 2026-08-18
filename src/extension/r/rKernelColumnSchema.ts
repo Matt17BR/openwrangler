@@ -5,6 +5,7 @@ import type {
   CloneColumnTransformStep,
   ColumnSchema,
   DropColumnsTransformStep,
+  ExtractRegexGroupTransformStep,
   FillMissingValuesTransformStep,
   FilterModel,
   FindReplaceTransformStep,
@@ -73,6 +74,46 @@ export function schemaAfterSplitTextColumns(
     });
   });
   return Object.freeze([...inputSchema.map((column) => Object.freeze({ ...column })), ...outputs]);
+}
+
+export function schemaAfterRegexExtraction(
+  inputSchema: readonly ColumnSchema[],
+  step: ExtractRegexGroupTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1 || matches[0]?.type !== "string") {
+    throw new TypeError("Regex extraction requires an exact R string or factor column reference.");
+  }
+  const name = step.params.newColumn;
+  if (name.length === 0 || Buffer.byteLength(name, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The regex-extraction output name is empty or exceeds the frame contract limit.");
+  }
+  if (name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The regex-extraction output uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === name)) {
+    throw new TypeError(`The R column name ${JSON.stringify(name)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (
+    Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes ||
+    inputSchema.some((column) => column.id === id)
+  ) {
+    throw new TypeError("The regex-extraction output identity is invalid or already exists.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name,
+      position: inputSchema.length,
+      rawType: "character",
+      type: "string" as const,
+      nullable: true
+    })
+  ]);
 }
 
 export function schemaAfterFillMissing(

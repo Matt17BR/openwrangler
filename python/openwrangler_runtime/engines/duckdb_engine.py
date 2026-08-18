@@ -15,6 +15,12 @@ from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..export_target import ExportWriterPath
+from ..portable_regex import (
+    MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
+    MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
+    PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
+    portable_regex_contract,
+)
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -833,6 +839,19 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "splitTextColumns":
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             return self._split_text_columns(frame, native_params)
+        if kind == "extractRegexGroup":
+            column = bound_column_name(params["column"], kind)
+            _ensure_duckdb_output_columns_available(self._columns(frame), [params["newColumn"]], "Regex extraction")
+            source = f"CAST({_quote_ident(column)} AS VARCHAR)"
+            oversized = self._terminal_scalar(
+                frame,
+                f"SELECT coalesce(bool_or(length({source}) > {MAX_PORTABLE_REGEX_TEXT_CODE_POINTS} OR "
+                f"octet_length(encode({source})) > {MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES}), FALSE) FROM ow",
+            )
+            if bool(oversized):
+                raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
+            expression = _regex_extract_expression(column, params["pattern"], params["group"])
+            return self._assign(frame, params["newColumn"], expression)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             if kind == "stripText" and native_params.get("characters") is None:
@@ -1041,6 +1060,38 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "splitTextColumns":
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             return [f"{prefix}df = _ow_split_text_columns(df, {native_params!r})"]
+        if kind == "extractRegexGroup":
+            column = bound_column_name(params["column"], kind)
+            expression = _regex_extract_expression(column, params["pattern"], params["group"])
+            source = f"CAST({_quote_ident(column)} AS VARCHAR)"
+            query = (
+                f"SELECT coalesce(bool_or(length({source}) > {MAX_PORTABLE_REGEX_TEXT_CODE_POINTS} OR "
+                f"octet_length(encode({source})) > {MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES}), FALSE) FROM ow"
+            )
+            return [
+                (
+                    f"{prefix}if (not {params['newColumn']!r} or '\\0' in {params['newColumn']!r} or "
+                    f"'\\r' in {params['newColumn']!r} or '\\n' in {params['newColumn']!r} or "
+                    f"any(0xD800 <= ord(char) <= 0xDFFF for char in {params['newColumn']!r}) or "
+                    f"len({params['newColumn']!r}.encode('utf-8')) > 1024):"
+                ),
+                (
+                    f"{prefix}    raise ValueError('Regex extraction output name must be bounded "
+                    "single-line Unicode scalar text.')"
+                ),
+                f"{prefix}_ow_check_outputs(_ow_columns(df), [{params['newColumn']!r}], 'Regex extraction')",
+                (
+                    f"{prefix}if {params['newColumn']!r}.casefold() in "
+                    f"{{str(name).casefold() for name in _ow_columns(df)}}:"
+                ),
+                (
+                    f"{prefix}    raise ValueError('Regex extraction would create a DuckDB column name "
+                    "that differs only by case.')"
+                ),
+                f"{prefix}if bool(_ow_query(df, {query!r}).fetchone()[0]):",
+                f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
+                f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {expression!r})",
+            ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             if kind == "stripText" and native_params.get("characters") is None:
@@ -2772,6 +2823,21 @@ def _checked_duckdb_integer_formula(left: str, right: str, operator: str) -> str
     return _checked_duckdb_integer_result(_formula_expression(left_bignum, right_bignum, operator))
 
 
+def _regex_extract_expression(column: str, pattern: str, group: int) -> str:
+    contract = portable_regex_contract(pattern, group)
+    source = f"CAST({_quote_ident(column)} AS VARCHAR)"
+    extracted = f"regexp_extract({source}, {_sql_literal(pattern)}, {group})"
+    if contract.participation_pattern != pattern:
+        extracted = (
+            f"CASE WHEN regexp_full_match(regexp_extract({source}, {_sql_literal(pattern)}, 0), "
+            f"{_sql_literal(contract.participation_pattern)}) THEN {extracted} ELSE NULL END"
+        )
+    return (
+        f"CASE WHEN {source} IS NULL THEN NULL "
+        f"WHEN regexp_matches({source}, {_sql_literal(pattern)}) THEN {extracted} ELSE NULL END"
+    )
+
+
 _GENERATED_HELPERS = r"""import math
 import re
 from datetime import date, datetime, timedelta
@@ -3726,7 +3792,7 @@ def _ow_check_outputs(existing, generated, operation):
     generated = [str(name) for name in generated]
     if any(name.casefold().startswith('__open_wrangler_internal_row_id_') for name in generated):
         raise ValueError(operation + " would create Open Wrangler's reserved private row-identity column.")
-    duplicates = {name for name, count in Counter(generated).items() if count > 1}
+    duplicates = {name for name in generated if generated.count(name) > 1}
     collisions = sorted(duplicates | (set(map(str, existing)) & set(generated)))
     if collisions:
         raise ValueError(operation + " would create duplicate column names: " + ", ".join(collisions))

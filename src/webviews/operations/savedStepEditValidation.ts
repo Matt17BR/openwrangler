@@ -18,6 +18,7 @@ import {
   interpolationCoordinateColumnsForTarget
 } from "./fillMissingModel";
 import { aggregationColumnTypes, isAggregationOperation, operationColumnTypes } from "./operationFieldCompatibility";
+import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 
 const recovery = "Cancel editing, then reload the session or undo and recreate this step.";
 
@@ -208,6 +209,7 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
     case "stripText":
     case "splitText":
     case "splitTextColumns":
+    case "extractRegexGroup":
     case "capitalizeText":
     case "lowerText":
     case "upperText":
@@ -365,6 +367,7 @@ function savedOperationTypeError(
     case "stripText":
     case "splitText":
     case "splitTextColumns":
+    case "extractRegexGroup":
     case "capitalizeText":
     case "lowerText":
     case "upperText":
@@ -495,6 +498,15 @@ export function savedStepEditError(
     const outsideSource = programReferences.find((reference) => !sourceIds.has(reference.id));
     if (outsideSource) {
       return `The saved by-example program uses column ID “${outsideSource.id}” outside its selected sources. ${recovery}`;
+    }
+  }
+  if (step.kind === "extractRegexGroup") {
+    try {
+      portableRegexContract(step.params.pattern, step.params.group);
+      validatePortableRegexOutputName(step.params.newColumn);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `This saved regex-extraction step is not portable: ${message} ${recovery}`;
     }
   }
   return undefined;

@@ -20,6 +20,7 @@ import type {
   PredicateFilter,
   ValueCount
 } from "../../shared/protocol";
+import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 import {
   isExportOptions,
   isOpenWranglerResponse,
@@ -235,6 +236,17 @@ export interface RKernelSplitTextColumnsStep {
     column: RKernelColumnReference;
     delimiter: string;
     newColumns: readonly string[];
+  }>;
+}
+
+export interface RKernelExtractRegexGroupStep {
+  readonly id: string;
+  readonly kind: "extractRegexGroup";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    pattern: string;
+    group: number;
+    newColumn: string;
   }>;
 }
 
@@ -493,6 +505,7 @@ export type RKernelTransformStep =
   | RKernelStripTextStep
   | RKernelSplitTextStep
   | RKernelSplitTextColumnsStep
+  | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
   | RKernelMinMaxScaleStep
@@ -1638,6 +1651,20 @@ function validateTransformStep(value: unknown): void {
     params.newColumns.forEach((name, index) =>
       boundedText(name, `request.payload.step.params.newColumns[${index}]`, maximumVariableNameBytes, false)
     );
+    return;
+  }
+  if (step.kind === "extractRegexGroup") {
+    const params = exactRecord(
+      step.params,
+      ["column", "pattern", "group", "newColumn"],
+      "R kernel regex-extraction parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    const pattern = boundedText(params.pattern, "request.payload.step.params.pattern", 16_384, false);
+    const group = boundedInteger(params.group, "request.payload.step.params.group", 9);
+    portableRegexContract(pattern, group);
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    validatePortableRegexOutputName(params.newColumn as string);
     return;
   }
   if (step.kind === "findReplace") {

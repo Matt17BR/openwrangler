@@ -2656,6 +2656,108 @@ assert_identical(split_columns$value, c("a||b||c||ignored", "left||||tail", "pla
 assert_identical(split_columns$first, c("a", "left", "plain", NA_character_), "splitTextColumns changed first parts")
 assert_identical(split_columns$second, c("b", "", NA_character_, NA_character_), "splitTextColumns changed empty or missing parts")
 assert_identical(split_columns$third, c("c", "tail", NA_character_, NA_character_), "splitTextColumns changed extra-part truncation")
+regex_source <- data.frame(
+  value = c("ba", "a", "x", "", NA_character_, "😀éé"),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+regex_optional <- openwrangler_r_frame_contract$extract_regex_group_at(
+  regex_source, 1L, "value", "(a)?", 1L, "optional", "(a)"
+)
+assert_identical(
+  regex_optional$optional,
+  c(NA_character_, "a", NA_character_, NA_character_, NA_character_, NA_character_),
+  "Regex extraction confused an unmatched optional capture with a later or empty match"
+)
+regex_empty <- openwrangler_r_frame_contract$extract_regex_group_at(regex_source, 1L, "value", "()", 1L, "empty")
+assert_identical(
+  regex_empty$empty,
+  c("", "", "", "", NA_character_, ""),
+  "Regex extraction lost a participating empty capture"
+)
+regex_group_zero <- openwrangler_r_frame_contract$extract_regex_group_at(
+  data.frame(value = c("AB-12", "none", NA_character_), check.names = FALSE),
+  1L,
+  "value",
+  "([A-Z]{2})-([0-9]{2})",
+  0L,
+  "full"
+)
+assert_identical(
+  regex_group_zero$full,
+  c("AB-12", NA_character_, NA_character_),
+  "Regex extraction changed group-zero or no-match semantics"
+)
+regex_group_nine <- openwrangler_r_frame_contract$extract_regex_group_at(
+  data.frame(value = c("abcdefghi", "none"), check.names = FALSE),
+  1L,
+  "value",
+  "(a)(b)(c)(d)(e)(f)(g)(h)(i)",
+  9L,
+  "ninth"
+)
+assert_identical(regex_group_nine$ninth, c("i", NA_character_), "Regex extraction changed capture-group nine")
+assert_error(
+  openwrangler_r_frame_contract$extract_regex_group_at(
+    data.frame(value = "abcdefghij", check.names = FALSE),
+    1L,
+    "value",
+    "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)",
+    10L,
+    "tenth"
+  ),
+  "invalid-range"
+)
+assert_error(
+  openwrangler_r_frame_contract$extract_regex_group_at(
+    data.frame(value = "alpha", check.names = FALSE),
+    1L,
+    "value",
+    "([a-z]+)",
+    1L,
+    "first\nsecond"
+  ),
+  "invalid-column-name"
+)
+regex_astral_boundary <- openwrangler_r_frame_contract$extract_regex_group_at(
+  data.frame(value = intToUtf8(rep.int(0x1f600L, 2048L)), check.names = FALSE),
+  1L,
+  "value",
+  "(😀{2})",
+  1L,
+  "astral"
+)
+assert_identical(regex_astral_boundary$astral, "😀😀", "Regex extraction changed astral Unicode semantics")
+assert_error(
+  openwrangler_r_frame_contract$extract_regex_group_at(
+    data.frame(value = intToUtf8(rep.int(0x1f600L, 2049L)), check.names = FALSE),
+    1L,
+    "value",
+    "(😀{2})",
+    1L,
+    "astral"
+  ),
+  "invalid-view-query"
+)
+regex_limit_error <- tryCatch(
+  {
+    openwrangler_r_frame_contract$extract_regex_group_at(
+      data.frame(value = paste0(rep.int("a", 8193L), collapse = ""), check.names = FALSE),
+      1L,
+      "value",
+      "(a+)",
+      1L,
+      "oversized"
+    )
+    NULL
+  },
+  error = function(error) error
+)
+assert_identical(
+  conditionMessage(regex_limit_error),
+  "Regex extraction source values must contain at most 8,192 Unicode scalar values and 8,192 UTF-8 bytes.",
+  "Regex extraction changed its portable source-limit diagnostic"
+)
 assert_error(
   openwrangler_r_frame_contract$split_text_columns(
     data.frame(value = "a||b", second = "keep", check.names = FALSE),

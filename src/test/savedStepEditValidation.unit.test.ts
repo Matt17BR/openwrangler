@@ -67,6 +67,12 @@ const validSteps = {
     delimiter: ",",
     newColumns: ["first", "second"]
   }),
+  extractRegexGroup: step("extractRegexGroup", {
+    column: text,
+    pattern: "([A-Za-z]+)",
+    group: 1,
+    newColumn: "word"
+  }),
   capitalizeText: step("capitalizeText", { column: text }),
   lowerText: step("lowerText", { column: text }),
   upperText: step("upperText", { column: text }),
@@ -612,6 +618,20 @@ describe("savedStepEditError", () => {
         schema
       )
     ).toBeUndefined();
+  });
+
+  it("rejects saved regex extraction whose output name cannot hydrate in a single-line control", () => {
+    expect(
+      savedStepEditError(
+        step("extractRegexGroup", {
+          column: text,
+          pattern: "([A-Za-z]+)",
+          group: 1,
+          newColumn: "first\nsecond"
+        }),
+        schema
+      )
+    ).toContain("single-line Unicode scalar text");
   });
 
   it("handles custom code explicitly and fails closed for an unknown operation kind", () => {

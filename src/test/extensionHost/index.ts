@@ -120,6 +120,7 @@ import {
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import { persistedReplayExportRequest } from "./persistedReplayExport";
 import { exerciseMultiOutputSplitJourney } from "./multiOutputSplitJourney";
+import { exerciseActiveRegexExtractionJourney, exercisePandasRegexExtractionJourney } from "./regexExtractionJourney";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
   captureNotebookWorkbenchScreenshot,
@@ -1089,6 +1090,19 @@ export async function run(): Promise<void> {
       await exerciseNumericSummaryPandasJourney({
         testing,
         createTemporaryDirectory: () => mkdtempSync(path.join(tmpdir(), "openwrangler-numeric-summary-")),
+        cleanupTemporaryDirectory: cleanupAcceptanceTemporaryDirectory,
+        sessionApp: async (sessionId, description) =>
+          synchronizedSessionApp(
+            await connectToEditorWorkbench(),
+            testing,
+            sessionId,
+            `${description} must render its confirmed shared-webview state.`
+          ),
+        recordProgress: recordAcceptanceProgress
+      });
+      await exercisePandasRegexExtractionJourney({
+        testing,
+        createTemporaryDirectory: () => mkdtempSync(path.join(tmpdir(), "openwrangler-regex-extraction-")),
         cleanupTemporaryDirectory: cleanupAcceptanceTemporaryDirectory,
         sessionApp: async (sessionId, description) =>
           synchronizedSessionApp(
@@ -2219,6 +2233,21 @@ async function exerciseReleasedREditingJourney(
       { testing, workbench, sessionId, phase },
       releasedRValueOperationDependencies
     );
+    const regexApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R regex-extraction session");
+    await exerciseActiveRegexExtractionJourney({
+      app: regexApp,
+      testing,
+      sessionId,
+      sourceColumnName: "label",
+      pattern: "([a-z]+)-([0-9]{4})()",
+      group: 3,
+      outputName: "regex_capture",
+      expectedOutputDisplays: ["", "", ""],
+      generatedCodePattern: /regexec\(/u,
+      reacquireApp: (description) => releasedRSessionApp(workbench, testing, sessionId, description),
+      recordProgress: recordAcceptanceProgress,
+      checkpoint: "jupyter-r:editing:value-operations:regex-extraction"
+    });
   }
 
   if (phase === "jupyter-r" && editingCatalog === "core-catalog" && screenshotOutput) {

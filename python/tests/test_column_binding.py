@@ -423,6 +423,13 @@ def test_fill_missing_binding_rejects_incompatible_column_types(
     [
         step("upperText", column=ref("c:value", "value"), newColumn="duplicate"),
         step("formatDatetime", column=ref("c:value", "value"), format="%Y", newColumn="duplicate"),
+        step(
+            "extractRegexGroup",
+            column=ref("c:value", "value"),
+            pattern="([A-Za-z]+)",
+            group=1,
+            newColumn="duplicate",
+        ),
     ],
 )
 def test_text_and_datetime_outputs_reject_existing_names(operation: dict[str, Any]) -> None:
@@ -463,6 +470,24 @@ def test_text_and_datetime_outputs_reject_existing_names(operation: dict[str, An
 def test_binding_rejects_the_private_row_identity_namespace(operation) -> None:
     with pytest.raises(ColumnBindingError, match="reserved private row-identity prefix"):
         bind_step(operation, SCHEMA, LINEAGE)
+
+
+def test_regex_binding_rejects_the_private_row_identity_namespace() -> None:
+    schema = [{"name": "value", "type": "string"}]
+    lineage = [{"id": "c:value", "name": "value"}]
+
+    with pytest.raises(ColumnBindingError, match="reserved private row-identity prefix"):
+        bind_step(
+            step(
+                "extractRegexGroup",
+                column=ref("c:value", "value"),
+                pattern="([A-Za-z]+)",
+                group=1,
+                newColumn="__OPEN_WRANGLER_INTERNAL_ROW_ID_user",
+            ),
+            schema,
+            lineage,
+        )
 
 
 def test_binding_allows_formula_to_use_one_identity_on_both_sides() -> None:

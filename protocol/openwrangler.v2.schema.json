@@ -131,6 +131,13 @@
       "icon": "split-horizontal"
     },
     {
+      "kind": "extractRegexGroup",
+      "title": "Extract regex group",
+      "description": "Retain the source and extract one capture group from the first leftmost match using Open Wrangler's portable regular-expression subset.",
+      "group": "Categorical / text",
+      "icon": "regex"
+    },
+    {
       "kind": "capitalizeText",
       "title": "Capitalize",
       "description": "Uppercase the first character and lowercase the rest.",
@@ -926,6 +933,7 @@
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractRegexGroup",
         "capitalizeText",
         "lowerText",
         "upperText",
@@ -1279,6 +1287,34 @@
         }
       }
     },
+    "ExtractRegexGroupParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "pattern", "group", "newColumn"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[^\\r\\n]+$",
+          "description": "A case-sensitive portable regular-expression pattern. The first leftmost match is used; unsupported dialect constructs are rejected before dispatch."
+        },
+        "group": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9,
+          "description": "Capture group to return. Group 0 selects the complete match."
+        },
+        "newColumn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[^\\r\\n]+$",
+          "description": "A single-line portable output name of at most 1,024 UTF-8 bytes; exact byte validation is enforced by every decoder."
+        }
+      }
+    },
     "ColumnOptionalOutputParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1509,6 +1545,7 @@
         { "$ref": "#/definitions/StripTextTransformStep" },
         { "$ref": "#/definitions/SplitTextTransformStep" },
         { "$ref": "#/definitions/SplitTextColumnsTransformStep" },
+        { "$ref": "#/definitions/ExtractRegexGroupTransformStep" },
         { "$ref": "#/definitions/CapitalizeTextTransformStep" },
         { "$ref": "#/definitions/LowerTextTransformStep" },
         { "$ref": "#/definitions/UpperTextTransformStep" },
@@ -1710,6 +1747,18 @@
           "properties": {
             "kind": { "const": "splitTextColumns" },
             "params": { "$ref": "#/definitions/SplitTextColumnsParams" }
+          }
+        }
+      ]
+    },
+    "ExtractRegexGroupTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "extractRegexGroup" },
+            "params": { "$ref": "#/definitions/ExtractRegexGroupParams" }
           }
         }
       ]

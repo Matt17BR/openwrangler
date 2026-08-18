@@ -635,7 +635,9 @@ text_transform_step <- function(
   characters = NULL,
   delimiter = NULL,
   index = NULL,
-  new_columns = NULL
+  new_columns = NULL,
+  pattern = NULL,
+  group = NULL
 ) {
   params <- list(column = list(id = column_id, name = column_name))
   if (!is.null(new_column)) params$newColumn <- new_column
@@ -651,6 +653,9 @@ text_transform_step <- function(
   } else if (identical(kind, "splitTextColumns")) {
     params$delimiter <- delimiter
     params$newColumns <- I(as.list(new_columns))
+  } else if (identical(kind, "extractRegexGroup")) {
+    params$pattern <- pattern
+    params$group <- group
   }
   list(id = id, kind = kind, params = params)
 }
@@ -975,11 +980,181 @@ split_columns_apply <- dispatch(
   list(sessionId = text_cleanup_session_id, revision = 14L, page = page_window())
 )
 assert_identical(split_columns_apply$action, "apply", "R Split text into columns did not apply")
-split_apply <- split_columns_apply
+regex_resource_rejection <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 15L,
+    step = text_transform_step(
+      "extractRegexGroup",
+      "regex-resource-rejection",
+      "r:c:0",
+      "text",
+      new_column = "regex rejected",
+      pattern = "a{0,20}a{0,20}a{0,20}a{0,20}a{0,20}a{0,20}b",
+      group = 0L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(regex_resource_rejection$kind, "error", "R Regex extraction accepted an ambiguous portable pattern")
+assert_identical(regex_resource_rejection$code, "invalid_request", "R Regex extraction changed its parser diagnostic")
+regex_edge_hyphen_rejection <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 15L,
+    step = text_transform_step(
+      "extractRegexGroup",
+      "regex-edge-hyphen-rejection",
+      "r:c:0",
+      "text",
+      new_column = "regex edge rejected",
+      pattern = "[-A]",
+      group = 0L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(regex_edge_hyphen_rejection$kind, "error", "R Regex extraction accepted an edge hyphen")
+assert_identical(regex_edge_hyphen_rejection$code, "invalid_request", "R Regex extraction changed its range diagnostic")
+regex_width_session_id <- "55555555-5555-4555-8555-555555555555"
+source_environment$regex_width_frame <- source_environment$text_cleanup_frame
+regex_width_open <- dispatch(
+  "openSession",
+  list(sessionId = regex_width_session_id, variableName = "regex_width_frame", page = page_window())
+)
+assert_identical(regex_width_open$kind, "page", "R Regex extraction width-contract session did not open")
+regex_width_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = regex_width_session_id,
+    revision = 0L,
+    step = text_transform_step(
+      "extractRegexGroup",
+      "regex-width-accepted",
+      "r:c:0",
+      "text",
+      new_column = "bounded width",
+      pattern = paste(rep("a{1000}", 8L), collapse = ""),
+      group = 0L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(regex_width_preview$kind, "stepPreview", "R Regex extraction rejected an 8,000-scalar minimum width")
+regex_width_closed <- dispatch("closeSession", list(sessionId = regex_width_session_id))
+assert_identical(regex_width_closed$kind, "closed", "R Regex extraction width-contract session did not close")
+for (pattern in c(
+  paste(rep("a{1000}", 9L), collapse = ""),
+  "😀{1000}😀{1000}😀{49}",
+  "[😀]{1000}[😀]{1000}[😀]{49}"
+)) {
+  regex_width_rejection <- dispatch(
+    "previewStep",
+    list(
+      sessionId = text_cleanup_session_id,
+      revision = 15L,
+      step = text_transform_step(
+        "extractRegexGroup",
+        "regex-width-rejection",
+        "r:c:0",
+        "text",
+        new_column = "regex width rejected",
+        pattern = pattern,
+        group = 0L
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(regex_width_rejection$kind, "error", "R Regex extraction accepted an impossible minimum width")
+  assert_identical(regex_width_rejection$code, "invalid_request", "R Regex extraction changed its width diagnostic")
+}
+regex_multiline_output_rejection <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 15L,
+    step = text_transform_step(
+      "extractRegexGroup",
+      "regex-multiline-output-rejection",
+      "r:c:0",
+      "text",
+      new_column = "first\nsecond",
+      pattern = "([a-z]+)",
+      group = 1L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  regex_multiline_output_rejection$kind,
+  "error",
+  "R Regex extraction accepted a multiline output name"
+)
+assert_identical(
+  regex_multiline_output_rejection$code,
+  "invalid_request",
+  "R Regex extraction changed its multiline-output diagnostic"
+)
+regex_optional_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 15L,
+    step = text_transform_step(
+      "extractRegexGroup",
+      "regex-optional-step",
+      "r:c:0",
+      "text",
+      new_column = "optional match",
+      pattern = "😀(a)?",
+      group = 1L
+    ),
+    page = page_window(column_offset = 8L, column_limit = 1L)
+  )
+)
+assert_identical(regex_optional_preview$kind, "stepPreview", "R Regex extraction rejected an optional capture after astral Unicode")
+if (!all(vapply(regex_optional_preview$page$page$rows, function(row) isTRUE(row$values[[1L]]$isNull), logical(1L)))) {
+  stop("R Regex extraction changed optional no-match semantics", call. = FALSE)
+}
+regex_optional_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_cleanup_session_id, revision = 16L, page = page_window())
+)
+assert_identical(regex_optional_apply$action, "apply", "R optional Regex extraction did not apply")
+regex_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 17L,
+    step = text_transform_step(
+      "extractRegexGroup",
+      "regex-step",
+      "r:c:0",
+      "text",
+      new_column = "regex match",
+      pattern = "([A\\-Za-z]{5})-([0-9]+)",
+      group = 0L
+    ),
+    page = page_window(column_offset = 9L, column_limit = 1L)
+  )
+)
+assert_identical(regex_preview$kind, "stepPreview", "R Regex extraction did not preview")
+assert_identical(regex_preview$page$page$columnIds, list("c:step:regex-step:0"), "R Regex extraction lost its stable output identity")
+assert_identical(regex_preview$page$page$rows[[1L]]$values[[1L]]$raw, "alpha-12", "R Regex extraction changed group-zero semantics")
+assert_identical(regex_preview$page$page$rows[[2L]]$values[[1L]]$isNull, TRUE, "R Regex extraction changed no-match semantics")
+regex_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_cleanup_session_id, revision = 18L, page = page_window())
+)
+assert_identical(regex_apply$action, "apply", "R Regex extraction did not apply")
+split_apply <- regex_apply
 for (native_expression in c(
   "toupper(.ow_characters[[1L]])",
   ".ow_text_strip_characters",
-  "gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)"
+  "gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)",
+  ".ow_match <- regexec(.ow_regex_pattern, .ow_utf8, perl = TRUE, useBytes = FALSE)"
 )) {
   if (!grepl(native_expression, split_apply$code, fixed = TRUE)) {
     stop(sprintf("generated R text tools lost native expression: %s", native_expression), call. = FALSE)
@@ -997,6 +1172,8 @@ assert_identical(text_tools_generated$`stripped text`, c("alpha", "béta", NA_ch
 assert_identical(text_tools_generated$suffix, c("12", "34", NA_character_), "generated R Split text changed values")
 assert_identical(text_tools_generated$`split first`, c("alpha", "béta", NA_character_), "generated R multi-output split changed first parts")
 assert_identical(text_tools_generated$`split second`, c("12", "34", NA_character_), "generated R multi-output split changed second parts")
+assert_identical(text_tools_generated$`optional match`, rep.int(NA_character_, 3L), "generated R optional regex changed no-match semantics")
+assert_identical(text_tools_generated$`regex match`, c("alpha-12", NA_character_, NA_character_), "generated R regex extraction changed match semantics")
 assert_identical(row.names(text_tools_generated), row.names(text_cleanup_before), "generated R text tools changed row names")
 assert_identical(
   get("text_cleanup_frame", envir = .GlobalEnv, inherits = FALSE),

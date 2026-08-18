@@ -66,6 +66,7 @@ export type TransformStep =
   | StripTextTransformStep
   | SplitTextTransformStep
   | SplitTextColumnsTransformStep
+  | ExtractRegexGroupTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
@@ -101,6 +102,7 @@ export type OperationKind =
   | "stripText"
   | "splitText"
   | "splitTextColumns"
+  | "extractRegexGroup"
   | "capitalizeText"
   | "lowerText"
   | "upperText"
@@ -277,6 +279,11 @@ export type SplitTextTransformStep = TransformStepTemplate & {
 export type SplitTextColumnsTransformStep = TransformStepTemplate & {
   kind: "splitTextColumns";
   params: SplitTextColumnsParams;
+  [k: string]: unknown;
+};
+export type ExtractRegexGroupTransformStep = TransformStepTemplate & {
+  kind: "extractRegexGroup";
+  params: ExtractRegexGroupParams;
   [k: string]: unknown;
 };
 export type CapitalizeTextTransformStep = TransformStepTemplate & {
@@ -705,6 +712,21 @@ export interface SplitTextColumnsParams {
    * @maxItems 64
    */
   newColumns: [string, string, ...string[]];
+}
+export interface ExtractRegexGroupParams {
+  column: ColumnReference;
+  /**
+   * A case-sensitive portable regular-expression pattern. The first leftmost match is used; unsupported dialect constructs are rejected before dispatch.
+   */
+  pattern: string;
+  /**
+   * Capture group to return. Group 0 selects the complete match.
+   */
+  group: number;
+  /**
+   * A single-line portable output name of at most 1,024 UTF-8 bytes; exact byte validation is enforced by every decoder.
+   */
+  newColumn: string;
 }
 export interface ColumnOptionalOutputParams {
   column: ColumnReference;

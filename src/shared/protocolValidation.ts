@@ -19,6 +19,7 @@ import type {
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationKinds } from "./operationCatalog.generated";
+import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
 import { PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
@@ -1231,6 +1232,25 @@ export function isTransformStep(value: unknown): value is TransformStep {
         decoded.newColumns.length >= 2 &&
         decoded.newColumns.length <= 64
       );
+    }
+    case "extractRegexGroup": {
+      const decoded = exactRecord(params, ["column", "pattern", "group", "newColumn"]);
+      if (
+        decoded === undefined ||
+        !isColumnReference(decoded.column) ||
+        !isNonEmptyString(decoded.pattern) ||
+        !isInteger(decoded.group) ||
+        !isNonEmptyString(decoded.newColumn)
+      ) {
+        return false;
+      }
+      try {
+        portableRegexContract(decoded.pattern, decoded.group);
+        validatePortableRegexOutputName(decoded.newColumn);
+        return true;
+      } catch {
+        return false;
+      }
     }
     case "capitalizeText":
     case "lowerText":
