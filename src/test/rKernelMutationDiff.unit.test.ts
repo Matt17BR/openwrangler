@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ColumnSchema, DataDiff } from "../shared/protocol";
+import type { ColumnSchema, DataDiff, OneHotEncodeTransformStep } from "../shared/protocol";
 import type { RFramePageContract } from "../extension/r/rFrameContract";
 import type { RTransformStep } from "../extension/r/rKernelTransformBinding";
 import {
@@ -18,7 +18,7 @@ import {
 
 describe("R kernel mutation diff", () => {
   it("owns categorical retention and rejects stale, repeated, and private references", () => {
-    const oneHot = {
+    const oneHot: OneHotEncodeTransformStep = {
       id: "encode",
       kind: "oneHotEncode" as const,
       params: { columns: [reference(0)], dropOriginal: true }
@@ -205,10 +205,10 @@ function pageContract(values: readonly [string, string][]): RFramePageContract {
     contractVersion: 5,
     dataframeFlavor: "r.data.frame",
     shape: { rows: values.length, columns: 2 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: [
-      { ...schema[0]!, semantics: { kind: "character", classes: ["character"] } },
-      { ...schema[1]!, semantics: { kind: "integer", classes: ["integer"] } }
+      { ...schema[0]!, semantics: { kind: "character", storageMode: "character", classes: ["character"] } },
+      { ...schema[1]!, semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] } }
     ],
     page: {
       offset: 0,

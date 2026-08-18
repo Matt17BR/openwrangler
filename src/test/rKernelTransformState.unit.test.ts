@@ -131,7 +131,7 @@ describe("R kernel transform state", () => {
         {
           column: reference(0),
           type: "string",
-          predicates: [{ kind: "predicate", operator: "contains", value: "x", caseSensitive: true }],
+          predicates: [{ kind: "predicate", operator: "contains", value: "x" }],
           valueFilter: {
             kind: "values",
             selectedValues: ["x"],

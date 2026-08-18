@@ -79,7 +79,7 @@ describe("R kernel bridge contract", () => {
     const session = sessionFromContract(sessionId, openRequest().source, "editing", contract, []);
     const window = { offset: 0, limit: 1, columnOffset: 0, columnLimit: 1 };
     expect(() =>
-      assertSessionContract(session, contract, window, session.schema, 1, 1, [], "automatic", emptyView)
+      assertSessionContract(session, contract, window, session.schema, 1, 1, [], "positional", emptyView)
     ).not.toThrow();
     expect(() =>
       assertSessionContract(
@@ -90,7 +90,7 @@ describe("R kernel bridge contract", () => {
         1,
         1,
         [],
-        "automatic",
+        "positional",
         emptyView
       )
     ).toThrow("column projection");
@@ -101,7 +101,7 @@ describe("R kernel bridge contract", () => {
       schema: [{ ...contract.schema[0]!, nullable: false }]
     };
     expect(() =>
-      assertMutationContract(session, actual, window, expected, 1, 1, [], "automatic", emptyView, {
+      assertMutationContract(session, actual, window, expected, 1, 1, [], "positional", emptyView, {
         columnId: "r:c:0",
         mode: "mayRemove"
       })
@@ -115,7 +115,7 @@ describe("R kernel bridge contract", () => {
         1,
         1,
         [],
-        "automatic",
+        "positional",
         emptyView,
         {
           columnId: "r:c:0",
@@ -237,7 +237,7 @@ function frameContract(): RFramePageContract {
     contractVersion: 5,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: [
       {
         id: "r:c:0",
