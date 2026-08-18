@@ -4,6 +4,7 @@ import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
 import {
   appliedFor,
+  deferred,
   initialSource,
   metadataFor,
   open,
@@ -202,6 +203,57 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(persisted.cleaning?.steps).toEqual([replacement, second, third]);
     expect(persisted.cleaning?.draftStep).toBeUndefined();
     expect(coordinator.activeSession()?.metadata.steps).toEqual([replacement, second, third]);
+  });
+
+  it("settles a failed final save before terminal close resolves its runtime target", async () => {
+    const harness = rewriteHarness({ draft: replacement });
+    let stored: Record<string, unknown> = {};
+    let updateCount = 0;
+    const finalWriteStarted = deferred<void>();
+    const releaseFinalWrite = deferred<void>();
+    const workspaceState = {
+      keys: () => [],
+      get: <T>(_key: string, defaultValue?: T): T | undefined =>
+        (Object.keys(stored).length > 0 ? stored : defaultValue) as T | undefined,
+      update: vi.fn(async (_key: string, value: unknown) => {
+        updateCount += 1;
+        if (updateCount === 1) {
+          stored = value as Record<string, unknown>;
+          return;
+        }
+        finalWriteStarted.resolve();
+        await releaseFinalWrite.promise;
+        throw new Error("final persistence unavailable");
+      })
+    } as unknown as Memento;
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: harness.request });
+    const opened = await open(bridge, initialSource);
+
+    const rewrite = bridge.rewriteCleaningPlan?.(
+      opened.metadata.sessionId,
+      opened.metadata.revision,
+      first.id,
+      "applyDraft",
+      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+    );
+    await finalWriteStarted.promise;
+    const candidateId = harness.candidateOpenRequests()[0]?.requestedSessionId;
+    expect(candidateId).toEqual(expect.any(String));
+
+    const close = bridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+    await Promise.resolve();
+    expect(harness.closedRuntimeIds()).toEqual([]);
+
+    releaseFinalWrite.resolve();
+    await expect(rewrite).resolves.toMatchObject({ kind: "error", code: "session_closing" });
+    await expect(close).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
+    expect(harness.closedRuntimeIds()).toEqual([candidateId, "runtime-old"]);
+    expect(coordinator.activeSession()).toBeUndefined();
   });
 });
 

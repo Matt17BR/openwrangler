@@ -692,6 +692,11 @@ export class SessionCoordinator implements vscode.Disposable {
           ? session.draftBaseFilterModel
           : session.metadata.filterModel
     };
+    let resolveRewriteSettlement!: () => void;
+    const rewriteSettlement = new Promise<void>((resolve) => {
+      resolveRewriteSettlement = resolve;
+    });
+    this.installRuntimeSettlementBarrier(session, rewriteSettlement);
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
@@ -736,6 +741,7 @@ export class SessionCoordinator implements vscode.Disposable {
       else this.pendingOpens.delete(delegate);
       this.resolvePendingOpenWaitersIfIdle();
       this.runtimeCleanup.releaseIfIdle(delegate);
+      resolveRewriteSettlement();
     }
   }
 
@@ -919,6 +925,7 @@ export class SessionCoordinator implements vscode.Disposable {
     session: CoordinatedSession,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
+    await this.waitForRuntimeSettlement(session);
     try {
       const response = await this.runtimeCleanup.closeTerminal(session, options);
       if (response.kind === "sessionClosed" && response.sessionId === session.runtimeId) {
