@@ -178,12 +178,12 @@ slows the feedback loop, and can exhaust the developer machine without improving
 Do not run memory-intensive local suites concurrently. Coordinate that in the active task instead of adding locks,
 leases, process managers, or other operator machinery to this repository. Run the complete serial list below for a
 release candidate or when a change genuinely spans every listed boundary;
-otherwise run `npm run check`, the focused tests for the changed owner, and the relevant UI/editor scenario. Hosted
+otherwise run `npm run check:pr`, the focused tests for the changed owner, and the relevant UI/editor scenario. Hosted
 pull-request CI requires every lane selected by its path classifier before merge. Release-only consumers run later
 against the protected release candidate; they are not default pull-request jobs.
 
 ```bash
-npm run check
+npm run check:pr
 npm test
 npm run test:extension-host
 npm run test:webview-acceptance
