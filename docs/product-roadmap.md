@@ -82,6 +82,10 @@ Current implementation evidence closes prerequisites, not the complete approacha
   owners. The direct Native-R complete-catalog contract retains one independent, mutation-sensitive 28-operation
   oracle that must remain exactly equal to the generated kinds; it is executable test evidence, not a second runtime
   registry.
+- The [dated maintainability measurement](maintainability-measurement-2026-08-18.md) records current-main new-file
+  bounds, named hotspot movement, and the exact evidence backlog for all ten gates. New production and test files meet
+  their size bounds, but several existing monoliths and the timing, rolling reliability, reproducibility, and artifact
+  measurements remain open; no stable-2.0 or expansion credit follows from the partial result.
 
 This roadmap links durable checkpoints and dispositions without embedding volatile workflow timing or runner totals.
 
