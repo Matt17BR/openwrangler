@@ -93,8 +93,8 @@ VSIX. `npm run check` includes the strict dependency-only TypeScript graph, and 
 development tree.
 
 Every repository, CI, candidate, packaging, promotion, and release install uses `npm ci --ignore-scripts`; `.npmrc`
-makes the same boundary the contributor default. `npm run check:install-policy` inventories all 26 executable
-installs and rejects any unowned or plain install, lifecycle re-enablement, rebuild, package-manager alias, dynamic
+makes the same boundary the contributor default. `npm run check:install-policy` inventories all 28 executable
+install invocations across 26 owners in 11 GitHub and Azure automation files and rejects any unowned or plain install, lifecycle re-enablement, rebuild, package-manager alias, dynamic
 install, or lock entry with `hasInstallScript`. The lock has no native `keytar` or `prebuild-install`. A tracked
 fail-closed credential shim selects VSCE's existing file/PAT path, while a script-free signing bridge resolves only
 the exact lockfile-authenticated `@vscode/vsce-sign-*` package for the current platform. Missing platform bytes

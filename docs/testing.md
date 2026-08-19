@@ -33,8 +33,8 @@ matrix for release candidates or changes that cross those boundaries.
   budget, and `--continue-on-error` plus `--print-label` prefixes every interleaved output line so one early failure
   cannot hide or obscure the other result.
 
-- `npm run check:install-policy` owns all 26 lockfile installs across 25 contributor, CI, candidate, package,
-  promotion, and release jobs in eight workflows. `.npmrc` disables lifecycle scripts by default and every
+- `npm run check:install-policy` owns all 28 lockfile install invocations across 26 contributor, CI, candidate,
+  package, promotion, and release owners in 11 GitHub and Azure automation files. `.npmrc` disables lifecycle scripts by default and every
   executable owner repeats `npm ci --ignore-scripts`; the checker rejects plain installs, lifecycle re-enablement,
   rebuilds, dynamic installs, package-manager aliases, and unowned install sites. Its install-script allowlist is
   empty. The lock must contain no `hasInstallScript` entry, native `keytar`, or `prebuild-install`. Script-free
