@@ -535,7 +535,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         if: ${{ matrix.phase == 'python' }}
         with:
           distribution: temurin
