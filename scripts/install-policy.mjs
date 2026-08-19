@@ -69,7 +69,9 @@ const NPM_COMMAND = /\bnpm\b[^\n;&|]*/gu;
 const LIFECYCLE_ALIASES = new Set([
   "add",
   "ci",
+  "cit",
   "clean-install",
+  "clean-install-test",
   "i",
   "ic",
   "in",
@@ -78,17 +80,21 @@ const LIFECYCLE_ALIASES = new Set([
   "insta",
   "instal",
   "install",
+  "install-ci-test",
   "install-clean",
+  "install-test",
   "isnt",
   "isnta",
   "isntal",
   "isntall",
   "isntall-clean",
   "rb",
-  "rebuild"
+  "rebuild",
+  "sit",
+  "it"
 ]);
 const BYPASS_COMMAND =
-  /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|clean-install|i|ic|in|ins|inst|insta|instal|install|install-clean|isnt|isnta|isntal|isntall|isntall-clean|rb|rebuild)(?=\s|$)/iu;
+  /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
 const WEAKENED_SCRIPT_CONTROL =
   /(?:--ignore-scripts(?:=|\s+)false\b|\bignore-scripts\s*=\s*false\b|\bnpm_config_ignore_scripts\b|--foreground-scripts\b)/iu;
 
@@ -137,9 +143,10 @@ function npmScriptControlMutations(source) {
   return [...source.matchAll(NPM_COMMAND)]
     .filter((match) => {
       const tokens = shellTokens(match[0]).slice(1);
-      const configIndex = tokens.indexOf("config");
-      if (configIndex < 0) return false;
-      const tail = tokens.slice(configIndex + 1);
+      const configIndex = tokens.findIndex((token) => token === "config" || token === "c");
+      const directSetIndex = tokens.indexOf("set");
+      if (configIndex < 0 && directSetIndex < 0) return false;
+      const tail = tokens.slice(configIndex >= 0 ? configIndex + 1 : directSetIndex);
       return (
         tail.some((token) => ["delete", "edit", "remove", "rm", "set", "unset"].includes(token)) &&
         tail.some((token) => /^(?:ignore-scripts|foreground-scripts)(?:=|$)/u.test(token))

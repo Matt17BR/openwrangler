@@ -156,6 +156,12 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     "npm --silent i",
     "npm add keytar",
     "npm clean-install",
+    "npm install-ci-test",
+    "npm cit",
+    "npm clean-install-test",
+    "npm sit",
+    "npm install-test",
+    "npm it",
     "npm rb keytar",
     "command npm --prefix release-source install"
   ]) {
@@ -168,6 +174,8 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
   }
   for (const command of [
     "npm config set ignore-scripts false",
+    "npm c set ignore-scripts false",
+    "npm set ignore-scripts false",
     "npm --silent config set ignore-scripts=false",
     "npm config delete ignore-scripts"
   ]) {
