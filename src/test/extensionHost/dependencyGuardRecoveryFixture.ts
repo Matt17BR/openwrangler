@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { sameAcceptanceExecutable } from "./dependencyInstallLifecycleFixture";
 
@@ -252,16 +252,35 @@ export function createDependencyGuardRecoveryFixture(
       : path.join(environmentRoot, "bin", "python");
   assert.equal(existsSync(executable), true, "The dependency-recovery environment is missing its interpreter.");
 
-  const dependencySitePackages = execFileSync(
-    dependencyPython,
-    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-    {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-      windowsHide: true
-    }
-  ).trim();
+  const dependencyParent = JSON.parse(
+    execFileSync(
+      dependencyPython,
+      [
+        "-I",
+        "-c",
+        [
+          "import json",
+          "import pip",
+          "import pip._vendor.packaging.specifiers",
+          "import pip._vendor.packaging.version",
+          "import sysconfig",
+          "print(json.dumps({",
+          "    'purelib': sysconfig.get_path('purelib'),",
+          "    'pip': pip.__file__,",
+          "    'pipSpecifiers': pip._vendor.packaging.specifiers.__file__,",
+          "    'pipVersion': pip._vendor.packaging.version.__file__,",
+          "}, sort_keys=True))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as Record<string, unknown>;
+  const dependencySitePackages = String(dependencyParent.purelib);
   const environmentSitePackages = execFileSync(
     executable,
     ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
@@ -274,6 +293,23 @@ export function createDependencyGuardRecoveryFixture(
   ).trim();
   assert.ok(path.isAbsolute(dependencySitePackages) && path.isAbsolute(environmentSitePackages));
   assert.doesNotMatch(dependencySitePackages, /[\r\n]/u);
+  assert.equal(typeof dependencyParent.pip === "string" && path.isAbsolute(dependencyParent.pip), true);
+  assert.equal(
+    typeof dependencyParent.pipSpecifiers === "string" && path.isAbsolute(dependencyParent.pipSpecifiers),
+    true
+  );
+  assert.equal(typeof dependencyParent.pipVersion === "string" && path.isAbsolute(dependencyParent.pipVersion), true);
+  const dependencyPipPackage = path.dirname(String(dependencyParent.pip));
+  const dependencyPipRelative = path.relative(dependencySitePackages, dependencyPipPackage);
+  assert.equal(
+    dependencyPipRelative.length > 0 &&
+      dependencyPipRelative !== ".." &&
+      !dependencyPipRelative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(dependencyPipRelative),
+    true,
+    "The recovery PEP 440 authority must belong to the selected parent interpreter's package root."
+  );
+  assert.equal(lstatSync(dependencyPipPackage).isDirectory(), true);
   writeFileSync(
     path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
     `${dependencySitePackages}\n`,
@@ -313,7 +349,10 @@ export function createDependencyGuardRecoveryFixture(
   const pipCompleted = path.join(directory, "guarded-pip-completed");
   const pipPackage = path.join(environmentSitePackages, "pip");
   mkdirSync(pipPackage);
-  writeFileSync(path.join(pipPackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  writeFileSync(path.join(pipPackage, "__init__.py"), `__path__.append(${JSON.stringify(dependencyPipPackage)})\n`, {
+    encoding: "utf8",
+    flag: "wx"
+  });
   writeFileSync(
     path.join(pipPackage, "__main__.py"),
     dependencyGuardFakePipSource(pipStarted, pipRelease, pipCompleted),
@@ -331,10 +370,20 @@ export function createDependencyGuardRecoveryFixture(
           "import json",
           "import openwrangler_guard_fixture",
           "import pip",
+          "import pip._vendor.packaging.specifiers",
+          "import pip._vendor.packaging.version",
           "import polars",
           "print(json.dumps({",
           "    'fixtureVersion': importlib.metadata.version('openwrangler-guard-fixture'),",
           "    'pip': pip.__file__,",
+          "    'pipSpecifiers': pip._vendor.packaging.specifiers.__file__,",
+          "    'pipVersion': pip._vendor.packaging.version.__file__,",
+          "    'fixtureSupported': pip._vendor.packaging.specifiers.SpecifierSet('==1.0.0').contains(",
+          "        pip._vendor.packaging.version.Version(",
+          "            importlib.metadata.version('openwrangler-guard-fixture')",
+          "        ),",
+          "        prereleases=True,",
+          "    ),",
           "    'polarsVersion': polars.__version__,",
           "}, sort_keys=True))"
         ].join("\n")
@@ -348,7 +397,20 @@ export function createDependencyGuardRecoveryFixture(
     )
   ) as Record<string, unknown>;
   assert.equal(preflight.fixtureVersion, "1.0.0");
+  assert.equal(preflight.fixtureSupported, true, "Recovery must retain exact PEP 440 validation authority.");
   assert.equal(typeof preflight.polarsVersion, "string");
+  assert.equal(
+    typeof preflight.pipSpecifiers === "string" &&
+      sameAcceptanceExecutable(preflight.pipSpecifiers, String(dependencyParent.pipSpecifiers)),
+    true,
+    "Recovery must use the selected parent interpreter's exact SpecifierSet implementation."
+  );
+  assert.equal(
+    typeof preflight.pipVersion === "string" &&
+      sameAcceptanceExecutable(preflight.pipVersion, String(dependencyParent.pipVersion)),
+    true,
+    "Recovery must use the selected parent interpreter's exact Version implementation."
+  );
   assert.equal(
     typeof preflight.pip === "string" && sameAcceptanceExecutable(preflight.pip, path.join(pipPackage, "__init__.py")),
     true,

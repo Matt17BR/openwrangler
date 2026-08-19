@@ -109,11 +109,17 @@ export function createExcelDependencyInstallPython(directory: string, python: st
         [
           "import importlib.metadata",
           "import json",
+          "import pip",
+          "import pip._vendor.packaging.specifiers",
+          "import pip._vendor.packaging.version",
           "import sys",
           "import sysconfig",
           "print(json.dumps({",
           "    'executable': sys.executable,",
           "    'purelib': sysconfig.get_path('purelib'),",
+          "    'pip': pip.__file__,",
+          "    'pipSpecifiers': pip._vendor.packaging.specifiers.__file__,",
+          "    'pipVersion': pip._vendor.packaging.version.__file__,",
           "    'pandas': importlib.metadata.version('pandas'),",
           "    'openpyxl': importlib.metadata.version('openpyxl'),",
           "}, sort_keys=True))"
@@ -139,12 +145,26 @@ export function createExcelDependencyInstallPython(directory: string, python: st
   );
   assert.equal(typeof parent.pandas === "string" && parent.pandas.length > 0, true);
   assert.equal(typeof parent.openpyxl === "string" && parent.openpyxl.length > 0, true);
+  assert.equal(typeof parent.pip === "string" && path.isAbsolute(parent.pip), true);
+  assert.equal(typeof parent.pipSpecifiers === "string" && path.isAbsolute(parent.pipSpecifiers), true);
+  assert.equal(typeof parent.pipVersion === "string" && path.isAbsolute(parent.pipVersion), true);
   assert.equal(
     lstatSync(String(parent.purelib)).isDirectory(),
     true,
     "The XLSX dependency fixture parent package root must remain a directory."
   );
   assert.doesNotMatch(String(parent.purelib), /[\r\n]/u, "A Python package root must not contain line breaks.");
+  const parentPipPackage = path.dirname(String(parent.pip));
+  const parentPipRelative = path.relative(String(parent.purelib), parentPipPackage);
+  assert.equal(
+    parentPipRelative.length > 0 &&
+      parentPipRelative !== ".." &&
+      !parentPipRelative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(parentPipRelative),
+    true,
+    "The fixture PEP 440 authority must belong to the selected parent interpreter's package root."
+  );
+  assert.equal(lstatSync(parentPipPackage).isDirectory(), true);
 
   const environment = path.join(directory, "environment");
   execFileSync(python, ["-m", "venv", "--without-pip", environment], {
@@ -187,7 +207,10 @@ export function createExcelDependencyInstallPython(directory: string, python: st
 
   const pipPackage = path.join(sitePackages, "pip");
   mkdirSync(pipPackage);
-  writeFileSync(path.join(pipPackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  writeFileSync(path.join(pipPackage, "__init__.py"), `__path__.append(${JSON.stringify(parentPipPackage)})\n`, {
+    encoding: "utf8",
+    flag: "wx"
+  });
   writeFileSync(path.join(pipPackage, "__main__.py"), excelDependencyPipSource(marker, invocation), {
     encoding: "utf8",
     flag: "wx"
@@ -204,6 +227,8 @@ export function createExcelDependencyInstallPython(directory: string, python: st
           "import importlib.util",
           "import json",
           "import pip",
+          "import pip._vendor.packaging.specifiers",
+          "import pip._vendor.packaging.version",
           "import sys",
           "print(json.dumps({",
           "    'executable': sys.executable,",
@@ -212,6 +237,11 @@ export function createExcelDependencyInstallPython(directory: string, python: st
           "    'pandasVersion': importlib.metadata.version('pandas'),",
           "    'openpyxl': importlib.util.find_spec('openpyxl') is not None,",
           "    'pip': pip.__file__,",
+          "    'pipSpecifiers': pip._vendor.packaging.specifiers.__file__,",
+          "    'pipVersion': pip._vendor.packaging.version.__file__,",
+          "    'pandasSupported': pip._vendor.packaging.specifiers.SpecifierSet('').contains(",
+          "        pip._vendor.packaging.version.Version(importlib.metadata.version('pandas')), prereleases=True",
+          "    ),",
           "}, sort_keys=True))"
         ].join("\n")
       ],
@@ -235,6 +265,19 @@ export function createExcelDependencyInstallPython(directory: string, python: st
   );
   assert.equal(preflight.pandas, true, "The XLSX dependency-test environment must retain Pandas.");
   assert.equal(preflight.pandasVersion, parent.pandas);
+  assert.equal(preflight.pandasSupported, true, "The selected PEP 440 authority must accept installed Pandas.");
+  assert.equal(
+    typeof preflight.pipSpecifiers === "string" &&
+      sameAcceptanceExecutable(preflight.pipSpecifiers, String(parent.pipSpecifiers)),
+    true,
+    "The fixture must use the selected parent interpreter's exact SpecifierSet implementation."
+  );
+  assert.equal(
+    typeof preflight.pipVersion === "string" &&
+      sameAcceptanceExecutable(preflight.pipVersion, String(parent.pipVersion)),
+    true,
+    "The fixture must use the selected parent interpreter's exact Version implementation."
+  );
   assert.equal(preflight.openpyxl, false, "The XLSX dependency-test environment must initially hide openpyxl.");
   assert.equal(
     typeof preflight.pip === "string" && sameAcceptanceExecutable(preflight.pip, path.join(pipPackage, "__init__.py")),
