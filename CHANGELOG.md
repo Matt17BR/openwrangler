@@ -17,6 +17,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Native-R notebook sessions now prepare one freshly verified private delegate after an exact correlated kernel-change
+  response, replay confirmed state, and swap runtimes without changing the public session. The failed read or mutation
+  is returned without retry, cancellation and stale ownership fail closed, concurrent failures coalesce, and ordinary
+  R-document and interactive-R recovery keep their existing delegate path. Focused source checks cover this change;
+  the strengthened installed scalar restart journey has not yet been run.
 - Registry promotion now verifies only the canonical VSIX, checksum, provenance, channel, and downloaded public VSIX
   identity. README and gallery image hosting no longer blocks Open VSX or Marketplace publication.
 - Manual `v1.99.7` preview publication now qualifies one canonical protected-main artifact in stable VS Code before an
