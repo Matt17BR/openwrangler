@@ -936,6 +936,20 @@ class DataFrameEngine(ABC):
     ) -> tuple[list[dict[str, Any]], bool]:
         raise NotImplementedError
 
+    def validate_transform_preflight(
+        self,
+        frame: Any,
+        step: Mapping[str, Any],
+        input_shape: SessionDataShape,
+    ) -> None:
+        """Validate a transformation before the mutating adapter entry point.
+
+        Most operations are fully covered by public binding. Row-expanding or
+        class-metadata-sensitive operations may override this hook while still
+        retaining defensive checks inside ``apply_transform``.
+        """
+        return None
+
     @abstractmethod
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
         raise NotImplementedError

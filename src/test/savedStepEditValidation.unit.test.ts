@@ -67,6 +67,11 @@ const validSteps = {
     delimiter: ",",
     newColumns: ["first", "second"]
   }),
+  pivotLonger: step("pivotLonger", {
+    columns: [text, otherText],
+    labelColumn: "variable",
+    valueColumn: "reading"
+  }),
   extractRegexGroup: step("extractRegexGroup", {
     column: text,
     pattern: "([A-Za-z]+)",

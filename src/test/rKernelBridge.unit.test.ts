@@ -15,6 +15,7 @@ import type {
   OneHotEncodeTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest,
+  PivotLongerTransformStep,
   RoundNumberTransformStep,
   SelectColumnsTransformStep,
   SourceCapabilities,
@@ -44,6 +45,7 @@ import {
   rKernelOpenRequest as openRequest,
   rKernelPlanRequest as planRequest,
   rKernelReplaceContractCell as replaceContractCell,
+  rKernelReplaceColumnSemantics as replaceColumnSemantics,
   rKernelRenameContract as renameContract,
   rKernelRenameDiff as renameDiff,
   rKernelRenamePreviewRequest as renamePreviewRequest,
@@ -2175,6 +2177,161 @@ describe("canonical R kernel bridge", () => {
       })
     ).resolves.toMatchObject({ kind: "stepPreview" });
     expect(keyedTransport.previewStep).toHaveBeenCalledOnce();
+  });
+
+  it("rejects Pivot longer overflow, class metadata drift, and portable collisions before R dispatch", async () => {
+    const stringCell = (raw: string): RFrameCell => ({
+      kind: "string",
+      raw,
+      display: raw,
+      isNull: false,
+      isNaN: false
+    });
+    const durationCell: RFrameCell = {
+      kind: "duration",
+      raw: "90",
+      display: "90 secs",
+      isNull: false,
+      isNaN: false
+    };
+    const integerCell: RFrameCell = {
+      kind: "integer",
+      raw: "7",
+      display: "7",
+      isNull: false,
+      isNaN: false
+    };
+    const datetimeCell: RFrameCell = {
+      kind: "datetime",
+      raw: "1785945600",
+      display: "2026-08-05T12:00:00Z",
+      isNull: false,
+      isNaN: false
+    };
+
+    const factorBase = factorContract(
+      castContract(
+        factorContract(castContract(frameContract(), "r:c:0", "character", "string", stringCell("a"), false), "r:c:0", [
+          "a",
+          "b"
+        ]),
+        "r:c:7",
+        "character",
+        "string",
+        stringCell("a"),
+        false
+      ),
+      "r:c:7",
+      ["a", "c"]
+    );
+    const datetimeBase = replaceColumnSemantics(
+      castContract(frameContract(), "r:c:7", "POSIXct", "datetime", datetimeCell, false),
+      "r:c:7",
+      { kind: "datetime", storageMode: "double", classes: ["POSIXct", "POSIXt"], timezone: "Europe/Rome" }
+    );
+    const durationBase = replaceColumnSemantics(
+      castContract(frameContract(), "r:c:7", "difftime", "duration", durationCell, false),
+      "r:c:7",
+      { kind: "difftime", storageMode: "double", classes: ["difftime"], units: "mins" }
+    );
+    const integer64Base = replaceColumnSemantics(
+      castContract(frameContract(), "r:c:7", "integer64", "integer", integerCell, false),
+      "r:c:7",
+      { kind: "integer64", storageMode: "double", classes: ["integer64", "custom-integer64"] }
+    );
+
+    const cases: readonly {
+      name: string;
+      source: RFramePageContract;
+      columns: readonly [{ id: string; name: string }, { id: string; name: string }];
+      labelColumn?: string;
+      valueColumn?: string;
+    }[] = [
+      {
+        name: "row overflow",
+        source: frameContract({ totalRows: 1_073_741_824 }),
+        columns: [
+          { id: "r:c:0", name: "value" },
+          { id: "r:c:7", name: "infinite" }
+        ]
+      },
+      {
+        name: "factor levels",
+        source: factorBase,
+        columns: [
+          { id: "r:c:0", name: "value" },
+          { id: "r:c:7", name: "infinite" }
+        ]
+      },
+      {
+        name: "POSIXct timezone",
+        source: datetimeBase,
+        columns: [
+          { id: "r:c:3", name: "when" },
+          { id: "r:c:7", name: "infinite" }
+        ]
+      },
+      {
+        name: "difftime units",
+        source: durationBase,
+        columns: [
+          { id: "r:c:4", name: "elapsed" },
+          { id: "r:c:7", name: "infinite" }
+        ]
+      },
+      {
+        name: "integer64 class metadata",
+        source: integer64Base,
+        columns: [
+          { id: "r:c:1", name: "count" },
+          { id: "r:c:7", name: "infinite" }
+        ]
+      },
+      {
+        name: "portable output-name collision",
+        source: frameContract(),
+        columns: [
+          { id: "r:c:0", name: "value" },
+          { id: "r:c:7", name: "infinite" }
+        ],
+        labelColumn: "Straße",
+        valueColumn: "STRASSE"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const transport = fakeTransport(testCase.source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+
+      await expect(
+        bridge.request(
+          pivotLongerPreviewRequest(
+            `r-pivot-no-dispatch-${testCase.name.replaceAll(" ", "-")}`,
+            testCase.columns,
+            testCase.labelColumn,
+            testCase.valueColumn
+          )
+        )
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request", sessionId });
+      expect(transport.previewStep, testCase.name).not.toHaveBeenCalled();
+      expect(transport.applyDraft, testCase.name).not.toHaveBeenCalled();
+      expect(transport.discardDraft, testCase.name).not.toHaveBeenCalled();
+      const page = await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: `after-${testCase.name}`,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      });
+      expect(page).toMatchObject({ kind: "page", revision: 0, metadata: { steps: [] } });
+      if (page.kind !== "page") throw new Error(`Expected a page after ${testCase.name}.`);
+      expect(page.metadata).not.toHaveProperty("draftStep");
+    }
   });
 
   it("accepts most common value for R text and boolean columns and rejects numeric columns", async () => {
@@ -5970,6 +6127,29 @@ describe("canonical R kernel bridge", () => {
     ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
   });
 });
+
+function pivotLongerPreviewRequest(
+  id: string,
+  columns: readonly [{ id: string; name: string }, { id: string; name: string }],
+  labelColumn = "metric",
+  valueColumn = "reading"
+): Extract<OpenWranglerRequest, { kind: "previewStep" }> {
+  const step: PivotLongerTransformStep = {
+    id,
+    kind: "pivotLonger",
+    params: { columns: [...columns], labelColumn, valueColumn }
+  };
+  return {
+    kind: "previewStep",
+    sessionId,
+    revision: 0,
+    step,
+    offset: 0,
+    limit: 20,
+    columnOffset: 0,
+    columnLimit: 8
+  };
+}
 
 function dropContract(source: RFramePageContract, columnIds: readonly string[]): RFramePageContract {
   const dropped = new Set(columnIds);

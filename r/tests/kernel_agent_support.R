@@ -133,6 +133,7 @@ latest_full_capture <- NULL
 group_by_source_materializations <- 0L
 instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
+real_capture_pivot_longer_at <- instrumented_frame_contract$capture_pivot_longer_at
 real_isolate_capture <- instrumented_frame_contract$isolate_capture
 real_materialize_view_page <- instrumented_frame_contract$materialize_view_page
 real_by_example_column_at <- instrumented_frame_contract$by_example_column_at
@@ -140,6 +141,12 @@ last_by_example_evaluator_error <- NULL
 instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
   captured <- real_capture_frame(value, ...)
+  latest_full_capture <<- captured
+  captured
+}
+instrumented_frame_contract$capture_pivot_longer_at <- function(...) {
+  full_capture_count <<- full_capture_count + 1L
+  captured <- real_capture_pivot_longer_at(...)
   latest_full_capture <<- captured
   captured
 }

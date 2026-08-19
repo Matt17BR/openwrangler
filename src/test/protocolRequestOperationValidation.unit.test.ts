@@ -690,6 +690,15 @@ describe("protocol-v2 operation request validation", () => {
         newColumn: "word"
       }
     },
+    {
+      id: "pivot-longer",
+      kind: "pivotLonger",
+      params: {
+        columns: [valueReference, otherReference],
+        labelColumn: "metric",
+        valueColumn: "reading"
+      }
+    },
     { id: "capitalize", kind: "capitalizeText", params: { column: valueReference } },
     { id: "lower", kind: "lowerText", params: { column: valueReference, newColumn: "lower" } },
     { id: "upper", kind: "upperText", params: { column: valueReference } },
@@ -863,6 +872,20 @@ describe("protocol-v2 operation request validation", () => {
       id: "regex-extraction-multiline-output",
       kind: "extractRegexGroup",
       params: { column: valueReference, pattern: "([A-Za-z]+)", group: 1, newColumn: "first\nsecond" }
+    },
+    {
+      id: "pivot-longer-too-few",
+      kind: "pivotLonger",
+      params: { columns: [valueReference], labelColumn: "metric", valueColumn: "reading" }
+    },
+    {
+      id: "pivot-longer-folded-output-collision",
+      kind: "pivotLonger",
+      params: {
+        columns: [valueReference, otherReference],
+        labelColumn: "Straße",
+        valueColumn: "STRASSE"
+      }
     },
     { id: "capitalize-string", kind: "capitalizeText", params: { column: "value" } },
     { id: "lower-string", kind: "lowerText", params: { column: "value" } },

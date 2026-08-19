@@ -15,6 +15,11 @@ from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..export_target import ExportWriterPath
+from ..pivot_longer import (
+    PivotLongerContractError,
+    checked_pivot_longer_row_count,
+    portable_pivot_longer_name_key,
+)
 from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
@@ -45,6 +50,7 @@ from .base import (
     generated_view_value_helper_lines,
     infer_semantic_type,
     is_blank_delimited_file,
+    is_internal_row_id_label,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -839,6 +845,54 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "splitTextColumns":
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             return self._split_text_columns(frame, native_params)
+        if kind == "pivotLonger":
+            selected = [bound_column_name(column, kind) for column in params["columns"]]
+            outputs = [params["labelColumn"], params["valueColumn"]]
+            columns = self._columns(frame)
+            _ensure_duckdb_pivot_output_columns_available(columns, outputs)
+            types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+            if any(types[name] != types[selected[0]] for name in selected[1:]):
+                raise EngineError("Pivot-longer columns must have one exactly compatible DuckDB type.")
+            row_count = self.shape(frame)["rows"]
+            if row_count is None:
+                raise EngineError("Pivot longer requires an exact input row count before execution.")
+            try:
+                checked_pivot_longer_row_count(row_count, len(selected))
+            except PivotLongerContractError as error:
+                raise EngineError(str(error)) from error
+            visible = self._visible_columns(frame)
+            unselected = [name for name in visible if name not in set(selected)]
+            source_order = _unique_internal(columns, "__ow_pivot_source_order")
+            pivot_order = _unique_internal([*columns, source_order], "__ow_pivot_selected_order")
+            row_id = self._row_id_column(frame)
+            source = (
+                "SELECT *, row_number() OVER () - 1 AS " + _quote_ident(source_order) + " FROM ow"
+                if row_id is None
+                else "SELECT *, " + _quote_ident(row_id) + " AS " + _quote_ident(source_order) + " FROM ow"
+            )
+            branches = []
+            for ordinal, selected_name in enumerate(selected):
+                projections = [*(_quote_ident(name) for name in unselected)]
+                projections.extend(
+                    (
+                        f"{_sql_literal(selected_name)} AS {_quote_ident(params['labelColumn'])}",
+                        f"{_quote_ident(selected_name)} AS {_quote_ident(params['valueColumn'])}",
+                        f"{ordinal} AS {_quote_ident(pivot_order)}",
+                        _quote_ident(source_order),
+                    )
+                )
+                branches.append("SELECT " + ", ".join(projections) + " FROM pivot_source")
+            query = (
+                "WITH pivot_source AS ("
+                + source
+                + "), pivot_rows AS ("
+                + " UNION ALL ".join(branches)
+                + ") SELECT * EXCLUDE ("
+                + _identifier_list([pivot_order, source_order])
+                + ") FROM pivot_rows ORDER BY "
+                + _identifier_list([pivot_order, source_order])
+            )
+            return self._relation(frame, query)
         if kind == "extractRegexGroup":
             column = bound_column_name(params["column"], kind)
             _ensure_duckdb_output_columns_available(self._columns(frame), [params["newColumn"]], "Regex extraction")
@@ -891,6 +945,26 @@ class DuckDBEngine(DataFrameEngine):
             # and guarantees no custom relation owner enters session state.
             return self._relation_from_sql(result_sql)
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
+
+    def validate_transform_preflight(
+        self,
+        frame: Any,
+        step: Mapping[str, Any],
+        input_shape: SessionDataShape,
+    ) -> None:
+        if step.get("kind") != "pivotLonger":
+            return
+        source = self.normalize(frame)
+        params = step["params"]
+        selected = [bound_column_name(column, "pivotLonger") for column in params["columns"]]
+        columns = self._columns(source)
+        _ensure_duckdb_pivot_output_columns_available(
+            columns,
+            [params["labelColumn"], params["valueColumn"]],
+        )
+        types = dict(zip(columns, (str(item) for item in source.types), strict=True))
+        if any(types[name] != types[selected[0]] for name in selected[1:]):
+            raise EngineError("Pivot-longer columns must have one exactly compatible DuckDB type.")
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
@@ -1060,6 +1134,12 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "splitTextColumns":
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             return [f"{prefix}df = _ow_split_text_columns(df, {native_params!r})"]
+        if kind == "pivotLonger":
+            native_params = {
+                **params,
+                "columns": [bound_column_name(column, kind) for column in params["columns"]],
+            }
+            return [f"{prefix}df = _ow_pivot_longer(df, {native_params!r})"]
         if kind == "extractRegexGroup":
             column = bound_column_name(params["column"], kind)
             expression = _regex_extract_expression(column, params["pattern"], params["group"])
@@ -2540,6 +2620,26 @@ def _ensure_duckdb_output_columns_available(existing: Iterable[Any], generated: 
         )
 
 
+def _ensure_duckdb_pivot_output_columns_available(existing: Iterable[Any], generated: Iterable[Any]) -> None:
+    existing_names = [str(name) for name in existing]
+    generated_names = [str(name) for name in generated]
+    if any(is_internal_row_id_label(name) for name in generated_names):
+        raise EngineError("Pivot longer would create Open Wrangler's reserved private row-identity column.")
+    existing_by_key = {portable_pivot_longer_name_key(name): name for name in existing_names}
+    generated_by_key: dict[str, str] = {}
+    collisions: set[str] = set()
+    for name in generated_names:
+        key = portable_pivot_longer_name_key(name)
+        if key in existing_by_key:
+            collisions.update((existing_by_key[key], name))
+        previous = generated_by_key.get(key)
+        if previous is not None:
+            collisions.update((previous, name))
+        generated_by_key[key] = name
+    if collisions:
+        raise EngineError("Pivot longer would create duplicate column names: " + ", ".join(sorted(collisions)))
+
+
 def _bound_duckdb_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
     return {
         **model,
@@ -3929,6 +4029,50 @@ def _ow_split_text_columns(df, params):
     for index, name in enumerate(output_names, start=1):
         df = _ow_assign(df, name, "string_split(" + value + ", " + delimiter + ")[" + str(index) + "]")
     return df
+
+
+def _ow_pivot_longer(df, params):
+    selected = list(params["columns"])
+    outputs = [params["labelColumn"], params["valueColumn"]]
+    columns = _ow_columns(df)
+    _ow_check_outputs(columns, outputs, "Pivot longer")
+    def output_key(value):
+        return "".join(
+            chr(ord(char) + 32) if "A" <= char <= "Z" else "ss" if char in {"ß", "ẞ"} else char
+            for char in value
+        )
+    existing = {output_key(str(name)): str(name) for name in columns}
+    output_keys = [output_key(name) for name in outputs]
+    if len(set(output_keys)) != len(output_keys):
+        raise ValueError("Pivot-longer output names must differ case-insensitively.")
+    if any(key in existing for key in output_keys):
+        raise ValueError("Pivot longer would create a DuckDB column name that differs only by case.")
+    types = dict(zip(columns, map(str, df.types)))
+    if any(types[name] != types[selected[0]] for name in selected[1:]):
+        raise ValueError("Pivot-longer columns must have one exactly compatible DuckDB type.")
+    row_count = int(_ow_query(df, "SELECT count(*) FROM ow").fetchone()[0])
+    if row_count and row_count > 2147483647 // len(selected):
+        raise ValueError("Pivot longer would exceed the portable 2,147,483,647-row limit.")
+    unselected = [name for name in columns if name not in set(selected)]
+    source_order = _ow_unique(columns, "__ow_pivot_source_order")
+    pivot_order = _ow_unique(columns + [source_order], "__ow_pivot_selected_order")
+    branches = []
+    for ordinal, selected_name in enumerate(selected):
+        projections = [_ow_ident(name) for name in unselected]
+        projections.extend([
+            _ow_literal(selected_name) + " AS " + _ow_ident(params["labelColumn"]),
+            _ow_ident(selected_name) + " AS " + _ow_ident(params["valueColumn"]),
+            str(ordinal) + " AS " + _ow_ident(pivot_order),
+            _ow_ident(source_order),
+        ])
+        branches.append("SELECT " + ", ".join(projections) + " FROM pivot_source")
+    query = (
+        "WITH pivot_source AS (SELECT *, row_number() OVER () - 1 AS " + _ow_ident(source_order)
+        + " FROM ow), pivot_rows AS (" + " UNION ALL ".join(branches)
+        + ") SELECT * EXCLUDE (" + _ow_identifiers([pivot_order, source_order])
+        + ") FROM pivot_rows ORDER BY " + _ow_identifiers([pivot_order, source_order])
+    )
+    return _ow_query(df, query)
 
 
 def _ow_min_max(df, column, target):

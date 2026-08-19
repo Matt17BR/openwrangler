@@ -42,6 +42,7 @@ import {
 } from "./rKernelMutationDiff";
 import {
   acceptRetainedByExampleStep,
+  assertRPivotLongerPreflight,
   assertCustomDerivedRowIdentities,
   customRowIdentityConstraintAfterRStep,
   dynamicByExampleSchema,
@@ -98,6 +99,7 @@ export class RKernelMutationLifecycle {
       request.step.kind !== "stripText" &&
       request.step.kind !== "splitText" &&
       request.step.kind !== "splitTextColumns" &&
+      request.step.kind !== "pivotLonger" &&
       request.step.kind !== "extractRegexGroup" &&
       request.step.kind !== "capitalizeText" &&
       request.step.kind !== "lowerText" &&
@@ -177,6 +179,9 @@ export class RKernelMutationLifecycle {
           : isRCategoricalTransformStep(request.step)
             ? categoricalRetainedSchema(inputSchema, request.step)
             : schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
+      if (request.step.kind === "pivotLonger") {
+        assertRPivotLongerPreflight(request.step, inputSchema, inputRSchema, inputRows);
+      }
       targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
       rStep = rTransformStep(request.step, inputSchema);
       targetRowNames = rowNamesAfterRStep(inputRowNames, request.step);

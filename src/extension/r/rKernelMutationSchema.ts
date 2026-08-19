@@ -10,9 +10,11 @@ import type {
   FormulaTransformStep,
   GroupByTransformStep,
   MinMaxScaleTransformStep,
+  PivotLongerTransformStep,
   RoundNumberTransformStep
 } from "../../shared/protocol";
 import { isRetainedTransformStep } from "../../shared/protocolValidation";
+import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
 import { R_FRAME_CONTRACT_LIMITS, type RColumnSchema, type RFramePageContract } from "./rFrameContract";
 import {
   schemaAfterCast,
@@ -47,6 +49,121 @@ import { retainedKeyPrefix } from "./rKernelTransformState";
 import { requireRTransformColumn as requireTransformColumn } from "./rKernelViewContract";
 
 const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
+const MAX_PIVOT_LONGER_ROWS = 2_147_483_647;
+const R_PIVOT_LONGER_SCALAR_KINDS = new Set([
+  "character",
+  "factor",
+  "integer",
+  "integer64",
+  "double",
+  "logical",
+  "date",
+  "datetime",
+  "difftime"
+]);
+
+function checkedRPivotLongerRows(inputRows: number, selectedCount: number): number {
+  if (
+    !Number.isSafeInteger(inputRows) ||
+    inputRows < 0 ||
+    !Number.isSafeInteger(selectedCount) ||
+    selectedCount < 2 ||
+    selectedCount > 64 ||
+    (inputRows !== 0 && inputRows > Math.floor(MAX_PIVOT_LONGER_ROWS / selectedCount))
+  ) {
+    throw new TypeError("Pivot longer would exceed the portable 2,147,483,647-row limit.");
+  }
+  return inputRows * selectedCount;
+}
+
+function pivotLongerInputColumns(
+  inputSchema: readonly ColumnSchema[],
+  step: PivotLongerTransformStep
+): readonly ColumnSchema[] {
+  const selected = step.params.columns.map((reference) => {
+    const matches = inputSchema.filter((column) => column.id === reference.id && column.name === reference.name);
+    if (matches.length !== 1) {
+      throw new TypeError("A Pivot longer column reference no longer matches the active R dataframe.");
+    }
+    return matches[0] as ColumnSchema;
+  });
+  if (new Set(selected.map((column) => column.id)).size !== selected.length) {
+    throw new TypeError("Pivot longer requires unique input columns.");
+  }
+  const first = selected[0] as ColumnSchema;
+  if (selected.some((column) => column.type !== first.type || column.rawType !== first.rawType)) {
+    throw new TypeError("Pivot longer requires exactly compatible scalar column types.");
+  }
+  return selected;
+}
+
+function schemaAfterPivotLonger(
+  inputSchema: readonly ColumnSchema[],
+  step: PivotLongerTransformStep
+): readonly ColumnSchema[] {
+  const selected = pivotLongerInputColumns(inputSchema, step);
+  const selectedIds = new Set(selected.map((column) => column.id));
+  const first = selected[0] as ColumnSchema;
+  return Object.freeze(
+    [
+      ...inputSchema.filter((column) => !selectedIds.has(column.id)).map((column) => ({ ...column })),
+      {
+        id: `c:step:${step.id}:0`,
+        name: step.params.labelColumn,
+        rawType: "character",
+        type: "string" as const,
+        nullable: false
+      },
+      {
+        id: `c:step:${step.id}:1`,
+        name: step.params.valueColumn,
+        rawType: first.rawType,
+        type: first.type,
+        nullable: selected.some((column) => column.nullable)
+      }
+    ].map((column, position) => Object.freeze({ ...column, position }))
+  );
+}
+
+export function assertRPivotLongerPreflight(
+  step: PivotLongerTransformStep,
+  inputSchema: readonly ColumnSchema[],
+  inputRSchema: readonly RColumnSchema[],
+  inputRows: number
+): void {
+  checkedRPivotLongerRows(inputRows, step.params.columns.length);
+  const selected = pivotLongerInputColumns(inputSchema, step);
+  const selectedR = selected.map((column) => {
+    const matches = inputRSchema.filter(
+      (candidate) =>
+        candidate.id === column.id && candidate.name === column.name && candidate.position === column.position
+    );
+    if (matches.length !== 1) {
+      throw new TypeError("A Pivot longer column no longer matches the exact R runtime schema.");
+    }
+    return matches[0] as RColumnSchema;
+  });
+  const first = selectedR[0] as RColumnSchema;
+  if (
+    !R_PIVOT_LONGER_SCALAR_KINDS.has(first.semantics.kind) ||
+    selectedR.some(
+      (column) =>
+        !R_PIVOT_LONGER_SCALAR_KINDS.has(column.semantics.kind) || !isDeepStrictEqual(column.semantics, first.semantics)
+    )
+  ) {
+    throw new TypeError(
+      "Pivot longer requires exact R scalar metadata, including factor levels/order, timezone, duration units, and integer64 semantics."
+    );
+  }
+  validatePivotLongerOutputName(step.params.labelColumn, "Label column");
+  validatePivotLongerOutputName(step.params.valueColumn, "Value column");
+  const outputNames = [step.params.labelColumn, step.params.valueColumn];
+  const occupied = new Set(inputSchema.map((column) => portablePivotLongerNameKey(column.name)));
+  const outputKeys = outputNames.map(portablePivotLongerNameKey);
+  if (new Set(outputKeys).size !== 2 || outputKeys.some((key) => occupied.has(key))) {
+    throw new TypeError("Pivot-longer output names collide under the portable collision rule.");
+  }
+}
 
 export type RCustomRowIdentityConstraint = Readonly<{
   first: number;
@@ -58,7 +175,7 @@ export function rowNamesAfterRStep(
   input: RFramePageContract["frameSemantics"]["rowNames"],
   step: RPreviewTransformStep
 ): RFramePageContract["frameSemantics"]["rowNames"] {
-  return step.kind === "groupBy" ? "positional" : input;
+  return step.kind === "groupBy" || step.kind === "pivotLonger" ? "positional" : input;
 }
 
 export function schemaAfterRStep(
@@ -86,6 +203,7 @@ export function schemaAfterRStep(
   if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (step.kind === "splitTextColumns") return schemaAfterSplitTextColumns(inputSchema, step);
+  if (step.kind === "pivotLonger") return schemaAfterPivotLonger(inputSchema, step);
   if (step.kind === "extractRegexGroup") return schemaAfterRegexExtraction(inputSchema, step);
   if (isRCategoricalTransformStep(step)) {
     throw new TypeError("Categorical R operations require a runtime-derived output schema.");
@@ -754,7 +872,7 @@ export function keyColumnsAfterRStep(
   outputSchema: readonly ColumnSchema[],
   step: RPreviewTransformStep
 ): readonly string[] {
-  if (step.kind === "groupBy") return Object.freeze([]);
+  if (step.kind === "groupBy" || step.kind === "pivotLonger") return Object.freeze([]);
   if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
     return Object.freeze([]);
   }
@@ -762,6 +880,13 @@ export function keyColumnsAfterRStep(
 }
 
 export function rowCountAfterRStep(step: RPreviewTransformStep, inputRows: number, diff: DataDiff): number {
+  if (step.kind === "pivotLonger") {
+    const outputRows = checkedRPivotLongerRows(inputRows, step.params.columns.length);
+    if (diff.removedRows !== inputRows || diff.addedRows !== outputRows) {
+      throw new Error("The R kernel returned invalid row counts for Pivot longer.");
+    }
+    return outputRows;
+  }
   if (step.kind === "groupBy" || step.kind === "customCode") {
     if (diff.removedRows !== inputRows) {
       throw new Error(
@@ -792,6 +917,7 @@ export function rowIdentityDomainAfterRStep(
   inputIdentityRows: number,
   outputRows: number
 ): number {
+  if (step.kind === "pivotLonger") return outputRows;
   if (step.kind !== "groupBy" && step.kind !== "customCode") return inputIdentityRows;
   const outputIdentityRows = inputIdentityRows + outputRows;
   if (!Number.isSafeInteger(outputIdentityRows) || outputIdentityRows > R_FRAME_CONTRACT_LIMITS.rows) {
@@ -817,7 +943,7 @@ export function customRowIdentityConstraintAfterRStep(
       order: "exact" as const
     });
   }
-  if (step.kind === "groupBy") return undefined;
+  if (step.kind === "groupBy" || step.kind === "pivotLonger") return undefined;
   if (!input) return undefined;
   if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
     return input.order === "any" ? input : Object.freeze({ ...input, order: "any" as const });

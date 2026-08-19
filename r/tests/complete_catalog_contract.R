@@ -68,6 +68,10 @@ recording_contract$capture_group_result <- function(...) record_capture(real_cap
 recording_contract$capture_custom_code_result <- function(...) {
   record_capture(real_capture_custom_code_result(...))
 }
+real_capture_pivot_longer_at <- recording_contract$capture_pivot_longer_at
+recording_contract$capture_pivot_longer_at <- function(...) {
+  record_capture(real_capture_pivot_longer_at(...))
+}
 
 agent <- openwrangler_r_kernel_agent$new_agent(recording_contract, source_environment)
 
@@ -175,7 +179,7 @@ catalog_kinds <- c(
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "minMaxScale", "roundNumber", "floorNumber",
-  "ceilNumber", "formatDatetime", "groupBy", "byExample", "customCode"
+  "ceilNumber", "formatDatetime", "pivotLonger", "groupBy", "byExample", "customCode"
 )
 
 catalog_cases <- list(
@@ -403,6 +407,19 @@ catalog_cases <- list(
       output[["formatted day"]], format(input$day, "%d/%m/%Y"), "Format Datetime changed values"
     )
   ),
+  pivotLonger = list(
+    step = function(frame, id) step_with(id, "pivotLonger", list(
+      columns = I(list(column_reference(frame, "whole"), column_reference(frame, "fallback"))),
+      labelColumn = "measure",
+      valueColumn = "reading"
+    )),
+    verify = function(output, input) {
+      assert_identical(names(output), c(setdiff(names(input), c("whole", "fallback")), "measure", "reading"), "Pivot longer returned the wrong schema")
+      assert_identical(output$measure, rep(c("whole", "fallback"), each = nrow(input)), "Pivot longer changed selected-column-major order")
+      assert_identical(output$reading, unname(c(input$whole, input$fallback)), "Pivot longer changed scalar values")
+      assert_identical(.row_names_info(output, type = 1L), -nrow(output), "Pivot longer did not publish positional row names")
+    }
+  ),
   groupBy = list(
     step = function(frame, id) step_with(id, "groupBy", list(
       keys = I(list(column_reference(frame, "group"))),
@@ -444,7 +461,7 @@ catalog_cases <- list(
 )
 
 assert_identical(names(catalog_cases), catalog_kinds, "the complete R catalog owner is not in canonical order")
-assert_identical(length(catalog_cases), 30L, "the complete R catalog owner does not contain 30 operations")
+assert_identical(length(catalog_cases), 31L, "the complete R catalog owner does not contain 31 operations")
 
 catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(catalog_cases))
 
@@ -1182,6 +1199,6 @@ remove("complete_composition", envir = source_environment)
 
 agent$dispose()
 cat(paste0(
-  "complete native-R catalog contract passed: 30 live/generated/replayed operations; ",
+  "complete native-R catalog contract passed: 31 live/generated/replayed operations; ",
   "inspection, undo, flavors, attributes, zero-row, >1024 chunk, and cardinality composition\n"
 ))

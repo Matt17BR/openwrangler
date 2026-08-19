@@ -110,6 +110,7 @@
 | `floorNumber`        | Floor                   | Numeric / datetime | `column`                                    | `newColumn`                             |
 | `ceilNumber`         | Ceiling                 | Numeric / datetime | `column`                                    | `newColumn`                             |
 | `formatDatetime`     | Format datetime         | Numeric / datetime | `column`, `format`                          | `newColumn`                             |
+| `pivotLonger`        | Pivot longer            | Reshape            | `columns`, `labelColumn`, `valueColumn`     | None                                    |
 | `groupBy`            | Group and aggregate     | Aggregation        | `keys`, `aggregations`                      | None                                    |
 | `byExample`          | Transform by example    | By example         | `sourceColumns`, `newColumn`, `examples`    | `program`, `warnings`, `candidateCount` |
 | `customCode`         | Custom code             | Custom             | `code`                                      | None                                    |
