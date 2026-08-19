@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import {
@@ -7,7 +9,8 @@ import {
   WORKFLOW_PATHS,
   WORKFLOW_INSTALL_OWNERS,
   inspectInstallPolicy,
-  installPolicyInventory
+  installPolicyInventory,
+  tokenizeShellCommand
 } from "./install-policy.mjs";
 
 const relevantPaths = new Set([
@@ -56,6 +59,33 @@ test("install policy owns every script-free lockfile install and exact shim", ()
     platformPackages: 9,
     workflowFiles: 11
   });
+});
+
+test("shell command tokenization preserves quoted and unmatched boundaries", () => {
+  assert.deepEqual(tokenizeShellCommand(`npm exec "a b" 'c d' plain`), ["npm", "exec", "a b", "c d", "plain"]);
+  assert.deepEqual(tokenizeShellCommand(`"a\\"b"tail`), [`a\\"b`, "tail"]);
+  assert.deepEqual(tokenizeShellCommand(`'' ""`), ["", ""]);
+
+  const unterminatedDoubleQuote = '"' + "\\!".repeat(30);
+  assert.deepEqual(tokenizeShellCommand(unterminatedDoubleQuote), [unterminatedDoubleQuote]);
+  assert.deepEqual(tokenizeShellCommand("'unterminated value"), ["'unterminated", "value"]);
+});
+
+test("shell command tokenization remains bounded on a long adversarial quote", () => {
+  const moduleUrl = pathToFileURL("scripts/install-policy.mjs").href;
+  const program = `
+    import { tokenizeShellCommand } from ${JSON.stringify(moduleUrl)};
+    const input = '"' + "\\\\!".repeat(250_000);
+    const tokens = tokenizeShellCommand(input);
+    if (tokens.length !== 1 || tokens[0] !== input) process.exit(2);
+  `;
+  const child = spawnSync(process.execPath, ["--input-type=module", "--eval", program], {
+    encoding: "utf8",
+    timeout: 2_000
+  });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.signal, null, child.stderr);
+  assert.equal(child.status, 0, child.stderr);
 });
 
 test("install policy rejects every lifecycle-script lock entry and native downloader", () => {
