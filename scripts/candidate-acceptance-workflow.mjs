@@ -44,7 +44,7 @@ const DUPLICATE_SOURCE_HARNESS_RUNS = [
   "npm run test:coverage"
 ];
 const LINUX_DUPLICATE_HARNESS_SETUP = [
-  "npx playwright-core install --with-deps chromium",
+  "npx --no-install playwright-core install --with-deps chromium",
   'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"',
   "uv-0.11.32-py3-none-manylinux"
 ];

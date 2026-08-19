@@ -244,7 +244,7 @@ jobs:
           printf 'required=%s\n' "$required" >> "$GITHUB_OUTPUT"
       - name: Install the lockfile-pinned public-media browser
         if: ${{ steps.public_media_contract.outputs.required == 'true' }}
-        run: npx playwright-core install --with-deps chromium
+        run: npx --no-install playwright-core install --with-deps chromium
       - name: Verify public README media after registry propagation
         if: ${{ steps.public_media_contract.outputs.required == 'true' }}
         env:

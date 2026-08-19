@@ -76,7 +76,7 @@ esac
 `;
 export const PUBLIC_MEDIA_BROWSER_INSTALL_RUN = `case "$PREPUBLICATION_REQUIRED" in
 true) release-source/node_modules/.bin/playwright-core install --with-deps chromium ;;
-false) npx playwright-core install --with-deps chromium ;;
+false) npx --no-install playwright-core install --with-deps chromium ;;
 *) exit 64 ;;
 esac
 `;

@@ -66,6 +66,14 @@ export const WORKFLOW_PATHS = Object.freeze([
 ]);
 const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
 const NPM_COMMAND = /\bnpm(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
+const NPX_COMMAND = /\bnpx(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
+const REVIEWED_NPX_EXECUTABLES = Object.freeze({
+  "npm-run-all": ["node_modules/npm-run-all", "bin/npm-run-all/index.js"],
+  ovsx: ["node_modules/ovsx", "bin/ovsx"],
+  "playwright-core": ["node_modules/playwright-core", "cli.js"],
+  vitest: ["node_modules/vitest", "vitest.mjs"],
+  vsce: ["node_modules/@vscode/vsce", "vsce"]
+});
 const NPM_COMMANDS = new Set([
   "access",
   "adduser",
@@ -193,7 +201,7 @@ const NPM_ALIASES = Object.freeze({
   why: "explain",
   x: "exec"
 });
-const NPM_LIFECYCLE_COMMANDS = new Set(["ci", "install", "install-ci-test", "install-test", "rebuild"]);
+const NPM_LIFECYCLE_COMMANDS = new Set(["ci", "exec", "install", "install-ci-test", "install-test", "rebuild"]);
 const SCRIPT_CONTROL_COMMANDS = new Set(["c", "config"]);
 const DIRECT_SCRIPT_CONTROL_COMMANDS = new Set(["set"]);
 const SCRIPT_CONTROL_ACTIONS = new Set(["delete", "edit", "remove", "rm", "set", "unset"]);
@@ -229,9 +237,29 @@ function normalizeShellContinuations(source) {
   return source.replace(/[\\`^]\r?\n/gu, " ");
 }
 
+function normalizePackageManagerCommands(source) {
+  return normalizeShellContinuations(source).replace(/[^\s;&|]+/gu, (token) => {
+    const unescaped = token.replace(/[\\`^'"]/gu, "");
+    return /^(?:npm|npx)(?:\.(?:cmd|ps1))?$/iu.test(unescaped) ? unescaped : token;
+  });
+}
+
+function unreviewedNpxCommands(source) {
+  return [...normalizePackageManagerCommands(source).matchAll(NPX_COMMAND)]
+    .filter((match) => {
+      const tokens = shellTokens(match[0]).slice(1);
+      return tokens[0] !== "--no-install" || REVIEWED_NPX_EXECUTABLES[tokens[1]] === undefined;
+    })
+    .map((match) => normalizeCommand(match[0]));
+}
+
 function hasBypassCommand(source) {
-  const normalized = normalizeShellContinuations(source);
-  return BYPASS_COMMAND.test(normalized) || ALTERNATE_PACKAGE_MANAGER.test(normalized);
+  const normalized = normalizePackageManagerCommands(source);
+  return (
+    BYPASS_COMMAND.test(normalized) ||
+    ALTERNATE_PACKAGE_MANAGER.test(normalized) ||
+    unreviewedNpxCommands(normalized).length > 0
+  );
 }
 
 function shellTokens(command) {
@@ -266,7 +294,7 @@ function npmInvocation(match) {
 }
 
 function lifecycleCommands(source) {
-  return [...normalizeShellContinuations(source).matchAll(NPM_COMMAND)]
+  return [...normalizePackageManagerCommands(source).matchAll(NPM_COMMAND)]
     .filter((match) => {
       const invocation = npmInvocation(match[0]);
       return invocation.hasLeadingOption || NPM_LIFECYCLE_COMMANDS.has(invocation.command);
@@ -275,7 +303,7 @@ function lifecycleCommands(source) {
 }
 
 function npmScriptControlMutations(source) {
-  return [...normalizeShellContinuations(source).matchAll(NPM_COMMAND)]
+  return [...normalizePackageManagerCommands(source).matchAll(NPM_COMMAND)]
     .filter((match) => {
       const invocation = npmInvocation(match[0]);
       if (!SCRIPT_CONTROL_COMMANDS.has(invocation.command) && !DIRECT_SCRIPT_CONTROL_COMMANDS.has(invocation.command)) {
@@ -447,6 +475,13 @@ function checkManifestAndLock(readText, problems) {
   }
   if (lockPackages["node_modules/prebuild-install"] !== undefined) {
     problems.push("package-lock.json must not contain prebuild-install.");
+  }
+  for (const [executable, [path, binPath]] of Object.entries(REVIEWED_NPX_EXECUTABLES)) {
+    const bin = lockPackages[path]?.bin;
+    const actualBin = typeof bin === "string" ? bin : bin?.[executable];
+    if (actualBin !== binPath) {
+      problems.push("package-lock.json must bind reviewed npx executable " + executable + " to " + path + ".");
+    }
   }
 
   for (const [name, path] of Object.entries(SHIM_PATHS)) {
