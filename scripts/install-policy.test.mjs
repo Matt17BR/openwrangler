@@ -172,6 +172,14 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
       /(?:unreviewed npm lifecycle commands|bypass alias)/u
     );
   }
+  for (const command of ["yarn", "yarn --frozen-lockfile", "pnpm install", "bun install"]) {
+    rejected(
+      mutate(".github/workflows/ci.yml", (source) =>
+        source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
+      ),
+      /bypass alias/u
+    );
+  }
   for (const command of [
     "npm config set ignore-scripts false",
     "npm c set ignore-scripts false",
@@ -186,6 +194,36 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
       /weakens lifecycle-script suppression/u
     );
   }
+  rejected(
+    mutate(".github/workflows/ci.yml", (source) =>
+      source.replace(
+        "npm ci --ignore-scripts",
+        "npm ci --ignore-scripts\n          npm \\\n            c delete ignore-scripts --location=project\n          npm \\\n            install-ci-test"
+      )
+    ),
+    /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
+  );
+  rejected(
+    mutate(".github/workflows/ci.yml", (source) =>
+      source.replace(
+        "    steps:\n",
+        "    steps:\n" +
+          "      - run: >\n" +
+          "          npm c set --location=project\n" +
+          "          ignore-scripts false\n" +
+          "      - run: >\n" +
+          "          npm\n" +
+          "          install-ci-test\n"
+      )
+    ),
+    /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
+  );
+  rejected(
+    mutate(".github/workflows/ci.yml", (source) =>
+      source.replace("    steps:\n", "    steps:\n      - run: >\n          yarn\n          install\n")
+    ),
+    /bypass alias/u
+  );
 });
 
 test("every workflow install owner rejects command and lifecycle-control drift", () => {
