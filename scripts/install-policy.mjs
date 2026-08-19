@@ -222,9 +222,9 @@ const SCRIPT_CONTROL_ACTIONS = new Set(["delete", "edit", "remove", "rm", "set",
 const BYPASS_COMMAND =
   /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
 const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|bunx|corepack|pnpm|pnpx|yarn|yarnpkg)\b/iu;
-const UNREVIEWED_SHELL_TOKEN_ENCODING = /\$'/u;
+const UNREVIEWED_SHELL_TOKEN_ENCODING = /(?:\$'|(?<!&)&(?!&)\s*\()/u;
 const PACKAGE_MANAGER_VARIABLE =
-  /(?:\$(?:\{[^}\n]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[^}\n]*\}|\([A-Z_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z_]*\)|(?:(?:env|global|local|private|script|using):)?[A-Z_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z_]*)|%[A-Z_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z_]*%)/iu;
+  /(?:\$(?:\{[^}\n]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[^}\n]*\}|\([A-Z0-9_.-]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z0-9_.-]*\)|(?:(?:env|global|local|private|script|using):)?[A-Z0-9_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z0-9_]*)|%[A-Z0-9_.-]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z0-9_.-]*%)/iu;
 const WEAKENED_SCRIPT_CONTROL =
   /(?:--ignore-scripts(?:=|\s+)false\b|\bignore-scripts\s*=\s*false\b|\bnpm_config_ignore_scripts\b|--foreground-scripts\b)/iu;
 
