@@ -252,13 +252,22 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     ["pwsh", "& $env:SAFE_NPX2 --yes @scope/unreviewed"],
     ["pwsh", "& ('n'+'pm') install keytar"],
     ["pwsh", "& ('n'+'px') --yes @scope/unreviewed"],
+    ["pwsh", "& $('n'+'pm') install keytar"],
+    ["pwsh", "& $('n'+'px') --yes @scope/unreviewed"],
     ["pwsh", "ya`rn install"],
+    ["pwsh", "bu`n.exe install"],
     ["cmd", "ya^rn install"],
+    ["cmd", "bu^n.exe install"],
+    ["cmd", "pn^pm.exe install"],
+    ["cmd", "n^pm.exe install keytar"],
     ["cmd", "%SAFE_BUNX2% @scope/unreviewed"]
   ]) {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
     workflow.jobs["windows-unique"].steps.push({ ...(shell === undefined ? {} : { shell }), run: command });
-    rejected(new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]), /bypass alias/u);
+    rejected(
+      new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
+      /(?:unreviewed npm lifecycle commands|bypass alias)/u
+    );
   }
   {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
