@@ -59,6 +59,14 @@ def derive_lineage(
                 {"id": _step_column_id(step, 1), "name": str(params["valueColumn"])},
             )
         )
+    elif kind == "pivotWider":
+        removed_ids = {_reference_id(params["namesFrom"]), _reference_id(params["valuesFrom"])}
+        _require_known_ids(candidates, removed_ids)
+        candidates = [column for column in candidates if column["id"] not in removed_ids]
+        candidates.extend(
+            {"id": _step_column_id(step, index), "name": str(output["name"])}
+            for index, output in enumerate(params["outputs"])
+        )
     return _align(candidates, after_schema, step)
 
 

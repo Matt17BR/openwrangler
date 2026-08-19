@@ -510,7 +510,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /Switch between counts and percentages from the grid or column panel\. Hover or focus a bin for both, or click a value or bin to filter\./u
   );
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
-  assert.match(readme, /Choose from 31 operations/u);
+  assert.match(readme, /Choose from 32 operations/u);
   assert.match(
     readme,
     /Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step/u

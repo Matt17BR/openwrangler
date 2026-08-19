@@ -189,10 +189,10 @@ const expectedStableRScope = [
   ["Notebook workbench", "Linux, macOS, and Windows", "src/test/rKernelBridge.unit.test.ts"],
   [
     "Complete R cleaning catalog and generated code",
-    "All 31 catalog operations",
+    "All 32 catalog operations",
     "r/tests/complete_catalog_contract.R"
   ],
-  ["Copy or save generated R", "All 31 catalog operations", "src/test/rCompleteCatalogCodeExport.unit.test.ts"],
+  ["Copy or save generated R", "All 32 catalog operations", "src/test/rCompleteCatalogCodeExport.unit.test.ts"],
   [
     "Insert generated R into its IRkernel notebook",
     "Linux, macOS, and Windows",
@@ -843,8 +843,8 @@ test("rejects structural and semantic drift in the stable Native R matrix", () =
   }
 
   for (const mutated of [
-    ...["All 30 catalog operations", "All 32 catalog operations"].map((availability) =>
-      stableRParity().replace("All 31 catalog operations", availability)
+    ...["All 31 catalog operations", "All 33 catalog operations"].map((availability) =>
+      stableRParity().replace("All 32 catalog operations", availability)
     ),
     stableRParity().replace("collapse::qDF()", "collapse frame"),
     stableRParity().replace("collapse::qTBL()", "collapse frame"),

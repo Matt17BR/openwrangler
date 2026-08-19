@@ -17,6 +17,7 @@ from ..pivot_longer import (
     checked_pivot_longer_row_count,
     portable_pivot_longer_name_key,
 )
+from ..pivot_wider import pivot_wider_key_value, portable_pivot_wider_name_key
 from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
@@ -711,6 +712,10 @@ class PandasEngine(DataFrameEngine):
                 fragment[params["valueColumn"]] = df.iloc[:, position].reset_index(drop=True)
                 fragments.append(fragment)
             return pd.concat(fragments, axis=0, ignore_index=True)
+        if kind == "pivotWider":
+            names_position = self._bound_frame_position(df, params["namesFrom"], kind)
+            values_position = self._bound_frame_position(df, params["valuesFrom"], kind)
+            return _pandas_pivot_wider(df, names_position, values_position, params["outputs"])
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
@@ -828,6 +833,20 @@ class PandasEngine(DataFrameEngine):
         step: Mapping[str, Any],
         input_shape: SessionDataShape,
     ) -> None:
+        if step.get("kind") == "pivotWider":
+            import pandas as pd
+
+            df = self.normalize(frame)
+            params = step["params"]
+            names_position = self._bound_frame_position(df, params["namesFrom"], "pivotWider")
+            values_position = self._bound_frame_position(df, params["valuesFrom"], "pivotWider")
+            _pandas_validate_pivot_wider(df, names_position, values_position, params["outputs"])
+            if not (
+                isinstance(df.dtypes.iloc[names_position], (pd.StringDtype, pd.CategoricalDtype))
+                or pd.api.types.is_object_dtype(df.dtypes.iloc[names_position])
+            ):
+                raise EngineError("Pivot-wider namesFrom must be a Pandas text or categorical column.")
+            return
         if step.get("kind") != "pivotLonger":
             return
         import pandas as pd
@@ -995,9 +1014,10 @@ class PandasEngine(DataFrameEngine):
         needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
-        needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
+        needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample", "pivotWider"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         needs_pivot_longer_helpers = any(step["kind"] == "pivotLonger" for step in plan)
+        needs_pivot_wider_helpers = any(step["kind"] == "pivotWider" for step in plan)
         needs_counter = any(
             step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"}
             or (
@@ -1079,6 +1099,8 @@ class PandasEngine(DataFrameEngine):
                     "",
                 ]
             )
+        if needs_pivot_wider_helpers:
+            lines.extend(_generated_pandas_pivot_wider_helpers())
         if needs_missing_helpers:
             lines.extend(generated_view_value_helper_lines())
             lines.extend(
@@ -1759,6 +1781,18 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}    df, {positions!r}, {names!r}, {params['labelColumn']!r}, {params['valueColumn']!r}",
                 f"{prefix})",
             ]
+        if kind == "pivotWider":
+            names_position = bound_column_position(params["namesFrom"], kind)
+            values_position = bound_column_position(params["valuesFrom"], kind)
+            output_values = [
+                pivot_wider_key_value(output["key"], "pivotWider.outputs.key") for output in params["outputs"]
+            ]
+            output_names = [output["name"] for output in params["outputs"]]
+            return [
+                f"{prefix}df = _open_wrangler_pivot_wider(",
+                f"{prefix}    df, {names_position}, {values_position}, {output_values!r}, {output_names!r}",
+                f"{prefix})",
+            ]
         if kind == "formatDatetime":
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -1973,6 +2007,252 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = {function_name}(df)",
             ]
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
+
+
+def _pandas_validate_pivot_wider(
+    df: Any,
+    names_position: int,
+    values_position: int,
+    outputs: Sequence[Mapping[str, Any]],
+) -> tuple[list[int], list[str], list[str]]:
+    import pandas as pd
+
+    output_values = [pivot_wider_key_value(output["key"], "pivotWider.outputs.key") for output in outputs]
+    output_names = [str(output["name"]) for output in outputs]
+    identifiers = [
+        position
+        for position, column in enumerate(df.columns)
+        if position not in {names_position, values_position} and not is_internal_row_id_label(column)
+    ]
+    keys = [portable_pivot_wider_name_key(name) for name in output_names]
+    existing = {
+        portable_pivot_wider_name_key(str(df.columns[position])): str(df.columns[position]) for position in identifiers
+    }
+    collisions = [existing[key] for key in keys if key in existing]
+    if len(set(keys)) != len(keys) or collisions:
+        detail = ": " + ", ".join(collisions) if collisions else ""
+        raise EngineError("Pivot wider would create duplicate column names" + detail)
+    if any(is_internal_row_id_label(name) for name in output_names):
+        raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
+
+    names = df.iloc[:, names_position]
+    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)
+    invalid = names.isna() | invalid_type | ~names.isin(output_values)
+    if bool(invalid.any()):
+        raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
+    identifier_frame, _key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
+    duplicate_source = pd.concat([identifier_frame, names.reset_index(drop=True)], axis=1)
+    if bool(duplicate_source.duplicated(keep=False).any()):
+        raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
+    return identifiers, output_values, output_names
+
+
+def _pandas_pivot_wider_identifier_frame(
+    df: Any,
+    identifiers: Sequence[int],
+) -> tuple[Any, list[tuple[object | None, bool]]]:
+    import pandas as pd
+
+    columns = []
+    states: list[tuple[object | None, bool]] = []
+    allowed = {"string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"}
+    for position in identifiers:
+        source = df.iloc[:, position].reset_index(drop=True)
+        semantic_type = _pandas_semantic_type(source)
+        if semantic_type not in allowed:
+            raise EngineError(
+                "Pivot wider identifier columns must use the portable group-key scalar family; "
+                f"{str(df.columns[position])!r} is {semantic_type!r}."
+            )
+        prepared, sentinel, integer_key = _pandas_prepare_group_key(source)
+        if not integer_key:
+            missing = [_pandas_is_missing_scalar(item) for item in source.array]
+            prepared = _pandas_group_nulls(source, missing)
+        columns.append(prepared)
+        states.append((sentinel, integer_key))
+    frame = pd.concat(columns, axis=1) if columns else pd.DataFrame(index=range(len(df)))
+    frame.columns = list(range(len(identifiers)))
+    return frame, states
+
+
+def _pandas_nullable_pivot_series(values: Any, size: int, name: str) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    dtype = values.dtype
+    if isinstance(dtype, pd.CategoricalDtype):
+        data = pd.Categorical([None] * size, categories=dtype.categories, ordered=dtype.ordered)
+        return pd.Series(data, name=name)
+    if pd.api.types.is_integer_dtype(dtype):
+        nullable = pd.UInt64Dtype() if pd.api.types.is_unsigned_integer_dtype(dtype) else pd.Int64Dtype()
+        return pd.Series(pd.array([pd.NA] * size, dtype=nullable), name=name)
+    if pd.api.types.is_bool_dtype(dtype):
+        return pd.Series(pd.array([pd.NA] * size, dtype=pd.BooleanDtype()), name=name)
+    if pd.api.types.is_float_dtype(dtype):
+        return pd.Series(np.full(size, np.nan, dtype=dtype), name=name)
+    try:
+        return pd.Series(pd.array([pd.NA] * size, dtype=dtype), name=name)
+    except (TypeError, ValueError):
+        return pd.Series([None] * size, dtype="object", name=name)
+
+
+def _pandas_pivot_wider(
+    df: Any,
+    names_position: int,
+    values_position: int,
+    outputs: Sequence[Mapping[str, Any]],
+) -> Any:
+    import pandas as pd
+
+    identifiers, output_values, output_names = _pandas_validate_pivot_wider(
+        df, names_position, values_position, outputs
+    )
+    names = df.iloc[:, names_position].reset_index(drop=True)
+    values = df.iloc[:, values_position].reset_index(drop=True)
+    if identifiers:
+        identifier_frame, key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
+        group_codes = identifier_frame.groupby(
+            list(identifier_frame.columns), sort=False, dropna=False, observed=True
+        ).ngroup()
+        first_rows = ~group_codes.duplicated()
+        result = identifier_frame.loc[first_rows].reset_index(drop=True)
+        result.columns = pd.Index(
+            [df.columns[position] for position in identifiers], dtype="object", tupleize_cols=False
+        )
+        for output_position, (sentinel, integer_key) in enumerate(key_states):
+            result.isetitem(
+                output_position,
+                _pandas_restore_group_key(result.iloc[:, output_position], sentinel, integer_key),
+            )
+        group_count = len(result)
+    else:
+        group_count = 1 if len(df) else 0
+        group_codes = pd.Series([0] * len(df), dtype="int64")
+        result = pd.DataFrame(index=range(group_count))
+
+    for key_value, output_name in zip(output_values, output_names, strict=True):
+        output = _pandas_nullable_pivot_series(values, group_count, output_name)
+        mask = names.eq(key_value)
+        target = group_codes.loc[mask].astype("int64").to_list()
+        if target:
+            output.iloc[target] = values.loc[mask].array
+        result[output_name] = output.array
+    return result.reset_index(drop=True)
+
+
+def _generated_pandas_pivot_wider_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_pivot_wider(df, names_position, values_position, output_values, output_names):",
+        "    def output_key(value):",
+        (
+            "        return ''.join(chr(ord(char) + 32) if 'A' <= char <= 'Z' "
+            "else 'ss' if char in {'ß', 'ẞ'} else char for char in value)"
+        ),
+        "    keys = [output_key(name) for name in output_names]",
+        "    identifiers = [p for p in range(df.shape[1]) if p not in {names_position, values_position}]",
+        "    existing = {output_key(str(df.columns[p])): str(df.columns[p]) for p in identifiers}",
+        "    collisions = [existing[key] for key in keys if key in existing]",
+        "    if len(set(keys)) != len(keys) or collisions:",
+        "        raise ValueError('Pivot wider would create duplicate column names.')",
+        f"    if any(name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r}) for name in output_names):",
+        '        raise ValueError("Pivot wider would create Open Wrangler\'s reserved private row-identity column.")',
+        "    names = df.iloc[:, names_position].reset_index(drop=True)",
+        "    values = df.iloc[:, values_position].reset_index(drop=True)",
+        "    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)",
+        "    invalid = names.isna() | invalid_type | ~names.isin(output_values)",
+        "    if bool(invalid.any()):",
+        "        raise ValueError('Pivot wider namesFrom values must be present and match one declared typed key.')",
+        "    identifier_columns = []",
+        "    key_states = []",
+        (
+            "    allowed_object_kinds = {'string', 'unicode', 'empty', 'boolean', 'integer', "
+            "'floating', 'mixed-integer-float', 'decimal', 'datetime', 'datetime64', "
+            "'timedelta', 'timedelta64', 'bytes', 'date'}"
+        ),
+        "    for position in identifiers:",
+        "        source = df.iloc[:, position].reset_index(drop=True)",
+        (
+            "        if pd.api.types.is_object_dtype(source.dtype) and "
+            "pd.api.types.infer_dtype(source, skipna=True) not in allowed_object_kinds:"
+        ),
+        "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
+        (
+            "        if not (pd.api.types.is_object_dtype(source.dtype) or isinstance(source.dtype, "
+            "(pd.StringDtype, pd.CategoricalDtype)) or pd.api.types.is_numeric_dtype(source.dtype) "
+            "or pd.api.types.is_bool_dtype(source.dtype) or "
+            "pd.api.types.is_datetime64_any_dtype(source.dtype) or "
+            "pd.api.types.is_timedelta64_dtype(source.dtype)):"
+        ),
+        "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
+        "        prepared, sentinel, integer_key = _open_wrangler_prepare_group_key(source)",
+        "        if not integer_key:",
+        (
+            "            prepared = _open_wrangler_group_nulls(source, "
+            "[_open_wrangler_missing_scalar(item) for item in source.array])"
+        ),
+        "        identifier_columns.append(prepared)",
+        "        key_states.append((sentinel, integer_key))",
+        (
+            "    identifier_frame = pd.concat(identifier_columns, axis=1) if identifier_columns "
+            "else pd.DataFrame(index=range(len(df)))"
+        ),
+        "    identifier_frame.columns = list(range(len(identifiers)))",
+        "    duplicate_source = pd.concat([identifier_frame, names], axis=1)",
+        "    if bool(duplicate_source.duplicated(keep=False).any()):",
+        (
+            "        raise ValueError('Pivot wider found duplicate identifier-and-key rows; "
+            "aggregation is not supported.')"
+        ),
+        "    if identifiers:",
+        (
+            "        group_codes = identifier_frame.groupby(list(identifier_frame.columns), sort=False, "
+            "dropna=False, observed=True).ngroup()"
+        ),
+        "        first_rows = ~group_codes.duplicated()",
+        "        result = identifier_frame.loc[first_rows].reset_index(drop=True)",
+        (
+            "        result.columns = pd.Index([df.columns[p] for p in identifiers], "
+            "dtype='object', tupleize_cols=False)"
+        ),
+        "        for output_position, (sentinel, integer_key) in enumerate(key_states):",
+        (
+            "            result.isetitem(output_position, _open_wrangler_restore_group_key("
+            "result.iloc[:, output_position], sentinel, integer_key))"
+        ),
+        "        group_count = len(result)",
+        "    else:",
+        "        group_count = 1 if len(df) else 0",
+        "        group_codes = pd.Series([0] * len(df), dtype='int64')",
+        "        result = pd.DataFrame(index=range(group_count))",
+        "    dtype = values.dtype",
+        "    for key_value, output_name in zip(output_values, output_names, strict=True):",
+        "        if isinstance(dtype, pd.CategoricalDtype):",
+        ("            data = pd.Categorical([None] * group_count, categories=dtype.categories, ordered=dtype.ordered)"),
+        "            output = pd.Series(data, name=output_name)",
+        "        elif pd.api.types.is_integer_dtype(dtype):",
+        (
+            "            nullable = pd.UInt64Dtype() if pd.api.types.is_unsigned_integer_dtype(dtype) "
+            "else pd.Int64Dtype()"
+        ),
+        "            output = pd.Series(pd.array([pd.NA] * group_count, dtype=nullable), name=output_name)",
+        "        elif pd.api.types.is_bool_dtype(dtype):",
+        "            output = pd.Series(pd.array([pd.NA] * group_count, dtype=pd.BooleanDtype()), name=output_name)",
+        "        elif pd.api.types.is_float_dtype(dtype):",
+        "            output = pd.Series(np.full(group_count, np.nan, dtype=dtype), name=output_name)",
+        "        else:",
+        "            try:",
+        "                output = pd.Series(pd.array([pd.NA] * group_count, dtype=dtype), name=output_name)",
+        "            except (TypeError, ValueError):",
+        "                output = pd.Series([None] * group_count, dtype='object', name=output_name)",
+        "        mask = names.eq(key_value)",
+        "        target = group_codes.loc[mask].astype('int64').to_list()",
+        "        if target:",
+        "            output.iloc[target] = values.loc[mask].array",
+        "        result[output_name] = output.array",
+        "    return result.reset_index(drop=True)",
+        "",
+        "",
+    ]
 
 
 def _pandas_require_pivot_output_names(df: Any, outputs: Sequence[str]) -> None:

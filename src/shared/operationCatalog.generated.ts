@@ -231,6 +231,14 @@ export const operationCatalog = Object.freeze([
     icon: "table"
   },
   {
+    kind: "pivotWider",
+    title: "Pivot wider",
+    description:
+      "Turn one typed key column and one scalar value column into 2–64 explicitly declared outputs without aggregation.",
+    group: "Reshape",
+    icon: "table"
+  },
+  {
     kind: "groupBy",
     title: "Group and aggregate",
     description: "Group by keys and calculate named aggregations.",

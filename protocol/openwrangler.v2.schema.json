@@ -201,6 +201,13 @@
       "icon": "table"
     },
     {
+      "kind": "pivotWider",
+      "title": "Pivot wider",
+      "description": "Turn one typed key column and one scalar value column into 2–64 explicitly declared outputs without aggregation.",
+      "group": "Reshape",
+      "icon": "table"
+    },
+    {
       "kind": "groupBy",
       "title": "Group and aggregate",
       "description": "Group by keys and calculate named aggregations.",
@@ -950,6 +957,7 @@
         "ceilNumber",
         "formatDatetime",
         "pivotLonger",
+        "pivotWider",
         "groupBy",
         "byExample",
         "customCode"
@@ -1381,6 +1389,46 @@
         }
       }
     },
+    "PivotWiderOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "name"],
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/TypedSelectionToken",
+          "description": "A versioned, present string selection token matching one exact names-from value."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[^\\r\\n]+$",
+          "description": "An explicit output name. Exact UTF-8 byte and portable collision validation is enforced by every decoder."
+        }
+      }
+    },
+    "PivotWiderParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namesFrom", "valuesFrom", "outputs"],
+      "properties": {
+        "namesFrom": {
+          "$ref": "#/definitions/ColumnReference",
+          "description": "A portable text or factor scalar whose complete non-null domain must be declared by outputs."
+        },
+        "valuesFrom": {
+          "$ref": "#/definitions/ColumnReference",
+          "description": "A distinct compatible scalar column copied without aggregation or common-type coercion."
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "description": "Ordered fixed outputs. Duplicate identifier-and-key rows are errors; missing declared combinations become typed nulls.",
+          "items": { "$ref": "#/definitions/PivotWiderOutput" }
+        }
+      }
+    },
     "Aggregation": {
       "type": "object",
       "additionalProperties": false,
@@ -1592,6 +1640,7 @@
         { "$ref": "#/definitions/CeilNumberTransformStep" },
         { "$ref": "#/definitions/FormatDatetimeTransformStep" },
         { "$ref": "#/definitions/PivotLongerTransformStep" },
+        { "$ref": "#/definitions/PivotWiderTransformStep" },
         { "$ref": "#/definitions/GroupByTransformStep" },
         { "$ref": "#/definitions/ByExampleTransformStep" },
         { "$ref": "#/definitions/CustomCodeTransformStep" }
@@ -1902,6 +1951,18 @@
           "properties": {
             "kind": { "const": "pivotLonger" },
             "params": { "$ref": "#/definitions/PivotLongerParams" }
+          }
+        }
+      ]
+    },
+    "PivotWiderTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "pivotWider" },
+            "params": { "$ref": "#/definitions/PivotWiderParams" }
           }
         }
       ]

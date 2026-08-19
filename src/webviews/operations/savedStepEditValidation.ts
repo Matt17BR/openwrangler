@@ -17,9 +17,16 @@ import {
   groupedKeyColumnsForTarget,
   interpolationCoordinateColumnsForTarget
 } from "./fillMissingModel";
-import { aggregationColumnTypes, isAggregationOperation, operationColumnTypes } from "./operationFieldCompatibility";
+import {
+  aggregationColumnTypes,
+  isAggregationOperation,
+  operationColumnTypes,
+  pivotLongerColumnTypes,
+  textColumnTypes
+} from "./operationFieldCompatibility";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
+import { pivotWiderKeyValue, portablePivotWiderNameKey, validatePivotWiderOutputName } from "../../shared/pivotWider";
 
 const recovery = "Cancel editing, then reload the session or undo and recreate this step.";
 
@@ -237,6 +244,17 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
           rejectRepeatedIds: true
         }
       ];
+    case "pivotWider":
+      return [
+        {
+          label: "pivot columns",
+          references: [
+            { label: "names-from column", reference: step.params.namesFrom },
+            { label: "values-from column", reference: step.params.valuesFrom }
+          ],
+          rejectRepeatedIds: true
+        }
+      ];
     case "groupBy":
       return [
         {
@@ -415,6 +433,17 @@ function savedOperationTypeError(
       }
       return undefined;
     }
+    case "pivotWider": {
+      const namesFrom = columnsById.get(step.params.namesFrom.id);
+      const valuesFrom = columnsById.get(step.params.valuesFrom.id);
+      if (namesFrom && !textColumnTypes.has(namesFrom.type)) {
+        return "pivot-wider names-from values must use a text or factor column";
+      }
+      if (valuesFrom && !pivotLongerColumnTypes.has(valuesFrom.type)) {
+        return "pivot-wider values must use a portable scalar column";
+      }
+      return undefined;
+    }
     case "oneHotEncode":
       return incompatibleReferenceType(
         step.params.columns.map((reference, index) => ({ label: `column ${index + 1}`, reference })),
@@ -543,6 +572,33 @@ export function savedStepEditError(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return `This saved pivot-longer step is not portable: ${message} ${recovery}`;
+    }
+  }
+  if (step.kind === "pivotWider") {
+    const removed = new Set([step.params.namesFrom.id, step.params.valuesFrom.id]);
+    const existing = new Set(
+      inputSchema.filter((column) => !removed.has(column.id)).map((column) => portablePivotWiderNameKey(column.name))
+    );
+    const keyValues: string[] = [];
+    const outputNames: string[] = [];
+    try {
+      for (const [index, output] of step.params.outputs.entries()) {
+        keyValues.push(pivotWiderKeyValue(output.key));
+        validatePivotWiderOutputName(output.name, `Pivot wider output ${index + 1} name`);
+        outputNames.push(portablePivotWiderNameKey(output.name));
+      }
+      if (
+        step.params.outputs.length < 2 ||
+        step.params.outputs.length > 64 ||
+        new Set(keyValues).size !== keyValues.length ||
+        new Set(outputNames).size !== outputNames.length ||
+        outputNames.some((name) => existing.has(name))
+      ) {
+        return `This saved pivot-wider step has duplicate keys or colliding output names. ${recovery}`;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `This saved pivot-wider step is not portable: ${message} ${recovery}`;
     }
   }
   return undefined;

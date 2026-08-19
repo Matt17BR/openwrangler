@@ -6,6 +6,7 @@ import type { exerciseReleasedRCategoricalEditingJourney as exerciseReleasedRCat
 import {
   RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE,
   RELEASED_R_COMPREHENSIVE_COVERAGE,
+  RELEASED_R_PIVOT_WIDER_COVERAGE,
   RELEASED_R_REPRESENTATIVE_COVERAGE,
   RELEASED_R_VALUE_OPERATIONS_COVERAGE,
   type ReleasedRAcceptanceCoverageProfile
@@ -28,6 +29,9 @@ function fixture() {
   const exerciseReleasedRRepresentativeEditingJourney = vi.fn(async () => {
     events.push("representative");
   });
+  const exerciseReleasedRPivotWiderJourney = vi.fn(async () => {
+    events.push("pivot-wider");
+  });
   const exerciseReleasedRValueOperationsJourney = vi.fn(async () => {
     events.push("value");
   });
@@ -44,6 +48,7 @@ function fixture() {
     disposePackagedSessionPanel,
     exerciseReleasedREditingJourney,
     exerciseReleasedRCategoricalEditingJourney,
+    exerciseReleasedRPivotWiderJourney,
     exerciseReleasedRRepresentativeEditingJourney,
     exerciseReleasedRValueOperationsJourney,
     recordReleasedRAcceptanceSection: (_phase, _coverage, _section, boundary) => events.push(`section:${boundary}`)
@@ -55,6 +60,7 @@ function fixture() {
     events,
     exerciseReleasedRCategoricalEditingJourney,
     exerciseReleasedREditingJourney,
+    exerciseReleasedRPivotWiderJourney,
     exerciseReleasedRRepresentativeEditingJourney,
     exerciseReleasedRValueOperationsJourney,
     owner
@@ -72,6 +78,7 @@ describe("released R editing coverage", () => {
     ["jupyter-r", RELEASED_R_REPRESENTATIVE_COVERAGE, ["section:start", "representative"]],
     ["jupyter-r", RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE, ["section:start", "representative", "categorical"]],
     ["jupyter-r", RELEASED_R_VALUE_OPERATIONS_COVERAGE, ["section:start", "representative", "value"]],
+    ["jupyter-r", RELEASED_R_PIVOT_WIDER_COVERAGE, ["section:start", "pivot-wider"]],
     ["jupyter-r-remote", RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE, ["section:start", "representative"]],
     ["jupyter-r-remote", RELEASED_R_VALUE_OPERATIONS_COVERAGE, ["section:start", "representative"]]
   ] as const)("routes %s/%s through its exact editing owner", async (phase, coverage, journeyEvents) => {
@@ -113,6 +120,10 @@ describe("released R editing coverage", () => {
         coverage.editing
       );
       expect(test.exerciseReleasedRRepresentativeEditingJourney).not.toHaveBeenCalled();
+    } else if (phase === "jupyter-r" && coverage.focusedEditing === "pivot-wider") {
+      expect(test.exerciseReleasedRPivotWiderJourney).toHaveBeenCalledExactlyOnceWith(testing, workbench, "session-r");
+      expect(test.exerciseReleasedRRepresentativeEditingJourney).not.toHaveBeenCalled();
+      expect(test.exerciseReleasedREditingJourney).not.toHaveBeenCalled();
     } else {
       expect(test.exerciseReleasedRRepresentativeEditingJourney).toHaveBeenCalledExactlyOnceWith(
         testing,
@@ -122,6 +133,9 @@ describe("released R editing coverage", () => {
         phase
       );
       expect(test.exerciseReleasedREditingJourney).not.toHaveBeenCalled();
+    }
+    if (!(phase === "jupyter-r" && coverage.focusedEditing === "pivot-wider")) {
+      expect(test.exerciseReleasedRPivotWiderJourney).not.toHaveBeenCalled();
     }
     if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {
       expect(test.exerciseReleasedRCategoricalEditingJourney).toHaveBeenCalledExactlyOnceWith(

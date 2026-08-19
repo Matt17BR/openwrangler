@@ -72,6 +72,10 @@ real_capture_pivot_longer_at <- recording_contract$capture_pivot_longer_at
 recording_contract$capture_pivot_longer_at <- function(...) {
   record_capture(real_capture_pivot_longer_at(...))
 }
+real_capture_pivot_wider_at <- recording_contract$capture_pivot_wider_at
+recording_contract$capture_pivot_wider_at <- function(...) {
+  record_capture(real_capture_pivot_wider_at(...))
+}
 
 agent <- openwrangler_r_kernel_agent$new_agent(recording_contract, source_environment)
 
@@ -179,7 +183,7 @@ catalog_kinds <- c(
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "minMaxScale", "roundNumber", "floorNumber",
-  "ceilNumber", "formatDatetime", "pivotLonger", "groupBy", "byExample", "customCode"
+  "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "groupBy", "byExample", "customCode"
 )
 
 catalog_cases <- list(
@@ -420,6 +424,29 @@ catalog_cases <- list(
       assert_identical(.row_names_info(output, type = 1L), -nrow(output), "Pivot longer did not publish positional row names")
     }
   ),
+  pivotWider = list(
+    step = function(frame, id) step_with(id, "pivotWider", list(
+      namesFrom = column_reference(frame, "duplicate"),
+      valuesFrom = column_reference(frame, "whole"),
+      outputs = I(lapply(c("u", "v", "w", "x"), function(key) list(
+        key = list(
+          kind = "typedSelection",
+          version = 1L,
+          columnType = "string",
+          cell = list(kind = "string", raw = key, display = key, isNull = FALSE, isNaN = FALSE)
+        ),
+        name = paste0("value ", key)
+      )))
+    )),
+    verify = function(output, input) {
+      assert_identical(
+        names(output),
+        c(setdiff(names(input), c("duplicate", "whole")), "value u", "value v", "value w", "value x"),
+        "Pivot wider returned the wrong fixed schema"
+      )
+      assert_identical(.row_names_info(output, type = 1L), -nrow(output), "Pivot wider did not publish positional row names")
+    }
+  ),
   groupBy = list(
     step = function(frame, id) step_with(id, "groupBy", list(
       keys = I(list(column_reference(frame, "group"))),
@@ -461,7 +488,7 @@ catalog_cases <- list(
 )
 
 assert_identical(names(catalog_cases), catalog_kinds, "the complete R catalog owner is not in canonical order")
-assert_identical(length(catalog_cases), 31L, "the complete R catalog owner does not contain 31 operations")
+assert_identical(length(catalog_cases), 32L, "the complete R catalog owner does not contain 32 operations")
 
 catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(catalog_cases))
 
@@ -1199,6 +1226,6 @@ remove("complete_composition", envir = source_environment)
 
 agent$dispose()
 cat(paste0(
-  "complete native-R catalog contract passed: 31 live/generated/replayed operations; ",
+  "complete native-R catalog contract passed: 32 live/generated/replayed operations; ",
   "inspection, undo, flavors, attributes, zero-row, >1024 chunk, and cardinality composition\n"
 ))

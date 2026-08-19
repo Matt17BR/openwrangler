@@ -43,7 +43,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(31);
+    expect(operationCatalog).toHaveLength(32);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -538,6 +538,83 @@ describe("OperationBuilder", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("hydrates, reorders, and submits Pivot wider fixed outputs", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "pivot-cities",
+      kind: "pivotWider",
+      params: {
+        namesFrom: { id: "c:0", name: "city" },
+        valuesFrom: { id: "c:1", name: "sales" },
+        outputs: [
+          {
+            key: {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "string",
+              cell: { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }
+            },
+            name: "milan_sales"
+          },
+          {
+            key: {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "string",
+              cell: { kind: "string", raw: "Paris", display: "Paris", isNull: false, isNaN: false }
+            },
+            name: "paris_sales"
+          }
+        ]
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Pivot wider" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Names from")).toHaveValue("c:0");
+    expect(screen.getByLabelText("Values from")).toHaveValue("c:1");
+    expect(screen.getByLabelText("Key 1")).toHaveValue("Milan");
+    expect(screen.getByLabelText("Output column 1")).toHaveValue("milan_sales");
+    fireEvent.click(screen.getByRole("button", { name: "Move pivot output 2 up" }));
+    expect(screen.getByLabelText("Key 1")).toHaveValue("Paris");
+    expect(screen.getByLabelText("Output column 1")).toHaveValue("paris_sales");
+    fireEvent.click(screen.getByRole("button", { name: "Add output" }));
+    expect(screen.getByLabelText("Key 3")).toHaveValue("key_3");
+    expect(screen.getByLabelText("Output column 3")).toHaveValue("value_3");
+    fireEvent.click(screen.getByRole("button", { name: "Remove pivot output 3" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: initialStep.id,
+        kind: "pivotWider",
+        params: expect.objectContaining({
+          namesFrom: { id: "c:0", name: "city" },
+          valuesFrom: { id: "c:1", name: "sales" },
+          outputs: [
+            expect.objectContaining({
+              name: "paris_sales",
+              key: expect.objectContaining({ cell: expect.objectContaining({ raw: "Paris" }) })
+            }),
+            expect.objectContaining({
+              name: "milan_sales",
+              key: expect.objectContaining({ cell: expect.objectContaining({ raw: "Milan" }) })
+            })
+          ]
+        })
+      }),
+      initialStep.id
+    );
   });
 
   it("hydrates and submits public regex extraction separately from literal split", () => {

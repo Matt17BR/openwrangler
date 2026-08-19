@@ -17,6 +17,7 @@ from .pivot_longer import (
     portable_pivot_longer_name_key,
     validate_pivot_longer_output_name,
 )
+from .pivot_wider import PivotWiderContractError, validate_pivot_wider_outputs
 from .portable_regex import PortableRegexError, portable_regex_contract, validate_portable_regex_output_name
 
 
@@ -86,6 +87,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "floorNumber": ("column",),
     "ceilNumber": ("column",),
     "formatDatetime": ("column",),
+    "pivotWider": ("namesFrom", "valuesFrom"),
 }
 _COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "selectColumns": ("columns",),
@@ -264,6 +266,13 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError(str(error)) from error
         if portable_pivot_longer_name_key(label_column) == portable_pivot_longer_name_key(value_column):
             raise OperationError("pivotLonger label and value output names must differ case-insensitively.")
+    elif kind == "pivotWider":
+        if params["namesFrom"]["id"] == params["valuesFrom"]["id"]:
+            raise OperationError("pivotWider namesFrom and valuesFrom must reference distinct columns.")
+        try:
+            params["outputs"] = validate_pivot_wider_outputs(params.get("outputs"))
+        except PivotWiderContractError as error:
+            raise OperationError(str(error)) from error
     elif kind == "roundNumber" and (
         isinstance(params.get("decimals", 0), bool) or not isinstance(params.get("decimals", 0), int)
     ):
@@ -680,8 +689,17 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "floorNumber",
         "ceilNumber",
         "formatDatetime",
+        "pivotWider",
     }:
-        references.append(("column.name", params["column"].get("name")))
+        if kind == "pivotWider":
+            references.extend(
+                (
+                    ("namesFrom.name", params["namesFrom"].get("name")),
+                    ("valuesFrom.name", params["valuesFrom"].get("name")),
+                )
+            )
+        else:
+            references.append(("column.name", params["column"].get("name")))
         if kind == "fillMissingValues" and params["replacement"].get("kind") == "fallbackColumns":
             references.extend(
                 ("replacement.columns.name", item.get("name")) for item in params["replacement"]["columns"]
@@ -723,6 +741,8 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
                 ("valueColumn", params["valueColumn"]),
             )
         )
+    if kind == "pivotWider":
+        references.extend(("outputs.name", output["name"]) for output in params["outputs"])
     if kind == "multiLabelBinarize" and "prefix" in params:
         references.append(("prefix", params["prefix"]))
 

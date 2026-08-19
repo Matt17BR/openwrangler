@@ -6,6 +6,7 @@ import type {
   GroupByTransformStep,
   OneHotEncodeTransformStep,
   PivotLongerTransformStep,
+  PivotWiderTransformStep,
   RetainedTransformStep,
   SortRowsTransformStep
 } from "../../shared/protocol";
@@ -307,6 +308,20 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "pivotWider") {
+    return {
+      id: step.id,
+      kind: "pivotWider",
+      params: {
+        namesFrom: { ...step.params.namesFrom },
+        valuesFrom: { ...step.params.valuesFrom },
+        outputs: step.params.outputs.map((output) => ({
+          key: { ...output.key, cell: { ...output.key.cell } },
+          name: output.name
+        })) as PivotWiderTransformStep["params"]["outputs"]
+      }
+    };
+  }
   if (step.kind === "extractRegexGroup") {
     return {
       id: step.id,
@@ -434,6 +449,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "splitText" &&
     step.kind !== "splitTextColumns" &&
     step.kind !== "pivotLonger" &&
+    step.kind !== "pivotWider" &&
     step.kind !== "extractRegexGroup" &&
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&

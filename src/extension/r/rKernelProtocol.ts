@@ -18,6 +18,7 @@ import type {
   ExportOptions,
   FillMissingReplacement,
   PredicateFilter,
+  TypedSelectionToken,
   ValueCount
 } from "../../shared/protocol";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
@@ -246,6 +247,16 @@ export interface RKernelPivotLongerStep {
     columns: readonly RKernelColumnReference[];
     labelColumn: string;
     valueColumn: string;
+  }>;
+}
+
+export interface RKernelPivotWiderStep {
+  readonly id: string;
+  readonly kind: "pivotWider";
+  readonly params: Readonly<{
+    namesFrom: RKernelColumnReference;
+    valuesFrom: RKernelColumnReference;
+    outputs: readonly Readonly<{ key: TypedSelectionToken; name: string }>[];
   }>;
 }
 
@@ -516,6 +527,7 @@ export type RKernelTransformStep =
   | RKernelSplitTextStep
   | RKernelSplitTextColumnsStep
   | RKernelPivotLongerStep
+  | RKernelPivotWiderStep
   | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
@@ -1678,6 +1690,22 @@ function validateTransformStep(value: unknown): void {
     );
     boundedText(params.labelColumn, "request.payload.step.params.labelColumn", maximumVariableNameBytes, false);
     boundedText(params.valueColumn, "request.payload.step.params.valueColumn", maximumVariableNameBytes, false);
+    return;
+  }
+  if (step.kind === "pivotWider") {
+    const params = exactRecord(step.params, ["namesFrom", "valuesFrom", "outputs"], "R kernel pivot-wider parameters");
+    validateColumnReference(params.namesFrom, "request.payload.step.params.namesFrom");
+    validateColumnReference(params.valuesFrom, "request.payload.step.params.valuesFrom");
+    if (!Array.isArray(params.outputs) || params.outputs.length < 2 || params.outputs.length > 64) {
+      fail("R kernel pivot-wider parameters require 2 to 64 outputs.");
+    }
+    params.outputs.forEach((value, index) => {
+      const output = exactRecord(value, ["key", "name"], `request.payload.step.params.outputs[${index}]`);
+      if (output.key === null || typeof output.key !== "object" || Array.isArray(output.key)) {
+        fail(`request.payload.step.params.outputs[${index}].key must be a typed selection token.`);
+      }
+      boundedText(output.name, `request.payload.step.params.outputs[${index}].name`, maximumVariableNameBytes, false);
+    });
     return;
   }
   if (step.kind === "extractRegexGroup") {

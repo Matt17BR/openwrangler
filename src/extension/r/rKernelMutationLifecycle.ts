@@ -43,6 +43,7 @@ import {
 import {
   acceptRetainedByExampleStep,
   assertRPivotLongerPreflight,
+  assertRPivotWiderPreflight,
   assertCustomDerivedRowIdentities,
   customRowIdentityConstraintAfterRStep,
   dynamicByExampleSchema,
@@ -100,6 +101,7 @@ export class RKernelMutationLifecycle {
       request.step.kind !== "splitText" &&
       request.step.kind !== "splitTextColumns" &&
       request.step.kind !== "pivotLonger" &&
+      request.step.kind !== "pivotWider" &&
       request.step.kind !== "extractRegexGroup" &&
       request.step.kind !== "capitalizeText" &&
       request.step.kind !== "lowerText" &&
@@ -181,6 +183,9 @@ export class RKernelMutationLifecycle {
             : schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
       if (request.step.kind === "pivotLonger") {
         assertRPivotLongerPreflight(request.step, inputSchema, inputRSchema, inputRows);
+      }
+      if (request.step.kind === "pivotWider") {
+        assertRPivotWiderPreflight(request.step, inputSchema, inputRSchema, inputRows);
       }
       targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
       rStep = rTransformStep(request.step, inputSchema);

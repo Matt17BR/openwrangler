@@ -5475,6 +5475,216 @@ openwrangler_r_frame_contract <- local({
     finish_capture(capture)
   }
 
+  capture_pivot_wider_at <- function(
+    value,
+    names_position,
+    names_old_name,
+    values_position,
+    values_old_name,
+    output_keys,
+    output_names,
+    output_ids
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    schema <- plain_metadata_storage(inspected$descriptor$schema)
+    column_count <- inspected$descriptor$shape$columns
+    row_count <- as.integer(inspected$descriptor$shape$rows)
+    positions <- c(names_position, values_position)
+    if (
+      any(!is.numeric(positions)) || anyNA(positions) || any(!is.finite(positions)) ||
+        any(positions != floor(positions)) || any(positions < 1L) || any(positions > column_count) ||
+        identical(names_position, values_position)
+    ) {
+      abort("invalid-view-query", "Pivot wider requires distinct current source positions")
+    }
+    positions <- as.integer(positions)
+    if (!identical(vapply(schema[positions], `[[`, character(1L), "name", USE.NAMES = FALSE), c(names_old_name, values_old_name))) {
+      abort("stale-column", "Pivot wider column names no longer match the R dataframe")
+    }
+    names_semantics <- schema[[positions[[1L]]]]$semantics
+    value_semantics <- schema[[positions[[2L]]]]$semantics
+    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    retained_positions <- setdiff(seq_along(schema), positions)
+    if (
+      !names_semantics$kind %in% c("character", "factor") ||
+        !value_semantics$kind %in% supported ||
+        any(!vapply(schema[retained_positions], function(column) column$semantics$kind %in% supported, logical(1L)))
+    ) {
+      abort("invalid-view-query", "Pivot wider requires portable scalar R source columns")
+    }
+    if (
+      !is.character(output_keys) || !is.character(output_names) || !is.character(output_ids) ||
+        length(output_keys) < 2L || length(output_keys) > 64L ||
+        length(output_names) != length(output_keys) || length(output_ids) != length(output_keys) ||
+        anyNA(output_keys) || anyNA(output_names) || anyNA(output_ids) ||
+        anyDuplicated(output_keys) || anyDuplicated(output_names) || anyDuplicated(output_ids)
+    ) {
+      abort("invalid-view-query", "Pivot wider requires 2 to 64 unique fixed outputs")
+    }
+    if (length(retained_positions) + length(output_names) > maximum_columns) {
+      abort("operation-output-too-large", "Pivot wider would exceed the portable 2,048-column limit")
+    }
+    source_names <- attr(value, "names", exact = TRUE)
+    retained_names <- source_names[retained_positions]
+    portable_name_key <- function(name) paste0(vapply(
+      utf8ToInt(enc2utf8(name)),
+      function(point) if (point >= 65L && point <= 90L) intToUtf8(point + 32L) else if (point %in% c(223L, 7838L)) "ss" else intToUtf8(point),
+      character(1L),
+      USE.NAMES = FALSE
+    ), collapse = "")
+    retained_keys <- vapply(retained_names, portable_name_key, character(1L), USE.NAMES = FALSE)
+    output_name_keys <- vapply(output_names, portable_name_key, character(1L), USE.NAMES = FALSE)
+    if (
+      any(output_names == "") || any(vapply(output_names, is_private_column_name, logical(1L), USE.NAMES = FALSE)) ||
+        anyDuplicated(output_name_keys) || any(output_name_keys %in% retained_keys)
+    ) {
+      abort("column-name-collision", "Pivot-wider output names are invalid, reserved, or collide")
+    }
+
+    snapshot <- isolated_snapshot(value, inspected$flavor)
+    names_values <- as.character(snapshot[[positions[[1L]]]])
+    if (anyNA(names_values) || any(!names_values %in% output_keys)) {
+      abort("invalid-view-value", "Every Pivot wider names-from value must match one declared output key")
+    }
+    if (!requireNamespace("data.table", quietly = TRUE)) {
+      abort("missing-package", "Pivot wider requires the data.table package")
+    }
+    identifier_values <- lapply(retained_positions, function(position) {
+      column <- snapshot[[position]]
+      semantics <- schema[[position]]$semantics
+      if (identical(semantics$kind, "double") && is.double(column) && !is.object(column)) {
+        column[is.nan(column)] <- NA_real_
+      }
+      column
+    })
+    if (length(retained_positions) == 0L) {
+      group_ids <- if (row_count == 0L) integer() else rep.int(1L, row_count)
+    } else {
+      identifiers <- data.table::as.data.table(identifier_values)
+      identifier_names <- paste0("ow_identifier_", seq_along(retained_positions))
+      data.table::setnames(identifiers, identifier_names)
+      group_column <- "__open_wrangler_internal_row_id_pivot_wider_group"
+      identifiers[, (group_column) := .GRP, by = identifier_names]
+      group_ids <- identifiers[[group_column]]
+    }
+    group_rows <- which(!duplicated(group_ids))
+    group_count <- length(group_rows)
+    key_ordinals <- match(names_values, output_keys)
+    pair_keys <- paste0(group_ids, ":", key_ordinals)
+    if (anyDuplicated(pair_keys)) {
+      abort("invalid-view-value", "Pivot wider found duplicate identifier-and-key rows")
+    }
+
+    value_source <- snapshot[[positions[[2L]]]]
+    value_storage <- value_source
+    attributes(value_storage) <- NULL
+    restore_value_semantics <- function(storage) {
+      if (identical(value_semantics$kind, "factor")) {
+        attr(storage, "levels") <- levels(value_source)
+        attr(storage, "class") <- class(value_source)
+      } else if (identical(value_semantics$kind, "datetime")) {
+        attr(storage, "class") <- class(value_source)
+        timezone <- attr(value_source, "tzone", exact = TRUE)
+        if (!is.null(timezone)) attr(storage, "tzone") <- timezone
+      } else if (identical(value_semantics$kind, "difftime")) {
+        attr(storage, "class") <- class(value_source)
+        attr(storage, "units") <- attr(value_source, "units", exact = TRUE)
+      } else if (value_semantics$kind %in% c("date", "integer64")) {
+        attr(storage, "class") <- class(value_source)
+      }
+      storage
+    }
+    missing_storage <- function(size) {
+      result <- vector(typeof(value_storage), size)
+      if (size != 0L) {
+        if (identical(value_semantics$kind, "integer64")) {
+          result[] <- unclass(bit64::as.integer64(NA_character_))[[1L]]
+        } else if (typeof(result) == "integer") {
+          result[] <- NA_integer_
+        } else if (typeof(result) == "logical") {
+          result[] <- NA
+        } else if (typeof(result) == "character") {
+          result[] <- NA_character_
+        } else {
+          result[] <- NA_real_
+        }
+      }
+      result
+    }
+    output_values <- lapply(seq_along(output_keys), function(output_index) {
+      storage <- missing_storage(group_count)
+      matching_rows <- which(key_ordinals == output_index)
+      if (length(matching_rows) != 0L) storage[group_ids[matching_rows]] <- value_storage[matching_rows]
+      restore_value_semantics(storage)
+    })
+    if (identical(inspected$flavor, "r.data.table")) {
+      result <- snapshot[group_rows, retained_positions, with = FALSE]
+      data.table::setkeyv(result, NULL)
+      for (identifier_index in seq_along(identifier_values)) {
+        data.table::set(
+          result,
+          j = retained_names[[identifier_index]],
+          value = identifier_values[[identifier_index]][group_rows]
+        )
+      }
+      for (output_index in seq_along(output_names)) {
+        data.table::set(result, j = output_names[[output_index]], value = output_values[[output_index]])
+      }
+    } else {
+      result <- snapshot[group_rows, retained_positions, drop = FALSE]
+      for (identifier_index in seq_along(identifier_values)) {
+        result[[identifier_index]] <- identifier_values[[identifier_index]][group_rows]
+      }
+      original_names <- names(result)
+      for (output_index in seq_along(output_names)) result[[length(result) + 1L]] <- output_values[[output_index]]
+      names(result) <- c(original_names, output_names)
+    }
+    attr(result, "row.names") <- if (group_count == 0L) integer() else c(NA_integer_, -as.integer(group_count))
+
+    captured <- capture_frame(result, preserve_data_table_element_names = TRUE)
+    output_schema <- plain_metadata_storage(captured$descriptor$schema)
+    output_positions <- seq.int(length(retained_positions) + 1L, length(retained_positions) + length(output_names))
+    if (
+      any(!vapply(output_schema[output_positions], function(column) identical(column$semantics, value_semantics), logical(1L))) ||
+        length(plain_metadata_storage(captured$descriptor$frameSemantics$keyColumnIds)) != 0L
+    ) {
+      abort("internal-error", "Pivot wider changed R scalar or key metadata")
+    }
+    source_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    assigned_ids <- c(source_ids[retained_positions], output_ids)
+    generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    for (position in seq_along(output_schema)) {
+      output_schema[[position]]$id <- assigned_ids[[position]]
+      output_schema[[position]]$position <- position - 1L
+    }
+    descriptor <- captured$descriptor
+    descriptor$schema <- json_array(output_schema)
+    descriptor$frameSemantics$keyColumnIds <- json_array(character())
+    old_bytes <- sum(vapply(generated_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    new_bytes <- sum(vapply(assigned_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    metadata_bytes <- captured$metadataBytes
+    if (new_bytes > old_bytes) {
+      budget <- new_payload_budget(metadata_bytes)
+      spend_payload_budget(budget, new_bytes - old_bytes, "Pivot wider output identities")
+      metadata_bytes <- budget$used
+    }
+    capture <- new.env(parent = emptyenv())
+    capture$mode <- "isolated"
+    capture$snapshot <- captured$snapshot
+    capture$sourceReader <- NULL
+    capture$descriptor <- descriptor
+    set_sequential_row_origins(capture, group_count, group_count)
+    capture$metadataBytes <- metadata_bytes
+    capture$metrics <- captured$metrics
+    capture$sortCache <- new_sort_cache()
+    finish_capture(capture)
+  }
+
   portable_regex_text_limit_message <- paste0(
     "Regex extraction source values must contain at most 8,192 Unicode scalar values ",
     "and 8,192 UTF-8 bytes."
@@ -9521,6 +9731,7 @@ openwrangler_r_frame_contract <- local({
     split_text_columns = split_text_columns,
     split_text_columns_at = split_text_columns_at,
     capture_pivot_longer_at = capture_pivot_longer_at,
+    capture_pivot_wider_at = capture_pivot_wider_at,
     extract_regex_group_at = extract_regex_group_at,
     find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,

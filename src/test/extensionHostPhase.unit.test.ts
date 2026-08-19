@@ -90,6 +90,7 @@ describe("extension-host phase selection", () => {
       "core-operations",
       "categorical-operations",
       "value-operations",
+      "pivot-wider",
       "kernel-restart",
       "native-frames",
       "interactive-terminal",

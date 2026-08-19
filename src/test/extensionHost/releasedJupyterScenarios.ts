@@ -7,6 +7,7 @@ export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
   "core-operations",
   "categorical-operations",
   "value-operations",
+  "pivot-wider",
   "kernel-restart",
   "native-frames",
   "interactive-terminal",
@@ -26,6 +27,7 @@ export type ReleasedRCoverageProfileKey =
   | "candidate-core"
   | "categorical-operations"
   | "value-operations"
+  | "pivot-wider"
   | "kernel-restart"
   | "native-frames";
 
@@ -160,6 +162,18 @@ export const RELEASED_JUPYTER_SCENARIOS: readonly ReleasedJupyterScenarioDefinit
     prerequisites: ["host-python", "released-jupyter", "released-r"],
     runnerKey: "released-jupyter",
     rCoverageProfileKey: "value-operations",
+    declaredProgressSections: FOCUSED_R_EDITING_PROGRESS_SECTIONS,
+    evidenceSceneIds: []
+  },
+  {
+    phaseId: "jupyter-r",
+    selector: "pivot-wider",
+    tierRiskOwner: "released-r",
+    editorEligibility: "all",
+    platformEligibility: "all",
+    prerequisites: ["host-python", "released-jupyter", "released-r"],
+    runnerKey: "released-jupyter",
+    rCoverageProfileKey: "pivot-wider",
     declaredProgressSections: FOCUSED_R_EDITING_PROGRESS_SECTIONS,
     evidenceSceneIds: []
   },

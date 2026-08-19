@@ -3078,7 +3078,7 @@ test("editor phases validate and forward exact R and candidate compatibility sel
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
@@ -3175,6 +3175,22 @@ test("editor phases validate and forward exact R and candidate compatibility sel
       }
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "value-operations");
+
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "pivot-wider" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "pivot-wider");
 
     await runEditorAcceptancePhase(
       { ...input, testSelector: "kernel-restart" },

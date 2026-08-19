@@ -13244,6 +13244,7 @@ if (
 
 source("r/tests/kernel_agent_group_by.R", local = FALSE)
 source("r/tests/kernel_agent_pivot_longer.R", local = FALSE)
+source("r/tests/kernel_agent_pivot_wider.R", local = FALSE)
 
 source_environment$export_frame <- data.frame(
   "order id" = c(3L, 1L, 2L),

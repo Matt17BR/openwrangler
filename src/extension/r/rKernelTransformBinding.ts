@@ -25,6 +25,7 @@ import type {
   MultiLabelBinarizeTransformStep,
   OneHotEncodeTransformStep,
   PivotLongerTransformStep,
+  PivotWiderTransformStep,
   RenameColumnTransformStep,
   RoundNumberTransformStep,
   SelectColumnsTransformStep,
@@ -37,6 +38,7 @@ import type {
 } from "../../shared/protocol";
 import { isTransformStep } from "../../shared/protocolValidation";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
+import { pivotWiderKeyValue, portablePivotWiderNameKey, validatePivotWiderOutputName } from "../../shared/pivotWider";
 import { R_FRAME_CONTRACT_LIMITS } from "./rFrameContract";
 import {
   assertRKernelByExampleTransportStrings,
@@ -70,6 +72,7 @@ export type RTransformStepWithoutByExample =
   | SplitTextTransformStep
   | SplitTextColumnsTransformStep
   | PivotLongerTransformStep
+  | PivotWiderTransformStep
   | ExtractRegexGroupTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
@@ -694,6 +697,31 @@ export function rTransformStep(
         columns: Object.freeze(columns),
         labelColumn: step.params.labelColumn,
         valueColumn: step.params.valueColumn
+      })
+    });
+  }
+  if (step.kind === "pivotWider") {
+    validatePivotWiderOutputName(step.params.outputs[0].name, "Pivot wider output");
+    const outputs = step.params.outputs.map((output, index) => {
+      validatePivotWiderOutputName(output.name, `Pivot wider output ${index + 1}`);
+      pivotWiderKeyValue(output.key);
+      return Object.freeze({
+        key: Object.freeze({ ...output.key, cell: Object.freeze({ ...output.key.cell }) }),
+        name: output.name
+      });
+    });
+    const outputNames = outputs.map((output) => portablePivotWiderNameKey(output.name));
+    const outputKeys = outputs.map((output) => pivotWiderKeyValue(output.key));
+    if (new Set(outputNames).size !== outputs.length || new Set(outputKeys).size !== outputs.length) {
+      throw new TypeError("Pivot wider output names and keys must be unique.");
+    }
+    return Object.freeze({
+      id: step.id,
+      kind: "pivotWider" as const,
+      params: Object.freeze({
+        namesFrom: Object.freeze({ ...step.params.namesFrom }),
+        valuesFrom: Object.freeze({ ...step.params.valuesFrom }),
+        outputs: Object.freeze(outputs)
       })
     });
   }

@@ -142,7 +142,12 @@ export function inspectionDiff(
   inputRows: number,
   outputRows: number
 ): DataDiff {
-  if (step.kind === "groupBy" || step.kind === "customCode" || step.kind === "pivotLonger") {
+  if (
+    step.kind === "groupBy" ||
+    step.kind === "customCode" ||
+    step.kind === "pivotLonger" ||
+    step.kind === "pivotWider"
+  ) {
     const inputIds = new Set(inputSchema.map((column) => column.id));
     const outputIds = new Set(outputSchema.map((column) => column.id));
     const fullyRepresented =
@@ -305,6 +310,38 @@ export function assertMutationDiff(
       diff.cells.length === 0 &&
       (fullyRepresented || diff.truncated);
     if (!valid) throw new Error("The R kernel returned an invalid Pivot longer diff.");
+    return;
+  }
+  if (step.kind === "pivotWider") {
+    const removedIds = new Set([step.params.namesFrom.id, step.params.valuesFrom.id]);
+    const retained = inputSchema.filter((column) => !removedIds.has(column.id));
+    const expectedIds = [
+      ...retained.map((column) => column.id),
+      ...step.params.outputs.map((_, ordinal) => `c:step:${step.id}:${ordinal}`)
+    ];
+    const fullyRepresented =
+      outputPage.page.offset === 0 &&
+      outputPage.page.totalRows === outputRows &&
+      outputPage.page.rows.length === outputRows;
+    const valid =
+      isDeepStrictEqual(
+        outputSchema.map((column) => column.id),
+        expectedIds
+      ) &&
+      diff.addedRows === outputRows &&
+      diff.removedRows === inputRows &&
+      isDeepStrictEqual(
+        diff.addedColumns,
+        step.params.outputs.map((output) => output.name)
+      ) &&
+      isDeepStrictEqual(
+        diff.removedColumns,
+        inputSchema.filter((column) => removedIds.has(column.id)).map((column) => column.name)
+      ) &&
+      diff.changedCells === 0 &&
+      diff.cells.length === 0 &&
+      (fullyRepresented || diff.truncated);
+    if (!valid) throw new Error("The R kernel returned an invalid Pivot wider diff.");
     return;
   }
   if (step.kind === "customCode") {

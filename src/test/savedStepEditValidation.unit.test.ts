@@ -72,6 +72,30 @@ const validSteps = {
     labelColumn: "variable",
     valueColumn: "reading"
   }),
+  pivotWider: step("pivotWider", {
+    namesFrom: text,
+    valuesFrom: value,
+    outputs: [
+      {
+        key: {
+          kind: "typedSelection",
+          version: 1,
+          columnType: "string",
+          cell: { kind: "string", raw: "a", display: "a", isNull: false, isNaN: false }
+        },
+        name: "a_value"
+      },
+      {
+        key: {
+          kind: "typedSelection",
+          version: 1,
+          columnType: "string",
+          cell: { kind: "string", raw: "b", display: "b", isNull: false, isNaN: false }
+        },
+        name: "b_value"
+      }
+    ]
+  }),
   extractRegexGroup: step("extractRegexGroup", {
     column: text,
     pattern: "([A-Za-z]+)",

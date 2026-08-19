@@ -160,7 +160,7 @@ describe("complete native R generated-code export catalog", () => {
     expect(operations).toEqual(EXPECTED_NATIVE_R_OPERATIONS);
     expect(operationCatalog.map(({ kind }) => kind)).toEqual(EXPECTED_NATIVE_R_OPERATIONS);
     await expect(catalogKindsFromDirectRContract()).resolves.toEqual(EXPECTED_NATIVE_R_OPERATIONS);
-    expect(new Set(operations).size).toBe(31);
+    expect(new Set(operations).size).toBe(32);
   });
 
   it("copies and atomically saves each operation's exact executable export buffer", async () => {
@@ -198,8 +198,8 @@ describe("complete native R generated-code export catalog", () => {
     expect(exportedFiles).toEqual(
       EXPECTED_NATIVE_R_OPERATIONS.map((kind, index) => `${String(index + 1).padStart(2, "0")}-${kind}.clean.R`)
     );
-    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledTimes(31);
-    expect(nativeMocks.showSaveDialog).toHaveBeenCalledTimes(31);
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledTimes(32);
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledTimes(32);
     const saveDialogCalls = nativeMocks.showSaveDialog.mock.calls as unknown[][];
     for (const [options] of saveDialogCalls) {
       expect(options).toEqual({

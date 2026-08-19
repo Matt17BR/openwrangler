@@ -27,6 +27,7 @@ import {
   CORE_R_JUPYTER_SELECTOR,
   KERNEL_RESTART_R_JUPYTER_SELECTOR,
   NATIVE_FRAMES_R_JUPYTER_SELECTOR,
+  PIVOT_WIDER_R_JUPYTER_SELECTOR,
   resolvePackagedRJourneySelection
 } from "./packaged-r-journey.mjs";
 
@@ -101,6 +102,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
   assert.equal(CORE_R_JUPYTER_SELECTOR, "core-operations");
   assert.equal(KERNEL_RESTART_R_JUPYTER_SELECTOR, "kernel-restart");
   assert.equal(NATIVE_FRAMES_R_JUPYTER_SELECTOR, "native-frames");
+  assert.equal(PIVOT_WIDER_R_JUPYTER_SELECTOR, "pivot-wider");
   const resolve = (overrides = {}) =>
     resolvePackagedRJourneySelection({
       acceptanceMode: "r-jupyter",
@@ -131,6 +133,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     [CORE_R_JUPYTER_SELECTOR, false, false],
     ["categorical-operations", false, false],
     ["value-operations", false, false],
+    [PIVOT_WIDER_R_JUPYTER_SELECTOR, false, false],
     [KERNEL_RESTART_R_JUPYTER_SELECTOR, false, false],
     [NATIVE_FRAMES_R_JUPYTER_SELECTOR, false, false],
     ["interactive-terminal", false, true],
@@ -188,6 +191,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     [{ selector: CORE_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: "categorical-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: "value-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
+    [{ selector: PIVOT_WIDER_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: KERNEL_RESTART_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: NATIVE_FRAMES_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ remoteJupyterEnabled: true, requestedEditors: ["cursor"] }, /requires VS Code/u],

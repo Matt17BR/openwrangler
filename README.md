@@ -156,8 +156,8 @@ a partial rectangle.
 
 ## Transformations
 
-Choose from 31 operations, including filling missing values, multi-output literal splitting, portable
-regular-expression extraction, deterministic Pivot longer, engine-native custom Python or R code, and
+Choose from 32 operations, including filling missing values, multi-output literal splitting, portable
+regular-expression extraction, deterministic Pivot longer and Pivot wider, engine-native custom Python or R code, and
 transformations inferred from examples. A draft stays separate until you apply it. You can inspect any applied step.
 Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step.
 
@@ -166,6 +166,10 @@ sort key, or fallback column appear only when the dataframe has a compatible col
 
 Pivot longer turns 2–64 ordered, exactly compatible scalar columns into one label column and one value column. It
 keeps unselected columns, preserves values without common-type coercion, and emits selected-column-major rows.
+
+Pivot wider uses one text/factor key column and one scalar value column with 2–64 explicitly declared typed keys and
+output names. Duplicate identifier/key rows fail instead of aggregating; missing declared combinations become typed
+nulls, retained identifiers keep their public lineage, and groups follow first source occurrence.
 
 | Column type                | Methods                                                                                                           |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------- |

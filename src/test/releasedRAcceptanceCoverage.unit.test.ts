@@ -3,6 +3,7 @@ import {
   RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE,
   RELEASED_R_COMPREHENSIVE_COVERAGE,
   RELEASED_R_KERNEL_RESTART_COVERAGE,
+  RELEASED_R_PIVOT_WIDER_COVERAGE,
   RELEASED_R_REPRESENTATIVE_COVERAGE,
   RELEASED_R_VALUE_OPERATIONS_COVERAGE,
   releasedRAcceptanceCoverageProfile
@@ -63,6 +64,7 @@ describe("released-R acceptance coverage", () => {
       RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE
     );
     expect(profile("jupyter-r", "value-operations", "vscode", "linux")).toBe(RELEASED_R_VALUE_OPERATIONS_COVERAGE);
+    expect(profile("jupyter-r", "pivot-wider", "vscode", "linux")).toBe(RELEASED_R_PIVOT_WIDER_COVERAGE);
     expect(profile("jupyter-r", "kernel-restart", "vscode", "linux")).toBe(RELEASED_R_KERNEL_RESTART_COVERAGE);
   });
 

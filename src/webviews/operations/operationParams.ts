@@ -10,6 +10,12 @@ import type {
 import { buildFillMissingParams } from "./fillMissingModel";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
+import {
+  MAX_PIVOT_WIDER_COLUMNS,
+  pivotWiderKeyValue,
+  portablePivotWiderNameKey,
+  validatePivotWiderOutputName
+} from "../../shared/pivotWider";
 
 export type OperationParamsFor<Kind extends OperationKind> = Extract<TransformStep, { kind: Kind }>["params"];
 
@@ -182,6 +188,48 @@ export function buildParams(
         throw new TypeError("Pivot-longer output names must be distinct from each other and the input schema.");
       }
       return { columns, labelColumn, valueColumn };
+    }
+    case "pivotWider": {
+      const namesFrom = columnReference("namesFrom");
+      const valuesFrom = columnReference("valuesFrom");
+      if (namesFrom.id === valuesFrom.id) {
+        throw new TypeError("Pivot wider requires distinct names-from and values-from columns.");
+      }
+      const keyValues = form.getAll("pivotWiderKey").map(String);
+      const outputNames = form.getAll("pivotWiderName").map(String);
+      if (keyValues.length < 2 || keyValues.length > 64 || keyValues.length !== outputNames.length) {
+        throw new TypeError("Pivot wider requires 2 to 64 complete ordered outputs.");
+      }
+      const removed = new Set([namesFrom.id, valuesFrom.id]);
+      const existing = new Set(
+        availableColumns
+          .filter((column) => !removed.has(column.id))
+          .map((column) => portablePivotWiderNameKey(column.name))
+      );
+      const nameKeys: string[] = [];
+      const outputs = keyValues.map((keyValue, index) => {
+        const name = outputNames[index]!;
+        validatePivotWiderOutputName(name, `Pivot wider output ${index + 1} name`);
+        const nameKey = portablePivotWiderNameKey(name);
+        if (existing.has(nameKey))
+          throw new TypeError("Pivot-wider output names must not collide with retained columns.");
+        nameKeys.push(nameKey);
+        const key = {
+          kind: "typedSelection" as const,
+          version: 1 as const,
+          columnType: "string" as const,
+          cell: { kind: "string" as const, raw: keyValue, display: keyValue, isNull: false, isNaN: false }
+        };
+        pivotWiderKeyValue(key);
+        return { key, name };
+      });
+      if (new Set(keyValues).size !== keyValues.length || new Set(nameKeys).size !== nameKeys.length) {
+        throw new TypeError("Pivot wider requires unique typed keys and portable output names.");
+      }
+      if (availableColumns.length - 2 + outputs.length > MAX_PIVOT_WIDER_COLUMNS) {
+        throw new TypeError(`Pivot wider cannot create more than ${MAX_PIVOT_WIDER_COLUMNS.toLocaleString()} columns.`);
+      }
+      return { namesFrom, valuesFrom, outputs };
     }
     case "extractRegexGroup": {
       const pattern = value("pattern");

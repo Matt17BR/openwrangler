@@ -16,6 +16,7 @@ import type {
   OpenSessionRequest,
   OpenWranglerRequest,
   PivotLongerTransformStep,
+  PivotWiderTransformStep,
   RoundNumberTransformStep,
   SelectColumnsTransformStep,
   SourceCapabilities,
@@ -2330,6 +2331,74 @@ describe("canonical R kernel bridge", () => {
       });
       expect(page).toMatchObject({ kind: "page", revision: 0, metadata: { steps: [] } });
       if (page.kind !== "page") throw new Error(`Expected a page after ${testCase.name}.`);
+      expect(page.metadata).not.toHaveProperty("draftStep");
+    }
+  });
+
+  it("rejects Pivot wider schema and output-contract failures before R transport", async () => {
+    const collisionSource = frameContract();
+    const invalidNamesBase = frameContract();
+    const invalidNamesSource: RFramePageContract = {
+      ...invalidNamesBase,
+      schema: invalidNamesBase.schema.map((column, index) =>
+        index === 6
+          ? {
+              ...column,
+              rawType: "double",
+              type: "float",
+              semantics: { kind: "double", storageMode: "double", classes: ["numeric"] }
+            }
+          : column
+      )
+    };
+    const invalidIdentifierBase = frameContract();
+    const invalidIdentifierSource: RFramePageContract = {
+      ...invalidIdentifierBase,
+      schema: invalidIdentifierBase.schema.map((column, index) =>
+        index === 1
+          ? ({
+              ...column,
+              rawType: "list",
+              type: "list",
+              semantics: { kind: "list", storageMode: "list", classes: ["list"] }
+            } as unknown as RColumnSchema)
+          : column
+      )
+    };
+    const cases: readonly { name: string; source: RFramePageContract; outputNames: readonly [string, string] }[] = [
+      { name: "portable retained collision", source: collisionSource, outputNames: ["count", "beta"] },
+      { name: "non-text names-from metadata", source: invalidNamesSource, outputNames: ["alpha", "beta"] },
+      {
+        name: "non-scalar retained identifier metadata",
+        source: invalidIdentifierSource,
+        outputNames: ["alpha", "beta"]
+      }
+    ];
+
+    for (const testCase of cases) {
+      const transport = fakeTransport(testCase.source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request(
+          pivotWiderPreviewRequest(`r-pivot-wider-${testCase.name.replaceAll(" ", "-")}`, testCase.outputNames)
+        )
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request", sessionId });
+      expect(transport.previewStep, testCase.name).not.toHaveBeenCalled();
+      expect(transport.applyDraft, testCase.name).not.toHaveBeenCalled();
+      const page = await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: `after-pivot-wider-${testCase.name}`,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      });
+      expect(page).toMatchObject({ kind: "page", revision: 0, metadata: { steps: [] } });
+      if (page.kind !== "page") throw new Error("Expected a page after rejected Pivot wider preview.");
       expect(page.metadata).not.toHaveProperty("draftStep");
     }
   });
@@ -6138,6 +6207,40 @@ function pivotLongerPreviewRequest(
     id,
     kind: "pivotLonger",
     params: { columns: [...columns], labelColumn, valueColumn }
+  };
+  return {
+    kind: "previewStep",
+    sessionId,
+    revision: 0,
+    step,
+    offset: 0,
+    limit: 20,
+    columnOffset: 0,
+    columnLimit: 8
+  };
+}
+
+function pivotWiderPreviewRequest(
+  id: string,
+  outputNames: readonly [string, string]
+): Extract<OpenWranglerRequest, { kind: "previewStep" }> {
+  const token = (value: string) => ({
+    kind: "typedSelection" as const,
+    version: 1 as const,
+    columnType: "string" as const,
+    cell: { kind: "string" as const, raw: value, display: value, isNull: false, isNaN: false }
+  });
+  const step: PivotWiderTransformStep = {
+    id,
+    kind: "pivotWider",
+    params: {
+      namesFrom: { id: "r:c:6", name: "missing" },
+      valuesFrom: { id: "r:c:0", name: "value" },
+      outputs: [
+        { key: token("a"), name: outputNames[0] },
+        { key: token("b"), name: outputNames[1] }
+      ]
+    }
   };
   return {
     kind: "previewStep",

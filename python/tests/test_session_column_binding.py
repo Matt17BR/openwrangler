@@ -256,6 +256,70 @@ def test_output_collision_is_rejected_before_adapter_dispatch(tmp_path: Path, mo
         )
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_pivot_wider_container_identifier_rejects_before_adapter_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    path = tmp_path / f"pivot-wider-container-{backend}.jsonl"
+    path.write_text(
+        '{"identifier":[1],"key":"x","value":1}\n{"identifier":[1],"key":"y","value":2}\n',
+        encoding="utf-8",
+    )
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    schema = opened["metadata"]["schema"]
+    runtime = manager.sessions[session_id]
+    before = {
+        "revision": runtime.revision,
+        "plan": deepcopy(runtime.plan),
+        "draft": deepcopy(runtime.draft_step),
+        "schema": deepcopy(runtime.committed_schema),
+        "cache": deepcopy(runtime.page_cache),
+    }
+
+    def unexpected_dispatch(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Pivot wider container identifiers must fail before adapter dispatch")
+
+    monkeypatch.setattr(runtime.engine, "apply_transform", unexpected_dispatch)
+    names_from = next(column for column in schema if column["name"] == "key")
+    values_from = next(column for column in schema if column["name"] == "value")
+
+    def token(value: str) -> dict[str, Any]:
+        return {
+            "kind": "typedSelection",
+            "version": 1,
+            "columnType": "string",
+            "cell": {"kind": "string", "raw": value, "display": value, "isNull": False, "isNaN": False},
+        }
+
+    operation = step(
+        "pivot-wider-container",
+        "pivotWider",
+        namesFrom=ref(names_from["id"], names_from["name"]),
+        valuesFrom=ref(values_from["id"], values_from["name"]),
+        outputs=[
+            {"key": token("x"), "name": "x_value"},
+            {"key": token("y"), "name": "y_value"},
+        ],
+    )
+    with pytest.raises(EngineError, match="identifier columns must use the portable group-key scalar family"):
+        manager.preview_step(session_id, 0, operation, 0, 10)
+    assert {
+        "revision": runtime.revision,
+        "plan": runtime.plan,
+        "draft": runtime.draft_step,
+        "schema": runtime.committed_schema,
+        "cache": runtime.page_cache,
+    } == before
+
+
 def test_preview_failure_restores_private_bound_state(tmp_path: Path, monkeypatch) -> None:
     manager, session_id, schema = open_session(tmp_path)
     value = ref(schema[1]["id"], schema[1]["name"])
