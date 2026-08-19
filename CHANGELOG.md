@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- **Pivot longer** reshapes 2–64 ordered, exactly compatible scalar columns into stable label/value outputs. It keeps
+  unselected columns, emits selected-column-major rows, preserves native scalar metadata without common-type
+  coercion, and runs natively in Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.
 - **Extract regex group** retains its source column and creates one stable output from the selected capture group in
   the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
   engine-native live and generated execution; PySpark remains viewing-only.

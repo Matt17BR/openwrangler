@@ -7,12 +7,14 @@ const city = { id: "c:city", name: "city" } as const;
 const sales = { id: "c:sales", name: "sales" } as const;
 const when = { id: "c:when", name: "when" } as const;
 const units = { id: "c:units", name: "units" } as const;
+const profit = { id: "c:profit", name: "profit" } as const;
 
 const schema = [
   column(city, 0, "string", "String"),
   column(sales, 1, "float", "Float64"),
   column(when, 2, "datetime", "Datetime"),
-  column(units, 3, "integer", "Int64")
+  column(units, 3, "integer", "Int64"),
+  column(profit, 4, "float", "Float64")
 ] satisfies ColumnSchema[];
 
 const emptyFilterModel: FilterModel = { filters: [], sort: [] };
@@ -205,6 +207,16 @@ const validCases: ParamsCases = {
       ["newColumns", "second"]
     ],
     expected: { column: city, delimiter: "-", newColumns: ["first", "second"] }
+  },
+  pivotLonger: {
+    kind: "pivotLonger",
+    fields: [
+      ["columns", "c:sales"],
+      ["columns", "c:profit"],
+      ["labelColumn", "metric"],
+      ["valueColumn", "reading"]
+    ],
+    expected: { columns: [sales, profit], labelColumn: "metric", valueColumn: "reading" }
   },
   extractRegexGroup: {
     kind: "extractRegexGroup",

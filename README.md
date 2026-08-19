@@ -156,13 +156,16 @@ a partial rectangle.
 
 ## Transformations
 
-Choose from 30 operations, including filling missing values, multi-output literal splitting, portable
-regular-expression extraction, engine-native custom Python or R code, and
+Choose from 31 operations, including filling missing values, multi-output literal splitting, portable
+regular-expression extraction, deterministic Pivot longer, engine-native custom Python or R code, and
 transformations inferred from examples. A draft stays separate until you apply it. You can inspect any applied step.
-Edit and cleaning Undo target only the most recent step.
+Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step.
 
 Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
 sort key, or fallback column appear only when the dataframe has a compatible column.
+
+Pivot longer turns 2–64 ordered, exactly compatible scalar columns into one label column and one value column. It
+keeps unselected columns, preserves values without common-type coercion, and emits selected-column-major rows.
 
 | Column type                | Methods                                                                                                           |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------- |

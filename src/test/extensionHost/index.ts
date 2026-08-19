@@ -120,6 +120,7 @@ import {
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import { persistedReplayExportRequest } from "./persistedReplayExport";
 import { exerciseMultiOutputSplitJourney } from "./multiOutputSplitJourney";
+import { exercisePivotLongerJourney } from "./pivotLongerJourney";
 import { exerciseActiveRegexExtractionJourney, exercisePandasRegexExtractionJourney } from "./regexExtractionJourney";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
@@ -477,6 +478,11 @@ const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInterac
   columnReference,
   exerciseMultiOutputSplitJourney: (app, testing, sessionId, synchronizeApp) =>
     exerciseMultiOutputSplitJourney(app, testing, sessionId, synchronizeApp, { recordAcceptanceProgress, waitFor }),
+  exercisePivotLongerJourney: (app, testing, sessionId, selectedColumnNames, synchronizeApp) =>
+    exercisePivotLongerJourney(app, testing, sessionId, selectedColumnNames, synchronizeApp, {
+      recordAcceptanceProgress,
+      waitFor
+    }),
   previewAndDiscardPreviousRevenue,
   previewApplyAndUndoGroupedRevenue,
   previewMostCommonAccountNote,
@@ -2248,6 +2254,18 @@ async function exerciseReleasedREditingJourney(
       recordProgress: recordAcceptanceProgress,
       checkpoint: "jupyter-r:editing:value-operations:regex-extraction"
     });
+    const pivotApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R Pivot longer session");
+    await exercisePivotLongerJourney(
+      pivotApp,
+      testing,
+      sessionId,
+      ["score", "fractional_score"],
+      (description) => releasedRSessionApp(workbench, testing, sessionId, description),
+      {
+        recordAcceptanceProgress,
+        waitFor
+      }
+    );
   }
 
   if (phase === "jupyter-r" && editingCatalog === "core-catalog" && screenshotOutput) {

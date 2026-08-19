@@ -177,9 +177,9 @@ is followed immediately by its own sealed failure-evidence upload. A deferred sh
 after every phase assigned to that shard, so an early failure cannot suppress later evidence or be overwritten by it.
 Explicit candidate core keeps its existing job, phase, and selector but owns one full installed Clone Column lifecycle:
 preview, apply, applied-step inspection, edit and reapply with the same step/output identities, then undo. Dedicated
-local-source contracts now own the strict ordered 30-operation live/generated catalog and byte-exact clipboard/atomic
-script exports of distinct executable operation-labelled buffers. Current source therefore exposes all 30 operations
-but remains **Partial** until a fresh hosted candidate plus installed all-30 and performance evidence pass. The private
+local-source contracts now own the strict ordered 31-operation live/generated catalog and byte-exact clipboard/atomic
+script exports of distinct executable operation-labelled buffers. Current source therefore exposes all 31 operations
+but remains **Partial** until a fresh hosted candidate plus installed all-31 and performance evidence pass. The private
 R transport is v14; public protocol v2 and every candidate job, selector, phase, 300-second hard deadline, 180-second
 inactivity deadline, and no-retry boundary remain unchanged. Candidate core,
 value, and categorical do not duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive

@@ -7,6 +7,7 @@ from math import isfinite
 from typing import Any
 
 from .engines.base import VIEW_COMPARABLE_TYPES, is_internal_row_id_label
+from .pivot_longer import PIVOT_LONGER_SCALAR_TYPES, portable_pivot_longer_name_key
 
 _GROUP_KEY_TYPES = {
     "string",
@@ -73,6 +74,7 @@ class _Column:
     name: str
     position: int
     semantic_type: str
+    raw_type: str
 
     def bound_reference(self) -> dict[str, str | int]:
         return {"id": self.identifier, "name": self.name, "position": self.position}
@@ -96,10 +98,17 @@ class _BindingContext:
                 raise ColumnBindingError(f"Column lineage at position {position} must be an object.")
             schema_name = str(schema_column["name"])
             semantic_type = schema_column.get("type")
+            # Runtime schemas always include rawType. Tests and older private
+            # callers may provide only the semantic type; treating that as the
+            # raw identity keeps unrelated binding behavior compatible while
+            # pivotLonger still compares exact runtime raw types when present.
+            raw_type = schema_column.get("rawType", semantic_type)
             identifier = identity.get("id")
             identity_name = identity.get("name")
             if not isinstance(semantic_type, str) or not semantic_type:
                 raise ColumnBindingError(f"Column schema at position {position} has an invalid semantic type.")
+            if not isinstance(raw_type, str) or not raw_type:
+                raise ColumnBindingError(f"Column schema at position {position} has an invalid raw type.")
             if not isinstance(identifier, str) or not identifier:
                 raise ColumnBindingError(f"Column lineage at position {position} has an invalid identity.")
             if not isinstance(identity_name, str):
@@ -111,7 +120,7 @@ class _BindingContext:
                 )
             if identifier in self.by_id:
                 raise ColumnBindingError(f"Duplicate column identity in the input schema: {identifier}")
-            column = _Column(identifier, schema_name, position, semantic_type)
+            column = _Column(identifier, schema_name, position, semantic_type, raw_type)
             self.columns.append(column)
             self.by_id[identifier] = column
 
@@ -172,6 +181,42 @@ class _BindingContext:
             raise ColumnBindingError(
                 f"{label} has unsupported {column.semantic_type!r} type; group keys must be portable scalar columns."
             )
+
+    def require_pivot_longer_columns(self, references: Sequence[Mapping[str, Any]]) -> None:
+        columns = [
+            self._column_for(reference, f"pivotLonger.columns[{index}]") for index, reference in enumerate(references)
+        ]
+        first = columns[0]
+        if first.semantic_type not in PIVOT_LONGER_SCALAR_TYPES:
+            raise ColumnBindingError(
+                f"pivotLonger.columns must be portable scalar columns; {first.name!r} is {first.semantic_type!r}."
+            )
+        for column in columns[1:]:
+            if column.semantic_type != first.semantic_type or column.raw_type != first.raw_type:
+                raise ColumnBindingError(
+                    "pivotLonger.columns must have one exactly compatible scalar type; "
+                    f"{column.name!r} is {column.semantic_type!r}/{column.raw_type!r}, not "
+                    f"{first.semantic_type!r}/{first.raw_type!r}."
+                )
+
+    def reject_casefold_output_collisions(self, outputs: Sequence[tuple[Any, str]]) -> None:
+        normalized: dict[str, str] = {}
+        existing = {portable_pivot_longer_name_key(column.name): column.name for column in self.columns}
+        for output_name, label in outputs:
+            if not isinstance(output_name, str) or not output_name:
+                raise ColumnBindingError(f"{label} must be a non-empty string.")
+            if is_internal_row_id_label(output_name):
+                raise ColumnBindingError(f"{label} uses Open Wrangler's reserved private row-identity prefix.")
+            key = portable_pivot_longer_name_key(output_name)
+            if key in existing:
+                raise ColumnBindingError(
+                    f"{label} collides case-insensitively with an existing column: {existing[key]}"
+                )
+            if key in normalized:
+                raise ColumnBindingError(
+                    f"{label} collides case-insensitively with another pivot output: {normalized[key]}"
+                )
+            normalized[key] = output_name
 
     def require_by_example_source(self, reference: Mapping[str, Any], label: str) -> None:
         column = self._column_for(reference, label)
@@ -426,6 +471,7 @@ def bind_step(
         "formatDatetime",
         "groupBy",
         "byExample",
+        "pivotLonger",
     }:
         return bound
 
@@ -480,6 +526,17 @@ def bind_step(
         params["columns"] = context.bind_many(params.get("columns"), f"{kind}.columns")
         if kind == "dropColumns" and len(params["columns"]) == len(context.columns):
             raise ColumnBindingError("dropColumns must leave at least one visible column.")
+        return bound
+
+    if kind == "pivotLonger":
+        params["columns"] = context.bind_many(params.get("columns"), "pivotLonger.columns")
+        context.require_pivot_longer_columns(params["columns"])
+        context.reject_casefold_output_collisions(
+            (
+                (params.get("labelColumn"), "pivotLonger.labelColumn"),
+                (params.get("valueColumn"), "pivotLonger.valueColumn"),
+            )
+        )
         return bound
 
     if kind == "groupBy":

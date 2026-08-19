@@ -469,6 +469,41 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </>
     );
   }
+  if (kind === "pivotLonger") {
+    const pivotColumns = compatibleColumns(columns, operationColumnTypes(kind));
+    return (
+      <>
+        <ColumnReferencesSelect
+          name="columns"
+          label="Columns to pivot (ordered)"
+          columns={pivotColumns}
+          defaultValue={initialColumnReferences("columns")}
+          preserveSelectionOrder
+          searchLabel="Find a compatible scalar column"
+        />
+        <p className="panelNote">
+          Select 2 to 64 columns with the same exact data type. Rows are emitted once per selected column in the order
+          shown.
+        </p>
+        <TextField
+          name="labelColumn"
+          label="Label column"
+          defaultValue={param("labelColumn", "variable")}
+          maxUtf8Bytes={1024}
+          description="Stores each selected public column name. Use a unique single-line name."
+          required
+        />
+        <TextField
+          name="valueColumn"
+          label="Value column"
+          defaultValue={param("valueColumn", "value")}
+          maxUtf8Bytes={1024}
+          description="Stores the selected values without common-type coercion. Use a unique single-line name."
+          required
+        />
+      </>
+    );
+  }
   if (kind === "extractRegexGroup") {
     const textColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (

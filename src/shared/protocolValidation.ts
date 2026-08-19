@@ -19,6 +19,12 @@ import type {
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationKinds } from "./operationCatalog.generated";
+import {
+  MAX_PIVOT_LONGER_COLUMNS,
+  MIN_PIVOT_LONGER_COLUMNS,
+  portablePivotLongerNameKey,
+  validatePivotLongerOutputName
+} from "./pivotLonger";
 import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
 import { PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
@@ -1281,6 +1287,27 @@ export function isTransformStep(value: unknown): value is TransformStep {
         isNonEmptyString(decoded.format) &&
         optional(decoded, "newColumn", isNonEmptyString)
       );
+    }
+    case "pivotLonger": {
+      const decoded = exactRecord(params, ["columns", "labelColumn", "valueColumn"]);
+      if (
+        decoded === undefined ||
+        !isUniqueColumnReferenceArray(decoded.columns, false) ||
+        decoded.columns.length < MIN_PIVOT_LONGER_COLUMNS ||
+        decoded.columns.length > MAX_PIVOT_LONGER_COLUMNS ||
+        !isNonEmptyString(decoded.labelColumn) ||
+        !isNonEmptyString(decoded.valueColumn) ||
+        portablePivotLongerNameKey(decoded.labelColumn) === portablePivotLongerNameKey(decoded.valueColumn)
+      ) {
+        return false;
+      }
+      try {
+        validatePivotLongerOutputName(decoded.labelColumn, "Pivot longer label output name");
+        validatePivotLongerOutputName(decoded.valueColumn, "Pivot longer value output name");
+        return true;
+      } catch {
+        return false;
+      }
     }
     case "groupBy": {
       const decoded = exactRecord(params, ["keys", "aggregations"]);

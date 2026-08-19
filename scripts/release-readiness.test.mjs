@@ -189,10 +189,10 @@ const expectedStableRScope = [
   ["Notebook workbench", "Linux, macOS, and Windows", "src/test/rKernelBridge.unit.test.ts"],
   [
     "Complete R cleaning catalog and generated code",
-    "All 30 catalog operations",
+    "All 31 catalog operations",
     "r/tests/complete_catalog_contract.R"
   ],
-  ["Copy or save generated R", "All 30 catalog operations", "src/test/rCompleteCatalogCodeExport.unit.test.ts"],
+  ["Copy or save generated R", "All 31 catalog operations", "src/test/rCompleteCatalogCodeExport.unit.test.ts"],
   [
     "Insert generated R into its IRkernel notebook",
     "Linux, macOS, and Windows",
@@ -479,7 +479,13 @@ test("binds the checked-in Native R preview table to its exact truthful structur
   }
 
   for (const [surface] of previewOperationScope) {
-    for (const invalidAvailability of ["26 operations", "27 operations", "29 operations", "30 operations"]) {
+    for (const invalidAvailability of [
+      "26 operations",
+      "27 operations",
+      "29 operations",
+      "30 operations",
+      "31 operations"
+    ]) {
       const mutatedScope = R_PREVIEW_PARITY_SCOPE.map((row) =>
         row[0] === surface ? [row[0], invalidAvailability, row[2]] : row
       );
@@ -837,8 +843,8 @@ test("rejects structural and semantic drift in the stable Native R matrix", () =
   }
 
   for (const mutated of [
-    ...["All 29 catalog operations", "All 31 catalog operations"].map((availability) =>
-      stableRParity().replace("All 30 catalog operations", availability)
+    ...["All 30 catalog operations", "All 32 catalog operations"].map((availability) =>
+      stableRParity().replace("All 31 catalog operations", availability)
     ),
     stableRParity().replace("collapse::qDF()", "collapse frame"),
     stableRParity().replace("collapse::qTBL()", "collapse frame"),

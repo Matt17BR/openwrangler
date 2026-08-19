@@ -172,12 +172,12 @@ export const R_STABLE_PARITY_SCOPE = Object.freeze([
   stableRScope("Notebook workbench", "Linux, macOS, and Windows", "src/test/rKernelBridge.unit.test.ts"),
   stableRScope(
     "Complete R cleaning catalog and generated code",
-    "All 30 catalog operations",
+    "All 31 catalog operations",
     "r/tests/complete_catalog_contract.R"
   ),
   stableRScope(
     "Copy or save generated R",
-    "All 30 catalog operations",
+    "All 31 catalog operations",
     "src/test/rCompleteCatalogCodeExport.unit.test.ts"
   ),
   stableRScope(

@@ -14,6 +14,16 @@ export const portableScalarColumnTypes: ReadonlySet<ColumnType> = new Set([
   "duration",
   "binary"
 ]);
+export const pivotLongerColumnTypes: ReadonlySet<ColumnType> = new Set([
+  "string",
+  "integer",
+  "float",
+  "decimal",
+  "boolean",
+  "datetime",
+  "date",
+  "duration"
+]);
 
 const orderedAggregationColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
@@ -36,6 +46,7 @@ export type TypeRestrictedOperationKind = Extract<
   | "stripText"
   | "splitText"
   | "splitTextColumns"
+  | "pivotLonger"
   | "extractRegexGroup"
   | "capitalizeText"
   | "lowerText"
@@ -93,6 +104,8 @@ export function operationColumnTypes(kind: TypeRestrictedOperationKind): Readonl
       return textColumnTypes;
     case "formatDatetime":
       return datetimeColumnTypes;
+    case "pivotLonger":
+      return pivotLongerColumnTypes;
     case "oneHotEncode":
     case "groupBy":
     case "byExample":

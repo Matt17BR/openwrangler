@@ -239,6 +239,16 @@ export interface RKernelSplitTextColumnsStep {
   }>;
 }
 
+export interface RKernelPivotLongerStep {
+  readonly id: string;
+  readonly kind: "pivotLonger";
+  readonly params: Readonly<{
+    columns: readonly RKernelColumnReference[];
+    labelColumn: string;
+    valueColumn: string;
+  }>;
+}
+
 export interface RKernelExtractRegexGroupStep {
   readonly id: string;
   readonly kind: "extractRegexGroup";
@@ -505,6 +515,7 @@ export type RKernelTransformStep =
   | RKernelStripTextStep
   | RKernelSplitTextStep
   | RKernelSplitTextColumnsStep
+  | RKernelPivotLongerStep
   | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
@@ -1651,6 +1662,22 @@ function validateTransformStep(value: unknown): void {
     params.newColumns.forEach((name, index) =>
       boundedText(name, `request.payload.step.params.newColumns[${index}]`, maximumVariableNameBytes, false)
     );
+    return;
+  }
+  if (step.kind === "pivotLonger") {
+    const params = exactRecord(
+      step.params,
+      ["columns", "labelColumn", "valueColumn"],
+      "R kernel pivot-longer parameters"
+    );
+    if (!Array.isArray(params.columns) || params.columns.length < 2 || params.columns.length > 64) {
+      fail("R kernel pivot-longer parameters require 2 to 64 columns.");
+    }
+    params.columns.forEach((column, index) =>
+      validateColumnReference(column, `request.payload.step.params.columns[${index}]`)
+    );
+    boundedText(params.labelColumn, "request.payload.step.params.labelColumn", maximumVariableNameBytes, false);
+    boundedText(params.valueColumn, "request.payload.step.params.valueColumn", maximumVariableNameBytes, false);
     return;
   }
   if (step.kind === "extractRegexGroup") {

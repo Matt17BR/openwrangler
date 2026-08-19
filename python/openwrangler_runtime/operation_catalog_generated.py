@@ -204,6 +204,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=("newColumn",),
     ),
     OperationDefinition(
+        kind="pivotLonger",
+        title="Pivot longer",
+        group="Reshape",
+        required=("columns", "labelColumn", "valueColumn"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="groupBy",
         title="Group and aggregate",
         group="Aggregation",

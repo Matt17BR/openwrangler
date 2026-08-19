@@ -27,6 +27,7 @@ from .live_page_payload import (
     validate_live_page_payload,
 )
 from .operations import OperationError, validate_step
+from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
 from .protocol import MAX_COLUMN_LIMIT
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
 from .version import __version__
@@ -668,12 +669,13 @@ class SessionManager:
             diff_base_view_shape = session.filtered_shape
             base = session.committed
             base_lineage = session.committed_lineage
+            base_shape = session.committed_shape
             base_schema = session.committed_schema
             retained_bound_steps = session.bound_plan if replace_index is None else session.bound_plan[:replace_index]
             if replace_index is not None:
-                base, base_lineage, _base_shape, base_schema = self._replay(session, session.bound_plan[:replace_index])
+                base, base_lineage, base_shape, base_schema = self._replay(session, session.bound_plan[:replace_index])
                 original_bound_step = session.bound_plan[replace_index]
-                diff_base = self._apply_transform_with_row_ids(session, base, original_bound_step)
+                diff_base = self._apply_transform_with_row_ids(session, base, original_bound_step, base_shape)
                 diff_base_shape = session.engine.shape(diff_base)
                 diff_base_schema = self._schema_after_transform(session.engine.schema(diff_base), original_bound_step)
                 diff_base_lineage = derive_lineage(base_lineage, diff_base_schema, original_bound_step)
@@ -695,7 +697,7 @@ class SessionManager:
                 raise EngineError(str(error)) from error
             candidate_bound_plan = [*retained_bound_steps, bound_step]
 
-            draft = self._apply_transform_with_row_ids(session, base, bound_step)
+            draft = self._apply_transform_with_row_ids(session, base, bound_step, base_shape)
             draft_shape = session.engine.shape(draft)
             draft_schema = self._schema_after_transform(session.engine.schema(draft), bound_step)
             draft_lineage = derive_lineage(base_lineage, draft_schema, bound_step)
@@ -803,7 +805,7 @@ class SessionManager:
             step_index = matches[0]
             bound_step = session.bound_plan[step_index]
             before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
-            after = self._apply_transform_with_row_ids(session, before, bound_step)
+            after = self._apply_transform_with_row_ids(session, before, bound_step, before_shape)
             after_shape = session.engine.shape(after)
             after_raw_schema = self._schema_after_transform(session.engine.schema(after), bound_step)
 
@@ -1499,17 +1501,38 @@ class SessionManager:
         frame = session.original
         lineage = source_lineage(session.source_schema)
         schema = session.source_schema
+        shape = session.source_shape
         for step in bound_plan:
-            frame = self._apply_transform_with_row_ids(session, frame, step)
+            frame = self._apply_transform_with_row_ids(session, frame, step, shape)
             schema = self._schema_after_transform(session.engine.schema(frame), step)
             lineage = derive_lineage(lineage, schema, step)
-        shape = session.source_shape if not bound_plan else session.engine.shape(frame)
+            shape = session.engine.shape(frame)
         return frame, lineage, shape, schema
 
     @staticmethod
-    def _apply_transform_with_row_ids(session: Session, frame: Any, step: Mapping[str, Any]) -> Any:
+    def _apply_transform_with_row_ids(
+        session: Session,
+        frame: Any,
+        step: Mapping[str, Any],
+        input_shape: SessionDataShape,
+    ) -> Any:
         kind = str(step["kind"])
-        allowed_internal = None if kind in {"groupBy", "customCode"} else session.engine.internal_row_id_column(frame)
+        if kind == "pivotLonger":
+            params = step.get("params")
+            columns = params.get("columns") if isinstance(params, Mapping) else None
+            if not isinstance(columns, list):
+                raise EngineError("The bound pivot-longer step has invalid selected columns.")
+            row_count = input_shape["rows"]
+            if row_count is None:
+                raise EngineError("Pivot longer requires an exact input row count before execution.")
+            try:
+                checked_pivot_longer_row_count(row_count, len(columns))
+            except PivotLongerContractError as error:
+                raise EngineError(str(error)) from error
+        session.engine.validate_transform_preflight(frame, step, input_shape)
+        allowed_internal = (
+            None if kind in {"groupBy", "customCode", "pivotLonger"} else session.engine.internal_row_id_column(frame)
+        )
         transformed = session.engine.apply_transform(frame, step)
         session.engine.validate_internal_row_id_namespace(transformed, allowed_internal)
         session.engine.validate_column_addressability(transformed)

@@ -9,6 +9,7 @@ import type {
 } from "../../shared/protocol";
 import { buildFillMissingParams } from "./fillMissingModel";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
+import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
 
 export type OperationParamsFor<Kind extends OperationKind> = Extract<TransformStep, { kind: Kind }>["params"];
 
@@ -153,6 +154,34 @@ export function buildParams(
         delimiter,
         newColumns
       };
+    }
+    case "pivotLonger": {
+      const columns = columnReferences("columns");
+      if (columns.length < 2 || columns.length > 64) {
+        throw new TypeError("Pivot longer requires 2 to 64 ordered columns.");
+      }
+      if (new Set(columns.map((column) => column.id)).size !== columns.length) {
+        throw new TypeError("Pivot longer requires unique ordered columns.");
+      }
+      const selected = columns.map((reference) => {
+        const column = availableColumns.find((candidate) => candidate.id === reference.id);
+        if (!column) throw new TypeError("Pivot longer contains an unavailable column.");
+        return column;
+      });
+      if (selected.some((column) => column.type !== selected[0]!.type || column.rawType !== selected[0]!.rawType)) {
+        throw new TypeError("Pivot longer requires columns with one exactly compatible scalar type.");
+      }
+      const labelColumn = value("labelColumn");
+      const valueColumn = value("valueColumn");
+      validatePivotLongerOutputName(labelColumn, "Pivot longer label output name");
+      validatePivotLongerOutputName(valueColumn, "Pivot longer value output name");
+      const existing = new Set(availableColumns.map((column) => portablePivotLongerNameKey(column.name)));
+      const labelKey = portablePivotLongerNameKey(labelColumn);
+      const valueKey = portablePivotLongerNameKey(valueColumn);
+      if (labelKey === valueKey || existing.has(labelKey) || existing.has(valueKey)) {
+        throw new TypeError("Pivot-longer output names must be distinct from each other and the input schema.");
+      }
+      return { columns, labelColumn, valueColumn };
     }
     case "extractRegexGroup": {
       const pattern = value("pattern");

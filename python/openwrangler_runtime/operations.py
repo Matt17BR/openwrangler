@@ -10,6 +10,13 @@ from .by_example import SynthesisError, normalize_by_example
 from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operation_catalog_generated import OPERATION_DEFINITIONS
+from .pivot_longer import (
+    MAX_PIVOT_LONGER_COLUMNS,
+    MIN_PIVOT_LONGER_COLUMNS,
+    PivotLongerContractError,
+    portable_pivot_longer_name_key,
+    validate_pivot_longer_output_name,
+)
 from .portable_regex import PortableRegexError, portable_regex_contract, validate_portable_regex_output_name
 
 
@@ -86,6 +93,7 @@ _COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "oneHotEncode": ("columns",),
     "groupBy": ("keys",),
     "byExample": ("sourceColumns",),
+    "pivotLonger": ("columns",),
 }
 
 
@@ -242,6 +250,20 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             validate_portable_regex_output_name(params.get("newColumn"))
         except PortableRegexError as error:
             raise OperationError(str(error)) from error
+    elif kind == "pivotLonger":
+        columns = params["columns"]
+        if not MIN_PIVOT_LONGER_COLUMNS <= len(columns) <= MAX_PIVOT_LONGER_COLUMNS:
+            raise OperationError(
+                "pivotLonger.columns must contain between "
+                f"{MIN_PIVOT_LONGER_COLUMNS} and {MAX_PIVOT_LONGER_COLUMNS} column references."
+            )
+        try:
+            label_column = validate_pivot_longer_output_name(params.get("labelColumn"), "pivotLonger.labelColumn")
+            value_column = validate_pivot_longer_output_name(params.get("valueColumn"), "pivotLonger.valueColumn")
+        except PivotLongerContractError as error:
+            raise OperationError(str(error)) from error
+        if portable_pivot_longer_name_key(label_column) == portable_pivot_longer_name_key(value_column):
+            raise OperationError("pivotLonger label and value output names must differ case-insensitively.")
     elif kind == "roundNumber" and (
         isinstance(params.get("decimals", 0), bool) or not isinstance(params.get("decimals", 0), int)
     ):
@@ -636,7 +658,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         )
     elif kind in {"dropMissingRows", "dropDuplicates"}:
         references.extend(("columns.name", item.get("name")) for item in params.get("columns", []))
-    elif kind in {"selectColumns", "dropColumns", "oneHotEncode"}:
+    elif kind in {"selectColumns", "dropColumns", "oneHotEncode", "pivotLonger"}:
         references.extend(("columns.name", item.get("name")) for item in params["columns"])
     elif kind in {
         "renameColumn",
@@ -694,6 +716,13 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
             references.append((output_field, params[output_field]))
     if kind == "splitTextColumns":
         references.extend(("newColumns", name) for name in params["newColumns"])
+    if kind == "pivotLonger":
+        references.extend(
+            (
+                ("labelColumn", params["labelColumn"]),
+                ("valueColumn", params["valueColumn"]),
+            )
+        )
     if kind == "multiLabelBinarize" and "prefix" in params:
         references.append(("prefix", params["prefix"]))
 

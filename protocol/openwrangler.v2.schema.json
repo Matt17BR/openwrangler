@@ -194,6 +194,13 @@
       "icon": "calendar"
     },
     {
+      "kind": "pivotLonger",
+      "title": "Pivot longer",
+      "description": "Replace 2–64 compatible scalar columns with one label column and one value column in deterministic selected-column-major order.",
+      "group": "Reshape",
+      "icon": "table"
+    },
+    {
       "kind": "groupBy",
       "title": "Group and aggregate",
       "description": "Group by keys and calculate named aggregations.",
@@ -942,6 +949,7 @@
         "floorNumber",
         "ceilNumber",
         "formatDatetime",
+        "pivotLonger",
         "groupBy",
         "byExample",
         "customCode"
@@ -1344,6 +1352,35 @@
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },
+    "PivotLongerParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns", "labelColumn", "valueColumn"],
+      "properties": {
+        "columns": {
+          "description": "Ordered compatible scalar columns. Output rows are grouped by this selected-column order and preserve source order within each group.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/ColumnReference" }
+        },
+        "labelColumn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[^\\r\\n]+$",
+          "description": "Name of the stable string output containing each selected public column name; exact UTF-8 byte validation is enforced by every decoder."
+        },
+        "valueColumn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[^\\r\\n]+$",
+          "description": "Name of the scalar output containing the selected values without lossy common-type coercion; exact UTF-8 byte validation is enforced by every decoder."
+        }
+      }
+    },
     "Aggregation": {
       "type": "object",
       "additionalProperties": false,
@@ -1554,6 +1591,7 @@
         { "$ref": "#/definitions/FloorNumberTransformStep" },
         { "$ref": "#/definitions/CeilNumberTransformStep" },
         { "$ref": "#/definitions/FormatDatetimeTransformStep" },
+        { "$ref": "#/definitions/PivotLongerTransformStep" },
         { "$ref": "#/definitions/GroupByTransformStep" },
         { "$ref": "#/definitions/ByExampleTransformStep" },
         { "$ref": "#/definitions/CustomCodeTransformStep" }
@@ -1852,6 +1890,18 @@
           "properties": {
             "kind": { "const": "formatDatetime" },
             "params": { "$ref": "#/definitions/FormatDatetimeParams" }
+          }
+        }
+      ]
+    },
+    "PivotLongerTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "pivotLonger" },
+            "params": { "$ref": "#/definitions/PivotLongerParams" }
           }
         }
       ]

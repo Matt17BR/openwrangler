@@ -24,6 +24,7 @@ import type {
   MinMaxScaleTransformStep,
   MultiLabelBinarizeTransformStep,
   OneHotEncodeTransformStep,
+  PivotLongerTransformStep,
   RenameColumnTransformStep,
   RoundNumberTransformStep,
   SelectColumnsTransformStep,
@@ -35,6 +36,7 @@ import type {
   UpperTextTransformStep
 } from "../../shared/protocol";
 import { isTransformStep } from "../../shared/protocolValidation";
+import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
 import { R_FRAME_CONTRACT_LIMITS } from "./rFrameContract";
 import {
   assertRKernelByExampleTransportStrings,
@@ -67,6 +69,7 @@ export type RTransformStepWithoutByExample =
   | StripTextTransformStep
   | SplitTextTransformStep
   | SplitTextColumnsTransformStep
+  | PivotLongerTransformStep
   | ExtractRegexGroupTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
@@ -672,6 +675,25 @@ export function rTransformStep(
         column: Object.freeze({ ...step.params.column }),
         delimiter: step.params.delimiter,
         newColumns: Object.freeze([...step.params.newColumns])
+      })
+    });
+  }
+  if (step.kind === "pivotLonger") {
+    const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
+    [step.params.labelColumn, step.params.valueColumn].forEach((name, index) =>
+      validatePivotLongerOutputName(name, index === 0 ? "Label column" : "Value column")
+    );
+    const keys = [step.params.labelColumn, step.params.valueColumn].map(portablePivotLongerNameKey);
+    if (new Set(keys).size !== keys.length) {
+      throw new TypeError("Pivot-longer output names must be distinct under the portable collision rule.");
+    }
+    return Object.freeze({
+      id: step.id,
+      kind: "pivotLonger" as const,
+      params: Object.freeze({
+        columns: Object.freeze(columns),
+        labelColumn: step.params.labelColumn,
+        valueColumn: step.params.valueColumn
       })
     });
   }

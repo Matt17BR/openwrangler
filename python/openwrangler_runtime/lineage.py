@@ -49,6 +49,16 @@ def derive_lineage(
         candidates = _selected_candidates(candidates, params["keys"])
         for index, aggregation in enumerate(params["aggregations"]):
             candidates.append({"id": _step_column_id(step, index), "name": str(aggregation["alias"])})
+    elif kind == "pivotLonger":
+        selected_ids = {_reference_id(reference) for reference in params["columns"]}
+        _require_known_ids(candidates, selected_ids)
+        candidates = [column for column in candidates if column["id"] not in selected_ids]
+        candidates.extend(
+            (
+                {"id": _step_column_id(step, 0), "name": str(params["labelColumn"])},
+                {"id": _step_column_id(step, 1), "name": str(params["valueColumn"])},
+            )
+        )
     return _align(candidates, after_schema, step)
 
 

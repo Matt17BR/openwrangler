@@ -4,11 +4,11 @@
   "authority": {
     "path": "AGENTS.md",
     "section": "Non-negotiable invariants",
-    "sha256": "9d446db1a328cc4239f854ad2687e0430068cb6f560839eb72779ae7c44e5894"
+    "sha256": "a1fb6609e1d277349c820c2d2d88fde4ca778869e37d489c11934169c3e62522"
   },
   "archive": {
     "path": "docs/contracts/invariants-v1.md",
-    "sha256": "9d446db1a328cc4239f854ad2687e0430068cb6f560839eb72779ae7c44e5894"
+    "sha256": "a1fb6609e1d277349c820c2d2d88fde4ca778869e37d489c11934169c3e62522"
   },
   "scannedDocuments": ["docs/architecture.md", "docs/feature-parity.md", "docs/releasing.md", "docs/testing.md"],
   "invariantCount": 58,
@@ -384,7 +384,7 @@
     },
     {
       "id": 29,
-      "sha256": "e9695af28ef2f35d2494c0d0e69e28afa16841c98e8c26b7bb436fb165a2ca75",
+      "sha256": "8af05fdf3f3e28d9f9053bd51856cbe5779bd0db0024ef0f753d3df1b296a5ff",
       "sourceLines": {
         "start": 86,
         "end": 86

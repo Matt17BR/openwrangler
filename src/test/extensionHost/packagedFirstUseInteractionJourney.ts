@@ -41,6 +41,13 @@ export interface PackagedFirstUseInteractionDependencies {
     sessionId: string,
     synchronizeApp: (phase: string) => Promise<Locator>
   ) => Promise<void>;
+  readonly exercisePivotLongerJourney: (
+    app: Locator,
+    testing: TestApi,
+    sessionId: string,
+    selectedColumnNames: readonly [string, string],
+    synchronizeApp: (phase: string) => Promise<Locator>
+  ) => Promise<void>;
   readonly previewUppercaseMarket: (app: Locator, testing: TestApi, newColumn: string) => Promise<void>;
   readonly reacquireAcknowledgedSessionApp: (
     workbench: Page,
@@ -84,6 +91,7 @@ export function createPackagedFirstUseInteractionJourney(
     clearReleasedJupyterScreenshotTransientUi,
     columnReference,
     exerciseMultiOutputSplitJourney,
+    exercisePivotLongerJourney,
     previewAndDiscardPreviousRevenue,
     previewApplyAndUndoGroupedRevenue,
     previewMostCommonAccountNote,
@@ -615,6 +623,15 @@ export function createPackagedFirstUseInteractionJourney(
       confirmedMutationDiagnostics
     );
     app = await reacquireApp("Multi-output split undo");
+
+    await exercisePivotLongerJourney(app, testing, sessionId, ["revenue", "gross_margin"], rediscoverApp);
+    await waitFor(
+      confirmedMutationRendererReady,
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the undone Pivot longer state to hydrate on its current renderer",
+      confirmedMutationDiagnostics
+    );
+    app = await reacquireApp("Pivot longer undo");
 
     recordAcceptanceProgress("platform-smoke:draft-apply");
     await previewUppercaseMarket(app, testing, "market_upper");

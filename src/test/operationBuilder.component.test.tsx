@@ -43,7 +43,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(30);
+    expect(operationCatalog).toHaveLength(31);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -487,6 +487,57 @@ describe("OperationBuilder", () => {
       }),
       undefined
     );
+  });
+
+  it("hydrates and submits Pivot longer with exact selected-column order", () => {
+    const onPreview = vi.fn();
+    const profit = {
+      ...metadata.schema[1],
+      id: "c:2",
+      name: "profit",
+      position: 2
+    };
+    const numericMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 3 },
+      filteredShape: { rows: 2, columns: 3 },
+      schema: [...metadata.schema, profit]
+    };
+    const initialStep: TransformStep = {
+      id: "pivot-metrics",
+      kind: "pivotLonger",
+      params: {
+        columns: [
+          { id: "c:2", name: "profit" },
+          { id: "c:1", name: "sales" }
+        ],
+        labelColumn: "metric",
+        valueColumn: "reading"
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...numericMetadata,
+          latestStepInputSchema: numericMetadata.schema,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Pivot longer" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "profit" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "sales" })).toBeChecked();
+    expect(screen.getByText("Selected order: profit → sales")).toBeInTheDocument();
+    expect(screen.getByLabelText("Label column")).toHaveValue("metric");
+    expect(screen.getByLabelText("Value column")).toHaveValue("reading");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
 
   it("hydrates and submits public regex extraction separately from literal split", () => {

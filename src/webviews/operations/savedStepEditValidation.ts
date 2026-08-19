@@ -19,6 +19,7 @@ import {
 } from "./fillMissingModel";
 import { aggregationColumnTypes, isAggregationOperation, operationColumnTypes } from "./operationFieldCompatibility";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
+import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
 
 const recovery = "Cancel editing, then reload the session or undo and recreate this step.";
 
@@ -225,6 +226,17 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
           rejectRepeatedIds: false
         }
       ];
+    case "pivotLonger":
+      return [
+        {
+          label: "pivot columns",
+          references: step.params.columns.map((reference, index) => ({
+            label: `pivot column ${index + 1}`,
+            reference
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
     case "groupBy":
       return [
         {
@@ -394,6 +406,15 @@ function savedOperationTypeError(
         operationColumnTypes(step.kind),
         "datetime formatting requires a date or datetime column"
       );
+    case "pivotLonger": {
+      const selected = step.params.columns.map((reference) => columnsById.get(reference.id));
+      if (selected.some((column) => column === undefined)) return undefined;
+      const first = selected[0]!;
+      if (selected.some((column) => column!.type !== first.type || column!.rawType !== first.rawType)) {
+        return "pivot-longer columns must have one exactly compatible scalar type";
+      }
+      return undefined;
+    }
     case "oneHotEncode":
       return incompatibleReferenceType(
         step.params.columns.map((reference, index) => ({ label: `column ${index + 1}`, reference })),
@@ -507,6 +528,21 @@ export function savedStepEditError(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return `This saved regex-extraction step is not portable: ${message} ${recovery}`;
+    }
+  }
+  if (step.kind === "pivotLonger") {
+    const existing = new Set(inputSchema.map((column) => portablePivotLongerNameKey(column.name)));
+    try {
+      validatePivotLongerOutputName(step.params.labelColumn, "Pivot longer label output name");
+      validatePivotLongerOutputName(step.params.valueColumn, "Pivot longer value output name");
+      const labelKey = portablePivotLongerNameKey(step.params.labelColumn);
+      const valueKey = portablePivotLongerNameKey(step.params.valueColumn);
+      if (labelKey === valueKey || existing.has(labelKey) || existing.has(valueKey)) {
+        return `This saved pivot-longer step has colliding output names. ${recovery}`;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `This saved pivot-longer step is not portable: ${message} ${recovery}`;
     }
   }
   return undefined;

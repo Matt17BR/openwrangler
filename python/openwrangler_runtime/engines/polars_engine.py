@@ -12,6 +12,11 @@ from typing import Any, Literal
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..export_target import ExportWriterPath
+from ..pivot_longer import (
+    PivotLongerContractError,
+    checked_pivot_longer_row_count,
+    portable_pivot_longer_name_key,
+)
 from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
@@ -63,6 +68,32 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _POLARS_INTEGER_LIMB_BASE = 10**9
 _POLARS_INTEGER_LIMB_COUNT = 5
+
+
+def _polars_require_pivot_output_names(existing_names: Sequence[str], outputs: Sequence[str]) -> None:
+    keys = [portable_pivot_longer_name_key(name) for name in outputs]
+    if len(set(keys)) != len(keys):
+        raise EngineError("Pivot-longer output names must differ case-insensitively.")
+    if any(name.casefold().startswith(INTERNAL_ROW_ID_PREFIX.casefold()) for name in outputs):
+        raise EngineError("Pivot longer would create Open Wrangler's reserved private row-identity column.")
+    existing = {portable_pivot_longer_name_key(name): name for name in existing_names}
+    collisions = [existing[key] for key in keys if key in existing]
+    if collisions:
+        raise EngineError("Pivot longer would create duplicate column names: " + ", ".join(collisions))
+
+
+def _polars_pivot_type_metadata(frame: Any, name: str, dtype: Any) -> tuple[str, tuple[str, ...] | None]:
+    import polars as pl
+
+    base_type = dtype.base_type()
+    if base_type == pl.Enum:
+        categories = getattr(dtype, "categories", None)
+        return str(dtype), tuple(str(value) for value in categories) if categories is not None else None
+    if base_type != pl.Categorical:
+        return str(dtype), None
+    query = frame.select(pl.col(name).cat.get_categories().alias(name))
+    eager = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
+    return str(dtype), tuple(str(value) for value in eager.get_column(name).to_list())
 
 
 def _literal_file_uri(path: str) -> str:
@@ -1237,6 +1268,35 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(
                 [parts.list.get(index, null_on_oob=True).alias(name) for index, name in enumerate(output_names)]
             )
+        if kind == "pivotLonger":
+            selected = [bound_column_name(column, kind) for column in params["columns"]]
+            outputs = [params["labelColumn"], params["valueColumn"]]
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            _polars_require_pivot_output_names(schema.names(), outputs)
+            first_metadata = _polars_pivot_type_metadata(df, selected[0], schema[selected[0]])
+            if any(_polars_pivot_type_metadata(df, name, schema[name]) != first_metadata for name in selected[1:]):
+                raise EngineError("Pivot-longer columns must have one exactly compatible Polars dtype.")
+            row_count = self.shape(df)["rows"]
+            if row_count is None:
+                raise EngineError("Pivot longer requires an exact input row count before execution.")
+            try:
+                checked_pivot_longer_row_count(row_count, len(selected))
+            except PivotLongerContractError as error:
+                raise EngineError(str(error)) from error
+            row_id = self._row_id_column(df)
+            removed = {*selected, *([row_id] if row_id is not None else [])}
+            unselected = [name for name in schema.names() if name not in removed]
+            fragments = [
+                df.select(
+                    [
+                        *[pl.col(name) for name in unselected],
+                        pl.lit(public_name, dtype=pl.String).alias(params["labelColumn"]),
+                        pl.col(selected_name).alias(params["valueColumn"]),
+                    ]
+                )
+                for selected_name, public_name in zip(selected, selected, strict=True)
+            ]
+            return pl.concat(fragments, how="vertical")
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])
             column = bound_column_name(params["column"], kind)
@@ -1344,6 +1404,24 @@ class PolarsEngine(DataFrameEngine):
                 return result.to_frame() if isinstance(result, pl.Series) else result
         raise EngineError(f"Polars does not implement transformation: {kind}")
 
+    def validate_transform_preflight(
+        self,
+        frame: Any,
+        step: Mapping[str, Any],
+        input_shape: SessionDataShape,
+    ) -> None:
+        if step.get("kind") != "pivotLonger":
+            return
+        import polars as pl
+
+        params = step["params"]
+        selected = [bound_column_name(column, "pivotLonger") for column in params["columns"]]
+        schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+        _polars_require_pivot_output_names(schema.names(), [params["labelColumn"], params["valueColumn"]])
+        first_metadata = _polars_pivot_type_metadata(frame, selected[0], schema[selected[0]])
+        if any(_polars_pivot_type_metadata(frame, name, schema[name]) != first_metadata for name in selected[1:]):
+            raise EngineError("Pivot-longer columns must have one exactly compatible Polars dtype.")
+
     def _row_id_column(self, frame: Any) -> str | None:
         import polars as pl
 
@@ -1377,6 +1455,22 @@ class PolarsEngine(DataFrameEngine):
         if needs_fill_helpers:
             lines.extend(_generated_polars_fill_helpers())
             lines.extend(_generated_polars_linear_interpolation_helpers())
+        if any(step["kind"] == "pivotLonger" for step in plan):
+            lines.extend(
+                [
+                    "def _ow_polars_pivot_type_metadata(df, name, dtype):",
+                    "    if dtype.base_type() == pl.Enum:",
+                    "        categories = getattr(dtype, 'categories', None)",
+                    "        return str(dtype), tuple(map(str, categories)) if categories is not None else None",
+                    "    if dtype.base_type() != pl.Categorical:",
+                    "        return str(dtype), None",
+                    "    query = df.select(pl.col(name).cat.get_categories().alias(name))",
+                    "    eager = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query",
+                    "    return str(dtype), tuple(map(str, eager.get_column(name).to_list()))",
+                    "",
+                    "",
+                ]
+            )
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
             lines.extend(
                 [
@@ -1912,6 +2006,59 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}    for item, name in enumerate({output_names!r})",
                 f"{prefix}])",
+            ]
+        if kind == "pivotLonger":
+            selected = [bound_column_name(column, kind) for column in params["columns"]]
+            outputs = [params["labelColumn"], params["valueColumn"]]
+            schema = f"_pivot_schema_{index}"
+            output_keys = f"_pivot_output_keys_{index}"
+            existing = f"_pivot_existing_{index}"
+            row_count = f"_pivot_row_count_{index}"
+            unselected = f"_pivot_unselected_{index}"
+            fragments = f"_pivot_fragments_{index}"
+            return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                (
+                    f"{prefix}def _pivot_output_key_{index}(value): return ''.join("
+                    "chr(ord(char) + 32) if 'A' <= char <= 'Z' else 'ss' if char in {'ß', 'ẞ'} else char "
+                    "for char in value)"
+                ),
+                f"{prefix}{output_keys} = [_pivot_output_key_{index}(name) for name in {outputs!r}]",
+                f"{prefix}{existing} = {{_pivot_output_key_{index}(name): name for name in {schema}.names()}}",
+                f"{prefix}if len(set({output_keys})) != len({output_keys}):",
+                f"{prefix}    raise ValueError('Pivot-longer output names must differ case-insensitively.')",
+                (
+                    f"{prefix}if any(name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r}) "
+                    f"for name in {outputs!r}):"
+                ),
+                (
+                    f"{prefix}    raise ValueError(\"Pivot longer would create Open Wrangler's reserved "
+                    'private row-identity column.")'
+                ),
+                f"{prefix}if any(key in {existing} for key in {output_keys}):",
+                f"{prefix}    raise ValueError('Pivot longer would create a duplicate column name.')",
+                (
+                    f"{prefix}if any(_ow_polars_pivot_type_metadata(df, name, {schema}[name]) != "
+                    f"_ow_polars_pivot_type_metadata(df, {selected[0]!r}, {schema}[{selected[0]!r}]) "
+                    f"for name in {selected[1:]!r}):"
+                ),
+                f"{prefix}    raise ValueError('Pivot-longer columns must have one exactly compatible Polars dtype.')",
+                (
+                    f"{prefix}{row_count} = (df.select(pl.len()).collect(engine='streaming').item() "
+                    "if isinstance(df, pl.LazyFrame) else df.height)"
+                ),
+                f"{prefix}if {row_count} and {row_count} > {2_147_483_647} // {len(selected)}:",
+                f"{prefix}    raise ValueError('Pivot longer would exceed the portable {2_147_483_647:,}-row limit.')",
+                f"{prefix}{unselected} = [name for name in {schema}.names() if name not in set({selected!r})]",
+                f"{prefix}{fragments} = [",
+                f"{prefix}    df.select([",
+                f"{prefix}        *[pl.col(name) for name in {unselected}],",
+                f"{prefix}        pl.lit(public_name, dtype=pl.String).alias({params['labelColumn']!r}),",
+                f"{prefix}        pl.col(selected_name).alias({params['valueColumn']!r}),",
+                f"{prefix}    ])",
+                (f"{prefix}    for selected_name, public_name in zip({selected!r}, {selected!r}, strict=True)"),
+                f"{prefix}]",
+                f"{prefix}df = pl.concat({fragments}, how='vertical')",
             ]
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])

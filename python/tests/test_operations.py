@@ -54,7 +54,7 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 30
+    assert len(catalog) == 31
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",

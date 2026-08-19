@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..pivot_longer import (
+    PivotLongerContractError,
+    checked_pivot_longer_row_count,
+    portable_pivot_longer_name_key,
+)
 from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
@@ -674,6 +679,33 @@ class PandasEngine(DataFrameEngine):
                 axis=1,
             )
             return pd.concat([df, generated], axis=1)
+        if kind == "pivotLonger":
+            positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
+            names = [bound_column_name(column, kind) for column in params["columns"]]
+            outputs = [params["labelColumn"], params["valueColumn"]]
+            _pandas_require_pivot_output_names(df, outputs)
+            first_dtype = df.dtypes.iloc[positions[0]]
+            if any(
+                not pd.api.types.is_dtype_equal(first_dtype, df.dtypes.iloc[position]) for position in positions[1:]
+            ):
+                raise EngineError("Pivot-longer columns must have one exactly compatible Pandas dtype.")
+            try:
+                checked_pivot_longer_row_count(len(df), len(positions))
+            except PivotLongerContractError as error:
+                raise EngineError(str(error)) from error
+            selected = set(positions)
+            unselected = [
+                position
+                for position in range(df.shape[1])
+                if position not in selected and not is_internal_row_id_label(df.columns[position])
+            ]
+            fragments = []
+            for position, name in zip(positions, names, strict=True):
+                fragment = df.iloc[:, unselected].reset_index(drop=True).copy()
+                fragment[params["labelColumn"]] = pd.Series([name] * len(df), dtype="string")
+                fragment[params["valueColumn"]] = df.iloc[:, position].reset_index(drop=True)
+                fragments.append(fragment)
+            return pd.concat(fragments, axis=0, ignore_index=True)
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
@@ -784,6 +816,24 @@ class PandasEngine(DataFrameEngine):
                     )
                 return self.normalize(result)
         raise EngineError(f"Pandas does not implement transformation: {kind}")
+
+    def validate_transform_preflight(
+        self,
+        frame: Any,
+        step: Mapping[str, Any],
+        input_shape: SessionDataShape,
+    ) -> None:
+        if step.get("kind") != "pivotLonger":
+            return
+        import pandas as pd
+
+        df = self.normalize(frame)
+        params = step["params"]
+        positions = [self._bound_frame_position(df, column, "pivotLonger") for column in params["columns"]]
+        _pandas_require_pivot_output_names(df, [params["labelColumn"], params["valueColumn"]])
+        first_dtype = df.dtypes.iloc[positions[0]]
+        if any(not pd.api.types.is_dtype_equal(first_dtype, df.dtypes.iloc[position]) for position in positions[1:]):
+            raise EngineError("Pivot-longer columns must have one exactly compatible Pandas dtype.")
 
     def _row_id_column(self, frame: Any) -> Any | None:
         return next((column for column in frame.columns if is_internal_row_id_label(column)), None)
@@ -942,6 +992,7 @@ class PandasEngine(DataFrameEngine):
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
+        needs_pivot_longer_helpers = any(step["kind"] == "pivotLonger" for step in plan)
         needs_counter = any(
             step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"}
             or (
@@ -970,6 +1021,55 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        if needs_pivot_longer_helpers:
+            lines.extend(
+                [
+                    "def _open_wrangler_pivot_longer(df, positions, names, label_column, value_column):",
+                    "    outputs = [label_column, value_column]",
+                    "    def output_key(value):",
+                    (
+                        "        return ''.join(chr(ord(char) + 32) if 'A' <= char <= 'Z' "
+                        "else 'ss' if char in {'ß', 'ẞ'} else char for char in value)"
+                    ),
+                    "    output_keys = [output_key(name) for name in outputs]",
+                    "    existing = {output_key(str(column)): str(column) for column in df.columns}",
+                    "    if len(set(output_keys)) != len(output_keys):",
+                    "        raise ValueError('Pivot-longer output names must differ case-insensitively.')",
+                    (
+                        f"    if any(name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r}) "
+                        "for name in outputs):"
+                    ),
+                    (
+                        "        raise ValueError(\"Pivot longer would create Open Wrangler's reserved "
+                        'private row-identity column.")'
+                    ),
+                    "    collisions = [existing[key] for key in output_keys if key in existing]",
+                    "    if collisions:",
+                    (
+                        "        raise ValueError('Pivot longer would create duplicate column names: ' "
+                        "+ ', '.join(collisions))"
+                    ),
+                    "    first_dtype = df.dtypes.iloc[positions[0]]",
+                    (
+                        "    if any(not pd.api.types.is_dtype_equal(first_dtype, df.dtypes.iloc[position]) "
+                        "for position in positions[1:]):"
+                    ),
+                    "        raise ValueError('Pivot-longer columns must have one exactly compatible Pandas dtype.')",
+                    f"    if len(df) and len(df) > {2_147_483_647} // len(positions):",
+                    f"        raise ValueError('Pivot longer would exceed the portable {2_147_483_647:,}-row limit.')",
+                    "    selected = set(positions)",
+                    "    unselected = [position for position in range(df.shape[1]) if position not in selected]",
+                    "    fragments = []",
+                    "    for position, name in zip(positions, names, strict=True):",
+                    "        fragment = df.iloc[:, unselected].reset_index(drop=True).copy()",
+                    "        fragment[label_column] = pd.Series([name] * len(df), dtype='string')",
+                    "        fragment[value_column] = df.iloc[:, position].reset_index(drop=True)",
+                    "        fragments.append(fragment)",
+                    "    return pd.concat(fragments, axis=0, ignore_index=True)",
+                    "",
+                    "",
+                ]
+            )
         if needs_missing_helpers:
             lines.extend(generated_view_value_helper_lines())
             lines.extend(
@@ -1642,6 +1742,14 @@ class PandasEngine(DataFrameEngine):
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
             return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
+        if kind == "pivotLonger":
+            positions = [bound_column_position(column, kind) for column in params["columns"]]
+            names = [bound_column_name(column, kind) for column in params["columns"]]
+            return [
+                f"{prefix}df = _open_wrangler_pivot_longer(",
+                f"{prefix}    df, {positions!r}, {names!r}, {params['labelColumn']!r}, {params['valueColumn']!r}",
+                f"{prefix})",
+            ]
         if kind == "formatDatetime":
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -1856,6 +1964,18 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = {function_name}(df)",
             ]
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
+
+
+def _pandas_require_pivot_output_names(df: Any, outputs: Sequence[str]) -> None:
+    keys = [portable_pivot_longer_name_key(name) for name in outputs]
+    if len(set(keys)) != len(keys):
+        raise EngineError("Pivot-longer output names must differ case-insensitively.")
+    if any(is_internal_row_id_label(name) for name in outputs):
+        raise EngineError("Pivot longer would create Open Wrangler's reserved private row-identity column.")
+    existing = {portable_pivot_longer_name_key(str(column)): str(column) for column in df.columns}
+    collisions = [existing[key] for key in keys if key in existing]
+    if collisions:
+        raise EngineError("Pivot longer would create duplicate column names: " + ", ".join(collisions))
 
 
 def _pandas_group_by_positions(

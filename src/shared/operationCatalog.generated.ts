@@ -6,6 +6,7 @@ export type OperationGroup =
   | "Columns / types"
   | "Categorical / text"
   | "Numeric / datetime"
+  | "Reshape"
   | "Aggregation"
   | "By example"
   | "Custom";
@@ -23,6 +24,7 @@ export const operationGroups = Object.freeze([
   "Columns / types",
   "Categorical / text",
   "Numeric / datetime",
+  "Reshape",
   "Aggregation",
   "By example",
   "Custom"
@@ -219,6 +221,14 @@ export const operationCatalog = Object.freeze([
     description: "Format parsed dates and datetimes with strftime syntax.",
     group: "Numeric / datetime",
     icon: "calendar"
+  },
+  {
+    kind: "pivotLonger",
+    title: "Pivot longer",
+    description:
+      "Replace 2–64 compatible scalar columns with one label column and one value column in deterministic selected-column-major order.",
+    group: "Reshape",
+    icon: "table"
   },
   {
     kind: "groupBy",

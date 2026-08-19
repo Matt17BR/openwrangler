@@ -122,7 +122,7 @@ both direct packaged-frame and real Node-to-owned-`Rscript` stdin/stdout boundar
 untimed dataset-statistics, greater-than-one-million-row summary, keyed-`data.table`, resource, response-accounting,
 session/process, and cleanup proofs. It deliberately defines no reviewed numeric threshold and cannot emit a release
 pass. It is infrastructure rather than recorded evidence: no row advances until a fresh immutable candidate supplies
-the separately reviewed performance record, the installed all-30 matrix passes, and the following stable-authoring
+the separately reviewed performance record, the installed all-31 matrix passes, and the following stable-authoring
 change resolves that record's source/candidate ordering.
 
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
@@ -264,11 +264,11 @@ workbench, Rename Column draft, and generated R inserted into the originating no
 uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Explicit candidate core
 keeps its existing phase but owns one complete installed Clone Column lifecycle: preview, apply, applied-step
 inspection, edit and reapply with the same step/output identities, and undo. Direct suites own the prior 27
-operations, focused Custom Code contracts cover operation 28, multi-output literal split is operation 29, and public
-regex extraction is operation 30. A dedicated direct R contract now executes the strict ordered 30-operation catalog and each
+operations, focused Custom Code contracts cover operation 28, multi-output literal split is operation 29, public
+regex extraction is operation 30, and Pivot longer is operation 31. A dedicated direct R contract now executes the strict ordered 31-operation catalog and each
 production-generated replay, and a dedicated TypeScript contract binds
 the same order to exact copy/save bytes for distinct executable operation-labelled buffers. Exhaustive installed
-execution of all 30 operations and reviewed performance evidence remain outstanding. The focused value targeted
+execution of all 31 operations and reviewed performance evidence remain outstanding. The focused value targeted
 slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
@@ -280,6 +280,14 @@ restart/reopen. Explicit candidate core omits both pieces on Linux, macOS, and W
 selectors in VS Code and Cursor, while macOS and Windows execute them in VS Code. Default/unset manual core retains the
 full catalog and the remote R journey retains its representative embedded behavior. This routing does not reduce
 native-frame or restart coverage on any platform and adds no selector, job, phase, deadline, or retry.
+
+Pivot longer is available in Pandas, eager and lazy Polars, DuckDB, and Native R with matching executable generated
+code. Its fixed two-output contract requires 2–64 ordered exactly compatible scalar columns, retains unselected
+columns and identities, emits selected-column-major rows, and rejects overflow, output collisions, and class-metadata
+drift before dispatch. The shared installed journey exercises the real operation form, stable output identities,
+preview paging, generated code, apply, and undo in a packaged Python session and packaged Native R session. The
+catalog remains **Partial** for its explicitly named installed and DuckDB gaps; Pivot wider, transpose, explode, and
+unnest remain planned.
 Categorical Undo uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation completion bound without a
 post-boundary retry. The remote R Docker journey independently retains `lowerText` (Lowercase). Across the local
 slices, base-frame coverage includes preview, apply, inspection, discard, latest-step editing, and undo; Convert type
@@ -339,11 +347,11 @@ while VS Code alone owns the complete value and categorical catalogs. Candidate 
 verification, fresh requested-editor private roots, and its own immediate sealed failure upload. The installed
 candidate `core-operations` phase owns one complete Clone Column lifecycle: preview, apply, inspect,
 edit the same step while retaining its step/output identity, reapply, and undo. Dedicated local-source contracts own
-the strict ordered 30-operation live/generated catalog and exact copy/save bytes for distinct executable
+the strict ordered 31-operation live/generated catalog and exact copy/save bytes for distinct executable
 operation-labelled buffers. The installed value and categorical slices, the complete Linux
 native-frame owner, representative native/restart seams on every hosted platform, and the 300-second hard,
 180-second inactivity, and
-no-retry contracts remain unchanged; exhaustive installed execution of all 30 operations and a reviewed performance
+no-retry contracts remain unchanged; exhaustive installed execution of all 31 operations and a reviewed performance
 record are still required.
 Preview release runs #72,
 [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383), and
@@ -419,7 +427,7 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Notebook variables and inline MIME rendering | Viewing only        | Partial | Packaged native VS Code/Cursor Jupyter relation matrix  | Large relation, OS, and repeated recovery/performance matrix                                        |
 | Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native rich-type matrix; packaged page and query slices | Large-scale mixed data and cross-platform matrix                                                    |
 | Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence                                               |
-| Complete 30-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Full installed all-29 input-operation matrix, fill-missing journey, and DuckDB semantic edge matrix |
+| Complete 31-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Full installed all-30 input-operation matrix, fill-missing journey, and DuckDB semantic edge matrix |
 | Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                                                         |
 | Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                                                                    |
 | CSV and Parquet cleaned-data export          | Yes                 | Partial | Native exports plus host publication failure injection  | Cross-platform installed-editor destination matrix                                                  |

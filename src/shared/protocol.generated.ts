@@ -75,6 +75,7 @@ export type TransformStep =
   | FloorNumberTransformStep
   | CeilNumberTransformStep
   | FormatDatetimeTransformStep
+  | PivotLongerTransformStep
   | GroupByTransformStep
   | ByExampleTransformStep
   | CustomCodeTransformStep;
@@ -111,6 +112,7 @@ export type OperationKind =
   | "floorNumber"
   | "ceilNumber"
   | "formatDatetime"
+  | "pivotLonger"
   | "groupBy"
   | "byExample"
   | "customCode";
@@ -324,6 +326,11 @@ export type CeilNumberTransformStep = TransformStepTemplate & {
 export type FormatDatetimeTransformStep = TransformStepTemplate & {
   kind: "formatDatetime";
   params: FormatDatetimeParams;
+  [k: string]: unknown;
+};
+export type PivotLongerTransformStep = TransformStepTemplate & {
+  kind: "pivotLonger";
+  params: PivotLongerParams;
   [k: string]: unknown;
 };
 export type GroupByTransformStep = TransformStepTemplate & {
@@ -741,6 +748,23 @@ export interface FormatDatetimeParams {
   column: ColumnReference;
   format: string;
   newColumn?: string;
+}
+export interface PivotLongerParams {
+  /**
+   * Ordered compatible scalar columns. Output rows are grouped by this selected-column order and preserve source order within each group.
+   *
+   * @minItems 2
+   * @maxItems 64
+   */
+  columns: [ColumnReference, ColumnReference, ...ColumnReference[]];
+  /**
+   * Name of the stable string output containing each selected public column name; exact UTF-8 byte validation is enforced by every decoder.
+   */
+  labelColumn: string;
+  /**
+   * Name of the scalar output containing the selected values without lossy common-type coercion; exact UTF-8 byte validation is enforced by every decoder.
+   */
+  valueColumn: string;
 }
 export interface GroupByParams {
   keys: NonEmptyColumnReferenceArray;
