@@ -107,6 +107,32 @@ describe("SessionRuntimeCleanup", () => {
     expect(reportDiagnostic).toHaveBeenCalledWith(expect.stringContaining("exact-kernel close remains observed"));
   });
 
+  it("keeps retired-runtime shutdown tracking pending until a detached close really settles", async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => {
+      throw new DetachedBridgeRequestError("host deadline", "timeout", true, settlement);
+    });
+    const cleanup = new SessionRuntimeCleanup(() => false);
+
+    cleanup.track(target({ request }), "retired runtime");
+    let shutdownDrained = false;
+    const shutdown = cleanup.waitForTracked().then(() => {
+      shutdownDrained = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(shutdownDrained).toBe(false);
+    expect(request).toHaveBeenCalledOnce();
+
+    settle();
+    await shutdown;
+    expect(shutdownDrained).toBe(true);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("accepts only an exactly correlated absent-session response for candidate cleanup", async () => {
     const diagnostics = vi.fn();
     const exact = bridge(

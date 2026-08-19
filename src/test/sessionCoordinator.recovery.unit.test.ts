@@ -8,7 +8,6 @@ import {
 } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
-import type { RuntimeRecoveryDelegateFactory } from "../extension/sessionRuntimeRecovery";
 import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -28,8 +27,9 @@ import {
   setOpenNotebookDocuments,
   deferred
 } from "./sessionCoordinatorTestFixtures";
+import { nativeRKernelChangedResponse, type NativeRRecoveryBridge } from "./nativeRRecoveryTestFixtures";
 
-type RecoveryBridge = OpenWranglerBridge & RuntimeRecoveryDelegateFactory;
+type RecoveryBridge = NativeRRecoveryBridge;
 
 describe("SessionCoordinator", () => {
   it("persists grid presentation separately and notifies native views only when column selection changes", async () => {
@@ -370,14 +370,7 @@ describe("SessionCoordinator", () => {
       if (request.kind === "getPage") {
         executionOrder.push(`page-${request.sessionId}-${request.viewRequestId}`);
         if (request.sessionId === "runtime-1") {
-          return {
-            kind: "error",
-            code: "r_kernel_changed",
-            message: "The selected R notebook kernel changed.",
-            recoverable: true,
-            sessionId: request.sessionId,
-            viewRequestId: request.viewRequestId
-          };
+          return nativeRKernelChangedResponse(request);
         }
         return pageResponseForMetadata(
           request,
@@ -527,14 +520,7 @@ describe("SessionCoordinator", () => {
         oldRequests.push(request);
         if (request.kind === "openSession") return openedResponse("runtime-old", "r");
         if (request.kind === "getPage") {
-          return {
-            kind: "error",
-            code: "r_kernel_changed",
-            message: "The selected R notebook kernel changed.",
-            recoverable: true,
-            sessionId: request.sessionId,
-            viewRequestId: request.viewRequestId
-          };
+          return nativeRKernelChangedResponse(request);
         }
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
         throw new Error(`Unexpected old-runtime request: ${request.kind}`);
@@ -641,14 +627,7 @@ describe("SessionCoordinator", () => {
         if (request.kind === "openSession") return openedResponse("runtime-old", "r");
         if (request.kind === "getSummary" || request.kind === "getPage") {
           if (request.kind === "getPage") foregroundLossObserved.resolve(undefined);
-          return {
-            kind: "error",
-            code: "r_kernel_changed",
-            message: "The selected R notebook kernel changed.",
-            recoverable: true,
-            sessionId: request.sessionId,
-            viewRequestId: request.viewRequestId
-          };
+          return nativeRKernelChangedResponse(request);
         }
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
         throw new Error(`Unexpected old-runtime request: ${request.kind}`);

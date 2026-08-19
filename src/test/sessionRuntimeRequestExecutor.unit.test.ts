@@ -269,6 +269,84 @@ describe("SessionRuntimeRequestExecutor", () => {
     expect(readConfirmedPublicState()).toEqual(confirmedPublicState);
   });
 
+  it.each(["previewStep", "applyDraft", "discardDraft", "undoStep"] as const)(
+    "recovers an exact Native-R %s kernel change without retrying the mutation",
+    async (kind) => {
+      const mutation = mutationRequest(kind, 3);
+      const nextPage = pageRequest(`after-${kind}-recovery`, 3);
+      const runtimeCalls: OpenWranglerRequest[] = [];
+      const draftStep: TransformStep = { ...step, id: "confirmed-draft" };
+      const session = runtimeSession(
+        bridge(
+          requestMock(async (runtimeRequest) => {
+            runtimeCalls.push(runtimeRequest);
+            if (runtimeSessionId(runtimeRequest) === "runtime-session") {
+              return {
+                kind: "error",
+                code: "r_kernel_changed",
+                message: `The selected R notebook kernel changed during ${kind}.`,
+                recoverable: true,
+                sessionId: "runtime-session"
+              };
+            }
+            if (runtimeRequest.kind !== "getPage") throw new Error("The failed mutation must not be retried.");
+            return pageResponse(runtimeRequest, session.metadata);
+          })
+        ),
+        {
+          publicRevision: 3,
+          runtimeRevision: 3,
+          metadata: metadata({ backend: "r", revision: 3, steps: [step], draftStep }),
+          code: "# confirmed generated R code",
+          latestRequestedPageRequestId: nextPage.viewRequestId
+        }
+      );
+      const confirmed = {
+        publicId: session.publicId,
+        publicRevision: session.publicRevision,
+        steps: session.metadata.steps,
+        draftStep: session.metadata.draftStep,
+        code: session.code,
+        viewState: session.viewState
+      };
+      const replay = vi.fn(async (_id, _options, requiredSchema, isStillCurrent) => {
+        expect(requiredSchema).toEqual(schema);
+        expect(isStillCurrent?.()).toBe(true);
+        replaceRuntime(session);
+        return true;
+      });
+      const requestHooks = hooks({ replayAfterRuntimeLoss: replay });
+
+      await expect(runtimeExecutor().execute(session, mutation, undefined, requestHooks)).resolves.toEqual({
+        kind: "error",
+        code: "r_kernel_changed",
+        message: `The selected R notebook kernel changed during ${kind}.`,
+        recoverable: true,
+        sessionId: "public-session"
+      });
+      expect(runtimeCalls).toHaveLength(1);
+      expect(runtimeCalls[0]).toMatchObject({ kind, sessionId: "runtime-session", revision: 3 });
+      expect(replay).toHaveBeenCalledOnce();
+      expect({
+        publicId: session.publicId,
+        publicRevision: session.publicRevision,
+        steps: session.metadata.steps,
+        draftStep: session.metadata.draftStep,
+        code: session.code,
+        viewState: session.viewState
+      }).toEqual(confirmed);
+
+      await expect(runtimeExecutor().execute(session, nextPage, undefined, requestHooks)).resolves.toMatchObject({
+        kind: "page",
+        viewRequestId: nextPage.viewRequestId,
+        metadata: { sessionId: "public-session" }
+      });
+      expect(runtimeCalls).toHaveLength(2);
+      expect(runtimeCalls[1]).toMatchObject({ kind: "getPage", sessionId: "runtime-2" });
+      expect(replay).toHaveBeenCalledOnce();
+    }
+  );
+
   it("rejects malformed or unrelated kernel-change errors without replay", async () => {
     const request = statsRequest(0);
     const cases: Array<{ label: string; response: OpenWranglerResponse; expectedCode: string }> = [
@@ -467,6 +545,75 @@ describe("SessionRuntimeRequestExecutor", () => {
       expect(replay, state).not.toHaveBeenCalled();
       expect(delegate.request, state).toHaveBeenCalledOnce();
     }
+  });
+
+  it("does not recover a kernel change when the host cancellation token is already cancelled", async () => {
+    const request = statsRequest(0);
+    const replay = vi.fn(async () => true);
+    const delegate = bridge(
+      requestMock(async (runtimeRequest) => ({
+        kind: "error",
+        code: "r_kernel_changed",
+        message: "The selected R notebook kernel changed.",
+        recoverable: true,
+        sessionId: runtimeSessionId(runtimeRequest),
+        viewRequestId: request.viewRequestId
+      }))
+    );
+    const session = runtimeSession(delegate, {
+      metadata: metadata({ backend: "r" }),
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view"
+    });
+
+    await expect(
+      runtimeExecutor().execute(
+        session,
+        request,
+        { viewContextId: "view", cancellation: cancellationToken(true) },
+        hooks({ replayAfterRuntimeLoss: replay })
+      )
+    ).resolves.toMatchObject({ kind: "error", code: "stale_response" });
+    expect(delegate.request).toHaveBeenCalledOnce();
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("discards Native-R recovery when host cancellation arrives before publication", async () => {
+    const request = statsRequest(0);
+    const cancellation = cancellationToken(false);
+    const delegate = bridge(
+      requestMock(async (runtimeRequest) => ({
+        kind: "error",
+        code: "r_kernel_changed",
+        message: "The selected R notebook kernel changed.",
+        recoverable: true,
+        sessionId: runtimeSessionId(runtimeRequest),
+        viewRequestId: request.viewRequestId
+      }))
+    );
+    const session = runtimeSession(delegate, {
+      metadata: metadata({ backend: "r" }),
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view"
+    });
+    const replay = vi.fn(async (_id, _options, _schema, isStillCurrent) => {
+      expect(isStillCurrent?.()).toBe(true);
+      cancellation.isCancellationRequested = true;
+      expect(isStillCurrent?.()).toBe(false);
+      return false;
+    });
+
+    await expect(
+      runtimeExecutor().execute(
+        session,
+        request,
+        { viewContextId: "view", cancellation },
+        hooks({ replayAfterRuntimeLoss: replay })
+      )
+    ).resolves.toMatchObject({ kind: "error", code: "stale_response" });
+    expect(delegate.request).toHaveBeenCalledOnce();
+    expect(replay).toHaveBeenCalledOnce();
+    expect(session.runtimeId).toBe("runtime-session");
   });
 
   it.each([
@@ -888,5 +1035,29 @@ function previewRequest(): Extract<SessionBoundRequest, { kind: "previewStep" }>
     limit: 10,
     columnOffset: 0,
     columnLimit: 1
+  };
+}
+
+function mutationRequest(
+  kind: "previewStep" | "applyDraft" | "discardDraft" | "undoStep",
+  revision: number
+): Extract<SessionBoundRequest, { kind: typeof kind }> {
+  const request = {
+    kind,
+    sessionId: "public-session",
+    revision,
+    offset: 0,
+    limit: 10,
+    columnOffset: 0,
+    columnLimit: 1,
+    ...(kind === "previewStep" ? { step } : {})
+  };
+  return request as Extract<SessionBoundRequest, { kind: typeof kind }>;
+}
+
+function cancellationToken(isCancellationRequested: boolean) {
+  return {
+    isCancellationRequested,
+    onCancellationRequested: vi.fn(() => ({ dispose: vi.fn() }))
   };
 }

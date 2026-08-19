@@ -29,6 +29,8 @@ export interface RuntimeRecoveryDelegateCandidate {
 }
 
 export interface RuntimeRecoveryDelegateFactory {
+  /** False when an R bridge is not bound to one re-verifiable notebook variable. */
+  readonly supportsVerifiedRuntimeRecoveryDelegate?: boolean;
   createRuntimeRecoveryDelegate(): Promise<RuntimeRecoveryDelegateCandidate>;
 }
 
@@ -155,16 +157,17 @@ export class SessionRuntimeRecovery {
     try {
       if (session.metadata.backend === "r") {
         const delegateFactory = runtimeRecoveryDelegateFactory(session.delegate);
-        if (!delegateFactory) return false;
-        replacementDelegate = await delegateFactory.createRuntimeRecoveryDelegate();
-        if (replacementDelegate.delegate === session.delegate) {
-          throw new Error("Native-R recovery must use a fresh verified runtime delegate.");
-        }
-        if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
-          throw new Error("The recovery request was superseded before its replacement runtime opened.");
-        }
-        if (hooks.originMismatch(session.openRequest)) {
-          throw new Error("The originating source changed before recovery opened its replacement runtime.");
+        if (delegateFactory) {
+          replacementDelegate = await delegateFactory.createRuntimeRecoveryDelegate();
+          if (replacementDelegate.delegate === session.delegate) {
+            throw new Error("Native-R recovery must use a fresh verified runtime delegate.");
+          }
+          if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
+            throw new Error("The recovery request was superseded before its replacement runtime opened.");
+          }
+          if (hooks.originMismatch(session.openRequest)) {
+            throw new Error("The originating source changed before recovery opened its replacement runtime.");
+          }
         }
       }
       const candidateDelegate = replacementDelegate?.delegate ?? session.delegate;
@@ -265,7 +268,8 @@ export class SessionRuntimeRecovery {
 
 function runtimeRecoveryDelegateFactory(delegate: OpenWranglerBridge): RuntimeRecoveryDelegateFactory | undefined {
   const candidate = delegate as OpenWranglerBridge & Partial<RuntimeRecoveryDelegateFactory>;
-  return typeof candidate.createRuntimeRecoveryDelegate === "function"
+  return typeof candidate.createRuntimeRecoveryDelegate === "function" &&
+    candidate.supportsVerifiedRuntimeRecoveryDelegate !== false
     ? (candidate as OpenWranglerBridge & RuntimeRecoveryDelegateFactory)
     : undefined;
 }

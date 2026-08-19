@@ -83,7 +83,9 @@ export class SessionRuntimeRequestExecutor {
     const isBackground = sessionRequestPriority(publicRequest, options) === "background";
     const rendererBackgroundRead =
       isBackground && isRecoverableRendererBackgroundRead(publicRequest) && options?.viewContextId !== undefined;
-    const requestWasCancelled = (): boolean => session.scheduler.isCancelled(requestViewId(publicRequest));
+    const requestWasCancelled = (): boolean =>
+      options?.cancellation?.isCancellationRequested === true ||
+      session.scheduler.isCancelled(requestViewId(publicRequest));
     const rendererBackgroundReadIsCurrent = (): boolean =>
       rendererBackgroundRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
     const canRecoverUnknownSession = (): boolean =>
@@ -98,6 +100,15 @@ export class SessionRuntimeRequestExecutor {
       }
       return isCurrentLogicalView(session, options);
     };
+    const rKernelChangeResponseIsCurrent = (): boolean =>
+      !requestWasCancelled() &&
+      (isRuntimeStateMutation(publicRequest)
+        ? publicRequest.revision === session.publicRevision
+        : liveSourceRecoveryIsCurrent());
+    const rKernelRecoveryCanPublish = (): boolean =>
+      hooks.isCoordinatorAvailable() && !session.closing && rKernelChangeResponseIsCurrent();
+    const canRecoverRKernelChange = (): boolean =>
+      rKernelRecoveryCanPublish() && (isRuntimeStateMutation(publicRequest) || isIdempotentReadRequest(publicRequest));
     const staleBackgroundResponse = (): OpenWranglerResponse =>
       protocolError(
         "stale_response",
@@ -195,18 +206,17 @@ export class SessionRuntimeRequestExecutor {
         session.metadata.schema
       );
       if (changedMismatch) return invalidRuntimeResponse(publicRequest, session.publicId, changedMismatch);
-      if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
+      if (!rKernelChangeResponseIsCurrent()) return staleLiveSourceResponse();
       const recovered =
-        canRecoverTransport() &&
-        liveSourceRecoveryIsCurrent() &&
+        canRecoverRKernelChange() &&
         (await hooks.replayAfterRuntimeLoss(
           requestRuntimeId,
           automaticRecoveryOptions(options),
           session.metadata.schema,
-          liveSourceRecoveryIsCurrent
+          rKernelRecoveryCanPublish
         ));
+      if (!rKernelChangeResponseIsCurrent()) return staleLiveSourceResponse();
       if (recovered) {
-        if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
         session.recoveryRequired = false;
       }
       return { ...confirmedKernelChange, sessionId: session.publicId };

@@ -65,6 +65,7 @@ export class RKernelBridge implements OpenWranglerBridge {
   private idleRequested = false;
   private disposed = false;
   private disposal: Promise<void> | undefined;
+  readonly supportsVerifiedRuntimeRecoveryDelegate: boolean;
 
   static fromVerifiedSelection(
     context: vscode.ExtensionContext,
@@ -103,6 +104,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     fileOperations: RKernelBridgeFileOperations = {},
     private readonly createRecoveryDelegate?: () => Promise<RKernelBridge>
   ) {
+    this.supportsVerifiedRuntimeRecoveryDelegate = createRecoveryDelegate !== undefined;
     this.transport = transport;
     this.readQueries = new RKernelReadQueries(transport, this.sessions);
     this.mutations = new RKernelMutationLifecycle(transport, this.sessions);

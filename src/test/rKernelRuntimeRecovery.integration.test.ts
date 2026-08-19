@@ -228,7 +228,7 @@ describe("Native-R verified bridge runtime recovery", () => {
 
     await expect(losingRead).resolves.toMatchObject({
       kind: "error",
-      code: "r_kernel_changed",
+      code: "stale_response",
       sessionId: publicSessionId,
       viewRequestId: "superseded-loss"
     });
