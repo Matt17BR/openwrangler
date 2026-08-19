@@ -67,6 +67,7 @@ export const WORKFLOW_PATHS = Object.freeze([
 const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
 const NPM_COMMAND = /\bnpm(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
 const NPX_COMMAND = /\bnpx(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
+const PACKAGE_MANAGER_EXECUTABLE = /(?:bun|bunx|corepack|npm|npx|pnpm|pnpx|yarn|yarnpkg)(?:\.(?:cmd|ps1))?/iu;
 const REVIEWED_NPX_EXECUTABLES = Object.freeze({
   "npm-run-all": ["node_modules/npm-run-all", "bin/npm-run-all/index.js"],
   ovsx: ["node_modules/ovsx", "bin/ovsx"],
@@ -205,6 +206,7 @@ const NPM_DEPENDENCY_COMMANDS = new Set([
   "ci",
   "dedupe",
   "exec",
+  "init",
   "install",
   "install-ci-test",
   "install-test",
@@ -219,9 +221,10 @@ const DIRECT_SCRIPT_CONTROL_COMMANDS = new Set(["set"]);
 const SCRIPT_CONTROL_ACTIONS = new Set(["delete", "edit", "remove", "rm", "set", "unset"]);
 const BYPASS_COMMAND =
   /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
-const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|pnpm|yarn|yarnpkg)\b/iu;
+const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|bunx|corepack|pnpm|pnpx|yarn|yarnpkg)\b/iu;
+const UNREVIEWED_SHELL_TOKEN_ENCODING = /\$'/u;
 const PACKAGE_MANAGER_VARIABLE =
-  /(?:\$(?:\{[^}\n]*(?:NPM|NPX)[^}\n]*\}|[A-Z_]*(?:NPM|NPX)[A-Z_]*)|%[A-Z_]*(?:NPM|NPX)[A-Z_]*%)/iu;
+  /(?:\$(?:\{[^}\n]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[^}\n]*\}|\([A-Z_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z_]*\)|(?:(?:env|global|local|private|script|using):)?[A-Z_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z_]*)|%[A-Z_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z_]*%)/iu;
 const WEAKENED_SCRIPT_CONTROL =
   /(?:--ignore-scripts(?:=|\s+)false\b|\bignore-scripts\s*=\s*false\b|\bnpm_config_ignore_scripts\b|--foreground-scripts\b)/iu;
 
@@ -258,10 +261,10 @@ function normalizePackageManagerCommands(source) {
       .replace(/\$"([^"]*)"/gu, "$1")
       .replace(/[\\`^'"]/gu, "");
     if (unescaped !== token) {
-      const executableSuffix = unescaped.match(/(?:npm|npx)(?:\.(?:cmd|ps1))?\)*$/iu);
+      const executableSuffix = unescaped.match(new RegExp("(?:" + PACKAGE_MANAGER_EXECUTABLE.source + ")\\)*$", "iu"));
       if (executableSuffix !== null) return executableSuffix[0];
     }
-    return /^(?:npm|npx)(?:\.(?:cmd|ps1))?$/iu.test(unescaped) ? unescaped : token;
+    return new RegExp("^(?:" + PACKAGE_MANAGER_EXECUTABLE.source + ")$", "iu").test(unescaped) ? unescaped : token;
   });
 }
 
@@ -277,6 +280,7 @@ function unreviewedNpxCommands(source) {
 function hasBypassCommand(source) {
   const normalized = normalizePackageManagerCommands(source);
   return (
+    UNREVIEWED_SHELL_TOKEN_ENCODING.test(source) ||
     BYPASS_COMMAND.test(normalized) ||
     ALTERNATE_PACKAGE_MANAGER.test(normalized) ||
     PACKAGE_MANAGER_VARIABLE.test(normalized) ||
