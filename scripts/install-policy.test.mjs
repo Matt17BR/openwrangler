@@ -185,7 +185,9 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     "npm c set ignore-scripts false",
     "npm set ignore-scripts false",
     "npm --silent config set ignore-scripts=false",
-    "npm config delete ignore-scripts"
+    "npm config delete ignore-scripts",
+    "npm conf delete ignore-scripts --location=project",
+    "npm config del ignore-scripts --location=project"
   ]) {
     rejected(
       mutate(".github/workflows/ci.yml", (source) =>
@@ -194,6 +196,15 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
       /weakens lifecycle-script suppression/u
     );
   }
+  rejected(
+    mutate(".github/workflows/ci.yml", (source) =>
+      source.replace(
+        "npm ci --ignore-scripts",
+        "npm ci --ignore-scripts\n          npm conf delete ignore-scripts --location=project\n          npm install-cl"
+      )
+    ),
+    /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
+  );
   rejected(
     mutate(".github/workflows/ci.yml", (source) =>
       source.replace(

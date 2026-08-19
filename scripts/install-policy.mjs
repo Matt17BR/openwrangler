@@ -65,34 +65,138 @@ export const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/stable-release.yml"
 ]);
 const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
-const NPM_COMMAND = /\bnpm\b[^\n;&|]*/giu;
-const LIFECYCLE_ALIASES = new Set([
-  "add",
+const NPM_COMMAND = /\bnpm(?:\.cmd)?(?=\s|$|[%}"'])[^\n;&|]*/giu;
+const NPM_COMMANDS = new Set([
+  "access",
+  "adduser",
+  "audit",
+  "bugs",
+  "cache",
   "ci",
-  "cit",
-  "clean-install",
-  "clean-install-test",
-  "i",
-  "ic",
-  "in",
-  "ins",
-  "inst",
-  "insta",
-  "instal",
+  "completion",
+  "config",
+  "dedupe",
+  "deprecate",
+  "diff",
+  "dist-tag",
+  "docs",
+  "doctor",
+  "edit",
+  "exec",
+  "explain",
+  "explore",
+  "find-dupes",
+  "fund",
+  "get",
+  "help",
+  "help-search",
+  "hook",
+  "init",
   "install",
   "install-ci-test",
-  "install-clean",
   "install-test",
-  "isnt",
-  "isnta",
-  "isntal",
-  "isntall",
-  "isntall-clean",
-  "rb",
+  "link",
+  "ll",
+  "login",
+  "logout",
+  "ls",
+  "org",
+  "outdated",
+  "owner",
+  "pack",
+  "ping",
+  "pkg",
+  "prefix",
+  "profile",
+  "prune",
+  "publish",
+  "query",
   "rebuild",
-  "sit",
-  "it"
+  "repo",
+  "restart",
+  "root",
+  "run-script",
+  "sbom",
+  "search",
+  "set",
+  "shrinkwrap",
+  "star",
+  "stars",
+  "start",
+  "stop",
+  "team",
+  "test",
+  "token",
+  "uninstall",
+  "unpublish",
+  "unstar",
+  "update",
+  "version",
+  "view",
+  "whoami"
 ]);
+const NPM_ALIASES = Object.freeze({
+  add: "install",
+  "add-user": "adduser",
+  author: "owner",
+  c: "config",
+  "clean-install": "ci",
+  "clean-install-test": "install-ci-test",
+  cit: "install-ci-test",
+  create: "init",
+  ddp: "dedupe",
+  "dist-tags": "dist-tag",
+  find: "search",
+  hlep: "help",
+  home: "docs",
+  i: "install",
+  ic: "ci",
+  in: "install",
+  info: "view",
+  innit: "init",
+  ins: "install",
+  inst: "install",
+  insta: "install",
+  instal: "install",
+  "install-clean": "ci",
+  isnt: "install",
+  isnta: "install",
+  isntal: "install",
+  isntall: "install",
+  "isntall-clean": "ci",
+  issues: "bugs",
+  it: "install-test",
+  la: "ll",
+  list: "ls",
+  ln: "link",
+  ogr: "org",
+  r: "uninstall",
+  rb: "rebuild",
+  remove: "uninstall",
+  rm: "uninstall",
+  rum: "run-script",
+  run: "run-script",
+  s: "search",
+  se: "search",
+  show: "view",
+  sit: "install-ci-test",
+  t: "test",
+  tst: "test",
+  udpate: "update",
+  un: "uninstall",
+  unlink: "uninstall",
+  up: "update",
+  upgrade: "update",
+  urn: "run-script",
+  v: "view",
+  verison: "version",
+  why: "explain",
+  x: "exec"
+});
+const NPM_LIFECYCLE_COMMANDS = new Set(["ci", "install", "install-ci-test", "install-test", "rebuild"]);
+const SCRIPT_CONTROL_COMMANDS = new Set(["c", "config"]);
+const DIRECT_SCRIPT_CONTROL_COMMANDS = new Set(["set"]);
+const SCRIPT_CONTROL_ACTIONS = new Set(["delete", "edit", "remove", "rm", "set", "unset"]);
 const BYPASS_COMMAND =
   /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
 const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|pnpm|yarn|yarnpkg)\b/iu;
@@ -139,26 +243,48 @@ function shellTokens(command) {
   });
 }
 
+function matchesCommandPrefix(token, commands) {
+  const normalized = token.toLowerCase();
+  return [...commands].some((command) => command === normalized || command.startsWith(normalized));
+}
+
+function resolveNpmCommand(token) {
+  let normalized = token.replace(/([A-Z])/gu, (match) => "-" + match.toLowerCase()).toLowerCase();
+  if (NPM_COMMANDS.has(normalized)) return normalized;
+  if (NPM_ALIASES[normalized] !== undefined) return NPM_ALIASES[normalized];
+  const candidates = [...NPM_COMMANDS, ...Object.keys(NPM_ALIASES)].filter((command) => command.startsWith(normalized));
+  if (candidates.length !== 1) return undefined;
+  normalized = candidates[0];
+  return NPM_ALIASES[normalized] ?? normalized;
+}
+
+function npmInvocation(match) {
+  const tokens = shellTokens(match).slice(1);
+  if (tokens.length === 0) return { command: undefined, hasLeadingOption: false };
+  if (tokens[0].startsWith("-")) return { command: undefined, hasLeadingOption: true };
+  return { command: resolveNpmCommand(tokens[0]), hasLeadingOption: false, tokens };
+}
+
 function lifecycleCommands(source) {
   return [...normalizeShellContinuations(source).matchAll(NPM_COMMAND)]
-    .filter((match) =>
-      shellTokens(match[0])
-        .slice(1)
-        .some((token) => LIFECYCLE_ALIASES.has(token))
-    )
+    .filter((match) => {
+      const invocation = npmInvocation(match[0]);
+      return invocation.hasLeadingOption || NPM_LIFECYCLE_COMMANDS.has(invocation.command);
+    })
     .map((match) => normalizeCommand(match[0]));
 }
 
 function npmScriptControlMutations(source) {
   return [...normalizeShellContinuations(source).matchAll(NPM_COMMAND)]
     .filter((match) => {
-      const tokens = shellTokens(match[0]).slice(1);
-      const configIndex = tokens.findIndex((token) => token === "config" || token === "c");
-      const directSetIndex = tokens.indexOf("set");
-      if (configIndex < 0 && directSetIndex < 0) return false;
-      const tail = tokens.slice(configIndex >= 0 ? configIndex + 1 : directSetIndex);
+      const invocation = npmInvocation(match[0]);
+      if (!SCRIPT_CONTROL_COMMANDS.has(invocation.command) && !DIRECT_SCRIPT_CONTROL_COMMANDS.has(invocation.command)) {
+        return false;
+      }
+      const tail = invocation.tokens.slice(1);
       return (
-        tail.some((token) => ["delete", "edit", "remove", "rm", "set", "unset"].includes(token)) &&
+        (DIRECT_SCRIPT_CONTROL_COMMANDS.has(invocation.command) ||
+          tail.some((token) => matchesCommandPrefix(token, SCRIPT_CONTROL_ACTIONS))) &&
         tail.some((token) => /^(?:ignore-scripts|foreground-scripts)(?:=|$)/u.test(token))
       );
     })
