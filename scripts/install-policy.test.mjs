@@ -240,14 +240,21 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     [undefined, "$SAFE_YARN install"],
     [undefined, "$SAFE_PNPM install"],
     [undefined, "$SAFE_PNPX @scope/unreviewed"],
+    [undefined, "$SAFE_NPM2 exec --yes --package=@scope/unreviewed tool"],
     [undefined, "$(SAFE_NPM) exec --yes --package=@scope/unreviewed tool"],
     [undefined, "$(SAFE_NPX) --yes @scope/unreviewed"],
+    [undefined, "$(SAFE_PNPM2) install"],
+    [undefined, "$(SAFE_NPM.V2) exec --yes --package=@scope/unreviewed tool"],
     [undefined, "$'\\x6e\\x70\\x6d' install keytar"],
     [undefined, "$'\\156\\160\\155' exec --yes --package=@scope/unreviewed tool"],
     ["pwsh", "& $env:SAFE_NPM exec --yes --package=@scope/unreviewed tool"],
     ["pwsh", "& $env:SAFE_NPX --yes @scope/unreviewed"],
+    ["pwsh", "& $env:SAFE_NPX2 --yes @scope/unreviewed"],
+    ["pwsh", "& ('n'+'pm') install keytar"],
+    ["pwsh", "& ('n'+'px') --yes @scope/unreviewed"],
     ["pwsh", "ya`rn install"],
-    ["cmd", "ya^rn install"]
+    ["cmd", "ya^rn install"],
+    ["cmd", "%SAFE_BUNX2% @scope/unreviewed"]
   ]) {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
     workflow.jobs["windows-unique"].steps.push({ ...(shell === undefined ? {} : { shell }), run: command });
