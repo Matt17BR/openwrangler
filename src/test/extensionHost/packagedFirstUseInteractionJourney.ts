@@ -56,7 +56,8 @@ export interface PackagedFirstUseInteractionDependencies {
     namesFromName: string,
     valuesFromName: string,
     keys: readonly [string, string, ...string[]],
-    synchronizeApp: (phase: string) => Promise<Locator>
+    synchronizeApp: (phase: string) => Promise<Locator>,
+    reacquireApp: (phase: string) => Promise<Locator>
   ) => Promise<void>;
   readonly previewUppercaseMarket: (app: Locator, testing: TestApi, newColumn: string) => Promise<void>;
   readonly reacquireAcknowledgedSessionApp: (
@@ -651,7 +652,8 @@ export function createPackagedFirstUseInteractionJourney(
       "market",
       "revenue",
       PACKAGED_SCREENSHOT_MARKETS,
-      rediscoverApp
+      rediscoverApp,
+      reacquireApp
     );
     await waitFor(
       confirmedMutationRendererReady,

@@ -2,11 +2,67 @@ import * as assert from "node:assert/strict";
 import type { Locator } from "playwright-core";
 import * as vscode from "vscode";
 import type { CellValue } from "../../shared/protocol";
+import {
+  consumeLayoutCommittedRendererValue,
+  reacquireLayoutCommittedRendererTarget,
+  sameRendererSynchronizationReceipt
+} from "./acknowledgedRenderer";
 import type { TestApi } from "./extensionHostTestApi";
+import { activateExactAcceptanceElementOnce } from "./playwrightLifecycle";
 
 export interface PivotWiderJourneyDependencies {
   readonly recordAcceptanceProgress: (checkpoint: string) => void;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
+}
+
+async function activatePivotWiderPreviewOnce(
+  previewButton: Locator,
+  immediatelyBeforeClick?: () => void
+): Promise<void> {
+  const previewElement = await previewButton.elementHandle({ timeout: 10_000 });
+  assert.ok(previewElement, "Pivot wider requires one exact installed form action.");
+  try {
+    await activateExactAcceptanceElementOnce(previewElement, 10_000, immediatelyBeforeClick);
+  } finally {
+    await previewElement.dispose();
+  }
+}
+
+async function readCommittedPivotWiderPreviewCells(
+  testing: TestApi,
+  sessionId: string,
+  revision: number,
+  outputs: readonly Readonly<{ position: number }>[],
+  expectedFirstValue: string,
+  reacquireApp: (phase: string) => Promise<Locator>,
+  waitFor: PivotWiderJourneyDependencies["waitFor"]
+): Promise<
+  Readonly<{
+    app: Locator;
+    cells: readonly Readonly<{ text: string; missing: boolean }>[];
+  }>
+> {
+  return consumeLayoutCommittedRendererValue(testing, sessionId, revision, waitFor, async (receipt) => {
+    const app = await reacquireLayoutCommittedRendererTarget(testing, sessionId, receipt, () =>
+      reacquireApp("Pivot wider committed preview")
+    );
+    const cells: Array<Readonly<{ text: string; missing: boolean }>> = [];
+    for (const [index, output] of outputs.entries()) {
+      const cell = app.locator(`td[data-grid-row="0"][data-grid-column="${output.position}"]`);
+      if (index === 0) {
+        await cell.getByText(expectedFirstValue, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+      } else {
+        await app
+          .locator(`td.missingCell[data-grid-row="0"][data-grid-column="${output.position}"]`)
+          .waitFor({ state: "visible", timeout: 10_000 });
+      }
+      cells.push({
+        text: await cell.locator(".gridCellText").innerText(),
+        missing: await cell.evaluate((element) => element.classList.contains("missingCell"))
+      });
+    }
+    return { app, cells };
+  });
 }
 
 export async function exercisePivotWiderJourney(
@@ -17,6 +73,7 @@ export async function exercisePivotWiderJourney(
   valuesFromName: string,
   keys: readonly [string, string, ...string[]],
   synchronizeApp: (phase: string) => Promise<Locator>,
+  reacquireApp: (phase: string) => Promise<Locator>,
   dependencies: PivotWiderJourneyDependencies
 ): Promise<void> {
   const { recordAcceptanceProgress, waitFor } = dependencies;
@@ -61,21 +118,40 @@ export async function exercisePivotWiderJourney(
     await dialog.getByLabel(`Key ${index + 1}`, { exact: true }).fill(key);
     await dialog.getByLabel(`Output column ${index + 1}`, { exact: true }).fill(`pivot_${index + 1}`);
   }
-  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
-  await waitFor(
-    () => {
-      const draft = testing.activeSession()?.metadata.draftStep;
-      return (
-        draft?.kind === "pivotWider" &&
-        draft.params.namesFrom.id === namesFrom.id &&
-        draft.params.valuesFrom.id === valuesFrom.id &&
-        draft.params.outputs.map((output) => output.name).join(",") ===
-          keys.map((_, index) => `pivot_${index + 1}`).join(",")
-      );
-    },
-    30_000,
-    "previewing Pivot wider through the installed operation form"
+  const previewButton = dialog.getByRole("button", { name: "Preview changes", exact: true });
+  const previewForm = dialog.locator("form");
+  await previewForm.locator(":invalid").first().waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await previewForm.evaluate((form) => (form as unknown as { reportValidity(): boolean }).reportValidity()),
+    true,
+    "Pivot wider preview requires one natively valid installed form."
   );
+  const previewReceipt = testing.panelSynchronizationReceipt(sessionId);
+  assert.ok(previewReceipt, "Pivot wider preview requires one exact acknowledged renderer receipt.");
+  await activatePivotWiderPreviewOnce(previewButton, () => {
+    if (!sameRendererSynchronizationReceipt(previewReceipt, testing.panelSynchronizationReceipt(sessionId))) {
+      throw new Error("The Pivot wider renderer changed immediately before preview dispatch.");
+    }
+  });
+  try {
+    await waitFor(
+      () => {
+        const draft = testing.activeSession()?.metadata.draftStep;
+        return (
+          draft?.kind === "pivotWider" &&
+          draft.params.namesFrom.id === namesFrom.id &&
+          draft.params.valuesFrom.id === valuesFrom.id &&
+          draft.params.outputs.map((output) => output.name).join(",") ===
+            keys.map((_, index) => `pivot_${index + 1}`).join(",")
+        );
+      },
+      30_000,
+      "previewing Pivot wider through the installed operation form"
+    );
+  } catch (error) {
+    const alerts = await app.locator('[role="alert"]').allTextContents();
+    throw new Error(`Pivot wider preview did not settle; visible alerts: ${JSON.stringify(alerts)}`, { cause: error });
+  }
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
   const preview = testing.activeSession();
@@ -96,31 +172,19 @@ export async function exercisePivotWiderJourney(
   );
   assert.match(preview.code ?? "", /pivot_/u);
 
-  const previewApp = await synchronizeApp("Pivot wider preview");
-  const previewPage = await testing.request({
-    kind: "getPage",
+  const committedPreview = await readCommittedPivotWiderPreviewCells(
+    testing,
     sessionId,
-    revision: preview.metadata.revision,
-    viewRequestId: `${checkpoint}:preview`,
-    offset: 0,
-    limit: 1,
-    filterModel: preview.viewState.filterModel,
-    columnOffset: outputs[0]!.position,
-    columnLimit: outputs.length
-  });
-  if (previewPage.kind !== "page") {
-    const detail =
-      previewPage.kind === "error"
-        ? `${previewPage.code} (recoverable=${String(previewPage.recoverable)}): ${previewPage.message}`
-        : `unexpected ${previewPage.kind} response`;
-    throw new Error(`Pivot wider preview page did not resolve: ${detail}`);
-  }
-  assert.deepEqual(
-    previewPage.page.columnIds,
-    outputs.map((output) => output.id)
+    preview.metadata.revision,
+    outputs,
+    sourceValue.display,
+    reacquireApp,
+    waitFor
   );
-  assert.deepEqual(previewPage.page.rows[0]?.values[0], sourceValue);
-  for (const missing of previewPage.page.rows[0]?.values.slice(1) ?? []) assert.equal(missing.isNull, true);
+  const { app: previewApp, cells: previewCells } = committedPreview;
+  assert.equal(previewCells[0]?.text, sourceValue.display);
+  assert.equal(previewCells[0]?.missing, false);
+  for (const missing of previewCells.slice(1)) assert.equal(missing.missing, true);
 
   const review = previewApp.getByRole("region", { name: "Draft review" });
   await review.getByText("Pivot wider", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -149,7 +213,13 @@ export async function exercisePivotWiderJourney(
   await suffixDialog.getByRole("button", { name: /^Clone column\b/u }).click();
   await suffixDialog.getByLabel("Column", { exact: true }).selectOption(retained.id);
   await suffixDialog.getByLabel("New name", { exact: true }).fill("pivot_wider_suffix");
-  await suffixDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  const suffixForm = suffixDialog.locator("form");
+  assert.equal(
+    await suffixForm.evaluate((form) => (form as unknown as { reportValidity(): boolean }).reportValidity()),
+    true,
+    "Pivot wider suffix requires one natively valid installed form."
+  );
+  await activatePivotWiderPreviewOnce(suffixDialog.getByRole("button", { name: "Preview changes", exact: true }));
   await waitFor(
     () => {
       const draft = testing.activeSession()?.metadata.draftStep;
@@ -245,7 +315,7 @@ export async function exercisePivotWiderJourney(
     );
   }
   await editDialog.getByLabel("Output column 1", { exact: true }).fill("pivot_edited_1");
-  await editDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await activatePivotWiderPreviewOnce(editDialog.getByRole("button", { name: "Preview changes", exact: true }));
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -323,7 +393,7 @@ export async function exercisePivotWiderJourney(
   await replaySuffixDialog.getByRole("button", { name: /^Clone column\b/u }).click();
   await replaySuffixDialog.getByLabel("Column", { exact: true }).selectOption(retained.id);
   await replaySuffixDialog.getByLabel("New name", { exact: true }).fill("pivot_wider_suffix");
-  await replaySuffixDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await activatePivotWiderPreviewOnce(replaySuffixDialog.getByRole("button", { name: "Preview changes", exact: true }));
   await waitFor(
     () => testing.activeSession()?.metadata.draftStep?.kind === "cloneColumn",
     30_000,

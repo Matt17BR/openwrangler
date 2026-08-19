@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery } from "../../shared/filterModel";
@@ -79,6 +79,7 @@ export function OperationBuilder({
   const [search, setSearch] = useState("");
   const [formError, setFormError] = useState<string>();
   const dialogRef = useRef<HTMLElement | null>(null);
+  const previewButtonRef = useRef<HTMLButtonElement | null>(null);
   const availableCatalog = useMemo(() => supportedOperationCatalog(metadata.capabilities), [metadata.capabilities]);
   const filteredCatalog = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -90,9 +91,10 @@ export function OperationBuilder({
       : availableCatalog;
   }, [availableCatalog, search]);
   const activeInitial = initialStep?.kind === selectedKind ? initialStep : undefined;
-  const availableColumns = initialStep
-    ? [...(editInputSchema ?? metadata.latestStepInputSchema ?? [])]
-    : metadata.schema;
+  const availableColumns = useMemo(
+    () => (initialStep ? [...(editInputSchema ?? metadata.latestStepInputSchema ?? [])] : metadata.schema),
+    [editInputSchema, initialStep, metadata.latestStepInputSchema, metadata.schema]
+  );
   const editPreflightError = initialStep
     ? savedStepEditError(initialStep, editInputSchema ?? metadata.latestStepInputSchema)
     : undefined;
@@ -110,26 +112,64 @@ export function OperationBuilder({
     dialog?.focus();
   }, [busy]);
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (busy || !selectedKind || editPreflightError || !supportsOperation(metadata.capabilities, selectedKind)) return;
-    try {
-      const form = new FormData(event.currentTarget);
-      const params = buildParams(selectedKind, form, filterModel, availableColumns, savedFilterModel);
-      const step = {
-        id: initialStep?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
-        kind: selectedKind,
-        params
-      };
-      if (!isTransformStep(step)) {
-        throw new Error("The operation contains invalid or incomplete parameters.");
+  const submitOperation = useCallback(
+    (formElement: HTMLFormElement) => {
+      if (busy || !selectedKind || editPreflightError || !supportsOperation(metadata.capabilities, selectedKind))
+        return;
+      try {
+        const form = new FormData(formElement);
+        const params = buildParams(selectedKind, form, filterModel, availableColumns, savedFilterModel);
+        const step = {
+          id: initialStep?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
+          kind: selectedKind,
+          params
+        };
+        if (!isTransformStep(step)) {
+          throw new Error("The operation contains invalid or incomplete parameters.");
+        }
+        setFormError(undefined);
+        onPreview(step, initialStep?.id);
+      } catch (error) {
+        setFormError(error instanceof Error ? error.message : String(error));
       }
-      setFormError(undefined);
-      onPreview(step, initialStep?.id);
-    } catch (error) {
-      setFormError(error instanceof Error ? error.message : String(error));
-    }
+    },
+    [
+      availableColumns,
+      busy,
+      editPreflightError,
+      filterModel,
+      initialStep,
+      metadata.capabilities,
+      onPreview,
+      savedFilterModel,
+      selectedKind
+    ]
+  );
+
+  const submitValidatedOperation = useCallback(
+    (formElement: HTMLFormElement, onValidated: () => void) => {
+      if (!formElement.reportValidity()) return;
+      onValidated();
+      submitOperation(formElement);
+    },
+    [submitOperation]
+  );
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    submitValidatedOperation(event.currentTarget, () => event.preventDefault());
   };
+
+  useLayoutEffect(() => {
+    const previewButton = previewButtonRef.current;
+    if (!previewButton) return;
+    const preview = (event: MouseEvent) => {
+      const formElement = previewButton.form;
+      if (!formElement || previewButton.matches(":disabled")) return;
+      submitValidatedOperation(formElement, () => event.preventDefault());
+    };
+    previewButton.addEventListener("click", preview);
+    return () => previewButton.removeEventListener("click", preview);
+  }, [submitValidatedOperation]);
 
   return (
     <div
@@ -233,7 +273,11 @@ export function OperationBuilder({
                   <button type="button" className="secondaryButton" onClick={onClose}>
                     Cancel
                   </button>
-                  <button type="submit" disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}>
+                  <button
+                    ref={previewButtonRef}
+                    type="submit"
+                    disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}
+                  >
                     Preview changes
                   </button>
                 </footer>

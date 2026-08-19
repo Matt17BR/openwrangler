@@ -224,10 +224,10 @@ describe("Fill Missing operation fields", () => {
     const form = screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement;
     for (const invalid of ["0", "1.5", "1000001"]) {
       fireEvent.change(maximumGap, { target: { value: invalid } });
-      fireEvent.submit(form);
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "Maximum missing cells in a run must be a whole number from 1 to 1,000,000."
-      );
+      expect(maximumGap).toBeInvalid();
+      expect(form).toBeInvalid();
+      expect(fireEvent.submit(form)).toBe(true);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     }
     expect(onPreview).toHaveBeenCalledOnce();
   });
@@ -538,15 +538,17 @@ describe("Fill Missing operation fields", () => {
     const form = screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement;
     for (const invalid of ["0", "1.5", "1000001"]) {
       fireEvent.change(maximumGap, { target: { value: invalid } });
-      fireEvent.submit(form);
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "Maximum gap length must be a whole number from 1 to 1,000,000."
-      );
+      expect(maximumGap).toBeInvalid();
+      expect(form).toBeInvalid();
+      expect(fireEvent.submit(form)).toBe(true);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(onPreview).not.toHaveBeenCalled();
     }
 
     fireEvent.change(maximumGap, { target: { value: "2" } });
-    fireEvent.submit(form);
+    expect(maximumGap).toBeValid();
+    expect(form).toBeValid();
+    expect(fireEvent.submit(form)).toBe(false);
     expect(onPreview).toHaveBeenCalledOnce();
   });
 

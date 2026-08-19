@@ -124,6 +124,7 @@ interface FakeExactAcceptanceElement {
     listener: (event: { readonly isTrusted: boolean }) => void,
     options: { readonly once: boolean }
   ): void;
+  matches(selector: string): boolean;
   contains(node: FakeExactAcceptanceElement | null): boolean;
   getAttribute(name: string): string | null;
   getBoundingClientRect(): {
@@ -139,11 +140,12 @@ function exactAcceptanceTarget(
     readonly covered?: boolean;
     readonly disconnected?: boolean;
     readonly disabled?: boolean;
+    readonly inheritedDisabled?: boolean;
     readonly ariaDisabled?: boolean;
     readonly geometry?: boolean;
     readonly readinessReceiptOverride?: unknown;
     readonly readinessSequence?: readonly (
-      "aria-disabled" | "covered" | "disabled" | "disconnected" | "geometry" | "ready"
+      "aria-disabled" | "covered" | "disabled" | "disconnected" | "geometry" | "inherited-disabled" | "ready"
     )[];
     readonly trusted?: boolean;
     readonly clickError?: Error;
@@ -160,13 +162,15 @@ function exactAcceptanceTarget(
     ? "disconnected"
     : options.disabled
       ? "disabled"
-      : options.ariaDisabled
-        ? "aria-disabled"
-        : options.geometry
-          ? "geometry"
-          : options.covered
-            ? "covered"
-            : "ready";
+      : options.inheritedDisabled
+        ? "inherited-disabled"
+        : options.ariaDisabled
+          ? "aria-disabled"
+          : options.geometry
+            ? "geometry"
+            : options.covered
+              ? "covered"
+              : "ready";
   const readinessSequence = options.readinessSequence ?? [initialReadiness];
   let currentReadiness = readinessSequence[0] ?? "ready";
   const occluder = {} as FakeExactAcceptanceElement;
@@ -184,6 +188,7 @@ function exactAcceptanceTarget(
     addEventListener: (_type, nextListener) => {
       listener = nextListener;
     },
+    matches: (selector) => selector === ":disabled" && currentReadiness === "inherited-disabled",
     contains: () => false,
     getAttribute: (name) => (name === "aria-disabled" && currentReadiness === "aria-disabled" ? "true" : null),
     getBoundingClientRect: () => ({
@@ -1088,7 +1093,7 @@ describe("extension-host Playwright lifecycle", () => {
     }
   });
 
-  it.each(["covered", "geometry", "disabled", "aria-disabled"] as const)(
+  it.each(["covered", "geometry", "disabled", "inherited-disabled", "aria-disabled"] as const)(
     "waits for an exact temporarily %s element on the same handle",
     async (reason) => {
       vi.useFakeTimers();

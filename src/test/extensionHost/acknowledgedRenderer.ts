@@ -6,9 +6,90 @@ export interface RendererSynchronizationReceipt {
   readonly revision: number;
 }
 
+export interface LayoutCommittedRendererSynchronizationReceipt extends RendererSynchronizationReceipt {
+  readonly layoutTransitionPending: false;
+}
+
 export interface AcknowledgedRendererApi {
   panelHydrated(sessionId: string): boolean;
   panelSynchronizationReceipt(sessionId: string): RendererSynchronizationReceipt | undefined;
+}
+
+export interface LayoutCommittedRendererApi {
+  panelHydrated(sessionId: string): boolean;
+  panelSynchronizationReceipt(
+    sessionId: string
+  ): (RendererSynchronizationReceipt & Readonly<{ layoutTransitionPending: boolean }>) | undefined;
+}
+
+export async function consumeLayoutCommittedRendererValue<T>(
+  testing: LayoutCommittedRendererApi,
+  sessionId: string,
+  revision: number,
+  waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>,
+  consume: (receipt: LayoutCommittedRendererSynchronizationReceipt) => Promise<T>
+): Promise<T> {
+  let committed: LayoutCommittedRendererSynchronizationReceipt | undefined;
+  await waitFor(
+    () => {
+      const current = testing.panelSynchronizationReceipt(sessionId);
+      if (
+        testing.panelHydrated(sessionId) &&
+        current?.sessionId === sessionId &&
+        current.revision === revision &&
+        current.layoutTransitionPending === false
+      ) {
+        committed = current as LayoutCommittedRendererSynchronizationReceipt;
+        return true;
+      }
+      return false;
+    },
+    10_000,
+    "one exact acknowledged renderer to commit its existing layout"
+  );
+  assert.ok(committed, "The exact renderer never committed its layout before the acquisition deadline.");
+
+  const assertSameCommittedReceipt = (phase: string): void => {
+    assert.equal(testing.panelHydrated(sessionId), true, `${phase} The exact renderer must remain hydrated.`);
+    const current = testing.panelSynchronizationReceipt(sessionId);
+    assert.equal(
+      sameRendererSynchronizationReceipt(committed, current),
+      true,
+      `${phase} The committed renderer receipt was superseded.`
+    );
+    assert.equal(current?.layoutTransitionPending, false, `${phase} The exact renderer layout is no longer committed.`);
+  };
+
+  assertSameCommittedReceipt("Before consuming the renderer-owned value.");
+  const value = await consume(committed);
+  assertSameCommittedReceipt("After consuming the renderer-owned value.");
+  return value;
+}
+
+export async function reacquireLayoutCommittedRendererTarget<T>(
+  testing: LayoutCommittedRendererApi,
+  sessionId: string,
+  expectedReceipt: LayoutCommittedRendererSynchronizationReceipt,
+  reacquire: () => Promise<T>
+): Promise<T> {
+  const target = await reacquire();
+  assert.equal(
+    testing.panelHydrated(sessionId),
+    true,
+    "The reacquired committed renderer must remain hydrated before its DOM is read."
+  );
+  const current = testing.panelSynchronizationReceipt(sessionId);
+  assert.equal(
+    sameRendererSynchronizationReceipt(expectedReceipt, current),
+    true,
+    "The committed renderer receipt was superseded during reacquisition."
+  );
+  assert.equal(
+    current?.layoutTransitionPending,
+    false,
+    "The reacquired renderer layout must remain committed before its DOM is read."
+  );
+  return target;
 }
 
 export interface CountedLocator {

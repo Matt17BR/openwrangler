@@ -5361,6 +5361,7 @@ openwrangler_r_kernel_agent <- local({
       return(list(
         capture = frame_contract$capture_pivot_wider_at(
           source,
+          capture,
           bound$namesFrom$position,
           bound$namesFrom$name,
           bound$valuesFrom$position,
@@ -8002,6 +8003,7 @@ openwrangler_r_kernel_agent <- local({
           "    if (!base::is.null(.ow_clone_element_names)) data.table::setattr(base::.subset2(.ow_result, ncol(.ow_result)), \"names\", .ow_clone_element_names)",
           "  } else {",
           "    .ow_clone_frame_attributes <- base::attributes(.ow_result)",
+          "    .ow_clone_frame_attributes[['row.names']] <- base::.row_names_info(.ow_result, type = 0L)",
           "    .ow_clone_columns <- base::unclass(.ow_result)",
           "    .ow_clone_columns[[base::length(.ow_clone_columns) + 1L]] <- base::.subset2(.ow_clone_columns, .ow_clone_position)",
           "    .ow_clone_frame_attributes[[\"names\"]] <- c(.ow_clone_frame_names, .ow_clone_name)",

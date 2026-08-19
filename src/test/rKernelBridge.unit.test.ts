@@ -2403,6 +2403,68 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
+  it("preserves conservative Pivot wider nullability and rejects a narrowed R publication", async () => {
+    const stepId = "r-pivot-wider-nullability";
+    const source = frameContract();
+    const valid = pivotWiderContract(source, stepId, ["alpha", "beta"]);
+
+    const validTransport = fakeTransport(source);
+    const validBridge = createBridge(validTransport);
+    await validBridge.request(openRequest("editing"));
+    validTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: valid,
+      diff: pivotWiderDiff(["alpha", "beta"]),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(validBridge.request(pivotWiderPreviewRequest(stepId, ["alpha", "beta"]))).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:1", nullable: true }),
+          expect.objectContaining({ id: `c:step:${stepId}:0`, name: "alpha", nullable: true }),
+          expect.objectContaining({ id: `c:step:${stepId}:1`, name: "beta", nullable: true })
+        ])
+      }
+    });
+    expect(validTransport.previewStep).toHaveBeenCalledOnce();
+
+    const narrowed = {
+      ...valid,
+      schema: valid.schema.map((column, index) => (index === 0 ? { ...column, nullable: false } : { ...column }))
+    } satisfies RFramePageContract;
+    const narrowedTransport = fakeTransport(source);
+    const narrowedBridge = createBridge(narrowedTransport);
+    await narrowedBridge.request(openRequest("editing"));
+    narrowedTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: narrowed,
+      diff: pivotWiderDiff(["alpha", "beta"]),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(narrowedBridge.request(pivotWiderPreviewRequest(stepId, ["alpha", "beta"]))).rejects.toThrow(
+      "did not match the requested session state: schema"
+    );
+    expect(narrowedTransport.previewStep).toHaveBeenCalledOnce();
+    expect(narrowedTransport.applyDraft).not.toHaveBeenCalled();
+    await expect(
+      narrowedBridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: "after-pivot-wider-nullability-mismatch",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      })
+    ).resolves.toMatchObject({ kind: "error", sessionId });
+    expect(source).toEqual(frameContract());
+  });
+
   it("accepts most common value for R text and boolean columns and rejects numeric columns", async () => {
     const cases = [
       {
@@ -6251,6 +6313,62 @@ function pivotWiderPreviewRequest(
     limit: 20,
     columnOffset: 0,
     columnLimit: 8
+  };
+}
+
+function pivotWiderContract(
+  source: RFramePageContract,
+  stepId: string,
+  outputNames: readonly [string, string]
+): RFramePageContract {
+  const retainedPositions = source.schema
+    .map((column, position) => ({ column, position }))
+    .filter(({ column }) => column.id !== "r:c:6" && column.id !== "r:c:0")
+    .map(({ position }) => position);
+  const retained = retainedPositions.map((position, outputPosition) => ({
+    ...(source.schema[position] as RColumnSchema),
+    position: outputPosition
+  }));
+  const valueColumn = source.schema.find((column) => column.id === "r:c:0");
+  if (!valueColumn) throw new Error("Fake Pivot wider source has no values-from column.");
+  const outputs = outputNames.map((name, ordinal) => ({
+    ...valueColumn,
+    id: `c:step:${stepId}:${ordinal}`,
+    name,
+    position: retained.length + ordinal,
+    nullable: true
+  }));
+  const schema = [...retained, ...outputs];
+  const sourceRow = source.page.rows[0];
+  if (!sourceRow) throw new Error("Fake Pivot wider source has no row.");
+  const outputValues = [
+    ...retainedPositions.map((position) => ({ ...(sourceRow.values[position] as RFrameCell) })),
+    { ...(sourceRow.values[0] as RFrameCell) },
+    { ...(sourceRow.values[0] as RFrameCell) }
+  ];
+  return {
+    ...source,
+    shape: { rows: 1, columns: schema.length },
+    frameSemantics: { ...source.frameSemantics, rowNames: "positional", keyColumnIds: [] },
+    schema,
+    page: {
+      ...source.page,
+      offset: 0,
+      totalRows: 1,
+      columnOffset: 0,
+      columnIds: schema.map((column) => column.id),
+      rows: [{ id: "r:r:0", rowNumber: 0, values: outputValues }]
+    }
+  };
+}
+
+function pivotWiderDiff(outputNames: readonly [string, string]): DataDiff {
+  return {
+    ...renameDiff(),
+    addedRows: 1,
+    removedRows: 1,
+    addedColumns: [...outputNames],
+    removedColumns: ["value", "missing"]
   };
 }
 
