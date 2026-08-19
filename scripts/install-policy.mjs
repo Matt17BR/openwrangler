@@ -65,9 +65,9 @@ export const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/stable-release.yml"
 ]);
 const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
-const NPM_COMMAND = /\bnpm(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
-const NPX_COMMAND = /\bnpx(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
-const PACKAGE_MANAGER_EXECUTABLE = /(?:bun|bunx|corepack|npm|npx|pnpm|pnpx|yarn|yarnpkg)(?:\.(?:cmd|ps1))?/iu;
+const NPM_COMMAND = /\bnpm(?:\.(?:cmd|exe|ps1))?(?![\w.-])[^\n;&|]*/giu;
+const NPX_COMMAND = /\bnpx(?:\.(?:cmd|exe|ps1))?(?![\w.-])[^\n;&|]*/giu;
+const PACKAGE_MANAGER_EXECUTABLE = /(?:bun|bunx|corepack|npm|npx|pnpm|pnpx|yarn|yarnpkg)(?:\.(?:cmd|exe|ps1))?/iu;
 const REVIEWED_NPX_EXECUTABLES = Object.freeze({
   "npm-run-all": ["node_modules/npm-run-all", "bin/npm-run-all/index.js"],
   ovsx: ["node_modules/ovsx", "bin/ovsx"],
@@ -222,7 +222,7 @@ const SCRIPT_CONTROL_ACTIONS = new Set(["delete", "edit", "remove", "rm", "set",
 const BYPASS_COMMAND =
   /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
 const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|bunx|corepack|pnpm|pnpx|yarn|yarnpkg)\b/iu;
-const UNREVIEWED_SHELL_TOKEN_ENCODING = /(?:\$'|(?<!&)&(?!&)\s*\()/u;
+const UNREVIEWED_SHELL_TOKEN_ENCODING = /(?:\$'|(?<!&)&(?!&)\s*\$?\()/u;
 const PACKAGE_MANAGER_VARIABLE =
   /(?:\$(?:\{[^}\n]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[^}\n]*\}|\([A-Z0-9_.-]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z0-9_.-]*\)|(?:(?:env|global|local|private|script|using):)?[A-Z0-9_]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z0-9_]*)|%[A-Z0-9_.-]*(?:BUN|BUNX|COREPACK|NPM|NPX|PNPM|PNPX|YARN)[A-Z0-9_.-]*%)/iu;
 const WEAKENED_SCRIPT_CONTROL =
