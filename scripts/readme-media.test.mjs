@@ -511,7 +511,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
   assert.match(readme, /Choose from 31 operations/u);
-  assert.match(readme, /Edit and cleaning Undo target only the most recent step/u);
+  assert.match(
+    readme,
+    /Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step/u
+  );
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
   assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live\s+dataframe/u);
