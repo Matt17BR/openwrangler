@@ -56,10 +56,10 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     source.replace("--skip-duplicate canonical-release/openwrangler.vsix", "canonical-release/openwrangler.vsix"),
     source.replace("Published Matt17BR.openwrangler v$RELEASE_VERSION", "Published something"),
     source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published"),
-    source.replace("npx playwright-core install --with-deps chromium", "echo browser-skipped"),
+    source.replace("npx --no-install playwright-core install --with-deps chromium", "echo browser-skipped"),
     source.replace(
       "release-source/node_modules/.bin/playwright-core install --with-deps chromium",
-      "npx playwright-core install --with-deps chromium"
+      "npx --no-install playwright-core install --with-deps chromium"
     ),
     source.replace(
       "PREPUBLICATION_REQUIRED: ${{ steps.public_media_prepublish.outputs.required }}",

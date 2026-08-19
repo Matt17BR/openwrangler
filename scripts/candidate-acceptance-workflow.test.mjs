@@ -318,7 +318,7 @@ test("linux acceptance does not rerun pull-request suites or their private setup
     "npm run test:scripts",
     "npm run test:webview-acceptance",
     "npm run test:coverage",
-    "npx playwright-core install --with-deps chromium",
+    "npx --no-install playwright-core install --with-deps chromium",
     'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"',
     'python -m pip install --no-deps "https://files.pythonhosted.org/packages/uv-0.11.32-py3-none-manylinux.whl"'
   ]) {

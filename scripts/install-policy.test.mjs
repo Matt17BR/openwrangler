@@ -87,6 +87,14 @@ test("install policy rejects every lifecycle-script lock entry and native downlo
     ),
     /resolve keytar only/u
   );
+  rejected(
+    mutate("package-lock.json", (source) => {
+      const lock = JSON.parse(source);
+      lock.packages["node_modules/playwright-core"].bin["playwright-core"] = "dynamic-loader.js";
+      return JSON.stringify(lock, null, 2) + "\n";
+    }),
+    /reviewed npx executable playwright-core/u
+  );
 });
 
 test("install policy rejects default, manifest, override, and shim weakening", () => {
@@ -171,6 +179,34 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
       ),
       /(?:unreviewed npm lifecycle commands|bypass alias)/u
     );
+  }
+  for (const command of [
+    "npm exec --yes --package=@scope/unreviewed tool",
+    "npm x --yes --package=@scope/unreviewed tool",
+    "npx --yes @scope/unreviewed",
+    "npx @scope/unreviewed",
+    "npx --no-install @scope/unreviewed"
+  ]) {
+    rejected(
+      mutate(".github/workflows/ci.yml", (source) =>
+        source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
+      ),
+      /(?:unreviewed npm lifecycle commands|bypass alias)/u
+    );
+  }
+  for (const command of ["n\\pm install keytar", "n'p'm install keytar"]) {
+    rejected(
+      mutate(".github/workflows/ci.yml", (source) =>
+        source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
+      ),
+      /unreviewed npm lifecycle commands/u
+    );
+  }
+  {
+    const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
+    workflow.jobs["windows-unique"].steps.push({ run: "np`m install keytar" });
+    workflow.jobs["windows-unique"].steps.push({ shell: "cmd", run: "np^m install keytar" });
+    rejected(new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]), /unreviewed npm lifecycle commands/u);
   }
   for (const command of ["yarn", "yarn --frozen-lockfile", "pnpm install", "bun install"]) {
     rejected(

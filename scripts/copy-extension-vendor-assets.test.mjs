@@ -88,6 +88,6 @@ test("extension vendor staging rejects changed package identity and linked sourc
 
 test("extension watch prepares the exact vendored runtime before incremental compilation", () => {
   const manifest = JSON.parse(readFileSync(join(repositoryRoot, "package.json"), "utf8"));
-  assert.equal(manifest.scripts["prewatch:extension"], "npm run build:extension");
-  assert.equal(manifest.scripts["watch:extension"], "tsc -w -p tsconfig.extension.json");
+  assert.equal(manifest.scripts["prewatch:extension"], undefined);
+  assert.equal(manifest.scripts["watch:extension"], "npm run build:extension && tsc -w -p tsconfig.extension.json");
 });

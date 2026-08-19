@@ -61,7 +61,7 @@ jobs:
       - name: Portable, Python 3.10, schema, protocol, reference, docs, and license invariants
         if: ${{ github.event_name == 'pull_request' }}
         run: >-
-          npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
+          npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
           check:invariants test:scripts test:python
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
@@ -529,7 +529,7 @@ jobs:
       - name: TypeScript owner contracts
         if: ${{ !cancelled() }}
         run: >-
-          npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
+          npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
           typecheck typecheck:dependencies test:ts
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.canonical_python.outputs.python-path }}
@@ -557,7 +557,7 @@ jobs:
           cache: pip
       - run: npm ci --ignore-scripts
       - run: python -m pip install -e "python[dev]"
-      - run: npx playwright-core install chromium
+      - run: npx --no-install playwright-core install chromium
       - run: env -u CHROME_BIN npm run test:webview-acceptance
       - if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -603,7 +603,7 @@ jobs:
           python/tests/test_session_editing.py
       - run: npm run test:scripts:native
       - run: >-
-          npx vitest run
+          npx --no-install vitest run
           src/test/dependencyInstaller.unit.test.ts
           src/test/processShutdown.unit.test.ts
           src/test/pythonEnvironment.unit.test.ts

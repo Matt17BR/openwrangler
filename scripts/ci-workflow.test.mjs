@@ -151,7 +151,7 @@ function assertVisualAccessibilityBrowserOwnership(document, manifest = packageJ
   const orderedCommands = [
     "npm ci --ignore-scripts",
     'python -m pip install -e "python[dev]"',
-    "npx playwright-core install chromium",
+    "npx --no-install playwright-core install chromium",
     "env -u CHROME_BIN npm run test:webview-acceptance"
   ];
   const commandIndexes = orderedCommands.map((command) => job.steps.findIndex((step) => step?.run === command));
@@ -160,9 +160,9 @@ function assertVisualAccessibilityBrowserOwnership(document, manifest = packageJ
     commandIndexes,
     [...commandIndexes].sort((left, right) => left - right)
   );
-  const browserInstall = stepRunning(job, "npx playwright-core install chromium");
+  const browserInstall = stepRunning(job, "npx --no-install playwright-core install chromium");
   const acceptance = stepRunning(job, "env -u CHROME_BIN npm run test:webview-acceptance");
-  assert.equal(job.steps.filter((step) => step?.run === "npx playwright-core install chromium").length, 1);
+  assert.equal(job.steps.filter((step) => step?.run === "npx --no-install playwright-core install chromium").length, 1);
   assert.equal(manifest.scripts?.["test:webview-acceptance"], "npm run test:webview-acceptance:run");
   const acceptanceOwners = new Set(["test:webview-acceptance", "test:webview-acceptance:run"]);
   const acceptanceSteps = job.steps.filter(
@@ -698,9 +698,9 @@ test("CI exposes only the current pull-request owners", () => {
 function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   const job = document.jobs["invariant-core"];
   const pullRequestCommand =
-    "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python";
+    "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python";
   const typescriptCommand =
-    "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label typecheck typecheck:dependencies test:ts";
+    "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label typecheck typecheck:dependencies test:ts";
   assert.equal(
     scripts["check:pr"],
     "npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test"
@@ -767,21 +767,21 @@ test("invariant core keeps the portable and Python floor while the selected cano
     (document) => {
       stepRunning(
         document.jobs["invariant-core"],
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
+        "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
       ).run =
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts";
+        "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts";
     },
     (document) => {
       stepRunning(
         document.jobs["invariant-core"],
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
+        "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
       ).run =
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python";
+        "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check test:scripts test:python";
     },
     (document) => {
       stepRunning(
         document.jobs["invariant-core"],
-        "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
+        "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label check:invariants test:scripts test:python"
       ).if = "${{ !cancelled() && github.event_name == 'pull_request' }}";
     },
     (document) => {
@@ -792,7 +792,7 @@ test("invariant core keeps the portable and Python floor while the selected cano
       document.jobs["canonical-editor"].steps = document.jobs["canonical-editor"].steps.filter(
         (step) =>
           step.run !==
-          "npx npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label typecheck typecheck:dependencies test:ts"
+          "npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label typecheck typecheck:dependencies test:ts"
       );
     }
   ];
@@ -1595,11 +1595,11 @@ test("visual acceptance installs only the lockfile-owned Chromium before its fai
 
   const workflowMutations = [
     (document) => {
-      stepRunning(document.jobs["visual-accessibility"], "npx playwright-core install chromium").run =
+      stepRunning(document.jobs["visual-accessibility"], "npx --no-install playwright-core install chromium").run =
         "npx playwright-core install --with-deps chromium";
     },
     (document) => {
-      stepRunning(document.jobs["visual-accessibility"], "npx playwright-core install chromium").run =
+      stepRunning(document.jobs["visual-accessibility"], "npx --no-install playwright-core install chromium").run =
         "npx playwright-core install-deps chromium";
     },
     (document) => {
@@ -1649,7 +1649,7 @@ test("visual acceptance installs only the lockfile-owned Chromium before its fai
     },
     (document) => {
       const steps = document.jobs["visual-accessibility"].steps;
-      const install = steps.findIndex((step) => step?.run === "npx playwright-core install chromium");
+      const install = steps.findIndex((step) => step?.run === "npx --no-install playwright-core install chromium");
       const acceptance = steps.findIndex((step) => step?.run === "env -u CHROME_BIN npm run test:webview-acceptance");
       [steps[install], steps[acceptance]] = [steps[acceptance], steps[install]];
     },
