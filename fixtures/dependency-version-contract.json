@@ -1,0 +1,33 @@
+{
+  "dependency": {
+    "importModule": "openwrangler_pep440_probe",
+    "distribution": "openwrangler-pep440-probe",
+    "installSpec": "openwrangler-pep440-probe>=1.5.4,<1.6",
+    "exactVersion": null,
+    "minimumVersion": "1.5.4",
+    "maximumVersionExclusive": "1.6"
+  },
+  "cases": [
+    { "name": "release candidate below minimum", "version": "1.5.4rc1", "supported": false },
+    { "name": "minimum release", "version": "1.5.4", "supported": true },
+    { "name": "prerelease inside range", "version": "1.5.5rc1", "supported": true },
+    { "name": "release candidate at excluded upper bound", "version": "1.6rc1", "supported": false },
+    { "name": "development release below minimum", "version": "1.5.4.dev1", "supported": false },
+    { "name": "development release inside range", "version": "1.5.5.dev1", "supported": true },
+    { "name": "post release", "version": "1.5.4.post1", "supported": true },
+    { "name": "nonzero epoch above upper bound", "version": "1!1.5.4", "supported": false },
+    { "name": "local release", "version": "1.5.4+vendor.1", "supported": true },
+    { "name": "shortened release", "version": "1.5", "supported": false },
+    { "name": "malformed release", "version": "not-a-version", "supported": false },
+    {
+      "name": "arbitrarily large release component",
+      "version": "1.5.4.99999999999999999999999999999999999999999999999999999999999999999999999999999999",
+      "supported": true
+    },
+    {
+      "name": "long release vector",
+      "version": "1.5.4.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1",
+      "supported": true
+    }
+  ]
+}

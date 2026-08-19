@@ -1,9 +1,9 @@
 """Crash-safe dependency mutation guard for a selected Python environment.
 
-This module intentionally uses only the Python standard library and can be
-executed directly with ``python -I dependency_guard.py <mode>``.  Its JSONL
-protocol is consumed by the extension host; package and import output never
-crosses that protocol boundary.
+This module uses the Python standard library plus the selected interpreter's
+pip-vendored PEP 440 implementation and can be executed directly with
+``python -I dependency_guard.py <mode>``. Its JSONL protocol is consumed by
+the extension host; package and import output never crosses that boundary.
 """
 
 from __future__ import annotations
@@ -62,7 +62,6 @@ _INSTALL_SPEC_PATTERN = re.compile(
     r"(?:,(?:==|!=|<=|>=|<|>|~=)[0-9]+(?:\.[0-9]+){0,7})*)?)$"
 )
 _BOUND_VERSION_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+){0,7}$")
-_RELEASE_PREFIX_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+)*")
 
 _ENVIRONMENT_KEYS = {
     "executable",
@@ -2213,27 +2212,28 @@ def _run_pip(dependencies: list[dict[str, Any]]) -> int:
     return exit_code
 
 
-def _release_parts(value: str) -> tuple[int, ...]:
-    match = _RELEASE_PREFIX_PATTERN.match(value)
-    if match is None:
-        _fail("validation_failed")
-    parts = tuple(int(part) for part in match.group(0).split("."))
-    if len(parts) > 32 or any(part >= 1 << 31 for part in parts):
-        _fail("validation_failed")
-    return parts
+def _pep440_specifier(value: str) -> Any:
+    from pip._vendor.packaging.specifiers import SpecifierSet
+
+    return SpecifierSet(value)
 
 
-def _compare_release_versions(left: str, right: str) -> int:
-    left_parts = _release_parts(left)
-    right_parts = _release_parts(right)
-    length = max(len(left_parts), len(right_parts))
-    for index in range(length):
-        difference = (left_parts[index] if index < len(left_parts) else 0) - (
-            right_parts[index] if index < len(right_parts) else 0
-        )
-        if difference:
-            return 1 if difference > 0 else -1
-    return 0
+def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> bool:
+    try:
+        from pip._vendor.packaging.version import Version
+
+        if dependency["exactVersion"] is not None:
+            specifier = f"=={dependency['exactVersion']}"
+        else:
+            constraints = []
+            if dependency["minimumVersion"] is not None:
+                constraints.append(f">={dependency['minimumVersion']}")
+            if dependency["maximumVersionExclusive"] is not None:
+                constraints.append(f"<{dependency['maximumVersionExclusive']}")
+            specifier = ",".join(constraints)
+        return bool(_pep440_specifier(specifier).contains(Version(observed), prereleases=True))
+    except BaseException:
+        return False
 
 
 def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
@@ -2252,14 +2252,7 @@ def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
                 or any(ord(character) < 0x20 for character in observed)
             ):
                 _fail("validation_failed")
-            exact = dependency["exactVersion"]
-            minimum = dependency["minimumVersion"]
-            maximum = dependency["maximumVersionExclusive"]
-            if exact is not None and observed != exact:
-                _fail("validation_failed")
-            if minimum is not None and _compare_release_versions(observed, minimum) < 0:
-                _fail("validation_failed")
-            if maximum is not None and _compare_release_versions(observed, maximum) >= 0:
+            if not _dependency_version_supported(dependency, observed):
                 _fail("validation_failed")
 
 

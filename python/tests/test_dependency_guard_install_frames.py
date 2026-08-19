@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from dependency_guard_test_support import create_fake_pip_package
 
 PROTOCOL = "openwrangler-dependency-guard-v1"
 HELPER = Path(__file__).parents[1] / "openwrangler_runtime" / "dependency_guard.py"
@@ -212,9 +213,7 @@ def _write_fake_dependency(site_packages: Path) -> None:
 
 
 def _write_fake_pip(site_packages: Path) -> None:
-    package = site_packages / "pip"
-    package.mkdir()
-    (package / "__init__.py").write_text("", encoding="utf-8")
+    package = create_fake_pip_package(site_packages)
     (package / "__main__.py").write_text(
         "\n".join(
             [

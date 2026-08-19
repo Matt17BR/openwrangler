@@ -634,13 +634,25 @@ export async function probeDependencies(
   }
   const program = [
     "import importlib.metadata,importlib.util,json",
-    `deps=${JSON.stringify(dependencies)}`,
+    "try:",
+    " from pip._vendor.packaging.specifiers import SpecifierSet",
+    " from pip._vendor.packaging.version import Version",
+    "except BaseException: SpecifierSet=Version=None",
+    `deps=json.loads(${JSON.stringify(JSON.stringify(dependencies))})`,
     "out={}",
     "for d in deps:",
-    " found=importlib.util.find_spec(d['importModule']) is not None",
-    " try: version=importlib.metadata.version(d['distribution']) if found else None",
-    " except importlib.metadata.PackageNotFoundError: version=None",
-    " out[d['importModule']]={'found':found,'version':version}",
+    " try:",
+    "  found=importlib.util.find_spec(d['importModule']) is not None",
+    "  version=importlib.metadata.version(d['distribution']) if found else None",
+    "  valid=isinstance(version,str) and 0<len(version)<=256 and '\\0' not in version and not any(ord(c)<32 for c in version)",
+    "  exact=d.get('exactVersion')",
+    "  constraints=['=='+exact] if exact is not None else []",
+    "  if exact is None and d.get('minimumVersion'): constraints.append('>='+d['minimumVersion'])",
+    "  if exact is None and d.get('maximumVersionExclusive'): constraints.append('<'+d['maximumVersionExclusive'])",
+    "  spec=','.join(constraints)",
+    "  supported=bool(valid and SpecifierSet and SpecifierSet(spec).contains(Version(version),prereleases=True))",
+    " except BaseException: supported=False",
+    " out[d['importModule']]={'supported':supported}",
     "print(json.dumps(out))"
   ].join("\n");
   const { stdout } = await execFileAsync(executable, ["-I", "-c", program], {
@@ -649,43 +661,22 @@ export async function probeDependencies(
     timeout: 10_000,
     windowsHide: true
   });
-  const result = JSON.parse(stdout.trim()) as Record<string, { found: boolean; version?: string }>;
+  const result = JSON.parse(stdout.trim()) as Record<string, { supported?: unknown }>;
   return classifyDependencyProbe(dependencies, result);
 }
 
 export function classifyDependencyProbe(
   dependencies: readonly PythonDependency[],
-  result: Readonly<Record<string, { found: boolean; version?: string }>>
+  result: Readonly<Record<string, { supported?: unknown }>>
 ): DependencyProbe {
   const supported = (dependency: PythonDependency): boolean => {
     const observed = result[dependency.importModule];
-    if (!observed?.found) return false;
-    if (dependency.exactVersion && observed.version !== dependency.exactVersion) return false;
-    if (dependency.minimumVersion && compareVersions(observed.version, dependency.minimumVersion) < 0) return false;
-    if (
-      dependency.maximumVersionExclusive &&
-      compareVersions(observed.version, dependency.maximumVersionExclusive) >= 0
-    ) {
-      return false;
-    }
-    return true;
+    return observed?.supported === true;
   };
   return {
     missing: dependencies.filter((dependency) => !supported(dependency)).map((dependency) => dependency.installSpec),
     available: dependencies.filter(supported).map((dependency) => dependency.importModule)
   };
-}
-
-function compareVersions(observed: string | undefined, expected: string): number {
-  if (!observed) return -1;
-  const parts = (value: string): number[] => value.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const left = parts(observed);
-  const right = parts(expected);
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const difference = (left[index] ?? 0) - (right[index] ?? 0);
-    if (difference !== 0) return difference;
-  }
-  return 0;
 }
 
 async function probeEnvironment(
