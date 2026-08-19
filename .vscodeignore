@@ -19,6 +19,7 @@ coverage/**
 .git/**
 .gitignore
 .node-version
+.npmrc
 .prettierignore
 .prettierrc.json
 docs/**

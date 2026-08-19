@@ -53,7 +53,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - id: candidate
         name: Select one fully qualified soaked candidate
         env:
@@ -96,7 +96,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Require the exact historical candidate source
         env:
           CANDIDATE_SOURCE_SHA: ${{ needs.select.outputs.candidate-source-sha }}

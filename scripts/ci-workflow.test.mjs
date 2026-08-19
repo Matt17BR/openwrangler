@@ -149,7 +149,7 @@ function assertVisualAccessibilityBrowserOwnership(document, manifest = packageJ
   assert.equal(job["timeout-minutes"], 20);
 
   const orderedCommands = [
-    "npm ci",
+    "npm ci --ignore-scripts",
     'python -m pip install -e "python[dev]"',
     "npx playwright-core install chromium",
     "env -u CHROME_BIN npm run test:webview-acceptance"
@@ -711,6 +711,7 @@ function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   );
   assert.deepEqual([...packageScriptClosure("check:invariants", scripts)].sort(), [
     "brand:check",
+    "check:install-policy",
     "check:invariants",
     "check:r-dependency-lock",
     "check:remote-jupyter-lock",
@@ -1777,7 +1778,11 @@ test("script groups remain pairwise disjoint and exactly cover the script-test i
       )
     ])
   );
-  assert.deepEqual(groups.workflow, ["scripts/candidate-acceptance-workflow.test.mjs", "scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.workflow, [
+    "scripts/candidate-acceptance-workflow.test.mjs",
+    "scripts/ci-workflow.test.mjs",
+    "scripts/install-policy.test.mjs"
+  ]);
   assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
   for (let left = 0; left < SCRIPT_TEST_GROUPS.length; left += 1) {
@@ -1834,7 +1839,15 @@ test("pull-request workflows cancel only obsolete heads while both required resu
 
 test("repository-only roots remain excluded from the VSIX inventory", () => {
   const ignored = new Set(readFileSync(".vscodeignore", "utf8").split(/\r?\n/gu).filter(Boolean));
-  for (const path of ["docs/**", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md", ".node-version"]) {
+  for (const path of [
+    "docs/**",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    ".node-version",
+    ".npmrc"
+  ]) {
     assert.equal(ignored.has(path), true, `${path} must stay outside the extension package.`);
   }
   const rSubtreeExclusions = [...ignored].filter((path) => path.startsWith("r/"));

@@ -1973,7 +1973,7 @@ test("documents one bounded current-source build in every public README channel"
     assert.match(section, /\*\*Latest preview:\*\*/u);
     assert.match(section, /\*\*Current `main`:\*\*/u);
     assert.match(section, /git clone https:\/\/github\.com\/Matt17BR\/openwrangler\.git/u);
-    assert.match(section, /npm ci\nnpm run package:dev/u);
+    assert.match(section, /npm ci --ignore-scripts\nnpm run package:dev/u);
     assert.match(section, /code --install-extension openwrangler-dev\.vsix --force/u);
     assert.match(section, /cursor --install-extension openwrangler-dev\.vsix --force/u);
     assert.match(section, /may be ahead of the published preview/u);

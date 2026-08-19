@@ -21,6 +21,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Security
 
+- Dependency lifecycle scripts are now disabled for contributor, CI, candidate, packaging, promotion, and release
+  installs. The lock contains no lifecycle-script packages, native keytar, or prebuild-install fallback; VSCE
+  credentials fail closed to the existing file/PAT path, and signing resolves only authenticated optional platform
+  packages without dynamic download or native compilation.
 - The Data Wrangler comparison harness now reads requests through one bounded descriptor and rejects same-size path,
   symlink, and hard-link substitutions before decoding. Result publication uses an exclusive no-overwrite commit and
   identity-aware cleanup. CodeQL also analyzes every push to protected `main`, keeping default-branch security alerts

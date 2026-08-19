@@ -1,0 +1,7 @@
+{
+  "name": "keytar",
+  "version": "7.9.0-openwrangler.1",
+  "description": "Fail-closed credential-store boundary for noninteractive Open Wrangler release tooling",
+  "license": "MIT",
+  "main": "index.cjs"
+}

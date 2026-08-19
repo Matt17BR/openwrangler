@@ -23,10 +23,18 @@ Clone the repository and install its locked Node dependencies:
 git clone https://github.com/Matt17BR/openwrangler.git
 cd openwrangler
 node --version
-npm ci
+npm ci --ignore-scripts
 ```
 
 The Node version should start with `v22.` and be at least `v22.17.0`.
+
+Dependency lifecycle scripts are disabled by `.npmrc` and every automation owner repeats `--ignore-scripts`
+explicitly. `npm run check:install-policy` verifies the lock, all install owners, and the local script-free shims used
+by VSCE tooling. Do not use `npm install`, `npm rebuild`, `ignore-scripts=false`, another package manager, or
+an alias that bypasses this policy. The VSCE signing bridge resolves only the exact optional package already
+authenticated by the lockfile for the current platform; it never downloads or compiles a binary. Interactive VSCE
+credential storage is disabled, so automation must use its existing explicit token and contributors who intentionally
+use VSCE login must select `VSCE_STORE=file`.
 
 Create a checkout-local Python environment and install the runtime with its development dependencies. The `.venv`
 name matters because repository commands discover that environment without shell activation.
