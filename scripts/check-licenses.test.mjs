@@ -58,6 +58,14 @@ test("requires the selected-environment fsspec notice", () => {
   }
 });
 
+test("classifies linked packages from their lockfile-owned target", () => {
+  const promoted = structuredClone(lock);
+  promoted.packages["scripts/npm-shims/keytar"].dev = false;
+  assert.deepEqual(inspectDependencyLicensePolicy({ root, lock: promoted, notices }).errors, [
+    "keytar is not assigned to a third-party notice group."
+  ]);
+});
+
 test("accepts only the exact vendored js-yaml runtime, development pin, and full MIT notice", () => {
   const input = { packageJsonSource, lock, notices, jsYamlRuntimeBytes, jsYamlLicenseBytes };
   assert.deepEqual(inspectVendoredRuntimeLicensePolicy(input), []);

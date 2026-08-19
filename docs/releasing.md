@@ -62,7 +62,7 @@ fail-closed against the exact historical source and public payload.
 ## Package gate
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
 .venv/bin/python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
@@ -91,6 +91,16 @@ duplicates the same exact Node value because it may inspect historical tags that
 contracts keep that duplicate synchronized. The development pin remains repository tooling and is excluded from the
 VSIX. `npm run check` includes the strict dependency-only TypeScript graph, and `npm run audit:node` audits the full
 development tree.
+
+Every repository, CI, candidate, packaging, promotion, and release install uses `npm ci --ignore-scripts`; `.npmrc`
+makes the same boundary the contributor default. `npm run check:install-policy` inventories all 26 executable
+installs and rejects any unowned or plain install, lifecycle re-enablement, rebuild, package-manager alias, dynamic
+install, or lock entry with `hasInstallScript`. The lock has no native `keytar` or `prebuild-install`. A tracked
+fail-closed credential shim selects VSCE's existing file/PAT path, while a script-free signing bridge resolves only
+the exact lockfile-authenticated `@vscode/vsce-sign-*` package for the current platform. Missing platform bytes
+fail locally; there is no npm, direct-download, or native-compilation fallback. The bridge preserves canonical
+programmatic VSCE packaging and noninteractive signature manifest/archive operations without changing registry
+credentials or publication commands.
 
 The package command derives `--pre-release` from the validated numeric version and explicit `package.json.preview`
 value. Preview metadata receives exactly one prerelease flag; stable metadata rejects any caller-supplied prerelease

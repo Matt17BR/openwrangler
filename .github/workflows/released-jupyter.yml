@@ -62,7 +62,7 @@ jobs:
           printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
           printf 'Hosted R: %s\n' "$r_version"
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
@@ -259,7 +259,7 @@ jobs:
           output <- Sys.getenv("GITHUB_OUTPUT")
           if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
@@ -318,7 +318,7 @@ jobs:
           output <- Sys.getenv("GITHUB_OUTPUT")
           if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix

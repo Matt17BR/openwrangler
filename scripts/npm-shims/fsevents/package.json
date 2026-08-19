@@ -1,0 +1,7 @@
+{
+  "name": "fsevents",
+  "version": "2.3.3-openwrangler.1",
+  "description": "Script-free boundary that selects portable filesystem watching",
+  "license": "MIT",
+  "main": "index.cjs"
+}

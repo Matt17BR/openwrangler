@@ -1,0 +1,18 @@
+{
+  "name": "@vscode/vsce-sign",
+  "version": "2.0.9-openwrangler.1",
+  "description": "Script-free bridge to lockfile-installed VSCE signing binaries",
+  "license": "MIT",
+  "main": "index.cjs",
+  "optionalDependencies": {
+    "@vscode/vsce-sign-alpine-arm64": "2.0.6",
+    "@vscode/vsce-sign-alpine-x64": "2.0.6",
+    "@vscode/vsce-sign-darwin-arm64": "2.0.6",
+    "@vscode/vsce-sign-darwin-x64": "2.0.6",
+    "@vscode/vsce-sign-linux-arm": "2.0.6",
+    "@vscode/vsce-sign-linux-arm64": "2.0.6",
+    "@vscode/vsce-sign-linux-x64": "2.0.6",
+    "@vscode/vsce-sign-win32-arm64": "2.0.6",
+    "@vscode/vsce-sign-win32-x64": "2.0.6"
+  }
+}

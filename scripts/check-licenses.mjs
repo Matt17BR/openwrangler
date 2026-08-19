@@ -65,6 +65,12 @@ export function inspectDependencyLicensePolicy({ root, lock, notices }) {
   const errors = [];
   const productionPackages = [];
   for (const [packagePath, metadata] of Object.entries(lock.packages)) {
+    if (metadata.link) {
+      if (lock.packages[metadata.resolved] === undefined) {
+        errors.push(`${packagePath} has no lockfile-owned link target.`);
+      }
+      continue;
+    }
     if (!packagePath || metadata.dev) continue;
     const manifest = JSON.parse(readFileSync(resolve(root, packagePath, "package.json"), "utf8"));
     const name = manifest.name ?? metadata.name ?? packagePath.split("node_modules/").at(-1);

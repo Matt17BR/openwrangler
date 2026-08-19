@@ -33,6 +33,17 @@ matrix for release candidates or changes that cross those boundaries.
   budget, and `--continue-on-error` plus `--print-label` prefixes every interleaved output line so one early failure
   cannot hide or obscure the other result.
 
+- `npm run check:install-policy` owns all 26 lockfile installs across 25 contributor, CI, candidate, package,
+  promotion, and release jobs in eight workflows. `.npmrc` disables lifecycle scripts by default and every
+  executable owner repeats `npm ci --ignore-scripts`; the checker rejects plain installs, lifecycle re-enablement,
+  rebuilds, dynamic installs, package-manager aliases, and unowned install sites. Its install-script allowlist is
+  empty. The lock must contain no `hasInstallScript` entry, native `keytar`, or `prebuild-install`. Script-free
+  local shims make VSCE fall back to its file/PAT credential path and make Vite/Pyright use portable filesystem
+  watching. The script-free signing bridge resolves only one of the nine exact `@vscode/vsce-sign-*` optional
+  packages already authenticated by the lock; a missing or unsupported platform fails without npm, HTTP, direct
+  download, or native compilation. Mutation tests cover every owner and package, override, flag, command, platform,
+  and shim boundary.
+
 - `npm run check:r-dependency-lock` strictly validates both native-R lock registries without network or filesystem
   mutation. `node scripts/r-dependency-lock.mjs generate ... --check true` is the explicit networked byte-regeneration
   operation; it must reproduce the dated archive graph exactly. The workflow `prepare` command validates the lock and

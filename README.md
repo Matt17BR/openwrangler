@@ -46,7 +46,7 @@ To build and install the current `main` branch:
 ```bash
 git clone https://github.com/Matt17BR/openwrangler.git
 cd openwrangler
-npm ci
+npm ci --ignore-scripts
 npm run package:dev
 ```
 
