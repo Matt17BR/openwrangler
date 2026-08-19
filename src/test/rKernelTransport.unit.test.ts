@@ -15,6 +15,7 @@ import {
 import { R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
 import { RKernelSessionTransport } from "../extension/r/rKernelTransport";
 import type { RNotebookKernelSelectionBinding } from "../extension/r/rNotebookVariableDiscovery";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 import {
   R_KERNEL_RUNTIME_BINDING,
   buildRKernelBootstrapCode,
@@ -1337,6 +1338,75 @@ describe("native R kernel protocol", () => {
         inputSchema: minimalFramePage().schema
       })
     ).toThrow("response.diff.addedColumns[0]");
+  });
+
+  it("strictly validates canonical bounded Pivot Wider string-key tokens", () => {
+    const selection = (value: string) => ({
+      kind: "typedSelection" as const,
+      version: 1 as const,
+      columnType: "string" as const,
+      cell: { kind: "string" as const, raw: value, display: value, isNull: false, isNaN: false }
+    });
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "pivot-wider-token-step",
+          kind: "pivotWider",
+          params: {
+            namesFrom: { id: "r:c:0", name: "key" },
+            valuesFrom: { id: "r:c:1", name: "value" },
+            outputs: [
+              { key: selection("a"), name: "alpha" },
+              { key: selection("b"), name: "beta" }
+            ]
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    for (const invalidVersion of [true, "1"]) {
+      const invalid = structuredClone(request) as unknown as {
+        payload: { step: { params: { outputs: Array<{ key: { version: unknown } }> } } };
+      };
+      invalid.payload.step.params.outputs[0]!.key.version = invalidVersion;
+      expect(() => encodeRKernelRequest(invalid as unknown as RKernelRequest)).toThrow(
+        "canonical present string typed selection token"
+      );
+    }
+
+    const exactLimit = structuredClone(request) as unknown as {
+      payload: {
+        step: {
+          params: { outputs: Array<{ key: { cell: { raw: string; display: string } } }> };
+        };
+      };
+    };
+    const exactLimitValue = "a".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    exactLimit.payload.step.params.outputs[0]!.key.cell.raw = exactLimitValue;
+    exactLimit.payload.step.params.outputs[0]!.key.cell.display = exactLimitValue;
+    expect(JSON.parse(encodeRKernelRequest(exactLimit as unknown as RKernelRequest))).toEqual(exactLimit);
+
+    const oversized = structuredClone(exactLimit);
+    oversized.payload.step.params.outputs[0]!.key.cell.raw += "a";
+    oversized.payload.step.params.outputs[0]!.key.cell.display += "a";
+    expect(() => encodeRKernelRequest(oversized as unknown as RKernelRequest)).toThrow(
+      "canonical present string typed selection token"
+    );
+
+    const mismatchedDisplay = structuredClone(request) as unknown as {
+      payload: { step: { params: { outputs: Array<{ key: { cell: { display: string } } }> } } };
+    };
+    mismatchedDisplay.payload.step.params.outputs[0]!.key.cell.display = "A";
+    expect(() => encodeRKernelRequest(mismatchedDisplay as unknown as RKernelRequest)).toThrow(
+      "canonical present string typed selection token"
+    );
   });
 
   it("strictly validates native R lowercase requests and bounded in-place cell diffs", () => {

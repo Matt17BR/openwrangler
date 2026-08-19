@@ -29,6 +29,8 @@ openwrangler_r_kernel_agent <- local({
   maximum_portable_regex_repeat <- 1000L
   maximum_portable_regex_text_characters <- 8192L
   maximum_portable_regex_text_bytes <- 8192L
+  maximum_view_value_text_characters <- 65536L
+  maximum_view_value_text_bytes <- maximum_view_value_text_characters * 4L
   portable_regex_text_limit_message <- paste0(
     "Regex extraction source values must contain at most 8,192 Unicode scalar values ",
     "and 8,192 UTF-8 bytes."
@@ -3051,13 +3053,32 @@ openwrangler_r_kernel_agent <- local({
           sprintf("request.payload.step.params.outputs[%d].key.cell", index)
         )
         if (
-          !identical(token$kind, "typedSelection") || !identical(as.integer(token$version), 1L) ||
+          !identical(token$kind, "typedSelection") || !identical(token$version, 1L) ||
             !identical(token$columnType, "string") || !identical(cell$kind, "string") ||
             !is.character(cell$raw) || length(cell$raw) != 1L || is.na(cell$raw) ||
-            !identical(cell$display, cell$raw) || !identical(cell$isNull, FALSE) || !identical(cell$isNaN, FALSE)
+            !is.character(cell$display) || length(cell$display) != 1L || is.na(cell$display) ||
+            !identical(cell$isNull, FALSE) || !identical(cell$isNaN, FALSE)
         ) {
           abort("invalid_request", "Pivot wider keys must be canonical present string selection tokens")
         }
+        cell$raw <- bounded_text(
+          cell$raw,
+          sprintf("request.payload.step.params.outputs[%d].key.cell.raw", index),
+          maximum_view_value_text_bytes
+        )
+        cell$display <- bounded_text(
+          cell$display,
+          sprintf("request.payload.step.params.outputs[%d].key.cell.display", index),
+          maximum_view_value_text_bytes
+        )
+        if (
+          nchar(cell$raw, type = "chars") > maximum_view_value_text_characters ||
+            nchar(cell$display, type = "chars") > maximum_view_value_text_characters ||
+            !identical(cell$display, cell$raw)
+        ) {
+          abort("invalid_request", "Pivot wider keys must be canonical present string selection tokens")
+        }
+        token$cell <- cell
         list(
           key = cell$raw,
           token = token,
@@ -8493,7 +8514,7 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_wider_restore <- function(.ow_storage) { if (is.factor(.ow_wider_value_source)) { attr(.ow_storage, \"levels\") <- levels(.ow_wider_value_source); attr(.ow_storage, \"class\") <- class(.ow_wider_value_source) } else if (inherits(.ow_wider_value_source, \"POSIXct\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_tzone <- attr(.ow_wider_value_source, \"tzone\", exact = TRUE); if (!is.null(.ow_tzone)) attr(.ow_storage, \"tzone\") <- .ow_tzone } else if (inherits(.ow_wider_value_source, \"difftime\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); attr(.ow_storage, \"units\") <- attr(.ow_wider_value_source, \"units\", exact = TRUE) } else if (inherits(.ow_wider_value_source, \"Date\") || inherits(.ow_wider_value_source, \"integer64\")) attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_storage }",
           "  .ow_wider_missing <- function(.ow_size) { .ow_storage <- vector(typeof(.ow_wider_value_storage), .ow_size); if (.ow_size != 0L) { if (inherits(.ow_wider_value_source, \"integer64\")) .ow_storage[] <- unclass(bit64::as.integer64(NA_character_))[[1L]] else if (typeof(.ow_storage) == \"integer\") .ow_storage[] <- NA_integer_ else if (typeof(.ow_storage) == \"logical\") .ow_storage[] <- NA else if (typeof(.ow_storage) == \"character\") .ow_storage[] <- NA_character_ else .ow_storage[] <- NA_real_ }; .ow_storage }",
           "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- .ow_wider_missing(length(.ow_wider_group_rows)); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_storage[.ow_rows]; .ow_wider_restore(.ow_storage) })",
-          "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = names(.ow_result)[[.ow_identifier]], value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }",
+          "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = .ow_identifier, value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }",
           "  attr(.ow_result, \"row.names\") <- if (nrow(.ow_result) == 0L) integer() else c(NA_integer_, -as.integer(nrow(.ow_result)))",
           sprintf("  .ow_result_ids <- c(.ow_result_ids[.ow_wider_retained], c(%s))", output_ids)
         )
