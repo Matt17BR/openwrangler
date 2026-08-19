@@ -42,6 +42,7 @@ describe("SessionCoordinator Native-R recovery settlement", () => {
         throw new Error(`Unexpected replacement-runtime request: ${request.kind}`);
       })
     };
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
     (oldDelegate as NativeRRecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
       delegate: candidateDelegate,
       dispose: vi.fn(async () => undefined)
