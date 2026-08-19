@@ -7,8 +7,10 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from openwrangler_runtime import kernel_agent, notebook
+from openwrangler_runtime import kernel_agent, notebook, server
 from openwrangler_runtime.engines import AmbiguousViewColumnError
+from openwrangler_runtime.protocol import response_envelope
+from openwrangler_runtime.response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 from openwrangler_runtime.session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
@@ -286,6 +288,173 @@ def test_mutation_response_preflight_failure_preserves_its_structured_code(monke
             "recoverable": True,
         },
     }
+
+
+def test_kernel_response_uses_the_bounded_compact_utf8_frame_encoder() -> None:
+    value = "é" * 30_000
+    cell = {"kind": "string", "raw": value, "display": value, "isNull": False, "isNaN": False}
+    response = {
+        "kind": "stepPreview",
+        "revision": 1,
+        "page": {
+            "offset": 0,
+            "limit": 100,
+            "totalRows": 100,
+            "columnIds": ["c:source:0"],
+            "rows": [{"rowId": str(index), "values": [cell]} for index in range(100)],
+        },
+    }
+    envelope = response_envelope("non-ascii-response", response)
+
+    encoded = kernel_agent._encode_response("non-ascii-response", response)
+
+    assert encoded.encode("utf-8") == encode_response_frame(envelope, MAX_RESPONSE_FRAME_BYTES)[:-1]
+    assert len(encoded.encode("utf-8")) + 1 <= MAX_RESPONSE_FRAME_BYTES
+    assert "é" in encoded
+    assert "\\u00e9" not in encoded
+    assert len(json.dumps(envelope).encode("utf-8")) > MAX_RESPONSE_FRAME_BYTES
+
+
+def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(monkeypatch) -> None:
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    value = "é" * 15_000
+    frame = pd.DataFrame({"city": [value] * 100})
+    handle = notebook._register_live_result(frame)
+    opened = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "openSession",
+                    "source": {"kind": "notebookVariable", "label": "DataFrame", "variableName": handle},
+                    "backend": "pandas",
+                    "mode": "editing",
+                    "pageSize": 100,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                },
+                request_id="open-non-ascii-session",
+            )
+        )
+    )["response"]
+    session_id = opened["metadata"]["sessionId"]
+
+    encoded = kernel_agent.dispatch_json(
+        _envelope(
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                "step": {
+                    "id": "rename-non-ascii",
+                    "kind": "renameColumn",
+                    "params": {
+                        "column": {"id": "c:source:0", "name": "city"},
+                        "newName": "place",
+                    },
+                },
+                "offset": 0,
+                "limit": 100,
+                "columnOffset": 0,
+                "columnLimit": 64,
+            },
+            request_id="preview-non-ascii",
+        )
+    )
+    decoded = json.loads(encoded)
+
+    assert decoded["response"]["kind"] == "stepPreview"
+    assert decoded["response"]["revision"] == 1
+    assert len(encoded.encode("utf-8")) + 1 <= MAX_RESPONSE_FRAME_BYTES
+    assert "é" in encoded
+    assert "\\u00e9" not in encoded
+    assert len(json.dumps(decoded).encode("utf-8")) > MAX_RESPONSE_FRAME_BYTES
+    manager.close_session(session_id, 1)
+
+
+def test_kernel_mutation_preflight_failure_rolls_back_real_dispatch(monkeypatch) -> None:
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    frame = pd.DataFrame({"name": ["a", "b"], "value": [1, 2]})
+    handle = notebook._register_live_result(frame)
+    opened = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "openSession",
+                    "source": {"kind": "notebookVariable", "label": "DataFrame", "variableName": handle},
+                    "backend": "pandas",
+                    "mode": "editing",
+                    "pageSize": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                },
+                request_id="open-rollback-session",
+            )
+        )
+    )["response"]
+    session_id = opened["metadata"]["sessionId"]
+    original_page = opened["page"]
+    monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", 256)
+
+    failed = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "previewStep",
+                    "sessionId": session_id,
+                    "revision": 0,
+                    "step": {
+                        "id": "notebook-preflight-rollback",
+                        "kind": "formula",
+                        "params": {
+                            "leftColumn": {"id": "c:source:1", "name": "value"},
+                            "operator": "multiply",
+                            "value": 2,
+                            "newColumn": "doubled",
+                        },
+                    },
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                },
+                request_id="notebook-preflight-rollback",
+            )
+        )
+    )
+
+    assert failed["response"]["kind"] == "error"
+    assert failed["response"]["code"] == "response_too_large", failed
+    session = manager.sessions[session_id]
+    assert session.revision == 0
+    assert session.plan == []
+    assert session.bound_plan == []
+    assert session.draft_step is None
+    assert session.draft_frame is None
+
+    observed = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "getPage",
+                    "sessionId": session_id,
+                    "revision": 0,
+                    "viewRequestId": "view-after-rollback",
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                    "filterModel": EMPTY_FILTER,
+                },
+                request_id="get-after-rollback",
+            )
+        )
+    )["response"]
+    assert observed["kind"] == "page"
+    assert observed["metadata"]["revision"] == 0
+    assert observed["page"] == original_page
+    manager.close_session(session_id, 0)
 
 
 def test_decoder_error_preserves_available_request_and_view_correlation() -> None:
