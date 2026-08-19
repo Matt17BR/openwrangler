@@ -201,13 +201,27 @@ const NPM_ALIASES = Object.freeze({
   why: "explain",
   x: "exec"
 });
-const NPM_LIFECYCLE_COMMANDS = new Set(["ci", "exec", "install", "install-ci-test", "install-test", "rebuild"]);
+const NPM_DEPENDENCY_COMMANDS = new Set([
+  "ci",
+  "dedupe",
+  "exec",
+  "install",
+  "install-ci-test",
+  "install-test",
+  "link",
+  "prune",
+  "rebuild",
+  "uninstall",
+  "update"
+]);
 const SCRIPT_CONTROL_COMMANDS = new Set(["c", "config"]);
 const DIRECT_SCRIPT_CONTROL_COMMANDS = new Set(["set"]);
 const SCRIPT_CONTROL_ACTIONS = new Set(["delete", "edit", "remove", "rm", "set", "unset"]);
 const BYPASS_COMMAND =
   /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
 const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|pnpm|yarn|yarnpkg)\b/iu;
+const PACKAGE_MANAGER_VARIABLE =
+  /(?:\$(?:\{[^}\n]*(?:NPM|NPX)[^}\n]*\}|[A-Z_]*(?:NPM|NPX)[A-Z_]*)|%[A-Z_]*(?:NPM|NPX)[A-Z_]*%)/iu;
 const WEAKENED_SCRIPT_CONTROL =
   /(?:--ignore-scripts(?:=|\s+)false\b|\bignore-scripts\s*=\s*false\b|\bnpm_config_ignore_scripts\b|--foreground-scripts\b)/iu;
 
@@ -239,7 +253,14 @@ function normalizeShellContinuations(source) {
 
 function normalizePackageManagerCommands(source) {
   return normalizeShellContinuations(source).replace(/[^\s;&|]+/gu, (token) => {
-    const unescaped = token.replace(/[\\`^'"]/gu, "");
+    const unescaped = token
+      .replace(/\$'([^']*)'/gu, "$1")
+      .replace(/\$"([^"]*)"/gu, "$1")
+      .replace(/[\\`^'"]/gu, "");
+    if (unescaped !== token) {
+      const executableSuffix = unescaped.match(/(?:npm|npx)(?:\.(?:cmd|ps1))?\)*$/iu);
+      if (executableSuffix !== null) return executableSuffix[0];
+    }
     return /^(?:npm|npx)(?:\.(?:cmd|ps1))?$/iu.test(unescaped) ? unescaped : token;
   });
 }
@@ -258,6 +279,7 @@ function hasBypassCommand(source) {
   return (
     BYPASS_COMMAND.test(normalized) ||
     ALTERNATE_PACKAGE_MANAGER.test(normalized) ||
+    PACKAGE_MANAGER_VARIABLE.test(normalized) ||
     unreviewedNpxCommands(normalized).length > 0
   );
 }
@@ -297,7 +319,12 @@ function lifecycleCommands(source) {
   return [...normalizePackageManagerCommands(source).matchAll(NPM_COMMAND)]
     .filter((match) => {
       const invocation = npmInvocation(match[0]);
-      return invocation.hasLeadingOption || NPM_LIFECYCLE_COMMANDS.has(invocation.command);
+      return (
+        invocation.hasLeadingOption ||
+        NPM_DEPENDENCY_COMMANDS.has(invocation.command) ||
+        (invocation.command === "audit" &&
+          invocation.tokens.slice(1).some((token) => matchesCommandPrefix(token, ["fix"])))
+      );
     })
     .map((match) => normalizeCommand(match[0]));
 }

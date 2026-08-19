@@ -183,6 +183,12 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
   for (const command of [
     "npm exec --yes --package=@scope/unreviewed tool",
     "npm x --yes --package=@scope/unreviewed tool",
+    "npm update",
+    "npm audit fix",
+    "npm uninstall keytar",
+    "npm link keytar",
+    "npm dedupe",
+    "npm prune",
     "npx --yes @scope/unreviewed",
     "npx @scope/unreviewed",
     "npx --no-install @scope/unreviewed"
@@ -194,12 +200,31 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
       /(?:unreviewed npm lifecycle commands|bypass alias)/u
     );
   }
-  for (const command of ["n\\pm install keytar", "n'p'm install keytar"]) {
+  for (const command of [
+    "$SAFE_NPM exec --yes --package=@scope/unreviewed tool",
+    "$SAFE_NPM x --yes --package=@scope/unreviewed tool",
+    "$SAFE_NPX --yes @scope/unreviewed"
+  ]) {
     rejected(
       mutate(".github/workflows/ci.yml", (source) =>
         source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
       ),
-      /unreviewed npm lifecycle commands/u
+      /bypass alias/u
+    );
+  }
+  for (const command of [
+    "n\\pm install keytar",
+    "n'p'm install keytar",
+    "n$''pm install keytar",
+    "n$'p'x --yes @scope/unreviewed",
+    "/usr/bin/n\\pm install keytar",
+    '"$(command -v n\\pm)" install keytar'
+  ]) {
+    const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
+    workflow.jobs["invariant-core"].steps.push({ run: command });
+    rejected(
+      new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
+      /(?:unreviewed npm lifecycle commands|bypass alias)/u
     );
   }
   {
