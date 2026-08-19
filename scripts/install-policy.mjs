@@ -95,6 +95,7 @@ const LIFECYCLE_ALIASES = new Set([
 ]);
 const BYPASS_COMMAND =
   /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|cit|clean-install|clean-install-test|i|ic|in|ins|inst|insta|instal|install|install-ci-test|install-clean|install-test|isnt|isnta|isntal|isntall|isntall-clean|it|rb|rebuild|sit)(?=\s|$)/iu;
+const ALTERNATE_PACKAGE_MANAGER = /\b(?:bun|pnpm|yarn|yarnpkg)\b/iu;
 const WEAKENED_SCRIPT_CONTROL =
   /(?:--ignore-scripts(?:=|\s+)false\b|\bignore-scripts\s*=\s*false\b|\bnpm_config_ignore_scripts\b|--foreground-scripts\b)/iu;
 
@@ -120,6 +121,15 @@ function normalizeCommand(command) {
   return command.trim().replace(/\s+/gu, " ");
 }
 
+function normalizeShellContinuations(source) {
+  return source.replace(/\\\r?\n/gu, " ");
+}
+
+function hasBypassCommand(source) {
+  const normalized = normalizeShellContinuations(source);
+  return BYPASS_COMMAND.test(normalized) || ALTERNATE_PACKAGE_MANAGER.test(normalized);
+}
+
 function shellTokens(command) {
   return (command.match(/"(?:\\.|[^"])*"|'[^']*'|\S+/gu) ?? []).map((token) => {
     if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
@@ -130,7 +140,7 @@ function shellTokens(command) {
 }
 
 function lifecycleCommands(source) {
-  return [...source.matchAll(NPM_COMMAND)]
+  return [...normalizeShellContinuations(source).matchAll(NPM_COMMAND)]
     .filter((match) =>
       shellTokens(match[0])
         .slice(1)
@@ -140,7 +150,7 @@ function lifecycleCommands(source) {
 }
 
 function npmScriptControlMutations(source) {
-  return [...source.matchAll(NPM_COMMAND)]
+  return [...normalizeShellContinuations(source).matchAll(NPM_COMMAND)]
     .filter((match) => {
       const tokens = shellTokens(match[0]).slice(1);
       const configIndex = tokens.findIndex((token) => token === "config" || token === "c");
@@ -177,15 +187,22 @@ function checkWorkflows(readText, listWorkflowPaths, problems) {
 
   for (const path of WORKFLOW_PATHS) {
     const source = readText(path);
-    if (BYPASS_COMMAND.test(source)) problems.push(path + " contains an npm lifecycle bypass alias.");
+    if (hasBypassCommand(source)) problems.push(path + " contains an npm lifecycle bypass alias.");
     if (WEAKENED_SCRIPT_CONTROL.test(source) || npmScriptControlMutations(source).length > 0) {
       problems.push(path + " weakens lifecycle-script suppression.");
     }
     const workflow = parseYaml(source);
     for (const [jobName, job] of Object.entries(workflow?.jobs ?? {})) {
-      const commands = (job?.steps ?? []).flatMap((step) =>
-        typeof step?.run === "string" ? lifecycleCommands(step.run) : []
-      );
+      const commands = (job?.steps ?? []).flatMap((step) => {
+        if (typeof step?.run !== "string") return [];
+        if (hasBypassCommand(step.run)) {
+          problems.push(path + " job " + jobName + " contains an npm lifecycle bypass alias.");
+        }
+        if (WEAKENED_SCRIPT_CONTROL.test(step.run) || npmScriptControlMutations(step.run).length > 0) {
+          problems.push(path + " job " + jobName + " weakens lifecycle-script suppression.");
+        }
+        return lifecycleCommands(step.run);
+      });
       if (commands.length === 0) continue;
       const key = path + "\0" + jobName;
       observedOwners.add(key);
@@ -213,7 +230,7 @@ function checkAzurePipelines(readText, listAzurePipelinePaths, problems) {
   }
   for (const [path, expectedStage, expectedJob, expectedCommands] of AZURE_INSTALL_OWNERS) {
     const source = readText(path);
-    if (BYPASS_COMMAND.test(source)) problems.push(path + " contains an npm lifecycle bypass alias.");
+    if (hasBypassCommand(source)) problems.push(path + " contains an npm lifecycle bypass alias.");
     if (WEAKENED_SCRIPT_CONTROL.test(source) || npmScriptControlMutations(source).length > 0) {
       problems.push(path + " weakens lifecycle-script suppression.");
     }
@@ -222,9 +239,16 @@ function checkAzurePipelines(readText, listAzurePipelinePaths, problems) {
     for (const stage of pipeline?.stages ?? []) {
       for (const job of stage?.jobs ?? []) {
         const steps = job?.steps ?? job?.strategy?.runOnce?.deploy?.steps ?? [];
-        const commands = steps.flatMap((step) =>
-          typeof step?.script === "string" ? lifecycleCommands(step.script) : []
-        );
+        const commands = steps.flatMap((step) => {
+          if (typeof step?.script !== "string") return [];
+          if (hasBypassCommand(step.script)) {
+            problems.push(path + " contains an npm lifecycle bypass alias in parsed Azure script.");
+          }
+          if (WEAKENED_SCRIPT_CONTROL.test(step.script) || npmScriptControlMutations(step.script).length > 0) {
+            problems.push(path + " weakens lifecycle-script suppression in parsed Azure script.");
+          }
+          return lifecycleCommands(step.script);
+        });
         if (commands.length > 0) observed.push([stage.stage, job.job ?? job.deployment, commands]);
       }
     }
@@ -249,7 +273,7 @@ function checkManifestAndLock(readText, problems) {
     }
   }
   const scriptSource = Object.values(packageScripts).join("\n");
-  if (lifecycleCommands(scriptSource).length > 0 || BYPASS_COMMAND.test(scriptSource)) {
+  if (lifecycleCommands(scriptSource).length > 0 || hasBypassCommand(scriptSource)) {
     problems.push("package.json scripts may not install, rebuild, or alias npm dependencies.");
   }
   if (WEAKENED_SCRIPT_CONTROL.test(scriptSource) || npmScriptControlMutations(scriptSource).length > 0) {
