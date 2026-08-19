@@ -4,6 +4,7 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import {
   AZURE_INSTALL_OWNERS,
+  WORKFLOW_PATHS,
   WORKFLOW_INSTALL_OWNERS,
   inspectInstallPolicy,
   installPolicyInventory
@@ -28,11 +29,12 @@ const relevantPaths = new Set([
 ]);
 const baseline = new Map([...relevantPaths].map((path) => [path, readFileSync(path, "utf8")]));
 
-function inspect(overrides = new Map()) {
+function inspect(overrides = new Map(), options = {}) {
   return inspectInstallPolicy({
     readText(path) {
       return overrides.get(path) ?? baseline.get(path) ?? readFileSync(path, "utf8");
-    }
+    },
+    ...options
   });
 }
 
@@ -101,6 +103,15 @@ test("install policy rejects default, manifest, override, and shim weakening", (
   );
   rejected(
     mutate("package.json", (source) =>
+      source.replace(
+        '"watch:extension": "npm run build:extension && tsc -w -p tsconfig.extension.json"',
+        '"prewatch:extension": "npm run build:extension",\n    "watch:extension": "tsc -w -p tsconfig.extension.json"'
+      )
+    ),
+    /implicit npm pre-hook/u
+  );
+  rejected(
+    mutate("package.json", (source) =>
       source.replace('"clean": "node scripts/clean.mjs"', '"clean": "npm rebuild keytar"')
     ),
     /may not install, rebuild/u
@@ -122,6 +133,51 @@ test("install policy rejects default, manifest, override, and shim weakening", (
     ),
     /fsevents shim package metadata/u
   );
+});
+
+test("workflow and Azure inventories reject newly unowned automation files", () => {
+  assert.match(
+    inspect(new Map(), {
+      listWorkflowPaths: () => [...WORKFLOW_PATHS, ".github/workflows/unowned.yml"].sort()
+    }).join("\n"),
+    /GitHub workflow inventory drifted/u
+  );
+  assert.match(
+    inspect(new Map(), {
+      listAzurePipelinePaths: () => ["azure-pipelines-marketplace.yml", "azure-pipelines-unowned.yml"]
+    }).join("\n"),
+    /Azure pipeline inventory drifted/u
+  );
+});
+
+test("workflow owners reject npm option forms, aliases, and config weakening", () => {
+  for (const command of [
+    "npm --prefix release-source install",
+    "npm --silent i",
+    "npm add keytar",
+    "npm clean-install",
+    "npm rb keytar",
+    "command npm --prefix release-source install"
+  ]) {
+    rejected(
+      mutate(".github/workflows/ci.yml", (source) =>
+        source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
+      ),
+      /(?:unreviewed npm lifecycle commands|bypass alias)/u
+    );
+  }
+  for (const command of [
+    "npm config set ignore-scripts false",
+    "npm --silent config set ignore-scripts=false",
+    "npm config delete ignore-scripts"
+  ]) {
+    rejected(
+      mutate(".github/workflows/ci.yml", (source) =>
+        source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
+      ),
+      /weakens lifecycle-script suppression/u
+    );
+  }
 });
 
 test("every workflow install owner rejects command and lifecycle-control drift", () => {

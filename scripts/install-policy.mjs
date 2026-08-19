@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
@@ -52,7 +52,7 @@ export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
 export const AZURE_INSTALL_OWNERS = Object.freeze([
   ["azure-pipelines-marketplace.yml", "Promote", "Marketplace", [INSTALL, PREFIXED_INSTALL]]
 ]);
-const WORKFLOW_PATHS = Object.freeze([
+export const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/candidate-acceptance.yml",
   ".github/workflows/ci.yml",
   ".github/workflows/codeql.yml",
@@ -64,9 +64,31 @@ const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/released-jupyter.yml",
   ".github/workflows/stable-release.yml"
 ]);
-const LIFECYCLE_COMMAND = /\bnpm\s+(ci|install|rebuild)\b[^\n;&|]*/gu;
+const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
+const NPM_COMMAND = /\bnpm\b[^\n;&|]*/gu;
+const LIFECYCLE_ALIASES = new Set([
+  "add",
+  "ci",
+  "clean-install",
+  "i",
+  "ic",
+  "in",
+  "ins",
+  "inst",
+  "insta",
+  "instal",
+  "install",
+  "install-clean",
+  "isnt",
+  "isnta",
+  "isntal",
+  "isntall",
+  "isntall-clean",
+  "rb",
+  "rebuild"
+]);
 const BYPASS_COMMAND =
-  /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))\s+(?:ci|install|rebuild)\b/iu;
+  /(?:\bnpx\s+npm|\bcommand\s+npm|\bpnpm|\byarn|\bbun|\$(?:\{[^}\n]*NPM[^}\n]*\}|[A-Z_]*NPM[A-Z_]*))(?:(?![\n;&|]).)*\s(?:add|ci|clean-install|i|ic|in|ins|inst|insta|instal|install|install-clean|isnt|isnta|isntal|isntall|isntall-clean|rb|rebuild)(?=\s|$)/iu;
 const WEAKENED_SCRIPT_CONTROL =
   /(?:--ignore-scripts(?:=|\s+)false\b|\bignore-scripts\s*=\s*false\b|\bnpm_config_ignore_scripts\b|--foreground-scripts\b)/iu;
 
@@ -74,12 +96,56 @@ function defaultReadText(path) {
   return readFileSync(path, "utf8");
 }
 
+function defaultListWorkflowPaths() {
+  return readdirSync(".github/workflows", { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /\.ya?ml$/u.test(entry.name))
+    .map((entry) => ".github/workflows/" + entry.name)
+    .sort();
+}
+
+function defaultListAzurePipelinePaths() {
+  return readdirSync(".", { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^azure-pipelines.*\.ya?ml$/u.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+}
+
 function normalizeCommand(command) {
   return command.trim().replace(/\s+/gu, " ");
 }
 
+function shellTokens(command) {
+  return (command.match(/"(?:\\.|[^"])*"|'[^']*'|\S+/gu) ?? []).map((token) => {
+    if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+      return token.slice(1, -1);
+    }
+    return token;
+  });
+}
+
 function lifecycleCommands(source) {
-  return [...source.matchAll(LIFECYCLE_COMMAND)].map((match) => normalizeCommand(match[0]));
+  return [...source.matchAll(NPM_COMMAND)]
+    .filter((match) =>
+      shellTokens(match[0])
+        .slice(1)
+        .some((token) => LIFECYCLE_ALIASES.has(token))
+    )
+    .map((match) => normalizeCommand(match[0]));
+}
+
+function npmScriptControlMutations(source) {
+  return [...source.matchAll(NPM_COMMAND)]
+    .filter((match) => {
+      const tokens = shellTokens(match[0]).slice(1);
+      const configIndex = tokens.indexOf("config");
+      if (configIndex < 0) return false;
+      const tail = tokens.slice(configIndex + 1);
+      return (
+        tail.some((token) => ["delete", "edit", "remove", "rm", "set", "unset"].includes(token)) &&
+        tail.some((token) => /^(?:ignore-scripts|foreground-scripts)(?:=|$)/u.test(token))
+      );
+    })
+    .map((match) => normalizeCommand(match[0]));
 }
 
 function exactObject(actual, expected) {
@@ -92,7 +158,11 @@ function exactObject(actual, expected) {
   );
 }
 
-function checkWorkflows(readText, problems) {
+function checkWorkflows(readText, listWorkflowPaths, problems) {
+  const actualPaths = listWorkflowPaths();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(WORKFLOW_PATHS)) {
+    problems.push("GitHub workflow inventory drifted: " + JSON.stringify(actualPaths) + ".");
+  }
   const expectedByOwner = new Map(
     WORKFLOW_INSTALL_OWNERS.map(([path, job, commands]) => [path + "\0" + job, commands])
   );
@@ -101,7 +171,9 @@ function checkWorkflows(readText, problems) {
   for (const path of WORKFLOW_PATHS) {
     const source = readText(path);
     if (BYPASS_COMMAND.test(source)) problems.push(path + " contains an npm lifecycle bypass alias.");
-    if (WEAKENED_SCRIPT_CONTROL.test(source)) problems.push(path + " weakens lifecycle-script suppression.");
+    if (WEAKENED_SCRIPT_CONTROL.test(source) || npmScriptControlMutations(source).length > 0) {
+      problems.push(path + " weakens lifecycle-script suppression.");
+    }
     const workflow = parseYaml(source);
     for (const [jobName, job] of Object.entries(workflow?.jobs ?? {})) {
       const commands = (job?.steps ?? []).flatMap((step) =>
@@ -127,11 +199,17 @@ function checkWorkflows(readText, problems) {
   }
 }
 
-function checkAzurePipelines(readText, problems) {
+function checkAzurePipelines(readText, listAzurePipelinePaths, problems) {
+  const actualPaths = listAzurePipelinePaths();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(AZURE_PIPELINE_PATHS)) {
+    problems.push("Azure pipeline inventory drifted: " + JSON.stringify(actualPaths) + ".");
+  }
   for (const [path, expectedStage, expectedJob, expectedCommands] of AZURE_INSTALL_OWNERS) {
     const source = readText(path);
     if (BYPASS_COMMAND.test(source)) problems.push(path + " contains an npm lifecycle bypass alias.");
-    if (WEAKENED_SCRIPT_CONTROL.test(source)) problems.push(path + " weakens lifecycle-script suppression.");
+    if (WEAKENED_SCRIPT_CONTROL.test(source) || npmScriptControlMutations(source).length > 0) {
+      problems.push(path + " weakens lifecycle-script suppression.");
+    }
     const pipeline = parseYaml(source);
     const observed = [];
     for (const stage of pipeline?.stages ?? []) {
@@ -167,7 +245,7 @@ function checkManifestAndLock(readText, problems) {
   if (lifecycleCommands(scriptSource).length > 0 || BYPASS_COMMAND.test(scriptSource)) {
     problems.push("package.json scripts may not install, rebuild, or alias npm dependencies.");
   }
-  if (WEAKENED_SCRIPT_CONTROL.test(scriptSource)) {
+  if (WEAKENED_SCRIPT_CONTROL.test(scriptSource) || npmScriptControlMutations(scriptSource).length > 0) {
     problems.push("package.json scripts may not weaken lifecycle-script suppression.");
   }
   if (packageScripts["check:install-policy"] !== "node scripts/install-policy.mjs") {
@@ -177,6 +255,12 @@ function checkManifestAndLock(readText, problems) {
     if (!packageScripts[owner]?.includes("npm run check:install-policy")) {
       problems.push(owner + " must execute the install policy checker.");
     }
+  }
+  if (packageScripts["prewatch:extension"] !== undefined) {
+    problems.push("watch:extension must not rely on an implicit npm pre-hook while scripts are disabled.");
+  }
+  if (packageScripts["watch:extension"] !== "npm run build:extension && tsc -w -p tsconfig.extension.json") {
+    problems.push("watch:extension must explicitly build the extension before watching.");
   }
 
   const expectedOverrides = {
@@ -304,13 +388,17 @@ function checkRepositoryDefaults(readText, problems) {
   }
 }
 
-export function inspectInstallPolicy({ readText = defaultReadText } = {}) {
+export function inspectInstallPolicy({
+  readText = defaultReadText,
+  listWorkflowPaths = defaultListWorkflowPaths,
+  listAzurePipelinePaths = defaultListAzurePipelinePaths
+} = {}) {
   const problems = [];
   try {
     checkRepositoryDefaults(readText, problems);
     checkManifestAndLock(readText, problems);
-    checkWorkflows(readText, problems);
-    checkAzurePipelines(readText, problems);
+    checkWorkflows(readText, listWorkflowPaths, problems);
+    checkAzurePipelines(readText, listAzurePipelinePaths, problems);
   } catch (error) {
     problems.push(error instanceof Error ? error.message : String(error));
   }
@@ -341,7 +429,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         inventory.owners +
         " owners in " +
         inventory.workflowFiles +
-        " workflows; " +
+        " automation files; " +
         inventory.platformPackages +
         " VSCE signing platform packages authenticated."
     );
