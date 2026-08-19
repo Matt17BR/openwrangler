@@ -224,6 +224,16 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     ),
     /bypass alias/u
   );
+  {
+    const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
+    workflow.jobs["windows-unique"].steps.push({
+      run: "npm `\r\n c delete ignore-scripts --location=project\r\n" + "npm `\r\n install-test keytar"
+    });
+    rejected(
+      new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
+      /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
+    );
+  }
 });
 
 test("every workflow install owner rejects command and lifecycle-control drift", () => {

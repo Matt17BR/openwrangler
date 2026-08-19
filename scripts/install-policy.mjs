@@ -122,7 +122,7 @@ function normalizeCommand(command) {
 }
 
 function normalizeShellContinuations(source) {
-  return source.replace(/\\\r?\n/gu, " ");
+  return source.replace(/[\\`]\r?\n/gu, " ");
 }
 
 function hasBypassCommand(source) {
