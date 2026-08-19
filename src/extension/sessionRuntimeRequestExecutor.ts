@@ -109,7 +109,7 @@ export class SessionRuntimeRequestExecutor {
     const staleLiveSourceResponse = (): OpenWranglerResponse =>
       protocolError(
         "stale_response",
-        "Ignored a cancelled or superseded read before live PySpark recovery.",
+        "Ignored a cancelled or superseded read before live runtime recovery.",
         true,
         session.publicId,
         requestViewId(publicRequest)
@@ -179,6 +179,37 @@ export class SessionRuntimeRequestExecutor {
         requestRuntimeRevision = session.runtimeRevision;
         response = await session.delegate.request(runtimeRequest(), options);
       }
+    }
+
+    if (session.metadata.backend === "r" && isRKernelChanged(response, requestRuntimeId)) {
+      const confirmedKernelChange = { ...response };
+      const changedValidationRequest = runtimeValidationRequest(
+        publicRequest,
+        requestRuntimeId,
+        requestRuntimeRevision
+      );
+      const changedMismatch = responseMismatch(
+        changedValidationRequest,
+        response,
+        requestRuntimeId,
+        session.metadata.schema
+      );
+      if (changedMismatch) return invalidRuntimeResponse(publicRequest, session.publicId, changedMismatch);
+      if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
+      const recovered =
+        canRecoverTransport() &&
+        liveSourceRecoveryIsCurrent() &&
+        (await hooks.replayAfterRuntimeLoss(
+          requestRuntimeId,
+          automaticRecoveryOptions(options),
+          session.metadata.schema,
+          liveSourceRecoveryIsCurrent
+        ));
+      if (recovered) {
+        if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
+        session.recoveryRequired = false;
+      }
+      return { ...confirmedKernelChange, sessionId: session.publicId };
     }
 
     if (isLiveSourceInvalidated(response, requestRuntimeId)) {
@@ -327,6 +358,18 @@ function isUnknownRuntimeSession(
     response.code === "engine_error" &&
     response.message === `Unknown session: ${expectedSessionId}` &&
     (response.sessionId === undefined || response.sessionId === expectedSessionId)
+  );
+}
+
+function isRKernelChanged(
+  response: OpenWranglerResponse,
+  expectedSessionId: string
+): response is ErrorResponse & { code: "r_kernel_changed" } {
+  return (
+    response.kind === "error" &&
+    response.code === "r_kernel_changed" &&
+    response.recoverable &&
+    response.sessionId === expectedSessionId
   );
 }
 

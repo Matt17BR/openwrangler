@@ -143,6 +143,19 @@ export async function verifyRNotebookVariableSelection(
   }
 }
 
+/** Re-discovers one exact variable on the notebook's currently selected R kernel. */
+export async function reverifyRNotebookVariableSelection(
+  notebook: vscode.NotebookDocument,
+  expected: RNotebookVariableDescriptor
+): Promise<VerifiedRNotebookVariableSelection> {
+  const discovery = await discoverRNotebookVariables(notebook);
+  const selected = discovery.variables.find(
+    (candidate) => candidate.name === expected.name && candidate.dataframeFlavor === expected.dataframeFlavor
+  );
+  if (!selected || selected.backend !== expected.backend) throw changedRecoveryVariableSelection();
+  return verifyRNotebookVariableSelection(notebook, discovery, selected);
+}
+
 /** Claims the verified selection exactly once and keeps its restart guard alive. */
 export function claimVerifiedRNotebookVariableSelection(
   notebook: vscode.NotebookDocument,
@@ -726,6 +739,12 @@ function missingRPackages(): RNotebookVariableDiscoveryError {
 function changedVariableSelection(): RNotebookVariableDiscoveryError {
   return new RNotebookVariableDiscoveryError(
     "The selected R dataframe changed while the picker was open. Open the picker again."
+  );
+}
+
+function changedRecoveryVariableSelection(): RNotebookVariableDiscoveryError {
+  return new RNotebookVariableDiscoveryError(
+    "The selected R dataframe name or frame type changed before runtime recovery."
   );
 }
 

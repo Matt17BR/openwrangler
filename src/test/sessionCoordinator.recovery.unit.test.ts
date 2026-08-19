@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
-import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
+import {
+  DetachedBridgeRequestError,
+  type BridgeRequestOptions,
+  type OpenWranglerBridge
+} from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import type { RuntimeRecoveryDelegateFactory } from "../extension/sessionRuntimeRecovery";
 import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -15,6 +20,7 @@ import {
   columnWindow,
   openedResponse,
   pageResponse,
+  pageResponseForMetadata,
   stepPreviewResponse,
   planUpdatedResponse,
   summaryResponse,
@@ -22,6 +28,8 @@ import {
   setOpenNotebookDocuments,
   deferred
 } from "./sessionCoordinatorTestFixtures";
+
+type RecoveryBridge = OpenWranglerBridge & RuntimeRecoveryDelegateFactory;
 
 describe("SessionCoordinator", () => {
   it("persists grid presentation separately and notifies native views only when column selection changes", async () => {
@@ -297,6 +305,727 @@ describe("SessionCoordinator", () => {
 
     expect(dispatched).toEqual(["preview"]);
     expect(coordinator.activeSession()?.metadata.revision).toBe(1);
+  });
+
+  it("replays a confirmed Native-R plan, draft, view, and code after the exact kernel changes", async () => {
+    const appliedStep: TransformStep = {
+      id: "r-applied",
+      kind: "cloneColumn",
+      params: { column: { id: "c:source:0", name: "sales" }, newName: "sales_copy" }
+    };
+    const draftStep: TransformStep = {
+      id: "r-draft",
+      kind: "renameColumn",
+      params: { column: { id: "c:source:0", name: "sales" }, newName: "amount" }
+    };
+    const rOpenRequest = { ...openRequest, backend: "r" as const };
+    const metadataFor = (
+      sessionId: string,
+      revision = 0,
+      steps: TransformStep[] = [],
+      draftStepValue?: TransformStep
+    ) => ({
+      ...openedResponse(sessionId, "r").metadata,
+      rDataframeFlavor: "r.data.frame" as const,
+      shape: { rows: 100, columns: 0 },
+      filteredShape: { rows: 100, columns: 0 },
+      revision,
+      steps,
+      ...(draftStepValue ? { draftStep: draftStepValue } : {})
+    });
+    let openCount = 0;
+    const executionOrder: string[] = [];
+    const handleRequest = async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        const sessionId = `runtime-${openCount}`;
+        executionOrder.push(`open-${sessionId}`);
+        const opened = openedResponse(sessionId, "r");
+        return { ...opened, metadata: metadataFor(sessionId), page: { ...opened.page, totalRows: 100 } };
+      }
+      if (request.kind === "previewStep") {
+        executionOrder.push(`preview-${request.sessionId}-${request.step.id}`);
+        const steps = request.step.id === draftStep.id ? [appliedStep] : [];
+        const preview = stepPreviewResponse(
+          request.revision + 1,
+          request.step,
+          request.sessionId,
+          request.step.id === draftStep.id ? "# draft" : "# applied preview"
+        );
+        return {
+          ...preview,
+          page: { ...preview.page, offset: request.offset, limit: request.limit, totalRows: 100 },
+          metadata: metadataFor(request.sessionId, request.revision + 1, steps, request.step)
+        };
+      }
+      if (request.kind === "applyDraft") {
+        executionOrder.push(`apply-${request.sessionId}`);
+        const updated = planUpdatedResponse(request.revision + 1, [appliedStep], request.sessionId, "# applied");
+        return {
+          ...updated,
+          page: { ...updated.page, offset: request.offset, limit: request.limit, totalRows: 100 },
+          metadata: metadataFor(request.sessionId, request.revision + 1, [appliedStep])
+        };
+      }
+      if (request.kind === "getPage") {
+        executionOrder.push(`page-${request.sessionId}-${request.viewRequestId}`);
+        if (request.sessionId === "runtime-1") {
+          return {
+            kind: "error",
+            code: "r_kernel_changed",
+            message: "The selected R notebook kernel changed.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        return pageResponseForMetadata(
+          request,
+          metadataFor(request.sessionId, request.revision, [appliedStep], draftStep)
+        );
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected Native-R recovery request: ${request.kind}`);
+    };
+    const oldDelegate: OpenWranglerBridge = {
+      request: vi.fn(handleRequest),
+      onIdle: vi.fn()
+    };
+    const candidateDispose = vi.fn(async () => undefined);
+    const candidateDelegate: OpenWranglerBridge = {
+      request: vi.fn(handleRequest),
+      onIdle: vi.fn()
+    };
+    (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
+      delegate: candidateDelegate,
+      dispose: candidateDispose
+    }));
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(oldDelegate);
+    const opened = await bridge.request(rOpenRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the Native-R session to open.");
+    const sessionId = opened.metadata.sessionId;
+    const previewApplied = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: appliedStep,
+      offset: 0,
+      limit: 1,
+      ...columnWindow
+    });
+    if (previewApplied.kind === "error") throw new Error(previewApplied.message);
+    expect(previewApplied).toMatchObject({ kind: "stepPreview", revision: 1 });
+    const applied = await bridge.request({
+      kind: "applyDraft",
+      sessionId,
+      revision: 1,
+      offset: 0,
+      limit: 1,
+      ...columnWindow
+    });
+    expect(applied).toMatchObject({ kind: "planUpdated", revision: 2 });
+    const previewDraft = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 2,
+      step: draftStep,
+      offset: 0,
+      limit: 1,
+      ...columnWindow
+    });
+    expect(previewDraft).toMatchObject({ kind: "stepPreview", revision: 3, code: "# draft" });
+    await bridge.updateViewState?.(sessionId, {
+      columnWidths: new Map(),
+      viewport: { firstVisibleRow: 17, scrollLeft: 23 }
+    });
+    const confirmedBefore = coordinator.activeSession();
+
+    const loss = await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 3,
+      viewRequestId: "r-kernel-lost",
+      offset: 0,
+      limit: 10,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+
+    expect(loss).toEqual({
+      kind: "error",
+      code: "r_kernel_changed",
+      message: "The selected R notebook kernel changed.",
+      recoverable: true,
+      sessionId,
+      viewRequestId: "r-kernel-lost"
+    });
+    expect(coordinator.activeSession()).toMatchObject({
+      sessionId,
+      metadata: { revision: 3, steps: [appliedStep], draftStep },
+      code: "# draft",
+      viewState: { viewport: { firstVisibleRow: 17, scrollLeft: 23 } }
+    });
+    expect(coordinator.activeSession()?.metadata.source).toEqual(confirmedBefore?.metadata.source);
+    expect(openCount).toBe(2);
+    await vi.waitFor(() => expect(executionOrder.filter((entry) => entry === "close-runtime-1")).toHaveLength(1));
+    expect(executionOrder.filter((entry) => entry.startsWith("page-runtime-1-"))).toHaveLength(1);
+
+    const recovered = await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 3,
+      viewRequestId: "r-kernel-recovered",
+      offset: 0,
+      limit: 10,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    expect(recovered).toMatchObject({
+      kind: "page",
+      revision: 3,
+      viewRequestId: "r-kernel-recovered",
+      metadata: { sessionId }
+    });
+    expect(coordinator.activeSession()).toMatchObject({
+      sessionId,
+      metadata: { revision: 3, steps: [appliedStep], draftStep },
+      code: "# draft",
+      viewState: { viewport: { firstVisibleRow: 17, scrollLeft: 23 } }
+    });
+    expect(executionOrder.filter((entry) => entry === "close-runtime-1")).toHaveLength(1);
+    expect(openCount).toBe(2);
+    const replacementPages = executionOrder.filter((entry) => entry.startsWith("page-runtime-2-"));
+    expect(replacementPages).toHaveLength(3);
+    expect(replacementPages.filter((entry) => entry.endsWith(":draft-base"))).toHaveLength(1);
+    expect(replacementPages.filter((entry) => entry.includes(":saved"))).toHaveLength(1);
+    expect(replacementPages.filter((entry) => entry.endsWith("-r-kernel-recovered"))).toHaveLength(1);
+    expect(executionOrder.filter((entry) => entry === "preview-runtime-2-r-applied")).toHaveLength(1);
+    expect(executionOrder.filter((entry) => entry === "apply-runtime-2")).toHaveLength(1);
+    expect(executionOrder.filter((entry) => entry === "preview-runtime-2-r-draft")).toHaveLength(1);
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+    expect(candidateDispose).not.toHaveBeenCalled();
+    await expect(
+      bridge.rewriteCleaningPlan?.(sessionId, 3, appliedStep.id, "deleteStep", {
+        offset: 0,
+        limit: 1,
+        columnOffset: 0,
+        columnLimit: 1
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "draft_active", sessionId });
+  });
+
+  it("returns the first R loss and prevents a second recovery from overtaking a detached candidate open", async () => {
+    const candidateSettlement = deferred<void>();
+    const oldRequests: OpenWranglerRequest[] = [];
+    const candidateRequests: OpenWranglerRequest[] = [];
+    const oldDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        oldRequests.push(request);
+        if (request.kind === "openSession") return openedResponse("runtime-old", "r");
+        if (request.kind === "getPage") {
+          return {
+            kind: "error",
+            code: "r_kernel_changed",
+            message: "The selected R notebook kernel changed.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected old-runtime request: ${request.kind}`);
+      })
+    };
+    const detachedCandidate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        candidateRequests.push(request);
+        if (request.kind === "openSession") {
+          throw new DetachedBridgeRequestError(
+            "The replacement R kernel open exceeded its host deadline.",
+            "timeout",
+            true,
+            candidateSettlement.promise
+          );
+        }
+        throw new Error(`Unexpected detached-candidate request: ${request.kind}`);
+      })
+    };
+    const recoveredOpened = openedResponse("runtime-new", "r");
+    const recoveredDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        candidateRequests.push(request);
+        if (request.kind === "openSession") return recoveredOpened;
+        if (request.kind === "getPage") return pageResponseForMetadata(request, recoveredOpened.metadata);
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected recovered-candidate request: ${request.kind}`);
+      })
+    };
+    const disposeDetached = vi.fn(async () => undefined);
+    (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi
+      .fn()
+      .mockResolvedValueOnce({ delegate: detachedCandidate, dispose: disposeDetached })
+      .mockResolvedValueOnce({ delegate: recoveredDelegate, dispose: vi.fn(async () => undefined) });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(oldDelegate);
+    const opened = await bridge.request({ ...openRequest, backend: "r" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the original R session to open.");
+    const page = (viewRequestId: string): Extract<OpenWranglerRequest, { kind: "getPage" }> => ({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId,
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+
+    await expect(bridge.request(page("detached-loss"))).resolves.toMatchObject({
+      kind: "error",
+      code: "r_kernel_changed",
+      sessionId: opened.metadata.sessionId,
+      viewRequestId: "detached-loss"
+    });
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+    expect(disposeDetached).not.toHaveBeenCalled();
+
+    let nextSettled = false;
+    const next = bridge.request(page("after-detached-loss")).then((response) => {
+      nextSettled = true;
+      return response;
+    });
+    await Promise.resolve();
+    expect(nextSettled).toBe(false);
+    expect(oldRequests.filter((request) => request.kind === "getPage")).toHaveLength(1);
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+
+    candidateSettlement.resolve();
+    await expect(next).resolves.toMatchObject({
+      kind: "error",
+      code: "r_kernel_changed",
+      sessionId: opened.metadata.sessionId,
+      viewRequestId: "after-detached-loss"
+    });
+    expect(disposeDetached).toHaveBeenCalledOnce();
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledTimes(2);
+
+    await expect(bridge.request(page("recovered-page"))).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "recovered-page",
+      metadata: { sessionId: opened.metadata.sessionId }
+    });
+    expect(candidateRequests.filter((request) => request.kind === "openSession")).toHaveLength(2);
+    expect(disposeDetached).toHaveBeenCalledOnce();
+    await bridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+    await coordinator.dispose();
+  });
+
+  it("holds an overtaking foreground R recovery behind a detached background candidate", async () => {
+    const candidateOpenStarted = deferred<void>();
+    const releaseCandidateDetach = deferred<void>();
+    const candidateSettlement = deferred<void>();
+    const foregroundLossObserved = deferred<void>();
+    const oldRequests: OpenWranglerRequest[] = [];
+    const candidateRequests: OpenWranglerRequest[] = [];
+    const oldDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        oldRequests.push(request);
+        if (request.kind === "openSession") return openedResponse("runtime-old", "r");
+        if (request.kind === "getSummary" || request.kind === "getPage") {
+          if (request.kind === "getPage") foregroundLossObserved.resolve(undefined);
+          return {
+            kind: "error",
+            code: "r_kernel_changed",
+            message: "The selected R notebook kernel changed.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected old-runtime request: ${request.kind}`);
+      })
+    };
+    const detachedCandidate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        candidateRequests.push(request);
+        if (request.kind === "openSession") {
+          candidateOpenStarted.resolve(undefined);
+          await releaseCandidateDetach.promise;
+          throw new DetachedBridgeRequestError(
+            "The replacement R kernel open exceeded its host deadline.",
+            "timeout",
+            true,
+            candidateSettlement.promise
+          );
+        }
+        throw new Error(`Unexpected detached-candidate request: ${request.kind}`);
+      })
+    };
+    const recoveredOpened = openedResponse("runtime-new", "r");
+    const recoveredDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        candidateRequests.push(request);
+        if (request.kind === "openSession") return recoveredOpened;
+        if (request.kind === "getPage") return pageResponseForMetadata(request, recoveredOpened.metadata);
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected recovered-candidate request: ${request.kind}`);
+      })
+    };
+    const disposeDetached = vi.fn(async () => undefined);
+    (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi
+      .fn()
+      .mockResolvedValueOnce({ delegate: detachedCandidate, dispose: disposeDetached })
+      .mockResolvedValueOnce({ delegate: recoveredDelegate, dispose: vi.fn(async () => undefined) });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(oldDelegate);
+    const opened = await bridge.request({ ...openRequest, backend: "r" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the original R session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
+
+    const background = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "detached-background-loss",
+        filterModel: opened.metadata.filterModel
+      },
+      { priority: "background", viewContextId: "renderer-view" }
+    );
+    await candidateOpenStarted.promise;
+
+    const foreground = bridge.request(
+      {
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "overtaking-foreground-loss",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await foregroundLossObserved.promise;
+    releaseCandidateDetach.resolve(undefined);
+
+    await expect(background).resolves.toMatchObject({
+      kind: "error",
+      code: "r_kernel_changed",
+      sessionId: opened.metadata.sessionId,
+      viewRequestId: "detached-background-loss"
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+    expect(disposeDetached).not.toHaveBeenCalled();
+
+    candidateSettlement.resolve(undefined);
+    await expect(foreground).resolves.toMatchObject({
+      kind: "error",
+      code: "r_kernel_changed",
+      sessionId: opened.metadata.sessionId,
+      viewRequestId: "overtaking-foreground-loss"
+    });
+    expect(disposeDetached).toHaveBeenCalledOnce();
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledTimes(2);
+    expect(oldRequests.filter((request) => request.kind === "getSummary")).toHaveLength(1);
+    expect(oldRequests.filter((request) => request.kind === "getPage")).toHaveLength(1);
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "recovered-foreground-page",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    ).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "recovered-foreground-page",
+      metadata: { sessionId: opened.metadata.sessionId }
+    });
+    expect(candidateRequests.filter((request) => request.kind === "openSession")).toHaveLength(2);
+    expect(disposeDetached).toHaveBeenCalledOnce();
+    await bridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+    await coordinator.dispose();
+  });
+
+  it("serializes concurrent recovery-required reads across detached and successful R candidates", async () => {
+    const detachedOpenStarted = deferred<void>();
+    const releaseDetachedOpen = deferred<void>();
+    const detachedSettlement = deferred<void>();
+    const recoveredOpenStarted = deferred<void>();
+    const finishRecoveredOpen = deferred<void>();
+    const oldRequests: OpenWranglerRequest[] = [];
+    const recoveredRequests: OpenWranglerRequest[] = [];
+    const ambiguousStep: TransformStep = {
+      id: "ambiguous-r-preview",
+      kind: "cloneColumn",
+      params: { column: { id: "c:source:0", name: "sales" }, newName: "sales_copy" }
+    };
+    const oldDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        oldRequests.push(request);
+        if (request.kind === "openSession") return openedResponse("runtime-old", "r");
+        if (request.kind === "previewStep") throw new Error("The preview result was ambiguous.");
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Recovery-required work reached the old runtime: ${request.kind}`);
+      })
+    };
+    const detachedCandidate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          detachedOpenStarted.resolve(undefined);
+          await releaseDetachedOpen.promise;
+          throw new DetachedBridgeRequestError(
+            "The replacement R kernel open exceeded its host deadline.",
+            "timeout",
+            true,
+            detachedSettlement.promise
+          );
+        }
+        throw new Error(`Unexpected detached-candidate request: ${request.kind}`);
+      })
+    };
+    const recoveredOpened = openedResponse("runtime-new", "r");
+    const redundantRecovery = vi.fn(async () => {
+      throw new Error("A published replacement runtime must not be replayed again.");
+    });
+    const recoveredDelegate: RecoveryBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        recoveredRequests.push(request);
+        if (request.kind === "openSession") {
+          recoveredOpenStarted.resolve(undefined);
+          await finishRecoveredOpen.promise;
+          return recoveredOpened;
+        }
+        if (request.kind === "getPage") return pageResponseForMetadata(request, recoveredOpened.metadata);
+        if (request.kind === "getSummary") return summaryResponse(request.viewRequestId);
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected recovered-candidate request: ${request.kind}`);
+      }),
+      createRuntimeRecoveryDelegate: redundantRecovery
+    };
+    const disposeDetached = vi.fn(async () => undefined);
+    (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi
+      .fn()
+      .mockResolvedValueOnce({ delegate: detachedCandidate, dispose: disposeDetached })
+      .mockResolvedValueOnce({ delegate: recoveredDelegate, dispose: vi.fn(async () => undefined) });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(oldDelegate);
+    const opened = await bridge.request({ ...openRequest, backend: "r" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the original R session to open.");
+    const sessionId = opened.metadata.sessionId;
+    bridge.setViewContext?.(sessionId, "renderer-view");
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: opened.metadata.revision,
+        step: ambiguousStep,
+        offset: 0,
+        limit: 1,
+        ...columnWindow
+      })
+    ).rejects.toThrow("The preview result was ambiguous.");
+
+    const detachedBackground = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "recovery-required-background",
+        filterModel: opened.metadata.filterModel
+      },
+      { priority: "background", viewContextId: "renderer-view" }
+    );
+    await detachedOpenStarted.promise;
+    const recoveringForeground = bridge.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "recovery-required-foreground",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() =>
+      expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+        activeForegroundOperation: true,
+        activeBackgroundOperation: true
+      })
+    );
+    releaseDetachedOpen.resolve(undefined);
+
+    await expect(detachedBackground).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_recovery_failed",
+      sessionId,
+      viewRequestId: "recovery-required-background"
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+    expect(disposeDetached).not.toHaveBeenCalled();
+
+    detachedSettlement.resolve(undefined);
+    await recoveredOpenStarted.promise;
+    finishRecoveredOpen.resolve(undefined);
+
+    await expect(recoveringForeground).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "recovery-required-foreground",
+      metadata: { sessionId }
+    });
+    expect(disposeDetached).toHaveBeenCalledOnce();
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledTimes(2);
+    expect(redundantRecovery).not.toHaveBeenCalled();
+    expect(oldRequests.filter((request) => request.kind === "previewStep")).toHaveLength(1);
+    expect(oldRequests.filter((request) => request.kind === "getPage" || request.kind === "getSummary")).toHaveLength(
+      0
+    );
+    expect(recoveredRequests.filter((request) => request.kind === "openSession")).toHaveLength(1);
+    expect(recoveredRequests.filter((request) => request.kind === "getPage")).toHaveLength(2);
+    await bridge.request({ kind: "closeSession", sessionId, revision: opened.metadata.revision });
+    await coordinator.dispose();
+  });
+
+  it("coalesces a recovery-required foreground read behind a successful background R recovery", async () => {
+    const recoveredOpenStarted = deferred<void>();
+    const finishRecoveredOpen = deferred<void>();
+    const oldRequests: OpenWranglerRequest[] = [];
+    const recoveredRequests: OpenWranglerRequest[] = [];
+    const ambiguousStep: TransformStep = {
+      id: "successful-coalesced-r-preview",
+      kind: "cloneColumn",
+      params: { column: { id: "c:source:0", name: "sales" }, newName: "sales_copy" }
+    };
+    const oldDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        oldRequests.push(request);
+        if (request.kind === "openSession") return openedResponse("runtime-old", "r");
+        if (request.kind === "previewStep") throw new Error("The preview result was ambiguous.");
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Recovery-required work reached the old runtime: ${request.kind}`);
+      })
+    };
+    const recoveredOpened = openedResponse("runtime-new", "r");
+    const redundantRecovery = vi.fn(async () => {
+      throw new Error("A published replacement runtime must not be replayed again.");
+    });
+    const recoveredDelegate: RecoveryBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        recoveredRequests.push(request);
+        if (request.kind === "openSession") {
+          recoveredOpenStarted.resolve(undefined);
+          await finishRecoveredOpen.promise;
+          return recoveredOpened;
+        }
+        if (request.kind === "getPage") return pageResponseForMetadata(request, recoveredOpened.metadata);
+        if (request.kind === "getSummary") return summaryResponse(request.viewRequestId);
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected recovered-candidate request: ${request.kind}`);
+      }),
+      createRuntimeRecoveryDelegate: redundantRecovery
+    };
+    (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
+      delegate: recoveredDelegate,
+      dispose: vi.fn(async () => undefined)
+    }));
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(oldDelegate);
+    const opened = await bridge.request({ ...openRequest, backend: "r" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the original R session to open.");
+    const sessionId = opened.metadata.sessionId;
+    bridge.setViewContext?.(sessionId, "renderer-view");
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: opened.metadata.revision,
+        step: ambiguousStep,
+        offset: 0,
+        limit: 1,
+        ...columnWindow
+      })
+    ).rejects.toThrow("The preview result was ambiguous.");
+
+    const background = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "successful-recovery-background",
+        filterModel: opened.metadata.filterModel
+      },
+      { priority: "background", viewContextId: "renderer-view" }
+    );
+    await recoveredOpenStarted.promise;
+    const foreground = bridge.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "coalesced-recovery-foreground",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() =>
+      expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+        activeForegroundOperation: true,
+        activeBackgroundOperation: true
+      })
+    );
+    finishRecoveredOpen.resolve(undefined);
+
+    await expect(background).resolves.toMatchObject({
+      kind: "summary",
+      viewRequestId: "successful-recovery-background"
+    });
+    await expect(foreground).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "coalesced-recovery-foreground",
+      metadata: { sessionId }
+    });
+    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+    expect(redundantRecovery).not.toHaveBeenCalled();
+    expect(oldRequests.filter((request) => request.kind === "previewStep")).toHaveLength(1);
+    expect(oldRequests.filter((request) => request.kind === "getPage" || request.kind === "getSummary")).toHaveLength(
+      0
+    );
+    expect(recoveredRequests.filter((request) => request.kind === "openSession")).toHaveLength(1);
+    expect(recoveredRequests.filter((request) => request.kind === "getSummary")).toHaveLength(1);
+    expect(recoveredRequests.filter((request) => request.kind === "getPage")).toHaveLength(2);
+    await bridge.request({ kind: "closeSession", sessionId, revision: opened.metadata.revision });
+    await coordinator.dispose();
   });
 
   it("coalesces concurrent foreground and renderer-background recovery for one lost runtime", async () => {

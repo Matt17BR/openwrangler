@@ -107,16 +107,29 @@ export class SessionRuntimeCleanup {
 
   track(target: RuntimeCleanupTarget, role: RuntimeCleanupRole): void {
     const cleanup = this.close(target, role);
+    this.trackDelegateSettlement(target.delegate, cleanup);
+  }
+
+  /**
+   * Retains one already-owned delegate settlement for coordinator shutdown and
+   * idle accounting without making the request that installed it wait.
+   */
+  trackDelegateSettlement(delegate: OpenWranglerBridge, settlement: Promise<void>): Promise<void> {
+    const cleanup = settlement.then(
+      () => undefined,
+      () => undefined
+    );
     this.detached.add(cleanup);
-    this.detachedCounts.set(target.delegate, (this.detachedCounts.get(target.delegate) ?? 0) + 1);
+    this.detachedCounts.set(delegate, (this.detachedCounts.get(delegate) ?? 0) + 1);
     const complete = (): void => {
       this.detached.delete(cleanup);
-      const remaining = (this.detachedCounts.get(target.delegate) ?? 1) - 1;
-      if (remaining > 0) this.detachedCounts.set(target.delegate, remaining);
-      else this.detachedCounts.delete(target.delegate);
-      this.releaseIfIdle(target.delegate);
+      const remaining = (this.detachedCounts.get(delegate) ?? 1) - 1;
+      if (remaining > 0) this.detachedCounts.set(delegate, remaining);
+      else this.detachedCounts.delete(delegate);
+      this.releaseIfIdle(delegate);
     };
     void cleanup.then(complete, complete);
+    return cleanup;
   }
 
   async waitForTracked(): Promise<void> {

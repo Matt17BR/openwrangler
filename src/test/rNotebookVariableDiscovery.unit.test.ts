@@ -8,6 +8,7 @@ import {
   claimVerifiedRNotebookVariableSelection,
   discoverRNotebookVariables,
   parseRNotebookVariableDiscoveryOutput,
+  reverifyRNotebookVariableSelection,
   verifyRNotebookVariableSelection
 } from "../extension/r/rNotebookVariableDiscovery";
 
@@ -292,6 +293,76 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
       "no longer bound to its verified notebook kernel"
     );
     expect(controlled.listenerCount()).toBe(0);
+  });
+
+  it("binds a fresh proof to the replacement kernel only after exact variable re-verification", async () => {
+    const document = notebookDocument();
+    setWorkspaceState(true, document);
+    const output = (code: string) =>
+      kernelOutput(
+        framed(discoveryMarker(code), {
+          protocolVersion: 1,
+          truncated: false,
+          variables: [{ name: "orders", dataframeFlavor: "r.data.table" }]
+        })
+      );
+    const original = controlledRKernel(output);
+    const replacement = controlledRKernel(output);
+    let currentKernel = original.kernel;
+    installJupyterMock(vi.fn(async () => currentKernel));
+
+    const discovery = await discoverRNotebookVariables(document);
+    const selected = discovery.variables[0];
+    if (!selected) throw new Error("Expected a discovered R dataframe.");
+    const oldVerified = await verifyRNotebookVariableSelection(document, discovery, selected);
+    const oldBinding = claimVerifiedRNotebookVariableSelection(document, oldVerified);
+
+    original.setStatus("restarting");
+    currentKernel = replacement.kernel;
+    const replacementVerified = await reverifyRNotebookVariableSelection(document, selected);
+    const replacementBinding = claimVerifiedRNotebookVariableSelection(document, replacementVerified);
+
+    expect(oldBinding.isInvalidated()).toBe(true);
+    expect(replacementBinding).toMatchObject({
+      notebook: document,
+      kernel: replacement.kernel,
+      variable: selected
+    });
+    expect(replacementBinding.isInvalidated()).toBe(false);
+    oldBinding.dispose();
+    replacementBinding.dispose();
+    expect(original.listenerCount()).toBe(0);
+    expect(replacement.listenerCount()).toBe(0);
+  });
+
+  it.each([
+    { name: "renamed", backend: "r" as const, dataframeFlavor: "r.data.frame" as const },
+    { name: "frame", backend: "r" as const, dataframeFlavor: "r.tibble" as const }
+  ])("rejects replacement discovery drift for $name/$dataframeFlavor", async (replacementVariable) => {
+    const document = notebookDocument();
+    setWorkspaceState(true, document);
+    const selectedKernel = rKernel(((code: string) =>
+      kernelOutput(
+        framed(discoveryMarker(code), {
+          protocolVersion: 1,
+          truncated: false,
+          variables: [
+            {
+              name: replacementVariable.name,
+              dataframeFlavor: replacementVariable.dataframeFlavor
+            }
+          ]
+        })
+      )) as Kernel["executeCode"]);
+    installJupyterMock(vi.fn(async () => selectedKernel));
+
+    await expect(
+      reverifyRNotebookVariableSelection(document, {
+        name: "frame",
+        backend: "r",
+        dataframeFlavor: "r.data.frame"
+      })
+    ).rejects.toThrow("name or frame type changed before runtime recovery");
   });
 
   it("rejects a kernel switch while the picker is open without probing the replacement", async () => {

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ColumnSchema, OpenSessionRequest, OpenWranglerResponse, PageResponse } from "../shared/protocol";
-import type { BridgeRequestOptions } from "./dataBridge";
+import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "./dataBridge";
 import { persistedSessionState } from "./sessionPersistence";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import { protocolError, publicMetadata, type SessionResponseState } from "./sessionResponseCommitter";
@@ -23,9 +23,19 @@ export interface RuntimeRecoverySession extends SessionResponseState {
   liveReconnectRequired: boolean;
 }
 
+export interface RuntimeRecoveryDelegateCandidate {
+  readonly delegate: OpenWranglerBridge;
+  dispose(): Promise<void>;
+}
+
+export interface RuntimeRecoveryDelegateFactory {
+  createRuntimeRecoveryDelegate(): Promise<RuntimeRecoveryDelegateCandidate>;
+}
+
 export interface RuntimeRecoveryHooks {
   isCurrent(): boolean;
   originMismatch(request: OpenSessionRequest): string | undefined;
+  installRuntimeSettlement(settlement: Promise<void>): void;
   clearPublishedStepInspection(): void;
   publishActive(): void;
   replayAfterRuntimeLoss(
@@ -140,28 +150,41 @@ export class SessionRuntimeRecovery {
       viewState: session.viewState
     };
     let candidate: RuntimeSessionState | undefined;
+    let replacementDelegate: RuntimeRecoveryDelegateCandidate | undefined;
     let restoredPage: PageResponse | undefined;
     try {
-      const response = await session.delegate.request(session.openRequest, options);
-      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
-      if (response.kind !== "sessionOpened") return false;
+      if (session.metadata.backend === "r") {
+        const delegateFactory = runtimeRecoveryDelegateFactory(session.delegate);
+        if (!delegateFactory) return false;
+        replacementDelegate = await delegateFactory.createRuntimeRecoveryDelegate();
+        if (replacementDelegate.delegate === session.delegate) {
+          throw new Error("Native-R recovery must use a fresh verified runtime delegate.");
+        }
+        if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
+          throw new Error("The recovery request was superseded before its replacement runtime opened.");
+        }
+        if (hooks.originMismatch(session.openRequest)) {
+          throw new Error("The originating source changed before recovery opened its replacement runtime.");
+        }
+      }
+      const candidateDelegate = replacementDelegate?.delegate ?? session.delegate;
+      const response = await candidateDelegate.request(session.openRequest, options);
+      if (response.kind !== "sessionOpened") throw new Error("The replacement runtime did not open a session.");
       candidate = {
         publicId: session.publicId,
         runtimeId: response.metadata.sessionId,
         runtimeRevision: response.metadata.revision,
-        delegate: session.delegate,
+        delegate: candidateDelegate,
         metadata: response.metadata,
         code: "",
         viewState: initialViewingState(response.metadata)
       };
+      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
       if (hooks.originMismatch(session.openRequest)) {
         throw new Error("The originating source changed while recovery was opening its runtime session.");
       }
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
-      if (requiredSchema && !isDeepStrictEqual(response.metadata.schema, requiredSchema)) {
-        throw new Error("The recreated live dataframe schema no longer matches the confirmed Open Wrangler view.");
-      }
       restoredPage = await this.runtimeStateRestorer.restoreRuntimeState(
         candidate,
         persisted,
@@ -171,17 +194,27 @@ export class SessionRuntimeRecovery {
         recoveryFollowupOptions(options),
         requiredSchema !== undefined
       );
+      if (requiredSchema && !isDeepStrictEqual(candidate.metadata.schema, requiredSchema)) {
+        throw new Error("The replayed live dataframe schema no longer matches the confirmed Open Wrangler view.");
+      }
       if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
       if (hooks.originMismatch(session.openRequest)) {
         throw new Error("The originating source changed while recovery was restoring its runtime session.");
       }
-    } catch {
-      if (candidate) await this.runtimeCleanup.close(candidate, "recovery candidate");
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) {
+        const delegate = replacementDelegate?.delegate ?? candidate?.delegate ?? session.delegate;
+        const deferredCleanup = error.settlement.then(() => this.discardCandidate(candidate, replacementDelegate));
+        const barrier = this.runtimeCleanup.trackDelegateSettlement(delegate, deferredCleanup);
+        hooks.installRuntimeSettlement(barrier);
+        return false;
+      }
+      await this.discardCandidate(candidate, replacementDelegate);
       return false;
     }
 
     if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
-      await this.runtimeCleanup.close(candidate, "recovery candidate");
+      await this.discardCandidate(candidate, replacementDelegate);
       return false;
     }
 
@@ -190,6 +223,7 @@ export class SessionRuntimeRecovery {
       candidate.metadata.backend === "pyspark" &&
       persisted.view !== undefined &&
       !isDeepStrictEqual(candidate.viewState.viewport, persisted.view.viewport);
+    session.delegate = candidate.delegate;
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
     session.metadata = candidate.metadata;
@@ -210,4 +244,28 @@ export class SessionRuntimeRecovery {
     this.runtimeCleanup.track(previous, "retired runtime");
     return true;
   }
+
+  private async discardCandidate(
+    candidate: RuntimeSessionState | undefined,
+    replacementDelegate: RuntimeRecoveryDelegateCandidate | undefined
+  ): Promise<void> {
+    if (candidate) await this.runtimeCleanup.close(candidate, "recovery candidate");
+    if (!replacementDelegate) return;
+    try {
+      await replacementDelegate.dispose();
+    } catch (error) {
+      replacementDelegate.delegate.reportDiagnostic?.(
+        `Open Wrangler could not finish cleanup of an unpublished recovery delegate: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+}
+
+function runtimeRecoveryDelegateFactory(delegate: OpenWranglerBridge): RuntimeRecoveryDelegateFactory | undefined {
+  const candidate = delegate as OpenWranglerBridge & Partial<RuntimeRecoveryDelegateFactory>;
+  return typeof candidate.createRuntimeRecoveryDelegate === "function"
+    ? (candidate as OpenWranglerBridge & RuntimeRecoveryDelegateFactory)
+    : undefined;
 }
