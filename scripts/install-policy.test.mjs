@@ -183,6 +183,8 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
   for (const command of [
     "npm exec --yes --package=@scope/unreviewed tool",
     "npm x --yes --package=@scope/unreviewed tool",
+    "npm init @scope/unreviewed",
+    "npm create @scope/unreviewed",
     "npm update",
     "npm audit fix",
     "npm uninstall keytar",
@@ -226,6 +228,30 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
       new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
       /(?:unreviewed npm lifecycle commands|bypass alias)/u
     );
+  }
+  for (const [shell, command] of [
+    [undefined, "y\\arn install"],
+    [undefined, "/usr/bin/pn\\pm install"],
+    [undefined, "corepack y\\arn install"],
+    [undefined, "pnpx @scope/unreviewed"],
+    [undefined, "bunx @scope/unreviewed"],
+    [undefined, "pn\\px @scope/unreviewed"],
+    [undefined, "bu\\nx @scope/unreviewed"],
+    [undefined, "$SAFE_YARN install"],
+    [undefined, "$SAFE_PNPM install"],
+    [undefined, "$SAFE_PNPX @scope/unreviewed"],
+    [undefined, "$(SAFE_NPM) exec --yes --package=@scope/unreviewed tool"],
+    [undefined, "$(SAFE_NPX) --yes @scope/unreviewed"],
+    [undefined, "$'\\x6e\\x70\\x6d' install keytar"],
+    [undefined, "$'\\156\\160\\155' exec --yes --package=@scope/unreviewed tool"],
+    ["pwsh", "& $env:SAFE_NPM exec --yes --package=@scope/unreviewed tool"],
+    ["pwsh", "& $env:SAFE_NPX --yes @scope/unreviewed"],
+    ["pwsh", "ya`rn install"],
+    ["cmd", "ya^rn install"]
+  ]) {
+    const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
+    workflow.jobs["windows-unique"].steps.push({ ...(shell === undefined ? {} : { shell }), run: command });
+    rejected(new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]), /bypass alias/u);
   }
   {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
