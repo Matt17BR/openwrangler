@@ -128,26 +128,6 @@ export function createReleasedRKernelLifecycle({
       recordReleasedRKernelLifecycleCheckpoint(phase, `restart-${checkpoint}`)
     );
 
-    recordReleasedRKernelLifecycleCheckpoint(phase, "invalidation:start");
-    const stale = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      sessionId: beforeRestart.sessionId,
-      revision: beforeRestart.metadata.revision,
-      viewRequestId: `${phase}-restarted-session`,
-      offset: 0,
-      limit: 10,
-      filterModel: beforeRestart.metadata.filterModel
-    });
-    assert.equal(stale.kind, "error");
-    if (stale.kind !== "error") throw new Error("The restarted R session unexpectedly returned data.");
-    assert.equal(stale.code, "r_kernel_changed");
-    assert.equal(stale.recoverable, true);
-    recordReleasedRKernelLifecycleCheckpoint(phase, "invalidation:complete");
-    recordReleasedRKernelLifecycleCheckpoint(phase, "invalidated-session-cleanup:start");
-    await disposePackagedSessionPanel(testing, beforeRestart.sessionId, "the invalidated R session");
-    recordReleasedRKernelLifecycleCheckpoint(phase, "invalidated-session-cleanup:complete");
-
     recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-show:start");
     const replacementEditor = await showExactReleasedNotebook(notebook);
     recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-show:complete");
@@ -183,26 +163,30 @@ export function createReleasedRKernelLifecycle({
     }
     recordReleasedRKernelLifecycleCheckpoint(phase, "replacement-setup:complete");
 
-    recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-invoke:start");
-    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
-    recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-invoke:complete");
-    recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session:start");
-    const recovered = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      {
-        name: "orders_frame",
-        type: "data.frame",
-        backend: "r",
-        rDataframeFlavor: "r.data.frame",
-        firstValue: "1",
-        notebookInsert: true
-      },
-      "the reopened R session after kernel restart"
-    );
-    assert.notEqual(recovered.sessionId, beforeRestart.sessionId);
-    recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session:complete");
+    recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-trigger:start");
+    const failed = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: beforeRestart.sessionId,
+      revision: beforeRestart.metadata.revision,
+      viewRequestId: `${phase}-restarted-session`,
+      offset: 0,
+      limit: 10,
+      filterModel: beforeRestart.metadata.filterModel
+    });
+    assert.equal(failed.kind, "error");
+    if (failed.kind !== "error") throw new Error("The restarted R session unexpectedly returned data.");
+    assert.equal(failed.code, "r_kernel_changed");
+    assert.equal(failed.recoverable, true);
+    assert.equal(failed.sessionId, beforeRestart.sessionId);
+    recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-trigger:complete");
+
+    const recovered = testing.sessionSnapshot(beforeRestart.sessionId);
+    assert.ok(recovered, "Native-R recovery must retain the exact public session.");
+    assert.equal(recovered.sessionId, beforeRestart.sessionId);
+    assert.deepEqual(recovered.metadata, beforeRestart.metadata);
+    assert.equal(recovered.code, beforeRestart.code);
+    assert.deepEqual(recovered.viewState, beforeRestart.viewState);
     recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-page:start");
     await assertReleasedSessionPage(testing, recovered, "1", `${phase}-recovered-page`);
     recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-page:complete");
