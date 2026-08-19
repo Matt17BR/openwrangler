@@ -6,6 +6,7 @@ import {
   isCurrentPageRequest,
   protocolError,
   SessionResponseCommitter,
+  stepInspectionKey,
   type SessionResponseCallbacks,
   type SessionResponseState
 } from "./sessionResponseCommitter";
@@ -100,8 +101,11 @@ export class SessionRuntimeRequestExecutor {
       }
       return isCurrentLogicalView(session, options);
     };
+    const stepInspectionIsCurrent = (): boolean =>
+      publicRequest.kind !== "inspectStep" || session.latestStepInspectionKey === stepInspectionKey(publicRequest);
     const rKernelChangeResponseIsCurrent = (): boolean =>
       !requestWasCancelled() &&
+      stepInspectionIsCurrent() &&
       (isRuntimeStateMutation(publicRequest)
         ? publicRequest.revision === session.publicRevision
         : liveSourceRecoveryIsCurrent());

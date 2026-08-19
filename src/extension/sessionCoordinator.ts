@@ -1152,8 +1152,11 @@ export class SessionCoordinator implements vscode.Disposable {
 
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
+    const settleAfterProducersQuiesce = Promise.allSettled([...closes, this.waitForPendingOpens()]).then(() =>
+      this.runtimeCleanup.waitForTracked()
+    );
     await Promise.race([
-      Promise.allSettled([...closes, this.waitForPendingOpens(), this.runtimeCleanup.waitForTracked()]),
+      settleAfterProducersQuiesce,
       new Promise<void>((resolve) => {
         timer = setTimeout(
           () => {

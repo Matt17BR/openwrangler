@@ -224,6 +224,64 @@ describe("SessionRuntimeRecovery", () => {
     expect(disposeCandidate).toHaveBeenCalledOnce();
   });
 
+  it("rejects an aliased R recovery delegate without disposing the published delegate", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const oldDelegate = bridge(async (request) => {
+      requests.push(request);
+      if (request.kind === "getPage") {
+        return pageResponseForMetadata(request, openedResponse(request.sessionId, "r").metadata);
+      }
+      throw new Error(`Unexpected aliased-delegate request: ${request.kind}`);
+    });
+    const disposeAliasedDelegate = vi.fn(async () => undefined);
+    const createRuntimeRecoveryDelegate = vi.fn(async () => ({
+      delegate: oldDelegate,
+      dispose: disposeAliasedDelegate
+    }));
+    Object.assign(oldDelegate, {
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      createRuntimeRecoveryDelegate
+    });
+    const session = runtimeSession(oldDelegate, "r");
+    const previous = {
+      runtimeId: session.runtimeId,
+      runtimeRevision: session.runtimeRevision,
+      delegate: session.delegate,
+      metadata: session.metadata,
+      code: session.code,
+      viewState: session.viewState
+    };
+    const recoveryHooks = hooks();
+    const cleanup = new SessionRuntimeCleanup((delegate) => session.delegate === delegate);
+    const recovery = new SessionRuntimeRecovery(cleanup, new SessionRuntimeStateRestorer());
+
+    await expect(recovery.replay(session, undefined, recoveryHooks, true, session.metadata.schema)).resolves.toBe(
+      false
+    );
+
+    expect(session).toMatchObject(previous);
+    expect(createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+    expect(disposeAliasedDelegate).not.toHaveBeenCalled();
+    expect(recoveryHooks.publishActive).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
+
+    const nextPageRequest: Extract<OpenWranglerRequest, { kind: "getPage" }> = {
+      kind: "getPage",
+      sessionId: session.runtimeId,
+      revision: session.runtimeRevision,
+      viewRequestId: "after-aliased-recovery",
+      offset: 0,
+      limit: 1,
+      columnOffset: 0,
+      columnLimit: 1,
+      filterModel: session.metadata.filterModel
+    };
+    await expect(session.delegate.request(nextPageRequest)).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "after-aliased-recovery"
+    });
+  });
+
   it("closes a recovery candidate whose required live schema changed", async () => {
     const requests: OpenWranglerRequest[] = [];
     const candidate = openedResponse("runtime-new", "pyspark");
