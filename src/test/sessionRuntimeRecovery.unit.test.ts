@@ -47,6 +47,46 @@ describe("SessionRuntimeRecovery", () => {
     expect(recoveryHooks.publishActive).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    {
+      label: "R document",
+      source: {
+        kind: "documentVariable" as const,
+        label: "orders",
+        variableName: "orders",
+        uri: "file:///workspace/orders.R"
+      }
+    },
+    {
+      label: "interactive R",
+      source: { kind: "rInteractiveVariable" as const, label: "orders", variableName: "orders" }
+    }
+  ])("replays an ordinary $label session on its existing delegate", async ({ source }) => {
+    const requests: OpenWranglerRequest[] = [];
+    const opened = openedResponse("runtime-new", "r");
+    opened.metadata = { ...opened.metadata, source };
+    const delegate = bridge(async (request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return opened;
+      if (request.kind === "getPage") return pageResponseForMetadata(request, opened.metadata);
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected ordinary R recovery request: ${request.kind}`);
+    });
+    const session = runtimeSession(delegate, "r");
+    session.openRequest = { ...session.openRequest, source };
+    session.metadata = { ...session.metadata, source };
+    const cleanup = new SessionRuntimeCleanup((candidate) => candidate === session.delegate);
+    const recovery = new SessionRuntimeRecovery(cleanup, new SessionRuntimeStateRestorer());
+
+    await expect(recovery.replay(session, undefined, hooks(), true, session.metadata.schema)).resolves.toBe(true);
+    await cleanup.waitForTracked();
+
+    expect(session.delegate).toBe(delegate);
+    expect(session).toMatchObject({ runtimeId: "runtime-new", metadata: { source } });
+    expect(requests.filter((request) => request.kind === "openSession")).toHaveLength(1);
+    expect(requests).toContainEqual({ kind: "closeSession", sessionId: "runtime-old", revision: 0 });
+  });
+
   it("publishes one fresh verified R delegate before a late invalidated-delegate cleanup", async () => {
     const oldRequests: OpenWranglerRequest[] = [];
     const candidateRequests: OpenWranglerRequest[] = [];

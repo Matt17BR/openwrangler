@@ -101,6 +101,13 @@ export class SessionRuntimeCleanup {
       if (unknownSessionIsClean && isConfirmedAbsentSession(response, target.runtimeId)) return;
       this.report(target, role, cleanupResponseDescription(response, target.runtimeId));
     } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) {
+        // The bridge still owns and observes this exact close. Keep retired
+        // runtime accounting live until that request really settles; never
+        // issue a second close merely because the host waiter detached.
+        await error.settlement;
+        return;
+      }
       this.report(target, role, error instanceof Error ? error.message : String(error));
     }
   }
