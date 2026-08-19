@@ -69,7 +69,6 @@ export const RELEASED_R_VALUE_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoveragePr
 export const RELEASED_R_PIVOT_WIDER_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
   name: "pivot-wider",
-  coreJourney: false,
   kernelLifecycle: false,
   focusedEditing: "pivot-wider",
   nativeFrameEditing: "none"
