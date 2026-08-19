@@ -271,7 +271,7 @@ function normalizePackageManagerCommands(source) {
 function unreviewedNpxCommands(source) {
   return [...normalizePackageManagerCommands(source).matchAll(NPX_COMMAND)]
     .filter((match) => {
-      const tokens = shellTokens(match[0]).slice(1);
+      const tokens = tokenizeShellCommand(match[0]).slice(1);
       return tokens[0] !== "--no-install" || REVIEWED_NPX_EXECUTABLES[tokens[1]] === undefined;
     })
     .map((match) => normalizeCommand(match[0]));
@@ -288,13 +288,41 @@ function hasBypassCommand(source) {
   );
 }
 
-function shellTokens(command) {
-  return (command.match(/"(?:\\.|[^"])*"|'[^']*'|\S+/gu) ?? []).map((token) => {
-    if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
-      return token.slice(1, -1);
+function quotedShellTokenEnd(command, start, quote) {
+  let cursor = start + 1;
+  while (cursor < command.length) {
+    if (quote === '"' && command[cursor] === "\\" && cursor + 1 < command.length) {
+      cursor += 2;
+      continue;
     }
-    return token;
-  });
+    if (command[cursor] === quote) return cursor + 1;
+    cursor += 1;
+  }
+  return undefined;
+}
+
+export function tokenizeShellCommand(command) {
+  const tokens = [];
+  let cursor = 0;
+  while (cursor < command.length) {
+    while (cursor < command.length && /\s/u.test(command[cursor])) cursor += 1;
+    if (cursor === command.length) break;
+
+    const start = cursor;
+    const quote = command[cursor];
+    if (quote === '"' || quote === "'") {
+      const end = quotedShellTokenEnd(command, start, quote);
+      if (end !== undefined) {
+        tokens.push(command.slice(start + 1, end - 1));
+        cursor = end;
+        continue;
+      }
+    }
+
+    while (cursor < command.length && !/\s/u.test(command[cursor])) cursor += 1;
+    tokens.push(command.slice(start, cursor));
+  }
+  return tokens;
 }
 
 function matchesCommandPrefix(token, commands) {
@@ -313,7 +341,7 @@ function resolveNpmCommand(token) {
 }
 
 function npmInvocation(match) {
-  const tokens = shellTokens(match).slice(1);
+  const tokens = tokenizeShellCommand(match).slice(1);
   if (tokens.length === 0) return { command: undefined, hasLeadingOption: false };
   if (tokens[0].startsWith("-")) return { command: undefined, hasLeadingOption: true };
   return { command: resolveNpmCommand(tokens[0]), hasLeadingOption: false, tokens };
