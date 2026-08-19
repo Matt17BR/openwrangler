@@ -9,6 +9,7 @@ import {
   type RFramePageContract
 } from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS, hasAtMostViewValueTextCodePoints } from "../../shared/viewValueLimits";
 import type {
   ByExampleProgram,
   CellValue,
@@ -42,6 +43,7 @@ const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
 const maximumStepIdBytes = R_FRAME_CONTRACT_LIMITS.stepIdBytes;
 const maximumFillFallbackColumns = 64;
 const maximumFillDirectionalGap = 1_000_000;
+const maximumViewValueTextBytes = MAX_VIEW_VALUE_TEXT_CHARACTERS * 4;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -1701,9 +1703,7 @@ function validateTransformStep(value: unknown): void {
     }
     params.outputs.forEach((value, index) => {
       const output = exactRecord(value, ["key", "name"], `request.payload.step.params.outputs[${index}]`);
-      if (output.key === null || typeof output.key !== "object" || Array.isArray(output.key)) {
-        fail(`request.payload.step.params.outputs[${index}].key must be a typed selection token.`);
-      }
+      validatePivotWiderKey(output.key, `request.payload.step.params.outputs[${index}].key`);
       boundedText(output.name, `request.payload.step.params.outputs[${index}].name`, maximumVariableNameBytes, false);
     });
     return;
@@ -2358,6 +2358,28 @@ function validateViewValue(value: unknown, label: string, columnType: RColumnTyp
     hasMore: false
   };
   if (!isOpenWranglerResponse(candidate)) fail(`${label} is not a valid typed selection.`);
+}
+
+function validatePivotWiderKey(value: unknown, label: string): void {
+  const token = exactRecord(value, ["kind", "version", "columnType", "cell"], label);
+  if (token.kind !== "typedSelection" || token.version !== 1 || token.columnType !== "string") {
+    fail(`${label} must be a canonical present string typed selection token.`);
+  }
+  const cell = exactRecord(token.cell, ["kind", "raw", "display", "isNull", "isNaN"], `${label}.cell`);
+  if (
+    cell.kind !== "string" ||
+    cell.isNull !== false ||
+    cell.isNaN !== false ||
+    typeof cell.raw !== "string" ||
+    typeof cell.display !== "string"
+  ) {
+    fail(`${label} must be a canonical present string typed selection token.`);
+  }
+  const raw = boundedText(cell.raw, `${label}.cell.raw`, maximumViewValueTextBytes, true);
+  const display = boundedText(cell.display, `${label}.cell.display`, maximumViewValueTextBytes, true);
+  if (!hasAtMostViewValueTextCodePoints(raw) || !hasAtMostViewValueTextCodePoints(display) || display !== raw) {
+    fail(`${label} must be a canonical present string typed selection token.`);
+  }
 }
 
 function isRColumnType(value: unknown): value is RColumnType {

@@ -5646,7 +5646,7 @@ openwrangler_r_frame_contract <- local({
       for (identifier_index in seq_along(identifier_values)) {
         data.table::set(
           result,
-          j = retained_names[[identifier_index]],
+          j = identifier_index,
           value = identifier_values[[identifier_index]][group_rows]
         )
       }

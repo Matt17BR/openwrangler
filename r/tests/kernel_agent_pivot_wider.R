@@ -324,6 +324,79 @@ assert_identical(
   "Pivot wider portable grouping mutated its source"
 )
 
+pivot_wider_duplicate_name_session <- "f4f4f4f4-f4f4-44f4-84f4-f4f4f4f4f4f4"
+pivot_wider_duplicate_name_source <- data.table::data.table(
+  first_identifier = c(NaN, NaN, 1, 1),
+  second_identifier = c(10, 10, 20, 20),
+  key_value = c("a", "b", "a", "b"),
+  reading = c(1L, 2L, 3L, 4L)
+)
+data.table::setnames(pivot_wider_duplicate_name_source, c("identifier", "identifier", "key", "reading"))
+pivot_wider_duplicate_name_before <- serialize(pivot_wider_duplicate_name_source, NULL, version = 3L)
+assign("pivot_wider_duplicate_name_source", pivot_wider_duplicate_name_source, envir = source_environment)
+assert_identical(dispatch("openSession", list(
+  sessionId = pivot_wider_duplicate_name_session,
+  variableName = "pivot_wider_duplicate_name_source",
+  page = page_window(row_limit = 100L, column_limit = 100L)
+))$kind, "page", "Pivot wider duplicate-name data.table fixture did not open")
+latest_full_capture <<- NULL
+pivot_wider_duplicate_name_preview <- dispatch("previewStep", list(
+  sessionId = pivot_wider_duplicate_name_session,
+  revision = 0L,
+  step = pivot_wider_step(pivot_wider_duplicate_name_source, "pivot-wider-duplicate-name"),
+  page = page_window(row_limit = 100L, column_limit = 100L)
+))
+assert_identical(
+  pivot_wider_duplicate_name_preview$kind,
+  "stepPreview",
+  "Pivot wider rejected positional duplicate-name data.table identifiers"
+)
+pivot_wider_duplicate_name_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+assert_identical(
+  names(pivot_wider_duplicate_name_live),
+  c("identifier", "identifier", "alpha", "beta", "gamma"),
+  "Pivot wider changed duplicate retained data.table names or output order"
+)
+assert_identical(
+  is.na(pivot_wider_duplicate_name_live[[1L]]),
+  c(TRUE, FALSE),
+  "Pivot wider overwrote the first duplicate-name data.table identifier"
+)
+assert_identical(
+  pivot_wider_duplicate_name_live[[2L]],
+  c(10, 20),
+  "Pivot wider overwrote the second duplicate-name data.table identifier"
+)
+pivot_wider_duplicate_name_applied <- dispatch("applyDraft", list(
+  sessionId = pivot_wider_duplicate_name_session,
+  revision = pivot_wider_duplicate_name_preview$revision,
+  page = page_window(row_limit = 100L, column_limit = 100L)
+))
+pivot_wider_duplicate_name_generated_environment <- new.env(parent = baseenv())
+assign(
+  "pivot_wider_duplicate_name_source",
+  unserialize(pivot_wider_duplicate_name_before),
+  envir = pivot_wider_duplicate_name_generated_environment
+)
+eval(
+  parse(text = pivot_wider_duplicate_name_applied$code, keep.source = FALSE),
+  envir = pivot_wider_duplicate_name_generated_environment
+)
+assert_identical(
+  serialize(
+    get("open_wrangler_result", envir = pivot_wider_duplicate_name_generated_environment, inherits = FALSE),
+    NULL,
+    version = 3L
+  ),
+  serialize(pivot_wider_duplicate_name_live, NULL, version = 3L),
+  "Generated Pivot wider corrupted positional duplicate-name data.table identifiers"
+)
+assert_identical(
+  serialize(get("pivot_wider_duplicate_name_source", envir = source_environment), NULL, version = 3L),
+  pivot_wider_duplicate_name_before,
+  "Pivot wider duplicate-name data.table support mutated its source"
+)
+
 pivot_wider_duplicate_session <- "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2"
 pivot_wider_duplicate <- data.frame(group = c(1L, 1L), key = c("a", "a"), reading = c(1L, 1L))
 assign("pivot_wider_duplicate", pivot_wider_duplicate, envir = source_environment)
@@ -332,6 +405,48 @@ assert_identical(dispatch("openSession", list(
   variableName = "pivot_wider_duplicate",
   page = page_window()
 ))$kind, "page", "Pivot wider duplicate fixture did not open")
+for (invalid_version in list(TRUE, "1")) {
+  invalid_token_step <- pivot_wider_step(pivot_wider_duplicate, "pivot-wider-invalid-token-version")
+  invalid_token_step$params$outputs[[1L]]$key$version <- invalid_version
+  invalid_token_response <- dispatch("previewStep", list(
+    sessionId = pivot_wider_duplicate_session,
+    revision = 0L,
+    step = invalid_token_step,
+    page = page_window()
+  ))
+  assert_identical(invalid_token_response$kind, "error", "Pivot wider accepted a coerced typed-key version")
+  if (!grepl("canonical present string selection token", invalid_token_response$message, fixed = TRUE)) {
+    stop("Pivot wider rejected a coerced typed-key version at the wrong boundary", call. = FALSE)
+  }
+}
+pivot_wider_at_limit_step <- pivot_wider_step(pivot_wider_duplicate, "pivot-wider-key-limit")
+pivot_wider_at_limit_key <- strrep("a", 65536L)
+pivot_wider_at_limit_step$params$outputs[[1L]]$key$cell$raw <- pivot_wider_at_limit_key
+pivot_wider_at_limit_step$params$outputs[[1L]]$key$cell$display <- pivot_wider_at_limit_key
+pivot_wider_at_limit_response <- dispatch("previewStep", list(
+  sessionId = pivot_wider_duplicate_session,
+  revision = 0L,
+  step = pivot_wider_at_limit_step,
+  page = page_window()
+))
+assert_identical(pivot_wider_at_limit_response$kind, "error", "Pivot wider limit fixture unexpectedly executed")
+if (!grepl("names-from value", pivot_wider_at_limit_response$message, fixed = TRUE)) {
+  stop("Pivot wider rejected an exactly 65,536-code-point key at the decoder", call. = FALSE)
+}
+pivot_wider_over_limit_step <- pivot_wider_step(pivot_wider_duplicate, "pivot-wider-key-over-limit")
+pivot_wider_over_limit_key <- strrep("a", 65537L)
+pivot_wider_over_limit_step$params$outputs[[1L]]$key$cell$raw <- pivot_wider_over_limit_key
+pivot_wider_over_limit_step$params$outputs[[1L]]$key$cell$display <- pivot_wider_over_limit_key
+pivot_wider_over_limit_response <- dispatch("previewStep", list(
+  sessionId = pivot_wider_duplicate_session,
+  revision = 0L,
+  step = pivot_wider_over_limit_step,
+  page = page_window()
+))
+assert_identical(pivot_wider_over_limit_response$kind, "error", "Pivot wider accepted an oversized typed key")
+if (!grepl("canonical present string selection token", pivot_wider_over_limit_response$message, fixed = TRUE)) {
+  stop("Pivot wider rejected an oversized typed key at the wrong boundary", call. = FALSE)
+}
 pivot_wider_duplicate_response <- dispatch("previewStep", list(
   sessionId = pivot_wider_duplicate_session,
   revision = 0L,
@@ -344,4 +459,13 @@ assert_identical(pivot_wider_duplicate_response$recoverable, TRUE, "Pivot wider 
 assert_identical(dispatch("closeSession", list(sessionId = pivot_wider_session))$kind, "closed", "Pivot wider did not close")
 assert_identical(dispatch("closeSession", list(sessionId = pivot_wider_duplicate_session))$kind, "closed", "Pivot wider duplicate session did not close")
 assert_identical(dispatch("closeSession", list(sessionId = pivot_wider_group_key_session))$kind, "closed", "Pivot wider portable group-key session did not close")
-remove(list = c(pivot_wider_variable, "pivot_wider_duplicate", "pivot_wider_group_key_source"), envir = source_environment)
+assert_identical(dispatch("closeSession", list(sessionId = pivot_wider_duplicate_name_session))$kind, "closed", "Pivot wider duplicate-name data.table session did not close")
+remove(
+  list = c(
+    pivot_wider_variable,
+    "pivot_wider_duplicate",
+    "pivot_wider_group_key_source",
+    "pivot_wider_duplicate_name_source"
+  ),
+  envir = source_environment
+)
