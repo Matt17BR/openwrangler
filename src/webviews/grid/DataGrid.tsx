@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEventHandler } from "react";
 import type {
   CellDiff,
   CellValue,
@@ -41,6 +41,7 @@ import {
   type ProfileValueMode
 } from "../profileValueMode";
 import { CompactExtremum, HeaderProfileValue } from "./GridHeaderProfileValues";
+import { useColumnResizeLifecycle, type BeginColumnResize } from "./useColumnResizeLifecycle";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -224,6 +225,7 @@ export function DataGrid({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
   const headerProfilesButtonRef = useRef<HTMLButtonElement>(null);
+  const beginColumnResize = useColumnResizeLifecycle();
   const pointerSelection = useRef<GridPointerSelection | undefined>(undefined);
   const profileFitDescriptionId = useId();
   const gridSelectionInstructionsId = useId();
@@ -1387,6 +1389,7 @@ export function DataGrid({
                     }}
                     onCopy={() => void gridClipboard.copyColumn()}
                     onApplyProfileFilter={onApplyProfileFilter}
+                    onBeginResize={beginColumnResize}
                     onResize={(width) =>
                       reportViewState({
                         ...viewStateRef.current,
@@ -2181,6 +2184,7 @@ function ColumnHeader({
   onSelect,
   onCopy,
   onApplyProfileFilter,
+  onBeginResize,
   onResize
 }: {
   column: ColumnSchema;
@@ -2210,6 +2214,7 @@ function ColumnHeader({
   onSelect(): void;
   onCopy(): void;
   onApplyProfileFilter?: (filter: ColumnFilter) => void;
+  onBeginResize: BeginColumnResize;
   onResize(width: number): void;
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -2238,17 +2243,9 @@ function ColumnHeader({
     onActivate();
     onApplyProfileFilter(filter);
   };
-  const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const beginResize: PointerEventHandler<HTMLButtonElement> = (event) => {
     if (viewControlsDisabled) return;
-    event.preventDefault();
-    const start = event.clientX;
-    const move = (moveEvent: PointerEvent) => onResize(Math.max(80, Math.min(640, width + moveEvent.clientX - start)));
-    const end = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", end, { once: true });
+    onBeginResize(event, width, onResize);
   };
 
   const resizeWithKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
