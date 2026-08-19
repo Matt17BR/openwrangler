@@ -30,13 +30,18 @@ const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
-const SETUP_PYTHON = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
-const SETUP_JAVA = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
+const SETUP_PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97";
+const SETUP_JAVA = "actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961";
 const CODEQL = "github/codeql-action";
 const CODEQL_SHA = "ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd";
 const SETUP_R = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
-const CACHE_RESTORE = "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809";
+const CACHE_RESTORE = "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9";
 const CACHE_SAVE = "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809";
+const SUPERSEDED_DEPENDENCY_ACTIONS = new Map([
+  [SETUP_PYTHON, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"],
+  [SETUP_JAVA, "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e"],
+  [CACHE_RESTORE, "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809"]
+]);
 const BOOLEAN_OUTPUTS = Object.freeze({
   rContractRequired: true,
   canonicalEditorRequired: true,
@@ -79,13 +84,13 @@ const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
   ["codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ]);
 const APPROVED_EXTERNAL_ACTIONS = new Set([
-  "actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809",
+  "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809",
   "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-  "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e",
+  "actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961",
   "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-  "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+  "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
   "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
   "github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd",
@@ -100,7 +105,35 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "4b2abcd42fa01a0537eb54e70536508b00c99698c7c74a3fcee446837dbec029";
+const WORKFLOW_USE_INVENTORY_SHA256 = "4dad193f568dbbe53ecaf6c0d3f0ee1a85dc80a6ff0f07d13b1790f56115411a";
+const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
+  ["candidate-acceptance.yml", "$.jobs.jupyter.steps[2].uses", SETUP_PYTHON],
+  ["candidate-acceptance.yml", "$.jobs.jupyter.steps[3].uses", SETUP_JAVA],
+  ["candidate-acceptance.yml", "$.jobs.linux.steps[2].uses", SETUP_PYTHON],
+  ["candidate-acceptance.yml", "$.jobs.performance.steps[2].uses", SETUP_PYTHON],
+  ["candidate-acceptance.yml", "$.jobs.platform.steps[2].uses", SETUP_PYTHON],
+  ["candidate-acceptance.yml", "$.jobs.r_local.steps[2].uses", SETUP_PYTHON],
+  ["candidate-acceptance.yml", "$.jobs.r_platform.steps[2].uses", SETUP_PYTHON],
+  ["ci.yml", "$.jobs.canonical-editor.steps[2].uses", SETUP_PYTHON],
+  ["ci.yml", "$.jobs.invariant-core.steps[2].uses", SETUP_PYTHON],
+  ["ci.yml", "$.jobs.r-contract-kernel.steps[6].uses", CACHE_RESTORE],
+  ["ci.yml", "$.jobs.r-contract-protocol.steps[6].uses", CACHE_RESTORE],
+  ["ci.yml", "$.jobs.visual-accessibility.steps[2].uses", SETUP_PYTHON],
+  ["ci.yml", "$.jobs.windows-unique.steps[2].uses", SETUP_PYTHON],
+  ["cross-platform.yml", "$.jobs.dependency-guard-windows.steps[1].uses", SETUP_PYTHON],
+  ["cross-platform.yml", "$.jobs.r-4-4-scheduled-qualification.steps[6].uses", CACHE_RESTORE],
+  ["cross-platform.yml", "$.jobs.runtime.steps[2].uses", SETUP_PYTHON],
+  ["daily-preview.yml", "$.jobs.build.steps[4].uses", SETUP_PYTHON],
+  ["daily-preview.yml", "$.jobs.representative-editor.steps[2].uses", SETUP_PYTHON],
+  ["performance.yml", "$.jobs.polars-runtime.steps[1].uses", SETUP_PYTHON],
+  ["performance.yml", "$.jobs.pyspark-profile.steps[1].uses", SETUP_PYTHON],
+  ["performance.yml", "$.jobs.pyspark-profile.steps[2].uses", SETUP_JAVA],
+  ["release-candidate.yml", "$.jobs.package.steps[3].uses", SETUP_PYTHON],
+  ["released-jupyter.yml", "$.jobs.macos-r.steps[2].uses", SETUP_PYTHON],
+  ["released-jupyter.yml", "$.jobs.vscode.steps[2].uses", SETUP_PYTHON],
+  ["released-jupyter.yml", "$.jobs.vscode.steps[3].uses", SETUP_JAVA],
+  ["released-jupyter.yml", "$.jobs.windows-r.steps[2].uses", SETUP_PYTHON]
+]);
 
 function stepsUsing(job, prefix) {
   return (job?.steps ?? []).filter((step) => typeof step?.uses === "string" && step.uses.startsWith(prefix));
@@ -244,6 +277,18 @@ function workflowUseRows(entries) {
   return entries
     .flatMap(([name, document]) => allWorkflowUses(document).map(([path, uses]) => [name, path, uses]))
     .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function reviewedDependencyActionRows(rows) {
+  return rows.filter(([, , uses]) =>
+    ["actions/setup-python@", "actions/setup-java@", "actions/cache/restore@"].some(
+      (prefix) => typeof uses === "string" && uses.startsWith(prefix)
+    )
+  );
+}
+
+function assertReviewedDependencyActionCallsites(rows) {
+  assert.deepEqual(reviewedDependencyActionRows(rows), REVIEWED_DEPENDENCY_ACTION_CALLSITES);
 }
 
 function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
@@ -1419,6 +1464,32 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
   const inventory = validateWorkflowUseRows(rows);
   assert.equal(inventory.external.length, 146);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
+  assertReviewedDependencyActionCallsites(rows);
+
+  for (let index = 0; index < REVIEWED_DEPENDENCY_ACTION_CALLSITES.length; index += 1) {
+    const drift = structuredClone(rows);
+    const expected = REVIEWED_DEPENDENCY_ACTION_CALLSITES[index];
+    const rowIndex = drift.findIndex(
+      ([name, path, uses]) => name === expected[0] && path === expected[1] && uses === expected[2]
+    );
+    assert.notEqual(rowIndex, -1);
+    drift[rowIndex][2] = SUPERSEDED_DEPENDENCY_ACTIONS.get(expected[2]);
+    assert.throws(() => assertReviewedDependencyActionCallsites(drift));
+  }
+  const missingReviewedCallsite = rows.filter(
+    ([name, path]) =>
+      name !== REVIEWED_DEPENDENCY_ACTION_CALLSITES[0][0] || path !== REVIEWED_DEPENDENCY_ACTION_CALLSITES[0][1]
+  );
+  assert.throws(() => assertReviewedDependencyActionCallsites(missingReviewedCallsite));
+  const duplicatedReviewedCallsite = [...rows, REVIEWED_DEPENDENCY_ACTION_CALLSITES[0]];
+  assert.throws(() => assertReviewedDependencyActionCallsites(duplicatedReviewedCallsite));
+  const movedReviewedCallsite = structuredClone(rows);
+  const movedIndex = movedReviewedCallsite.findIndex(
+    ([name, path]) =>
+      name === REVIEWED_DEPENDENCY_ACTION_CALLSITES[0][0] && path === REVIEWED_DEPENDENCY_ACTION_CALLSITES[0][1]
+  );
+  movedReviewedCallsite[movedIndex][1] = "$.jobs.jupyter.steps[99].uses";
+  assert.throws(() => assertReviewedDependencyActionCallsites(movedReviewedCallsite));
 
   const sources = names.map((entry) => readFileSync(workflowPath(entry), "utf8")).join("\n");
   assert.doesNotMatch(sources, /@(v[0-9]+|main|master)(?:\s|$)/u);
