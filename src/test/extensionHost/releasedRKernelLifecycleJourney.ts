@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import type * as vscode from "vscode";
 import type { Page } from "playwright-core";
+import type { PageResponse } from "../../shared/protocol";
 import { RELEASED_JUPYTER_R_KERNEL_RESULT, RELEASED_JUPYTER_R_SETUP_RESULT } from "./releasedDocumentFixtures";
 import type { TestApi } from "./extensionHostTestApi";
 
@@ -34,7 +35,7 @@ interface ReleasedRKernelLifecycleDependencies {
     active: ReleasedRKernelLifecycleSession,
     firstValue: string,
     viewRequestId: string
-  ) => Promise<unknown>;
+  ) => Promise<PageResponse>;
   readonly disposePackagedSessionPanel: (testing: TestApi, sessionId: string, description: string) => Promise<void>;
   readonly executeReleasedNotebookCell: (
     notebook: vscode.NotebookDocument,
@@ -109,7 +110,7 @@ export function createReleasedRKernelLifecycle({
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
     recordReleasedRKernelLifecycleCheckpoint(phase, "variable-invoke:complete");
     recordReleasedRKernelLifecycleCheckpoint(phase, "session-receipt:start");
-    const beforeRestart = await waitForReleasedVariableSession(
+    const openedBeforeRestart = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
@@ -124,6 +125,55 @@ export function createReleasedRKernelLifecycle({
       "the R restart session"
     );
     recordReleasedRKernelLifecycleCheckpoint(phase, "session-receipt:complete");
+    recordReleasedRKernelLifecycleCheckpoint(phase, "scalar-step:start");
+    const groupColumn = openedBeforeRestart.metadata.schema.find((column) => column.name === "group");
+    assert.ok(groupColumn, "The R restart journey requires its scalar group column.");
+    const preview = await testing.request({
+      kind: "previewStep",
+      sessionId: openedBeforeRestart.sessionId,
+      revision: openedBeforeRestart.metadata.revision,
+      step: {
+        id: "released-r-kernel-restart-lowercase",
+        kind: "lowerText",
+        params: { column: { id: groupColumn.id, name: groupColumn.name } }
+      },
+      offset: 0,
+      limit: 10,
+      ...GRID_COLUMN_WINDOW
+    });
+    assert.equal(preview.kind, "stepPreview", "The R restart scalar step must preview before the restart.");
+    if (preview.kind !== "stepPreview") throw new Error("The R restart scalar preview failed.");
+    assert.equal(preview.page.rows[0]?.values[groupColumn.position]?.display, "a");
+    assert.match(preview.code, /tolower/u);
+    const applied = await testing.request({
+      kind: "applyDraft",
+      sessionId: openedBeforeRestart.sessionId,
+      revision: preview.revision,
+      offset: 0,
+      limit: 10,
+      ...GRID_COLUMN_WINDOW
+    });
+    assert.equal(applied.kind, "planUpdated", "The R restart scalar step must commit before the restart.");
+    if (applied.kind !== "planUpdated") throw new Error("The R restart scalar apply failed.");
+    assert.equal(applied.page.rows[0]?.values[groupColumn.position]?.display, "a");
+    assert.equal(applied.metadata.steps.length, 1);
+    await testing.updateViewState(openedBeforeRestart.sessionId, {
+      selectedColumnId: groupColumn.id,
+      columnWidths: new Map([[groupColumn.id, 210]]),
+      viewport: { firstVisibleRow: 4, scrollLeft: 11 }
+    });
+    const beforeRestart = testing.sessionSnapshot(openedBeforeRestart.sessionId);
+    assert.ok(beforeRestart, "The committed R restart session must remain available.");
+    assert.equal(beforeRestart.metadata.revision, applied.revision);
+    assert.deepEqual(beforeRestart.metadata.steps, applied.metadata.steps);
+    assert.equal(beforeRestart.metadata.draftStep, undefined);
+    assert.equal(beforeRestart.code, applied.code);
+    assert.ok(beforeRestart.code, "The committed R restart session must retain generated code.");
+    assert.deepEqual(beforeRestart.metadata.source, openedBeforeRestart.metadata.source);
+    assert.equal(beforeRestart.viewState.selectedColumnId, groupColumn.id);
+    assert.deepEqual(beforeRestart.viewState.columnWidths, new Map([[groupColumn.id, 210]]));
+    assert.deepEqual(beforeRestart.viewState.viewport, { firstVisibleRow: 4, scrollLeft: 11 });
+    recordReleasedRKernelLifecycleCheckpoint(phase, "scalar-step:complete");
     await restartReleasedJupyterKernelAndWait(notebook, (checkpoint) =>
       recordReleasedRKernelLifecycleCheckpoint(phase, `restart-${checkpoint}`)
     );
@@ -188,7 +238,12 @@ export function createReleasedRKernelLifecycle({
     assert.equal(recovered.code, beforeRestart.code);
     assert.deepEqual(recovered.viewState, beforeRestart.viewState);
     recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-page:start");
-    await assertReleasedSessionPage(testing, recovered, "1", `${phase}-recovered-page`);
+    const recoveredPage = await assertReleasedSessionPage(testing, recovered, "1", `${phase}-recovered-page`);
+    assert.equal(
+      recoveredPage.page.rows[0]?.values[groupColumn.position]?.display,
+      "a",
+      "The recovered R page must contain the committed scalar output."
+    );
     recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-page:complete");
     recordReleasedRKernelLifecycleCheckpoint(phase, "recovery-session-cleanup:start");
     await disposePackagedSessionPanel(testing, recovered.sessionId, "the recovered R session");
