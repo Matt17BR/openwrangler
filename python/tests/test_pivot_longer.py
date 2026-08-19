@@ -116,6 +116,43 @@ def test_pivot_longer_pandas_live_and_generated_are_column_major_and_preserve_nu
     assert list(frame.columns) == ["keep", "alpha", "beta"]
 
 
+def test_pivot_longer_pandas_multiindex_columns_keep_raw_labels_and_exact_flat_outputs() -> None:
+    columns = pd.MultiIndex.from_tuples([("metric", "retained"), ("alpha", "value"), ("beta", "value")])
+    frame = pd.DataFrame([["k1", 1, 3], ["k2", 2, 4]], columns=columns)
+    engine = PandasEngine()
+    before_schema = engine.schema(frame)
+    before_lineage = source_lineage(before_schema)
+    operation = public_step(
+        columns=[
+            {"id": "c:source:1", "name": str(columns[1])},
+            {"id": "c:source:2", "name": str(columns[2])},
+        ]
+    )
+    step = bind(engine, frame, operation)
+    expected = [
+        ("k1", str(columns[1]), 1),
+        ("k2", str(columns[1]), 2),
+        ("k1", str(columns[2]), 3),
+        ("k2", str(columns[2]), 4),
+    ]
+
+    live = engine.apply_transform(frame, step)
+    generated = execute_generated(engine, frame, step)
+    for result in (live, generated):
+        assert not isinstance(result.columns, pd.MultiIndex)
+        assert list(result.columns) == [columns[0], "metric", "reading"]
+        assert rows(result) == expected
+        assert [column["name"] for column in engine.schema(result)] == [str(columns[0]), "metric", "reading"]
+        assert derive_lineage(before_lineage, engine.schema(result), operation) == [
+            {"id": "c:source:0", "name": str(columns[0])},
+            {"id": "c:step:pivot-longer:0", "name": "metric"},
+            {"id": "c:step:pivot-longer:1", "name": "reading"},
+        ]
+    assert isinstance(frame.columns, pd.MultiIndex)
+    assert list(frame.columns) == list(columns)
+    assert rows(frame) == [("k1", 1, 3), ("k2", 2, 4)]
+
+
 def test_pivot_longer_duckdb_live_and_generated_are_column_major_and_preserve_nulls() -> None:
     frame = duckdb.sql(
         "SELECT * FROM (VALUES ('k1', 1::BIGINT, 3::BIGINT), ('k2', NULL::BIGINT, 4::BIGINT)) source(keep, alpha, beta)"
@@ -126,6 +163,92 @@ def test_pivot_longer_duckdb_live_and_generated_are_column_major_and_preserve_nu
     assert rows(DuckDBEngine().apply_transform(frame, step)) == expected
     assert rows(execute_generated(DuckDBEngine(), frame, step)) == expected
     assert rows(frame) == [("k1", 1, 3), ("k2", None, 4)]
+
+
+@pytest.mark.parametrize("label_column,value_column", [("Σ", "ς"), ("İ", "i̇"), ("K", "k")])
+def test_pivot_longer_duckdb_rejects_full_casefold_output_collisions_before_query(
+    label_column: str,
+    value_column: str,
+) -> None:
+    class PreflightSpy(DuckDBEngine):
+        apply_called = False
+
+        def apply_transform(self, frame: Any, step: Any) -> Any:
+            self.apply_called = True
+            return super().apply_transform(frame, step)
+
+    engine = PreflightSpy()
+    frame = duckdb.sql("SELECT 'k' AS keep, 1::BIGINT AS alpha, 2::BIGINT AS beta")
+    operation = public_step(label_column=label_column, value_column=value_column)
+    validate_step(operation)
+    step = bind(engine, frame, operation)
+    baseline = rows(frame)
+    session = cast(Session, SimpleNamespace(engine=engine, session_id="pivot-casefold"))
+
+    with pytest.raises(EngineError, match="DuckDB column names|DuckDB identifier matching"):
+        SessionManager._apply_transform_with_row_ids(
+            session,
+            frame,
+            step,
+            {"rows": 1, "columns": 3},
+        )
+    assert not engine.apply_called
+    with pytest.raises(ValueError, match="DuckDB column name|DuckDB identifier matching"):
+        execute_generated(engine, frame, step)
+    assert rows(frame) == baseline
+
+
+@pytest.mark.parametrize("sort_kind", ["sortRows", "filterRows"])
+def test_pivot_longer_duckdb_preserves_current_sorted_order_live_and_generated(sort_kind: str) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        "SELECT * FROM (VALUES ('k1', 1::BIGINT, 4::BIGINT), "
+        "('k3', 3::BIGINT, 6::BIGINT), ('k2', 2::BIGINT, 5::BIGINT)) source(keep, alpha, beta)"
+    )
+    identified_source = engine.ensure_row_ids(frame, "pivot-source")
+    source_row_id = engine._row_id_column(identified_source)
+    assert source_row_id is not None
+    schema = engine.schema(identified_source)
+    lineage = source_lineage(schema)
+    sort_rule = {
+        "column": {"id": "c:source:0", "name": "keep"},
+        "direction": "desc",
+        "nulls": "last",
+    }
+    public_sort = (
+        {"id": "sort", "kind": "sortRows", "params": {"rules": [sort_rule]}}
+        if sort_kind == "sortRows"
+        else {
+            "id": "filter-sort",
+            "kind": "filterRows",
+            "params": {"filterModel": {"logic": "and", "filters": [], "sort": [sort_rule]}},
+        }
+    )
+    sort_step = bind_step(public_sort, schema, lineage)
+    pivot_step = bind(engine, identified_source)
+    expected = [
+        ("k3", "alpha", 3),
+        ("k2", "alpha", 2),
+        ("k1", "alpha", 1),
+        ("k3", "beta", 6),
+        ("k2", "beta", 5),
+        ("k1", "beta", 4),
+    ]
+
+    sorted_frame = engine.apply_transform(identified_source, sort_step)
+    assert [row[-1] for row in rows(sorted_frame)] == [1, 2, 0]
+    live = engine.apply_transform(sorted_frame, pivot_step)
+    assert engine._visible_columns(live) == ["keep", "metric", "reading"]
+    assert engine._row_id_column(live) is None
+    assert rows(live) == expected
+    identified = engine.ensure_row_ids(live, "pivot-sorted")
+    row_id = engine._row_id_column(identified)
+    assert row_id is not None
+    assert [row[-1] for row in rows(identified)] == list(range(len(expected)))
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([sort_step, pivot_step]), namespace, namespace)
+    assert rows(namespace["clean_data"](frame)) == expected
+    assert rows(frame) == [("k1", 1, 4), ("k3", 3, 6), ("k2", 2, 5)]
 
 
 def test_pivot_longer_binding_rejects_mixed_raw_types_and_casefold_collisions() -> None:

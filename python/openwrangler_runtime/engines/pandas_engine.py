@@ -702,6 +702,11 @@ class PandasEngine(DataFrameEngine):
             fragments = []
             for position, name in zip(positions, names, strict=True):
                 fragment = df.iloc[:, unselected].reset_index(drop=True).copy()
+                # A scalar assignment to a MultiIndex-column frame is padded
+                # into that MultiIndex and can overwrite a matching top-level
+                # label. Preserve retained raw labels in a plain object Index
+                # before appending the two exact public output names.
+                fragment.columns = pd.Index(list(fragment.columns), dtype="object", tupleize_cols=False)
                 fragment[params["labelColumn"]] = pd.Series([name] * len(df), dtype="string")
                 fragment[params["valueColumn"]] = df.iloc[:, position].reset_index(drop=True)
                 fragments.append(fragment)
@@ -1062,6 +1067,10 @@ class PandasEngine(DataFrameEngine):
                     "    fragments = []",
                     "    for position, name in zip(positions, names, strict=True):",
                     "        fragment = df.iloc[:, unselected].reset_index(drop=True).copy()",
+                    (
+                        "        fragment.columns = pd.Index(list(fragment.columns), "
+                        "dtype='object', tupleize_cols=False)"
+                    ),
                     "        fragment[label_column] = pd.Series([name] * len(df), dtype='string')",
                     "        fragment[value_column] = df.iloc[:, position].reset_index(drop=True)",
                     "        fragments.append(fragment)",

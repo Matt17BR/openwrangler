@@ -864,12 +864,12 @@ class DuckDBEngine(DataFrameEngine):
             unselected = [name for name in visible if name not in set(selected)]
             source_order = _unique_internal(columns, "__ow_pivot_source_order")
             pivot_order = _unique_internal([*columns, source_order], "__ow_pivot_selected_order")
-            row_id = self._row_id_column(frame)
-            source = (
-                "SELECT *, row_number() OVER () - 1 AS " + _quote_ident(source_order) + " FROM ow"
-                if row_id is None
-                else "SELECT *, " + _quote_ident(row_id) + " AS " + _quote_ident(source_order) + " FROM ow"
-            )
+            # The private row identity belongs to the source capture, so it may
+            # no longer describe the current relation order after an earlier
+            # committed sort. Pivoting creates fresh row identities anyway;
+            # derive this transient ordinal from the current relation so live
+            # execution preserves the same order as generated code.
+            source = "SELECT *, row_number() OVER () - 1 AS " + _quote_ident(source_order) + " FROM ow"
             branches = []
             for ordinal, selected_name in enumerate(selected):
                 projections = [*(_quote_ident(name) for name in unselected)]
@@ -2638,6 +2638,7 @@ def _ensure_duckdb_pivot_output_columns_available(existing: Iterable[Any], gener
         generated_by_key[key] = name
     if collisions:
         raise EngineError("Pivot longer would create duplicate column names: " + ", ".join(sorted(collisions)))
+    _ensure_duckdb_output_columns_available(existing_names, generated_names, "Pivot longer")
 
 
 def _bound_duckdb_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
@@ -4046,6 +4047,12 @@ def _ow_pivot_longer(df, params):
     if len(set(output_keys)) != len(output_keys):
         raise ValueError("Pivot-longer output names must differ case-insensitively.")
     if any(key in existing for key in output_keys):
+        raise ValueError("Pivot longer would create a DuckDB column name that differs only by case.")
+    addressable_existing = {str(name).casefold(): str(name) for name in columns}
+    addressable_output_keys = [name.casefold() for name in outputs]
+    if len(set(addressable_output_keys)) != len(addressable_output_keys):
+        raise ValueError("Pivot-longer output names must remain distinct under DuckDB identifier matching.")
+    if any(key in addressable_existing for key in addressable_output_keys):
         raise ValueError("Pivot longer would create a DuckDB column name that differs only by case.")
     types = dict(zip(columns, map(str, df.types)))
     if any(types[name] != types[selected[0]] for name in selected[1:]):
