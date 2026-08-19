@@ -237,7 +237,7 @@ def test_pivot_wider_live_and_generated_reject_domain_failures_atomically(engine
     }[failure]
     if engine_name == "pandas":
         engine: Any = PandasEngine()
-        frame: Any = pd.DataFrame(values, columns=["group", "key", "value"])
+        frame: Any = pd.DataFrame(values, columns=pd.Index(["group", "key", "value"]))
     elif engine_name == "polars":
         engine = PolarsEngine()
         frame = pl.DataFrame(values, schema=["group", "key", "value"], orient="row")
