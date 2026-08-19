@@ -158,10 +158,11 @@ export class SessionRuntimeRecovery {
       if (session.metadata.backend === "r") {
         const delegateFactory = runtimeRecoveryDelegateFactory(session.delegate);
         if (delegateFactory) {
-          replacementDelegate = await delegateFactory.createRuntimeRecoveryDelegate();
-          if (replacementDelegate.delegate === session.delegate) {
+          const createdDelegate = await delegateFactory.createRuntimeRecoveryDelegate();
+          if (createdDelegate.delegate === session.delegate) {
             throw new Error("Native-R recovery must use a fresh verified runtime delegate.");
           }
+          replacementDelegate = createdDelegate;
           if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
             throw new Error("The recovery request was superseded before its replacement runtime opened.");
           }
@@ -241,10 +242,10 @@ export class SessionRuntimeRecovery {
       },
       candidate.metadata
     );
+    this.runtimeCleanup.track(previous, "retired runtime");
     hooks.clearPublishedStepInspection();
     if (publishActive) hooks.publishActive();
     if (restoredPage) onRestoredPage?.(restoredPage);
-    this.runtimeCleanup.track(previous, "retired runtime");
     return true;
   }
 

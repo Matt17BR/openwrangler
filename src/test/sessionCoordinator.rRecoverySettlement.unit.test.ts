@@ -12,6 +12,83 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator Native-R recovery settlement", () => {
+  it("keeps re-entrant shutdown behind the retired old-runtime close", async () => {
+    const oldCloseCanFinish = deferred<void>();
+    const oldCloseStarted = deferred<void>();
+    const oldRequests: OpenWranglerRequest[] = [];
+    const candidateRequests: OpenWranglerRequest[] = [];
+    const oldDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        oldRequests.push(request);
+        if (request.kind === "openSession") return openedResponse("runtime-old", "r");
+        if (request.kind === "getPage") return nativeRKernelChangedResponse(request);
+        if (request.kind === "closeSession") {
+          oldCloseStarted.resolve(undefined);
+          await oldCloseCanFinish.promise;
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected old-runtime request: ${request.kind}`);
+      })
+    };
+    const candidateOpened = openedResponse("runtime-new", "r");
+    const candidateDelegate: OpenWranglerBridge = {
+      request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+        candidateRequests.push(request);
+        if (request.kind === "openSession") return candidateOpened;
+        if (request.kind === "getPage") return pageResponseForMetadata(request, candidateOpened.metadata);
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected replacement-runtime request: ${request.kind}`);
+      })
+    };
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
+    (oldDelegate as NativeRRecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
+      delegate: candidateDelegate,
+      dispose: vi.fn(async () => undefined)
+    }));
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(oldDelegate);
+    const opened = await bridge.request({ ...openRequest, backend: "r" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the original Native-R session to open.");
+
+    let shutdownSettled = false;
+    let shutdown: Promise<void> | undefined;
+    const subscription = coordinator.onDidChangeActiveSession(() => {
+      if (shutdown) return;
+      shutdown = coordinator.shutdown(10_000).then(() => {
+        shutdownSettled = true;
+      });
+    });
+
+    const failedPage = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "reentrant-shutdown",
+      offset: 0,
+      limit: 10,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    await oldCloseStarted.promise;
+    await vi.waitFor(() => expect(shutdown).toBeDefined());
+    await expect(failedPage).resolves.toMatchObject({
+      kind: "error",
+      code: "r_kernel_changed",
+      sessionId: opened.metadata.sessionId
+    });
+    await vi.waitFor(() =>
+      expect(candidateRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1)
+    );
+    expect(shutdownSettled).toBe(false);
+
+    oldCloseCanFinish.resolve(undefined);
+    await shutdown;
+    subscription.dispose();
+    expect(shutdownSettled).toBe(true);
+    expect(oldRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+    expect(candidateRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+  });
+
   it("keeps shutdown behind the detached old-runtime close settlement", async () => {
     const oldCloseSettlement = deferred<void>();
     const oldRequests: OpenWranglerRequest[] = [];

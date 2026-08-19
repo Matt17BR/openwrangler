@@ -9,7 +9,7 @@ import type {
 } from "../shared/protocol";
 import { DetachedBridgeRequestError, type OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
-import { SessionResponseCommitter } from "../extension/sessionResponseCommitter";
+import { SessionResponseCommitter, stepInspectionKey } from "../extension/sessionResponseCommitter";
 import {
   SessionRuntimeRequestExecutor,
   type RuntimeRequestHooks,
@@ -578,6 +578,57 @@ describe("SessionRuntimeRequestExecutor", () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      label: "cleared",
+      supersede: (_session: RuntimeRequestSession, _request: Extract<SessionBoundRequest, { kind: "inspectStep" }>) =>
+        undefined
+    },
+    {
+      label: "replaced",
+      supersede: (session: RuntimeRequestSession, request: Extract<SessionBoundRequest, { kind: "inspectStep" }>) => {
+        const replacement = { ...request, stepId: "newer-inspection" };
+        session.latestStepInspectionKey = stepInspectionKey(replacement);
+        return session.latestStepInspectionKey;
+      }
+    }
+  ])("does not recover a Native-R inspectStep after it is $label", async ({ supersede }) => {
+    const request = inspectRequest();
+    const session = runtimeSession(bridge(vi.fn()), {
+      metadata: metadata({ backend: "r", steps: [step] }),
+      latestStepInspectionKey: stepInspectionKey(request)
+    });
+    const delegate = bridge(
+      requestMock(async (runtimeRequest) => {
+        session.latestStepInspectionKey = supersede(session, request);
+        return {
+          kind: "error",
+          code: "r_kernel_changed",
+          message: "The selected R notebook kernel changed during inspection.",
+          recoverable: true,
+          sessionId: runtimeSessionId(runtimeRequest)
+        };
+      })
+    );
+    session.delegate = delegate;
+    const replay = vi.fn(async () => {
+      replaceRuntime(session);
+      return true;
+    });
+    const requestHooks = hooks({ replayAfterRuntimeLoss: replay });
+
+    await expect(runtimeExecutor().execute(session, request, undefined, requestHooks)).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_response",
+      sessionId: "public-session"
+    });
+    expect(delegate.request).toHaveBeenCalledOnce();
+    expect(replay).not.toHaveBeenCalled();
+    expect(session.runtimeId).toBe("runtime-session");
+    expect(session.stepInspection).toBeUndefined();
+    expect(requestHooks.responseCallbacks.publishInspection).not.toHaveBeenCalled();
+  });
+
   it("discards Native-R recovery when host cancellation arrives before publication", async () => {
     const request = statsRequest(0);
     const cancellation = cancellationToken(false);
@@ -1003,6 +1054,19 @@ function pageRequest(viewRequestId: string, revision: number): Extract<SessionBo
     columnOffset: 0,
     columnLimit: 1,
     filterModel: emptyFilter
+  };
+}
+
+function inspectRequest(): Extract<SessionBoundRequest, { kind: "inspectStep" }> {
+  return {
+    kind: "inspectStep",
+    sessionId: "public-session",
+    revision: 0,
+    stepId: step.id,
+    offset: 0,
+    limit: 10,
+    columnOffset: 0,
+    columnLimit: 1
   };
 }
 
