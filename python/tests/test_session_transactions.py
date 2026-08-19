@@ -8,8 +8,10 @@ from typing import Any
 
 import pytest
 
+from openwrangler_runtime import server
+from openwrangler_runtime import session as session_runtime
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PolarsEngine
-from openwrangler_runtime.session import Session, SessionManager
+from openwrangler_runtime.session import ResponsePayloadError, Session, SessionManager
 
 VIEW_FILTER = {
     "logic": "and",
@@ -77,6 +79,8 @@ def session_state(session: Session) -> dict[str, Any]:
         "draftShape": deepcopy(session.draft_shape),
         "draftSchema": deepcopy(session.draft_schema),
         "replaceStepId": session.replace_step_id,
+        "sourceShape": deepcopy(session.source_shape),
+        "sourceSchema": deepcopy(session.source_schema),
         "pageCache": [(key, deepcopy(cached.payload), cached.size_bytes) for key, cached in session.page_cache.items()],
         "pageCacheBytes": session.page_cache_bytes,
         "viewGeneration": session.view_generation,
@@ -103,6 +107,52 @@ def assert_unchanged_and_closable(
 ) -> None:
     assert session_state(manager.sessions[session_id]) == expected
     assert manager.close_session(session_id, revision) == {"kind": "sessionClosed", "sessionId": session_id}
+
+
+def inject_preview_response_fault(
+    monkeypatch: pytest.MonkeyPatch,
+    manager: SessionManager,
+    session: Session,
+    field: str,
+    value: object,
+) -> None:
+    if field == "code":
+        monkeypatch.setattr(session.engine, "compile_plan", lambda _steps: value)
+        return
+    if field == "metadata":
+        original = manager._metadata
+        monkeypatch.setattr(manager, "_metadata", lambda active: {**original(active), "fault": value})
+        return
+    if field == "page":
+        original = manager._page
+        monkeypatch.setattr(manager, "_page", lambda *args: {**original(*args), "fault": value})
+        return
+    if field == "diff":
+        original = manager._diff
+        monkeypatch.setattr(manager, "_diff", lambda *args, **kwargs: {**original(*args, **kwargs), "fault": value})
+        return
+    if field == "warnings":
+        original = session_runtime.validate_step
+
+        def validate_with_fault(step: Mapping[str, Any]) -> dict[str, Any]:
+            normalized = original(step)
+            normalized["params"] = {**normalized["params"], "warnings": [value]}
+            return normalized
+
+        monkeypatch.setattr(session_runtime, "validate_step", validate_with_fault)
+        return
+    raise AssertionError(f"Unknown response field: {field}")
+
+
+def observe_session(manager: SessionManager, session_id: str, revision: int) -> dict[str, Any]:
+    session = manager.sessions[session_id]
+    return manager.get_page(
+        session_id,
+        revision,
+        0,
+        2,
+        deepcopy(session.filter_model),
+    )
 
 
 def test_preview_rolls_back_after_late_response_construction_failure(tmp_path: Path, monkeypatch) -> None:
@@ -163,6 +213,109 @@ def test_undo_rolls_back_after_late_response_construction_failure(tmp_path: Path
         manager.undo_step(session_id, 4, 0, 2)
 
     assert_unchanged_and_closable(manager, session_id, 4, before)
+
+
+@pytest.mark.parametrize("field", ["code", "metadata", "page", "diff", "warnings"])
+@pytest.mark.parametrize("fault_kind", ["invalid-json", "oversized"])
+def test_preview_preflight_restores_every_state_owner_for_each_response_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    fault_kind: str,
+) -> None:
+    manager, session_id = open_pandas_session(tmp_path)
+    prime_filtered_page(manager, session_id, 0)
+    session = manager.sessions[session_id]
+    expected_observation = observe_session(manager, session_id, 0)
+    before = session_state(session)
+    expected_code = "response_encoding_failed"
+    fault: object = object()
+    if fault_kind == "oversized":
+        monkeypatch.setattr(session_runtime, "MAX_STRICT_RESPONSE_PAYLOAD_BYTES", 64 * 1024)
+        fault = "x" * (128 * 1024)
+        expected_code = "response_too_large"
+
+    with monkeypatch.context() as response_fault:
+        inject_preview_response_fault(response_fault, manager, session, field, fault)
+        with pytest.raises(ResponsePayloadError) as raised:
+            manager.preview_step(session_id, 0, formula_step(f"{field}-{fault_kind}"), 0, 2)
+
+    assert raised.value.code == expected_code
+    assert session_state(session) == before
+    assert observe_session(manager, session_id, 0) == expected_observation
+
+
+@pytest.mark.parametrize("operation", ["preview", "apply", "discard", "undo", "replace"])
+def test_every_mutation_path_rolls_back_when_the_correlated_response_preflight_fails(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    manager, session_id = open_pandas_session(tmp_path)
+    revision = 0
+    arguments: tuple[Any, ...]
+    keyword_arguments: dict[str, Any] = {}
+    mutation = manager.preview_step
+    if operation == "preview":
+        arguments = (session_id, revision, formula_step("preview"), 0, 2)
+    elif operation in {"apply", "discard"}:
+        manager.preview_step(session_id, revision, formula_step(operation), 0, 2)
+        revision = 1
+        mutation = manager.apply_draft if operation == "apply" else manager.discard_draft
+        arguments = (session_id, revision, 0, 2)
+    elif operation == "undo":
+        manager.preview_step(session_id, revision, formula_step("undo"), 0, 2)
+        manager.apply_draft(session_id, 1, 0, 2)
+        revision = 2
+        mutation = manager.undo_step
+        arguments = (session_id, revision, 0, 2)
+    else:
+        manager.preview_step(session_id, revision, formula_step("replace"), 0, 2)
+        manager.apply_draft(session_id, 1, 0, 2)
+        revision = 2
+        arguments = (session_id, revision, formula_step("replace", "replacement"), 0, 2)
+        keyword_arguments["replace_step_id"] = "replace"
+
+    expected_observation = observe_session(manager, session_id, revision)
+    before = session_state(manager.sessions[session_id])
+
+    def reject(_response: dict[str, Any]) -> None:
+        raise ResponsePayloadError("correlated response rejected", "response_encoding_failed")
+
+    with pytest.raises(ResponsePayloadError, match="correlated response rejected"):
+        mutation(*arguments, **keyword_arguments, response_preflight=reject)
+
+    assert session_state(manager.sessions[session_id]) == before
+    assert observe_session(manager, session_id, revision) == expected_observation
+
+
+def test_server_preflights_the_complete_correlated_envelope_before_committing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, session_id = open_pandas_session(tmp_path)
+    expected_observation = observe_session(manager, session_id, 0)
+    before = session_state(manager.sessions[session_id])
+    monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", 256)
+
+    with pytest.raises(ResponsePayloadError) as raised:
+        server.dispatch(
+            manager,
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                "step": formula_step("correlated"),
+                "offset": 0,
+                "limit": 2,
+                "columnOffset": 0,
+                "columnLimit": 64,
+            },
+            "correlated-mutation",
+        )
+
+    assert raised.value.code == "response_too_large"
+    assert session_state(manager.sessions[session_id]) == before
+    assert observe_session(manager, session_id, 0) == expected_observation
 
 
 def test_source_post_validation_rolls_back_preview_but_keeps_cache_invalidated(tmp_path: Path) -> None:

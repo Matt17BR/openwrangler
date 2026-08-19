@@ -13,7 +13,12 @@ from typing import Any
 from .custom_code_output import isolate_standalone_protocol_output
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
-from .response_framing import MAX_RESPONSE_FRAME_BYTES, ResponseFrameTooLargeError, encode_response_frame
+from .response_framing import (
+    MAX_RESPONSE_FRAME_BYTES,
+    ResponseFrameTooLargeError,
+    encode_response_frame,
+    strict_json_byte_length,
+)
 from .session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
@@ -140,6 +145,7 @@ def _dispatch(
     request_id: str | None,
 ) -> dict[str, Any]:
     kind = request.get("kind")
+    response_preflight = _mutation_response_preflight(request_id)
     if kind == "initialize":
         return manager.initialize()
     if kind == "openSession":
@@ -208,6 +214,7 @@ def _dispatch(
             request.get("replaceStepId"),
             int(request["columnOffset"]),
             int(request["columnLimit"]),
+            response_preflight=response_preflight,
         )
     if kind == "inspectStep":
         return manager.inspect_step(
@@ -227,6 +234,7 @@ def _dispatch(
             int(request.get("limit", 200)),
             int(request["columnOffset"]),
             int(request["columnLimit"]),
+            response_preflight=response_preflight,
         )
     if kind == "discardDraft":
         return manager.discard_draft(
@@ -236,6 +244,7 @@ def _dispatch(
             int(request.get("limit", 200)),
             int(request["columnOffset"]),
             int(request["columnLimit"]),
+            response_preflight=response_preflight,
         )
     if kind == "undoStep":
         return manager.undo_step(
@@ -245,6 +254,7 @@ def _dispatch(
             int(request.get("limit", 200)),
             int(request["columnOffset"]),
             int(request["columnLimit"]),
+            response_preflight=response_preflight,
         )
     if kind == "exportData":
         return manager.export_data(
@@ -263,6 +273,30 @@ def _with_view_request_id(response: dict[str, Any], request: dict[str, Any]) -> 
     correlated = dict(response)
     correlated["viewRequestId"] = request["viewRequestId"]
     return correlated
+
+
+def _mutation_response_preflight(request_id: str | None) -> Callable[[dict[str, Any]], None] | None:
+    if request_id is None:
+        return None
+
+    def preflight(response: dict[str, Any]) -> None:
+        envelope = response_envelope(request_id, response)
+        try:
+            payload_size = strict_json_byte_length(envelope, MAX_RESPONSE_FRAME_BYTES - 1)
+        except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as error:
+            raise ResponsePayloadError(
+                "The correlated mutation response could not be encoded as strict JSON. Request fewer rows or columns.",
+                "response_encoding_failed",
+            ) from error
+        if payload_size + 1 > MAX_RESPONSE_FRAME_BYTES:
+            raise ResponsePayloadError(
+                "The correlated mutation response exceeds the "
+                f"{MAX_RESPONSE_FRAME_BYTES:,}-byte transport frame limit including LF. "
+                "Request fewer rows or columns.",
+                "response_too_large",
+            )
+
+    return preflight
 
 
 def main() -> int:

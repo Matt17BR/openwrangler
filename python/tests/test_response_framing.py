@@ -251,7 +251,7 @@ def test_async_oversized_mutation_publication_failure_returns_nonzero_without_co
             self.release_result = threading.Event()
             self.closed = False
 
-        def apply_draft(self, *_args: Any) -> dict[str, Any]:
+        def apply_draft(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             self.started.set()
             assert self.release_result.wait(5)
             return {

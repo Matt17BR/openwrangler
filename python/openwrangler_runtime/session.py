@@ -4,7 +4,7 @@ import importlib
 import threading
 import uuid
 from collections import OrderedDict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -35,6 +35,8 @@ from .version import __version__
 
 PAGE_CACHE_LIMIT = 8
 PAGE_CACHE_BYTE_LIMIT = 16 * 1024 * 1024
+
+MutationResponsePreflight = Callable[[dict[str, Any]], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +224,8 @@ class _SessionMutationSnapshot:
     draft_shape: SessionDataShape | None
     draft_schema: list[dict[str, Any]] | None
     replace_step_id: str | None
+    source_shape: SessionDataShape
+    source_schema: list[dict[str, Any]]
     page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
@@ -253,6 +257,8 @@ class _SessionMutationSnapshot:
             draft_shape=deepcopy(session.draft_shape),
             draft_schema=deepcopy(session.draft_schema),
             replace_step_id=session.replace_step_id,
+            source_shape=deepcopy(session.source_shape),
+            source_schema=deepcopy(session.source_schema),
             # Cached payloads are immutable after insertion. Copy the bounded LRU
             # index, not the potentially multi-megabyte data blocks themselves.
             page_cache=OrderedDict(session.page_cache),
@@ -285,6 +291,8 @@ class _SessionMutationSnapshot:
         session.draft_shape = self.draft_shape
         session.draft_schema = self.draft_schema
         session.replace_step_id = self.replace_step_id
+        session.source_shape = self.source_shape
+        session.source_schema = self.source_schema
         session.page_cache = self.page_cache
         session.page_cache_bytes = self.page_cache_bytes
         session.view_generation = self.view_generation
@@ -635,6 +643,8 @@ class SessionManager:
         replace_step_id: str | None = None,
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        *,
+        response_preflight: MutationResponsePreflight | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_access(session), self._validated_source_read(session):
@@ -744,7 +754,7 @@ class SessionManager:
                 total_rows=diff_base_view_shape["rows"],
                 column_projection=before_projection,
             )
-            return {
+            response = {
                 "kind": "stepPreview",
                 "revision": session.revision,
                 "metadata": self._metadata(session),
@@ -781,6 +791,7 @@ class SessionManager:
                 "code": session.engine.compile_plan(candidate_bound_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
             }
+            return self._preflight_mutation_response(response, response_preflight)
 
     def inspect_step(
         self,
@@ -890,6 +901,8 @@ class SessionManager:
         limit: int,
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        *,
+        response_preflight: MutationResponsePreflight | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -962,7 +975,7 @@ class SessionManager:
                 )
             else:
                 session.last_applied_view_restore = None
-            return response
+            return self._preflight_mutation_response(response, response_preflight)
 
     def discard_draft(
         self,
@@ -972,6 +985,8 @@ class SessionManager:
         limit: int,
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        *,
+        response_preflight: MutationResponsePreflight | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -989,7 +1004,7 @@ class SessionManager:
             )
             previous_schema = session.draft_schema if view_changed_during_draft else session.committed_schema
             self._clear_draft(session)
-            return self._finish_plan_change(
+            response = self._finish_plan_change(
                 session,
                 "discard",
                 offset,
@@ -999,6 +1014,7 @@ class SessionManager:
                 filter_model=filter_model,
                 previous_schema=previous_schema,
             )
+            return self._preflight_mutation_response(response, response_preflight)
 
     def undo_step(
         self,
@@ -1008,6 +1024,8 @@ class SessionManager:
         limit: int,
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        *,
+        response_preflight: MutationResponsePreflight | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -1049,7 +1067,7 @@ class SessionManager:
                 previous_schema=None if restore_filter_model is not None else previous_schema,
             )
             session.last_applied_view_restore = None
-            return response
+            return self._preflight_mutation_response(response, response_preflight)
 
     def export_data(
         self,
@@ -1316,6 +1334,26 @@ class SessionManager:
             ) from error
         SessionManager._assert_strict_response_payload_size(size, subject, recovery)
         return size
+
+    @classmethod
+    def _preflight_mutation_response(
+        cls,
+        response: dict[str, Any],
+        response_preflight: MutationResponsePreflight | None,
+    ) -> dict[str, Any]:
+        """Prove an edit response publishable before its atomic state can commit."""
+
+        cls._strict_response_payload_size(
+            response,
+            "mutation response",
+            "Request fewer rows or columns.",
+        )
+        if response_preflight is not None:
+            # Standalone and notebook transports supply the exact correlated
+            # envelope check. Keep it inside the session transaction so an
+            # envelope failure restores the same state as a payload failure.
+            response_preflight(response)
+        return response
 
     @staticmethod
     def _assert_strict_response_payload_size(size: int, subject: str, recovery: str) -> None:

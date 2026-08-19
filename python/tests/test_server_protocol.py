@@ -1482,7 +1482,7 @@ def test_terminal_frame_failure_shuts_down_running_mutation_without_synthesizing
             self.release = threading.Event()
             self.closed = False
 
-        def apply_draft(self, *_args: Any) -> dict[str, Any]:
+        def apply_draft(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             self.apply_calls += 1
             self.started.set()
             if not self.release.wait(2):
