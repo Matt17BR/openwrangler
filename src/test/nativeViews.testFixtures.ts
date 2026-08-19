@@ -365,7 +365,7 @@ function exportableSnapshot(sessionId: string, label: string, revision: number):
     },
     viewState: {
       filterModel: { filters: [], sort: [] },
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     }
   };
@@ -489,7 +489,7 @@ function snapshot(
     } as unknown as SessionMetadata,
     viewState: {
       filterModel: { filters: [], sort: [] },
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     }
   };

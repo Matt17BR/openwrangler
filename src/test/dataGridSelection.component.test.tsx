@@ -127,7 +127,7 @@ describe("DataGrid rectangular selection", () => {
     renderGrid({
       viewState: {
         selectedColumnId: "c:1",
-        columnWidths: {},
+        columnWidths: new Map(),
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
     });

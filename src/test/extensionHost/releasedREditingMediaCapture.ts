@@ -217,10 +217,10 @@ export function createReleasedREditingMediaCapture({
       assert.ok(firstColumn, "The R editing screenshot requires at least one visible column.");
       await testing.updateViewState(sessionId, {
         ...active.viewState,
-        columnWidths: {
+        columnWidths: new Map([
           ...active.viewState.columnWidths,
-          ...Object.fromEntries(firstColumns.map((column) => [column.id, column.name === "total_revenue" ? 240 : 190]))
-        },
+          ...firstColumns.map((column) => [column.id, column.name === "total_revenue" ? 240 : 190] as const)
+        ]),
         selectedColumnId: firstColumn.id,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       });

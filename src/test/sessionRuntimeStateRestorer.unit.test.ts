@@ -152,7 +152,7 @@ describe("SessionRuntimeStateRestorer", () => {
       session,
       {
         filterModel: savedFilter,
-        columnWidths: { removed: 260 },
+        columnWidths: new Map([["removed", 260]]),
         selectedColumnId: "removed",
         viewport: { firstVisibleRow: 40, scrollLeft: 120 }
       },
@@ -165,7 +165,7 @@ describe("SessionRuntimeStateRestorer", () => {
     expect(requestedFilters).toEqual([savedFilter, emptyFilter]);
     expect(session.viewState).toEqual({
       filterModel: emptyFilter,
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
   });
@@ -187,7 +187,10 @@ describe("SessionRuntimeStateRestorer", () => {
       session,
       {
         filterModel: emptyFilter,
-        columnWidths: { "c:value": 240, removed: 300 },
+        columnWidths: new Map([
+          ["c:value", 240],
+          ["removed", 300]
+        ]),
         selectedColumnId: "c:value",
         viewport: { firstVisibleRow: 450, scrollLeft: 30 }
       },
@@ -201,7 +204,7 @@ describe("SessionRuntimeStateRestorer", () => {
     expect(page.page.offset).toBe(100);
     expect(session.viewState).toEqual({
       filterModel: emptyFilter,
-      columnWidths: { "c:value": 240 },
+      columnWidths: new Map([["c:value", 240]]),
       selectedColumnId: "c:value",
       viewport: { firstVisibleRow: 119, scrollLeft: 30 }
     });
@@ -226,7 +229,7 @@ describe("SessionRuntimeStateRestorer", () => {
       session,
       {
         filterModel: emptyFilter,
-        columnWidths: { "c:value": 200 },
+        columnWidths: new Map([["c:value", 200]]),
         viewport: { firstVisibleRow: 250, scrollLeft: 7 }
       },
       100,
@@ -258,7 +261,7 @@ describe("SessionRuntimeStateRestorer", () => {
       session,
       {
         filterModel: emptyFilter,
-        columnWidths: {},
+        columnWidths: new Map(),
         viewport: { firstVisibleRow: 2_000, scrollLeft: 11 }
       },
       100,
@@ -302,7 +305,7 @@ describe("SessionRuntimeStateRestorer", () => {
     await expect(
       new SessionRuntimeStateRestorer().restoreOneViewingState(
         session,
-        { filterModel: emptyFilter, columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
+        { filterModel: emptyFilter, columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
         100,
         0,
         1,
@@ -326,7 +329,10 @@ describe("SessionRuntimeStateRestorer", () => {
       reconcileViewingState(
         {
           filterModel: emptyFilter,
-          columnWidths: { "c:value": 200, removed: 300 },
+          columnWidths: new Map([
+            ["c:value", 200],
+            ["removed", 300]
+          ]),
           selectedColumnId: "removed",
           viewport: { firstVisibleRow: 9, scrollLeft: 17 }
         },
@@ -334,7 +340,7 @@ describe("SessionRuntimeStateRestorer", () => {
       )
     ).toEqual({
       filterModel: confirmed.filterModel,
-      columnWidths: { "c:value": 200 },
+      columnWidths: new Map([["c:value", 200]]),
       viewport: { firstVisibleRow: 1, scrollLeft: 17 }
     });
   });

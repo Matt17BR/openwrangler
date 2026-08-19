@@ -740,7 +740,7 @@ writeWebviewHarness(
     followupMessage: {
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         viewport: { firstVisibleRow: 99_999_800, scrollLeft: 0 }
       }
     }
@@ -758,7 +758,7 @@ writeWebviewHarness(
     followupMessage: {
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         viewport: { firstVisibleRow: 99_999_800, scrollLeft: 0 }
       }
     }
@@ -799,7 +799,7 @@ writeWebviewHarness(
     followupMessage: {
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         selectedColumnId: textSummaryColumnId,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
@@ -823,7 +823,7 @@ writeWebviewHarness(
     followupMessage: {
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         selectedColumnId: exactExtremaColumnId,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
@@ -867,7 +867,7 @@ writeWebviewHarness(
     followupMessage: {
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         selectedColumnId: exactExtremaColumnId,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }

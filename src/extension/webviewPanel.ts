@@ -11,7 +11,7 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionMode";
-import type { GridViewState } from "../shared/viewState";
+import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
@@ -1549,7 +1549,9 @@ export class OpenWranglerPanel {
   private async postViewState(): Promise<boolean> {
     if (!this.sessionId) return true;
     const state = this.bridge.getViewState?.(this.sessionId);
-    return state ? this.postRendererMessage({ kind: "viewState", state }) : true;
+    if (!state) return true;
+    const serialized = encodeGridViewState(state);
+    return serialized ? this.postRendererMessage({ kind: "viewState", state: serialized }) : false;
   }
 
   private async postSessionPresentation(): Promise<boolean> {

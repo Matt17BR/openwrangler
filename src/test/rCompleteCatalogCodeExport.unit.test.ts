@@ -327,7 +327,7 @@ function rSnapshot(sourcePath: string, operations: readonly OperationKind[]): Ac
     },
     viewState: {
       filterModel: { filters: [], sort: [] },
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     }
   };

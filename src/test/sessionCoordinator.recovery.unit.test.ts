@@ -52,7 +52,10 @@ describe("SessionCoordinator", () => {
     coordinator.onDidChangeActiveSession(activeChanges);
 
     await bridge.updateViewState?.(response.metadata.sessionId, {
-      columnWidths: { "c:sales": 260, removed: 300 },
+      columnWidths: new Map([
+        ["c:sales", 260],
+        ["removed", 300]
+      ]),
       selectedColumnId: "c:sales",
       viewport: { firstVisibleRow: 240, scrollLeft: 180 }
     });
@@ -60,7 +63,7 @@ describe("SessionCoordinator", () => {
     expect(activeChanges).toHaveBeenCalledOnce();
     expect(coordinator.activeSession()?.viewState).toMatchObject({
       filterModel: response.metadata.filterModel,
-      columnWidths: { "c:sales": 260 },
+      columnWidths: new Map([["c:sales", 260]]),
       selectedColumnId: "c:sales",
       viewport: { firstVisibleRow: 240, scrollLeft: 180 }
     });
@@ -68,14 +71,14 @@ describe("SessionCoordinator", () => {
       cleaning: { steps: [] },
       view: {
         filterModel: response.metadata.filterModel,
-        columnWidths: { "c:sales": 260 },
+        columnWidths: [["c:sales", 260]],
         selectedColumnId: "c:sales",
         viewport: { firstVisibleRow: 240, scrollLeft: 180 }
       }
     });
 
     await bridge.updateViewState?.(response.metadata.sessionId, {
-      columnWidths: { "c:sales": 260 },
+      columnWidths: new Map([["c:sales", 260]]),
       selectedColumnId: "c:sales",
       viewport: { firstVisibleRow: 260, scrollLeft: 220 }
     });

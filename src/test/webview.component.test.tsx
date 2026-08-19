@@ -818,7 +818,7 @@ describe("DataGrid", () => {
           filteredShape: { rows: totalRows, columns: 2 }
         }}
         page={pageAt(currentOffset, totalRows)}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: currentOffset, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: currentOffset, scrollLeft: 0 } }}
         viewStateRestoreVersion={1}
         summaries={[]}
         pageSize={largeGridPageSize}
@@ -857,7 +857,7 @@ describe("DataGrid", () => {
         pageSize={largeGridPageSize}
         defaultColumnWidth={190}
         insightsOnOpen={true}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: offset, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: offset, scrollLeft: 0 } }}
         onPage={onPage}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
@@ -1467,7 +1467,7 @@ describe("DataGrid", () => {
         defaultColumnWidth={190}
         insightsOnOpen={false}
         viewState={{
-          columnWidths: { "c:1": 280 },
+          columnWidths: new Map([["c:1", 280]]),
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 1, scrollLeft: 95 }
         }}
@@ -1493,12 +1493,12 @@ describe("DataGrid", () => {
   it("requests a restored row block when the initial page still belongs to the previous viewport", async () => {
     const onPage = vi.fn();
     const initialViewState = {
-      columnWidths: {},
+      columnWidths: new Map(),
       selectedColumnId: "c:1",
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     };
     const restoredViewState = {
-      columnWidths: {},
+      columnWidths: new Map(),
       selectedColumnId: "c:1",
       viewport: { firstVisibleRow: 400, scrollLeft: 95 }
     };
@@ -1603,7 +1603,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         viewState={{
-          columnWidths: {},
+          columnWidths: new Map(),
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 1, scrollLeft: 35 }
         }}
@@ -1624,7 +1624,7 @@ describe("DataGrid", () => {
     fireEvent.scroll(scroller);
 
     expect(onViewStateChange).toHaveBeenLastCalledWith({
-      columnWidths: {},
+      columnWidths: new Map(),
       selectedColumnId: "c:1",
       viewport: { firstVisibleRow: 1, scrollLeft: 80 }
     });
@@ -1642,7 +1642,7 @@ describe("DataGrid", () => {
       defaultColumnWidth: 190,
       insightsOnOpen: false,
       viewState: {
-        columnWidths: {},
+        columnWidths: new Map(),
         selectedColumnId: "c:1",
         viewport: { firstVisibleRow: 1, scrollLeft: 23 }
       },
@@ -1716,7 +1716,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         viewState={{
-          columnWidths: { "c:1": 280 },
+          columnWidths: new Map([["c:1", 280]]),
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 1, scrollLeft: 35 }
         }}
@@ -1753,7 +1753,7 @@ describe("DataGrid", () => {
         {...props}
         viewContextId="restored-view"
         viewState={{
-          columnWidths: { "c:1": 280 },
+          columnWidths: new Map([["c:1", 280]]),
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 1, scrollLeft: 23 }
         }}
@@ -1813,7 +1813,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         viewState={{
-          columnWidths: { "c:1": 280 },
+          columnWidths: new Map([["c:1", 280]]),
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 1, scrollLeft: 23 }
         }}
@@ -1890,7 +1890,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         viewState={{
-          columnWidths: { "c:1": 280 },
+          columnWidths: new Map([["c:1", 280]]),
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 1, scrollLeft: 23 }
         }}
@@ -1913,7 +1913,7 @@ describe("DataGrid", () => {
     fireEvent.scroll(scroller);
 
     expect(onViewStateChange).toHaveBeenLastCalledWith({
-      columnWidths: { "c:1": 280 },
+      columnWidths: new Map([["c:1", 280]]),
       selectedColumnId: "c:1",
       viewport: { firstVisibleRow: 0, scrollLeft: 23 }
     });
@@ -1990,7 +1990,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         page={pageAt(restoredOffset)}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: restoredRow, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: restoredRow, scrollLeft: 0 } }}
         viewStateRestoreVersion={1}
       />
     );
@@ -2028,7 +2028,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         page={pageAt(1_000, totalRows)}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: 1_000, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: 1_000, scrollLeft: 0 } }}
         viewStateRestoreVersion={1}
       />
     );
@@ -2051,7 +2051,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         page={pageAt(finalOffset, totalRows)}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: finalOffset, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: finalOffset, scrollLeft: 0 } }}
         viewStateRestoreVersion={1}
       />
     );
@@ -2163,7 +2163,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         page={pageAt(initialOffset)}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 } }}
         viewStateRestoreVersion={1}
       />
     );
@@ -2184,7 +2184,7 @@ describe("DataGrid", () => {
     fireEvent.scroll(scroller);
     expect(onPage).toHaveBeenCalledTimes(1);
     expect(onViewStateChange).toHaveBeenLastCalledWith({
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 }
     });
 
@@ -2192,7 +2192,7 @@ describe("DataGrid", () => {
       <DataGrid
         {...props}
         page={pageAt(nextOffset)}
-        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 } }}
+        viewState={{ columnWidths: new Map(), viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 } }}
         viewStateRestoreVersion={1}
       />
     );
@@ -2205,7 +2205,7 @@ describe("DataGrid", () => {
     fireEvent.scroll(scroller);
     expect(onPage).toHaveBeenCalledTimes(2);
     expect(onViewStateChange).toHaveBeenLastCalledWith({
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 }
     });
   });
@@ -2773,7 +2773,7 @@ describe("DataGrid", () => {
   });
 
   it("resizes columns from the keyboard and clearly labels empty rows and datasets", () => {
-    let currentViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
+    let currentViewState = { columnWidths: new Map<string, number>(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
     const onViewStateChange = vi.fn((next) => {
       currentViewState = next;
       rerender(
@@ -3057,7 +3057,7 @@ describe("App file import options", () => {
           kind: "switchSessionMode",
           mode: "editing",
           state: {
-            columnWidths: { "c:0": 200 },
+            columnWidths: [["c:0", 200]],
             viewport: { firstVisibleRow: 0, scrollLeft: 0 }
           }
         }
@@ -3090,7 +3090,7 @@ describe("App file import options", () => {
       });
       dispatchAppMessage({
         kind: "viewState",
-        state: { columnWidths: { "c:0": 200 }, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        state: { columnWidths: [["c:0", 200]], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
       });
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
       expect(frames).toHaveLength(1);
@@ -3106,7 +3106,7 @@ describe("App file import options", () => {
       expect(webviewPostMessage).toHaveBeenCalledWith({
         kind: "switchSessionMode",
         mode: "viewing",
-        state: { columnWidths: { "c:0": 200 }, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        state: { columnWidths: [["c:0", 200]], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
       });
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "viewing" });
       expect(screen.getByText("Opening Viewing mode…")).toHaveAttribute("role", "status");
@@ -3132,7 +3132,7 @@ describe("App file import options", () => {
       });
       dispatchAppMessage({
         kind: "viewState",
-        state: { columnWidths: { "c:0": 200 }, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        state: { columnWidths: [["c:0", 200]], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
       });
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "viewing" });
       expect(frames).toHaveLength(1);
@@ -3172,7 +3172,7 @@ describe("App file import options", () => {
     expect(webviewPostMessage).toHaveBeenCalledWith({
       kind: "switchSessionMode",
       mode: "editing",
-      state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      state: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
     });
 
     dispatchAppMessage({
@@ -3737,7 +3737,7 @@ describe("App file import options", () => {
       });
       expect(synchronizationMessages[1]).toMatchObject({
         kind: "updateViewState",
-        state: { columnWidths: { "c:0": 200 } }
+        state: { columnWidths: [["c:0", 200]] }
       });
     } finally {
       vi.useRealTimers();
@@ -4155,7 +4155,7 @@ describe("App file import options", () => {
     expect(presentationAndImport).toHaveLength(2);
     expect(presentationAndImport[0]).toMatchObject({
       kind: "updateViewState",
-      state: { columnWidths: { "c:0": 200 } }
+      state: { columnWidths: [["c:0", 200]] }
     });
     expect(presentationAndImport[1]).toEqual({ kind: "changeImportOptions" });
   });
@@ -4202,7 +4202,7 @@ describe("App file import options", () => {
       expect(orderedMessages).toHaveLength(3);
       expect(orderedMessages[0]).toMatchObject({
         kind: "updateViewState",
-        state: { columnWidths: { "c:0": 200 } }
+        state: { columnWidths: [["c:0", 200]] }
       });
       expect(orderedMessages[1]).toMatchObject({
         kind: "cancelViewRequests",
@@ -4260,7 +4260,7 @@ describe("App file import options", () => {
     expect(webviewPostMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "updateViewState",
-        state: expect.objectContaining({ columnWidths: { "c:0": 200 } })
+        state: expect.objectContaining({ columnWidths: [["c:0", 200]] })
       })
     );
     expect(outboundImportOptionMessages()).toEqual([]);

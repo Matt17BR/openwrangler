@@ -239,7 +239,7 @@ describe("App progressive profiling and view correlation", () => {
     dispatch({
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         selectedColumnId: "c:1",
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
@@ -567,7 +567,7 @@ describe("App progressive profiling and view correlation", () => {
     dispatch({
       kind: "viewState",
       state: {
-        columnWidths: { "c:1": 275 },
+        columnWidths: [["c:1", 275]],
         selectedColumnId: "c:1",
         viewport: { firstVisibleRow: 200, scrollLeft: 90 }
       }
@@ -585,7 +585,7 @@ describe("App progressive profiling and view correlation", () => {
       expect(postMessage).toHaveBeenCalledWith({
         kind: "updateViewState",
         state: {
-          columnWidths: { "c:1": 285 },
+          columnWidths: [["c:1", 285]],
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 200, scrollLeft: 90 }
         }
@@ -602,7 +602,7 @@ describe("App progressive profiling and view correlation", () => {
       dispatch({
         kind: "viewState",
         state: {
-          columnWidths: { "c:1": 275 },
+          columnWidths: [["c:1", 275]],
           selectedColumnId: "c:1",
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
@@ -623,7 +623,7 @@ describe("App progressive profiling and view correlation", () => {
         {
           kind: "updateViewState",
           state: {
-            columnWidths: { "c:1": 295 },
+            columnWidths: [["c:1", 295]],
             selectedColumnId: "c:1",
             viewport: { firstVisibleRow: 0, scrollLeft: 0 }
           }
@@ -641,7 +641,7 @@ describe("App progressive profiling and view correlation", () => {
     dispatch({
       kind: "viewState",
       state: {
-        columnWidths: { "c:1": 275 },
+        columnWidths: [["c:1", 275]],
         selectedColumnId: "c:1",
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
@@ -656,7 +656,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(postMessage).toHaveBeenCalledWith({
       kind: "updateViewState",
       state: {
-        columnWidths: { "c:1": 285 },
+        columnWidths: [["c:1", 285]],
         selectedColumnId: "c:1",
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }

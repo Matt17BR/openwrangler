@@ -88,7 +88,7 @@ describe("SessionResponseCommitter", () => {
     session.viewState = {
       ...session.viewState,
       selectedColumnId: "c:value",
-      columnWidths: { "c:value": 240 },
+      columnWidths: new Map([["c:value", 240]]),
       viewport: { firstVisibleRow: 0, scrollLeft: 19 }
     };
     const request = pageRequest(session, "current-page", filterModel, 100);
@@ -121,12 +121,16 @@ describe("SessionResponseCommitter", () => {
       metadata: { filterModel },
       viewState: {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 240 },
+        columnWidths: new Map([["c:value", 240]]),
         viewport: { firstVisibleRow: 100, scrollLeft: 19 }
       }
     });
     expect(stored[persistenceKey(session.openRequest.source, "polars")]).toMatchObject({
-      view: { filterModel, viewport: { firstVisibleRow: 100, scrollLeft: 19 } }
+      view: {
+        filterModel,
+        columnWidths: [["c:value", 240]],
+        viewport: { firstVisibleRow: 100, scrollLeft: 19 }
+      }
     });
     expect(callbacks.activate).toHaveBeenCalledOnce();
 

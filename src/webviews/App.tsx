@@ -36,7 +36,7 @@ import {
   viewSortModelSignature,
   type FilterModel
 } from "../shared/filterModel";
-import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
+import { decodeGridViewState, emptyGridViewState, encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
 import { sessionModeAction } from "../shared/sessionMode";
@@ -416,7 +416,8 @@ export function App() {
     }
     const pending = pendingGridViewState.current;
     pendingGridViewState.current = undefined;
-    if (pending) vscode.postMessage({ kind: "updateViewState", state: pending });
+    const state = pending ? encodeGridViewState(pending) : undefined;
+    if (state) vscode.postMessage({ kind: "updateViewState", state });
   }, []);
 
   const publishGridViewState = useCallback(
@@ -430,6 +431,8 @@ export function App() {
   );
 
   const requestSessionModeChange = useCallback((target: SessionMode, trigger: HTMLButtonElement) => {
+    const state = encodeGridViewState(gridViewStateRef.current);
+    if (!state) return;
     if (gridViewStateTimer.current !== undefined) {
       window.clearTimeout(gridViewStateTimer.current);
       gridViewStateTimer.current = undefined;
@@ -437,7 +440,7 @@ export function App() {
     pendingGridViewState.current = undefined;
     sessionModeChangeReturnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
     setSessionModeChangeTarget(target);
-    vscode.postMessage({ kind: "switchSessionMode", mode: target, state: gridViewStateRef.current });
+    vscode.postMessage({ kind: "switchSessionMode", mode: target, state });
   }, []);
 
   const restoreSessionModeChangeFocus = useCallback((targetMode: SessionMode) => {
@@ -2074,9 +2077,7 @@ export function App() {
   const inspectionGridViewState = useMemo<GridViewState>(() => {
     const columnIds = new Set(stepInspection?.outputSchema.map((column) => column.id) ?? []);
     return {
-      columnWidths: Object.fromEntries(
-        Object.entries(gridViewState.columnWidths).filter(([columnId]) => columnIds.has(columnId))
-      ),
+      columnWidths: new Map([...gridViewState.columnWidths].filter(([columnId]) => columnIds.has(columnId))),
       viewport: {
         firstVisibleRow: stepInspection?.outputPage.offset ?? stepInspectionTarget?.offset ?? 0,
         scrollLeft: gridViewState.viewport.scrollLeft

@@ -54,9 +54,9 @@ export function createReleasedRMediaWorkbench({
     const active = testing.activeSession();
     assert.equal(active?.sessionId, sessionId, "The R media column fit requires the exact active session.");
     assert.ok(active);
-    const fittedWidths = { ...active.viewState.columnWidths };
+    const fittedWidths = new Map(active.viewState.columnWidths);
     for (const [index, name] of columnNames.entries()) {
-      fittedWidths[columnReference(active.metadata, name).id] = index === 2 ? trailingWidth : leadingWidth;
+      fittedWidths.set(columnReference(active.metadata, name).id, index === 2 ? trailingWidth : leadingWidth);
     }
     await testing.updateViewState(sessionId, {
       ...active.viewState,

@@ -249,7 +249,7 @@ export function simpleReconfiguringDelegate(initialRuntimeId: string): {
 }
 
 export function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 export function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {

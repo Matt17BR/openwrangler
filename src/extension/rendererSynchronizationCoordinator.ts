@@ -1,5 +1,5 @@
 import type { OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
-import type { GridViewState } from "../shared/viewState";
+import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionPresentation } from "./dataBridge";
 
 const DEFAULT_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
@@ -441,7 +441,8 @@ export class RendererSynchronizationCoordinator {
       const presentation = this.callbacks.getSessionPresentation();
       if (presentation && !(await this.postMessage({ kind: "sessionPresentation", presentation }))) return;
       const state = this.callbacks.getViewState();
-      if (state && !(await this.postMessage({ kind: "viewState", state }))) return;
+      const serialized = state ? encodeGridViewState(state) : undefined;
+      if (state && (!serialized || !(await this.postMessage({ kind: "viewState", state: serialized })))) return;
       this.callbacks.didPublishAuthoritativeSnapshot();
     } else if (openResponse) {
       if (!(await this.postMessage(openResponse))) return;

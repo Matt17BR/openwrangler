@@ -13,7 +13,6 @@ import {
   appliedFor,
   appliedStep,
   capabilities,
-  clone,
   deferred,
   draftStep,
   initialSource,
@@ -48,7 +47,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
       publicationUpdate =
         bridge.updateViewState?.(snapshot.sessionId, {
           selectedColumnId: "c:value",
-          columnWidths: { "c:value": 247 },
+          columnWidths: new Map([["c:value", 247]]),
           viewport: { firstVisibleRow: 1, scrollLeft: 23 }
         }) ?? Promise.resolve();
     });
@@ -65,7 +64,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     await publicationUpdate;
     expect(coordinator.activeSession()?.viewState).toMatchObject({
       selectedColumnId: "c:value",
-      columnWidths: { "c:value": 247 },
+      columnWidths: new Map([["c:value", 247]]),
       viewport: { firstVisibleRow: 1, scrollLeft: 23 }
     });
   });
@@ -150,7 +149,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     const publicId = opened.metadata.sessionId;
     await bridge.updateViewState?.(publicId, {
       selectedColumnId: "c:value",
-      columnWidths: { "c:value": 260 },
+      columnWidths: new Map([["c:value", 260]]),
       viewport: { firstVisibleRow: 1, scrollLeft: 19 }
     });
 
@@ -197,7 +196,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
       code: "# restored draft",
       viewState: {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 260 },
+        columnWidths: new Map([["c:value", 260]]),
         viewport: { firstVisibleRow: 1, scrollLeft: 19 },
         filterModel: savedFilter
       }
@@ -408,7 +407,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge, initialSource);
-    const before = clone(coordinator.activeSession());
+    const before = structuredClone(coordinator.activeSession());
 
     const response = await bridge.reconfigureFileSession?.(
       opened.metadata.sessionId,
@@ -561,7 +560,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     if (openedResponse.kind !== "sessionOpened") throw new Error("Expected a Polars session.");
     await bridge.updateViewState?.(openedResponse.metadata.sessionId, {
       selectedColumnId: "c:value",
-      columnWidths: { "c:value": 245 },
+      columnWidths: new Map([["c:value", 245]]),
       viewport: { firstVisibleRow: 1, scrollLeft: 17 }
     });
 
@@ -587,7 +586,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     });
     expect(coordinator.activeSession()?.viewState).toMatchObject({
       selectedColumnId: "c:value",
-      columnWidths: { "c:value": 245 },
+      columnWidths: new Map([["c:value", 245]]),
       viewport: { firstVisibleRow: 1, scrollLeft: 17 }
     });
 
@@ -844,10 +843,10 @@ describe("SessionCoordinator file-session reconfiguration", () => {
       if (openedResponse.kind !== "sessionOpened") throw new Error("Expected a pinned Pandas session.");
       await bridge.updateViewState?.(openedResponse.metadata.sessionId, {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 271 },
+        columnWidths: new Map([["c:value", 271]]),
         viewport: { firstVisibleRow: 1, scrollLeft: 13 }
       });
-      const before = clone(coordinator.activeSession());
+      const before = structuredClone(coordinator.activeSession());
 
       const response = await bridge.reconfigureFileSession!(
         openedResponse.metadata.sessionId,
@@ -900,7 +899,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge, initialSource);
-    const before = clone(coordinator.activeSession());
+    const before = structuredClone(coordinator.activeSession());
 
     const response = await bridge.reconfigureFileSession?.(
       opened.metadata.sessionId,
@@ -956,7 +955,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge, initialSource);
-    const before = clone(coordinator.activeSession());
+    const before = structuredClone(coordinator.activeSession());
 
     const response = await bridge.reconfigureFileSession?.(
       opened.metadata.sessionId,

@@ -371,7 +371,7 @@ describe("App column projection", () => {
     dispatchMany([
       {
         kind: "viewState",
-        state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        state: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
       },
       {
         kind: "rendererSynchronization",
@@ -603,7 +603,7 @@ type HostMessage =
   | OpenWranglerResponse
   | {
       kind: "viewState";
-      state: { columnWidths: Record<string, number>; viewport: { firstVisibleRow: number; scrollLeft: number } };
+      state: { columnWidths: Array<[string, number]>; viewport: { firstVisibleRow: number; scrollLeft: number } };
     }
   | { kind: "rendererSynchronization"; syncId: string; sessionId: string; revision: number }
   | { kind: "editorAction"; action: "applyDraft" }
