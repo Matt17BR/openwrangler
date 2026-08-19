@@ -13,6 +13,7 @@ from openwrangler_runtime.session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
     PySparkConnectUnavailableError,
+    ResponsePayloadError,
     SessionCleanupError,
     SessionManager,
 )
@@ -241,6 +242,48 @@ def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeyp
             "message": "Could not release the Spark cache.",
             "recoverable": False,
             "sessionId": "cleanup-session",
+        },
+    }
+
+
+def test_mutation_response_preflight_failure_preserves_its_structured_code(monkeypatch) -> None:
+    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+        raise ResponsePayloadError(
+            "The correlated mutation response is not valid strict JSON.",
+            "response_encoding_failed",
+        )
+
+    monkeypatch.setattr(kernel_agent, "dispatch", fail)
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "previewStep",
+                    "sessionId": "session",
+                    "revision": 0,
+                    "step": {
+                        "id": "preview",
+                        "kind": "dropColumns",
+                        "params": {"columns": [{"id": "c:source:0", "name": "value"}]},
+                    },
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                },
+                request_id="mutation-preflight-request",
+            )
+        )
+    )
+
+    assert result == {
+        "protocolVersion": 2,
+        "requestId": "mutation-preflight-request",
+        "response": {
+            "kind": "error",
+            "code": "response_encoding_failed",
+            "message": "The correlated mutation response is not valid strict JSON.",
+            "recoverable": True,
         },
     }
 

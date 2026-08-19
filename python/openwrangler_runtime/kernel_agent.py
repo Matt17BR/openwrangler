@@ -12,6 +12,7 @@ from .session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
     PySparkConnectUnavailableError,
+    ResponsePayloadError,
     SessionCleanupError,
     SessionManager,
     UnknownSessionError,
@@ -51,6 +52,8 @@ def dispatch_json(payload: str) -> str:
             recoverable=False,
             session_id=error.session_id,
         )
+    except ResponsePayloadError as error:
+        response = error_response(str(error), code=error.code)
     except AmbiguousViewColumnError as error:
         response = error_response(str(error), code="ambiguous_view_column")
     except EngineError as error:
