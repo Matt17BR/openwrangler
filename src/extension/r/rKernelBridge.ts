@@ -37,6 +37,7 @@ import {
 import { RKernelReadQueries } from "./rKernelReadQueries";
 import {
   claimVerifiedRNotebookVariableSelection,
+  reverifyRNotebookVariableSelection,
   type RNotebookVariableDescriptor,
   type VerifiedRNotebookVariableSelection
 } from "./rNotebookVariableDiscovery";
@@ -74,7 +75,19 @@ export class RKernelBridge implements OpenWranglerBridge {
     const binding = claimVerifiedRNotebookVariableSelection(notebookDocument, verifiedSelection);
     try {
       const transport = new RKernelSessionTransport(context, notebookDocument, randomUUID, randomUUID(), binding);
-      return new RKernelBridge(context, transport, randomUUID, diagnosticSink, binding.variable);
+      const createRecoveryDelegate = async (): Promise<RKernelBridge> => {
+        const verified = await reverifyRNotebookVariableSelection(notebookDocument, binding.variable);
+        return RKernelBridge.fromVerifiedSelection(context, notebookDocument, verified, diagnosticSink);
+      };
+      return new RKernelBridge(
+        context,
+        transport,
+        randomUUID,
+        diagnosticSink,
+        binding.variable,
+        {},
+        createRecoveryDelegate
+      );
     } catch (error) {
       binding.dispose();
       throw error;
@@ -87,7 +100,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     private readonly createSessionId: () => string = randomUUID,
     diagnosticSink?: (message: string) => void,
     private readonly verifiedVariable?: RNotebookVariableDescriptor,
-    fileOperations: RKernelBridgeFileOperations = {}
+    fileOperations: RKernelBridgeFileOperations = {},
+    private readonly createRecoveryDelegate?: () => Promise<RKernelBridge>
   ) {
     this.transport = transport;
     this.readQueries = new RKernelReadQueries(transport, this.sessions);
@@ -107,6 +121,20 @@ export class RKernelBridge implements OpenWranglerBridge {
       this.kernelGeneration += 1;
       for (const session of this.sessions.values()) session.invalidated = true;
     });
+  }
+
+  async createRuntimeRecoveryDelegate(): Promise<{
+    readonly delegate: OpenWranglerBridge;
+    dispose(): Promise<void>;
+  }> {
+    if (this.disposed || !this.createRecoveryDelegate) {
+      throw new Error("The verified R notebook source cannot create a replacement runtime delegate.");
+    }
+    const delegate = await this.createRecoveryDelegate();
+    return {
+      delegate,
+      dispose: () => delegate.dispose()
+    };
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {

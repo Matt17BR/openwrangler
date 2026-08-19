@@ -178,6 +178,297 @@ describe("SessionRuntimeRequestExecutor", () => {
     expect(mismatchedHooks.replayAfterRuntimeLoss).not.toHaveBeenCalled();
   });
 
+  it("returns the exact Native-R kernel-change error after replay and serves the next page from the replacement", async () => {
+    const lostRequest = pageRequest("r-kernel-lost", 0);
+    const recoveredRequest = pageRequest("r-kernel-recovered", 0);
+    const runtimeCalls: OpenWranglerRequest[] = [];
+    const draftStep: TransformStep = {
+      ...step,
+      id: "draft-round",
+      params: { column: { id: "c:value", name: "value" }, decimals: 2 }
+    };
+    const session = runtimeSession(
+      bridge(
+        requestMock(async (runtimeRequest) => {
+          runtimeCalls.push(runtimeRequest);
+          if (runtimeSessionId(runtimeRequest) === "runtime-session") {
+            return {
+              kind: "error",
+              code: "r_kernel_changed",
+              message: "The selected R notebook kernel changed.",
+              recoverable: true,
+              sessionId: runtimeSessionId(runtimeRequest),
+              viewRequestId: lostRequest.viewRequestId
+            };
+          }
+          if (runtimeRequest.kind !== "getPage") throw new Error("Expected the next request to be a page read.");
+          return pageResponse(runtimeRequest, session.metadata);
+        })
+      ),
+      {
+        metadata: metadata({ backend: "r", steps: [step], draftStep }),
+        code: "# confirmed generated R code",
+        latestRequestedPageRequestId: lostRequest.viewRequestId,
+        activeViewContextId: "view",
+        latestRequestedViewContextId: "view"
+      }
+    );
+    session.viewState = {
+      ...session.viewState,
+      selectedColumnId: "c:value",
+      columnWidths: new Map([["c:value", 240]]),
+      viewport: { firstVisibleRow: 3, scrollLeft: 17 }
+    };
+    const readConfirmedPublicState = () => ({
+      publicId: session.publicId,
+      publicRevision: session.publicRevision,
+      steps: session.metadata.steps,
+      draftStep: session.metadata.draftStep,
+      code: session.code,
+      viewState: session.viewState
+    });
+    const confirmedPublicState = readConfirmedPublicState();
+    const replay = vi.fn(async (_id, _options, requiredSchema, isStillCurrent) => {
+      expect(requiredSchema).toEqual(schema);
+      expect(isStillCurrent?.()).toBe(true);
+      replaceRuntime(session);
+      return true;
+    });
+
+    const requestHooks = hooks({ replayAfterRuntimeLoss: replay });
+    await expect(
+      runtimeExecutor().execute(session, lostRequest, { viewContextId: "view" }, requestHooks)
+    ).resolves.toEqual({
+      kind: "error",
+      code: "r_kernel_changed",
+      message: "The selected R notebook kernel changed.",
+      recoverable: true,
+      sessionId: "public-session",
+      viewRequestId: "r-kernel-lost"
+    });
+    expect(replay).toHaveBeenCalledWith(
+      "runtime-session",
+      { priority: "interactive", viewContextId: "view" },
+      schema,
+      expect.any(Function)
+    );
+    expect(runtimeCalls.map(runtimeSessionId)).toEqual(["runtime-session"]);
+    expect(readConfirmedPublicState()).toEqual(confirmedPublicState);
+    expect(session.runtimeId).toBe("runtime-2");
+
+    session.latestRequestedPageRequestId = recoveredRequest.viewRequestId;
+    await expect(
+      runtimeExecutor().execute(session, recoveredRequest, { viewContextId: "view" }, requestHooks)
+    ).resolves.toMatchObject({
+      kind: "page",
+      viewRequestId: "r-kernel-recovered",
+      metadata: { sessionId: "public-session" }
+    });
+    expect(runtimeCalls.map(runtimeSessionId)).toEqual(["runtime-session", "runtime-2"]);
+    expect(replay).toHaveBeenCalledOnce();
+    expect(readConfirmedPublicState()).toEqual(confirmedPublicState);
+  });
+
+  it("rejects malformed or unrelated kernel-change errors without replay", async () => {
+    const request = statsRequest(0);
+    const cases: Array<{ label: string; response: OpenWranglerResponse; expectedCode: string }> = [
+      {
+        label: "nonrecoverable",
+        response: {
+          kind: "error",
+          code: "r_kernel_changed",
+          message: "The selected R notebook kernel changed.",
+          recoverable: false,
+          sessionId: "runtime-session",
+          viewRequestId: request.viewRequestId
+        },
+        expectedCode: "r_kernel_changed"
+      },
+      {
+        label: "missing session",
+        response: {
+          kind: "error",
+          code: "r_kernel_changed",
+          message: "The selected R notebook kernel changed.",
+          recoverable: true,
+          viewRequestId: request.viewRequestId
+        },
+        expectedCode: "r_kernel_changed"
+      },
+      {
+        label: "wrong session",
+        response: {
+          kind: "error",
+          code: "r_kernel_changed",
+          message: "The selected R notebook kernel changed.",
+          recoverable: true,
+          sessionId: "other-runtime",
+          viewRequestId: request.viewRequestId
+        },
+        expectedCode: "invalid_runtime_response"
+      },
+      {
+        label: "wrong view",
+        response: {
+          kind: "error",
+          code: "r_kernel_changed",
+          message: "The selected R notebook kernel changed.",
+          recoverable: true,
+          sessionId: "runtime-session",
+          viewRequestId: "wrong-view"
+        },
+        expectedCode: "invalid_runtime_response"
+      },
+      {
+        label: "unrelated error",
+        response: {
+          kind: "error",
+          code: "engine_error",
+          message: "An unrelated engine error.",
+          recoverable: true,
+          sessionId: "runtime-session",
+          viewRequestId: request.viewRequestId
+        },
+        expectedCode: "engine_error"
+      }
+    ];
+    for (const testCase of cases) {
+      const replay = vi.fn(async () => true);
+      const session = runtimeSession(bridge(requestMock(async () => testCase.response)), {
+        metadata: metadata({ backend: "r" }),
+        activeViewContextId: "view",
+        latestRequestedViewContextId: "view"
+      });
+      await expect(
+        runtimeExecutor().execute(
+          session,
+          request,
+          { viewContextId: "view" },
+          hooks({ replayAfterRuntimeLoss: replay })
+        )
+      ).resolves.toMatchObject({ kind: "error", code: testCase.expectedCode });
+      expect(replay, testCase.label).not.toHaveBeenCalled();
+    }
+
+    const nonRReplay = vi.fn(async () => true);
+    const nonRSession = runtimeSession(
+      bridge(
+        requestMock(async (runtimeRequest) => ({
+          kind: "error",
+          code: "r_kernel_changed",
+          message: "The selected R notebook kernel changed.",
+          recoverable: true,
+          sessionId: runtimeSessionId(runtimeRequest),
+          viewRequestId: request.viewRequestId
+        }))
+      ),
+      { activeViewContextId: "view", latestRequestedViewContextId: "view" }
+    );
+    await expect(
+      runtimeExecutor().execute(
+        nonRSession,
+        request,
+        { viewContextId: "view" },
+        hooks({ replayAfterRuntimeLoss: nonRReplay })
+      )
+    ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
+    expect(nonRReplay).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact kernel-change error when replay fails without reissuing the read", async () => {
+    const request = statsRequest(0);
+    const delegate = bridge(
+      requestMock(async (runtimeRequest) => ({
+        kind: "error",
+        code: "r_kernel_changed",
+        message: "The selected R notebook kernel changed.",
+        recoverable: true,
+        sessionId: runtimeSessionId(runtimeRequest),
+        viewRequestId: request.viewRequestId
+      }))
+    );
+    const replay = vi.fn(async () => false);
+    const session = runtimeSession(delegate, {
+      metadata: metadata({ backend: "r", steps: [step] }),
+      code: "# unchanged",
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view"
+    });
+    const previous = {
+      publicId: session.publicId,
+      publicRevision: session.publicRevision,
+      runtimeId: session.runtimeId,
+      runtimeRevision: session.runtimeRevision,
+      metadata: session.metadata,
+      code: session.code,
+      viewState: session.viewState
+    };
+
+    await expect(
+      runtimeExecutor().execute(session, request, { viewContextId: "view" }, hooks({ replayAfterRuntimeLoss: replay }))
+    ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed", sessionId: "public-session" });
+    expect(replay).toHaveBeenCalledOnce();
+    expect(delegate.request).toHaveBeenCalledOnce();
+    expect(session).toMatchObject(previous);
+  });
+
+  it("does not replay a kernel change for a cancelled, superseded, unavailable, or closing owner", async () => {
+    const request = statsRequest(0);
+    for (const state of ["cancelled", "superseded", "unavailable", "closing"] as const) {
+      const cancelled = state === "cancelled";
+      const scheduler = schedulerStub(() => cancelled);
+      const session = runtimeSession(
+        bridge(
+          requestMock(async (runtimeRequest) => {
+            if (state === "superseded") {
+              session.activeViewContextId = "new-view";
+              session.latestRequestedViewContextId = "new-view";
+            }
+            return {
+              kind: "error",
+              code: "r_kernel_changed",
+              message: "The selected R notebook kernel changed.",
+              recoverable: true,
+              sessionId: runtimeSessionId(runtimeRequest),
+              viewRequestId: request.viewRequestId
+            };
+          })
+        ),
+        {
+          metadata: metadata({ backend: "r" }),
+          scheduler,
+          closing: state === "closing",
+          activeViewContextId: "view",
+          latestRequestedViewContextId: "view"
+        }
+      );
+      const delegate = session.delegate;
+      const replay = vi.fn(async () => true);
+      const requestHooks = hooks({
+        isCoordinatorAvailable: vi.fn(() => state !== "unavailable"),
+        replayAfterRuntimeLoss: replay
+      });
+      const response = await runtimeExecutor().execute(
+        session,
+        request,
+        { priority: "background", viewContextId: "view" },
+        requestHooks
+      );
+      if (state === "cancelled" || state === "superseded") {
+        expect(response).toMatchObject({
+          kind: "error",
+          code: "stale_response",
+          message: "Ignored a cancelled or superseded read before live runtime recovery."
+        });
+        expect(JSON.stringify(response)).not.toContain("PySpark");
+      } else {
+        expect(response).toMatchObject({ kind: "error", code: "r_kernel_changed" });
+      }
+      expect(replay, state).not.toHaveBeenCalled();
+      expect(delegate.request, state).toHaveBeenCalledOnce();
+    }
+  });
+
   it.each([
     { label: "cancelled", cancel: true, supersede: false, expectedCode: "unknown_session" },
     { label: "superseded", cancel: false, supersede: true, expectedCode: "stale_response" }

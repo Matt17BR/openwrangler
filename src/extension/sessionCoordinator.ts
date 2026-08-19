@@ -88,6 +88,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private persistenceOwnerOrdinal = 0;
   private shutdownPromise: Promise<void> | undefined;
   private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
+  private readonly sessionOwnerDelegates = new WeakMap<CoordinatedSession, OpenWranglerBridge>();
   private readonly runtimeCleanup: SessionRuntimeCleanup;
   private readonly persistence: SessionPersistenceStore;
   private readonly runtimeStateRestorer = new SessionRuntimeStateRestorer();
@@ -205,7 +206,7 @@ export class SessionCoordinator implements vscode.Disposable {
     const session = this.sessions.get(sessionId);
     if (
       !session ||
-      session.delegate !== delegate ||
+      this.sessionOwnerDelegates.get(session) !== delegate ||
       session.closing ||
       session.reconfiguring ||
       session.metadata.backend !== backend ||
@@ -213,7 +214,12 @@ export class SessionCoordinator implements vscode.Disposable {
     ) {
       return undefined;
     }
-    return delegate.listExcelSheets?.(session.runtimeId, session.openRequest.source, session.metadata.backend, options);
+    return session.delegate.listExcelSheets?.(
+      session.runtimeId,
+      session.openRequest.source,
+      session.metadata.backend,
+      options
+    );
   }
 
   private async reconnectLiveSession(
@@ -226,7 +232,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (
       this.disposed ||
       !session ||
-      session.delegate !== delegate ||
+      this.sessionOwnerDelegates.get(session) !== delegate ||
       session.metadata.backend !== "pyspark" ||
       session.openRequest.source.kind !== "notebookVariable"
     ) {
@@ -542,6 +548,7 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       if (!result.established) return result.response;
       this.responseCommitter.retainSession(result.session);
+      this.sessionOwnerDelegates.set(result.session, delegate);
       this.sessions.set(result.session.publicId, result.session);
       this.setActive(result.session.publicId);
       return result.response;
@@ -566,7 +573,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     const session = this.sessions.get(sessionId);
-    if (!session || session.delegate !== delegate) {
+    if (!session || this.sessionOwnerDelegates.get(session) !== delegate) {
       return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
     }
     if (revision !== session.publicRevision) {
@@ -631,7 +638,8 @@ export class SessionCoordinator implements vscode.Disposable {
 
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
-    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    const runtimeDelegate = session.delegate;
+    this.pendingOpens.set(runtimeDelegate, (this.pendingOpens.get(runtimeDelegate) ?? 0) + 1);
     let replacementPublished = false;
     try {
       await session.scheduler.waitForIdle();
@@ -654,7 +662,7 @@ export class SessionCoordinator implements vscode.Disposable {
         );
       }
       if (options?.cancellation?.isCancellationRequested) return reconfigurationCancelled(session.publicId);
-      const response = await this.serializeSessionEstablishment(delegate, () =>
+      const response = await this.serializeSessionEstablishment(runtimeDelegate, () =>
         this.runtimeReconfigurer.replaceFileSession(session, source, options, this.runtimeReconfigurationHooks(session))
       );
       replacementPublished = response.kind === "sessionOpened";
@@ -669,11 +677,11 @@ export class SessionCoordinator implements vscode.Disposable {
       ) {
         this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
-      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
-      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
-      else this.pendingOpens.delete(delegate);
+      const remaining = (this.pendingOpens.get(runtimeDelegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(runtimeDelegate, remaining);
+      else this.pendingOpens.delete(runtimeDelegate);
       this.resolvePendingOpenWaitersIfIdle();
-      this.runtimeCleanup.releaseIfIdle(delegate);
+      this.runtimeCleanup.releaseIfIdle(runtimeDelegate);
     }
   }
 
@@ -695,7 +703,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     const session = this.sessions.get(sessionId);
-    if (!session || session.delegate !== delegate) {
+    if (!session || this.sessionOwnerDelegates.get(session) !== delegate) {
       return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
     }
     if (revision !== session.publicRevision) {
@@ -770,7 +778,8 @@ export class SessionCoordinator implements vscode.Disposable {
     let resolveRewriteSettlement: (() => void) | undefined;
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
-    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    const runtimeDelegate = session.delegate;
+    this.pendingOpens.set(runtimeDelegate, (this.pendingOpens.get(runtimeDelegate) ?? 0) + 1);
     let published = false;
     try {
       await session.scheduler.waitForIdle();
@@ -794,7 +803,7 @@ export class SessionCoordinator implements vscode.Disposable {
         resolveRewriteSettlement = resolve;
       });
       this.installRuntimeSettlementBarrier(session, rewriteSettlement);
-      const response = await this.serializeSessionEstablishment(delegate, () =>
+      const response = await this.serializeSessionEstablishment(runtimeDelegate, () =>
         this.runtimeReconfigurer.rewriteCleaningPlan(
           session,
           steps,
@@ -811,11 +820,11 @@ export class SessionCoordinator implements vscode.Disposable {
       if (published && this.isLiveSession(session) && !session.closing && this.activeSessionId === session.publicId) {
         this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
-      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
-      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
-      else this.pendingOpens.delete(delegate);
+      const remaining = (this.pendingOpens.get(runtimeDelegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(runtimeDelegate, remaining);
+      else this.pendingOpens.delete(runtimeDelegate);
       this.resolvePendingOpenWaitersIfIdle();
-      this.runtimeCleanup.releaseIfIdle(delegate);
+      this.runtimeCleanup.releaseIfIdle(runtimeDelegate);
       resolveRewriteSettlement?.();
     }
   }
@@ -837,7 +846,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     const session = this.sessions.get(sessionId);
-    if (!session || session.delegate !== delegate) {
+    if (!session || this.sessionOwnerDelegates.get(session) !== delegate) {
       return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
     }
     if (revision !== session.publicRevision) {
@@ -884,7 +893,8 @@ export class SessionCoordinator implements vscode.Disposable {
     );
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
-    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    const runtimeDelegate = session.delegate;
+    this.pendingOpens.set(runtimeDelegate, (this.pendingOpens.get(runtimeDelegate) ?? 0) + 1);
     let replacementPublished = false;
     try {
       await session.scheduler.waitForIdle();
@@ -908,7 +918,7 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
       if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
-      const response = await this.serializeSessionEstablishment(delegate, () =>
+      const response = await this.serializeSessionEstablishment(runtimeDelegate, () =>
         this.runtimeReconfigurer.reopenLiveSessionInMode(
           session,
           mode,
@@ -929,11 +939,11 @@ export class SessionCoordinator implements vscode.Disposable {
       ) {
         this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       }
-      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
-      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
-      else this.pendingOpens.delete(delegate);
+      const remaining = (this.pendingOpens.get(runtimeDelegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(runtimeDelegate, remaining);
+      else this.pendingOpens.delete(runtimeDelegate);
       this.resolvePendingOpenWaitersIfIdle();
-      this.runtimeCleanup.releaseIfIdle(delegate);
+      this.runtimeCleanup.releaseIfIdle(runtimeDelegate);
     }
   }
 
@@ -1175,9 +1185,16 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
-    return this.serializeSessionEstablishment(session.delegate, () =>
-      this.runtimeRecovery.replay(session, options, this.runtimeRecoveryHooks(session))
-    );
+    const failedRuntimeId = session.runtimeId;
+    const failedDelegate = session.delegate;
+    return this.serializeSessionEstablishment(failedDelegate, async () => {
+      await this.waitForRuntimeSettlement(session);
+      if (!this.isLiveSession(session) || session.closing) return false;
+      if (session.runtimeId !== failedRuntimeId || session.delegate !== failedDelegate || !session.recoveryRequired) {
+        return true;
+      }
+      return this.runtimeRecovery.replay(session, options, this.runtimeRecoveryHooks(session));
+    });
   }
 
   private replayAfterRuntimeLoss(
@@ -1189,6 +1206,7 @@ export class SessionCoordinator implements vscode.Disposable {
     onRestoredPage?: (page: PageResponse) => void
   ): Promise<boolean> {
     return this.serializeSessionEstablishment(session.delegate, async () => {
+      await this.waitForRuntimeSettlement(session);
       if (!this.isLiveSession(session) || session.closing) return false;
       if (session.runtimeId !== failedRuntimeId) return true;
       if (isStillCurrent && !isStillCurrent()) return false;
@@ -1222,6 +1240,7 @@ export class SessionCoordinator implements vscode.Disposable {
     return {
       isCurrent: () => this.isLiveSession(session) && !session.closing,
       originMismatch: (request) => sessionOriginMismatch(request, session.origin),
+      installRuntimeSettlement: (settlement) => this.installRuntimeSettlementBarrier(session, settlement),
       clearPublishedStepInspection: () => this.clearPublishedStepInspection(session),
       publishActive: () => {
         if (this.activeSessionId === session.publicId) this.activeSessionEmitter.fire(activeSessionSnapshot(session));
