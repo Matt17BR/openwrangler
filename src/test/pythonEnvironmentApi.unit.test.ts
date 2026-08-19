@@ -231,7 +231,7 @@ describe("Python environment API broker", () => {
     ).rejects.toThrow("requires an absolute executable path");
   });
 
-  it("accepts only the exact selected fsspec release", () => {
+  it("uses only the selected interpreter's fsspec compatibility decision", () => {
     const exact = {
       importModule: "fsspec",
       distribution: "fsspec",
@@ -239,14 +239,17 @@ describe("Python environment API broker", () => {
       exactVersion: "2026.7.0"
     };
 
-    expect(classifyDependencyProbe([exact], { fsspec: { found: true, version: "2026.7.0" } })).toEqual({
+    expect(classifyDependencyProbe([exact], { fsspec: { supported: true } })).toEqual({
       available: ["fsspec"],
       missing: []
     });
-    for (const observed of [undefined, "2026.6.0", "2026.8.0"]) {
+    for (const observed of [undefined, false]) {
       expect(
-        classifyDependencyProbe([exact], observed === undefined ? {} : { fsspec: { found: true, version: observed } })
-      ).toEqual({ available: [], missing: ["fsspec==2026.7.0"] });
+        classifyDependencyProbe([exact], observed === undefined ? {} : { fsspec: { supported: observed } })
+      ).toEqual({
+        available: [],
+        missing: ["fsspec==2026.7.0"]
+      });
     }
   });
 
