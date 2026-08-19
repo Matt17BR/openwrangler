@@ -7,6 +7,7 @@ from concurrent.futures import CancelledError
 
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
+from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 from .server import dispatch
 from .session import (
     LiveSourceInvalidatedError,
@@ -66,7 +67,11 @@ def dispatch_json(payload: str) -> str:
 
 
 def _encode_response(request_id: str, response: Mapping[str, object]) -> str:
-    return json.dumps(response_envelope(request_id, response), default=str, allow_nan=False)
+    frame = encode_response_frame(
+        response_envelope(request_id, response),
+        MAX_RESPONSE_FRAME_BYTES,
+    )
+    return frame[:-1].decode("utf-8")
 
 
 def _safe_request_id(payload: str) -> str:
