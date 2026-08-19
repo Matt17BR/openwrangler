@@ -65,7 +65,7 @@ export const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/stable-release.yml"
 ]);
 const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
-const NPM_COMMAND = /\bnpm(?:\.cmd)?(?=\s|$|[%}"'])[^\n;&|]*/giu;
+const NPM_COMMAND = /\bnpm(?:\.(?:cmd|ps1))?(?![\w.-])[^\n;&|]*/giu;
 const NPM_COMMANDS = new Set([
   "access",
   "adduser",

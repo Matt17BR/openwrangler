@@ -205,6 +205,28 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     ),
     /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
   );
+  for (const command of [
+    '"$(command -v npm)" conf delete ignore-scripts --location=project\n' + '"$(command -v npm)" install-cl',
+    '"`command -v npm`" conf delete ignore-scripts --location=project\n' + '"`command -v npm`" install-cl'
+  ]) {
+    rejected(
+      mutate(".github/workflows/ci.yml", (source) =>
+        source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts\n          " + command)
+      ),
+      /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
+    );
+  }
+  for (const command of [
+    "& (Get-Command npm) conf delete ignore-scripts --location=project\n" + "& (Get-Command npm) install-cl",
+    "npm.ps1 conf delete ignore-scripts --location=project\n" + "npm.ps1 install-cl"
+  ]) {
+    const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
+    workflow.jobs["windows-unique"].steps.push({ run: command });
+    rejected(
+      new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
+      /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
+    );
+  }
   rejected(
     mutate(".github/workflows/ci.yml", (source) =>
       source.replace(
