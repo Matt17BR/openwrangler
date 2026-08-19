@@ -4,8 +4,8 @@ import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mj
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
-const SETUP_PYTHON = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
-const SETUP_JAVA = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
+const SETUP_PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97";
+const SETUP_JAVA = "actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961";
 const SETUP_R = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const SETUP_R_DEPENDENCIES = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const CALL_PATH = "./.github/workflows/candidate-acceptance.yml";
@@ -596,7 +596,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   }
   if (
     containsRunMarker(linux, [...DUPLICATE_SOURCE_HARNESS_RUNS, ...LINUX_DUPLICATE_HARNESS_SETUP]) ||
-    steps(linux).some((step) => step?.uses === SETUP_JAVA) ||
+    steps(linux).some((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@")) ||
     steps(linux).some((step) => step?.name === "Verify exact coverage runtimes")
   ) {
     problems.push(
