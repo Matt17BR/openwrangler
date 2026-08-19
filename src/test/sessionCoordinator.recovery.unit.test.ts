@@ -392,6 +392,7 @@ describe("SessionCoordinator", () => {
       request: vi.fn(handleRequest),
       onIdle: vi.fn()
     };
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
     (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
       delegate: candidateDelegate,
       dispose: candidateDispose
@@ -551,6 +552,7 @@ describe("SessionCoordinator", () => {
       })
     };
     const disposeDetached = vi.fn(async () => undefined);
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
     (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi
       .fn()
       .mockResolvedValueOnce({ delegate: detachedCandidate, dispose: disposeDetached })
@@ -660,6 +662,7 @@ describe("SessionCoordinator", () => {
       })
     };
     const disposeDetached = vi.fn(async () => undefined);
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
     (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi
       .fn()
       .mockResolvedValueOnce({ delegate: detachedCandidate, dispose: disposeDetached })
@@ -801,9 +804,11 @@ describe("SessionCoordinator", () => {
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
         throw new Error(`Unexpected recovered-candidate request: ${request.kind}`);
       }),
+      supportsVerifiedRuntimeRecoveryDelegate: true,
       createRuntimeRecoveryDelegate: redundantRecovery
     };
     const disposeDetached = vi.fn(async () => undefined);
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
     (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi
       .fn()
       .mockResolvedValueOnce({ delegate: detachedCandidate, dispose: disposeDetached })
@@ -928,8 +933,10 @@ describe("SessionCoordinator", () => {
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
         throw new Error(`Unexpected recovered-candidate request: ${request.kind}`);
       }),
+      supportsVerifiedRuntimeRecoveryDelegate: true,
       createRuntimeRecoveryDelegate: redundantRecovery
     };
+    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
     (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
       delegate: recoveredDelegate,
       dispose: vi.fn(async () => undefined)

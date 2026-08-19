@@ -123,7 +123,10 @@ describe("SessionRuntimeRecovery", () => {
       delegate: candidateDelegate,
       dispose: disposeCandidate
     }));
-    Object.assign(oldDelegate, { createRuntimeRecoveryDelegate });
+    Object.assign(oldDelegate, {
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      createRuntimeRecoveryDelegate
+    });
     const session = runtimeSession(oldDelegate, "r");
     const publicState = {
       publicId: session.publicId,
@@ -194,6 +197,7 @@ describe("SessionRuntimeRecovery", () => {
       throw new Error(`Unexpected old-runtime request: ${request.kind}`);
     });
     Object.assign(oldDelegate, {
+      supportsVerifiedRuntimeRecoveryDelegate: true,
       createRuntimeRecoveryDelegate: vi.fn(async () => ({
         delegate: candidateDelegate,
         dispose: disposeCandidate
@@ -276,6 +280,7 @@ describe("SessionRuntimeRecovery", () => {
       throw new Error(`Unexpected candidate request: ${request.kind}`);
     });
     Object.assign(oldDelegate, {
+      supportsVerifiedRuntimeRecoveryDelegate: true,
       createRuntimeRecoveryDelegate: vi.fn(async () => ({
         delegate: candidateDelegate,
         dispose: vi.fn(async () => undefined)
@@ -353,7 +358,10 @@ describe("SessionRuntimeRecovery", () => {
         delegate: candidateDelegate,
         dispose: disposeCandidate
       }));
-      Object.assign(oldDelegate, { createRuntimeRecoveryDelegate });
+      Object.assign(oldDelegate, {
+        supportsVerifiedRuntimeRecoveryDelegate: true,
+        createRuntimeRecoveryDelegate
+      });
       const session = runtimeSession(oldDelegate, "r");
       const previous = {
         runtimeId: session.runtimeId,

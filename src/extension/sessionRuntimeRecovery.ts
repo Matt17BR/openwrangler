@@ -29,8 +29,8 @@ export interface RuntimeRecoveryDelegateCandidate {
 }
 
 export interface RuntimeRecoveryDelegateFactory {
-  /** False when an R bridge is not bound to one re-verifiable notebook variable. */
-  readonly supportsVerifiedRuntimeRecoveryDelegate?: boolean;
+  /** True only when the R bridge is bound to one re-verifiable notebook variable. */
+  readonly supportsVerifiedRuntimeRecoveryDelegate: boolean;
   createRuntimeRecoveryDelegate(): Promise<RuntimeRecoveryDelegateCandidate>;
 }
 
@@ -269,7 +269,7 @@ export class SessionRuntimeRecovery {
 function runtimeRecoveryDelegateFactory(delegate: OpenWranglerBridge): RuntimeRecoveryDelegateFactory | undefined {
   const candidate = delegate as OpenWranglerBridge & Partial<RuntimeRecoveryDelegateFactory>;
   return typeof candidate.createRuntimeRecoveryDelegate === "function" &&
-    candidate.supportsVerifiedRuntimeRecoveryDelegate !== false
+    candidate.supportsVerifiedRuntimeRecoveryDelegate === true
     ? (candidate as OpenWranglerBridge & RuntimeRecoveryDelegateFactory)
     : undefined;
 }
