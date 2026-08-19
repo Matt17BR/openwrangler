@@ -484,11 +484,30 @@ const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInterac
       recordAcceptanceProgress,
       waitFor
     }),
-  exercisePivotWiderJourney: (app, testing, sessionId, namesFromName, valuesFromName, keys, synchronizeApp) =>
-    exercisePivotWiderJourney(app, testing, sessionId, namesFromName, valuesFromName, keys, synchronizeApp, {
-      recordAcceptanceProgress,
-      waitFor
-    }),
+  exercisePivotWiderJourney: (
+    app,
+    testing,
+    sessionId,
+    namesFromName,
+    valuesFromName,
+    keys,
+    synchronizeApp,
+    reacquireApp
+  ) =>
+    exercisePivotWiderJourney(
+      app,
+      testing,
+      sessionId,
+      namesFromName,
+      valuesFromName,
+      keys,
+      synchronizeApp,
+      reacquireApp,
+      {
+        recordAcceptanceProgress,
+        waitFor
+      }
+    ),
   previewAndDiscardPreviousRevenue,
   previewApplyAndUndoGroupedRevenue,
   previewMostCommonAccountNote,
@@ -2114,6 +2133,7 @@ const exerciseReleasedREditingCoverage = createReleasedREditingCoverage({
       "score",
       ["A", "B"],
       (description) => releasedRSessionApp(workbench, testing, sessionId, description),
+      (description) => reacquireAcknowledgedSessionApp(workbench, testing, sessionId, description),
       { recordAcceptanceProgress, waitFor }
     );
   },
@@ -2304,6 +2324,7 @@ async function exerciseReleasedREditingJourney(
       "score",
       ["A", "B"],
       (description) => releasedRSessionApp(workbench, testing, sessionId, description),
+      (description) => reacquireAcknowledgedSessionApp(workbench, testing, sessionId, description),
       { recordAcceptanceProgress, waitFor }
     );
   }

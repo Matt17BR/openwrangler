@@ -868,6 +868,7 @@ export async function activateExactAcceptanceElementOnce(
                 listener: (event: { readonly isTrusted: boolean }) => void,
                 options: { once: boolean }
               ): void;
+              matches(selector: string): boolean;
               contains(node: ClickableElement | null): boolean;
               getAttribute(name: string): string | null;
               getBoundingClientRect(): {
@@ -879,7 +880,12 @@ export async function activateExactAcceptanceElementOnce(
             };
             const element = candidate as ClickableElement;
             if (!element.isConnected) return "disconnected";
-            if (element.disabled === true || element.getAttribute("aria-disabled") === "true") return "disabled";
+            if (
+              element.disabled === true ||
+              element.matches(":disabled") ||
+              element.getAttribute("aria-disabled") === "true"
+            )
+              return "disabled";
             const rect = element.getBoundingClientRect();
             if (rect.width <= 0 || rect.height <= 0) return "geometry";
             const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);

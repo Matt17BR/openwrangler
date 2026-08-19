@@ -91,7 +91,9 @@ describe("OperationBuilder", () => {
     expect(code).toHaveValue("result <- df");
     expect(screen.getByText(/Assign an R data frame/u)).toBeInTheDocument();
     fireEvent.change(code, { target: { value: customCode } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    const preview = screen.getByRole("button", { name: "Preview changes" });
+    expect(preview).toHaveAttribute("type", "submit");
+    expect(fireEvent.click(preview)).toBe(false);
     expect(onPreview).toHaveBeenCalledOnce();
   });
 
@@ -119,6 +121,41 @@ describe("OperationBuilder", () => {
     expect(code).toHaveValue(defaultCode);
     expect(screen.getByText(/Assign an engine-native dataframe or relation/u)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+  });
+
+  it("dispatches pointer and implicit-form previews exactly once through the same validated routine", () => {
+    const onPreview = vi.fn();
+    const view = render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="renameColumn"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("New name"), { target: { value: "city_name" } });
+    const preview = screen.getByRole("button", { name: "Preview changes" });
+    const form = preview.closest("form") as HTMLFormElement;
+    expect(preview).toHaveAttribute("type", "submit");
+    expect(form).toBeValid();
+
+    view.rerender(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="renameColumn"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    fireEvent.click(preview);
+    expect(onPreview).toHaveBeenCalledOnce();
+
+    onPreview.mockClear();
+    expect(fireEvent.submit(form)).toBe(false);
     expect(onPreview).toHaveBeenCalledOnce();
   });
 
@@ -956,9 +993,10 @@ describe("OperationBuilder", () => {
     expect(onPreview).not.toHaveBeenCalled();
 
     fireEvent.change(value, { target: { value: "1e309" } });
-    fireEvent.submit(screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement);
+    expect(fireEvent.click(screen.getByRole("button", { name: "Preview changes" }))).toBe(true);
     expect(onPreview).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(value).toBeInvalid();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows and enforces the native R datetime-format limit before preview", () => {

@@ -31,6 +31,75 @@ pivot_wider_step <- function(frame, id = "pivot-wider-r") list(
   )
 )
 
+pivot_wider_complete_source <- data.frame(
+  identifier = c(10, 10, 20, 20),
+  key = c("a", "b", "a", "b"),
+  reading = c(1L, 2L, 3L, 4L),
+  check.names = FALSE
+)
+pivot_wider_complete_before <- serialize(pivot_wider_complete_source, NULL, version = 3L)
+pivot_wider_complete_base <- openwrangler_r_frame_contract$capture_frame(pivot_wider_complete_source)
+pivot_wider_complete_source_capture <- openwrangler_r_frame_contract$capture_frame(
+  pivot_wider_complete_source,
+  nullability_source = pivot_wider_complete_base,
+  source_positions = seq_along(pivot_wider_complete_base$descriptor$schema),
+  output_ids = vapply(
+    pivot_wider_complete_base$descriptor$schema,
+    `[[`,
+    character(1L),
+    "id",
+    USE.NAMES = FALSE
+  ),
+  min_max_scale_positions = 1L
+)
+assert_identical(
+  pivot_wider_complete_source_capture$descriptor$schema[[1L]]$nullable,
+  TRUE,
+  "Pivot wider nullability fixture did not retain conservative source metadata"
+)
+pivot_wider_complete_capture <- openwrangler_r_frame_contract$capture_pivot_wider_at(
+  pivot_wider_complete_source,
+  pivot_wider_complete_source_capture,
+  2L,
+  "key",
+  3L,
+  "reading",
+  c("a", "b"),
+  c("alpha", "beta"),
+  c("c:step:pivot-wider-nullability:0", "c:step:pivot-wider-nullability:1")
+)
+pivot_wider_complete_schema <- pivot_wider_complete_capture$descriptor$schema
+assert_identical(
+  pivot_wider_complete_schema[[1L]],
+  pivot_wider_complete_source_capture$descriptor$schema[[1L]],
+  "Pivot wider narrowed or otherwise changed retained source schema metadata"
+)
+assert_identical(
+  vapply(pivot_wider_complete_schema[2:3], `[[`, logical(1L), "nullable", USE.NAMES = FALSE),
+  c(TRUE, TRUE),
+  "Pivot wider narrowed complete fixed outputs that remain conservatively nullable"
+)
+assert_identical(
+  vapply(pivot_wider_complete_schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:c:0", "c:step:pivot-wider-nullability:0", "c:step:pivot-wider-nullability:1"),
+  "Pivot wider nullability preservation changed output identities"
+)
+assert_identical(
+  names(pivot_wider_complete_capture$snapshot),
+  c("identifier", "alpha", "beta"),
+  "Pivot wider nullability preservation changed output names or positions"
+)
+assert_identical(
+  anyNA(pivot_wider_complete_capture$snapshot),
+  FALSE,
+  "Pivot wider complete-matrix fixture unexpectedly contained a missing value"
+)
+assert_identical(
+  serialize(pivot_wider_complete_source, NULL, version = 3L),
+  pivot_wider_complete_before,
+  "Pivot wider nullability preservation mutated its source"
+)
+
 pivot_wider_session <- "f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1"
 pivot_wider_variable <- "pivot_wider_source"
 pivot_wider_levels <- c("low", "high", "unused")
@@ -114,6 +183,67 @@ assert_identical(
   serialize(get(pivot_wider_variable, envir = pivot_wider_generated_environment), NULL, version = 3L),
   pivot_wider_before,
   "Generated Pivot wider mutated its source"
+)
+
+pivot_wider_clone_preview <- dispatch("previewStep", list(
+  sessionId = pivot_wider_session,
+  revision = pivot_wider_applied$revision,
+  step = list(
+    id = "pivot-wider-clone",
+    kind = "cloneColumn",
+    params = list(column = list(id = "r:c:0", name = "group"), newName = "group copy")
+  ),
+  page = page_window(row_limit = 100L, column_limit = 100L)
+))
+assert_identical(
+  pivot_wider_clone_preview$kind,
+  "stepPreview",
+  paste(
+    "Clone Column did not preview after Pivot wider:",
+    if (is.null(pivot_wider_clone_preview$message)) "no diagnostic" else pivot_wider_clone_preview$message
+  )
+)
+assert_identical(
+  pivot_wider_clone_preview$page$frameSemantics$rowNames,
+  "positional",
+  "Clone Column changed Pivot-wider positional row-name semantics"
+)
+pivot_wider_clone_applied <- dispatch("applyDraft", list(
+  sessionId = pivot_wider_session,
+  revision = pivot_wider_clone_preview$revision,
+  page = page_window(row_limit = 100L, column_limit = 100L)
+))
+assert_identical(pivot_wider_clone_applied$action, "apply", "Clone Column did not apply after Pivot wider")
+pivot_wider_clone_generated_environment <- new.env(parent = baseenv())
+assign(pivot_wider_variable, unserialize(pivot_wider_before), envir = pivot_wider_clone_generated_environment)
+eval(
+  parse(text = pivot_wider_clone_applied$code, keep.source = FALSE),
+  envir = pivot_wider_clone_generated_environment
+)
+pivot_wider_clone_generated <- get(
+  "open_wrangler_result",
+  envir = pivot_wider_clone_generated_environment,
+  inherits = FALSE
+)
+assert_identical(
+  .row_names_info(pivot_wider_clone_generated, type = 1L),
+  -3L,
+  "Generated Clone Column changed Pivot-wider positional row-name semantics"
+)
+assert_identical(
+  names(pivot_wider_clone_generated),
+  c("group", "alpha", "beta", "gamma", "group copy"),
+  "Generated Clone Column changed the Pivot-wider schema"
+)
+assert_identical(
+  serialize(get(pivot_wider_variable, envir = pivot_wider_clone_generated_environment), NULL, version = 3L),
+  pivot_wider_before,
+  "Generated Pivot wider plus Clone Column mutated its source"
+)
+assert_identical(
+  serialize(get(pivot_wider_variable, envir = source_environment), NULL, version = 3L),
+  pivot_wider_before,
+  "Live Pivot wider plus Clone Column mutated its source"
 )
 
 pivot_wider_group_key_session <- "f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f3f3"

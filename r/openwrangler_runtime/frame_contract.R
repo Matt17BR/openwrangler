@@ -3671,6 +3671,7 @@ openwrangler_r_frame_contract <- local({
       }
     } else {
       frame_attributes <- attributes(result)
+      frame_attributes[["row.names"]] <- .row_names_info(result, type = 0L)
       columns <- unclass(result)
       columns[[storage_length(columns) + 1L]] <- .subset2(columns, position)
       frame_attributes[["names"]] <- c(frame_names, new_name)
@@ -5477,6 +5478,7 @@ openwrangler_r_frame_contract <- local({
 
   capture_pivot_wider_at <- function(
     value,
+    source_capture,
     names_position,
     names_old_name,
     values_position,
@@ -5485,6 +5487,7 @@ openwrangler_r_frame_contract <- local({
     output_names,
     output_ids
   ) {
+    validate_capture(source_capture)
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -5492,9 +5495,24 @@ openwrangler_r_frame_contract <- local({
       metrics = new_capture_metrics()
     )
     schema <- plain_metadata_storage(inspected$descriptor$schema)
+    source_schema <- plain_metadata_storage(source_capture$descriptor$schema)
     column_count <- inspected$descriptor$shape$columns
     row_count <- as.integer(inspected$descriptor$shape$rows)
     positions <- c(names_position, values_position)
+    if (
+      length(source_schema) != length(schema) ||
+        any(!vapply(seq_along(schema), function(position) {
+          source_column <- source_schema[[position]]
+          inspected_column <- schema[[position]]
+          identical(source_column$name, inspected_column$name) &&
+            identical(source_column$position, inspected_column$position) &&
+            identical(source_column$rawType, inspected_column$rawType) &&
+            identical(source_column$type, inspected_column$type) &&
+            identical(source_column$semantics, inspected_column$semantics)
+        }, logical(1L), USE.NAMES = FALSE))
+    ) {
+      abort("stale-column", "Pivot wider source metadata no longer matches the confirmed R capture")
+    }
     if (
       any(!is.numeric(positions)) || anyNA(positions) || any(!is.finite(positions)) ||
         any(positions != floor(positions)) || any(positions < 1L) || any(positions > column_count) ||
@@ -5655,12 +5673,26 @@ openwrangler_r_frame_contract <- local({
     ) {
       abort("internal-error", "Pivot wider changed R scalar or key metadata")
     }
-    source_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     assigned_ids <- c(source_ids[retained_positions], output_ids)
     generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     for (position in seq_along(output_schema)) {
       output_schema[[position]]$id <- assigned_ids[[position]]
       output_schema[[position]]$position <- position - 1L
+      if (position <= length(retained_positions)) {
+        source_column <- source_schema[[retained_positions[[position]]]]
+        output_column <- output_schema[[position]]
+        if (
+          !identical(output_column$rawType, source_column$rawType) ||
+            !identical(output_column$type, source_column$type) ||
+            !identical(output_column$semantics, source_column$semantics)
+        ) {
+          abort("internal-error", "Pivot wider changed retained R column metadata")
+        }
+        output_schema[[position]]$nullable <- source_column$nullable
+      } else {
+        output_schema[[position]]$nullable <- TRUE
+      }
     }
     descriptor <- captured$descriptor
     descriptor$schema <- json_array(output_schema)
