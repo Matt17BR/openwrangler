@@ -355,7 +355,7 @@ describe("SessionCoordinator", () => {
       if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark session to open.");
       await bridge.updateViewState?.(opened.metadata.sessionId, {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 240 },
+        columnWidths: new Map([["c:value", 240]]),
         viewport: { firstVisibleRow: 12, scrollLeft: 40 }
       });
       const confirmed = coordinator.activeSession();
@@ -483,7 +483,7 @@ describe("SessionCoordinator", () => {
       if (opened.kind !== "sessionOpened") throw new Error("Expected the Spark Connect dataframe to open.");
       await bridge.updateViewState?.(opened.metadata.sessionId, {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 260 },
+        columnWidths: new Map([["c:value", 260]]),
         viewport: { firstVisibleRow: 12, scrollLeft: 40 }
       });
       const confirmed = coordinator.activeSession();
@@ -724,7 +724,10 @@ describe("SessionCoordinator", () => {
     }
     await bridge.updateViewState?.(opened.metadata.sessionId, {
       selectedColumnId: "c:sales",
-      columnWidths: { "c:region": 210, "c:sales": 180 },
+      columnWidths: new Map([
+        ["c:region", 210],
+        ["c:sales", 180]
+      ]),
       viewport: { firstVisibleRow: 240, scrollLeft: 160 }
     });
     const confirmedView = coordinator.activeSession()?.viewState;
@@ -742,7 +745,10 @@ describe("SessionCoordinator", () => {
     await vi.waitFor(() => expect(openCount).toBe(2));
     await bridge.updateViewState?.(opened.metadata.sessionId, {
       selectedColumnId: "c:region",
-      columnWidths: { "c:region": 260, "c:sales": 150 },
+      columnWidths: new Map([
+        ["c:region", 260],
+        ["c:sales", 150]
+      ]),
       viewport: { firstVisibleRow: 310, scrollLeft: 240 }
     });
     const latestView = coordinator.activeSession()?.viewState;
@@ -937,7 +943,7 @@ describe("SessionCoordinator", () => {
     });
     await bridge.updateViewState?.(opened.metadata.sessionId, {
       selectedColumnId: "c:value",
-      columnWidths: { "c:value": 260 },
+      columnWidths: new Map([["c:value", 260]]),
       viewport: { firstVisibleRow, scrollLeft: 77 }
     });
 
@@ -966,7 +972,7 @@ describe("SessionCoordinator", () => {
       metadata: { filterModel },
       viewState: {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 260 },
+        columnWidths: new Map([["c:value", 260]]),
         viewport: { firstVisibleRow: 0, scrollLeft: 77 }
       }
     });

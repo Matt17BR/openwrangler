@@ -450,7 +450,7 @@ export function createLiveImportReconfiguration(
     );
     const retainedColumn = changed.metadata.schema.find((column) => column.name === "value");
     assert.ok(retainedColumn, "The reconfigured CSV must expose its value column for reload-state acceptance.");
-    const retainedColumnWidths = Object.fromEntries(changed.metadata.schema.map((column) => [column.id, 640]));
+    const retainedColumnWidths = new Map(changed.metadata.schema.map((column) => [column.id, 640] as const));
     const retainedViewState = {
       selectedColumnId: retainedColumn.id,
       columnWidths: retainedColumnWidths,
@@ -505,18 +505,29 @@ export function createLiveImportReconfiguration(
         const active = testing.activeSession();
         return (
           active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
-          changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+          changed.metadata.schema.every((column) => active.viewState.columnWidths.get(column.id) === 640) &&
           active.viewState.viewport.firstVisibleRow === 1 &&
           active.viewState.viewport.scrollLeft === 23
         );
       },
       5_000,
       "the reconfigured CSV view state to persist under its confirmed source and backend",
-      () =>
-        JSON.stringify({
-          expected: retainedViewState,
-          actual: testing.activeSession()?.viewState
-        })
+      () => {
+        const active = testing.activeSession();
+        return JSON.stringify({
+          expected: {
+            ...retainedViewState,
+            columnWidths: [...retainedViewState.columnWidths]
+          },
+          actual:
+            active === undefined
+              ? undefined
+              : {
+                  ...active.viewState,
+                  columnWidths: [...active.viewState.columnWidths]
+                }
+        });
+      }
     );
     recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:persisted");
 
@@ -629,7 +640,7 @@ export function createLiveImportReconfiguration(
         const active = testing.activeSession();
         return (
           active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
-          changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+          changed.metadata.schema.every((column) => active.viewState.columnWidths.get(column.id) === 640) &&
           active.viewState.viewport.firstVisibleRow === 1 &&
           active.viewState.viewport.scrollLeft === 23
         );
@@ -728,7 +739,7 @@ export function createLiveImportReconfiguration(
             active.metadata.shape.rows === 80 &&
             active.metadata.shape.columns === 8 &&
             active.viewState.selectedColumnId === retainedColumn.id &&
-            changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+            changed.metadata.schema.every((column) => active.viewState.columnWidths.get(column.id) === 640) &&
             active.viewState.viewport.firstVisibleRow === 1 &&
             active.viewState.viewport.scrollLeft === 23
           );
@@ -749,7 +760,7 @@ export function createLiveImportReconfiguration(
             selectedColumnMatches: active?.viewState.selectedColumnId === retainedColumn.id,
             widthsMatch:
               active !== undefined &&
-              changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640),
+              changed.metadata.schema.every((column) => active.viewState.columnWidths.get(column.id) === 640),
             firstVisibleRowMatches: active?.viewState.viewport.firstVisibleRow === 1,
             scrollLeftMatches: active?.viewState.viewport.scrollLeft === 23
           });

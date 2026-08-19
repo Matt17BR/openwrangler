@@ -22,7 +22,7 @@ import {
   viewNumericBinFilter,
   viewValueSelectionFilter
 } from "../../shared/filterModel";
-import type { GridViewState } from "../../shared/viewState";
+import { setGridColumnWidth, type GridViewState } from "../../shared/viewState";
 import {
   createRowScrollModel,
   gridRowHeight,
@@ -139,7 +139,7 @@ const gridSelectionInstructions =
   "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Select a column header or press Ctrl/Cmd+Space on it to prepare the whole filtered and sorted column for copying. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
 const pointerAutoScrollEdge = 32;
 const maximumPointerAutoScrollStep = gridRowHeight;
-const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
+const defaultViewState: GridViewState = { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
 const ignoreColumnRevealSignal = (): void => undefined;
@@ -816,7 +816,7 @@ export function DataGrid({
   }, [busy, logicalRowExtent, pageSize, updateViewportFromScroller, viewStateRestoreVersion]);
 
   const widths = useMemo(
-    () => metadata.schema.map((column) => viewState.columnWidths[column.id] ?? defaultColumnWidth),
+    () => metadata.schema.map((column) => viewState.columnWidths.get(column.id) ?? defaultColumnWidth),
     [defaultColumnWidth, metadata.schema, viewState.columnWidths]
   );
   const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width, rowHeaderWidth);
@@ -1390,7 +1390,7 @@ export function DataGrid({
                     onResize={(width) =>
                       reportViewState({
                         ...viewStateRef.current,
-                        columnWidths: { ...viewStateRef.current.columnWidths, [column.id]: width }
+                        columnWidths: setGridColumnWidth(viewStateRef.current.columnWidths, column.id, width)
                       })
                     }
                   />

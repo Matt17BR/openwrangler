@@ -3282,11 +3282,10 @@ async function exerciseReleasedJupyterExtension(
       assert.ok(duckdbDiagnostic, "The native DuckDB session must remain coordinated before kernel restart.");
       const recoveryDuckdbRevenue = columnReference(recoveryDuckdbPage.metadata, "revenue");
       const recoveryDuckdbViewState: GridViewState = {
-        columnWidths: Object.fromEntries(
-          recoveryDuckdbPage.metadata.schema.map((column) => [
-            column.id,
-            column.id === recoveryDuckdbRevenue.id ? 310 : 640
-          ])
+        columnWidths: new Map(
+          recoveryDuckdbPage.metadata.schema.map(
+            (column) => [column.id, column.id === recoveryDuckdbRevenue.id ? 310 : 640] as const
+          )
         ),
         selectedColumnId: recoveryDuckdbRevenue.id,
         viewport: { firstVisibleRow: 123, scrollLeft: 120 }
@@ -7911,10 +7910,7 @@ async function exercisePackagedBackendSwitchJourney(
   const selectedColumn = columnReference(initial.metadata, "market");
   await testing.updateViewState(sessionId, {
     ...initial.viewState,
-    columnWidths: {
-      ...initial.viewState.columnWidths,
-      [selectedColumn.id]: 287
-    },
+    columnWidths: new Map([...initial.viewState.columnWidths, [selectedColumn.id, 287]]),
     selectedColumnId: selectedColumn.id,
     viewport: { firstVisibleRow: 37, scrollLeft: 113 }
   });
@@ -9078,7 +9074,12 @@ async function waitForSettledViewState(testing: TestApi, expectation: string): P
   let unchangedSince = started;
   while (Date.now() - started <= 10_000) {
     const active = testing.activeSession();
-    const current = active ? JSON.stringify(active.viewState) : "";
+    const current = active
+      ? JSON.stringify({
+          ...active.viewState,
+          columnWidths: [...active.viewState.columnWidths]
+        })
+      : "";
     if (current !== previous) {
       previous = current;
       unchangedSince = Date.now();
@@ -10268,7 +10269,7 @@ async function captureReleasedJupyterPolarsDraft(
   assert.equal(active.metadata.draftStep?.id, "released-jupyter-double");
 
   const doubleUnits = columnReference(active.metadata, "double_units");
-  const baselineWidths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
+  const baselineWidths = new Map(active.metadata.schema.map((column) => [column.id, 230] as const));
   const doubleUnitsPosition = active.metadata.schema.findIndex((column) => column.id === doubleUnits.id);
   assert.ok(doubleUnitsPosition >= 0, "The Polars notebook screenshot requires the draft output column.");
   await testing.updateViewState(sessionId, {
@@ -10392,16 +10393,16 @@ async function captureReleasedJupyterPolarsDraft(
       alignedWidthRemainder
     })}`
   );
-  const alignedWidths = Object.fromEntries(
+  const alignedWidths = new Map(
     active.metadata.schema.map((column) => {
-      if (column.position < firstVisibleColumnPosition) return [column.id, 230];
+      if (column.position < firstVisibleColumnPosition) return [column.id, 230] as const;
       const visiblePosition = column.position - firstVisibleColumnPosition;
-      return [column.id, alignedBaseWidth + Number(visiblePosition < alignedWidthRemainder)];
+      return [column.id, alignedBaseWidth + Number(visiblePosition < alignedWidthRemainder)] as const;
     })
   );
   const alignedScrollLeft = active.metadata.schema
     .slice(0, firstVisibleColumnPosition)
-    .reduce((total, column) => total + (alignedWidths[column.id] ?? 0), 0);
+    .reduce((total, column) => total + (alignedWidths.get(column.id) ?? 0), 0);
   const alignedViewState = testing.activeSession()?.viewState;
   assert.ok(alignedViewState, "The Polars notebook screenshot requires its confirmed presentation state.");
   await testing.updateViewState(sessionId, {
@@ -10600,7 +10601,7 @@ async function captureReleasedJupyterDuckDbRelation(
     const revenue = columnReference(active.metadata, "revenue");
     await testing.updateViewState(sessionId, {
       ...active.viewState,
-      columnWidths: Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230])),
+      columnWidths: new Map(active.metadata.schema.map((column) => [column.id, 230] as const)),
       selectedColumnId: revenue.id,
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
@@ -10749,11 +10750,10 @@ async function captureReleasedJupyterDuckDbRelation(
         alignedWidthRemainder
       })}`
     );
-    const alignedWidths = Object.fromEntries(
-      active.metadata.schema.map((column) => [
-        column.id,
-        alignedBaseWidth + Number(column.position < alignedWidthRemainder)
-      ])
+    const alignedWidths = new Map(
+      active.metadata.schema.map(
+        (column) => [column.id, alignedBaseWidth + Number(column.position < alignedWidthRemainder)] as const
+      )
     );
     const confirmedViewState = testing.activeSession()?.viewState;
     assert.ok(confirmedViewState, "The DuckDB notebook screenshot requires its confirmed presentation state.");
@@ -10955,15 +10955,18 @@ async function captureReleasedJupyterPySparkLive(
     await clearReleasedJupyterScreenshotTransientUi(workbench);
 
     const selectedColumn = columnReference(active.metadata, "revenue");
-    const baselineColumnWidths = Object.fromEntries(
-      active.metadata.schema.map((column) => [
-        column.id,
-        ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name)
-          ? 204
-          : ["segment", "channel"].includes(column.name)
-            ? 197
-            : 170
-      ])
+    const baselineColumnWidths = new Map(
+      active.metadata.schema.map(
+        (column) =>
+          [
+            column.id,
+            ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name)
+              ? 204
+              : ["segment", "channel"].includes(column.name)
+                ? 197
+                : 170
+          ] as const
+      )
     );
     await testing.updateViewState(active.sessionId, {
       ...active.viewState,
@@ -11073,13 +11076,16 @@ async function captureReleasedJupyterPySparkLive(
         featuredWidthRemainder
       })}`
     );
-    const alignedColumnWidths = Object.fromEntries(
-      active.metadata.schema.map((column) => [
-        column.id,
-        column.position < featuredColumns.length
-          ? featuredBaseWidth + Number(column.position < featuredWidthRemainder)
-          : 170
-      ])
+    const alignedColumnWidths = new Map(
+      active.metadata.schema.map(
+        (column) =>
+          [
+            column.id,
+            column.position < featuredColumns.length
+              ? featuredBaseWidth + Number(column.position < featuredWidthRemainder)
+              : 170
+          ] as const
+      )
     );
     const confirmedViewState = testing.activeSession()?.viewState;
     assert.ok(confirmedViewState, "The PySpark media scene requires its confirmed presentation state.");
@@ -11103,7 +11109,7 @@ async function captureReleasedJupyterPySparkLive(
       firstPassGridBox.x + firstPassGridBox.width - (firstPassChannelBox.x + firstPassChannelBox.width)
     );
     if (Math.abs(widthCorrection) > 1) {
-      const correctedChannelWidth = alignedColumnWidths[channelColumn.id] + widthCorrection;
+      const correctedChannelWidth = alignedColumnWidths.get(channelColumn.id)! + widthCorrection;
       assert.ok(
         correctedChannelWidth >= 80 && correctedChannelWidth <= 640,
         `The native PySpark grid produced an invalid final-column correction: ${JSON.stringify({
@@ -11115,7 +11121,7 @@ async function captureReleasedJupyterPySparkLive(
       assert.ok(correctedViewState, "The PySpark media correction requires its confirmed presentation state.");
       await testing.updateViewState(active.sessionId, {
         ...correctedViewState,
-        columnWidths: { ...alignedColumnWidths, [channelColumn.id]: correctedChannelWidth },
+        columnWidths: new Map([...alignedColumnWidths, [channelColumn.id, correctedChannelWidth]]),
         selectedColumnId: selectedColumn.id,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       });
@@ -11269,7 +11275,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     assert.equal(opened.metadata.draftStep, undefined);
     assert.deepEqual(opened.viewState, {
       filterModel: { logic: "and", filters: [], sort: [] },
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
     await waitFor(
@@ -11477,7 +11483,10 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     return entries.flat();
   }
 
-  async function fitFeaturedGridColumns(sessionId: string, selectedColumnId: string): Promise<Record<string, number>> {
+  async function fitFeaturedGridColumns(
+    sessionId: string,
+    selectedColumnId: string
+  ): Promise<ReadonlyMap<string, number>> {
     const active = testing.activeSession();
     assert.equal(active?.sessionId, sessionId, "Screenshot grid fitting requires the exact active session.");
     assert.ok(active, "Screenshot grid fitting requires one active dataframe session.");
@@ -11496,10 +11505,10 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       gridDimensions.clientWidth,
       gridDimensions.rowHeaderWidth
     );
-    let columnWidths = Object.fromEntries(
+    let columnWidths = new Map(
       active.metadata.schema
         .filter((column) => column.name in widthsByName)
-        .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]])
+        .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]] as const)
     );
     await testing.updateViewState(sessionId, {
       columnWidths,
@@ -11530,9 +11539,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     }, orderDate.name);
     assert.ok(trailingGap >= -1, "The final featured screenshot column must not extend beyond the live grid.");
     if (trailingGap > 1) {
-      const adjustedWidth = (columnWidths[orderDate.id] ?? widthsByName.order_date) + Math.floor(trailingGap);
+      const adjustedWidth = (columnWidths.get(orderDate.id) ?? widthsByName.order_date) + Math.floor(trailingGap);
       assert.ok(adjustedWidth <= 640, "The live screenshot grid fit must retain the maximum column width.");
-      columnWidths = { ...columnWidths, [orderDate.id]: adjustedWidth };
+      columnWidths = new Map([...columnWidths, [orderDate.id, adjustedWidth]]);
       await testing.updateViewState(sessionId, {
         columnWidths,
         selectedColumnId,
@@ -13911,10 +13920,10 @@ async function fitPackagedProductSceneGrid(
     market: marketWidth,
     revenue: revenueWidth
   } as const;
-  let columnWidths = Object.fromEntries(
+  let columnWidths = new Map(
     active.metadata.schema
       .filter((column) => column.name in widthsByName)
-      .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]])
+      .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]] as const)
   );
   await testing.updateViewState(sessionId, {
     ...active.viewState,
@@ -13954,9 +13963,9 @@ async function fitPackagedProductSceneGrid(
     return visibleRight - header.getBoundingClientRect().right;
   }, revenue.name);
   if (Math.abs(trailingGap) > 1) {
-    const adjusted = (columnWidths[revenue.id] ?? revenueWidth) + Math.floor(trailingGap);
+    const adjusted = (columnWidths.get(revenue.id) ?? revenueWidth) + Math.floor(trailingGap);
     assert.ok(adjusted >= 200 && adjusted <= 640, "The fitted revenue column must remain readable.");
-    columnWidths = { ...columnWidths, [revenue.id]: adjusted };
+    columnWidths = new Map([...columnWidths, [revenue.id, adjusted]]);
     await testing.updateViewState(sessionId, {
       ...testing.activeSession()!.viewState,
       columnWidths,
@@ -14032,10 +14041,10 @@ async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, s
   assert.equal(current?.sessionId, sessionId);
   assert.ok(current, "The uppercase-plan grid fit requires one active dataframe session.");
   const marketUpper = columnReference(current.metadata, "market_upper");
-  let columnWidths = {
+  let columnWidths = new Map([
     ...current.viewState.columnWidths,
-    ...Object.fromEntries(names.map((name, index) => [columnReference(current.metadata, name).id, widths[index]!]))
-  };
+    ...names.map((name, index) => [columnReference(current.metadata, name).id, widths[index]!] as const)
+  ]);
   await testing.updateViewState(sessionId, {
     ...current.viewState,
     columnWidths,
@@ -14107,9 +14116,9 @@ async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, s
     return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
   }, marketUpper.name);
   if (Math.abs(trailingGap) > 1) {
-    const adjusted = (columnWidths[marketUpper.id] ?? widths.at(-1)!) + Math.floor(trailingGap);
+    const adjusted = (columnWidths.get(marketUpper.id) ?? widths.at(-1)!) + Math.floor(trailingGap);
     assert.ok(adjusted >= 140 && adjusted <= 640, "The fitted uppercase output column must remain readable.");
-    columnWidths = { ...columnWidths, [marketUpper.id]: adjusted };
+    columnWidths = new Map([...columnWidths, [marketUpper.id, adjusted]]);
     await testing.updateViewState(sessionId, {
       ...testing.activeSession()!.viewState,
       columnWidths,
@@ -14218,10 +14227,10 @@ async function fitPackagedWorkflowFormulaDraftGrid(
     "Every Workflow comparison column must remain readable."
   );
   const current = testing.activeSession()!;
-  let columnWidths = {
+  let columnWidths = new Map([
     ...current.viewState.columnWidths,
-    ...Object.fromEntries(names.map((name, index) => [columnReference(current.metadata, name).id, widths[index]!]))
-  };
+    ...names.map((name, index) => [columnReference(current.metadata, name).id, widths[index]!] as const)
+  ]);
   await testing.updateViewState(sessionId, {
     ...current.viewState,
     columnWidths,
@@ -14294,9 +14303,9 @@ async function fitPackagedWorkflowFormulaDraftGrid(
     return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
   }, projectedRevenue.name);
   if (Math.abs(trailingGap) > 1) {
-    const adjusted = (columnWidths[projectedRevenue.id] ?? widths.at(-1)!) + Math.floor(trailingGap);
+    const adjusted = (columnWidths.get(projectedRevenue.id) ?? widths.at(-1)!) + Math.floor(trailingGap);
     assert.ok(adjusted >= 140 && adjusted <= 640, "The fitted Workflow output column must remain readable.");
-    columnWidths = { ...columnWidths, [projectedRevenue.id]: adjusted };
+    columnWidths = new Map([...columnWidths, [projectedRevenue.id, adjusted]]);
     await testing.updateViewState(sessionId, {
       ...testing.activeSession()!.viewState,
       columnWidths,
@@ -14413,12 +14422,12 @@ async function fitPackagedSidebarOverviewGrid(testing: TestApi, workbench: Page,
     widths.every((width) => width >= 160),
     "Every overview column must remain readable."
   );
-  let columnWidths = {
+  let columnWidths = new Map([
     ...testing.activeSession()!.viewState.columnWidths,
-    ...Object.fromEntries(
-      names.map((name, index) => [columnReference(testing.activeSession()!.metadata, name).id, widths[index]!])
+    ...names.map(
+      (name, index) => [columnReference(testing.activeSession()!.metadata, name).id, widths[index]!] as const
     )
-  };
+  ]);
   await testing.updateViewState(sessionId, {
     ...testing.activeSession()!.viewState,
     columnWidths,
@@ -14479,9 +14488,9 @@ async function fitPackagedSidebarOverviewGrid(testing: TestApi, workbench: Page,
     return scroller.getBoundingClientRect().right - finalHeader.getBoundingClientRect().right;
   }, names.at(-1)!);
   if (Math.abs(trailingGap) > 1) {
-    const adjusted = (columnWidths[selected.id] ?? widths.at(-1)!) + Math.floor(trailingGap);
+    const adjusted = (columnWidths.get(selected.id) ?? widths.at(-1)!) + Math.floor(trailingGap);
     assert.ok(adjusted >= 160 && adjusted <= 640, "The overview's computed output must remain readable.");
-    columnWidths = { ...columnWidths, [selected.id]: adjusted };
+    columnWidths = new Map([...columnWidths, [selected.id, adjusted]]);
     await testing.updateViewState(sessionId, {
       ...testing.activeSession()!.viewState,
       columnWidths,
@@ -16925,7 +16934,7 @@ async function seedVisiblePersistedPanel(testing: TestApi, fixture: vscode.Uri):
   assert.equal(page.metadata.shape.columns, PACKAGED_SCREENSHOT_COLUMNS.length + 1);
   const selected = columnReference(page.metadata, PERSISTED_PANEL_SELECTED_COLUMN);
   await testing.updateViewState(opened.metadata.sessionId, {
-    columnWidths: { [selected.id]: PERSISTED_PANEL_COLUMN_WIDTH },
+    columnWidths: new Map([[selected.id, PERSISTED_PANEL_COLUMN_WIDTH]]),
     selectedColumnId: selected.id,
     viewport: {
       firstVisibleRow: PERSISTED_PANEL_FIRST_VISIBLE_ROW,
@@ -17050,7 +17059,7 @@ async function seedPersistedPlan(
     assert.ok(salesColumnId);
     recordAcceptanceProgress(`seed:${target.backend}:view-state`);
     await testing.updateViewState(opened.metadata.sessionId, {
-      columnWidths: { [salesColumnId]: target.width },
+      columnWidths: new Map([[salesColumnId, target.width]]),
       selectedColumnId: salesColumnId,
       viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: target.scrollLeft }
     });
@@ -17086,7 +17095,7 @@ async function seedPersistedPlan(
     assert.equal(readback.page.rows[0]?.values[4]?.display, target.score);
     assert.deepEqual(testing.activeSession()?.viewState, {
       filterModel: { ...filterModel, logic: "and" },
-      columnWidths: { [salesColumnId]: target.width },
+      columnWidths: new Map([[salesColumnId, target.width]]),
       selectedColumnId: salesColumnId,
       viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: target.scrollLeft }
     });
@@ -17178,7 +17187,7 @@ async function visiblePersistedPanelSnapshot(
   assert.deepEqual(active.viewState.filterModel, persistedPanelFilterModel());
   const selected = columnReference(active.metadata, PERSISTED_PANEL_SELECTED_COLUMN);
   assert.equal(active.viewState.selectedColumnId, selected.id);
-  assert.equal(active.viewState.columnWidths[selected.id], PERSISTED_PANEL_COLUMN_WIDTH);
+  assert.equal(active.viewState.columnWidths.get(selected.id), PERSISTED_PANEL_COLUMN_WIDTH);
   assert.equal(active.viewState.viewport.firstVisibleRow, PERSISTED_PANEL_FIRST_VISIBLE_ROW);
   assert.ok(active.viewState.viewport.scrollLeft > 0, "The restored horizontal viewport must remain nonzero.");
 
@@ -17476,7 +17485,7 @@ async function verifyPersistedReplayAndRecovery(
   assert.ok(restoredSalesId);
   assert.deepEqual(testing.activeSession()?.viewState, {
     filterModel: restored.metadata.filterModel,
-    columnWidths: { [restoredSalesId]: 250 },
+    columnWidths: new Map([[restoredSalesId, 250]]),
     selectedColumnId: restoredSalesId,
     viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: 35 }
   });
@@ -17520,7 +17529,7 @@ async function verifyPersistedReplayAndRecovery(
   assert.ok(duckdbSalesId);
   assert.deepEqual(testing.activeSession()?.viewState, {
     filterModel: third.metadata.filterModel,
-    columnWidths: { [duckdbSalesId]: 310 },
+    columnWidths: new Map([[duckdbSalesId, 310]]),
     selectedColumnId: duckdbSalesId,
     viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: 75 }
   });

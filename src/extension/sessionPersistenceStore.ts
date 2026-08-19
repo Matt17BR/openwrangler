@@ -3,9 +3,11 @@ import type { DataBackend, SessionSource } from "../shared/protocol";
 import {
   decodePersistedSession,
   persistenceKey,
+  serializePersistedSession,
   SESSION_STORAGE_KEY,
   type DecodedPersistedSessionState,
-  type PersistedSessionState
+  type PersistedSessionState,
+  type SerializedPersistedSessionState
 } from "./sessionPersistence";
 
 export class SessionPersistenceStore {
@@ -24,10 +26,12 @@ export class SessionPersistenceStore {
 
   async save(source: SessionSource, state: PersistedSessionState): Promise<void> {
     if (!this.workspaceState || !isPersistentSession(source, state.backend)) return;
+    const serialized = serializePersistedSession(state);
+    if (!serialized) return;
     const key = persistenceKey(source, state.backend);
     await this.enqueue(async () => {
       const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
-      await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
+      await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: serialized });
     });
   }
 
@@ -42,6 +46,12 @@ export class SessionPersistenceStore {
       commit();
       return true;
     }
+    const serialized = serializePersistedSession(state);
+    if (!serialized) {
+      if (!isCurrent()) return false;
+      commit();
+      return true;
+    }
 
     const key = persistenceKey(source, state.backend);
     let committed = false;
@@ -51,7 +61,7 @@ export class SessionPersistenceStore {
       const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
       const previousState = stored[key];
       try {
-        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
+        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: serialized });
       } catch {
         if (isCurrent()) {
           commit();
@@ -88,6 +98,8 @@ export class SessionPersistenceStore {
       commit();
       return true;
     }
+    const serialized = serializePersistedSession(state);
+    if (!serialized) return false;
 
     const key = persistenceKey(source, state.backend);
     const token = `runtime-replacement:${++this.replacementOrdinal}`;
@@ -100,7 +112,7 @@ export class SessionPersistenceStore {
       const pending = {
         pendingRuntimeReplacement: {
           token,
-          candidate: state,
+          candidate: serialized,
           hadPreviousState,
           ...(hadPreviousState ? { previousState } : {})
         }
@@ -126,7 +138,7 @@ export class SessionPersistenceStore {
         return;
       }
       try {
-        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...latest, [key]: state });
+        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...latest, [key]: serialized });
       } catch {
         rollback();
         committed = false;
@@ -161,7 +173,7 @@ export class SessionPersistenceStore {
 
 interface PendingRuntimeReplacement {
   token: string;
-  candidate: PersistedSessionState;
+  candidate: SerializedPersistedSessionState;
   hadPreviousState: boolean;
   previousState?: unknown;
 }

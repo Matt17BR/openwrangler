@@ -3,7 +3,12 @@ import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
 import type { BridgeRequestOptions } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import {
+  persistedSessionState,
+  persistenceKey,
+  serializePersistedSession,
+  SESSION_STORAGE_KEY
+} from "../extension/sessionPersistence";
 import type { FilterModel } from "../shared/filterModel";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
@@ -144,7 +149,7 @@ describe("SessionCoordinator", () => {
       const publicId = opened.metadata.sessionId;
       await bridge.updateViewState?.(publicId, {
         selectedColumnId: undefined,
-        columnWidths: {},
+        columnWidths: new Map(),
         viewport: { firstVisibleRow: 0, scrollLeft: 37 }
       });
       const sorted = await bridge.request({
@@ -161,7 +166,7 @@ describe("SessionCoordinator", () => {
 
       const currentViewState: GridViewState = {
         selectedColumnId: "c:value",
-        columnWidths: { "c:value": 240 },
+        columnWidths: new Map([["c:value", 240]]),
         viewport: { firstVisibleRow: 0, scrollLeft: 81 }
       };
       const editing = await bridge.reconfigureLiveSessionMode?.(publicId, sorted.revision, "editing", currentViewState);
@@ -181,7 +186,7 @@ describe("SessionCoordinator", () => {
         metadata: { mode: "editing", filterModel: sorted.metadata.filterModel },
         viewState: {
           selectedColumnId: "c:value",
-          columnWidths: { "c:value": 240 },
+          columnWidths: new Map([["c:value", 240]]),
           viewport: { firstVisibleRow: 0, scrollLeft: 81 },
           filterModel: sorted.metadata.filterModel
         }
@@ -235,7 +240,7 @@ describe("SessionCoordinator", () => {
         metadata: { mode: "viewing", filterModel: sorted.metadata.filterModel, steps: [] },
         viewState: {
           selectedColumnId: "c:value",
-          columnWidths: { "c:value": 240 },
+          columnWidths: new Map([["c:value", 240]]),
           viewport: { firstVisibleRow: 0, scrollLeft: 81 },
           filterModel: sorted.metadata.filterModel
         }
@@ -344,7 +349,7 @@ describe("SessionCoordinator", () => {
         opened.metadata.sessionId,
         opened.metadata.revision,
         "editing",
-        { selectedColumnId: "c:value", columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 42 } }
+        { selectedColumnId: "c:value", columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 42 } }
       );
 
       expect(editing).toMatchObject({
@@ -434,7 +439,7 @@ describe("SessionCoordinator", () => {
         opened.metadata.sessionId,
         opened.metadata.revision,
         "editing",
-        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 44 } }
+        { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 44 } }
       );
       await vi.waitFor(() => expect(candidateSessionId).toBeTruthy());
       setOpenNotebookDocuments(replacement);
@@ -762,7 +767,7 @@ describe("SessionCoordinator", () => {
     const opened = await bridge.request(openRequest);
     if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
     await bridge.updateViewState?.(opened.metadata.sessionId, {
-      columnWidths: { "c:sales": 260 },
+      columnWidths: new Map([["c:sales", 260]]),
       selectedColumnId: "c:sales",
       viewport: { firstVisibleRow: 240, scrollLeft: 180 }
     });
@@ -1032,10 +1037,12 @@ describe("SessionCoordinator", () => {
     };
     const key = persistenceKey(openRequest.source, "polars");
     let stored: Record<string, unknown> = {
-      [key]: persistedSessionState(
-        persistedMetadata,
-        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
-        draftBaseFilterModel
+      [key]: serializePersistedSession(
+        persistedSessionState(
+          persistedMetadata,
+          { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
+          draftBaseFilterModel
+        )
       )
     };
     const workspaceState = {

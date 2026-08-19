@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
-import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import {
+  persistedSessionState,
+  persistenceKey,
+  serializePersistedSession,
+  SESSION_STORAGE_KEY
+} from "../extension/sessionPersistence";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 import { SessionRuntimeEstablisher, type RuntimeEstablishmentHooks } from "../extension/sessionRuntimeEstablisher";
 import { SessionRuntimeCleanup } from "../extension/sessionRuntimeCleanup";
@@ -41,12 +46,13 @@ describe("SessionRuntimeEstablisher", () => {
       params: { columns: [{ id: "c:source:0", name: "missing" }] }
     };
     const key = persistenceKey(openRequest.source, "polars");
-    const stored = {
-      [key]: persistedSessionState(
-        { ...openedResponse().metadata, steps: [savedStep] },
-        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
-      )
-    };
+    const persisted = persistedSessionState(
+      { ...openedResponse().metadata, steps: [savedStep] },
+      { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+    );
+    const serialized = serializePersistedSession(persisted);
+    if (!serialized) throw new Error("Expected saved state to serialize.");
+    const stored = { [key]: serialized };
     const workspaceState = {
       get: vi.fn((storageKey: string) => (storageKey === SESSION_STORAGE_KEY ? stored : undefined)),
       update: vi.fn(async () => undefined),

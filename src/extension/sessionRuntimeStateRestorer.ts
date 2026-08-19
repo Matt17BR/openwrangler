@@ -304,7 +304,7 @@ export class SessionRuntimeStateRestorer {
     session.viewState = reconcileViewingState(
       {
         filterModel: response.metadata.filterModel,
-        columnWidths: {},
+        columnWidths: new Map(),
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       },
       response.metadata
@@ -318,7 +318,7 @@ export function initialViewingState(metadata: SessionMetadata): PersistedViewing
 
 export function gridState(state: PersistedViewingState): GridViewState {
   return {
-    columnWidths: { ...state.columnWidths },
+    columnWidths: new Map(state.columnWidths),
     ...(state.selectedColumnId === undefined ? {} : { selectedColumnId: state.selectedColumnId }),
     viewport: { ...state.viewport }
   };
@@ -326,9 +326,7 @@ export function gridState(state: PersistedViewingState): GridViewState {
 
 export function reconcileViewingState(state: PersistedViewingState, metadata: SessionMetadata): PersistedViewingState {
   const columnIds = new Set(metadata.schema.map((column) => column.id));
-  const columnWidths = Object.fromEntries(
-    Object.entries(state.columnWidths).filter(([columnId]) => columnIds.has(columnId))
-  );
+  const columnWidths = new Map([...state.columnWidths].filter(([columnId]) => columnIds.has(columnId)));
   const finalRow =
     metadata.filteredShape.rows === null
       ? state.viewport.firstVisibleRow

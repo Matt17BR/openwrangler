@@ -587,14 +587,18 @@ describe("OpenWranglerPanel retained view state", () => {
     };
     const opened = responseForSource(source);
     const authoritativeState = {
-      columnWidths: { "c:0": 280 },
+      columnWidths: new Map([["c:0", 280]]),
       selectedColumnId: "c:0",
       viewport: { firstVisibleRow: 1, scrollLeft: 24 }
     };
     const rendererState = {
-      columnWidths: { "c:0": 320 },
+      columnWidths: [["c:0", 320]],
       selectedColumnId: "c:0",
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    };
+    const serializedAuthoritativeState = {
+      ...authoritativeState,
+      columnWidths: [["c:0", 280]]
     };
     const updateViewState = vi.fn(async () => undefined);
     const harness = createPanelHarness(
@@ -678,7 +682,7 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     await harness.receive({ kind: "updateViewState", state: rendererState });
     expect(updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted).toContainEqual({ kind: "viewState", state: authoritativeState });
+    expect(harness.posted).toContainEqual({ kind: "viewState", state: serializedAuthoritativeState });
 
     await harness.receive({
       kind: "rendererSynchronized",
@@ -697,7 +701,10 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await harness.receive({ kind: "updateViewState", state: rendererState });
     expect(updateViewState).toHaveBeenCalledOnce();
-    expect(updateViewState).toHaveBeenCalledWith(opened.metadata.sessionId, rendererState);
+    expect(updateViewState).toHaveBeenCalledWith(opened.metadata.sessionId, {
+      ...rendererState,
+      columnWidths: new Map([["c:0", 320]])
+    });
 
     harness.dispose();
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
@@ -2664,10 +2671,11 @@ describe("OpenWranglerPanel retained view state", () => {
 
   it("round-trips only validated host-owned grid presentation state", async () => {
     const state = {
-      columnWidths: { "c:0": 260 },
+      columnWidths: new Map([["c:0", 260]]),
       selectedColumnId: "c:0",
       viewport: { firstVisibleRow: 1, scrollLeft: 44 }
     };
+    const serializedState = { ...state, columnWidths: [["c:0", 260]] };
     const bridge: OpenWranglerBridge = {
       request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
         if (request.kind === "getPage") {
@@ -2688,14 +2696,14 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
 
     await harness.send({ kind: "ready" });
-    expect(harness.posted).toContainEqual({ kind: "viewState", state });
+    expect(harness.posted).toContainEqual({ kind: "viewState", state: serializedState });
 
     const synchronization = latestRendererSynchronization(harness.posted);
     const staleSyncId = `${synchronization.syncId.startsWith("A") ? "B" : "A"}${synchronization.syncId.slice(1)}`;
     harness.posted.length = 0;
-    await harness.send({ kind: "updateViewState", state });
+    await harness.send({ kind: "updateViewState", state: serializedState });
     expect(bridge.updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted).toContainEqual({ kind: "viewState", state });
+    expect(harness.posted).toContainEqual({ kind: "viewState", state: serializedState });
 
     await harness.receive({
       kind: "rendererSynchronized",
@@ -2703,7 +2711,7 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: synchronization.sessionId,
       revision: synchronization.revision
     });
-    await harness.send({ kind: "updateViewState", state });
+    await harness.send({ kind: "updateViewState", state: serializedState });
     expect(bridge.updateViewState).not.toHaveBeenCalled();
 
     await harness.receive({
@@ -2712,10 +2720,10 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: synchronization.sessionId,
       revision: synchronization.revision
     });
-    await harness.send({ kind: "updateViewState", state });
+    await harness.send({ kind: "updateViewState", state: serializedState });
     await harness.send({
       kind: "updateViewState",
-      state: { ...state, columnWidths: { "c:0": 20 } }
+      state: { ...serializedState, columnWidths: [["c:0", 20]] }
     });
     await harness.send({
       kind: "updateViewState",
@@ -2727,12 +2735,15 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await harness.send(pageMessage("next-page", "current-view"));
     const stateAfterPageRevision = {
-      ...state,
-      columnWidths: { "c:0": 261 }
+      ...serializedState,
+      columnWidths: [["c:0", 261]]
     };
     await harness.send({ kind: "updateViewState", state: stateAfterPageRevision });
     expect(bridge.updateViewState).toHaveBeenCalledTimes(2);
-    expect(bridge.updateViewState).toHaveBeenLastCalledWith("session", stateAfterPageRevision);
+    expect(bridge.updateViewState).toHaveBeenLastCalledWith("session", {
+      ...stateAfterPageRevision,
+      columnWidths: new Map([["c:0", 261]])
+    });
   });
 
   it("rejects a late renderer view-state write while import reconfiguration owns the session", async () => {
@@ -2746,7 +2757,7 @@ describe("OpenWranglerPanel retained view state", () => {
     const initial = responseForSource(source, 2);
     const replacement = deferred<OpenWranglerResponse>();
     const authoritativeState = {
-      columnWidths: { "c:0": 245 },
+      columnWidths: new Map([["c:0", 245]]),
       selectedColumnId: "c:0",
       viewport: { firstVisibleRow: 1, scrollLeft: 18 }
     };
@@ -2775,14 +2786,17 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({
       kind: "updateViewState",
       state: {
-        columnWidths: { "c:0": 310 },
+        columnWidths: [["c:0", 310]],
         selectedColumnId: "c:0",
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
     });
 
     expect(updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted.at(-1)).toEqual({ kind: "viewState", state: authoritativeState });
+    expect(harness.posted.at(-1)).toEqual({
+      kind: "viewState",
+      state: { ...authoritativeState, columnWidths: [["c:0", 245]] }
+    });
 
     replacement.resolve(
       responseForSource(
@@ -3355,7 +3369,7 @@ describe("OpenWranglerPanel retained view state", () => {
       }
     );
     const retainedView = {
-      columnWidths: { "c:0": 245 },
+      columnWidths: new Map([["c:0", 245]]),
       selectedColumnId: "c:0",
       viewport: { firstVisibleRow: 1, scrollLeft: 18 }
     };
@@ -3419,7 +3433,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { kind: "importOptionsState", busy: true },
       committed,
       { kind: "sessionPresentation", presentation: restoredPresentation() },
-      { kind: "viewState", state: retainedView },
+      { kind: "viewState", state: { ...retainedView, columnWidths: [["c:0", 245]] } },
       { kind: "importOptionsState", busy: false }
     ]);
     expect(workspaceState.update).toHaveBeenLastCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
@@ -5013,12 +5027,16 @@ describe("OpenWranglerPanel retained view state", () => {
 
     const currentViewState = {
       selectedColumnId: "c:0",
-      columnWidths: { "c:0": 240 },
+      columnWidths: [["c:0", 240]],
       viewport: { firstVisibleRow: 1, scrollLeft: 73 }
+    };
+    const decodedCurrentViewState = {
+      ...currentViewState,
+      columnWidths: new Map([["c:0", 240]])
     };
     await harness.receive({ kind: "switchSessionMode", mode: "editing", state: currentViewState });
 
-    expect(reconfigureLiveSessionMode).toHaveBeenCalledWith("session", 0, "editing", currentViewState, {
+    expect(reconfigureLiveSessionMode).toHaveBeenCalledWith("session", 0, "editing", decodedCurrentViewState, {
       priority: "interactive",
       backendPreference: "r"
     });
@@ -5035,7 +5053,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     harness.posted.length = 0;
     await harness.receive({ kind: "switchSessionMode", mode: "viewing", state: currentViewState });
-    expect(reconfigureLiveSessionMode).toHaveBeenLastCalledWith("session", 1, "viewing", currentViewState, {
+    expect(reconfigureLiveSessionMode).toHaveBeenLastCalledWith("session", 1, "viewing", decodedCurrentViewState, {
       priority: "interactive",
       backendPreference: "r"
     });
@@ -5087,7 +5105,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({
       kind: "switchSessionMode",
       mode: "viewing",
-      state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      state: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
     });
 
     expect(reconfigureLiveSessionMode).not.toHaveBeenCalled();
@@ -5152,7 +5170,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({
       kind: "switchSessionMode",
       mode: "editing",
-      state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      state: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
     });
 
     expect(reconfigureLiveSessionMode).toHaveBeenCalledOnce();
@@ -5273,7 +5291,7 @@ describe("OpenWranglerPanel retained view state", () => {
     const reconnectLiveSession = vi.fn(async (): Promise<OpenWranglerResponse> => pysparkOpened);
     const getViewState = vi.fn(() => ({
       selectedColumnId: "c:0",
-      columnWidths: { "c:0": 240 },
+      columnWidths: new Map([["c:0", 240]]),
       viewport: { firstVisibleRow: 0, scrollLeft: 30 }
     }));
     const getSessionPresentation = vi.fn(() => ({
@@ -5296,7 +5314,10 @@ describe("OpenWranglerPanel retained view state", () => {
       kind: "sessionPresentation",
       presentation: { sessionId: "session", revision: 0, code: "" }
     });
-    expect(harness.posted).toContainEqual({ kind: "viewState", state: getViewState.mock.results[0]?.value });
+    expect(harness.posted).toContainEqual({
+      kind: "viewState",
+      state: { ...getViewState.mock.results[0]?.value, columnWidths: [["c:0", 240]] }
+    });
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
   });
 

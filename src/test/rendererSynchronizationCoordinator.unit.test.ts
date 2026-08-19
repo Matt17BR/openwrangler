@@ -54,7 +54,7 @@ const presentation: SessionPresentation = {
 };
 
 const viewState: GridViewState = {
-  columnWidths: { "c:0": 240 },
+  columnWidths: new Map([["c:0", 240]]),
   selectedColumnId: "c:0",
   viewport: { firstVisibleRow: 0, scrollLeft: 12 }
 };
@@ -81,7 +81,14 @@ describe("RendererSynchronizationCoordinator", () => {
       { kind: "stepInspectionCleared", resumeProfiling: false },
       snapshot,
       { kind: "sessionPresentation", presentation },
-      { kind: "viewState", state: viewState },
+      {
+        kind: "viewState",
+        state: {
+          columnWidths: [["c:0", 240]],
+          selectedColumnId: "c:0",
+          viewport: { firstVisibleRow: 0, scrollLeft: 12 }
+        }
+      },
       { kind: "importOptionsState", busy: true },
       synchronization
     ]);

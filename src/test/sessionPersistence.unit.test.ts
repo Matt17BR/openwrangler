@@ -4,6 +4,7 @@ import {
   decodePersistedSession,
   persistedSessionState,
   persistenceKey,
+  serializePersistedSession,
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
@@ -127,13 +128,22 @@ describe("session persistence", () => {
     const persisted = persistedSessionState(
       metadata,
       {
-        columnWidths: { "c:value": 240 },
-        selectedColumnId: "c:value",
+        columnWidths: new Map([
+          ["__proto__", 180],
+          ["列😀", 240]
+        ]),
+        selectedColumnId: "列😀",
         viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
       },
       draftBaseFilterModel
     );
-    expect(decodePersistedSession(persisted)).toEqual(persisted);
+    const serialized = serializePersistedSession(persisted);
+    expect(serialized).toBeDefined();
+    expect(serialized?.view.columnWidths).toEqual([
+      ["__proto__", 180],
+      ["列😀", 240]
+    ]);
+    expect(decodePersistedSession(serialized)).toEqual(persisted);
     expect(persisted).not.toHaveProperty("sessionId");
     expect(persisted).not.toHaveProperty("stats");
     expect(Object.keys(persisted).sort()).toEqual(["backend", "cleaning", "view"]);
@@ -142,12 +152,15 @@ describe("session persistence", () => {
     expect(persisted.cleaning.draftBaseFilterModel).toEqual(draftBaseFilterModel);
     expect(persisted.view).toMatchObject({
       filterModel: metadata.filterModel,
-      columnWidths: { "c:value": 240 },
-      selectedColumnId: "c:value",
+      columnWidths: new Map([
+        ["__proto__", 180],
+        ["列😀", 240]
+      ]),
+      selectedColumnId: "列😀",
       viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
     });
     expect(
-      decodePersistedSession({ ...persisted, runtimeIdentity: runtimeIdentityForDataBackend("polars") })
+      decodePersistedSession({ ...serialized, runtimeIdentity: runtimeIdentityForDataBackend("polars") })
     ).toBeUndefined();
   });
 
@@ -157,7 +170,7 @@ describe("session persistence", () => {
       cleaning: { steps: [] },
       view: {
         filterModel: { filters: [], sort: [] },
-        columnWidths: {},
+        columnWidths: [],
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
     };
@@ -243,7 +256,7 @@ describe("session persistence", () => {
         cleaning,
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: { "c:value": 79 },
+          columnWidths: [["c:value", 79]],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -260,7 +273,7 @@ describe("session persistence", () => {
               { column: "value", direction: "desc", nulls: "first" }
             ]
           },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -285,7 +298,7 @@ describe("session persistence", () => {
             filters: [],
             sort: [{ column: "value", direction: "desc", nulls: "last" }]
           },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -334,7 +347,7 @@ describe("session persistence", () => {
         cleaning: { steps: [{ id: "bad", kind: "notAnOperation", params: {} }] },
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -345,7 +358,7 @@ describe("session persistence", () => {
         cleaning: { steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["old"] } }] },
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -356,7 +369,7 @@ describe("session persistence", () => {
         cleaning: { steps: [{ id: "legacy-value", kind: "oneHotEncode", params: { columns: ["value"] } }] },
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -370,7 +383,7 @@ describe("session persistence", () => {
         },
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })
@@ -381,7 +394,7 @@ describe("session persistence", () => {
         cleaning: { steps: [] },
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         },
         unexpected: true
@@ -393,7 +406,7 @@ describe("session persistence", () => {
         cleaning: { steps: [] },
         view: {
           filterModel: { filters: [], sort: [] },
-          columnWidths: {},
+          columnWidths: [],
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         }
       })

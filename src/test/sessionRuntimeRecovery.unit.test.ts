@@ -26,7 +26,7 @@ describe("SessionRuntimeRecovery", () => {
     session.viewState = {
       ...session.viewState,
       selectedColumnId: undefined,
-      columnWidths: { "c:value": 240 },
+      columnWidths: new Map([["c:value", 240]]),
       viewport: { firstVisibleRow: 7, scrollLeft: 19 }
     };
     const cleanup = new SessionRuntimeCleanup(() => true);
@@ -40,7 +40,7 @@ describe("SessionRuntimeRecovery", () => {
     expect(session).toMatchObject({
       runtimeId: "runtime-new",
       runtimeRevision: 0,
-      viewState: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 19 } }
+      viewState: { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 19 } }
     });
     expect(requests).toContainEqual({ kind: "closeSession", sessionId: "runtime-old", revision: 0 });
     expect(recoveryHooks.clearPublishedStepInspection).toHaveBeenCalledOnce();

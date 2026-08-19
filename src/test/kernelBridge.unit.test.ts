@@ -288,7 +288,7 @@ describe("kernel retry classification", () => {
 
       await expect(
         bridge.reconfigureLiveSessionMode?.(opened.metadata.sessionId, opened.metadata.revision, "editing", {
-          columnWidths: {},
+          columnWidths: new Map(),
           viewport: { firstVisibleRow: 0, scrollLeft: 0 }
         })
       ).resolves.toMatchObject({ kind: "error", code: "editing_mode_open_failed" });

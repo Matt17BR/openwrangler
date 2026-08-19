@@ -384,7 +384,7 @@ describe("DataGrid column search target", () => {
           goToColumnId={goToColumnRequestId === undefined ? undefined : "c:15"}
           goToColumnRequestId={goToColumnRequestId}
           viewState={{
-            columnWidths: {},
+            columnWidths: new Map(),
             viewport: { firstVisibleRow: 0, scrollLeft }
           }}
           viewStateRestoreVersion={viewStateRestoreVersion}
@@ -635,7 +635,7 @@ describe("DataGrid column search target", () => {
 
     function PreviewGrid({ requestId }: { requestId?: number }) {
       const [viewState, setViewState] = useState<GridViewState>({
-        columnWidths: {},
+        columnWidths: new Map(),
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       });
       return (
@@ -656,7 +656,7 @@ describe("DataGrid column search target", () => {
           onVisibleSummaryColumnsChange={() => undefined}
           onViewStateChange={(next) => {
             onViewStateChange(next);
-            setViewState({ ...next, columnWidths: { ...next.columnWidths } });
+            setViewState({ ...next, columnWidths: new Map(next.columnWidths) });
           }}
         />
       );

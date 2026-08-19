@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import type { DataBackend, SessionSource } from "../shared/protocol";
-import { persistenceKey, SESSION_STORAGE_KEY, type PersistedSessionState } from "../extension/sessionPersistence";
+import {
+  persistenceKey,
+  serializePersistedSession,
+  SESSION_STORAGE_KEY,
+  type PersistedSessionState
+} from "../extension/sessionPersistence";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 
 const source: SessionSource = { kind: "file", label: "sample.csv", path: "/workspace/sample.csv" };
@@ -9,7 +14,7 @@ const source: SessionSource = { kind: "file", label: "sample.csv", path: "/works
 describe("SessionPersistenceStore", () => {
   it("loads only decoded state for the exact source and backend", () => {
     const key = persistenceKey(source, "polars");
-    let stored: Record<string, unknown> = { [key]: state("pandas", 1) };
+    let stored: Record<string, unknown> = { [key]: serializedState("pandas", 1) };
     const memory = memento(
       () => stored,
       (value) => {
@@ -19,7 +24,7 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(memory.value);
 
     expect(persistence.load(source, "polars")).toBeUndefined();
-    stored = { [key]: state("polars", 2) };
+    stored = { [key]: serializedState("polars", 2) };
     expect(persistence.load(source, "polars")).toEqual(state("polars", 2));
     expect(persistence.load(source, "duckdb")).toBeUndefined();
   });
@@ -27,7 +32,7 @@ describe("SessionPersistenceStore", () => {
   it("keeps notebook-output, native R, and Spark state ephemeral", async () => {
     const snapshotSource: SessionSource = { kind: "notebookOutput", label: "capture" };
     const stored = {
-      [persistenceKey(snapshotSource, "polars")]: state("polars", 1),
+      [persistenceKey(snapshotSource, "polars")]: serializedState("polars", 1),
       [persistenceKey(source, "r")]: state("r", 2),
       [persistenceKey(source, "pyspark")]: state("pyspark", 3)
     };
@@ -69,8 +74,8 @@ describe("SessionPersistenceStore", () => {
 
     expect(update).toHaveBeenCalledTimes(2);
     expect(stored).toEqual({
-      [persistenceKey(source, "polars")]: state("polars", 1),
-      [persistenceKey(secondSource, "duckdb")]: state("duckdb", 2)
+      [persistenceKey(source, "polars")]: serializedState("polars", 1),
+      [persistenceKey(secondSource, "duckdb")]: serializedState("duckdb", 2)
     });
   });
 
@@ -87,7 +92,7 @@ describe("SessionPersistenceStore", () => {
 
   it("restores the previous exact entry when a page becomes stale during its write", async () => {
     const key = persistenceKey(source, "polars");
-    const previous = state("polars", 1);
+    const previous = serializedState("polars", 1);
     let stored: Record<string, unknown> = { [key]: previous, unrelated: "keep" };
     const firstUpdate = deferred<void>();
     const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
@@ -130,7 +135,7 @@ describe("SessionPersistenceStore", () => {
 
   it("never reloads an unpublished runtime candidate when stale rollback storage fails", async () => {
     const key = persistenceKey(source, "polars");
-    const previous = state("polars", 1);
+    const previous = serializedState("polars", 1);
     let stored: Record<string, unknown> = { [key]: previous, unrelated: "keep" };
     const staged = deferred<void>();
     const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
@@ -150,14 +155,14 @@ describe("SessionPersistenceStore", () => {
     await expect(pending).resolves.toBe(false);
     expect(update).toHaveBeenCalledTimes(2);
     expect(commit).not.toHaveBeenCalled();
-    expect(persistence.load(source, "polars")).toEqual(previous);
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
     expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
     expect(stored.unrelated).toBe("keep");
   });
 
   it("restores live state when final runtime replacement persistence fails", async () => {
     const key = persistenceKey(source, "polars");
-    const previous = state("polars", 1);
+    const previous = serializedState("polars", 1);
     let stored: Record<string, unknown> = { [key]: previous, unrelated: "keep" };
     const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
       if (update.mock.calls.length === 2) throw new Error("final storage unavailable");
@@ -173,7 +178,7 @@ describe("SessionPersistenceStore", () => {
 
     expect(commit).toHaveBeenCalledOnce();
     expect(rollback).toHaveBeenCalledOnce();
-    expect(persistence.load(source, "polars")).toEqual(previous);
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
     expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
     expect(stored.unrelated).toBe("keep");
   });
@@ -192,7 +197,7 @@ describe("SessionPersistenceStore", () => {
 
     expect(commit).toHaveBeenCalledOnce();
     expect(update).toHaveBeenCalledTimes(2);
-    expect(stored[persistenceKey(source, "polars")]).toEqual(state("polars", 2));
+    expect(stored[persistenceKey(source, "polars")]).toEqual(serializedState("polars", 2));
   });
 });
 
@@ -202,10 +207,16 @@ function state(backend: DataBackend, firstVisibleRow: number): PersistedSessionS
     cleaning: { steps: [] },
     view: {
       filterModel: { filters: [], sort: [] },
-      columnWidths: {},
+      columnWidths: new Map(),
       viewport: { firstVisibleRow, scrollLeft: 0 }
     }
   };
+}
+
+function serializedState(backend: Extract<DataBackend, "pandas" | "polars" | "duckdb">, firstVisibleRow: number) {
+  const serialized = serializePersistedSession(state(backend, firstVisibleRow));
+  if (!serialized) throw new Error("Expected test state to serialize.");
+  return serialized;
 }
 
 function memento(

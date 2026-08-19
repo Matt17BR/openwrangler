@@ -1,6 +1,12 @@
 import type { DataBackend, FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
 import { isFilterModel, isRetainedTransformStep } from "../shared/protocolValidation";
-import { decodeGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
+import {
+  decodeGridViewState,
+  encodeGridViewState,
+  type GridViewState,
+  type PersistedViewingState,
+  type SerializedGridViewState
+} from "../shared/viewState";
 
 export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v4";
 
@@ -15,6 +21,12 @@ export interface PersistedSessionState {
   backend: DataBackend;
   cleaning: PersistedCleaningState;
   view: PersistedViewingState;
+}
+
+export interface SerializedPersistedSessionState {
+  backend: DataBackend;
+  cleaning: PersistedCleaningState;
+  view: SerializedGridViewState & { filterModel: FilterModel };
 }
 
 export interface DecodedPersistedSessionState {
@@ -50,9 +62,22 @@ export function persistedSessionState(
     },
     view: {
       ...gridViewState,
+      columnWidths: new Map(gridViewState.columnWidths),
+      viewport: { ...gridViewState.viewport },
       filterModel: metadata.filterModel
     }
   };
+}
+
+export function serializePersistedSession(state: PersistedSessionState): SerializedPersistedSessionState | undefined {
+  const serializedViewState = encodeGridViewState(state.view);
+  return serializedViewState
+    ? {
+        backend: state.backend,
+        cleaning: state.cleaning,
+        view: { ...serializedViewState, filterModel: state.view.filterModel }
+      }
+    : undefined;
 }
 
 export function decodePersistedSession(value: unknown): DecodedPersistedSessionState | undefined {

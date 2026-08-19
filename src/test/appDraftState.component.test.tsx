@@ -336,7 +336,7 @@ describe("App draft state boundaries", () => {
     dispatch({
       kind: "viewState",
       state: {
-        columnWidths: {},
+        columnWidths: [],
         selectedColumnId: committedSchema[0].id,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
@@ -607,7 +607,7 @@ describe("App draft state boundaries", () => {
       params: { column: { id: "c:c", name: "c" } }
     };
     const revealedViewState = {
-      columnWidths: {},
+      columnWidths: new Map(),
       selectedColumnId: "c:a",
       viewport: { firstVisibleRow: 0, scrollLeft: 900 }
     };
@@ -713,12 +713,12 @@ function latestGridProps(): {
   goToColumnRequestId?: number;
   onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
   onViewStateChange?(state: {
-    columnWidths: Record<string, number>;
+    columnWidths: ReadonlyMap<string, number>;
     selectedColumnId?: string;
     viewport: { firstVisibleRow: number; scrollLeft: number };
   }): void;
   viewState?: {
-    columnWidths: Record<string, number>;
+    columnWidths: ReadonlyMap<string, number>;
     selectedColumnId?: string;
     viewport: { firstVisibleRow: number; scrollLeft: number };
   };
@@ -732,12 +732,12 @@ function latestGridProps(): {
     goToColumnRequestId?: number;
     onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
     onViewStateChange?(state: {
-      columnWidths: Record<string, number>;
+      columnWidths: ReadonlyMap<string, number>;
       selectedColumnId?: string;
       viewport: { firstVisibleRow: number; scrollLeft: number };
     }): void;
     viewState?: {
-      columnWidths: Record<string, number>;
+      columnWidths: ReadonlyMap<string, number>;
       selectedColumnId?: string;
       viewport: { firstVisibleRow: number; scrollLeft: number };
     };
