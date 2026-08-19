@@ -65,7 +65,7 @@ export const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/stable-release.yml"
 ]);
 const AZURE_PIPELINE_PATHS = Object.freeze(AZURE_INSTALL_OWNERS.map(([path]) => path));
-const NPM_COMMAND = /\bnpm\b[^\n;&|]*/gu;
+const NPM_COMMAND = /\bnpm\b[^\n;&|]*/giu;
 const LIFECYCLE_ALIASES = new Set([
   "add",
   "ci",
