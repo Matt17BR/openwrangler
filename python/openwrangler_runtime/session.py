@@ -28,6 +28,7 @@ from .live_page_payload import (
 )
 from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
+from .pivot_wider import PivotWiderContractError, checked_pivot_wider_column_count
 from .protocol import MAX_COLUMN_LIMIT
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
 from .version import __version__
@@ -1529,9 +1530,20 @@ class SessionManager:
                 checked_pivot_longer_row_count(row_count, len(columns))
             except PivotLongerContractError as error:
                 raise EngineError(str(error)) from error
+        if kind == "pivotWider":
+            params = step.get("params")
+            outputs = params.get("outputs") if isinstance(params, Mapping) else None
+            if not isinstance(outputs, list):
+                raise EngineError("The bound pivot-wider step has invalid outputs.")
+            try:
+                checked_pivot_wider_column_count(input_shape["columns"], len(outputs))
+            except PivotWiderContractError as error:
+                raise EngineError(str(error)) from error
         session.engine.validate_transform_preflight(frame, step, input_shape)
         allowed_internal = (
-            None if kind in {"groupBy", "customCode", "pivotLonger"} else session.engine.internal_row_id_column(frame)
+            None
+            if kind in {"groupBy", "customCode", "pivotLonger", "pivotWider"}
+            else session.engine.internal_row_id_column(frame)
         )
         transformed = session.engine.apply_transform(frame, step)
         session.engine.validate_internal_row_id_namespace(transformed, allowed_internal)

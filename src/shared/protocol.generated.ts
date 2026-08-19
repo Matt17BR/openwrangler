@@ -76,6 +76,7 @@ export type TransformStep =
   | CeilNumberTransformStep
   | FormatDatetimeTransformStep
   | PivotLongerTransformStep
+  | PivotWiderTransformStep
   | GroupByTransformStep
   | ByExampleTransformStep
   | CustomCodeTransformStep;
@@ -113,6 +114,7 @@ export type OperationKind =
   | "ceilNumber"
   | "formatDatetime"
   | "pivotLonger"
+  | "pivotWider"
   | "groupBy"
   | "byExample"
   | "customCode";
@@ -333,6 +335,27 @@ export type PivotLongerTransformStep = TransformStepTemplate & {
   params: PivotLongerParams;
   [k: string]: unknown;
 };
+export type PivotWiderTransformStep = TransformStepTemplate & {
+  kind: "pivotWider";
+  params: PivotWiderParams;
+  [k: string]: unknown;
+};
+export type TypedCellKind =
+  | "null"
+  | "nan"
+  | "infinity"
+  | "boolean"
+  | "number"
+  | "integer"
+  | "string"
+  | "decimal"
+  | "datetime"
+  | "date"
+  | "duration"
+  | "binary"
+  | "list"
+  | "struct"
+  | "unknown";
 export type GroupByTransformStep = TransformStepTemplate & {
   kind: "groupBy";
   params: GroupByParams;
@@ -437,22 +460,6 @@ export type RetainedTransformStep = TransformStep & {
   [k: string]: unknown;
 };
 export type LiveGridPage = GridPage | UnknownTotalGridPage;
-export type TypedCellKind =
-  | "null"
-  | "nan"
-  | "infinity"
-  | "boolean"
-  | "number"
-  | "integer"
-  | "string"
-  | "decimal"
-  | "datetime"
-  | "date"
-  | "duration"
-  | "binary"
-  | "list"
-  | "struct"
-  | "unknown";
 export type ColumnVisualization =
   | {
       kind: "numeric";
@@ -765,6 +772,55 @@ export interface PivotLongerParams {
    * Name of the scalar output containing the selected values without lossy common-type coercion; exact UTF-8 byte validation is enforced by every decoder.
    */
   valueColumn: string;
+}
+export interface PivotWiderParams {
+  namesFrom: ColumnReference1;
+  valuesFrom: ColumnReference2;
+  /**
+   * Ordered fixed outputs. Duplicate identifier-and-key rows are errors; missing declared combinations become typed nulls.
+   *
+   * @minItems 2
+   * @maxItems 64
+   */
+  outputs: [PivotWiderOutput, PivotWiderOutput, ...PivotWiderOutput[]];
+}
+/**
+ * A portable text or factor scalar whose complete non-null domain must be declared by outputs.
+ */
+export interface ColumnReference1 {
+  id: string;
+  name: string;
+}
+/**
+ * A distinct compatible scalar column copied without aggregation or common-type coercion.
+ */
+export interface ColumnReference2 {
+  id: string;
+  name: string;
+}
+export interface PivotWiderOutput {
+  key: TypedSelectionToken;
+  /**
+   * An explicit output name. Exact UTF-8 byte and portable collision validation is enforced by every decoder.
+   */
+  name: string;
+}
+/**
+ * A versioned, present string selection token matching one exact names-from value.
+ */
+export interface TypedSelectionToken {
+  kind: "typedSelection";
+  version: 1;
+  columnType: ColumnType;
+  cell: CellValue;
+}
+export interface CellValue {
+  kind: TypedCellKind;
+  raw?: unknown;
+  display: string;
+  isNull: boolean;
+  isNaN: boolean;
+  sign?: -1 | 1;
 }
 export interface GroupByParams {
   keys: NonEmptyColumnReferenceArray;
@@ -1252,14 +1308,6 @@ export interface DataRow {
   rowLabel?: string;
   values: CellValue[];
 }
-export interface CellValue {
-  kind: TypedCellKind;
-  raw?: unknown;
-  display: string;
-  isNull: boolean;
-  isNaN: boolean;
-  sign?: -1 | 1;
-}
 /**
  * A bounded live page whose distributed backend has not run a full count.
  */
@@ -1313,12 +1361,12 @@ export interface NumericBin {
 export interface ValueCount {
   value: string;
   count: number;
-  selectionValue?: TypedSelectionToken;
+  selectionValue?: TypedSelectionToken1;
 }
 /**
  * Typed representative for a distinct-value group whose display text alone is ambiguous.
  */
-export interface TypedSelectionToken {
+export interface TypedSelectionToken1 {
   kind: "typedSelection";
   version: 1;
   columnType: ColumnType;

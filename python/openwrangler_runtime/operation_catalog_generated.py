@@ -211,6 +211,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=(),
     ),
     OperationDefinition(
+        kind="pivotWider",
+        title="Pivot wider",
+        group="Reshape",
+        required=("namesFrom", "valuesFrom", "outputs"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="groupBy",
         title="Group and aggregate",
         group="Aggregation",

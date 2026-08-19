@@ -3180,13 +3180,14 @@ export async function runEditorAcceptancePhase(
     testSelector !== "core-operations" &&
     testSelector !== "categorical-operations" &&
     testSelector !== "value-operations" &&
+    testSelector !== "pivot-wider" &&
     testSelector !== "kernel-restart" &&
     testSelector !== "native-frames" &&
     testSelector !== "interactive-terminal" &&
     testSelector !== "literate-documents"
   ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".'
+      'An editor acceptance test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".'
     );
   }
   if (

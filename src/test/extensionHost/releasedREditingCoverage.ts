@@ -33,6 +33,7 @@ interface ReleasedREditingCoverageDependencies {
     notebook: vscode.NotebookDocument,
     phase: "jupyter-r" | "jupyter-r-remote"
   ) => Promise<void>;
+  readonly exerciseReleasedRPivotWiderJourney: (testing: TestApi, workbench: Page, sessionId: string) => Promise<void>;
   readonly exerciseReleasedRValueOperationsJourney: (
     testing: TestApi,
     workbench: Page,
@@ -57,6 +58,7 @@ export function createReleasedREditingCoverage({
   disposePackagedSessionPanel,
   exerciseReleasedREditingJourney,
   exerciseReleasedRCategoricalEditingJourney,
+  exerciseReleasedRPivotWiderJourney,
   exerciseReleasedRRepresentativeEditingJourney,
   exerciseReleasedRValueOperationsJourney,
   recordReleasedRAcceptanceSection
@@ -85,6 +87,8 @@ export function createReleasedREditingCoverage({
         screenshotOutput,
         coverage.editing
       );
+    } else if (phase === "jupyter-r" && coverage.focusedEditing === "pivot-wider") {
+      await exerciseReleasedRPivotWiderJourney(testing, workbench, base.sessionId);
     } else {
       await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, notebook, phase);
       if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {

@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- **Pivot wider** reshapes one exact text/factor key and one scalar value column into 2–64 fixed ordered outputs.
+  Every non-null key must be declared, duplicate identifier/key rows fail without aggregation, missing combinations
+  become typed nulls, and Pandas, Polars, DuckDB, and Native R preserve engine-native values and generated code.
 - **Pivot longer** reshapes 2–64 ordered, exactly compatible scalar columns into stable label/value outputs. It keeps
   unselected columns, emits selected-column-major rows, preserves native scalar metadata without common-type
   coercion, and runs natively in Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.

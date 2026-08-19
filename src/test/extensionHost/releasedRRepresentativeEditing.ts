@@ -233,7 +233,7 @@ export function createReleasedRRepresentativeEditingJourney(
     assert.equal(opened.metadata.mode, "editing");
     assert.equal(opened.metadata.capabilities.editable, true);
     assert.deepEqual(opened.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
-    assert.equal(opened.metadata.capabilities.supportedOperations.length, 31);
+    assert.equal(opened.metadata.capabilities.supportedOperations.length, 32);
     assert.equal(opened.metadata.capabilities.supportedOperations.includes("byExample"), true);
     assert.equal(opened.metadata.capabilities.supportedOperations.includes("customCode"), true);
 

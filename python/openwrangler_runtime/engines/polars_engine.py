@@ -17,6 +17,7 @@ from ..pivot_longer import (
     checked_pivot_longer_row_count,
     portable_pivot_longer_name_key,
 )
+from ..pivot_wider import pivot_wider_key_value, portable_pivot_wider_name_key
 from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
@@ -94,6 +95,56 @@ def _polars_pivot_type_metadata(frame: Any, name: str, dtype: Any) -> tuple[str,
     query = frame.select(pl.col(name).cat.get_categories().alias(name))
     eager = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
     return str(dtype), tuple(str(value) for value in eager.get_column(name).to_list())
+
+
+def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple[list[str], list[str], list[str], Any]:
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    names_from = bound_column_name(params["namesFrom"], "pivotWider")
+    values_from = bound_column_name(params["valuesFrom"], "pivotWider")
+    output_values = [pivot_wider_key_value(output["key"], "pivotWider.outputs.key") for output in params["outputs"]]
+    output_names = [str(output["name"]) for output in params["outputs"]]
+    identifiers = [
+        name
+        for name in schema.names()
+        if name not in {names_from, values_from} and not name.startswith(INTERNAL_ROW_ID_PREFIX)
+    ]
+    output_keys = [portable_pivot_wider_name_key(name) for name in output_names]
+    existing = {portable_pivot_wider_name_key(name): name for name in identifiers}
+    if len(set(output_keys)) != len(output_keys) or any(key in existing for key in output_keys):
+        raise EngineError("Pivot wider would create duplicate column names.")
+    if any(name.casefold().startswith(INTERNAL_ROW_ID_PREFIX.casefold()) for name in output_names):
+        raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
+    if schema[names_from].base_type() not in {pl.String, pl.Categorical, pl.Enum}:
+        raise EngineError("Pivot-wider namesFrom must be a Polars text, categorical, or enum column.")
+    allowed_base_types = {pl.String, pl.Categorical, pl.Enum, pl.Boolean, pl.Date, pl.Datetime, pl.Duration, pl.Binary}
+    for identifier in identifiers:
+        dtype = schema[identifier]
+        if not (dtype.is_integer() or dtype.is_float() or dtype.base_type() in {*allowed_base_types, pl.Decimal}):
+            raise EngineError(
+                "Pivot wider identifier columns must use the portable group-key scalar family; "
+                f"{identifier!r} is {str(dtype)!r}."
+            )
+    normalized = frame.with_columns(
+        [
+            pl.col(identifier).fill_nan(None).alias(identifier)
+            for identifier in identifiers
+            if schema[identifier].is_float()
+        ]
+    )
+    key_expression = pl.col(names_from).cast(pl.String)
+    invalid = normalized.filter(key_expression.is_null() | ~key_expression.is_in(output_values)).limit(1)
+    invalid_eager = invalid.collect(engine="streaming") if isinstance(invalid, pl.LazyFrame) else invalid
+    if invalid_eager.height:
+        raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
+    duplicates = (
+        normalized.group_by([*identifiers, names_from], maintain_order=True).len().filter(pl.col("len") > 1).limit(1)
+    )
+    duplicate_eager = duplicates.collect(engine="streaming") if isinstance(duplicates, pl.LazyFrame) else duplicates
+    if duplicate_eager.height:
+        raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
+    return identifiers, output_values, output_names, normalized
 
 
 def _literal_file_uri(path: str) -> str:
@@ -1297,6 +1348,20 @@ class PolarsEngine(DataFrameEngine):
                 for selected_name, public_name in zip(selected, selected, strict=True)
             ]
             return pl.concat(fragments, how="vertical")
+        if kind == "pivotWider":
+            identifiers, output_values, output_names, normalized = _polars_validate_pivot_wider(df, params)
+            names_from = bound_column_name(params["namesFrom"], kind)
+            values_from = bound_column_name(params["valuesFrom"], kind)
+            expressions = [
+                pl.col(values_from).filter(pl.col(names_from).cast(pl.String) == key_value).first().alias(output_name)
+                for key_value, output_name in zip(output_values, output_names, strict=True)
+            ]
+            if identifiers:
+                return normalized.group_by(identifiers, maintain_order=True).agg(expressions)
+            group_name = "__open_wrangler_pivot_wider_group"
+            return (
+                normalized.group_by(pl.lit(0).alias(group_name), maintain_order=True).agg(expressions).drop(group_name)
+            )
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])
             column = bound_column_name(params["column"], kind)
@@ -1410,6 +1475,9 @@ class PolarsEngine(DataFrameEngine):
         step: Mapping[str, Any],
         input_shape: SessionDataShape,
     ) -> None:
+        if step.get("kind") == "pivotWider":
+            _polars_validate_pivot_wider(frame, step["params"])
+            return
         if step.get("kind") != "pivotLonger":
             return
         import polars as pl
@@ -1467,6 +1535,97 @@ class PolarsEngine(DataFrameEngine):
                     "    query = df.select(pl.col(name).cat.get_categories().alias(name))",
                     "    eager = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query",
                     "    return str(dtype), tuple(map(str, eager.get_column(name).to_list()))",
+                    "",
+                    "",
+                ]
+            )
+        if any(step["kind"] == "pivotWider" for step in plan):
+            lines.extend(
+                [
+                    "def _ow_polars_pivot_wider(df, names_from, values_from, output_values, output_names):",
+                    "    schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                    "    def output_key(value):",
+                    (
+                        "        return ''.join(chr(ord(char) + 32) if 'A' <= char <= 'Z' "
+                        "else 'ss' if char in {'ß', 'ẞ'} else char for char in value)"
+                    ),
+                    (
+                        f"    identifiers = [name for name in schema.names() if name not in "
+                        f"{{names_from, values_from}} and not name.startswith({INTERNAL_ROW_ID_PREFIX!r})]"
+                    ),
+                    "    keys = [output_key(name) for name in output_names]",
+                    "    existing = {output_key(name): name for name in identifiers}",
+                    "    if len(set(keys)) != len(keys) or any(key in existing for key in keys):",
+                    "        raise ValueError('Pivot wider would create duplicate column names.')",
+                    (
+                        f"    if any(name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r}) "
+                        "for name in output_names):"
+                    ),
+                    (
+                        "        raise ValueError(\"Pivot wider would create Open Wrangler's reserved "
+                        'private row-identity column.")'
+                    ),
+                    "    if schema[names_from].base_type() not in {pl.String, pl.Categorical, pl.Enum}:",
+                    "        raise ValueError('Pivot-wider namesFrom must be a text, categorical, or enum column.')",
+                    (
+                        "    allowed_base_types = {pl.String, pl.Categorical, pl.Enum, pl.Boolean, "
+                        "pl.Date, pl.Datetime, pl.Duration, pl.Binary, pl.Decimal}"
+                    ),
+                    "    for identifier in identifiers:",
+                    "        dtype = schema[identifier]",
+                    (
+                        "        if not (dtype.is_integer() or dtype.is_float() or "
+                        "dtype.base_type() in allowed_base_types):"
+                    ),
+                    (
+                        "            raise ValueError('Pivot wider identifier columns must use the "
+                        "portable group-key scalar family.')"
+                    ),
+                    (
+                        "    normalized = df.with_columns([pl.col(name).fill_nan(None).alias(name) "
+                        "for name in identifiers if schema[name].is_float()])"
+                    ),
+                    "    key_expression = pl.col(names_from).cast(pl.String)",
+                    (
+                        "    invalid = normalized.filter(key_expression.is_null() | "
+                        "~key_expression.is_in(output_values)).limit(1)"
+                    ),
+                    (
+                        "    invalid = invalid.collect(engine='streaming') "
+                        "if isinstance(invalid, pl.LazyFrame) else invalid"
+                    ),
+                    "    if invalid.height:",
+                    (
+                        "        raise ValueError('Pivot wider namesFrom values must be present and match one "
+                        "declared typed key.')"
+                    ),
+                    (
+                        "    duplicates = normalized.group_by([*identifiers, names_from], maintain_order=True).len()"
+                        ".filter(pl.col('len') > 1).limit(1)"
+                    ),
+                    (
+                        "    duplicates = duplicates.collect(engine='streaming') "
+                        "if isinstance(duplicates, pl.LazyFrame) else duplicates"
+                    ),
+                    "    if duplicates.height:",
+                    (
+                        "        raise ValueError('Pivot wider found duplicate identifier-and-key rows; "
+                        "aggregation is not supported.')"
+                    ),
+                    "    expressions = [",
+                    (
+                        "        pl.col(values_from).filter(pl.col(names_from).cast(pl.String) == key_value)"
+                        ".first().alias(output_name)"
+                    ),
+                    "        for key_value, output_name in zip(output_values, output_names, strict=True)",
+                    "    ]",
+                    "    if identifiers:",
+                    "        return normalized.group_by(identifiers, maintain_order=True).agg(expressions)",
+                    "    group_name = '__open_wrangler_pivot_wider_group'",
+                    (
+                        "    return normalized.group_by(pl.lit(0).alias(group_name), maintain_order=True)"
+                        ".agg(expressions).drop(group_name)"
+                    ),
                     "",
                     "",
                 ]
@@ -2059,6 +2218,18 @@ class PolarsEngine(DataFrameEngine):
                 (f"{prefix}    for selected_name, public_name in zip({selected!r}, {selected!r}, strict=True)"),
                 f"{prefix}]",
                 f"{prefix}df = pl.concat({fragments}, how='vertical')",
+            ]
+        if kind == "pivotWider":
+            names_from = bound_column_name(params["namesFrom"], kind)
+            values_from = bound_column_name(params["valuesFrom"], kind)
+            output_values = [
+                pivot_wider_key_value(output["key"], "pivotWider.outputs.key") for output in params["outputs"]
+            ]
+            output_names = [output["name"] for output in params["outputs"]]
+            return [
+                f"{prefix}df = _ow_polars_pivot_wider(",
+                f"{prefix}    df, {names_from!r}, {values_from!r}, {output_values!r}, {output_names!r}",
+                f"{prefix})",
             ]
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])

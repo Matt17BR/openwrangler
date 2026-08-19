@@ -13,6 +13,7 @@ import type { TestApi } from "./extensionHostTestApi";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_SCREENSHOT_COLUMNS,
+  PACKAGED_SCREENSHOT_MARKETS,
   packagedFirstUseAccountNoteKind,
   packagedScreenshotRow
 } from "./screenshotEvidence";
@@ -46,6 +47,15 @@ export interface PackagedFirstUseInteractionDependencies {
     testing: TestApi,
     sessionId: string,
     selectedColumnNames: readonly [string, string],
+    synchronizeApp: (phase: string) => Promise<Locator>
+  ) => Promise<void>;
+  readonly exercisePivotWiderJourney: (
+    app: Locator,
+    testing: TestApi,
+    sessionId: string,
+    namesFromName: string,
+    valuesFromName: string,
+    keys: readonly [string, string, ...string[]],
     synchronizeApp: (phase: string) => Promise<Locator>
   ) => Promise<void>;
   readonly previewUppercaseMarket: (app: Locator, testing: TestApi, newColumn: string) => Promise<void>;
@@ -92,6 +102,7 @@ export function createPackagedFirstUseInteractionJourney(
     columnReference,
     exerciseMultiOutputSplitJourney,
     exercisePivotLongerJourney,
+    exercisePivotWiderJourney,
     previewAndDiscardPreviousRevenue,
     previewApplyAndUndoGroupedRevenue,
     previewMostCommonAccountNote,
@@ -632,6 +643,23 @@ export function createPackagedFirstUseInteractionJourney(
       confirmedMutationDiagnostics
     );
     app = await reacquireApp("Pivot longer undo");
+
+    await exercisePivotWiderJourney(
+      app,
+      testing,
+      sessionId,
+      "market",
+      "revenue",
+      PACKAGED_SCREENSHOT_MARKETS,
+      rediscoverApp
+    );
+    await waitFor(
+      confirmedMutationRendererReady,
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the undone Pivot wider state to hydrate on its current renderer",
+      confirmedMutationDiagnostics
+    );
+    app = await reacquireApp("Pivot wider undo");
 
     recordAcceptanceProgress("platform-smoke:draft-apply");
     await previewUppercaseMarket(app, testing, "market_upper");

@@ -20,6 +20,7 @@ from ..pivot_longer import (
     checked_pivot_longer_row_count,
     portable_pivot_longer_name_key,
 )
+from ..pivot_wider import pivot_wider_key_value, portable_pivot_wider_name_key
 from ..portable_regex import (
     MAX_PORTABLE_REGEX_TEXT_CODE_POINTS,
     MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES,
@@ -893,6 +894,68 @@ class DuckDBEngine(DataFrameEngine):
                 + _identifier_list([pivot_order, source_order])
             )
             return self._relation(frame, query)
+        if kind == "pivotWider":
+            identifiers, output_values, output_names, identifier_expressions = self._validate_pivot_wider(frame, params)
+            names_from = bound_column_name(params["namesFrom"], kind)
+            values_from = bound_column_name(params["valuesFrom"], kind)
+            columns = self._columns(frame)
+            types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+            source_order = _unique_internal(columns, "__ow_pivot_wider_source_order")
+            reserved = [*columns, source_order]
+            group_marker = _unique_internal(reserved, "__ow_pivot_wider_group")
+            reserved.append(group_marker)
+            identifier_keys = []
+            for index, _identifier in enumerate(identifiers):
+                key = _unique_internal(reserved, f"__ow_pivot_wider_identifier_{index}")
+                reserved.append(key)
+                identifier_keys.append(key)
+            names_key_name = _unique_internal(reserved, "__ow_pivot_wider_names_key")
+            names_key = _case_sensitive_group_value(f"CAST({_quote_ident(names_from)} AS VARCHAR)", "VARCHAR")
+            group_columns = identifier_keys or [group_marker]
+            source_projection = "*"
+            if identifier_expressions:
+                source_projection += ", " + ", ".join(
+                    f"{expression} AS {_quote_ident(key)}"
+                    for expression, key in zip(identifier_expressions, identifier_keys, strict=True)
+                )
+            source_projection += f", {names_key} AS {_quote_ident(names_key_name)}"
+            if not identifiers:
+                source_projection += f", 0 AS {_quote_ident(group_marker)}"
+            source_projection += f", row_number() OVER () - 1 AS {_quote_ident(source_order)}"
+            projections = [
+                "first(CASE WHEN "
+                + _valid_predicate(_quote_ident(name), types[name])
+                + " THEN "
+                + _quote_ident(name)
+                + " ELSE NULL END ORDER BY "
+                + _quote_ident(source_order)
+                + ") AS "
+                + _quote_ident(name)
+                for name in identifiers
+            ]
+            projections.extend(
+                (
+                    "first("
+                    + _quote_ident(values_from)
+                    + ") FILTER (WHERE "
+                    + _quote_ident(names_key_name)
+                    + " = encode("
+                    + _sql_literal(key_value)
+                    + ")"
+                    + ") AS "
+                    + _quote_ident(output_name)
+                )
+                for key_value, output_name in zip(output_values, output_names, strict=True)
+            )
+            projections.append(f"min({_quote_ident(source_order)}) AS {_quote_ident(source_order)}")
+            select_list = ", ".join(projections)
+            query = (
+                f"WITH pivot_source AS (SELECT {source_projection} FROM ow), pivot_rows AS ("
+                f"SELECT {select_list} FROM pivot_source GROUP BY {_identifier_list(group_columns)}"
+                f") SELECT * EXCLUDE ({_quote_ident(source_order)}) FROM pivot_rows "
+                f"ORDER BY {_quote_ident(source_order)}"
+            )
+            return self._relation(frame, query)
         if kind == "extractRegexGroup":
             column = bound_column_name(params["column"], kind)
             _ensure_duckdb_output_columns_available(self._columns(frame), [params["newColumn"]], "Regex extraction")
@@ -946,12 +1009,86 @@ class DuckDBEngine(DataFrameEngine):
             return self._relation_from_sql(result_sql)
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
 
+    def _validate_pivot_wider(
+        self,
+        frame: Any,
+        params: Mapping[str, Any],
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        source = self.normalize(frame)
+        names_from = bound_column_name(params["namesFrom"], "pivotWider")
+        values_from = bound_column_name(params["valuesFrom"], "pivotWider")
+        output_values = [pivot_wider_key_value(output["key"], "pivotWider.outputs.key") for output in params["outputs"]]
+        output_names = [str(output["name"]) for output in params["outputs"]]
+        columns = self._columns(source)
+        visible = self._visible_columns(source)
+        identifiers = [name for name in visible if name not in {names_from, values_from}]
+        output_keys = [portable_pivot_wider_name_key(name) for name in output_names]
+        existing = {portable_pivot_wider_name_key(name): name for name in identifiers}
+        addressable = [name.casefold() for name in output_names]
+        existing_addressable = {name.casefold(): name for name in identifiers}
+        if (
+            len(set(output_keys)) != len(output_keys)
+            or any(key in existing for key in output_keys)
+            or len(set(addressable)) != len(addressable)
+            or any(key in existing_addressable for key in addressable)
+        ):
+            raise EngineError("Pivot wider would create a DuckDB column name that is not uniquely addressable.")
+        if any(is_internal_row_id_label(name) for name in output_names):
+            raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
+        types = dict(zip(columns, (str(item) for item in source.types), strict=True))
+        if types[names_from].upper() != "VARCHAR" and not types[names_from].upper().startswith("ENUM("):
+            raise EngineError("Pivot-wider namesFrom must be a DuckDB text or enum column.")
+        identifier_expressions = [_duckdb_pivot_wider_identifier_expression(name, types[name]) for name in identifiers]
+        names_key = _case_sensitive_group_value(f"CAST({_quote_ident(names_from)} AS VARCHAR)", "VARCHAR")
+        allowed = ", ".join(f"encode({_sql_literal(value)})" for value in output_values)
+        invalid = self._terminal_scalar(
+            source,
+            "SELECT 1 FROM ow WHERE "
+            + _quote_ident(names_from)
+            + " IS NULL OR "
+            + names_key
+            + " NOT IN ("
+            + allowed
+            + ") LIMIT 1",
+        )
+        if invalid is not None:
+            raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
+        reserved = list(columns)
+        identifier_keys = []
+        for index, _identifier in enumerate(identifiers):
+            key = _unique_internal(reserved, f"__ow_pivot_wider_identifier_{index}")
+            reserved.append(key)
+            identifier_keys.append(key)
+        names_key_name = _unique_internal(reserved, "__ow_pivot_wider_names_key")
+        normalized_projection = ", ".join(
+            [
+                *(
+                    f"{expression} AS {_quote_ident(key)}"
+                    for expression, key in zip(identifier_expressions, identifier_keys, strict=True)
+                ),
+                f"{names_key} AS {_quote_ident(names_key_name)}",
+            ]
+        )
+        duplicate_columns = [*identifier_keys, names_key_name]
+        duplicate = self._terminal_scalar(
+            source,
+            f"WITH normalized AS (SELECT {normalized_projection} FROM ow) SELECT 1 FROM normalized GROUP BY "
+            + _identifier_list(duplicate_columns)
+            + " HAVING count(*) > 1 LIMIT 1",
+        )
+        if duplicate is not None:
+            raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
+        return identifiers, output_values, output_names, identifier_expressions
+
     def validate_transform_preflight(
         self,
         frame: Any,
         step: Mapping[str, Any],
         input_shape: SessionDataShape,
     ) -> None:
+        if step.get("kind") == "pivotWider":
+            self._validate_pivot_wider(frame, step["params"])
+            return
         if step.get("kind") != "pivotLonger":
             return
         source = self.normalize(frame)
@@ -1140,6 +1277,13 @@ class DuckDBEngine(DataFrameEngine):
                 "columns": [bound_column_name(column, kind) for column in params["columns"]],
             }
             return [f"{prefix}df = _ow_pivot_longer(df, {native_params!r})"]
+        if kind == "pivotWider":
+            native_params = {
+                **params,
+                "namesFrom": bound_column_name(params["namesFrom"], kind),
+                "valuesFrom": bound_column_name(params["valuesFrom"], kind),
+            }
+            return [f"{prefix}df = _ow_pivot_wider(df, {native_params!r})"]
         if kind == "extractRegexGroup":
             column = bound_column_name(params["column"], kind)
             expression = _regex_extract_expression(column, params["pattern"], params["group"])
@@ -2434,6 +2578,28 @@ def _semantic_type(raw_type: str) -> str:
     if any(token in lowered for token in ("varchar", "char", "enum", "uuid")):
         return "string"
     return "unknown"
+
+
+def _duckdb_pivot_wider_identifier_expression(name: str, raw_type: str) -> str:
+    semantic_type = _semantic_type(raw_type)
+    if semantic_type not in {
+        "string",
+        "integer",
+        "float",
+        "decimal",
+        "boolean",
+        "datetime",
+        "date",
+        "duration",
+        "binary",
+    }:
+        raise EngineError(
+            "Pivot wider identifier columns must use the portable group-key scalar family; "
+            f"{name!r} is {semantic_type!r}."
+        )
+    identifier = _quote_ident(name)
+    grouped = _case_sensitive_group_value(identifier, raw_type)
+    return f"CASE WHEN {_valid_predicate(identifier, raw_type)} THEN {grouped} ELSE NULL END"
 
 
 def _is_float_type(raw_type: str) -> bool:
@@ -4078,6 +4244,146 @@ def _ow_pivot_longer(df, params):
         + " FROM ow), pivot_rows AS (" + " UNION ALL ".join(branches)
         + ") SELECT * EXCLUDE (" + _ow_identifiers([pivot_order, source_order])
         + ") FROM pivot_rows ORDER BY " + _ow_identifiers([pivot_order, source_order])
+    )
+    return _ow_query(df, query)
+
+
+def _ow_pivot_wider(df, params):
+    names_from = params["namesFrom"]
+    values_from = params["valuesFrom"]
+    outputs = list(params["outputs"])
+    output_values = []
+    output_names = []
+    for output in outputs:
+        token = output.get("key")
+        cell = token.get("cell") if isinstance(token, dict) else None
+        if (
+            not isinstance(token, dict)
+            or set(token) != {"kind", "version", "columnType", "cell"}
+            or token.get("kind") != "typedSelection"
+            or type(token.get("version")) is not int
+            or token["version"] != 1
+            or token.get("columnType") != "string"
+            or not isinstance(cell, dict)
+            or set(cell) != {"kind", "raw", "display", "isNull", "isNaN"}
+            or cell.get("kind") != "string"
+            or not isinstance(cell.get("raw"), str)
+            or cell.get("display") != cell.get("raw")
+            or cell.get("isNull") is not False
+            or cell.get("isNaN") is not False
+        ):
+            raise ValueError("Pivot wider keys must be canonical present string selection tokens.")
+        output_values.append(cell["raw"])
+        output_names.append(output["name"])
+    columns = _ow_columns(df)
+    identifiers = [name for name in columns if name not in {names_from, values_from}]
+    def output_key(value):
+        return "".join(
+            chr(ord(char) + 32) if "A" <= char <= "Z" else "ss" if char in {"ß", "ẞ"} else char
+            for char in value
+        )
+    output_keys = [output_key(name) for name in output_names]
+    existing = {output_key(str(name)): str(name) for name in identifiers}
+    addressable = [name.casefold() for name in output_names]
+    existing_addressable = {str(name).casefold(): str(name) for name in identifiers}
+    if (
+        len(set(output_keys)) != len(output_keys)
+        or any(key in existing for key in output_keys)
+        or len(set(addressable)) != len(addressable)
+        or any(key in existing_addressable for key in addressable)
+    ):
+        raise ValueError("Pivot wider would create a DuckDB column name that is not uniquely addressable.")
+    if any(name.casefold().startswith("__open_wrangler_internal_row_id_") for name in output_names):
+        raise ValueError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
+    types = dict(zip(columns, map(str, df.types)))
+    if types[names_from].upper() != "VARCHAR" and not types[names_from].upper().startswith("ENUM("):
+        raise ValueError("Pivot-wider namesFrom must be a DuckDB text or enum column.")
+    def identifier_expression(name):
+        raw_type = types[name]
+        lowered = raw_type.lower()
+        nested = lowered.endswith("[]") or lowered.startswith(("list", "array", "struct", "map", "union"))
+        scalar = any(token in lowered for token in (
+            "tinyint", "smallint", "integer", "bigint", "hugeint", "utinyint", "usmallint", "uinteger",
+            "ubigint", "decimal", "float", "double", "real", "bool", "timestamp", "date", "interval",
+            "blob", "bit", "varchar", "char", "enum", "uuid",
+        ))
+        if nested or not scalar:
+            raise ValueError("Pivot wider identifier columns must use the portable group-key scalar family.")
+        column = _ow_ident(name)
+        grouped = _ow_case_sensitive_group_value(column, raw_type)
+        return "CASE WHEN " + _ow_valid(column, raw_type) + " THEN " + grouped + " ELSE NULL END"
+    identifier_expressions = [identifier_expression(name) for name in identifiers]
+    names_key = _ow_case_sensitive_group_value("CAST(" + _ow_ident(names_from) + " AS VARCHAR)", "VARCHAR")
+    allowed = ", ".join("encode(" + _ow_literal(value) + ")" for value in output_values)
+    invalid = _ow_query(
+        df,
+        "SELECT 1 FROM ow WHERE " + _ow_ident(names_from) + " IS NULL OR "
+        + names_key + " NOT IN (" + allowed + ") LIMIT 1",
+    ).fetchone()
+    if invalid is not None:
+        raise ValueError("Pivot wider namesFrom values must be present and match one declared typed key.")
+    reserved = list(columns)
+    identifier_keys = []
+    for index, _identifier in enumerate(identifiers):
+        key = _ow_unique(reserved, "__ow_pivot_wider_identifier_" + str(index))
+        reserved.append(key)
+        identifier_keys.append(key)
+    names_key_name = _ow_unique(reserved, "__ow_pivot_wider_names_key")
+    normalized_identifiers = [
+        expression + " AS " + _ow_ident(key)
+        for expression, key in zip(identifier_expressions, identifier_keys, strict=True)
+    ]
+    normalized_projection = ", ".join([
+        *normalized_identifiers,
+        names_key + " AS " + _ow_ident(names_key_name),
+    ])
+    duplicate_columns = [*identifier_keys, names_key_name]
+    duplicate = _ow_query(
+        df,
+        "WITH normalized AS (SELECT " + normalized_projection
+        + " FROM ow) SELECT 1 FROM normalized GROUP BY "
+        + _ow_identifiers(duplicate_columns)
+        + " HAVING count(*) > 1 LIMIT 1",
+    ).fetchone()
+    if duplicate is not None:
+        raise ValueError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
+    source_order = _ow_unique(columns, "__ow_pivot_wider_source_order")
+    reserved = [*columns, source_order]
+    group_marker = _ow_unique(reserved, "__ow_pivot_wider_group")
+    reserved.append(group_marker)
+    identifier_keys = []
+    for index, _identifier in enumerate(identifiers):
+        key = _ow_unique(reserved, "__ow_pivot_wider_identifier_" + str(index))
+        reserved.append(key)
+        identifier_keys.append(key)
+    names_key_name = _ow_unique(reserved, "__ow_pivot_wider_names_key")
+    group_columns = identifier_keys or [group_marker]
+    source_projection = "*"
+    if identifier_expressions:
+        source_projection += ", " + ", ".join(
+            expression + " AS " + _ow_ident(key)
+            for expression, key in zip(identifier_expressions, identifier_keys, strict=True)
+        )
+    source_projection += ", " + names_key + " AS " + _ow_ident(names_key_name)
+    if not identifiers:
+        source_projection += ", 0 AS " + _ow_ident(group_marker)
+    source_projection += ", row_number() OVER () - 1 AS " + _ow_ident(source_order)
+    projections = [
+        "first(CASE WHEN " + _ow_valid(_ow_ident(name), types[name]) + " THEN " + _ow_ident(name)
+        + " ELSE NULL END ORDER BY " + _ow_ident(source_order) + ") AS " + _ow_ident(name)
+        for name in identifiers
+    ]
+    projections.extend(
+        "first(" + _ow_ident(values_from) + ") FILTER (WHERE " + _ow_ident(names_key_name)
+        + " = encode(" + _ow_literal(key_value) + ")) AS " + _ow_ident(output_name)
+        for key_value, output_name in zip(output_values, output_names, strict=True)
+    )
+    projections.append("min(" + _ow_ident(source_order) + ") AS " + _ow_ident(source_order))
+    query = (
+        "WITH pivot_source AS (SELECT " + source_projection + " FROM ow), pivot_rows AS (SELECT "
+        + ", ".join(projections) + " FROM pivot_source GROUP BY " + _ow_identifiers(group_columns)
+        + ") SELECT * EXCLUDE (" + _ow_ident(source_order) + ") FROM pivot_rows ORDER BY "
+        + _ow_ident(source_order)
     )
     return _ow_query(df, query)
 

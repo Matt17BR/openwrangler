@@ -3009,6 +3009,81 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
+    if (identical(kind, "pivotWider")) {
+      params <- exact_record(
+        step$params,
+        c("namesFrom", "valuesFrom", "outputs"),
+        "request.payload.step.params"
+      )
+      names_from <- decode_column_reference(
+        params$namesFrom,
+        "request.payload.step.params.namesFrom",
+        limits$columnIdBytes
+      )
+      values_from <- decode_column_reference(
+        params$valuesFrom,
+        "request.payload.step.params.valuesFrom",
+        limits$columnIdBytes
+      )
+      if (identical(names_from$id, values_from$id)) {
+        abort("invalid_request", "Pivot wider requires distinct names-from and values-from columns")
+      }
+      if (
+        !is.list(params$outputs) || is.object(params$outputs) || !is.null(names(params$outputs)) ||
+          length(params$outputs) < 2L || length(params$outputs) > 64L
+      ) {
+        abort("invalid_request", "request.payload.step.params.outputs must contain 2 to 64 outputs")
+      }
+      outputs <- lapply(seq_along(params$outputs), function(index) {
+        output <- exact_record(
+          params$outputs[[index]],
+          c("key", "name"),
+          sprintf("request.payload.step.params.outputs[%d]", index)
+        )
+        token <- exact_record(
+          output$key,
+          c("kind", "version", "columnType", "cell"),
+          sprintf("request.payload.step.params.outputs[%d].key", index)
+        )
+        cell <- exact_record(
+          token$cell,
+          c("kind", "raw", "display", "isNull", "isNaN"),
+          sprintf("request.payload.step.params.outputs[%d].key.cell", index)
+        )
+        if (
+          !identical(token$kind, "typedSelection") || !identical(as.integer(token$version), 1L) ||
+            !identical(token$columnType, "string") || !identical(cell$kind, "string") ||
+            !is.character(cell$raw) || length(cell$raw) != 1L || is.na(cell$raw) ||
+            !identical(cell$display, cell$raw) || !identical(cell$isNull, FALSE) || !identical(cell$isNaN, FALSE)
+        ) {
+          abort("invalid_request", "Pivot wider keys must be canonical present string selection tokens")
+        }
+        list(
+          key = cell$raw,
+          token = token,
+          name = validate_pivot_longer_output_name(
+            output$name,
+            sprintf("request.payload.step.params.outputs[%d].name", index)
+          ),
+          outputId = bounded_text(
+            paste0("c:step:", step_id, ":", index - 1L),
+            sprintf("the Pivot wider output identity %d", index),
+            limits$columnIdBytes
+          )
+        )
+      })
+      keys <- vapply(outputs, `[[`, character(1L), "key", USE.NAMES = FALSE)
+      output_names <- vapply(outputs, `[[`, character(1L), "name", USE.NAMES = FALSE)
+      output_name_keys <- vapply(output_names, portable_pivot_longer_name_key, character(1L), USE.NAMES = FALSE)
+      if (anyDuplicated(keys) || anyDuplicated(output_name_keys)) {
+        abort("invalid_request", "Pivot wider output keys and names must be unique")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(namesFrom = names_from, valuesFrom = values_from, outputs = outputs)
+      ))
+    }
     if (identical(kind, "extractRegexGroup")) {
       params <- exact_record(
         step$params,
@@ -3335,6 +3410,7 @@ openwrangler_r_kernel_agent <- local({
       "splitText",
       "splitTextColumns",
       "pivotLonger",
+      "pivotWider",
       "extractRegexGroup",
       "findReplace",
       "minMaxScale",
@@ -3647,6 +3723,67 @@ openwrangler_r_kernel_agent <- local({
       valueName = step$params$valueColumn,
       outputIds = step$outputIds,
       outputRows = output_rows
+    )
+  }
+
+  bind_pivot_wider_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    bind_reference <- function(reference, label) {
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", sprintf("The Pivot wider %s reference no longer matches the active R dataframe", label), TRUE)
+      }
+      position <- as.integer(matches[[1L]])
+      list(
+        id = reference$id,
+        name = reference$name,
+        position = position,
+        semantics = schema[[position]]$semantics,
+        type = schema[[position]]$type
+      )
+    }
+    names_from <- bind_reference(step$params$namesFrom, "names-from")
+    values_from <- bind_reference(step$params$valuesFrom, "values-from")
+    if (identical(names_from$id, values_from$id)) {
+      abort("invalid_request", "Pivot wider requires distinct source columns", TRUE)
+    }
+    if (!names_from$semantics$kind %in% c("character", "factor")) {
+      abort("invalid_request", "Pivot wider names-from requires an R character or factor column", TRUE)
+    }
+    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    if (!values_from$semantics$kind %in% supported) {
+      abort("invalid_request", "Pivot wider values-from requires a portable scalar R column", TRUE)
+    }
+    selected_positions <- c(names_from$position, values_from$position)
+    retained_positions <- setdiff(seq_along(schema), selected_positions)
+    if (any(!vapply(schema[retained_positions], function(column) column$semantics$kind %in% supported, logical(1L)))) {
+      abort("invalid_request", "Pivot wider identifier columns require portable scalar R values", TRUE)
+    }
+    retained_names <- vapply(schema[retained_positions], `[[`, character(1L), "name", USE.NAMES = FALSE)
+    output_names <- vapply(step$params$outputs, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    input_keys <- vapply(retained_names, portable_pivot_longer_name_key, character(1L), USE.NAMES = FALSE)
+    output_name_keys <- vapply(output_names, portable_pivot_longer_name_key, character(1L), USE.NAMES = FALSE)
+    if (anyDuplicated(output_name_keys) || any(output_name_keys %in% input_keys)) {
+      abort("invalid_request", "Pivot-wider output names collide under the portable collision rule", TRUE)
+    }
+    if (length(retained_positions) + length(output_names) > 2048L) {
+      abort("operation-output-too-large", "Pivot wider would exceed the portable 2,048-column limit", TRUE)
+    }
+    output_keys <- vapply(step$params$outputs, `[[`, character(1L), "key", USE.NAMES = FALSE)
+    if (anyDuplicated(output_keys)) abort("invalid_request", "Pivot wider output keys must be unique", TRUE)
+    output_ids <- vapply(step$params$outputs, `[[`, character(1L), "outputId", USE.NAMES = FALSE)
+    list(
+      id = step$id,
+      kind = step$kind,
+      namesFrom = names_from,
+      valuesFrom = values_from,
+      retainedPositions = as.integer(retained_positions),
+      removedNames = c(names_from$name, values_from$name),
+      outputKeys = output_keys,
+      outputNames = output_names,
+      outputIds = output_ids,
+      valueSemantics = values_from$semantics
     )
   }
 
@@ -5214,6 +5351,22 @@ openwrangler_r_kernel_agent <- local({
           bound$selectedNames,
           bound$labelName,
           bound$valueName,
+          bound$outputIds
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "pivotWider")) {
+      bound <- bind_pivot_wider_step(capture, step)
+      return(list(
+        capture = frame_contract$capture_pivot_wider_at(
+          source,
+          bound$namesFrom$position,
+          bound$namesFrom$name,
+          bound$valuesFrom$position,
+          bound$valuesFrom$name,
+          bound$outputKeys,
+          bound$outputNames,
           bound$outputIds
         ),
         bound = bound
@@ -8298,6 +8451,50 @@ openwrangler_r_kernel_agent <- local({
           "  attr(.ow_result, \"row.names\") <- if (nrow(.ow_result) == 0L) integer() else c(NA_integer_, -as.integer(nrow(.ow_result)))",
           sprintf("  .ow_result_ids <- c(.ow_result_ids[.ow_pivot_retained], c(%s))", output_ids)
         )
+      } else if (identical(step$kind, "pivotWider")) {
+        output_keys <- paste(vapply(step$outputKeys, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        output_names <- paste(vapply(step$outputNames, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        output_ids <- paste(vapply(step$outputIds, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        lines <- c(
+          lines,
+          sprintf("  .ow_wider_names_position <- %dL", step$namesFrom$position),
+          sprintf("  .ow_wider_names_name <- %s", r_string(step$namesFrom$name)),
+          sprintf("  .ow_wider_values_position <- %dL", step$valuesFrom$position),
+          sprintf("  .ow_wider_values_name <- %s", r_string(step$valuesFrom$name)),
+          sprintf("  .ow_wider_keys <- c(%s)", output_keys),
+          sprintf("  .ow_wider_output_names <- c(%s)", output_names),
+          "  .ow_wider_positions <- c(.ow_wider_names_position, .ow_wider_values_position)",
+          "  if (anyDuplicated(.ow_wider_positions) || any(.ow_wider_positions < 1L) || any(.ow_wider_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_wider_positions], c(.ow_wider_names_name, .ow_wider_values_name))) stop(\"Open Wrangler Pivot wider column references are stale\", call. = FALSE)",
+          "  if (!is.character(.ow_result[[.ow_wider_names_position]]) && !is.factor(.ow_result[[.ow_wider_names_position]])) stop(\"Open Wrangler Pivot wider names-from requires character or factor data\", call. = FALSE)",
+          "  .ow_wider_name_key <- function(.ow_name) paste0(vapply(utf8ToInt(enc2utf8(.ow_name)), function(.ow_point) if (.ow_point >= 65L && .ow_point <= 90L) intToUtf8(.ow_point + 32L) else if (.ow_point %in% c(223L, 7838L)) \"ss\" else intToUtf8(.ow_point), character(1L), USE.NAMES = FALSE), collapse = \"\")",
+          "  .ow_wider_retained <- setdiff(seq_len(ncol(.ow_result)), .ow_wider_positions)",
+          "  .ow_wider_retained_keys <- vapply(names(.ow_result)[.ow_wider_retained], .ow_wider_name_key, character(1L), USE.NAMES = FALSE)",
+          "  .ow_wider_output_name_keys <- vapply(.ow_wider_output_names, .ow_wider_name_key, character(1L), USE.NAMES = FALSE)",
+          "  if (length(.ow_wider_keys) < 2L || length(.ow_wider_keys) > 64L || anyDuplicated(.ow_wider_keys) || anyDuplicated(.ow_wider_output_name_keys) || any(.ow_wider_output_name_keys %in% .ow_wider_retained_keys) || any(startsWith(tolower(.ow_wider_output_names), \"__open_wrangler_internal_row_id_\"))) stop(\"Open Wrangler Pivot wider outputs are invalid or collide\", call. = FALSE)",
+          sprintf("  if (length(.ow_wider_retained) + length(.ow_wider_output_names) > %dL) stop(\"Pivot wider would exceed the portable 2,048-column limit\", call. = FALSE)", maximum_columns),
+          "  .ow_wider_names <- as.character(.ow_result[[.ow_wider_names_position]])",
+          "  if (anyNA(.ow_wider_names) || any(!.ow_wider_names %in% .ow_wider_keys)) stop(\"Every Pivot wider names-from value must match one declared output key\", call. = FALSE)",
+          "  if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"Open Wrangler Pivot wider requires data.table\", call. = FALSE)",
+          "  .ow_wider_identifier_values <- lapply(.ow_wider_retained, function(.ow_position) { .ow_column <- .ow_result[[.ow_position]]; if (is.double(.ow_column) && !is.object(.ow_column)) .ow_column[is.nan(.ow_column)] <- NA_real_; .ow_column })",
+          "  if (length(.ow_wider_retained) == 0L) { .ow_wider_groups <- if (nrow(.ow_result) == 0L) integer() else rep.int(1L, nrow(.ow_result)) } else {",
+          "    .ow_wider_identifiers <- data.table::as.data.table(.ow_wider_identifier_values)",
+          "    .ow_wider_identifier_names <- paste0(\"ow_identifier_\", seq_along(.ow_wider_retained))",
+          "    data.table::setnames(.ow_wider_identifiers, .ow_wider_identifier_names)",
+          "    .ow_wider_identifiers[, (\"__open_wrangler_internal_row_id_pivot_wider_group\") := .GRP, by = .ow_wider_identifier_names]",
+          "    .ow_wider_groups <- .ow_wider_identifiers[[\"__open_wrangler_internal_row_id_pivot_wider_group\"]]",
+          "  }",
+          "  .ow_wider_group_rows <- which(!duplicated(.ow_wider_groups))",
+          "  .ow_wider_key_ordinals <- match(.ow_wider_names, .ow_wider_keys)",
+          "  if (anyDuplicated(paste0(.ow_wider_groups, \":\", .ow_wider_key_ordinals))) stop(\"Pivot wider found duplicate identifier-and-key rows\", call. = FALSE)",
+          "  .ow_wider_value_source <- .ow_result[[.ow_wider_values_position]]",
+          "  .ow_wider_value_storage <- .ow_wider_value_source; attributes(.ow_wider_value_storage) <- NULL",
+          "  .ow_wider_restore <- function(.ow_storage) { if (is.factor(.ow_wider_value_source)) { attr(.ow_storage, \"levels\") <- levels(.ow_wider_value_source); attr(.ow_storage, \"class\") <- class(.ow_wider_value_source) } else if (inherits(.ow_wider_value_source, \"POSIXct\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_tzone <- attr(.ow_wider_value_source, \"tzone\", exact = TRUE); if (!is.null(.ow_tzone)) attr(.ow_storage, \"tzone\") <- .ow_tzone } else if (inherits(.ow_wider_value_source, \"difftime\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); attr(.ow_storage, \"units\") <- attr(.ow_wider_value_source, \"units\", exact = TRUE) } else if (inherits(.ow_wider_value_source, \"Date\") || inherits(.ow_wider_value_source, \"integer64\")) attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_storage }",
+          "  .ow_wider_missing <- function(.ow_size) { .ow_storage <- vector(typeof(.ow_wider_value_storage), .ow_size); if (.ow_size != 0L) { if (inherits(.ow_wider_value_source, \"integer64\")) .ow_storage[] <- unclass(bit64::as.integer64(NA_character_))[[1L]] else if (typeof(.ow_storage) == \"integer\") .ow_storage[] <- NA_integer_ else if (typeof(.ow_storage) == \"logical\") .ow_storage[] <- NA else if (typeof(.ow_storage) == \"character\") .ow_storage[] <- NA_character_ else .ow_storage[] <- NA_real_ }; .ow_storage }",
+          "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- .ow_wider_missing(length(.ow_wider_group_rows)); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_storage[.ow_rows]; .ow_wider_restore(.ow_storage) })",
+          "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = names(.ow_result)[[.ow_identifier]], value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }",
+          "  attr(.ow_result, \"row.names\") <- if (nrow(.ow_result) == 0L) integer() else c(NA_integer_, -as.integer(nrow(.ow_result)))",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids[.ow_wider_retained], c(%s))", output_ids)
+        )
       } else if (identical(step$kind, "extractRegexGroup")) {
         lines <- c(
           lines,
@@ -9052,6 +9249,8 @@ openwrangler_r_kernel_agent <- local({
       vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
     } else if (identical(bound$kind, "pivotLonger")) {
       c(bound$labelName, bound$valueName)
+    } else if (identical(bound$kind, "pivotWider")) {
+      bound$outputNames
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$generatedNames
     } else if (identical(bound$kind, "splitTextColumns")) {
@@ -9090,6 +9289,8 @@ openwrangler_r_kernel_agent <- local({
       bound$removedNames
     } else if (identical(bound$kind, "pivotLonger")) {
       bound$removedNames
+    } else if (identical(bound$kind, "pivotWider")) {
+      bound$removedNames
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$removedNames
     } else if (identical(bound$kind, "dropColumns")) {
@@ -9122,7 +9323,7 @@ openwrangler_r_kernel_agent <- local({
           after_page$page$totalRows == after_rows &&
           length(after_page$page$rows) == after_rows
       truncated <- !(before_complete && after_complete)
-    } else if (identical(bound$kind, "groupBy") || identical(bound$kind, "pivotLonger")) {
+    } else if (identical(bound$kind, "groupBy") || identical(bound$kind, "pivotLonger") || identical(bound$kind, "pivotWider")) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R row-expanding diff is missing its bounded page context")
       }

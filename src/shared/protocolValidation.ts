@@ -14,7 +14,8 @@ import type {
   SessionMetadata,
   TransformColumnFilter,
   TransformSortRule,
-  TransformStep
+  TransformStep,
+  TypedSelectionToken
 } from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
@@ -25,6 +26,13 @@ import {
   portablePivotLongerNameKey,
   validatePivotLongerOutputName
 } from "./pivotLonger";
+import {
+  MAX_PIVOT_WIDER_OUTPUTS,
+  MIN_PIVOT_WIDER_OUTPUTS,
+  pivotWiderKeyValue,
+  portablePivotWiderNameKey,
+  validatePivotWiderOutputName
+} from "./pivotWider";
 import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
 import { PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
@@ -1308,6 +1316,34 @@ export function isTransformStep(value: unknown): value is TransformStep {
       } catch {
         return false;
       }
+    }
+    case "pivotWider": {
+      const decoded = exactRecord(params, ["namesFrom", "valuesFrom", "outputs"]);
+      if (
+        decoded === undefined ||
+        !isColumnReference(decoded.namesFrom) ||
+        !isColumnReference(decoded.valuesFrom) ||
+        decoded.namesFrom.id === decoded.valuesFrom.id ||
+        !Array.isArray(decoded.outputs) ||
+        decoded.outputs.length < MIN_PIVOT_WIDER_OUTPUTS ||
+        decoded.outputs.length > MAX_PIVOT_WIDER_OUTPUTS
+      ) {
+        return false;
+      }
+      const keyValues: string[] = [];
+      const outputKeys: string[] = [];
+      try {
+        for (const [index, output] of decoded.outputs.entries()) {
+          const item = exactRecord(output, ["key", "name"]);
+          if (item === undefined || !isTypedSelectionToken(item.key) || !isNonEmptyString(item.name)) return false;
+          keyValues.push(pivotWiderKeyValue(item.key as TypedSelectionToken));
+          validatePivotWiderOutputName(item.name, `Pivot wider output ${index + 1} name`);
+          outputKeys.push(portablePivotWiderNameKey(item.name));
+        }
+      } catch {
+        return false;
+      }
+      return new Set(keyValues).size === keyValues.length && new Set(outputKeys).size === outputKeys.length;
     }
     case "groupBy": {
       const decoded = exactRecord(params, ["keys", "aggregations"]);

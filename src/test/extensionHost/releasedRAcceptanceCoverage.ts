@@ -4,6 +4,7 @@ export type ReleasedRAcceptanceCoverageProfile = Readonly<{
   name:
     | "categorical-operations"
     | "value-operations"
+    | "pivot-wider"
     | "kernel-restart"
     | "native-frames"
     | "comprehensive"
@@ -12,7 +13,7 @@ export type ReleasedRAcceptanceCoverageProfile = Readonly<{
   kernelLifecycle: boolean;
   gridPaging: "all-blocks" | "single-round-trip";
   editing: "clone-lifecycle" | "core-catalog" | "rename-lifecycle";
-  focusedEditing: "none" | "categorical-operations" | "value-operations";
+  focusedEditing: "none" | "categorical-operations" | "value-operations" | "pivot-wider";
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
   nativeFrameEditing: "none" | "rename-and-drop" | "one-operation-per-flavor";
@@ -65,6 +66,15 @@ export const RELEASED_R_VALUE_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoveragePr
   nativeFrameEditing: "none"
 });
 
+export const RELEASED_R_PIVOT_WIDER_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
+  name: "pivot-wider",
+  coreJourney: false,
+  kernelLifecycle: false,
+  focusedEditing: "pivot-wider",
+  nativeFrameEditing: "none"
+});
+
 export const RELEASED_R_KERNEL_RESTART_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
   name: "kernel-restart",
@@ -114,6 +124,8 @@ export function releasedRAcceptanceCoverageProfile(
       return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
     case "value-operations":
       return RELEASED_R_VALUE_OPERATIONS_COVERAGE;
+    case "pivot-wider":
+      return RELEASED_R_PIVOT_WIDER_COVERAGE;
     case "kernel-restart":
       return RELEASED_R_KERNEL_RESTART_COVERAGE;
     case "native-frames":

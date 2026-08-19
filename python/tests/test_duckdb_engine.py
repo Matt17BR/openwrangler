@@ -1492,9 +1492,40 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             valueColumn="reading",
         )
     ]
+    pivot_wider_a = typed_selection_value("a", "string")
+    pivot_wider_b = typed_selection_value("b", "string")
+    assert pivot_wider_a is not None and pivot_wider_b is not None
+    pivot_wider_plan = [
+        bound_step(
+            "selectColumns",
+            columns=[
+                bound_ref("c:source:4", "other", 4),
+                bound_ref("c:source:0", "group", 0),
+                bound_ref("c:source:3", "value", 3),
+            ],
+        ),
+        bound_step(
+            "pivotWider",
+            namesFrom=bound_ref("c:source:0", "group", 1),
+            valuesFrom=bound_ref("c:source:3", "value", 2),
+            outputs=[
+                {"key": pivot_wider_a, "name": "group_a_value"},
+                {"key": pivot_wider_b, "name": "group_b_value"},
+            ],
+        ),
+    ]
     custom_plan = [step("customCode", code='result = df.filter("other > 2")')]
 
-    plans = [row_plan, column_plan, text_numeric_plan, pivot_plan, group_plan, example_plan, custom_plan]
+    plans = [
+        row_plan,
+        column_plan,
+        text_numeric_plan,
+        pivot_plan,
+        pivot_wider_plan,
+        group_plan,
+        example_plan,
+        custom_plan,
+    ]
     covered = {operation["kind"] for plan in plans for operation in plan}
     assert covered == {item["kind"] for item in operation_catalog()}
     for plan in plans:

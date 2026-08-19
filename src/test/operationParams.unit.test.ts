@@ -218,6 +218,41 @@ const validCases: ParamsCases = {
     ],
     expected: { columns: [sales, profit], labelColumn: "metric", valueColumn: "reading" }
   },
+  pivotWider: {
+    kind: "pivotWider",
+    fields: [
+      ["namesFrom", "c:city"],
+      ["valuesFrom", "c:sales"],
+      ["pivotWiderKey", "Milan"],
+      ["pivotWiderName", "milan_sales"],
+      ["pivotWiderKey", "Paris"],
+      ["pivotWiderName", "paris_sales"]
+    ],
+    expected: {
+      namesFrom: city,
+      valuesFrom: sales,
+      outputs: [
+        {
+          key: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "string",
+            cell: { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }
+          },
+          name: "milan_sales"
+        },
+        {
+          key: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "string",
+            cell: { kind: "string", raw: "Paris", display: "Paris", isNull: false, isNaN: false }
+          },
+          name: "paris_sales"
+        }
+      ]
+    }
+  },
   extractRegexGroup: {
     kind: "extractRegexGroup",
     fields: [

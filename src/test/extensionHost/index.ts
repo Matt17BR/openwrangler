@@ -121,6 +121,7 @@ import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import { persistedReplayExportRequest } from "./persistedReplayExport";
 import { exerciseMultiOutputSplitJourney } from "./multiOutputSplitJourney";
 import { exercisePivotLongerJourney } from "./pivotLongerJourney";
+import { exercisePivotWiderJourney } from "./pivotWiderJourney";
 import { exerciseActiveRegexExtractionJourney, exercisePandasRegexExtractionJourney } from "./regexExtractionJourney";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
@@ -480,6 +481,11 @@ const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInterac
     exerciseMultiOutputSplitJourney(app, testing, sessionId, synchronizeApp, { recordAcceptanceProgress, waitFor }),
   exercisePivotLongerJourney: (app, testing, sessionId, selectedColumnNames, synchronizeApp) =>
     exercisePivotLongerJourney(app, testing, sessionId, selectedColumnNames, synchronizeApp, {
+      recordAcceptanceProgress,
+      waitFor
+    }),
+  exercisePivotWiderJourney: (app, testing, sessionId, namesFromName, valuesFromName, keys, synchronizeApp) =>
+    exercisePivotWiderJourney(app, testing, sessionId, namesFromName, valuesFromName, keys, synchronizeApp, {
       recordAcceptanceProgress,
       waitFor
     }),
@@ -2093,6 +2099,24 @@ const exerciseReleasedREditingCoverage = createReleasedREditingCoverage({
   disposePackagedSessionPanel,
   exerciseReleasedREditingJourney,
   exerciseReleasedRCategoricalEditingJourney,
+  exerciseReleasedRPivotWiderJourney: async (testing, workbench, sessionId) => {
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The focused native R Pivot wider renderer must acknowledge its complete host snapshot."
+    );
+    const app = await releasedRSessionApp(workbench, testing, sessionId, "the focused native R Pivot wider session");
+    await exercisePivotWiderJourney(
+      app,
+      testing,
+      sessionId,
+      "group",
+      "score",
+      ["A", "B"],
+      (description) => releasedRSessionApp(workbench, testing, sessionId, description),
+      { recordAcceptanceProgress, waitFor }
+    );
+  },
   exerciseReleasedRRepresentativeEditingJourney,
   exerciseReleasedRValueOperationsJourney,
   recordReleasedRAcceptanceSection
@@ -2239,6 +2263,11 @@ async function exerciseReleasedREditingJourney(
       { testing, workbench, sessionId, phase },
       releasedRValueOperationDependencies
     );
+    assert.equal(
+      await testing.ensurePanelSynchronized(sessionId, Date.now() + WORKBENCH_OPERATION_TIMEOUT_MS),
+      true,
+      "Native R coordinator-only value operations must publish their exact revision before later installed UI actions."
+    );
     const regexApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R regex-extraction session");
     await exerciseActiveRegexExtractionJourney({
       app: regexApp,
@@ -2265,6 +2294,17 @@ async function exerciseReleasedREditingJourney(
         recordAcceptanceProgress,
         waitFor
       }
+    );
+    const widerApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R Pivot wider session");
+    await exercisePivotWiderJourney(
+      widerApp,
+      testing,
+      sessionId,
+      "group",
+      "score",
+      ["A", "B"],
+      (description) => releasedRSessionApp(workbench, testing, sessionId, description),
+      { recordAcceptanceProgress, waitFor }
     );
   }
 

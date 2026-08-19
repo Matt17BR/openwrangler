@@ -11,10 +11,17 @@ import type {
   GroupByTransformStep,
   MinMaxScaleTransformStep,
   PivotLongerTransformStep,
+  PivotWiderTransformStep,
   RoundNumberTransformStep
 } from "../../shared/protocol";
 import { isRetainedTransformStep } from "../../shared/protocolValidation";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
+import {
+  MAX_PIVOT_WIDER_COLUMNS,
+  pivotWiderKeyValue,
+  portablePivotWiderNameKey,
+  validatePivotWiderOutputName
+} from "../../shared/pivotWider";
 import { R_FRAME_CONTRACT_LIMITS, type RColumnSchema, type RFramePageContract } from "./rFrameContract";
 import {
   schemaAfterCast,
@@ -125,6 +132,101 @@ function schemaAfterPivotLonger(
   );
 }
 
+function pivotWiderInputColumns(
+  inputSchema: readonly ColumnSchema[],
+  step: PivotWiderTransformStep
+): Readonly<{ namesFrom: ColumnSchema; valuesFrom: ColumnSchema; retained: readonly ColumnSchema[] }> {
+  const resolve = (reference: PivotWiderTransformStep["params"]["namesFrom"], label: string): ColumnSchema => {
+    const matches = inputSchema.filter((column) => column.id === reference.id && column.name === reference.name);
+    if (matches.length !== 1) throw new TypeError(`The Pivot wider ${label} reference is stale.`);
+    return matches[0] as ColumnSchema;
+  };
+  const namesFrom = resolve(step.params.namesFrom, "names-from");
+  const valuesFrom = resolve(step.params.valuesFrom, "values-from");
+  if (namesFrom.id === valuesFrom.id) throw new TypeError("Pivot wider requires distinct source columns.");
+  if (namesFrom.type !== "string")
+    throw new TypeError("Pivot wider names-from requires an R character or factor column.");
+  if (!new Set(["string", "integer", "float", "boolean", "date", "datetime", "duration"]).has(valuesFrom.type)) {
+    throw new TypeError("Pivot wider values-from requires a portable scalar R column.");
+  }
+  return Object.freeze({
+    namesFrom,
+    valuesFrom,
+    retained: Object.freeze(inputSchema.filter((column) => column.id !== namesFrom.id && column.id !== valuesFrom.id))
+  });
+}
+
+function schemaAfterPivotWider(
+  inputSchema: readonly ColumnSchema[],
+  step: PivotWiderTransformStep
+): readonly ColumnSchema[] {
+  const { valuesFrom, retained } = pivotWiderInputColumns(inputSchema, step);
+  if (retained.length + step.params.outputs.length > MAX_PIVOT_WIDER_COLUMNS) {
+    throw new TypeError("Pivot wider would exceed the portable 2,048-column limit.");
+  }
+  return Object.freeze(
+    [
+      ...retained.map((column) => ({ ...column })),
+      ...step.params.outputs.map((output, ordinal) => ({
+        id: `c:step:${step.id}:${ordinal}`,
+        name: output.name,
+        rawType: valuesFrom.rawType,
+        type: valuesFrom.type,
+        nullable: true
+      }))
+    ].map((column, position) => Object.freeze({ ...column, position }))
+  );
+}
+
+export function assertRPivotWiderPreflight(
+  step: PivotWiderTransformStep,
+  inputSchema: readonly ColumnSchema[],
+  inputRSchema: readonly RColumnSchema[],
+  inputRows: number
+): void {
+  if (!Number.isSafeInteger(inputRows) || inputRows < 0 || inputRows > 2_147_483_647) {
+    throw new TypeError("Pivot wider input rows exceed the portable row limit.");
+  }
+  const { namesFrom, valuesFrom, retained } = pivotWiderInputColumns(inputSchema, step);
+  const findR = (column: ColumnSchema): RColumnSchema => {
+    const matches = inputRSchema.filter(
+      (candidate) =>
+        candidate.id === column.id && candidate.name === column.name && candidate.position === column.position
+    );
+    if (matches.length !== 1) throw new TypeError("A Pivot wider source no longer matches the exact R runtime schema.");
+    return matches[0] as RColumnSchema;
+  };
+  const namesR = findR(namesFrom);
+  const valuesR = findR(valuesFrom);
+  const retainedR = retained.map(findR);
+  if (!new Set(["character", "factor"]).has(namesR.semantics.kind)) {
+    throw new TypeError("Pivot wider names-from requires an R character or factor column.");
+  }
+  if (!R_PIVOT_LONGER_SCALAR_KINDS.has(valuesR.semantics.kind)) {
+    throw new TypeError("Pivot wider values-from requires exact portable R scalar metadata.");
+  }
+  if (retainedR.some((column) => !R_PIVOT_LONGER_SCALAR_KINDS.has(column.semantics.kind))) {
+    throw new TypeError("Pivot wider identifiers require exact portable R group-key scalar metadata.");
+  }
+  const occupied = new Set(retained.map((column) => portablePivotWiderNameKey(column.name)));
+  const names = step.params.outputs.map((output, ordinal) => {
+    validatePivotWiderOutputName(output.name, `Pivot wider output ${ordinal + 1}`);
+    pivotWiderKeyValue(output.key);
+    return portablePivotWiderNameKey(output.name);
+  });
+  const keys = step.params.outputs.map((output) => pivotWiderKeyValue(output.key));
+  if (
+    new Set(names).size !== names.length ||
+    names.some((name) => occupied.has(name)) ||
+    new Set(keys).size !== keys.length
+  ) {
+    throw new TypeError("Pivot wider output names and keys must be unique and collision-free.");
+  }
+  if (retained.length + names.length > MAX_PIVOT_WIDER_COLUMNS) {
+    throw new TypeError("Pivot wider would exceed the portable 2,048-column limit.");
+  }
+}
+
 export function assertRPivotLongerPreflight(
   step: PivotLongerTransformStep,
   inputSchema: readonly ColumnSchema[],
@@ -175,7 +277,7 @@ export function rowNamesAfterRStep(
   input: RFramePageContract["frameSemantics"]["rowNames"],
   step: RPreviewTransformStep
 ): RFramePageContract["frameSemantics"]["rowNames"] {
-  return step.kind === "groupBy" || step.kind === "pivotLonger" ? "positional" : input;
+  return step.kind === "groupBy" || step.kind === "pivotLonger" || step.kind === "pivotWider" ? "positional" : input;
 }
 
 export function schemaAfterRStep(
@@ -204,6 +306,7 @@ export function schemaAfterRStep(
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (step.kind === "splitTextColumns") return schemaAfterSplitTextColumns(inputSchema, step);
   if (step.kind === "pivotLonger") return schemaAfterPivotLonger(inputSchema, step);
+  if (step.kind === "pivotWider") return schemaAfterPivotWider(inputSchema, step);
   if (step.kind === "extractRegexGroup") return schemaAfterRegexExtraction(inputSchema, step);
   if (isRCategoricalTransformStep(step)) {
     throw new TypeError("Categorical R operations require a runtime-derived output schema.");
@@ -872,7 +975,7 @@ export function keyColumnsAfterRStep(
   outputSchema: readonly ColumnSchema[],
   step: RPreviewTransformStep
 ): readonly string[] {
-  if (step.kind === "groupBy" || step.kind === "pivotLonger") return Object.freeze([]);
+  if (step.kind === "groupBy" || step.kind === "pivotLonger" || step.kind === "pivotWider") return Object.freeze([]);
   if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
     return Object.freeze([]);
   }
@@ -886,6 +989,12 @@ export function rowCountAfterRStep(step: RPreviewTransformStep, inputRows: numbe
       throw new Error("The R kernel returned invalid row counts for Pivot longer.");
     }
     return outputRows;
+  }
+  if (step.kind === "pivotWider") {
+    if (diff.removedRows !== inputRows || diff.addedRows < 0 || diff.addedRows > inputRows) {
+      throw new Error("The R kernel returned invalid row counts for Pivot wider.");
+    }
+    return diff.addedRows;
   }
   if (step.kind === "groupBy" || step.kind === "customCode") {
     if (diff.removedRows !== inputRows) {
@@ -917,7 +1026,7 @@ export function rowIdentityDomainAfterRStep(
   inputIdentityRows: number,
   outputRows: number
 ): number {
-  if (step.kind === "pivotLonger") return outputRows;
+  if (step.kind === "pivotLonger" || step.kind === "pivotWider") return outputRows;
   if (step.kind !== "groupBy" && step.kind !== "customCode") return inputIdentityRows;
   const outputIdentityRows = inputIdentityRows + outputRows;
   if (!Number.isSafeInteger(outputIdentityRows) || outputIdentityRows > R_FRAME_CONTRACT_LIMITS.rows) {
@@ -943,7 +1052,7 @@ export function customRowIdentityConstraintAfterRStep(
       order: "exact" as const
     });
   }
-  if (step.kind === "groupBy" || step.kind === "pivotLonger") return undefined;
+  if (step.kind === "groupBy" || step.kind === "pivotLonger" || step.kind === "pivotWider") return undefined;
   if (!input) return undefined;
   if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
     return input.order === "any" ? input : Object.freeze({ ...input, order: "any" as const });

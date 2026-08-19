@@ -28,6 +28,7 @@ describe("released Jupyter scenarios", () => {
       "jupyter-r:core-operations",
       "jupyter-r:categorical-operations",
       "jupyter-r:value-operations",
+      "jupyter-r:pivot-wider",
       "jupyter-r:kernel-restart",
       "jupyter-r:native-frames",
       "jupyter-r:interactive-terminal",
@@ -65,6 +66,7 @@ describe("released Jupyter scenarios", () => {
     expect(scenario("jupyter-r", "core-operations")?.rCoverageProfileKey).toBe("candidate-core");
     expect(scenario("jupyter-r", "categorical-operations")?.rCoverageProfileKey).toBe("categorical-operations");
     expect(scenario("jupyter-r", "value-operations")?.rCoverageProfileKey).toBe("value-operations");
+    expect(scenario("jupyter-r", "pivot-wider")?.rCoverageProfileKey).toBe("pivot-wider");
     expect(scenario("jupyter-r", "kernel-restart")).toMatchObject({
       rCoverageProfileKey: "kernel-restart",
       declaredProgressSections: ["notebook", "restart"]

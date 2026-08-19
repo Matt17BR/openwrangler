@@ -41,7 +41,7 @@ export interface ExtensionHostPhaseHandlers {
 }
 
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
-  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".';
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".';
 
 export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
   "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r.";

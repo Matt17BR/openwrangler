@@ -75,7 +75,7 @@ for very wide dataframes.
     <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Filling missing revenue values with the mean for each market and segment" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510"></a></td>
   </tr>
   <tr>
-    <td>Search or browse 31 operations, including multi-output literal splitting, portable regular-expression extraction, deterministic Pivot longer, custom code, and transformations inferred from examples.</td>
+    <td>Search or browse 32 operations, including multi-output literal splitting, portable regular-expression extraction, deterministic Pivot longer and Pivot wider, custom code, and transformations inferred from examples.</td>
     <td>Choose methods that fit the column type, including statistics by group, interpolation, ordered fills, and same-row fallbacks.</td>
   </tr>
 </table>

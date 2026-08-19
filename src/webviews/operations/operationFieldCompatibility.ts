@@ -47,6 +47,7 @@ export type TypeRestrictedOperationKind = Extract<
   | "splitText"
   | "splitTextColumns"
   | "pivotLonger"
+  | "pivotWider"
   | "extractRegexGroup"
   | "capitalizeText"
   | "lowerText"
@@ -105,6 +106,7 @@ export function operationColumnTypes(kind: TypeRestrictedOperationKind): Readonl
     case "formatDatetime":
       return datetimeColumnTypes;
     case "pivotLonger":
+    case "pivotWider":
       return pivotLongerColumnTypes;
     case "oneHotEncode":
     case "groupBy":

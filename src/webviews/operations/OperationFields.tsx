@@ -8,7 +8,9 @@ import {
   aggregationColumnTypes,
   compatibleColumns,
   isAggregationOperation,
-  operationColumnTypes
+  operationColumnTypes,
+  pivotLongerColumnTypes,
+  textColumnTypes
 } from "./operationFieldCompatibility";
 import type { AggregationOperation } from "./operationFieldCompatibility";
 import {
@@ -41,9 +43,16 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
   const initialSplitOutputNames = Array.isArray(params.newColumns)
     ? params.newColumns.map(String)
     : ["split_part_1", "split_part_2"];
+  const initialPivotWiderOutputs = Array.isArray(params.outputs)
+    ? (params.outputs as Record<string, unknown>[])
+    : [
+        { keyValue: "first", name: "first_value" },
+        { keyValue: "second", name: "second_value" }
+      ];
   const nextSortRowId = useRef(Math.max(1, initialSortRules.length));
   const nextAggregationRowId = useRef(Math.max(1, initialAggregations.length));
   const nextSplitOutputRowId = useRef(Math.max(2, initialSplitOutputNames.length));
+  const nextPivotWiderOutputRowId = useRef(Math.max(2, initialPivotWiderOutputs.length));
   const [sortRowIds, setSortRowIds] = useState(() =>
     Array.from({ length: Math.max(1, initialSortRules.length) }, (_, index) => `sort-${index}`)
   );
@@ -52,6 +61,9 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
   );
   const [splitOutputRowIds, setSplitOutputRowIds] = useState(() =>
     Array.from({ length: Math.max(2, initialSplitOutputNames.length) }, (_, index) => `split-output-${index}`)
+  );
+  const [pivotWiderOutputRowIds, setPivotWiderOutputRowIds] = useState(() =>
+    Array.from({ length: Math.max(2, initialPivotWiderOutputs.length) }, (_, index) => `pivot-wider-output-${index}`)
   );
   const [formulaOperandMode, setFormulaOperandMode] = useState(params.rightColumn ? "column" : "value");
   const [multiLabelPrefixMode, setMultiLabelPrefixMode] = useState(
@@ -501,6 +513,97 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
           description="Stores the selected values without common-type coercion. Use a unique single-line name."
           required
         />
+      </>
+    );
+  }
+  if (kind === "pivotWider") {
+    const namesColumns = compatibleColumns(columns, textColumnTypes);
+    const valueColumns = compatibleColumns(columns, pivotLongerColumnTypes);
+    const outputsById = new Map<string, { keyValue: string; name: string }>(
+      initialPivotWiderOutputs.map((output, index) => {
+        const key = output.key as Record<string, unknown> | undefined;
+        const cell = key?.cell as Record<string, unknown> | undefined;
+        return [
+          `pivot-wider-output-${index}`,
+          {
+            keyValue: String(cell?.raw ?? output.keyValue ?? ""),
+            name: String(output.name ?? "")
+          }
+        ];
+      })
+    );
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="namesFrom"
+          label="Names from"
+          columns={namesColumns}
+          defaultValue={initialColumnReference("namesFrom", namesColumns[0]?.id)}
+          emptyMessage="No text or factor column is available for output keys."
+        />
+        <ColumnReferenceSelect
+          name="valuesFrom"
+          label="Values from"
+          columns={valueColumns}
+          defaultValue={initialColumnReference(
+            "valuesFrom",
+            valueColumns.find((column) => column.id !== namesColumns[0]?.id)?.id
+          )}
+          emptyMessage="No compatible scalar value column is available."
+        />
+        <p className="panelNote">
+          Declare every non-missing key in advance. Duplicate identifier-and-key rows are rejected; missing declared
+          combinations become missing values.
+        </p>
+        <Fieldset legend="Ordered outputs">
+          {pivotWiderOutputRowIds.map((rowId, index) => {
+            const initial = outputsById.get(rowId);
+            const ordinal = Number(rowId.slice("pivot-wider-output-".length)) + 1;
+            return (
+              <div className="compoundRow operationInputRow" key={rowId}>
+                <TextField
+                  name="pivotWiderKey"
+                  label={`Key ${index + 1}`}
+                  defaultValue={initial?.keyValue ?? `key_${ordinal}`}
+                  description="Exact text or factor value represented by this output."
+                  required
+                />
+                <TextField
+                  name="pivotWiderName"
+                  label={`Output column ${index + 1}`}
+                  defaultValue={initial?.name ?? `value_${ordinal}`}
+                  maxUtf8Bytes={1024}
+                  description="Unique single-line output name."
+                  required
+                />
+                <RowActions
+                  label={`pivot output ${index + 1}`}
+                  canRemove={pivotWiderOutputRowIds.length > 2}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < pivotWiderOutputRowIds.length - 1}
+                  onRemove={() =>
+                    setPivotWiderOutputRowIds((current) => current.filter((candidate) => candidate !== rowId))
+                  }
+                  onMoveUp={() => setPivotWiderOutputRowIds((current) => moveItem(current, index, index - 1))}
+                  onMoveDown={() => setPivotWiderOutputRowIds((current) => moveItem(current, index, index + 1))}
+                />
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={pivotWiderOutputRowIds.length >= 64}
+            onClick={() =>
+              setPivotWiderOutputRowIds((current) => [
+                ...current,
+                `pivot-wider-output-${nextPivotWiderOutputRowId.current++}`
+              ])
+            }
+          >
+            Add output
+          </button>
+        </Fieldset>
       </>
     );
   }

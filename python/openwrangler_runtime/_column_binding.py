@@ -8,6 +8,7 @@ from typing import Any
 
 from .engines.base import VIEW_COMPARABLE_TYPES, is_internal_row_id_label
 from .pivot_longer import PIVOT_LONGER_SCALAR_TYPES, portable_pivot_longer_name_key
+from .pivot_wider import PIVOT_WIDER_VALUE_TYPES, checked_pivot_wider_column_count
 
 _GROUP_KEY_TYPES = {
     "string",
@@ -198,6 +199,60 @@ class _BindingContext:
                     f"{column.name!r} is {column.semantic_type!r}/{column.raw_type!r}, not "
                     f"{first.semantic_type!r}/{first.raw_type!r}."
                 )
+
+    def require_pivot_wider_columns(
+        self,
+        names_from: Mapping[str, Any],
+        values_from: Mapping[str, Any],
+    ) -> None:
+        names = self._column_for(names_from, "pivotWider.namesFrom")
+        values = self._column_for(values_from, "pivotWider.valuesFrom")
+        if names.identifier == values.identifier:
+            raise ColumnBindingError("pivotWider namesFrom and valuesFrom must reference distinct columns.")
+        if names.semantic_type != "string":
+            raise ColumnBindingError("pivotWider.namesFrom must be a portable text or factor scalar column.")
+        if values.semantic_type not in PIVOT_WIDER_VALUE_TYPES:
+            raise ColumnBindingError(
+                f"pivotWider.valuesFrom must be a portable scalar column; {values.name!r} is {values.semantic_type!r}."
+            )
+        selected_ids = {names.identifier, values.identifier}
+        for column in self.columns:
+            if column.identifier in selected_ids:
+                continue
+            if column.semantic_type not in _GROUP_KEY_TYPES:
+                raise ColumnBindingError(
+                    "pivotWider identifier columns must use the portable group-key scalar family; "
+                    f"{column.name!r} is {column.semantic_type!r}."
+                )
+
+    def reject_pivot_wider_output_collisions(
+        self,
+        outputs: Sequence[Mapping[str, Any]],
+        removed_ids: set[str],
+    ) -> None:
+        normalized: dict[str, str] = {}
+        existing = {
+            portable_pivot_longer_name_key(column.name): column.name
+            for column in self.columns
+            if column.identifier not in removed_ids
+        }
+        for index, output in enumerate(outputs):
+            output_name = output.get("name")
+            label = f"pivotWider.outputs[{index}].name"
+            if not isinstance(output_name, str) or not output_name:
+                raise ColumnBindingError(f"{label} must be a non-empty string.")
+            if is_internal_row_id_label(output_name):
+                raise ColumnBindingError(f"{label} uses Open Wrangler's reserved private row-identity prefix.")
+            key = portable_pivot_longer_name_key(output_name)
+            if key in existing:
+                raise ColumnBindingError(
+                    f"{label} collides case-insensitively with an existing column: {existing[key]}"
+                )
+            if key in normalized:
+                raise ColumnBindingError(
+                    f"{label} collides case-insensitively with another pivot output: {normalized[key]}"
+                )
+            normalized[key] = output_name
 
     def reject_casefold_output_collisions(self, outputs: Sequence[tuple[Any, str]]) -> None:
         normalized: dict[str, str] = {}
@@ -472,6 +527,7 @@ def bind_step(
         "groupBy",
         "byExample",
         "pivotLonger",
+        "pivotWider",
     }:
         return bound
 
@@ -537,6 +593,23 @@ def bind_step(
                 (params.get("valueColumn"), "pivotLonger.valueColumn"),
             )
         )
+        return bound
+
+    if kind == "pivotWider":
+        params["namesFrom"] = context.bind(params.get("namesFrom"), "pivotWider.namesFrom")
+        params["valuesFrom"] = context.bind(params.get("valuesFrom"), "pivotWider.valuesFrom")
+        context.require_pivot_wider_columns(params["namesFrom"], params["valuesFrom"])
+        outputs = params.get("outputs")
+        if not isinstance(outputs, list):
+            raise ColumnBindingError("pivotWider.outputs must be an array.")
+        context.reject_pivot_wider_output_collisions(
+            outputs,
+            {str(params["namesFrom"]["id"]), str(params["valuesFrom"]["id"])},
+        )
+        try:
+            checked_pivot_wider_column_count(len(context.columns), len(outputs))
+        except ValueError as error:
+            raise ColumnBindingError(str(error)) from error
         return bound
 
     if kind == "groupBy":
