@@ -116,15 +116,15 @@ async function runWindowsNativeStage(
     clearTimeout(settlementTimer);
   }
   if (settlement.kind === "settlement-deadline") {
-    let releaseError;
+    let releaseCause;
     try {
-      releaseAfterSettlementDeadline?.();
+      releaseCause = releaseAfterSettlementDeadline?.();
     } catch (error) {
-      releaseError = error;
+      releaseCause = error;
     }
     const failure = new Error(
       `The native Windows supervisor ${stage} stage exceeded ${timeoutMs} ms and did not settle within ${settlementTimeoutMs} ms after cancellation.`,
-      releaseError ? { cause: releaseError } : undefined
+      releaseCause ? { cause: releaseCause } : undefined
     );
     failure.code = "EDITOR_PROCESS_TREE_UNVERIFIED";
     failure.details = {
@@ -200,6 +200,7 @@ async function runWindowsNativeFilesystemStage(
     let settled = false;
     let released = false;
     let cancellationError;
+    let workerError;
     let onAbort;
     let onError;
     let onClose;
@@ -223,9 +224,16 @@ async function runWindowsNativeFilesystemStage(
           cancellationError.details = { stage, treeVerifiedStopped: false };
         }
       };
-      onError = (error) => settle(reject, error);
+      onError = (error) => {
+        if (Number.isInteger(child.pid) && child.pid > 0) {
+          workerError ??= error;
+          return;
+        }
+        settle(reject, error);
+      };
       onClose = (code, signal) => {
         if (cancellationError) settle(reject, cancellationError);
+        else if (workerError) settle(reject, workerError);
         else if (code === 0 && signal === null) settle(resolve);
         else {
           settle(
@@ -237,7 +245,7 @@ async function runWindowsNativeFilesystemStage(
         }
       };
       abortSignal.addEventListener("abort", onAbort, { once: true });
-      child.once("error", onError);
+      child.on("error", onError);
       child.once("close", onClose);
       if (abortSignal.aborted) onAbort();
     });
@@ -257,6 +265,7 @@ async function runWindowsNativeFilesystemStage(
         child.off("error", onError);
         child.off("close", onClose);
         child.unref?.();
+        return workerError;
       }
     };
   });
@@ -413,6 +422,79 @@ test("a never-closing filesystem worker releases ordinary callbacks and absorbs 
   assert.equal(worker.listenerCount("error"), 1);
   assert.equal(worker.listenerCount("close"), 1);
   assert.doesNotThrow(() => worker.emit("error", new Error("synthetic late filesystem worker error")));
+  worker.emit("close", null, "SIGKILL");
+  assert.equal(worker.listenerCount("error"), 0);
+  assert.equal(worker.listenerCount("close"), 0);
+});
+
+test("a PID-bearing filesystem worker error retains close ownership until bounded release", async () => {
+  const worker = new EventEmitter();
+  worker.pid = 17924;
+  worker.exitCode = null;
+  worker.signalCode = null;
+  const workerError = new Error("synthetic started-worker failure before close");
+  let killCount = 0;
+  let unrefCount = 0;
+  let closeOwnershipRetainedAfterError = false;
+  worker.kill = () => {
+    killCount += 1;
+    return true;
+  };
+  worker.unref = () => {
+    unrefCount += 1;
+  };
+
+  const startedAt = performance.now();
+  await assert.rejects(
+    runWindowsNativeFilesystemStage(
+      "error-before-close filesystem probe",
+      { timeoutMs: 15, settlementTimeoutMs: 25 },
+      "",
+      [],
+      {
+        spawnFilesystemWorker: () => {
+          queueMicrotask(() => {
+            worker.emit("error", workerError);
+            closeOwnershipRetainedAfterError =
+              worker.listenerCount("error") === 1 && worker.listenerCount("close") === 1;
+          });
+          return worker;
+        }
+      }
+    ),
+    (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.cause, workerError);
+      assert.deepEqual(
+        {
+          stage: error.details?.stage,
+          reason: error.details?.reason,
+          limitMs: error.details?.limitMs,
+          triggerReason: error.details?.triggerReason,
+          treeVerifiedStopped: error.details?.treeVerifiedStopped
+        },
+        {
+          stage: "error-before-close filesystem probe",
+          reason: "settlement-deadline",
+          limitMs: 25,
+          triggerReason: "deadline",
+          treeVerifiedStopped: false
+        }
+      );
+      assert.equal(error.details?.elapsedMs >= 20, true);
+      assert.equal(error.details?.stageElapsedMs >= 32, true);
+      return true;
+    }
+  );
+  const elapsedMs = performance.now() - startedAt;
+  assert.equal(elapsedMs >= 32, true);
+  assert.equal(elapsedMs < 1_000, true);
+  assert.equal(closeOwnershipRetainedAfterError, true);
+  assert.equal(killCount, 1);
+  assert.equal(unrefCount, 1);
+  assert.equal(worker.listenerCount("error"), 1);
+  assert.equal(worker.listenerCount("close"), 1);
+  assert.doesNotThrow(() => worker.emit("error", new Error("synthetic post-release worker error")));
   worker.emit("close", null, "SIGKILL");
   assert.equal(worker.listenerCount("error"), 0);
   assert.equal(worker.listenerCount("close"), 0);
