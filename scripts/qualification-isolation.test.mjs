@@ -867,6 +867,65 @@ test("rejects a Windows private snapshot replacement before supervisor launch", 
   assert.equal(existsSync(valueReceipt.environment.testResult), false);
 });
 
+test("executes the verified Windows supervisor snapshot and rejects an original-path swap", async (context) => {
+  const value = await fixture(context, "windows-supervisor-snapshot");
+  const task = await addTask(value, "windows-supervisor-snapshot");
+  const supervisor = await copiedExecutable(join(value.root, `windows-supervisor${extname(process.execPath)}`));
+  const expectedDigest = sha256(await readFile(supervisor));
+  let executedSupervisorPath;
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      commandPlatformForTest: "win32",
+      commandRunnerForTest: async (command, arguments_, options) => {
+        assert.equal(options.supervisorSourceCommand, supervisor);
+        assert.notEqual(options.supervisorExecutedPath, supervisor);
+        await options.verifyExecutableForSpawn();
+        const original = await readFile(supervisor);
+        const retained = `${supervisor}.retained`;
+        await rename(supervisor, retained);
+        await writeFile(supervisor, Buffer.alloc(original.length, 0x5a), { flag: "wx", mode: 0o700 });
+        try {
+          const launched = spawnSync(
+            options.supervisorExecutedPath,
+            ["-e", 'process.stdout.write("verified-supervisor\\n")'],
+            {
+              cwd: task.worktree,
+              encoding: "utf8",
+              env: options.environment,
+              windowsHide: true
+            }
+          );
+          assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+          assert.equal(launched.stdout, "verified-supervisor\n");
+          assert.equal(sha256(await readFile(options.supervisorExecutedPath)), expectedDigest);
+          executedSupervisorPath = options.supervisorExecutedPath;
+        } finally {
+          await rm(supervisor, { force: true });
+          await rename(retained, supervisor);
+        }
+        return simulatedWindowsSnapshotRunner(command, arguments_, options);
+      },
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      windowsSupervisorCommandForTest: supervisor,
+      writeOutput: false
+    }),
+    /qualification command identity changed/u
+  );
+  const valueReceipt = await receipt(task);
+  assert.equal(valueReceipt.eligible, false);
+  assert.equal(valueReceipt.result.status, null);
+  assert.equal(valueReceipt.result.treeEmpty, true);
+  assert.ok(executedSupervisorPath);
+  assert.equal(valueReceipt.result.executable.supervisor.snapshot.path, executedSupervisorPath);
+  assert.equal(valueReceipt.result.executable.supervisor.sourcePath, supervisor);
+  assert.equal(valueReceipt.result.executable.supervisor.sha256, expectedDigest);
+  assert.equal(sha256(await readFile(supervisor)), expectedDigest);
+});
+
 test("derives the Windows supervisor root independently of inherited Windows paths", () => {
   assert.equal(
     QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSystemRootCandidate("C:\\hostedtoolcache\\node\\node.exe"),

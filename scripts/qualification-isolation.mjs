@@ -1825,7 +1825,7 @@ async function runOwnedCommand(command, arguments_, options) {
     if (platform !== "win32") {
       supervisorExecutable = await openPinnedExecutable(options.posixSupervisorCommand);
       supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
-    } else if (!options.ownedRunnerForTest) {
+    } else if (options.windowsSupervisorCommand) {
       supervisorExecutable = await openPinnedExecutable(options.windowsSupervisorCommand);
       supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
     }
@@ -1854,8 +1854,10 @@ async function runOwnedCommand(command, arguments_, options) {
       launchArgv0: executableLeaf(launch.snapshot).path,
       platformForTest: platform,
       sourceCommand: command,
+      supervisorSourceCommand:
+        platform === "win32" && supervisorLaunch ? executableLeaf(supervisorLaunch.source).path : null,
       supervisorExecutedPath:
-        platform === "win32" ? (supervisorLaunch ? executableLeaf(supervisorLaunch.source).path : null) : "/dev/fd/3",
+        platform === "win32" ? (supervisorLaunch ? executableLeaf(supervisorLaunch.snapshot).path : null) : "/dev/fd/3",
       supervisorExecutableFd: platform === "win32" ? null : executableLeaf(supervisorLaunch.snapshot).handle.fd,
       targetExecutableFd: platform === "win32" ? null : executableLeaf(launch.snapshot).handle.fd,
       verifyExecutableForSpawn: async () => {
@@ -2086,6 +2088,7 @@ async function runQualification({
   environment = process.env,
   terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  windowsSupervisorCommandForTest,
   writeOutput = true
 }) {
   validateBound(timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS, "qualification timeout");
@@ -2143,7 +2146,7 @@ async function runQualification({
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
         posixSupervisorCommand: bootstrap.bootstrapPython,
-        windowsSupervisorCommand: layoutState.layout.windowsSupervisorCommand,
+        windowsSupervisorCommand: windowsSupervisorCommandForTest ?? layoutState.layout.windowsSupervisorCommand,
         terminationGraceMs,
         timeoutMs
       });
