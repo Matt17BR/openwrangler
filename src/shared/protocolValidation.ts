@@ -20,6 +20,7 @@ import type {
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationKinds } from "./operationCatalog.generated";
+import { MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES } from "./protocolLimits.generated";
 import {
   MAX_PIVOT_LONGER_COLUMNS,
   MIN_PIVOT_LONGER_COLUMNS,
@@ -1367,7 +1368,11 @@ export function isTransformStep(value: unknown): value is TransformStep {
       return isByExampleParams(params);
     case "customCode": {
       const decoded = exactRecord(params, ["code"]);
-      return decoded !== undefined && isNonEmptyTrimmedString(decoded.code);
+      return (
+        decoded !== undefined &&
+        isNonEmptyTrimmedString(decoded.code) &&
+        new TextEncoder().encode(decoded.code).byteLength <= MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
+      );
     }
     default:
       return false;

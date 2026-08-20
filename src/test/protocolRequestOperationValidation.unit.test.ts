@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES } from "../shared/protocolLimits.generated";
 import { isOpenWranglerRequest, isRuntimeRequestEnvelope, isTransformStep } from "../shared/protocolValidation";
 import {
   hasAtMostViewValueTextCodePoints,
@@ -8,6 +9,33 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v2 operation request validation", () => {
+  it("enforces the schema-owned Python Custom Code UTF-8 byte limit", () => {
+    const preview = requests.find((candidate) => candidate.kind === "previewStep");
+    expect(preview?.kind).toBe("previewStep");
+    if (preview?.kind !== "previewStep") return;
+    const envelope = (code: string) => ({
+      protocolVersion: 2,
+      requestId: "custom-code-byte-limit",
+      priority: "interactive",
+      request: {
+        ...preview,
+        step: { id: "custom-code", kind: "customCode", params: { code } }
+      }
+    });
+    const exactAscii = "x".repeat(MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES);
+    const exactMultibyte = "é".repeat(MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES / 2);
+    const oneByteOverMultibyte = `${exactMultibyte}x`;
+
+    for (const code of [exactAscii, exactMultibyte]) {
+      expect(validateTransportSchema(envelope(code))).toBe(true);
+      expect(isRuntimeRequestEnvelope(envelope(code))).toBe(true);
+    }
+    for (const code of [`${exactAscii}x`, oneByteOverMultibyte]) {
+      expect(validateTransportSchema(envelope(code))).toBe(false);
+      expect(isRuntimeRequestEnvelope(envelope(code))).toBe(false);
+    }
+  });
+
   it("makes the canonical schema reject terminal CR/LF in public regex fields", () => {
     const preview = requests.find((candidate) => candidate.kind === "previewStep");
     expect(preview?.kind).toBe("previewStep");

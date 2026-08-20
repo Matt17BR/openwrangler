@@ -9,8 +9,11 @@ const schemaPath = resolve(root, "protocol", "openwrangler.v2.schema.json");
 const protocolOutputPath = resolve(root, "src", "shared", "protocol.generated.ts");
 const catalogOutputPath = resolve(root, "src", "shared", "operationCatalog.generated.ts");
 const pythonCatalogOutputPath = resolve(root, "python", "openwrangler_runtime", "operation_catalog_generated.py");
+const protocolLimitsOutputPath = resolve(root, "src", "shared", "protocolLimits.generated.ts");
+const pythonProtocolLimitsOutputPath = resolve(root, "python", "openwrangler_runtime", "protocol_limits_generated.py");
 const schema = JSON.parse(await readFile(schemaPath, "utf8"));
 const operationCatalog = canonicalOperationCatalog(schema);
+const protocolLimits = canonicalProtocolLimits(schema);
 const prettierConfig = (await prettier.resolveConfig(catalogOutputPath)) ?? {};
 const protocolOutput = await compileFromFile(schemaPath, {
   bannerComment: "/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */",
@@ -30,11 +33,15 @@ const catalogOutput = await prettier.format(renderTypeScriptCatalog(operationCat
   parser: "typescript"
 });
 const pythonCatalogOutput = renderPythonCatalog(operationCatalog);
+const protocolLimitsOutput = renderTypeScriptProtocolLimits(protocolLimits);
+const pythonProtocolLimitsOutput = renderPythonProtocolLimits(protocolLimits);
 
 const outputs = [
   [protocolOutputPath, protocolOutput, "protocol types"],
   [catalogOutputPath, catalogOutput, "operation catalog types"],
-  [pythonCatalogOutputPath, pythonCatalogOutput, "Python operation catalog"]
+  [pythonCatalogOutputPath, pythonCatalogOutput, "Python operation catalog"],
+  [protocolLimitsOutputPath, protocolLimitsOutput, "protocol limits"],
+  [pythonProtocolLimitsOutputPath, pythonProtocolLimitsOutput, "Python protocol limits"]
 ];
 
 if (process.argv.includes("--check")) {
@@ -105,6 +112,41 @@ class OperationDefinition:
 OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
 ${definitions}
 )
+`;
+}
+
+function canonicalProtocolLimits(value) {
+  const limits = value?.["x-openwrangler-limits"];
+  const customCodeMaximum = value?.definitions?.CustomCodeParams?.properties?.code?.["x-openwrangler-utf8MaxBytes"];
+  const names = ["pythonCustomCodeUtf8Bytes", "pythonRetainedPlanUtf8Bytes", "pythonGeneratedCodeUtf8Bytes"];
+  if (
+    limits === null ||
+    typeof limits !== "object" ||
+    names.some((name) => !Number.isSafeInteger(limits[name]) || limits[name] <= 0) ||
+    customCodeMaximum !== limits.pythonCustomCodeUtf8Bytes
+  ) {
+    throw new Error("Canonical protocol byte limits are missing, invalid, or inconsistent.");
+  }
+  return Object.freeze({
+    customCode: limits.pythonCustomCodeUtf8Bytes,
+    retainedPlan: limits.pythonRetainedPlanUtf8Bytes,
+    generatedCode: limits.pythonGeneratedCodeUtf8Bytes
+  });
+}
+
+function renderTypeScriptProtocolLimits(limits) {
+  return `/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */
+export const MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES = ${limits.customCode};
+export const MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES = ${limits.retainedPlan};
+export const MAX_GENERATED_PYTHON_CODE_UTF8_BYTES = ${limits.generatedCode};
+`;
+}
+
+function renderPythonProtocolLimits(limits) {
+  return `# Generated from protocol/openwrangler.v2.schema.json. Do not edit.
+MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES = ${limits.customCode}
+MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES = ${limits.retainedPlan}
+MAX_GENERATED_PYTHON_CODE_UTF8_BYTES = ${limits.generatedCode}
 `;
 }
 

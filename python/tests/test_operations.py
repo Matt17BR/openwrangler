@@ -12,6 +12,7 @@ from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import OperationError, operation_catalog, validate_step
+from openwrangler_runtime.protocol_limits_generated import MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
 
 PRIVATE_COLUMN = f"{INTERNAL_ROW_ID_PREFIX}guessed"
 
@@ -82,6 +83,17 @@ def test_operation_registry_is_complete_and_validation_is_strict():
             value=True,
             newColumn="result",
         )
+
+
+def test_custom_code_uses_the_canonical_utf8_byte_limit() -> None:
+    exact_ascii = "x" * MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
+    exact_multibyte = "é" * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES // 2)
+
+    assert step("custom-ascii", "customCode", code=exact_ascii)["params"]["code"] == exact_ascii
+    assert step("custom-multibyte", "customCode", code=exact_multibyte)["params"]["code"] == exact_multibyte
+    for code in (exact_ascii + "x", exact_multibyte + "x"):
+        with pytest.raises(OperationError, match=r"65,536 UTF-8 bytes"):
+            step("custom-too-large", "customCode", code=code)
 
 
 def test_generated_code_imports_counter_only_for_categorical_encoding(engine_and_frame):
