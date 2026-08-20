@@ -19,6 +19,7 @@ import type {
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 const NOTEBOOK_PREVIEW_COMMAND = "openWrangler.chooseNotebookPreviewProvider";
+const DEFAULT_OWNER_SETTLEMENT_TIMEOUT_MS = 2_000;
 
 const FILE_COMMANDS = ["openWrangler.changeImportOptions", "openWrangler.openFile", "openWrangler.openPath"] as const;
 const PICKLE_COMMANDS = ["openWrangler.convertTrustedPickle"] as const;
@@ -168,6 +169,8 @@ const loadNotebookPreviewModule: NotebookPreviewLoader = () =>
 export class LazyActivationOwners implements vscode.Disposable {
   private readonly commandRegistrations = new Map<LazyCommandGroup, vscode.Disposable[]>();
   private readonly bootstrapSubscriptions: vscode.Disposable[] = [];
+  private readonly ownerRegistrations: OnceDisposable[] = [];
+  private readonly explicitlyOwnedDisposables = new Set<vscode.Disposable>();
   private readonly constructedOwners: string[] = [];
   private customEditorRegistration: vscode.Disposable | undefined;
   private nativeViewRegistrations: vscode.Disposable[] = [];
@@ -184,17 +187,32 @@ export class LazyActivationOwners implements vscode.Disposable {
   private runtimeOwner: Promise<void> | undefined;
   private nativeOwner: Promise<NativeOwner> | undefined;
   private initialNotebookOwner: Promise<NotebookOwner> | undefined;
+  private testingApiOwner: Promise<OpenWranglerTestApi> | undefined;
+  private sessionCoordinator: SessionCoordinator | undefined;
+  private pythonBridge: PythonBridge | undefined;
+  private pickleWorkers: TrustedPickleWorkerLifecycle | undefined;
+  private notebookVariables: PythonInteractiveCommandProvider | undefined;
+  private notebookCellResults: NotebookCellResultTracker | undefined;
+  private rVariables: (RLiveVariableProvider & LiterateRVariableProvider) | undefined;
   private sessionDiagnosticOutput: vscode.OutputChannel | undefined;
+  private shutdownPromise: Promise<void> | undefined;
+  private bootstrapDisposed = false;
+  private started = false;
   private disposed = false;
   private rDiscoveryStarted = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly notebookPreviewLoader: NotebookPreviewLoader = loadNotebookPreviewModule
+    private readonly notebookPreviewLoader: NotebookPreviewLoader = loadNotebookPreviewModule,
+    private readonly ownerSettlementTimeoutMs = DEFAULT_OWNER_SETTLEMENT_TIMEOUT_MS,
+    private readonly additionalOwnerPromises: readonly Promise<unknown>[] = []
   ) {}
 
   startBeforeFirstYield(): void {
     this.assertActive();
+    if (this.started) throw new Error("Open Wrangler activation owners have already started.");
+    this.started = true;
+    this.context.subscriptions.push(this);
     this.installCommandGroup("file", FILE_COMMANDS, () => this.ensureFileOwner());
     this.installCommandGroup("pickle", PICKLE_COMMANDS, () => this.ensurePickleOwner());
     this.installCommandGroup("notebookPreview", [NOTEBOOK_PREVIEW_COMMAND], async () => {
@@ -215,7 +233,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   async extensionApiForCurrentEnvironment(): Promise<OpenWranglerExtensionApi | undefined> {
     await this.initialNotebookOwner;
     if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return undefined;
-    return { testing: await this.createTestingApi() };
+    return { testing: await (this.testingApiOwner ??= this.createTestingApi()) };
   }
 
   diagnosticsForTesting(): LazyActivationDiagnostics {
@@ -226,35 +244,61 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.notebookPreview?.dispose();
-    this.notebookPreview = undefined;
-    for (const subscription of this.bootstrapSubscriptions.splice(0)) subscription.dispose();
-    for (const registrations of this.commandRegistrations.values()) {
-      for (const registration of registrations.splice(0)) registration.dispose();
-    }
-    this.commandRegistrations.clear();
-    this.customEditorRegistration?.dispose();
-    this.customEditorRegistration = undefined;
-    for (const registration of this.nativeViewRegistrations.splice(0)) registration.dispose();
+    void this.shutdown().catch((error: unknown) => {
+      console.error("Open Wrangler could not shut down its activation owners.", error);
+    });
   }
 
-  async shutdown(): Promise<void> {
-    this.dispose();
-    const failures: unknown[] = [];
-    const pickleWorkers = await settledValue(this.pickleOwner);
-    const r = await settledValue(this.rOwner);
-    const session = await settledValue(this.sessionOwner);
-    const python = await settledValue(this.pythonOwner);
+  shutdown(): Promise<void> {
+    return (this.shutdownPromise ??= this.performShutdown());
+  }
 
-    await captureFailure(() => pickleWorkers?.shutdown(), failures);
-    await captureFailure(() => r?.variables.shutdown(), failures);
-    await captureFailure(() => session?.coordinator.shutdown(), failures);
-    await captureFailure(() => python?.bridge.shutdown(), failures);
-    this.sessionDiagnosticOutput?.dispose();
+  private async performShutdown(): Promise<void> {
+    this.disposed = true;
+    const failureGroups: unknown[][] = [];
+    const bootstrapFailures: unknown[] = [];
+    this.disposeBootstrap(bootstrapFailures);
+    failureGroups.push(bootstrapFailures);
+    await this.observeStartedOwners();
+
+    for (const owner of [...this.ownerRegistrations].reverse()) {
+      const failures: unknown[] = [];
+      captureSynchronousFailure(() => owner.dispose(), failures);
+      failureGroups.push(failures);
+    }
+    const asyncCleanups: Promise<void>[] = [];
+    const startAsyncCleanup = (action: () => Promise<unknown> | undefined): void => {
+      const failures: unknown[] = [];
+      failureGroups.push(failures);
+      asyncCleanups.push(captureFailure(action, failures));
+    };
+    const runSynchronousCleanup = (action: () => void): void => {
+      const failures: unknown[] = [];
+      failureGroups.push(failures);
+      captureSynchronousFailure(action, failures);
+    };
+    startAsyncCleanup(() => this.pickleWorkers?.shutdown());
+    startAsyncCleanup(() => this.rVariables?.shutdown());
+    runSynchronousCleanup(() => this.notebookVariables?.dispose());
+    runSynchronousCleanup(() => this.notebookCellResults?.dispose());
+    startAsyncCleanup(() => this.sessionCoordinator?.shutdown());
+    startAsyncCleanup(() => this.pythonBridge?.shutdown());
+    runSynchronousCleanup(() => this.notebookPreview?.dispose());
+    runSynchronousCleanup(() => this.sessionDiagnosticOutput?.dispose());
+    await Promise.all(asyncCleanups);
+
+    this.ownerRegistrations.splice(0);
+    this.explicitlyOwnedDisposables.clear();
+    this.pickleWorkers = undefined;
+    this.rVariables = undefined;
+    this.notebookCellResults = undefined;
+    this.notebookVariables = undefined;
+    this.sessionCoordinator = undefined;
+    this.pythonBridge = undefined;
+    this.notebookPreview = undefined;
     this.sessionDiagnosticOutput = undefined;
 
+    const failures = failureGroups.flat();
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) {
       throw new AggregateError(
@@ -269,46 +313,55 @@ export class LazyActivationOwners implements vscode.Disposable {
     commandIds: readonly string[],
     initialize: () => Promise<unknown>
   ): void {
-    const registrations = commandIds.map((commandId) =>
-      vscode.commands.registerCommand(commandId, async (...args: unknown[]) => {
-        await initialize();
-        this.assertActive();
-        return vscode.commands.executeCommand(commandId, ...args);
-      })
-    );
+    const registrations = this.registerDisposablesTransactional(`lazy ${group} commands`, (retain) => {
+      for (const commandId of commandIds) {
+        retain(
+          vscode.commands.registerCommand(commandId, async (...args: unknown[]) => {
+            await initialize();
+            this.assertActive();
+            return vscode.commands.executeCommand(commandId, ...args);
+          })
+        );
+      }
+    });
     this.commandRegistrations.set(group, registrations);
-    this.context.subscriptions.push(...registrations);
   }
 
   private replaceCommandGroup(group: LazyCommandGroup): void {
     const registrations = this.commandRegistrations.get(group);
     if (!registrations) return;
     this.commandRegistrations.delete(group);
-    for (const registration of registrations) registration.dispose();
+    const failures = disposeDisposables(registrations);
+    if (failures.length > 0) throw cleanupAggregate(`Could not replace the ${group} activation commands.`, failures);
   }
 
   private installUtilityCommands(): void {
-    const registrations = [
-      vscode.commands.registerCommand("openWrangler.openWalkthrough", () =>
-        vscode.commands.executeCommand(
-          "workbench.action.openWalkthrough",
-          "Matt17BR.openwrangler#gettingStarted",
-          false
-        )
-      ),
-      vscode.commands.registerCommand("openWrangler.openSettings", () =>
-        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.openwrangler")
-      ),
-      vscode.commands.registerCommand("openWrangler.reportIssue", () =>
-        vscode.env.openExternal(
-          vscode.Uri.parse(
-            `https://github.com/Matt17BR/openwrangler/issues/new?title=${encodeURIComponent("Open Wrangler issue")}&body=${encodeURIComponent(`VS Code: ${vscode.version}\nOS: ${process.platform}\n\nSteps to reproduce:\n`)}`
+    const registrations = this.registerDisposablesTransactional("utility commands", (retain) => {
+      retain(
+        vscode.commands.registerCommand("openWrangler.openWalkthrough", () =>
+          vscode.commands.executeCommand(
+            "workbench.action.openWalkthrough",
+            "Matt17BR.openwrangler#gettingStarted",
+            false
           )
         )
-      )
-    ];
+      );
+      retain(
+        vscode.commands.registerCommand("openWrangler.openSettings", () =>
+          vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.openwrangler")
+        )
+      );
+      retain(
+        vscode.commands.registerCommand("openWrangler.reportIssue", () =>
+          vscode.env.openExternal(
+            vscode.Uri.parse(
+              `https://github.com/Matt17BR/openwrangler/issues/new?title=${encodeURIComponent("Open Wrangler issue")}&body=${encodeURIComponent(`VS Code: ${vscode.version}\nOS: ${process.platform}\n\nSteps to reproduce:\n`)}`
+            )
+          )
+        )
+      );
+    });
     this.commandRegistrations.set("utility", registrations);
-    this.context.subscriptions.push(...registrations);
   }
 
   private installCustomEditorGate(): void {
@@ -323,33 +376,32 @@ export class LazyActivationOwners implements vscode.Disposable {
       supportsMultipleEditorsPerDocument: false,
       webviewOptions: { retainContextWhenHidden: true }
     });
-    this.context.subscriptions.push(this.customEditorRegistration);
   }
 
   private installNativeViewGates(): void {
-    this.nativeViewRegistrations = NATIVE_TREE_VIEW_IDS.map((id) =>
-      vscode.window.registerTreeDataProvider(id, new LazyTreeProvider(() => this.ensureNativeOwner()))
-    );
-    this.nativeViewRegistrations.push(
-      vscode.window.registerWebviewViewProvider(
-        "openWrangler.codePreview",
-        new LazyWebviewViewProvider(() => this.ensureNativeOwner()),
-        { webviewOptions: { retainContextWhenHidden: true } }
-      )
-    );
-    this.context.subscriptions.push(...this.nativeViewRegistrations);
+    this.nativeViewRegistrations = this.registerDisposablesTransactional("lazy native view providers", (retain) => {
+      for (const id of NATIVE_TREE_VIEW_IDS) {
+        retain(vscode.window.registerTreeDataProvider(id, new LazyTreeProvider(() => this.ensureNativeOwner())));
+      }
+      retain(
+        vscode.window.registerWebviewViewProvider(
+          "openWrangler.codePreview",
+          new LazyWebviewViewProvider(() => this.ensureNativeOwner()),
+          { webviewOptions: { retainContextWhenHidden: true } }
+        )
+      );
+    });
   }
 
   private installNotebookVisibilityGate(): void {
     const onNotebookSurface = (): void => this.startVisibleNotebookOwners();
-    const subscriptions = [
-      vscode.window.onDidChangeVisibleNotebookEditors(onNotebookSurface),
-      vscode.window.onDidChangeActiveNotebookEditor(onNotebookSurface),
-      vscode.workspace.onDidOpenNotebookDocument(onNotebookSurface),
-      vscode.workspace.onDidGrantWorkspaceTrust(onNotebookSurface)
-    ];
+    const subscriptions = this.registerDisposablesTransactional("notebook visibility listeners", (retain) => {
+      retain(vscode.window.onDidChangeVisibleNotebookEditors(onNotebookSurface));
+      retain(vscode.window.onDidChangeActiveNotebookEditor(onNotebookSurface));
+      retain(vscode.workspace.onDidOpenNotebookDocument(onNotebookSurface));
+      retain(vscode.workspace.onDidGrantWorkspaceTrust(onNotebookSurface));
+    });
     this.bootstrapSubscriptions.push(...subscriptions);
-    this.context.subscriptions.push(...subscriptions);
   }
 
   private startVisibleNotebookOwners(initialActivation = false): void {
@@ -376,8 +428,8 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.replaceCommandGroup("notebookPreview");
     const preview = new module.NotebookPreviewCoordinator(this.context);
     this.notebookPreview = preview;
+    this.explicitlyOwnedDisposables.add(preview);
     this.constructedOwners.push("notebook-preview");
-    this.context.subscriptions.push(preview);
     return preview;
   }
 
@@ -393,12 +445,12 @@ export class LazyActivationOwners implements vscode.Disposable {
       if (!output) {
         output = vscode.window.createOutputChannel("Open Wrangler");
         this.sessionDiagnosticOutput = output;
-        this.context.subscriptions.push(output);
       }
       output.appendLine(message);
     });
+    this.sessionCoordinator = coordinator;
+    this.explicitlyOwnedDisposables.add(coordinator);
     this.constructedOwners.push("session");
-    this.context.subscriptions.push(coordinator);
     return { coordinator };
   }
 
@@ -410,8 +462,9 @@ export class LazyActivationOwners implements vscode.Disposable {
     const { PythonBridge } = await import("./pythonBridge.js");
     this.assertActive();
     const bridge = new PythonBridge(this.context);
+    this.pythonBridge = bridge;
+    this.explicitlyOwnedDisposables.add(bridge);
     this.constructedOwners.push("python");
-    this.context.subscriptions.push(bridge);
     return { bridge };
   }
 
@@ -433,7 +486,7 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.replaceCommandGroup("file");
     this.customEditorRegistration?.dispose();
     this.customEditorRegistration = undefined;
-    module.registerFileCommands(this.context, coordinatedBridge);
+    this.captureOwnerRegistration("file", () => module.registerFileCommands(this.context, coordinatedBridge));
     this.constructedOwners.push("custom-editor");
     return { module };
   }
@@ -450,12 +503,23 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     const lifecycle = new workers.TrustedPickleWorkerLifecycle();
+    this.pickleWorkers = lifecycle;
+    this.explicitlyOwnedDisposables.add(lifecycle);
     this.replaceCommandGroup("pickle");
-    conversion.registerTrustedPickleConversion(this.context, python.bridge, {
-      runWorker: (options) => lifecycle.run(options)
-    });
+    try {
+      this.captureOwnerRegistration("pickle", () =>
+        conversion.registerTrustedPickleConversion(this.context, python.bridge, {
+          runWorker: (options) => lifecycle.run(options)
+        })
+      );
+    } catch (error) {
+      const cleanupFailures: unknown[] = [];
+      this.pickleWorkers = undefined;
+      this.explicitlyOwnedDisposables.delete(lifecycle);
+      await captureFailure(() => lifecycle.shutdown(), cleanupFailures);
+      throw withCleanupFailures(error, cleanupFailures, "Trusted pickle activation failed during cleanup.");
+    }
     this.constructedOwners.push("pickle");
-    this.context.subscriptions.push(lifecycle);
     return lifecycle;
   }
 
@@ -474,19 +538,33 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     const cellResults = new cellResult.NotebookCellResultTracker();
+    this.notebookCellResults = cellResults;
+    this.explicitlyOwnedDisposables.add(cellResults);
     this.replaceCommandGroup("notebook");
     try {
-      const variables = interactive.registerPythonInteractiveCommands(this.context, session.coordinator);
-      cellResults.start();
-      jupyter.registerNotebookCommands(this.context, session.coordinator);
-      cellResult.registerNotebookCellResultAction(this.context, session.coordinator, cellResults);
-      renderer.registerNotebookRendererMessaging(this.context, session.coordinator);
+      let variables: PythonInteractiveCommandProvider | undefined;
+      this.captureOwnerRegistration("notebook", () => {
+        variables = interactive.registerPythonInteractiveCommands(this.context, session.coordinator);
+        this.notebookVariables = variables;
+        this.explicitlyOwnedDisposables.add(variables);
+        cellResults.start();
+        jupyter.registerNotebookCommands(this.context, session.coordinator);
+        cellResult.registerNotebookCellResultAction(this.context, session.coordinator, cellResults);
+        renderer.registerNotebookRendererMessaging(this.context, session.coordinator);
+      });
+      if (!variables) throw new Error("Notebook variable registration completed without an owner.");
       this.constructedOwners.push("notebook");
-      this.context.subscriptions.push(cellResults);
       return { variables, cellResults };
     } catch (error) {
-      cellResults.dispose();
-      throw error;
+      const cleanupFailures: unknown[] = [];
+      const variables = this.notebookVariables;
+      this.notebookVariables = undefined;
+      this.notebookCellResults = undefined;
+      if (variables) captureSynchronousFailure(() => variables.dispose(), cleanupFailures);
+      captureSynchronousFailure(() => cellResults.dispose(), cleanupFailures);
+      this.explicitlyOwnedDisposables.delete(cellResults);
+      if (variables) this.explicitlyOwnedDisposables.delete(variables);
+      throw withCleanupFailures(error, cleanupFailures, "Notebook activation failed during rollback.");
     }
   }
 
@@ -501,8 +579,22 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     this.replaceCommandGroup("r");
-    const variables = interactive.registerRInteractiveCommands(this.context, session.coordinator);
-    variables.startAutomaticDiscovery();
+    let variables: (RLiveVariableProvider & LiterateRVariableProvider) | undefined;
+    try {
+      this.captureOwnerRegistration("r", () => {
+        variables = interactive.registerRInteractiveCommands(this.context, session.coordinator);
+        this.rVariables = variables;
+        this.explicitlyOwnedDisposables.add(variables);
+        variables.startAutomaticDiscovery();
+      });
+    } catch (error) {
+      const cleanupFailures: unknown[] = [];
+      this.rVariables = undefined;
+      if (variables) this.explicitlyOwnedDisposables.delete(variables);
+      await captureFailure(() => variables?.shutdown(), cleanupFailures);
+      throw withCleanupFailures(error, cleanupFailures, "R activation failed during rollback.");
+    }
+    if (!variables) throw new Error("R registration completed without an owner.");
     this.rDiscoveryStarted = true;
     this.constructedOwners.push("r");
     return { variables };
@@ -521,10 +613,12 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     this.replaceCommandGroup("rDocument");
-    documentCommands.registerRDocumentCommands(this.context, session.coordinator, {
-      python: notebook.variables,
-      r: r.variables
-    });
+    this.captureOwnerRegistration("r-document", () =>
+      documentCommands.registerRDocumentCommands(this.context, session.coordinator, {
+        python: notebook.variables,
+        r: r.variables
+      })
+    );
     this.constructedOwners.push("r-document");
   }
 
@@ -536,7 +630,7 @@ export class LazyActivationOwners implements vscode.Disposable {
     const [runtime, python] = await Promise.all([import("./runtimeCommands.js"), this.ensurePythonOwner()]);
     this.assertActive();
     this.replaceCommandGroup("runtime");
-    runtime.registerRuntimeCommands(this.context, python.bridge);
+    this.captureOwnerRegistration("runtime", () => runtime.registerRuntimeCommands(this.context, python.bridge));
     this.constructedOwners.push("runtime-commands");
   }
 
@@ -554,10 +648,101 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.assertActive();
     this.replaceCommandGroup("native");
     this.replaceCommandGroup("utility");
-    for (const registration of this.nativeViewRegistrations.splice(0)) registration.dispose();
-    const controller = native.registerNativeViews(this.context, session.coordinator, notebook.variables, r.variables);
+    const providerDisposalFailures = disposeDisposables(this.nativeViewRegistrations.splice(0));
+    if (providerDisposalFailures.length > 0) {
+      throw cleanupAggregate("Could not replace the lazy native view providers.", providerDisposalFailures);
+    }
+    const controller = this.captureOwnerRegistration("native", () =>
+      native.registerNativeViews(this.context, session.coordinator, notebook.variables, r.variables)
+    );
     this.constructedOwners.push("native-views");
     return { controller };
+  }
+
+  private registerDisposablesTransactional(
+    name: string,
+    register: (retain: (disposable: vscode.Disposable) => void) => void
+  ): vscode.Disposable[] {
+    const registrations: vscode.Disposable[] = [];
+    try {
+      register((disposable) => registrations.push(disposable));
+      return registrations;
+    } catch (error) {
+      throw withCleanupFailures(
+        error,
+        disposeDisposables(registrations),
+        `Open Wrangler could not roll back its partial ${name}.`
+      );
+    }
+  }
+
+  private captureOwnerRegistration<T>(name: string, register: () => T): T {
+    const subscriptionStart = this.context.subscriptions.length;
+    let value: T;
+    try {
+      value = register();
+    } catch (error) {
+      const additions = this.context.subscriptions.splice(subscriptionStart);
+      const rollback = additions.filter((item) => !this.explicitlyOwnedDisposables.has(item));
+      throw withCleanupFailures(
+        error,
+        disposeDisposables(rollback),
+        `Open Wrangler could not roll back its partial ${name} owner.`
+      );
+    }
+    const additions = this.context.subscriptions.splice(subscriptionStart);
+    const owned = additions.filter((item) => !this.explicitlyOwnedDisposables.has(item));
+    this.ownerRegistrations.push(new OnceDisposable(name, owned));
+    return value;
+  }
+
+  private disposeBootstrap(failures: unknown[]): void {
+    if (this.bootstrapDisposed) return;
+    this.bootstrapDisposed = true;
+    failures.push(...disposeDisposables(this.bootstrapSubscriptions.splice(0)));
+    for (const registrations of this.commandRegistrations.values()) {
+      failures.push(...disposeDisposables(registrations));
+    }
+    this.commandRegistrations.clear();
+    if (this.customEditorRegistration) {
+      failures.push(...disposeDisposables([this.customEditorRegistration]));
+      this.customEditorRegistration = undefined;
+    }
+    failures.push(...disposeDisposables(this.nativeViewRegistrations.splice(0)));
+  }
+
+  private async observeStartedOwners(): Promise<void> {
+    const observed = new Set<Promise<unknown>>();
+    const deadline = Date.now() + Math.max(0, this.ownerSettlementTimeoutMs);
+    while (true) {
+      const pending = this.startedOwnerPromises().filter((promise) => !observed.has(promise));
+      if (pending.length === 0) return;
+      for (const promise of pending) observed.add(promise);
+      const settlement = Promise.allSettled(pending);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0 || !(await settlesWithin(settlement, remaining))) {
+        // Promise.allSettled has already attached both fulfillment and rejection
+        // observers. Late imports re-check disposed state before construction.
+        return;
+      }
+    }
+  }
+
+  private startedOwnerPromises(): Promise<unknown>[] {
+    return [
+      this.sessionOwner,
+      this.pythonOwner,
+      this.fileOwner,
+      this.pickleOwner,
+      this.notebookOwner,
+      this.rOwner,
+      this.rDocumentOwner,
+      this.runtimeOwner,
+      this.nativeOwner,
+      this.initialNotebookOwner,
+      this.testingApiOwner,
+      ...this.additionalOwnerPromises
+    ].filter((promise): promise is Promise<unknown> => promise !== undefined);
   }
 
   private async createTestingApi(): Promise<OpenWranglerTestApi> {
@@ -673,12 +858,37 @@ class LazyWebviewViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-async function settledValue<T>(promise: Promise<T> | undefined): Promise<T | undefined> {
-  if (!promise) return undefined;
+class OnceDisposable implements vscode.Disposable {
+  private disposed = false;
+
+  constructor(
+    private readonly name: string,
+    private readonly disposables: readonly vscode.Disposable[]
+  ) {}
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const failures = disposeDisposables(this.disposables);
+    if (failures.length > 0) {
+      throw cleanupAggregate(`Open Wrangler ${this.name} owner cleanup encountered multiple failures.`, failures);
+    }
+  }
+}
+
+function disposeDisposables(disposables: readonly vscode.Disposable[]): unknown[] {
+  const failures: unknown[] = [];
+  for (const disposable of [...disposables].reverse()) {
+    captureSynchronousFailure(() => disposable.dispose(), failures);
+  }
+  return failures;
+}
+
+function captureSynchronousFailure(action: () => void, failures: unknown[]): void {
   try {
-    return await promise;
-  } catch {
-    return undefined;
+    action();
+  } catch (error) {
+    failures.push(...flattenFailures(error));
   }
 }
 
@@ -686,6 +896,33 @@ async function captureFailure(action: () => Promise<unknown> | undefined, failur
   try {
     await action();
   } catch (error) {
-    failures.push(error);
+    failures.push(...flattenFailures(error));
+  }
+}
+
+function withCleanupFailures(primary: unknown, cleanupFailures: readonly unknown[], message: string): unknown {
+  const failures = [...flattenFailures(primary), ...cleanupFailures.flatMap(flattenFailures)];
+  return failures.length === 1 ? failures[0] : new AggregateError(failures, message);
+}
+
+function cleanupAggregate(message: string, failures: readonly unknown[]): unknown {
+  const flattened = failures.flatMap(flattenFailures);
+  return flattened.length === 1 ? flattened[0] : new AggregateError(flattened, message);
+}
+
+function flattenFailures(error: unknown): unknown[] {
+  return error instanceof AggregateError ? error.errors.flatMap(flattenFailures) : [error];
+}
+
+async function settlesWithin(settlement: Promise<unknown>, deadlineMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, deadlineMs));
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([settlement.then(() => true as const), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

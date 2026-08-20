@@ -4,6 +4,7 @@ import { LazyActivationOwners, type OpenWranglerExtensionApi, type OpenWranglerT
 export type { OpenWranglerExtensionApi, OpenWranglerTestApi };
 
 let activeOwners: LazyActivationOwners | undefined;
+let activeDeactivation: Promise<void> | undefined;
 
 const NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT = "openWrangler.forceNotebookEditorTitleAction";
 
@@ -15,6 +16,7 @@ export function isCursorAppName(appName: string): boolean {
 export async function activate(context: vscode.ExtensionContext): Promise<OpenWranglerExtensionApi | undefined> {
   const owners = new LazyActivationOwners(context);
   activeOwners = owners;
+  activeDeactivation = undefined;
   try {
     // This installs the lightweight activation gates and, when a relevant
     // notebook is already visible, its formatter preparation hooks before the
@@ -25,10 +27,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   } catch (error) {
     if (activeOwners === owners) activeOwners = undefined;
     try {
-      await owners.shutdown();
+      await beginDeactivation(owners);
     } catch (shutdownError) {
       throw new AggregateError(
-        [error, shutdownError],
+        [...activationFailures(error), ...activationFailures(shutdownError)],
         "Open Wrangler activation failed and its initialized owners could not shut down cleanly."
       );
     }
@@ -40,8 +42,30 @@ async function setNotebookEditorTitleActionContext(value: boolean): Promise<void
   await vscode.commands.executeCommand("setContext", NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT, value);
 }
 
-export async function deactivate(): Promise<void> {
+export function deactivate(): Promise<void> {
   const owners = activeOwners;
-  activeOwners = undefined;
-  await owners?.shutdown();
+  if (owners) {
+    activeOwners = undefined;
+    return beginDeactivation(owners);
+  }
+  return activeDeactivation ?? Promise.resolve();
+}
+
+function beginDeactivation(owners: LazyActivationOwners): Promise<void> {
+  if (activeDeactivation) return activeDeactivation;
+  const shutdown = owners.shutdown();
+  activeDeactivation = shutdown;
+  void shutdown.then(
+    () => {
+      if (activeDeactivation === shutdown) activeDeactivation = undefined;
+    },
+    () => {
+      if (activeDeactivation === shutdown) activeDeactivation = undefined;
+    }
+  );
+  return shutdown;
+}
+
+function activationFailures(error: unknown): unknown[] {
+  return error instanceof AggregateError ? error.errors.flatMap(activationFailures) : [error];
 }

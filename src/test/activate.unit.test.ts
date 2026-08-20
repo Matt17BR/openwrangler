@@ -56,13 +56,19 @@ describe("extension activation boundary", () => {
     expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.forceNotebookEditorTitleAction", true);
   });
 
-  it("shuts down the activation owner when the title context fails", async () => {
+  it("shuts down an already-started visible-notebook owner when the title context fails", async () => {
     const failure = new Error("setContext unavailable");
+    const visibleNotebookOwnerStarted = vi.fn();
+    const visibleNotebookOwnerDisposed = vi.fn();
+    lifecycle.startBeforeFirstYield.mockImplementationOnce(visibleNotebookOwnerStarted);
+    lifecycle.shutdown.mockImplementationOnce(async () => visibleNotebookOwnerDisposed());
     vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(failure);
 
     await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toBe(failure);
 
     expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    expect(visibleNotebookOwnerStarted).toHaveBeenCalledOnce();
+    expect(visibleNotebookOwnerDisposed).toHaveBeenCalledOnce();
     expect(lifecycle.dispose).not.toHaveBeenCalled();
     await deactivate();
     expect(lifecycle.shutdown).toHaveBeenCalledOnce();
@@ -70,16 +76,19 @@ describe("extension activation boundary", () => {
 
   it("preserves activation and shutdown failures together", async () => {
     const activationFailure = new Error("setContext unavailable");
-    const shutdownFailure = new Error("owner cleanup failed");
+    const firstShutdownFailure = new Error("owner cleanup failed");
+    const secondShutdownFailure = new Error("output cleanup failed");
     vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(activationFailure);
-    lifecycle.shutdown.mockRejectedValueOnce(shutdownFailure);
+    lifecycle.shutdown.mockRejectedValueOnce(
+      new AggregateError([firstShutdownFailure, secondShutdownFailure], "ordered owner cleanup failures")
+    );
 
     const error = await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext).catch(
       (reason: unknown) => reason
     );
 
     expect(error).toBeInstanceOf(AggregateError);
-    expect((error as AggregateError).errors).toEqual([activationFailure, shutdownFailure]);
+    expect((error as AggregateError).errors).toEqual([activationFailure, firstShutdownFailure, secondShutdownFailure]);
   });
 
   it("returns only the owner-provided environment-gated API", async () => {
@@ -98,6 +107,27 @@ describe("extension activation boundary", () => {
     expect(lifecycle.shutdown).toHaveBeenCalledOnce();
   });
 
+  it("shares one ordered failure across concurrent deactivate calls", async () => {
+    const shutdown = deferred<void>();
+    const firstFailure = new Error("notebook cleanup failed");
+    const secondFailure = new Error("R cleanup failed");
+    const cleanupFailure = new AggregateError([firstFailure, secondFailure], "ordered cleanup failures");
+    await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+    lifecycle.shutdown.mockReturnValueOnce(shutdown.promise);
+
+    const first = deactivate();
+    const second = deactivate();
+
+    expect(second).toBe(first);
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    shutdown.reject(cleanupFailure);
+    const failures = await Promise.all([
+      first.catch((error: unknown) => error),
+      second.catch((error: unknown) => error)
+    ]);
+    expect(failures).toEqual([cleanupFailure, cleanupFailure]);
+  });
+
   it.each([
     ["Cursor", true],
     ["Cursor Nightly", true],
@@ -110,10 +140,12 @@ describe("extension activation boundary", () => {
   });
 });
 
-function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void } {
+function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void; reject(error: unknown): void } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
     resolve = innerResolve;
+    reject = innerReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
