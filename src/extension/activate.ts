@@ -24,7 +24,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
     return await owners.extensionApiForCurrentEnvironment();
   } catch (error) {
     if (activeOwners === owners) activeOwners = undefined;
-    owners.dispose();
+    try {
+      await owners.shutdown();
+    } catch (shutdownError) {
+      throw new AggregateError(
+        [error, shutdownError],
+        "Open Wrangler activation failed and its initialized owners could not shut down cleanly."
+      );
+    }
     throw error;
   }
 }
