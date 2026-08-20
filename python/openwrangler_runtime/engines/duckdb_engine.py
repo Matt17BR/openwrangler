@@ -14,7 +14,11 @@ from typing import Any
 from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
-from ..custom_code_scope import CUSTOM_CODE_FUNCTION_NAME, custom_code_function_lines, execute_custom_code
+from ..custom_code_scope import (
+    custom_code_definition_lines,
+    custom_code_execution_lines,
+    execute_custom_code,
+)
 from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -1113,8 +1117,11 @@ class DuckDBEngine(DataFrameEngine):
             generated_helpers,
             "",
             *generated_view_value_helper_lines(),
-            "def clean_data(df):",
         ]
+        for index, step in enumerate(plan):
+            if step["kind"] == "customCode":
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
+        lines.append("def clean_data(df):")
         for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
@@ -1346,12 +1353,13 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {_by_example_expression(params['program'])!r})"
             ]
         if kind == "customCode":
+            custom_lines, result = custom_code_execution_lines(prefix=prefix, module_name="duckdb", index=index)
             return [
                 f"{prefix}df = _ow_visible_relation(df)",
-                *custom_code_function_lines(str(params["code"]), prefix=prefix),
-                f"{prefix}df = {CUSTOM_CODE_FUNCTION_NAME}(df)",
-                f"{prefix}if not isinstance(df, duckdb.DuckDBPyRelation):",
+                *custom_lines,
+                f"{prefix}if not isinstance({result}, duckdb.DuckDBPyRelation):",
                 f"{prefix}    raise ValueError('Custom DuckDB code must assign a DuckDBPyRelation to result.')",
+                f"{prefix}df = {result}",
             ]
         raise EngineError(f"DuckDB cannot compile transformation: {kind}")
 

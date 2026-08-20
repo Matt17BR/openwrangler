@@ -190,8 +190,9 @@ def test_retained_plan_budget_accepts_exact_limit_and_rejects_one_byte_over() ->
         SessionManager._preflight_retained_plan(exact)
 
 
-def test_newline_heavy_custom_plan_is_rejected_before_compile_allocates_split_lines() -> None:
-    code = "\n" * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len("result=df")) + "result=df"
+@pytest.mark.parametrize("separator", ["\n", "\f"], ids=["line-feed", "form-feed"])
+def test_splitline_heavy_custom_plan_is_rejected_before_compile_allocates_lines(separator: str) -> None:
+    code = separator * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len("result=df")) + "result=df"
     plan = [custom_step(f"custom-{index}", code) for index in range(8)]
     compile_calls = 0
 
@@ -199,7 +200,24 @@ def test_newline_heavy_custom_plan_is_rejected_before_compile_allocates_split_li
         def compile_plan(self, _steps: Iterable[Mapping[str, Any]]) -> str:
             nonlocal compile_calls
             compile_calls += 1
-            raise AssertionError("compile_plan allocated newline-expanded custom code")
+            raise AssertionError("compile_plan allocated splitline-expanded custom code")
+
+    with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
+        SessionManager._compile_plan_with_limits(CompileMustNotRun(), plan)  # type: ignore[arg-type]
+    assert compile_calls == 0
+
+
+@pytest.mark.parametrize("separator", ["\n", "\f"], ids=["terminal-lf", "terminal-form-feed"])
+def test_terminal_splitline_separator_preserves_preallocation_limit(separator: str) -> None:
+    code = ("x" * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len(separator.encode("utf-8")))) + separator
+    plan = [custom_step(f"custom-{index}", code) for index in range(64)]
+    compile_calls = 0
+
+    class CompileMustNotRun:
+        def compile_plan(self, _steps: Iterable[Mapping[str, Any]]) -> str:
+            nonlocal compile_calls
+            compile_calls += 1
+            raise AssertionError("compile_plan allocated terminal-separator custom code")
 
     with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
         SessionManager._compile_plan_with_limits(CompileMustNotRun(), plan)  # type: ignore[arg-type]
@@ -209,6 +227,7 @@ def test_newline_heavy_custom_plan_is_rejected_before_compile_allocates_split_li
 def test_generated_code_limit_is_exact_and_precedes_transform_execution(tmp_path: Path, monkeypatch) -> None:
     manager, session_id = open_pandas_session(tmp_path)
     session = manager.sessions[session_id]
+
     monkeypatch.setattr(session.engine, "compile_plan", lambda _steps: "x" * MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
 
     accepted = manager.preview_step(session_id, 0, formula_step("exact-code"), 0, 2)
