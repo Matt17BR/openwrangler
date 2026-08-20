@@ -4,7 +4,14 @@
     "pull_request": {
       "file": ".github/workflows/ci.yml",
       "event": "pull_request",
+      "activityTypes": ["opened", "synchronize", "reopened", "edited", "stacked"],
       "terminalJob": "validate"
+    },
+    "codeql": {
+      "file": ".github/workflows/codeql.yml",
+      "event": "pull_request",
+      "activityTypes": ["opened", "synchronize", "reopened", "edited", "stacked"],
+      "terminalJob": "codeql-gate"
     },
     "candidate": {
       "file": ".github/workflows/candidate-acceptance.yml",

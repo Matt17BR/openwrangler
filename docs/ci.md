@@ -33,8 +33,10 @@ layer instead classifies the cumulative `pull_request.stack.base.sha`-to-head ra
 and size. A non-final layer is recorded as a partial prefix, but it retains the same invariant core, conservative
 changed-area owners, and final `validate` result contract as the complete stack. Missing stack metadata uses the
 ordinary pull-request base; partially present or malformed stack metadata fails closed. Draft heads qualify when
-opened. Making the same SHA ready does not start a duplicate CI run, while synchronization, reopen, and base edits
-still trigger CI qualification. The independent `CodeQL gate` remains required on every layer.
+opened. GitHub's dedicated `stacked` activity qualifies an unchanged head again as soon as it joins a stack, so its
+checks use the cumulative stack base. Making the same SHA ready or draft does not start a duplicate run, while
+synchronization, reopen, and base edits still trigger both CI and CodeQL. The independent `CodeQL gate` remains
+required on every layer.
 
 <!-- BEGIN GENERATED CI CAPABILITIES -->
 

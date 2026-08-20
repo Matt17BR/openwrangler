@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { posix } from "node:path";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync
+} from "node:fs";
+import { isAbsolute, posix, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
@@ -32,10 +42,109 @@ const releasedJupyter = workflow("released-jupyter.yml");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
-const capabilityGraph = JSON.parse(readFileSync("scripts/fixtures/ci-capabilities.json", "utf8"));
-const capabilityDocuments = Object.fromEntries(
-  Object.entries(capabilityGraph.workflows).map(([id, owner]) => [id, parseYaml(readFileSync(owner.file, "utf8"))])
-);
+const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
+const CAPABILITY_GRAPH_PATH = "scripts/fixtures/ci-capabilities.json";
+const CAPABILITY_WORKFLOW_FILES = Object.freeze({
+  pull_request: ".github/workflows/ci.yml",
+  codeql: ".github/workflows/codeql.yml",
+  candidate: ".github/workflows/candidate-acceptance.yml",
+  release: ".github/workflows/release-candidate.yml"
+});
+const CAPABILITY_WORKFLOW_EVENTS = Object.freeze({
+  pull_request: "pull_request",
+  codeql: "pull_request",
+  candidate: "workflow_call",
+  release: "workflow_dispatch"
+});
+const CAPABILITY_WORKFLOW_TERMINALS = Object.freeze({
+  pull_request: "validate",
+  codeql: "codeql-gate",
+  candidate: "acceptance",
+  release: "qualify"
+});
+const CAPABILITY_FILES = new Set([CAPABILITY_GRAPH_PATH, ...Object.values(CAPABILITY_WORKFLOW_FILES)]);
+
+function assertContainedNoFollowPath(relativePath) {
+  assert.equal(CAPABILITY_FILES.has(relativePath), true, `${relativePath} is not an allowlisted capability file`);
+  const absolutePath = resolve(REPOSITORY_ROOT, ...relativePath.split("/"));
+  const containedPath = relative(REPOSITORY_ROOT, absolutePath);
+  assert.equal(isAbsolute(containedPath), false, `${relativePath} must stay below the repository root`);
+  assert.doesNotMatch(containedPath, /^(?:\.\.(?:[/\\]|$))/u, `${relativePath} escapes the repository root`);
+
+  let currentPath = REPOSITORY_ROOT;
+  const root = lstatSync(currentPath, { bigint: true });
+  assert.equal(root.isDirectory(), true, "repository root must remain a directory");
+  assert.equal(root.isSymbolicLink(), false, "repository root must not be a symbolic link");
+  const components = relativePath.split("/");
+  for (const [index, component] of components.entries()) {
+    currentPath = resolve(currentPath, component);
+    const status = lstatSync(currentPath, { bigint: true });
+    assert.equal(status.isSymbolicLink(), false, `${relativePath} must not traverse a symbolic link`);
+    const finalComponent = index === components.length - 1;
+    assert.equal(
+      finalComponent ? status.isFile() : status.isDirectory(),
+      true,
+      `${relativePath} has an unexpected filesystem type`
+    );
+  }
+  return absolutePath;
+}
+
+function readBoundedCapabilityFile(relativePath) {
+  const absolutePath = assertContainedNoFollowPath(relativePath);
+  const before = lstatSync(absolutePath, { bigint: true });
+  assert.ok(before.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+  const descriptor = openSync(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
+    assert.deepEqual([opened.dev, opened.ino], [before.dev, before.ino], `${relativePath} changed before open`);
+
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const remaining = CAPABILITY_FILE_LIMIT + 1 - total;
+      if (remaining <= 0) throw new Error(`${relativePath} exceeds the capability file limit`);
+      const chunk = Buffer.allocUnsafe(Math.min(16 * 1024, remaining));
+      const read = readSync(descriptor, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      chunks.push(chunk.subarray(0, read));
+      total += read;
+    }
+    assert.ok(total <= CAPABILITY_FILE_LIMIT, `${relativePath} exceeds the capability file limit`);
+
+    const after = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(assertContainedNoFollowPath(relativePath), { bigint: true });
+    assert.deepEqual(
+      [after.dev, after.ino, after.size],
+      [opened.dev, opened.ino, opened.size],
+      `${relativePath} changed while reading`
+    );
+    assert.deepEqual(
+      [pathAfter.dev, pathAfter.ino, pathAfter.size],
+      [after.dev, after.ino, after.size],
+      `${relativePath} path identity changed while reading`
+    );
+    assert.equal(BigInt(total), after.size, `${relativePath} returned incomplete bytes`);
+    return Buffer.concat(chunks, total).toString("utf8");
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function loadCapabilityDocuments(graph) {
+  assert.deepEqual(Object.keys(graph.workflows).sort(), Object.keys(CAPABILITY_WORKFLOW_FILES).sort());
+  return Object.fromEntries(
+    Object.entries(CAPABILITY_WORKFLOW_FILES).map(([id, file]) => {
+      assert.equal(graph.workflows[id]?.file, file, `${id} must use its fixed workflow file`);
+      return [id, parseYaml(readBoundedCapabilityFile(file))];
+    })
+  );
+}
+
+const capabilityGraph = JSON.parse(readBoundedCapabilityFile(CAPABILITY_GRAPH_PATH));
+const capabilityDocuments = loadCapabilityDocuments(capabilityGraph);
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
@@ -98,6 +207,7 @@ const CAPABILITY_NAMES = Object.freeze([
   "artifact_provenance",
   "release_fan_in"
 ]);
+const PULL_REQUEST_ACTIVITY_TYPES = Object.freeze(["opened", "synchronize", "reopened", "edited", "stacked"]);
 const CAPABILITY_DOCS_START = "<!-- BEGIN GENERATED CI CAPABILITIES -->";
 const CAPABILITY_DOCS_END = "<!-- END GENERATED CI CAPABILITIES -->";
 const APPROVED_EXTERNAL_ACTIONS = new Set([
@@ -465,10 +575,18 @@ function expectedCapabilityJobCondition(workflowId, jobId) {
   return undefined;
 }
 
+function assertCapabilityJobFatal(job, owner) {
+  assert.ok(job, `missing required capability job ${owner}`);
+  assert.equal(
+    job["continue-on-error"] === undefined || job["continue-on-error"] === false,
+    true,
+    `${owner} continue-on-error must be absent or literal false`
+  );
+}
+
 function assertRequiredCapabilityJob(job, workflowId, jobId) {
   const owner = `${workflowId}:${jobId}`;
-  assert.ok(job, `missing required capability job ${owner}`);
-  assert.notEqual(job["continue-on-error"], true, `${owner} must remain fatal`);
+  assertCapabilityJobFatal(job, owner);
   assert.equal(
     normalizeWorkflowExpression(job.if),
     normalizeWorkflowExpression(expectedCapabilityJobCondition(workflowId, jobId)),
@@ -478,13 +596,26 @@ function assertRequiredCapabilityJob(job, workflowId, jobId) {
 
 function assertCapabilityGraph(graph, documents) {
   assert.equal(graph.version, 1);
-  assert.deepEqual(Object.keys(graph.workflows), ["pull_request", "candidate", "release"]);
+  assert.deepEqual(Object.keys(graph.workflows).sort(), Object.keys(CAPABILITY_WORKFLOW_FILES).sort());
   assert.deepEqual(Object.keys(graph.capabilities), CAPABILITY_NAMES);
   for (const [workflowId, owner] of Object.entries(graph.workflows)) {
     const document = documents[workflowId];
     assert.ok(document, `missing parsed workflow ${workflowId}`);
+    assert.equal(owner.file, CAPABILITY_WORKFLOW_FILES[workflowId], `${workflowId} changed its fixed workflow file`);
+    assert.equal(owner.event, CAPABILITY_WORKFLOW_EVENTS[workflowId], `${workflowId} changed its exact event`);
+    assert.equal(
+      owner.terminalJob,
+      CAPABILITY_WORKFLOW_TERMINALS[workflowId],
+      `${workflowId} changed its terminal job`
+    );
     assert.ok(Object.hasOwn(document.on ?? {}, owner.event), `${owner.file} must retain ${owner.event}`);
     assert.ok(document.jobs?.[owner.terminalJob], `${owner.file} must retain ${owner.terminalJob}`);
+    if (workflowId === "pull_request" || workflowId === "codeql") {
+      assert.deepEqual(owner.activityTypes, PULL_REQUEST_ACTIVITY_TYPES);
+      assert.deepEqual(document.on[owner.event]?.types, owner.activityTypes);
+    } else {
+      assert.equal(owner.activityTypes, undefined, `${workflowId} must not declare pull-request activity types`);
+    }
   }
 
   for (const [capabilityName, capability] of Object.entries(graph.capabilities)) {
@@ -498,8 +629,19 @@ function assertCapabilityGraph(graph, documents) {
     const providerDocument = documents[capability.providerWorkflow];
     const fanInDocument = documents[capability.fanInWorkflow];
     assert.equal(fanInOwner.terminalJob, capability.fanInJob, `${capabilityName} must reach the final fan-in`);
+    assert.equal(Array.isArray(capability.requiredJobs), true, `${capabilityName} must declare its required jobs`);
+    assert.equal(
+      new Set(capability.requiredJobs).size,
+      capability.requiredJobs.length,
+      `${capabilityName} must not declare a required job twice`
+    );
     assert.ok(capability.requiredJobs.includes(capability.providerJob));
     const providerClosure = dependencyClosure(providerDocument, capability.providerJob);
+    assert.deepEqual(
+      [...providerClosure].sort(),
+      [...capability.requiredJobs].sort(),
+      `${capabilityName} must declare the exact provider dependency closure`
+    );
     for (const jobId of capability.requiredJobs) {
       assertRequiredCapabilityJob(providerDocument.jobs?.[jobId], capability.providerWorkflow, jobId);
       assert.equal(providerClosure.has(jobId), true, `${capabilityName} disconnects ${jobId} from its provider`);
@@ -527,10 +669,20 @@ function assertCapabilityGraph(graph, documents) {
   }
 
   const release = graph.capabilities.release_fan_in;
-  assert.deepEqual(graph.capabilities.source_coverage.requiredChecks, ["validate", "CodeQL gate"]);
+  const requiredChecks = graph.capabilities.source_coverage.requiredChecks;
+  assert.deepEqual(requiredChecks, ["validate", "CodeQL gate"]);
+  assert.equal(new Set(requiredChecks).size, requiredChecks.length, "required check names must be unique");
+  const declaredChecks = Object.entries(documents).flatMap(([workflowId, document]) =>
+    Object.entries(document.jobs ?? {}).map(([jobId, job]) => ({ workflowId, jobId, job }))
+  );
+  for (const checkName of requiredChecks) {
+    const owners = declaredChecks.filter(({ job }) => job?.name === checkName);
+    assert.equal(owners.length, 1, `${checkName} must name exactly one declared job`);
+    assertCapabilityJobFatal(owners[0].job, `${owners[0].workflowId}:${owners[0].jobId}`);
+  }
   assert.equal(documents.pull_request.jobs.validate.name, "validate");
-  assert.ok(Object.hasOwn(codeql.on ?? {}, "pull_request"));
-  assert.equal(codeql.jobs["codeql-gate"].name, "CodeQL gate");
+  assert.ok(Object.hasOwn(documents.codeql.on ?? {}, "pull_request"));
+  assert.equal(documents.codeql.jobs["codeql-gate"].name, "CodeQL gate");
   assert.deepEqual(release.requires, ["artifact_provenance", "installed_candidate"]);
   for (const requiredCapability of release.requires) {
     const required = graph.capabilities[requiredCapability];
@@ -577,6 +729,27 @@ function assertChangedAreaOwnersStartAfterClassification(document) {
       JSON.stringify(job),
       /needs\.invariant-core/u,
       `${jobId} must not wait for or inspect invariant-core before starting`
+    );
+  }
+}
+
+function assertPullRequestActivityContract(primaryDocument, codeqlDocument) {
+  for (const [name, document] of [
+    ["CI", primaryDocument],
+    ["CodeQL", codeqlDocument]
+  ]) {
+    assert.deepEqual(document.on.pull_request.types, PULL_REQUEST_ACTIVITY_TYPES, `${name} activity types drifted`);
+    assert.equal(document.on.pull_request.types.includes("edited"), true, `${name} must qualify base edits`);
+    assert.equal(document.on.pull_request.types.includes("stacked"), true, `${name} must qualify stack joins`);
+    assert.equal(
+      document.on.pull_request.types.includes("ready_for_review"),
+      false,
+      `${name} readiness must remain SHA-idempotent`
+    );
+    assert.equal(
+      document.on.pull_request.types.includes("converted_to_draft"),
+      false,
+      `${name} draft conversion must remain SHA-idempotent`
     );
   }
 }
@@ -952,6 +1125,18 @@ test("machine-readable capabilities bind correct events, fatal providers, and ma
   assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, capabilityDocuments));
 });
 
+test("capability workflow sources stay on the fixed bounded no-follow allowlist", () => {
+  for (const [workflowId, file] of Object.entries(CAPABILITY_WORKFLOW_FILES)) {
+    assert.equal(capabilityGraph.workflows[workflowId].file, file);
+    assert.ok(Buffer.byteLength(readBoundedCapabilityFile(file), "utf8") <= CAPABILITY_FILE_LIMIT);
+  }
+  for (const file of ["package.json", "../outside.yml", ".github/workflows/unknown.yml"]) {
+    const graph = structuredClone(capabilityGraph);
+    graph.workflows.release.file = file;
+    assert.throws(() => loadCapabilityDocuments(graph), /fixed workflow file/u);
+  }
+});
+
 test("capability mutations reject remove, skip, nonfatal, and disconnected evidence", () => {
   const mutations = [
     (documents) => {
@@ -959,9 +1144,6 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
     },
     (documents) => {
       documents.candidate.jobs.acceptance.if = "${{ false }}";
-    },
-    (documents) => {
-      documents.candidate.jobs.platform["continue-on-error"] = true;
     },
     (documents) => {
       documents.release.jobs.qualify.needs = documents.release.jobs.qualify.needs.filter(
@@ -974,13 +1156,51 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
     mutate(documents);
     assert.throws(() => assertCapabilityGraph(capabilityGraph, documents));
   }
+
+  for (const value of [true, "false", 0, null]) {
+    const documents = structuredClone(capabilityDocuments);
+    documents.candidate.jobs.platform["continue-on-error"] = value;
+    assert.throws(() => assertCapabilityGraph(capabilityGraph, documents), /absent or literal false/u);
+    const requiredCheckDocuments = structuredClone(capabilityDocuments);
+    requiredCheckDocuments.codeql.jobs["codeql-gate"]["continue-on-error"] = value;
+    assert.throws(() => assertCapabilityGraph(capabilityGraph, requiredCheckDocuments), /absent or literal false/u);
+  }
+  const explicitFatal = structuredClone(capabilityDocuments);
+  explicitFatal.candidate.jobs.platform["continue-on-error"] = false;
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, explicitFatal));
+
+  const incompleteClosure = structuredClone(capabilityGraph);
+  incompleteClosure.capabilities.installed_candidate.requiredJobs =
+    incompleteClosure.capabilities.installed_candidate.requiredJobs.filter((jobId) => jobId !== "platform");
+  assert.throws(
+    () => assertCapabilityGraph(incompleteClosure, capabilityDocuments),
+    /exact provider dependency closure/u
+  );
+  const duplicateRequiredJob = structuredClone(capabilityGraph);
+  duplicateRequiredJob.capabilities.installed_candidate.requiredJobs.push("platform");
+  assert.throws(() => assertCapabilityGraph(duplicateRequiredJob, capabilityDocuments), /required job twice/u);
+
+  const duplicateRequiredCheck = structuredClone(capabilityGraph);
+  duplicateRequiredCheck.capabilities.source_coverage.requiredChecks = ["validate", "validate"];
+  assert.throws(() => assertCapabilityGraph(duplicateRequiredCheck, capabilityDocuments));
+  const duplicateCheckOwner = structuredClone(capabilityDocuments);
+  duplicateCheckOwner.codeql.jobs["analyze-python"].name = "validate";
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, duplicateCheckOwner), /exactly one declared job/u);
+
+  const missingStackTrigger = structuredClone(capabilityGraph);
+  missingStackTrigger.workflows.codeql.activityTypes = missingStackTrigger.workflows.codeql.activityTypes.filter(
+    (activity) => activity !== "stacked"
+  );
+  assert.throws(() => assertCapabilityGraph(missingStackTrigger, capabilityDocuments));
 });
 
 test("capability validation tolerates harmless names and workflow ordering", () => {
   const documents = structuredClone(capabilityDocuments);
-  for (const [workflowId, document] of Object.entries(documents)) {
+  for (const document of Object.values(documents)) {
     for (const [jobId, job] of Object.entries(document.jobs)) {
-      if (!(workflowId === "pull_request" && jobId === "validate")) job.name = `Display label for ${jobId}`;
+      if (!new Set(capabilityGraph.capabilities.source_coverage.requiredChecks).has(job.name)) {
+        job.name = `Display label for ${jobId}`;
+      }
       if (Array.isArray(job.needs)) job.needs.reverse();
     }
     document.jobs = Object.fromEntries(Object.entries(document.jobs).reverse());
@@ -2054,10 +2274,21 @@ test("protected branch triggers and obsolete classifier vocabulary are absent fr
   }
 });
 
-test("draft readiness is SHA-idempotent while head, reopen, and base edits still qualify", () => {
-  assert.deepEqual(ci.on.pull_request.types, ["opened", "synchronize", "reopened", "edited"]);
-  assert.equal(ci.on.pull_request.types.includes("ready_for_review"), false);
-  assert.equal(ci.on.pull_request.types.includes("converted_to_draft"), false);
+test("CI and CodeQL align edited, stacked, readiness, and draft activity semantics", () => {
+  assertPullRequestActivityContract(ci, codeql);
+  for (const mutate of [
+    (document) => document.on.pull_request.types.splice(document.on.pull_request.types.indexOf("edited"), 1),
+    (document) => document.on.pull_request.types.splice(document.on.pull_request.types.indexOf("stacked"), 1),
+    (document) => document.on.pull_request.types.push("ready_for_review"),
+    (document) => document.on.pull_request.types.push("converted_to_draft")
+  ]) {
+    const changedCi = structuredClone(ci);
+    mutate(changedCi);
+    assert.throws(() => assertPullRequestActivityContract(changedCi, codeql));
+    const changedCodeql = structuredClone(codeql);
+    mutate(changedCodeql);
+    assert.throws(() => assertPullRequestActivityContract(ci, changedCodeql));
+  }
   const classify = stepRunning(ci.jobs.classify, "node scripts/ci-path-classification.mjs");
   assert.deepEqual(classify.env, {
     CI_EVENT_NAME: "${{ github.event_name }}",
