@@ -1125,28 +1125,32 @@ openwrangler_r_frame_contract <- local({
     paste0(if (negative) "-" else "", digits)
   }
 
-  integer_text_compare <- function(left, right) {
+  compare_integer_text <- function(left, right) {
+    left <- normalize_integer_text(left, "left integer comparison value")
+    right <- normalize_integer_text(right, "right integer comparison value")
+    if (identical(left, right)) return(0L)
     left_negative <- startsWith(left, "-")
     right_negative <- startsWith(right, "-")
     if (left_negative != right_negative) return(if (left_negative) -1L else 1L)
     left_digits <- if (left_negative) substring(left, 2L) else left
     right_digits <- if (right_negative) substring(right, 2L) else right
-    magnitude <- if (nchar(left_digits, type = "bytes") != nchar(right_digits, type = "bytes")) {
-      if (nchar(left_digits, type = "bytes") < nchar(right_digits, type = "bytes")) -1L else 1L
-    } else if (identical(left_digits, right_digits)) {
-      0L
-    } else if (left_digits < right_digits) {
-      -1L
-    } else {
-      1L
+    left_length <- nchar(left_digits, type = "bytes")
+    right_length <- nchar(right_digits, type = "bytes")
+    if (left_length != right_length) {
+      magnitude <- if (left_length < right_length) -1L else 1L
+      return(if (left_negative) -magnitude else magnitude)
     }
+    left_codes <- utf8ToInt(left_digits)
+    right_codes <- utf8ToInt(right_digits)
+    first_difference <- which(left_codes != right_codes)[[1L]]
+    magnitude <- if (left_codes[[first_difference]] < right_codes[[first_difference]]) -1L else 1L
     if (left_negative) -magnitude else magnitude
   }
 
   validate_integer64_text <- function(text, label) {
     if (
-      integer_text_compare(text, "-9223372036854775808") < 0L ||
-        integer_text_compare(text, "9223372036854775807") > 0L
+      compare_integer_text(text, "-9223372036854775808") < 0L ||
+        compare_integer_text(text, "9223372036854775807") > 0L
     ) {
       abort("invalid-view-value", sprintf("%s is outside the signed 64-bit range", label))
     }
@@ -1276,8 +1280,8 @@ openwrangler_r_frame_contract <- local({
   validate_duration_microseconds <- function(text, label) {
     microseconds <- duration_microseconds_text(text)
     if (
-      integer_text_compare(microseconds, "-86399999913600000000") < 0L ||
-        integer_text_compare(microseconds, "86399999999999999999") > 0L
+      compare_integer_text(microseconds, "-86399999913600000000") < 0L ||
+        compare_integer_text(microseconds, "86399999999999999999") > 0L
     ) {
       abort("invalid-view-value", sprintf("%s is outside the supported duration range", label))
     }
@@ -1301,8 +1305,8 @@ openwrangler_r_frame_contract <- local({
     }
     days_text <- if (identical(parts[[2L]], "")) "0" else normalize_integer_text(parts[[2L]], label)
     if (
-      integer_text_compare(days_text, "-999999999") < 0L ||
-        integer_text_compare(days_text, "999999999") > 0L
+      compare_integer_text(days_text, "-999999999") < 0L ||
+        compare_integer_text(days_text, "999999999") > 0L
     ) {
       abort("invalid-view-value", sprintf("%s is outside the supported duration range", label))
     }
@@ -1501,7 +1505,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   compare_integer_keys <- function(keys, target, operator) {
-    comparisons <- vapply(keys, integer_text_compare, integer(1L), right = target, USE.NAMES = FALSE)
+    comparisons <- vapply(keys, compare_integer_text, integer(1L), right = target, USE.NAMES = FALSE)
     switch(
       operator,
       equals = comparisons == 0L,
@@ -1885,10 +1889,9 @@ openwrangler_r_frame_contract <- local({
 
   exact_profile_integer_text_cell <- function(exact, budget, label) {
     spend_json_string(budget, exact, label)
-    digits <- if (startsWith(exact, "-")) substring(exact, 2L) else exact
     safe_limit <- "9007199254740991"
-    safely_numeric <- nchar(digits, type = "bytes") < nchar(safe_limit) ||
-      (nchar(digits, type = "bytes") == nchar(safe_limit) && digits <= safe_limit)
+    safely_numeric <- compare_integer_text(exact, paste0("-", safe_limit)) >= 0L &&
+      compare_integer_text(exact, safe_limit) <= 0L
     raw <- if (safely_numeric) as.double(exact) else exact
     ordinary_cell("integer", raw, exact)
   }
@@ -2065,8 +2068,15 @@ openwrangler_r_frame_contract <- local({
 
   order_integer64 <- function(values, decreasing) {
     text <- integer64_as_character(values, ensure_integer64_bindings())
-    negative <- startsWith(text, "-")
-    digits <- ifelse(negative, substring(text, 2L), text)
+    normalized <- vapply(
+      text,
+      normalize_integer_text,
+      character(1L),
+      label = "integer64 ordering value",
+      USE.NAMES = FALSE
+    )
+    negative <- startsWith(normalized, "-")
+    digits <- ifelse(negative, substring(normalized, 2L), normalized)
     negative_positions <- which(negative)
     nonnegative_positions <- which(!negative)
 
@@ -2080,11 +2090,23 @@ openwrangler_r_frame_contract <- local({
       )]
     }
 
-    if (decreasing) {
+    ordered <- if (decreasing) {
       c(order_group(nonnegative_positions, TRUE), order_group(negative_positions, FALSE))
     } else {
       c(order_group(negative_positions, TRUE), order_group(nonnegative_positions, FALSE))
     }
+    if (length(ordered) > 1L) {
+      adjacent <- vapply(
+        seq_len(length(ordered) - 1L),
+        function(index) compare_integer_text(normalized[[ordered[[index]]]], normalized[[ordered[[index + 1L]]]]),
+        integer(1L),
+        USE.NAMES = FALSE
+      )
+      if ((decreasing && any(adjacent < 0L)) || (!decreasing && any(adjacent > 0L))) {
+        abort("internal-error", "integer64 ordering disagreed with signed decimal comparison")
+      }
+    }
+    ordered
   }
 
   order_present_values <- function(values, semantics, decreasing) {
@@ -2122,26 +2144,6 @@ openwrangler_r_frame_contract <- local({
   profile_chunk_source_positions <- function(row_positions, start, count) {
     logical_positions <- seq.int(as.integer(start), length.out = as.integer(count))
     if (is.null(row_positions)) logical_positions else row_positions[logical_positions]
-  }
-
-  compare_integer_text <- function(left, right) {
-    if (identical(left, right)) return(0L)
-    left_negative <- startsWith(left, "-")
-    right_negative <- startsWith(right, "-")
-    if (left_negative != right_negative) return(if (left_negative) -1L else 1L)
-    left_digits <- if (left_negative) substring(left, 2L) else left
-    right_digits <- if (right_negative) substring(right, 2L) else right
-    left_length <- nchar(left_digits, type = "bytes")
-    right_length <- nchar(right_digits, type = "bytes")
-    if (left_length != right_length) {
-      magnitude <- if (left_length < right_length) -1L else 1L
-      return(if (left_negative) -magnitude else magnitude)
-    }
-    left_codes <- utf8ToInt(left_digits)
-    right_codes <- utf8ToInt(right_digits)
-    first_difference <- which(left_codes != right_codes)[[1L]]
-    magnitude <- if (left_codes[[first_difference]] < right_codes[[first_difference]]) -1L else 1L
-    if (left_negative) -magnitude else magnitude
   }
 
   chunked_column_summary <- function(capture, frame, resolved, row_positions, row_count, budget) {
@@ -7758,11 +7760,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   signed_decimal_in_range <- function(value, minimum, maximum) {
-    if (startsWith(value, "-")) {
-      compare_unsigned_decimal(substring(value, 2L), substring(minimum, 2L)) <= 0L
-    } else {
-      compare_unsigned_decimal(value, maximum) <= 0L
-    }
+    compare_integer_text(value, minimum) >= 0L && compare_integer_text(value, maximum) <= 0L
   }
 
   group_rows <- function(value, key_positions, key_semantics) {
