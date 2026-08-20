@@ -10,10 +10,11 @@ import {
   type SerializedPersistedSessionState
 } from "./sessionPersistence";
 
-export type SessionPersistenceFailureKind = "save" | "rollback" | "runtime-replacement";
+export type SessionPersistenceFailureKind = "read" | "save" | "rollback" | "runtime-replacement";
 
 export interface SessionPersistenceFailure {
   readonly kind: SessionPersistenceFailureKind;
+  readonly ownerKey: string;
   readonly error: unknown;
   readonly epoch: number;
   readonly firstInEpoch: boolean;
@@ -27,28 +28,29 @@ export interface SessionPersistenceStatus {
 
 export class SessionPersistenceStore {
   private tail: Promise<void> = Promise.resolve();
+  private commitOrdinal = 0;
   private replacementOrdinal = 0;
-  private degraded = false;
-  private degradationEpoch = 0;
-  private failureKind: SessionPersistenceFailureKind | undefined;
+  private readonly ownerStatuses = new Map<string, OwnerPersistenceStatus>();
 
   constructor(
     private readonly workspaceState?: Memento,
     private readonly onPersistenceFailure?: (failure: SessionPersistenceFailure) => void
   ) {}
 
-  status(): SessionPersistenceStatus {
+  status(source: SessionSource, backend: DataBackend): SessionPersistenceStatus {
+    const status = this.ownerStatuses.get(persistenceKey(source, backend));
     return {
-      degraded: this.degraded,
-      epoch: this.degradationEpoch,
-      ...(this.failureKind ? { failureKind: this.failureKind } : {})
+      degraded: status?.degraded ?? false,
+      epoch: status?.epoch ?? 0,
+      ...(status?.failureKind ? { failureKind: status.failureKind } : {})
     };
   }
 
   load(source: SessionSource, backend: DataBackend): DecodedPersistedSessionState | undefined {
     if (!this.workspaceState || !isPersistentSession(source, backend)) return undefined;
     const key = persistenceKey(source, backend);
-    const stored = this.workspaceState.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
+    const stored = this.readStored(key);
+    if (!stored) return undefined;
     const state = decodePersistedSession(loadableSessionValue(stored[key]));
     return state?.backend === backend ? state : undefined;
   }
@@ -59,9 +61,9 @@ export class SessionPersistenceStore {
     if (!serialized) return;
     const key = persistenceKey(source, state.backend);
     await this.enqueue(async () => {
-      const stored = this.readStored("save");
+      const stored = this.readStored(key);
       if (!stored) return;
-      if (await this.writeStored({ ...stored, [key]: serialized }, "save")) this.confirmPersistence();
+      if (await this.writeStored(key, { ...stored, [key]: serialized }, "save")) this.confirmPersistence(key);
     });
   }
 
@@ -84,14 +86,30 @@ export class SessionPersistenceStore {
     }
 
     const key = persistenceKey(source, state.backend);
+    const token = `current-commit:${++this.commitOrdinal}`;
     let committed = false;
     await this.enqueue(async () => {
       if (!isCurrent()) return;
-      const stored = this.readStored("save");
-      if (!stored) return;
-      const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
-      const previousState = stored[key];
-      if (!(await this.writeStored({ ...stored, [key]: serialized }, "save"))) {
+      const stored = this.readStored(key);
+      if (!stored) {
+        if (isCurrent()) {
+          commit();
+          committed = true;
+        }
+        return;
+      }
+      const previousState = loadableSessionValue(stored[key]);
+      const hadPreviousState = previousState !== undefined;
+      const pending = {
+        pendingCurrentCommit: {
+          token,
+          candidate: serialized,
+          hadPreviousState,
+          ...(hadPreviousState ? { previousState } : {})
+        }
+      };
+      const staged = { ...stored, [key]: pending };
+      if (!(await this.writeStored(key, staged, "save"))) {
         if (isCurrent()) {
           commit();
           committed = true;
@@ -99,17 +117,20 @@ export class SessionPersistenceStore {
         return;
       }
       if (!isCurrent()) {
-        const latest = this.readStored("rollback");
-        if (!latest) return;
-        const restored = { ...latest };
-        if (hadPreviousState) restored[key] = previousState;
-        else delete restored[key];
-        if (await this.writeStored(restored, "rollback")) this.confirmPersistence();
+        await this.restorePendingCommit(key, token);
+        return;
+      }
+      const latest = this.readStored(key);
+      if (!latest) return;
+      const latestPending = pendingCurrentCommit(latest[key], token);
+      if (!latestPending) return;
+      if (!isCurrent()) {
+        await this.restorePending(key, latest, latestPending);
         return;
       }
       commit();
       committed = true;
-      this.confirmPersistence();
+      if (await this.writeStored(key, { ...latest, [key]: serialized }, "save")) this.confirmPersistence(key);
     });
     return committed;
   }
@@ -133,10 +154,10 @@ export class SessionPersistenceStore {
     let committed = false;
     await this.enqueue(async () => {
       if (!isCurrent()) return;
-      const stored = this.readStored("runtime-replacement");
+      const stored = this.readStored(key);
       if (!stored) return;
-      const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
-      const previousState = stored[key];
+      const previousState = loadableSessionValue(stored[key]);
+      const hadPreviousState = previousState !== undefined;
       const pending = {
         pendingRuntimeReplacement: {
           token,
@@ -145,7 +166,7 @@ export class SessionPersistenceStore {
           ...(hadPreviousState ? { previousState } : {})
         }
       };
-      if (!(await this.writeStored({ ...stored, [key]: pending }, "runtime-replacement"))) return;
+      if (!(await this.writeStored(key, { ...stored, [key]: pending }, "runtime-replacement"))) return;
       if (!isCurrent()) {
         await this.restorePendingReplacement(key, token);
         return;
@@ -155,70 +176,99 @@ export class SessionPersistenceStore {
       // durable. No superseding callback can interleave with this state swap.
       const rollback = commit();
       committed = true;
-      const latest = this.readStored("runtime-replacement");
-      if (!latest) return;
+      const latest = this.readStored(key);
+      if (!latest) {
+        rollback();
+        committed = false;
+        return;
+      }
       if (!isPendingReplacement(latest[key], token)) {
         rollback();
         committed = false;
         return;
       }
-      if (!(await this.writeStored({ ...latest, [key]: serialized }, "runtime-replacement"))) {
+      if (!(await this.writeStored(key, { ...latest, [key]: serialized }, "runtime-replacement"))) {
         rollback();
         committed = false;
         // A pending record always decodes to the previously confirmed state,
         // matching the synchronously restored live runtime.
         return;
       }
-      this.confirmPersistence();
+      this.confirmPersistence(key);
     });
     return committed;
   }
 
+  private async restorePendingCommit(key: string, token: string): Promise<void> {
+    const latest = this.readStored(key);
+    if (!latest) return;
+    const pending = pendingCurrentCommit(latest[key], token);
+    if (!pending) return;
+    await this.restorePending(key, latest, pending);
+  }
+
   private async restorePendingReplacement(key: string, token: string): Promise<void> {
-    const latest = this.readStored("rollback");
+    const latest = this.readStored(key);
     if (!latest) return;
     const pending = pendingReplacement(latest[key], token);
     if (!pending) return;
+    await this.restorePending(key, latest, pending);
+  }
+
+  private async restorePending(
+    key: string,
+    latest: Record<string, unknown>,
+    pending: PendingPersistenceCommit
+  ): Promise<void> {
     const restored = { ...latest };
     if (pending.hadPreviousState) restored[key] = pending.previousState;
     else delete restored[key];
-    if (await this.writeStored(restored, "rollback")) this.confirmPersistence();
+    if (await this.writeStored(key, restored, "rollback")) this.confirmPersistence(key);
   }
 
-  private readStored(kind: SessionPersistenceFailureKind): Record<string, unknown> | undefined {
+  private readStored(ownerKey: string): Record<string, unknown> | undefined {
     try {
       return this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
     } catch (error) {
-      this.recordFailure(kind, error);
+      this.recordFailure(ownerKey, "read", error);
       return undefined;
     }
   }
 
-  private async writeStored(value: Record<string, unknown>, kind: SessionPersistenceFailureKind): Promise<boolean> {
+  private async writeStored(
+    ownerKey: string,
+    value: Record<string, unknown>,
+    kind: Exclude<SessionPersistenceFailureKind, "read">
+  ): Promise<boolean> {
     try {
       await this.workspaceState?.update(SESSION_STORAGE_KEY, value);
       return true;
     } catch (error) {
-      this.recordFailure(kind, error);
+      this.recordFailure(ownerKey, kind, error);
       return false;
     }
   }
 
-  private recordFailure(kind: SessionPersistenceFailureKind, error: unknown): void {
-    const firstInEpoch = !this.degraded;
-    if (firstInEpoch) this.degradationEpoch += 1;
-    this.degraded = true;
-    this.failureKind = kind;
+  private recordFailure(ownerKey: string, kind: SessionPersistenceFailureKind, error: unknown): void {
+    const previous = this.ownerStatuses.get(ownerKey);
+    const firstInEpoch = !previous?.degraded;
+    const status: OwnerPersistenceStatus = {
+      degraded: true,
+      epoch: firstInEpoch ? (previous?.epoch ?? 0) + 1 : (previous?.epoch ?? 1),
+      failureKind: kind
+    };
+    this.ownerStatuses.set(ownerKey, status);
     try {
-      this.onPersistenceFailure?.({ kind, error, epoch: this.degradationEpoch, firstInEpoch });
+      this.onPersistenceFailure?.({ kind, ownerKey, error, epoch: status.epoch, firstInEpoch });
     } catch {
       // Diagnostics must not change live-session or persistence queue behavior.
     }
   }
 
-  private confirmPersistence(): void {
-    this.degraded = false;
-    this.failureKind = undefined;
+  private confirmPersistence(ownerKey: string): void {
+    const previous = this.ownerStatuses.get(ownerKey);
+    if (!previous) return;
+    this.ownerStatuses.set(ownerKey, { degraded: false, epoch: previous.epoch });
   }
 
   private async enqueue(task: () => Promise<void>): Promise<void> {
@@ -228,18 +278,35 @@ export class SessionPersistenceStore {
   }
 }
 
-interface PendingRuntimeReplacement {
+interface OwnerPersistenceStatus extends SessionPersistenceStatus {
+  readonly degraded: boolean;
+  readonly epoch: number;
+}
+
+interface PendingPersistenceCommit {
   token: string;
   candidate: SerializedPersistedSessionState;
   hadPreviousState: boolean;
   previousState?: unknown;
 }
 
-function pendingReplacement(value: unknown, token?: string): PendingRuntimeReplacement | undefined {
-  if (!isRecord(value) || Object.keys(value).length !== 1 || !isRecord(value.pendingRuntimeReplacement)) {
+function pendingCurrentCommit(value: unknown, token?: string): PendingPersistenceCommit | undefined {
+  return pendingCommit(value, "pendingCurrentCommit", token);
+}
+
+function pendingReplacement(value: unknown, token?: string): PendingPersistenceCommit | undefined {
+  return pendingCommit(value, "pendingRuntimeReplacement", token);
+}
+
+function pendingCommit(
+  value: unknown,
+  property: "pendingCurrentCommit" | "pendingRuntimeReplacement",
+  token?: string
+): PendingPersistenceCommit | undefined {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !isRecord(value[property])) {
     return undefined;
   }
-  const pending = value.pendingRuntimeReplacement;
+  const pending = value[property];
   const allowed = new Set(["token", "candidate", "hadPreviousState", "previousState"]);
   if (
     Object.keys(pending).some((key) => !allowed.has(key)) ||
@@ -252,7 +319,7 @@ function pendingReplacement(value: unknown, token?: string): PendingRuntimeRepla
   ) {
     return undefined;
   }
-  return pending as unknown as PendingRuntimeReplacement;
+  return pending as unknown as PendingPersistenceCommit;
 }
 
 function isPendingReplacement(value: unknown, token: string): boolean {
@@ -260,8 +327,9 @@ function isPendingReplacement(value: unknown, token: string): boolean {
 }
 
 function loadableSessionValue(value: unknown): unknown {
-  const pending = pendingReplacement(value);
-  return pending?.hadPreviousState ? pending.previousState : value;
+  const pending = pendingCurrentCommit(value) ?? pendingReplacement(value);
+  if (!pending) return value;
+  return pending.hadPreviousState ? pending.previousState : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

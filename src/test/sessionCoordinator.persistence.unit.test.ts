@@ -60,4 +60,56 @@ describe("SessionCoordinator persistence diagnostics", () => {
 
     await coordinator.shutdown();
   });
+
+  it("records an in-flight persistence failure during shutdown without warning that the session remains open", async () => {
+    const write = rejectingDeferred<void>();
+    const workspaceState = {
+      get: vi.fn((_key: string, fallback?: unknown) => fallback),
+      update: vi.fn(() => write.promise),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const diagnosticSink = vi.fn();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+    warning.mockClear();
+    const runtimeOpened = openedResponse();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected shutdown persistence request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState, diagnosticSink);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+
+    const update = bridge.updateViewState?.(opened.metadata.sessionId, {
+      columnWidths: new Map(),
+      viewport: { firstVisibleRow: 0, scrollLeft: 20 }
+    });
+    await vi.waitFor(() => expect(workspaceState.update).toHaveBeenCalledOnce());
+    const shutdown = coordinator.shutdown();
+    write.reject(new Error("workspace unavailable during shutdown"));
+
+    await update;
+    await shutdown;
+
+    expect(diagnosticSink).toHaveBeenCalledWith(
+      "Open Wrangler workspace persistence ordinary save failed: Error: workspace unavailable during shutdown"
+    );
+    expect(warning).not.toHaveBeenCalled();
+  });
 });
+
+function rejectingDeferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

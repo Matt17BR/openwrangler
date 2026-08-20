@@ -159,7 +159,13 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private reportPersistenceFailure(failure: SessionPersistenceFailure): void {
     const operation =
-      failure.kind === "save" ? "ordinary save" : failure.kind === "rollback" ? "rollback" : "runtime replacement";
+      failure.kind === "read"
+        ? "read/availability"
+        : failure.kind === "save"
+          ? "ordinary save"
+          : failure.kind === "rollback"
+            ? "rollback"
+            : "runtime replacement";
     const detail =
       failure.error instanceof Error ? `${failure.error.name}: ${failure.error.message}` : String(failure.error);
     try {
@@ -167,7 +173,7 @@ export class SessionCoordinator implements vscode.Disposable {
     } catch {
       // Diagnostics must never destabilize the active renderer or session.
     }
-    if (!failure.firstInEpoch) return;
+    if (!failure.firstInEpoch || this.disposed) return;
     try {
       void Promise.resolve(
         vscode.window.showWarningMessage(
