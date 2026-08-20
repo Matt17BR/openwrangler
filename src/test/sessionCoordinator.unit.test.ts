@@ -34,6 +34,24 @@ describe("SessionCoordinator", () => {
     expect(observeRejection.mock.calls[0][0]).toBeTypeOf("function");
   });
 
+  it("forwards a fixed panel diagnostic without opening or changing a session", () => {
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => {
+      throw new Error("A diagnostic must not dispatch a runtime request.");
+    });
+    const reportDiagnostic = vi.fn();
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request, reportDiagnostic });
+
+    bridge.reportDiagnostic?.("Open Wrangler webview rendering stopped. A renderer reload was offered.");
+
+    expect(reportDiagnostic).toHaveBeenCalledOnce();
+    expect(reportDiagnostic).toHaveBeenCalledWith(
+      "Open Wrangler webview rendering stopped. A renderer reload was offered."
+    );
+    expect(request).not.toHaveBeenCalled();
+    expect(coordinator.diagnostics()).toMatchObject({ activeSessionId: undefined, sessionCount: 0, sessions: [] });
+  });
+
   it("translates live Excel sheet discovery through the confirmed runtime identity only", async () => {
     const source = {
       kind: "file" as const,

@@ -2,8 +2,10 @@ import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionMetadata } from "../shared/protocol";
 import { App } from "../webviews/App";
 import { WebviewErrorBoundary } from "../webviews/WebviewErrorBoundary";
+import { useWholeColumnClipboard } from "../webviews/grid/useWholeColumnClipboard";
 import { vscode } from "../webviews/vscodeApi";
 
 describe("WebviewErrorBoundary", () => {
@@ -103,8 +105,60 @@ describe("WebviewErrorBoundary", () => {
     expect(postMessage.mock.calls).not.toContainEqual([expect.objectContaining({ message: expect.anything() })]);
     expect(screen.queryByText(/private message payload/u)).not.toBeInTheDocument();
   });
+
+  it("contains a failure from the whole-column response listener", async () => {
+    render(
+      <WebviewErrorBoundary reload={() => undefined}>
+        <WholeColumnClipboardListener />
+      </WebviewErrorBoundary>
+    );
+    expect(screen.getByText("Whole-column listener ready")).toBeInTheDocument();
+
+    const hostileMessage = {};
+    Object.defineProperty(hostileMessage, "kind", {
+      get: () => {
+        throw new Error("private whole-column payload");
+      }
+    });
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data: hostileMessage, origin: window.location.origin }));
+    });
+
+    expect(await screen.findByRole("button", { name: "Reload Open Wrangler" })).toHaveFocus();
+    expect(postMessage).toHaveBeenCalledOnce();
+    expect(postMessage).toHaveBeenCalledWith({ kind: "webviewFailure", phase: "message" });
+    expect(screen.queryByText(/private whole-column payload/u)).not.toBeInTheDocument();
+  });
 });
 
 function RenderFailure(): never {
   throw new Error("private render value");
 }
+
+function WholeColumnClipboardListener() {
+  useWholeColumnClipboard({ metadata: clipboardMetadata, pageSize: 2, viewContextId: "view-a" });
+  return <span>Whole-column listener ready</span>;
+}
+
+const clipboardMetadata: SessionMetadata = {
+  protocolVersion: 2,
+  sessionId: "clipboard-session",
+  revision: 0,
+  backend: "pandas",
+  mode: "editing",
+  source: { kind: "file", label: "clipboard.csv", path: "clipboard.csv" },
+  capabilities: {
+    editable: true,
+    lazy: false,
+    cancel: true,
+    exportCsv: true,
+    exportParquet: true,
+    notebookInsert: false
+  },
+  shape: { rows: 2, columns: 1 },
+  filteredShape: { rows: 2, columns: 1 },
+  rowAxis: { kind: "positional", levelNames: [] },
+  filterModel: { filters: [], sort: [] },
+  steps: [],
+  schema: [{ id: "c:0", name: "city", position: 0, rawType: "object", type: "string", nullable: false }]
+};

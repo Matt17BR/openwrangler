@@ -134,7 +134,8 @@ export class SessionCoordinator implements vscode.Disposable {
       getSessionPresentation: (sessionId) => this.sessionPresentation(sessionId),
       updateViewState: (sessionId, state) => this.updateGridViewState(sessionId, state),
       clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
-      setActiveSession: (sessionId) => this.setActive(sessionId)
+      setActiveSession: (sessionId) => this.setActive(sessionId),
+      reportDiagnostic: (message) => delegate.reportDiagnostic?.(message)
     };
   }
 
