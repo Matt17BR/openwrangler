@@ -10,6 +10,8 @@ assert_identical <- function(actual, expected, message) {
   }
 }
 
+source("r/tests/warning_contract_assertions.R", local = FALSE)
+
 assert_error <- function(expression, pattern) {
   error <- tryCatch(
     {
@@ -930,7 +932,12 @@ group_integer64_result <- openwrangler_r_frame_contract$group_by_at(
   c("mean", "median"),
   c("value_mean", "value_median")
 )
-same_sign_midpoint <- suppressWarnings(as.double(bit64::as.integer64("9223372036854775804")))
+same_sign_midpoint <- assert_exact_warning(
+  as.double(bit64::as.integer64("9223372036854775804")),
+  c("simpleWarning", "warning", "condition"),
+  "integer precision lost while converting to double",
+  "the integer64 Group By midpoint expectation"
+)
 assert_identical(
   group_integer64_result$value_mean,
   c(0.5, 1, same_sign_midpoint),
@@ -5638,7 +5645,10 @@ invisible(local({
   had_random_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   if (had_random_seed) previous_random_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   on.exit({
-    suppressWarnings(do.call(RNGkind, as.list(previous_rng_kind)))
+    assert_no_warning(
+      do.call(RNGkind, as.list(previous_rng_kind)),
+      "restoring the Native R contract RNG kind"
+    )
     if (had_random_seed) {
       assign(".Random.seed", previous_random_seed, envir = .GlobalEnv)
     } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
@@ -5646,7 +5656,12 @@ invisible(local({
     }
   })
 
-  suppressWarnings(RNGkind(kind = "L'Ecuyer-CMRG", normal.kind = "Box-Muller", sample.kind = "Rounding"))
+  assert_exact_warning(
+    RNGkind(kind = "L'Ecuyer-CMRG", normal.kind = "Box-Muller", sample.kind = "Rounding"),
+    c("simpleWarning", "warning", "condition"),
+    "non-uniform 'Rounding' sampler used",
+    "selecting the legacy Native R contract sampler"
+  )
   set.seed(937L)
   expected_rng_kind <- RNGkind()
   expected_random_seed <- .Random.seed
