@@ -29,7 +29,12 @@ import {
   type TextDocumentSessionOrigin
 } from "./sessionOrigin";
 import { type SessionPersistenceFailure, SessionPersistenceStore } from "./sessionPersistenceStore";
-import { protocolError, SessionResponseCommitter, stepInspectionKey } from "./sessionResponseCommitter";
+import {
+  persistenceReadUnavailableError,
+  protocolError,
+  SessionResponseCommitter,
+  stepInspectionKey
+} from "./sessionResponseCommitter";
 import { requestViewId } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
 import { SessionRuntimeEstablisher, type RuntimeEstablishedSession } from "./sessionRuntimeEstablisher";
@@ -177,7 +182,9 @@ export class SessionCoordinator implements vscode.Disposable {
     try {
       void Promise.resolve(
         vscode.window.showWarningMessage(
-          "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
+          failure.kind === "read"
+            ? "Open Wrangler could not read workspace recovery state. Retry after workspace storage is available; recent changes may not survive an editor restart."
+            : "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
         )
       ).catch(() => undefined);
     } catch {
@@ -511,24 +518,27 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin
   ): Promise<OpenWranglerResponse> {
-    const requestedBackend = request.backend;
-    const provisionalOwner = requestedBackend ? `opening:${++this.persistenceOwnerOrdinal}` : undefined;
-    if (provisionalOwner && requestedBackend) {
-      this.persistence.retainOwner(provisionalOwner, request.source, requestedBackend);
-    }
+    const provisionalOwner = `opening:${++this.persistenceOwnerOrdinal}`;
     try {
-      const result = await this.runtimeEstablisher.establish(delegate, request, options, origin, {
-        isCoordinatorAvailable: () => !this.disposed,
-        executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
-          this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
-      });
+      const attempt = await this.persistence.withOpeningOwner(provisionalOwner, request.source, request.backend, () =>
+        this.runtimeEstablisher.establish(delegate, request, options, origin, {
+          isCoordinatorAvailable: () => !this.disposed,
+          executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
+            this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
+        })
+      );
+      const result = attempt.value;
+      if (attempt.readFailure) {
+        if (result.established) await this.runtimeCleanup.close(result.session, "failed saved-state runtime");
+        return persistenceReadUnavailableError();
+      }
       if (!result.established) return result.response;
       this.responseCommitter.retainSession(result.session);
       this.sessions.set(result.session.publicId, result.session);
       this.setActive(result.session.publicId);
       return result.response;
     } finally {
-      if (provisionalOwner) this.persistence.releaseOwner(provisionalOwner);
+      await this.persistence.releaseOwner(provisionalOwner);
     }
   }
 

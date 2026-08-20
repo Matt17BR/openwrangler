@@ -29,6 +29,41 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.load(source, "duckdb")).toBeUndefined();
   });
 
+  it("distinguishes an automatic-backend opening read fault and releases its exact owner", async () => {
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(() => {
+        throw codedError("EACCES", "cannot read /private/workspace/state.json");
+      }, vi.fn()),
+      failures
+    );
+
+    const first = await persistence.withOpeningOwner("opening:first", source, undefined, async () =>
+      persistence.load(source, "polars")
+    );
+
+    expect(first).toEqual({
+      value: undefined,
+      readFailure: {
+        kind: "read",
+        cause: { name: "Error", code: "EACCES" },
+        epoch: 1,
+        firstInEpoch: true
+      }
+    });
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 1, retainedKeys: 1, degradedKeys: 1 });
+    await persistence.releaseOwner("opening:first");
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
+
+    const second = await persistence.withOpeningOwner("opening:second", source, undefined, async () =>
+      persistence.load(source, "polars")
+    );
+    expect(second.readFailure).toMatchObject({ kind: "read", epoch: 1, firstInEpoch: true });
+    expect(failures).toHaveBeenCalledTimes(2);
+    await persistence.releaseOwner("opening:second");
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
+  });
+
   it("keeps notebook-output, native R, and Spark state ephemeral", async () => {
     const snapshotSource: SessionSource = { kind: "notebookOutput", label: "capture" };
     const stored = {
@@ -79,6 +114,67 @@ describe("SessionPersistenceStore", () => {
       [persistenceKey(source, "polars")]: serializedState("polars", 1),
       [persistenceKey(secondSource, "duckdb")]: serializedState("duckdb", 2)
     });
+  });
+
+  it("surfaces commit callback failure without poisoning the recovered queue tail", async () => {
+    const key = persistenceKey(source, "polars");
+    const previous = serializedState("polars", 1);
+    let stored: Record<string, unknown> = { [key]: previous };
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      stored = value;
+    });
+    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const callbackFailure = new Error("unexpected commit callback failure");
+
+    await expect(
+      persistence.commitCurrent(
+        source,
+        state("polars", 2),
+        () => true,
+        () => {
+          throw callbackFailure;
+        }
+      )
+    ).rejects.toBe(callbackFailure);
+    expect(stored[key]).toHaveProperty("pendingCurrentCommit");
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
+
+    await expect(persistence.save(source, state("polars", 3))).resolves.toBeUndefined();
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 3));
+  });
+
+  it("surfaces rollback callback failure after restoring live and durable state", async () => {
+    const key = persistenceKey(source, "polars");
+    const previous = serializedState("polars", 1);
+    let stored: Record<string, unknown> = { [key]: previous };
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 2) throw new Error("final storage unavailable");
+      stored = value;
+    });
+    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const rollbackFailure = new Error("unexpected rollback callback failure");
+    let live = "previous";
+
+    await expect(
+      persistence.commitRuntimeReplacement(
+        source,
+        state("polars", 2),
+        () => true,
+        () => {
+          live = "candidate";
+          return () => {
+            live = "previous";
+            throw rollbackFailure;
+          };
+        }
+      )
+    ).rejects.toBe(rollbackFailure);
+
+    expect(live).toBe("previous");
+    expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
+    await expect(persistence.save(source, state("polars", 3))).resolves.toBeUndefined();
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 3));
   });
 
   it("rejects a stale queued commit before it writes or publishes", async () => {

@@ -7,6 +7,57 @@ import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { openedResponse, openRequest } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
+  it("rejects and disposes automatic-backend opens when recovery state cannot be read", async () => {
+    const workspaceState = {
+      get: vi.fn(() => {
+        throw Object.assign(new Error("cannot read /private/workspace/state.json"), { code: "EACCES" });
+      }),
+      update: vi.fn(),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const diagnosticSink = vi.fn();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+    warning.mockClear();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse(`runtime-${delegateRequest.mock.calls.length}`);
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected persistence read-fault request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState, diagnosticSink);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const { backend: _backend, ...automaticRequest } = openRequest;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(bridge.request(automaticRequest)).resolves.toEqual({
+        kind: "error",
+        code: "persistence_unavailable",
+        message:
+          "Open Wrangler could not read workspace recovery state, so the dataframe was not opened. Retry after workspace storage is available.",
+        recoverable: true
+      });
+      expect(coordinator.activeSession()).toBeUndefined();
+    }
+
+    expect(delegateRequest.mock.calls.map(([request]) => request.kind)).toEqual([
+      "openSession",
+      "closeSession",
+      "openSession",
+      "closeSession"
+    ]);
+    expect(workspaceState.update).not.toHaveBeenCalled();
+    expect(diagnosticSink.mock.calls.map(([message]) => message)).toEqual([
+      "Open Wrangler workspace persistence read/availability failed: Error (EACCES)",
+      "Open Wrangler workspace persistence read/availability failed: Error (EACCES)"
+    ]);
+    expect(JSON.stringify(diagnosticSink.mock.calls)).not.toContain("/private/workspace");
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalledWith(
+      "Open Wrangler could not read workspace recovery state. Retry after workspace storage is available; recent changes may not survive an editor restart."
+    );
+
+    await coordinator.shutdown();
+  });
+
   it("shows and records one bounded receipt per degraded epoch", async () => {
     let stored: Record<string, unknown> = {};
     const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
