@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { constants as fileConstants } from "node:fs";
+import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -24,13 +25,6 @@ const CLEANING_HISTORY_JSON_MAX_STRING_SOURCE_UNITS = 1024;
 const CLEANING_HISTORY_JSON_MAX_STRING_BYTES = 512;
 const CLEANING_HISTORY_AUTHORITY_START = "// cleaning-history-capability-authority:start";
 const CLEANING_HISTORY_AUTHORITY_END = "// cleaning-history-capability-authority:end";
-const cleaningHistoryClaimLanguagePatterns = [
-  /\b(?:Any|Only the (?:latest|most recent)) (?:applied|committed) step can be (?:inspected|edited|deleted)/iu,
-  /\bCleaning Undo\b/u,
-  /\bReordering committed steps\b/u,
-  /\bCommitted steps can be reordered\b/u
-];
-
 const cleaningHistoryClaimSurfaces = [
   {
     path: "README.md",
@@ -93,15 +87,21 @@ function assertBoundedUtf8(value, maximumBytes, label) {
 }
 
 export async function readBoundedUtf8File(path, maximumBytes, label = path) {
-  const handle = await open(path, "r");
+  const expected = await lstat(path, { bigint: true });
+  if (!expected.isFile()) {
+    throw new Error(`${label} must be a regular file, not a symbolic link or special file.`);
+  }
+  if (expected.nlink !== 1n) {
+    throw new Error(`${label} must have exactly one hard link.`);
+  }
+  if (expected.size > BigInt(maximumBytes)) {
+    throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
+  }
+
+  const handle = await open(path, fileConstants.O_RDONLY | (fileConstants.O_NOFOLLOW ?? 0));
   try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile()) {
-      throw new Error(`${label} must be a regular file.`);
-    }
-    if (metadata.size > maximumBytes) {
-      throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
-    }
+    const opened = await handle.stat({ bigint: true });
+    assertSameRegularFile(expected, opened, label);
 
     const chunks = [];
     let totalBytes = 0;
@@ -117,6 +117,14 @@ export async function readBoundedUtf8File(path, maximumBytes, label = path) {
       throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
     }
 
+    const completed = await handle.stat({ bigint: true });
+    const current = await lstat(path, { bigint: true });
+    assertSameRegularFile(opened, completed, label);
+    assertSameRegularFile(opened, current, label);
+    if (completed.size !== BigInt(totalBytes)) {
+      throw new Error(`${label} changed while it was being read.`);
+    }
+
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, totalBytes));
     } catch {
@@ -124,6 +132,17 @@ export async function readBoundedUtf8File(path, maximumBytes, label = path) {
     }
   } finally {
     await handle.close();
+  }
+}
+
+function assertSameRegularFile(expected, actual, label) {
+  if (!actual.isFile() || actual.nlink !== 1n) {
+    throw new Error(`${label} must remain one regular file with exactly one hard link.`);
+  }
+  for (const field of ["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]) {
+    if (actual[field] !== expected[field]) {
+      throw new Error(`${label} changed identity or contents while it was being read.`);
+    }
   }
 }
 
@@ -463,28 +482,62 @@ export function renderCleaningHistoryClaims(model) {
   };
 }
 
+function parseMarkdownHeading(line) {
+  const match = /^ {0,3}(?<marks>#{1,6})[\t ]+(?<text>.*?)(?:[\t ]+#+[\t ]*)?$/u.exec(line);
+  if (match === null) return undefined;
+  return { level: match.groups.marks.length, text: match.groups.text.trim() };
+}
+
+function visibleMarkdownLines(document) {
+  const result = [];
+  let fence;
+  for (const line of document.split("\n")) {
+    if (fence !== undefined) {
+      const close = /^ {0,3}(?<marks>`+|~+)[\t ]*$/u.exec(line);
+      if (close !== null && close.groups.marks[0] === fence.character && close.groups.marks.length >= fence.length) {
+        fence = undefined;
+      }
+      result.push({ line: "", heading: undefined });
+      continue;
+    }
+
+    const openFence = /^ {0,3}(?<marks>`{3,}|~{3,})(?<info>.*)$/u.exec(line);
+    if (openFence !== null) {
+      fence = { character: openFence.groups.marks[0], length: openFence.groups.marks.length };
+      result.push({ line: "", heading: undefined });
+      continue;
+    }
+    result.push({ line, heading: parseMarkdownHeading(line) });
+  }
+  return result;
+}
+
 function extractMarkdownSection(document, path, heading) {
   assertBoundedUtf8(document, CLEANING_HISTORY_DOCUMENT_MAX_BYTES, path);
-  const lines = document.split("\n");
-  const indexes = lines.flatMap((line, index) => (line === heading ? [index] : []));
+  const requestedHeading = parseMarkdownHeading(heading);
+  if (requestedHeading === undefined) {
+    throw new Error(`Invalid claim-section heading ${heading}.`);
+  }
+  const lines = visibleMarkdownLines(document);
+  const indexes = lines.flatMap(({ heading: candidate }, index) =>
+    candidate?.level === requestedHeading.level && candidate.text === requestedHeading.text ? [index] : []
+  );
   if (indexes.length !== 1) {
     throw new Error(`${path} must contain exactly one ${heading} heading.`);
   }
 
-  const level = heading.match(/^#+/u)?.[0].length;
-  if (level === undefined) {
-    throw new Error(`Invalid claim-section heading ${heading}.`);
-  }
   let end = lines.length;
   for (let index = indexes[0] + 1; index < lines.length; index += 1) {
-    const match = /^(?<marks>#+) /u.exec(lines[index]);
-    if (match !== null && match.groups.marks.length <= level) {
+    if (lines[index].heading !== undefined && lines[index].heading.level <= requestedHeading.level) {
       end = index;
       break;
     }
   }
 
-  const section = lines.slice(indexes[0] + 1, end).join("\n");
+  const section = lines
+    .slice(indexes[0] + 1, end)
+    .map(({ line }) => line)
+    .join("\n");
   assertBoundedUtf8(section, CLEANING_HISTORY_SECTION_MAX_BYTES, `${path} ${heading} section`);
   return section;
 }
@@ -528,11 +581,47 @@ function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
     );
   }
   const outside = `${section.slice(0, section.indexOf(startMarker))}${section.slice(end + endMarker.length)}`;
-  if (cleaningHistoryClaimLanguagePatterns.some((pattern) => pattern.test(outside))) {
+  if (containsContradictoryCleaningHistoryClaim(outside)) {
     throw new Error(
-      `${path} ${heading} contains cleaning-history capability language outside its exclusive claim block.`
+      `${path} ${heading} contains a contradictory cleaning-history capability claim outside its exclusive claim block.`
     );
   }
+}
+
+function containsContradictoryCleaningHistoryClaim(source) {
+  const normalized = source
+    .replace(/<!--[\s\S]*?-->/gu, " ")
+    .replace(/[`*_~[\]()>#|]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .toLowerCase();
+  const step = "(?:applied|committed|cleaning|history)?\\s*steps?";
+  const inspectEditDelete =
+    "(?:inspect(?:ed|ing|ion)?|edit(?:ed|ing)?|delet(?:e|ed|ing|ion)|modif(?:y|ied|ying|ication)|remov(?:e|ed|ing|al))";
+  const unavailable = "(?:not\\s+supported|unavailable|unsupported|not\\s+available)";
+  return [
+    new RegExp(`\\bonly\\s+(?:the\\s+)?(?:latest|newest|most\\s+recent)[^.!?]{0,100}\\b${inspectEditDelete}\\b`, "iu"),
+    new RegExp(
+      `\\b${inspectEditDelete}\\b[^.!?]{0,100}\\b(?:is|are)\\s+(?:limited|restricted)\\s+to\\s+(?:the\\s+)?(?:latest|newest|most\\s+recent)\\b`,
+      "iu"
+    ),
+    new RegExp(
+      `\\b(?:earlier|older|non-latest)\\s+${step}\\b[^.!?]{0,100}\\b(?:cannot|can't|may\\s+not|must\\s+not|are\\s+not\\s+allowed\\s+to)[^.!?]{0,80}\\b${inspectEditDelete}\\b`,
+      "iu"
+    ),
+    new RegExp(
+      `\\b(?:cannot|can't|may\\s+not|must\\s+not|not\\s+allowed\\s+to)[^.!?]{0,80}\\b${inspectEditDelete}\\b[^.!?]{0,100}\\b(?:earlier|older|non-latest)\\s+${step}\\b`,
+      "iu"
+    ),
+    new RegExp(`\\b${inspectEditDelete}\\b[^.!?]{0,100}\\b(?:is|are|remains?)\\s+${unavailable}\\b`, "iu"),
+    new RegExp(`\\bundo\\b[^.!?]{0,120}\\b(?:any|an\\s+earlier|a\\s+selected|a\\s+specific)\\s+${step}\\b`, "iu"),
+    new RegExp(`\\bundo\\b[^.!?]{0,80}\\b(?:is|remains)\\s+${unavailable}\\b`, "iu"),
+    new RegExp(
+      "\\b(?:reorder(?:ed|ing)?|re-arrang(?:e|ed|ing))\\b[^.!?]{0,120}\\b(?:is\\s+supported|is\\s+available|is\\s+implemented|can|may|enabled)\\b",
+      "iu"
+    ),
+    new RegExp(`\\b${step}\\b[^.!?]{0,100}\\b(?:can|may)\\s+be\\s+(?:reordered|re-arranged)\\b`, "iu"),
+    /\b(?:cleaning\s+)?history\s+(?:order|ordering)\b[^.!?]{0,100}\b(?:can|may|supported|available|editable|change(?:d|able)?)\b/iu
+  ].some((pattern) => pattern.test(normalized));
 }
 
 export function assertCleaningHistoryClaimsCurrent({ modelSource, productionAuthoritySource, documents }) {

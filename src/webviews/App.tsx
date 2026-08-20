@@ -1117,6 +1117,59 @@ export function App() {
     [beginMutation]
   );
 
+  const sendPlanAction = useCallback(
+    (action: "applyDraft" | "discardDraft" | "undoStep", undoReturnTarget?: HTMLButtonElement): boolean => {
+      const currentMetadata = metadataRef.current;
+      if (
+        action === "undoStep" &&
+        (!currentMetadata ||
+          !cleaningHistoryActionAvailable("undo", {
+            stepCount: currentMetadata.steps.length,
+            stepIndex: currentMetadata.steps.length - 1
+          }))
+      ) {
+        return false;
+      }
+      if (!beginMutation()) return false;
+      undoPlanReturnFocus.current =
+        action === "undoStep" &&
+        metadataRef.current?.steps.length === 1 &&
+        metadataRef.current.draftStep === undefined &&
+        undoReturnTarget !== undefined &&
+        document.hasFocus() &&
+        document.activeElement === undoReturnTarget
+          ? undoReturnTarget
+          : null;
+      const columnWindow = desiredColumnWindow.current;
+      const draftTarget = metadataRef.current?.draftReplacesStepId;
+      const latestStepId = metadataRef.current?.steps.at(-1)?.id;
+      if (action === "applyDraft" && draftTarget !== undefined && draftTarget !== latestStepId) {
+        vscode.postMessage({
+          kind: "rewriteCleaningPlan",
+          action,
+          stepId: draftTarget,
+          offset: 0,
+          limit: pageSize,
+          columnOffset: columnWindow.offset,
+          columnLimit: columnWindow.limit
+        });
+        return true;
+      }
+      vscode.postMessage({
+        kind: "runtimeRequest",
+        request: {
+          kind: action,
+          offset: 0,
+          limit: pageSize,
+          columnOffset: columnWindow.offset,
+          columnLimit: columnWindow.limit
+        }
+      });
+      return true;
+    },
+    [beginMutation]
+  );
+
   const pruneSummaryOwners = useCallback(
     (nextMetadata: SessionMetadata) => {
       const validColumnIds = new Set(nextMetadata.schema.map((column) => column.id));
@@ -1414,6 +1467,8 @@ export function App() {
             return;
           }
           deleteStep(response.stepId);
+        } else if (response.action === "undoStep") {
+          sendPlanAction("undoStep");
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
           clearFilterColumnActionRef.current(response.column);
@@ -1934,6 +1989,7 @@ export function App() {
     restoreConfirmedViewState,
     restoreViewAfterPageFailure,
     resetViewProfiling,
+    sendPlanAction,
     sendSummaryColumn,
     storeBackgroundDiagnostics,
     storeColumnValues,
@@ -2456,44 +2512,6 @@ export function App() {
     });
   };
 
-  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep", undoReturnTarget?: HTMLButtonElement) => {
-    if (!beginMutation()) return;
-    undoPlanReturnFocus.current =
-      action === "undoStep" &&
-      metadataRef.current?.steps.length === 1 &&
-      metadataRef.current.draftStep === undefined &&
-      undoReturnTarget !== undefined &&
-      document.hasFocus() &&
-      document.activeElement === undoReturnTarget
-        ? undoReturnTarget
-        : null;
-    const columnWindow = desiredColumnWindow.current;
-    const draftTarget = metadataRef.current?.draftReplacesStepId;
-    const latestStepId = metadataRef.current?.steps.at(-1)?.id;
-    if (action === "applyDraft" && draftTarget !== undefined && draftTarget !== latestStepId) {
-      vscode.postMessage({
-        kind: "rewriteCleaningPlan",
-        action,
-        stepId: draftTarget,
-        offset: 0,
-        limit: pageSize,
-        columnOffset: columnWindow.offset,
-        columnLimit: columnWindow.limit
-      });
-      return;
-    }
-    vscode.postMessage({
-      kind: "runtimeRequest",
-      request: {
-        kind: action,
-        offset: 0,
-        limit: pageSize,
-        columnOffset: columnWindow.offset,
-        columnLimit: columnWindow.limit
-      }
-    });
-  };
-
   const deleteInspectedStep = () => {
     const target = stepInspectionTargetRef.current;
     if (target) deleteStep(target.stepId);
@@ -2572,17 +2590,32 @@ export function App() {
       sendPlanAction("applyDraft");
       handled = true;
     } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
-      if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
+      if (
+        !projectionLoading &&
+        !metadata?.draftStep &&
+        metadata?.steps.length &&
+        cleaningHistoryActionAvailable("undo", {
+          stepCount: metadata.steps.length,
+          stepIndex: metadata.steps.length - 1
+        })
+      ) {
         const activeElement = document.activeElement;
         const undoReturnTarget =
           activeElement instanceof HTMLButtonElement && activeElement.hasAttribute("data-cleaning-plan-undo")
             ? activeElement
             : undefined;
-        sendPlanAction("undoStep", undoReturnTarget);
-        handled = true;
+        handled = sendPlanAction("undoStep", undoReturnTarget);
       }
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
-      if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
+      if (
+        !projectionLoading &&
+        !metadata?.draftStep &&
+        metadata?.steps.length &&
+        cleaningHistoryActionAvailable("edit", {
+          stepCount: metadata.steps.length,
+          stepIndex: metadata.steps.length - 1
+        })
+      ) {
         requestOperationIntent({ action: "editLatest" });
         handled = true;
       }
@@ -2634,6 +2667,25 @@ export function App() {
   const visibleShapeLabel = visibleShape
     ? `${formatSessionRowCount(visibleShape.rows)} ${visibleShape.rows === 1 ? "row" : "rows"} by ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
     : undefined;
+  const latestHistoryStepIndex = (metadata?.steps.length ?? 0) - 1;
+  const canEditLatestHistoryStep = Boolean(
+    metadata &&
+    metadata.mode === "editing" &&
+    !metadata.draftStep &&
+    cleaningHistoryActionAvailable("edit", {
+      stepCount: metadata.steps.length,
+      stepIndex: latestHistoryStepIndex
+    })
+  );
+  const canUndoLatestHistoryStep = Boolean(
+    metadata &&
+    metadata.mode === "editing" &&
+    !metadata.draftStep &&
+    cleaningHistoryActionAvailable("undo", {
+      stepCount: metadata.steps.length,
+      stepIndex: latestHistoryStepIndex
+    })
+  );
 
   if (foregroundError && !metadata) {
     return (
@@ -2744,20 +2796,15 @@ export function App() {
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
               )}
-              {metadata.mode === "editing" &&
-                metadata.steps.length > 0 &&
-                !metadata.draftStep &&
-                cleaningHistoryActionAvailable("undo", {
-                  stepCount: metadata.steps.length,
-                  stepIndex: metadata.steps.length - 1
-                }) && (
-                  <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
-                    <span className="toolbarPlanStatus">
-                      <span className="codicon codicon-layers" aria-hidden="true" />
-                      <span>
-                        {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
-                      </span>
+              {(canEditLatestHistoryStep || canUndoLatestHistoryStep) && (
+                <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
+                  <span className="toolbarPlanStatus">
+                    <span className="codicon codicon-layers" aria-hidden="true" />
+                    <span>
+                      {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
                     </span>
+                  </span>
+                  {canEditLatestHistoryStep && (
                     <button
                       type="button"
                       className="secondaryButton"
@@ -2769,6 +2816,8 @@ export function App() {
                     >
                       Edit latest
                     </button>
+                  )}
+                  {canUndoLatestHistoryStep && (
                     <button
                       type="button"
                       className="secondaryButton"
@@ -2781,8 +2830,9 @@ export function App() {
                     >
                       <span className="codicon codicon-discard" aria-hidden="true" /> Undo
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
+              )}
               {(metadata.capabilities.exportCsv || metadata.capabilities.exportParquet) && (
                 <button
                   type="button"
@@ -2968,7 +3018,7 @@ export function App() {
             pageSize={pageSize}
             error={stepInspectionError}
             diff={stepInspection?.diff}
-            canModify={Boolean(
+            canEdit={Boolean(
               selectedInspectionStep &&
               stepInspection &&
               metadata &&
@@ -2976,6 +3026,16 @@ export function App() {
                 stepCount: metadata.steps.length,
                 stepIndex: selectedInspectionStepIndex
               }) &&
+              metadata.mode === "editing" &&
+              !metadata.draftStep &&
+              !loading &&
+              !projectionLoading &&
+              !importOptionsPending
+            )}
+            canDelete={Boolean(
+              selectedInspectionStep &&
+              stepInspection &&
+              metadata &&
               cleaningHistoryActionAvailable("delete", {
                 stepCount: metadata.steps.length,
                 stepIndex: selectedInspectionStepIndex

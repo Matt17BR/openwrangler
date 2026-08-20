@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { link, mkdtemp, mkdir, open, opendir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -288,9 +289,75 @@ test("cleaning-history claim surfaces reject contradictory prose outside their e
           productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
           documents: mutantDocuments
         }),
-      /capability language outside its exclusive claim block/u
+      /contradictory cleaning-history capability claim outside its exclusive claim block/u
     );
   }
+});
+
+test("cleaning-history claim surfaces ignore fenced examples but reject equivalent visible contradictions", () => {
+  const model = cleaningHistoryModel();
+  const examples = [
+    "Editing is limited to the newest committed step.",
+    "Earlier applied steps cannot be modified or removed.",
+    "You cannot edit older applied steps.",
+    "Inspection of earlier applied steps is unavailable.",
+    "Undo can remove any committed step.",
+    "Committed steps may be re-arranged.",
+    "Reordering is supported.",
+    "Cleaning history ordering can be changed."
+  ];
+
+  for (const example of examples) {
+    const fenced = cleaningHistoryDocuments(model);
+    fenced["README.md"] = fenced["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n\`\`\`text\n${example}\n\`\`\``
+    );
+    assert.doesNotThrow(() =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: fenced
+      })
+    );
+
+    const visible = cleaningHistoryDocuments(model);
+    visible["README.md"] = visible["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: visible
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+});
+
+test("cleaning-history Markdown headings and claim markers inside fences are not structural", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  documents["README.md"] = [
+    "```markdown",
+    "## Transformations",
+    "<!-- cleaning-history-capabilities:readme-transformations:start -->",
+    "Only the latest applied step can be edited.",
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    "```",
+    documents["README.md"]
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents
+    })
+  );
 });
 
 test("the cleaning-history model is bounded and keeps capability identities distinct", () => {
@@ -351,6 +418,45 @@ test("bounded cleaning-history reads reject hostile size before decoding the com
     await rm(directory, { recursive: true });
   }
 });
+
+test("bounded cleaning-history reads reject symlinks and hard-link aliases", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-identity-"));
+  const source = join(directory, "source.json");
+  const symbolicAlias = join(directory, "symbolic.json");
+  const hardAlias = join(directory, "hard.json");
+  try {
+    await writeFile(source, "{}", { encoding: "utf8", mode: 0o600 });
+    await symlink(source, symbolicAlias);
+    await assert.rejects(
+      readBoundedUtf8File(symbolicAlias, 8 * 1024, "symbolic model"),
+      /regular file, not a symbolic link or special file/u
+    );
+
+    await link(source, hardAlias);
+    await assert.rejects(readBoundedUtf8File(hardAlias, 8 * 1024, "hard-linked model"), /exactly one hard link/u);
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test(
+  "bounded cleaning-history reads reject a FIFO before allocating a read buffer",
+  { skip: process.platform === "win32" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-fifo-"));
+    const path = join(directory, "model.pipe");
+    try {
+      const result = spawnSync("mkfifo", [path], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(
+        readBoundedUtf8File(path, 8 * 1024, "FIFO model"),
+        /regular file, not a symbolic link or special file/u
+      );
+    } finally {
+      await rm(directory, { recursive: true });
+    }
+  }
+);
 
 test("the generated-file check rejects stale archive and evidence bytes", () => {
   const archive = fixtureSection();
