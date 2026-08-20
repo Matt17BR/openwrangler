@@ -129,23 +129,31 @@ export function registerRInteractiveCommands(
   transportFactory: RInteractiveTransportFactory = defaultTransportFactory,
   watcherFactory: RVscodeWorkspaceWatcherFactory = defaultRVscodeWorkspaceWatcherFactory
 ): RLiveVariableProvider & LiterateRVariableProvider {
-  const provider = new RInteractiveVariableCoordinator(context, coordinator, transportFactory, watcherFactory);
-  context.subscriptions.push(
-    provider,
-    vscode.commands.registerCommand(OPEN_R_DATAFRAME_COMMAND, (resource?: unknown) =>
-      isLiterateDocumentResource(resource)
-        ? vscode.commands.executeCommand<boolean>(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND)
-        : isOfficialRTerminal(vscode.window.activeTerminal)
-          ? provider.chooseAndOpen()
-          : vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND, resource)
-    ),
-    vscode.commands.registerCommand(OPEN_R_INTERACTIVE_VARIABLE_COMMAND, () => provider.chooseAndOpen()),
-    vscode.commands.registerCommand(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND, () => provider.refreshFromCommand()),
-    vscode.commands.registerCommand(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND, (handle: unknown) =>
-      provider.openCachedVariable(handle)
-    )
-  );
-  return provider;
+  return registerAtomically(context.subscriptions, () => {
+    const provider = new RInteractiveVariableCoordinator(context, coordinator, transportFactory, watcherFactory);
+    context.subscriptions.push(provider);
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_R_DATAFRAME_COMMAND, (resource?: unknown) =>
+        isLiterateDocumentResource(resource)
+          ? vscode.commands.executeCommand<boolean>(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND)
+          : isOfficialRTerminal(vscode.window.activeTerminal)
+            ? provider.chooseAndOpen()
+            : vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND, resource)
+      )
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_R_INTERACTIVE_VARIABLE_COMMAND, () => provider.chooseAndOpen())
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND, () => provider.refreshFromCommand())
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND, (handle: unknown) =>
+        provider.openCachedVariable(handle)
+      )
+    );
+    return provider;
+  });
 }
 
 class RInteractiveVariableCoordinator implements RLiveVariableProvider, LiterateRVariableProvider {
@@ -180,12 +188,31 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     private readonly transportFactory: RInteractiveTransportFactory,
     private readonly watcherFactory: RVscodeWorkspaceWatcherFactory
   ) {
-    this.currentSnapshot = idleSnapshot(vscode.window.activeTerminal);
-    this.subscriptions = [
-      vscode.window.onDidChangeActiveTerminal((terminal) => this.onActiveTerminalChanged(terminal)),
-      vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal)),
-      vscode.workspace.onDidGrantWorkspaceTrust(() => this.scheduleAutomaticAttachment(vscode.window.activeTerminal))
-    ];
+    this.subscriptions = [];
+    try {
+      this.currentSnapshot = idleSnapshot(vscode.window.activeTerminal);
+      registerAtomically(this.subscriptions, () => {
+        this.subscriptions.push(
+          vscode.window.onDidChangeActiveTerminal((terminal) => this.onActiveTerminalChanged(terminal))
+        );
+        this.subscriptions.push(vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal)));
+        this.subscriptions.push(
+          vscode.workspace.onDidGrantWorkspaceTrust(() =>
+            this.scheduleAutomaticAttachment(vscode.window.activeTerminal)
+          )
+        );
+      });
+    } catch (error) {
+      try {
+        this.changeEmitter.dispose();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Open Wrangler R variable owner construction failed during rollback."
+        );
+      }
+      throw error;
+    }
   }
 
   snapshot(): RLiveVariableSnapshot {
@@ -1146,4 +1173,22 @@ function showCleanupError(error: unknown): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function registerAtomically<T>(subscriptions: vscode.Disposable[], register: () => T): T {
+  const start = subscriptions.length;
+  try {
+    return register();
+  } catch (error) {
+    const failures: unknown[] = [error];
+    for (const disposable of subscriptions.splice(start).reverse()) {
+      try {
+        disposable.dispose();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    if (failures.length === 1) throw error;
+    throw new AggregateError(failures, "Open Wrangler R variable registration failed during rollback.");
+  }
 }

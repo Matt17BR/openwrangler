@@ -41,32 +41,54 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
         return undefined;
       }
     };
-    this.subscriptions.push(
-      vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", executionPreparationProvider),
-      vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", executionPreparationProvider),
-      vscode.workspace.onDidOpenNotebookDocument((notebook) => this.schedule(notebook)),
-      vscode.workspace.onDidCloseNotebookDocument((notebook) => this.remove(notebook)),
-      vscode.window.onDidChangeVisibleNotebookEditors((editors) => this.syncVisibleNotebooks(editors, true)),
-      vscode.window.onDidChangeActiveNotebookEditor((editor) => {
-        if (editor) this.schedule(editor.notebook, 0, true);
-      }),
-      vscode.workspace.onDidChangeNotebookDocument((event) => this.schedule(event.notebook, 0, true)),
-      vscode.workspace.onDidChangeConfiguration((event) => {
-        if (!event.affectsConfiguration("openWrangler.notebookPreviewProvider")) return;
-        this.conflictPromptDismissed = false;
-        this.resetEntries();
-        this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
-      }),
-      vscode.commands.registerCommand(CHOOSE_PREVIEW_PROVIDER_COMMAND, () => this.chooseProvider())
-    );
-    this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
+    try {
+      this.subscriptions.push(
+        vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", executionPreparationProvider)
+      );
+      this.subscriptions.push(
+        vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", executionPreparationProvider)
+      );
+      this.subscriptions.push(vscode.workspace.onDidOpenNotebookDocument((notebook) => this.schedule(notebook)));
+      this.subscriptions.push(vscode.workspace.onDidCloseNotebookDocument((notebook) => this.remove(notebook)));
+      this.subscriptions.push(
+        vscode.window.onDidChangeVisibleNotebookEditors((editors) => this.syncVisibleNotebooks(editors, true))
+      );
+      this.subscriptions.push(
+        vscode.window.onDidChangeActiveNotebookEditor((editor) => {
+          if (editor) this.schedule(editor.notebook, 0, true);
+        })
+      );
+      this.subscriptions.push(
+        vscode.workspace.onDidChangeNotebookDocument((event) => this.schedule(event.notebook, 0, true))
+      );
+      this.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((event) => {
+          if (!event.affectsConfiguration("openWrangler.notebookPreviewProvider")) return;
+          this.conflictPromptDismissed = false;
+          this.resetEntries();
+          this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
+        })
+      );
+      this.subscriptions.push(
+        vscode.commands.registerCommand(CHOOSE_PREVIEW_PROVIDER_COMMAND, () => this.chooseProvider())
+      );
+      this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
+    } catch (error) {
+      throw combinedFailure(
+        error,
+        this.disposeResources(),
+        "Open Wrangler notebook preview construction failed during rollback."
+      );
+    }
   }
 
   dispose(): void {
     if (this.disposed) return;
-    this.disposed = true;
-    for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
-    this.resetEntries();
+    const failures = this.disposeResources();
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Open Wrangler notebook preview cleanup encountered multiple failures.");
+    }
   }
 
   private schedule(notebook: vscode.NotebookDocument, delayMs = 0, expedite = false): void {
@@ -157,16 +179,30 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     const existing = this.entries.get(notebook);
     if (existing) return existing;
     const bridge = new KernelBridge(this.context, notebook);
+    let invalidationSubscription: vscode.Disposable;
+    try {
+      invalidationSubscription = bridge.onDidInvalidateKernel(() => {
+        const current = this.entries.get(notebook);
+        if (!current) return;
+        current.prepared = false;
+        current.retryIndex = 0;
+        this.schedule(notebook, RETRY_DELAYS_MS[0]);
+      });
+    } catch (error) {
+      const cleanupFailures: unknown[] = [];
+      captureCleanup(() => bridge.dispose(), cleanupFailures);
+      throw combinedFailure(
+        error,
+        cleanupFailures,
+        "Open Wrangler notebook preview bridge construction failed during rollback."
+      );
+    }
     const entry: NotebookPreviewEntry = {
       bridge,
       prepared: false,
       retryIndex: 0,
       immediateRetryRequested: false,
-      invalidationSubscription: bridge.onDidInvalidateKernel(() => {
-        entry.prepared = false;
-        entry.retryIndex = 0;
-        this.schedule(notebook, RETRY_DELAYS_MS[0]);
-      })
+      invalidationSubscription
     };
     this.entries.set(notebook, entry);
     return entry;
@@ -177,12 +213,32 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     if (!entry) return;
     this.entries.delete(notebook);
     if (entry.timer) clearTimeout(entry.timer);
-    entry.invalidationSubscription.dispose();
-    entry.bridge.dispose();
+    const failures: unknown[] = [];
+    captureCleanup(() => entry.invalidationSubscription.dispose(), failures);
+    captureCleanup(() => entry.bridge.dispose(), failures);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Open Wrangler notebook preview entry cleanup encountered multiple failures.");
+    }
   }
 
   private resetEntries(): void {
-    for (const notebook of [...this.entries.keys()]) this.remove(notebook);
+    const failures: unknown[] = [];
+    for (const notebook of [...this.entries.keys()]) captureCleanup(() => this.remove(notebook), failures);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Open Wrangler notebook preview reset encountered multiple failures.");
+    }
+  }
+
+  private disposeResources(): unknown[] {
+    this.disposed = true;
+    const failures: unknown[] = [];
+    for (const subscription of this.subscriptions.splice(0).reverse()) {
+      captureCleanup(() => subscription.dispose(), failures);
+    }
+    captureCleanup(() => this.resetEntries(), failures);
+    return failures;
   }
 
   private syncVisibleNotebooks(editors: readonly vscode.NotebookEditor[], expedite = false): void {
@@ -280,4 +336,22 @@ function providerLabel(provider: NotebookPreviewProvider): string {
   if (provider === "dataWrangler") return "Data Wrangler";
   if (provider === "disabled") return "Disabled";
   return "Ask when another provider is installed";
+}
+
+function captureCleanup(cleanup: () => void, failures: unknown[]): void {
+  try {
+    cleanup();
+  } catch (error) {
+    failures.push(...flattenFailures(error));
+  }
+}
+
+function combinedFailure(primary: unknown, cleanupFailures: readonly unknown[], message: string): unknown {
+  return cleanupFailures.length === 0
+    ? primary
+    : new AggregateError([...flattenFailures(primary), ...cleanupFailures.flatMap(flattenFailures)], message);
+}
+
+function flattenFailures(error: unknown): unknown[] {
+  return error instanceof AggregateError ? error.errors.flatMap(flattenFailures) : [error];
 }

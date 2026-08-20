@@ -27,6 +27,22 @@ describe("executed notebook cell result action", () => {
     resetNotebookCellResultTest();
   });
 
+  it("rolls back real tracker listeners and prior providers when a grouped registration throws", () => {
+    mocks.failRegistrationAttempt = 4;
+    const tracker = new NotebookCellResultTracker();
+    const context = { subscriptions: [] } as unknown as ExtensionContext;
+
+    expect(() => registerNotebookCellResultAction(context, coordinator(), tracker)).toThrow(
+      "notebook cell result registration failed"
+    );
+
+    expect(context.subscriptions).toEqual([]);
+    expect(mocks.providers).toEqual([]);
+    expect(mocks.commands.size).toBe(0);
+    expect(mocks.notebookChanges).toEqual([]);
+    expect(mocks.notebookCloses).toEqual([]);
+  });
+
   it("offers one action only for a supported execute_result observed in this extension session", async () => {
     const document = notebook();
     const cell = codeCell(document, 4);

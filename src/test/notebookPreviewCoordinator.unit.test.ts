@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => {
   };
   return {
     channels,
+    registrationAttempt: 0,
+    failRegistrationAttempt: undefined as number | undefined,
     commands: new Map<string, (...args: unknown[]) => unknown>(),
     documents: [] as NotebookDocument[],
     visibleEditors: [] as Array<{ notebook: NotebookDocument }>,
@@ -25,6 +27,7 @@ const mocks = vi.hoisted(() => {
     preference: "ask",
     prepare: vi.fn<() => Promise<void>>(async () => undefined),
     disposeBridge: vi.fn(),
+    failInvalidationRegistration: false,
     invalidationListeners: new Set<() => void>(),
     information: vi.fn(async () => undefined as string | undefined),
     quickPick: vi.fn(async () => undefined as { value: string } | undefined),
@@ -39,6 +42,10 @@ const mocks = vi.hoisted(() => {
 
 function event<T>(listeners: Set<Listener<T>>) {
   return (listener: Listener<T>) => {
+    mocks.registrationAttempt += 1;
+    if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+      throw new Error("notebook preview listener registration failed");
+    }
     listeners.add(listener);
     return { dispose: () => listeners.delete(listener) };
   };
@@ -74,6 +81,10 @@ vi.mock("vscode", () => ({
       notebookType: string,
       provider: { provideCellStatusBarItems(cell: { notebook: NotebookDocument }): unknown }
     ) => {
+      mocks.registrationAttempt += 1;
+      if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+        throw new Error("notebook preview provider registration failed");
+      }
       const registration = { notebookType, provider };
       mocks.statusBarProviders.push(registration);
       return {
@@ -86,6 +97,10 @@ vi.mock("vscode", () => ({
   },
   commands: {
     registerCommand: (id: string, handler: (...args: unknown[]) => unknown) => {
+      mocks.registrationAttempt += 1;
+      if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+        throw new Error("notebook preview command registration failed");
+      }
       mocks.commands.set(id, handler);
       return { dispose: () => mocks.commands.delete(id) };
     }
@@ -109,6 +124,7 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
   },
   KernelBridge: class {
     readonly onDidInvalidateKernel = (listener: () => void) => {
+      if (mocks.failInvalidationRegistration) throw new Error("kernel invalidation registration failed");
       mocks.invalidationListeners.add(listener);
       return { dispose: () => mocks.invalidationListeners.delete(listener) };
     };
@@ -127,6 +143,8 @@ describe("NotebookPreviewCoordinator", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.commands.clear();
+    mocks.registrationAttempt = 0;
+    mocks.failRegistrationAttempt = undefined;
     mocks.documents.splice(0);
     mocks.visibleEditors.splice(0);
     mocks.statusBarProviders.splice(0);
@@ -135,11 +153,36 @@ describe("NotebookPreviewCoordinator", () => {
     mocks.preference = "ask";
     mocks.prepare.mockReset().mockResolvedValue(undefined);
     mocks.disposeBridge.mockReset();
+    mocks.failInvalidationRegistration = false;
     mocks.invalidationListeners.clear();
     mocks.information.mockReset().mockResolvedValue(undefined);
     mocks.quickPick.mockReset().mockResolvedValue(undefined);
     mocks.updateSetting.mockClear();
     for (const channel of Object.values(mocks.channels)) channel.clear();
+  });
+
+  it("disposes every real provider and listener retained before a mid-constructor failure", () => {
+    mocks.failRegistrationAttempt = 6;
+
+    expect(() => new NotebookPreviewCoordinator({} as never)).toThrow("notebook preview listener registration failed");
+
+    expect(mocks.statusBarProviders).toEqual([]);
+    expect(mocks.commands.size).toBe(0);
+    for (const listeners of Object.values(mocks.channels)) expect(listeners.size).toBe(0);
+  });
+
+  it("disposes a bridge and all outer registrations when invalidation registration throws", () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.failInvalidationRegistration = true;
+
+    expect(() => new NotebookPreviewCoordinator({} as never)).toThrow("kernel invalidation registration failed");
+
+    expect(mocks.disposeBridge).toHaveBeenCalledOnce();
+    expect(mocks.statusBarProviders).toEqual([]);
+    expect(mocks.commands.size).toBe(0);
+    for (const listeners of Object.values(mocks.channels)) expect(listeners.size).toBe(0);
   });
 
   it.each(["jupyter-notebook", "interactive"])(

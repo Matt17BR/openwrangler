@@ -98,6 +98,55 @@ describe("extension activation boundary", () => {
     await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).resolves.toBe(api);
   });
 
+  it("does not publish a late activation after shutdown begins", async () => {
+    const contextGate = deferred<void>();
+    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
+      () => contextGate.promise as unknown as Thenable<undefined>
+    );
+    const activation = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+
+    const shutdown = deactivate();
+    contextGate.resolve();
+
+    await expect(activation).rejects.toThrow("activation was cancelled");
+    await shutdown;
+    expect(lifecycle.extensionApiForCurrentEnvironment).not.toHaveBeenCalled();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a concurrent activation instead of overwriting its unfinished owner", async () => {
+    const contextGate = deferred<void>();
+    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
+      () => contextGate.promise as unknown as Thenable<undefined>
+    );
+    const first = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+
+    await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toThrow(
+      "already active or activating"
+    );
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+
+    contextGate.resolve();
+    await first;
+  });
+
+  it("waits for unfinished shutdown before reactivation constructs another owner", async () => {
+    vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
+    await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+    const shutdownGate = deferred<void>();
+    lifecycle.shutdown.mockReturnValueOnce(shutdownGate.promise);
+
+    const shutdown = deactivate();
+    const reactivation = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+    await Promise.resolve();
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+
+    shutdownGate.resolve();
+    await shutdown;
+    await reactivation;
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledTimes(2);
+  });
+
   it("delegates terminal cleanup exactly once", async () => {
     await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
 

@@ -95,6 +95,12 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["r/", "notebooks/pythonInteractiveCommands.ts", "nativeViews.ts"]
   },
   "native-view": {
+    roots: ["src/extension/activate.ts", "src/extension/sessionCoordinator.ts", "src/extension/nativeViews.ts"],
+    maximumModules: 96,
+    maximumBytes: 1700 * 1024,
+    forbidden: ["pythonBridge.ts", "files/fileOpen.ts", "notebooks/pythonInteractiveCommands.ts"]
+  },
+  "native-live": {
     roots: [
       "src/extension/activate.ts",
       "src/extension/sessionCoordinator.ts",
@@ -120,6 +126,7 @@ export const dynamicEdgeClassifications = freezeClassifications({
     "r-document",
     "custom-editor",
     "native-view",
+    "native-live",
     "test-api"
   ],
   "src/extension/lazyActivationOwners.ts|import|./pythonBridge.js": [
@@ -134,36 +141,36 @@ export const dynamicEdgeClassifications = freezeClassifications({
   "src/extension/lazyActivationOwners.ts|import|./notebooks/pythonInteractiveCommands.js": [
     "notebook",
     "r-document",
-    "native-view",
+    "native-live",
     "test-api"
   ],
   "src/extension/lazyActivationOwners.ts|import|./notebooks/jupyterBridge.js": [
     "notebook",
     "r-document",
-    "native-view",
+    "native-live",
     "test-api"
   ],
   "src/extension/lazyActivationOwners.ts|import|./notebooks/notebookCellResult.js": [
     "notebook",
     "r-document",
-    "native-view",
+    "native-live",
     "test-api"
   ],
   "src/extension/lazyActivationOwners.ts|import|./notebooks/rendererMessaging.js": [
     "notebook",
     "r-document",
-    "native-view",
+    "native-live",
     "test-api"
   ],
   "src/extension/lazyActivationOwners.ts|import|./r/rInteractiveCommands.js": [
     "r",
     "r-document",
-    "native-view",
+    "native-live",
     "test-api"
   ],
   "src/extension/lazyActivationOwners.ts|import|./r/rDocumentCommands.js": ["r-document", "test-api"],
   "src/extension/lazyActivationOwners.ts|import|./runtimeCommands.js": ["runtime", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./nativeViews.js": ["native-view", "test-api"],
+  "src/extension/lazyActivationOwners.ts|import|./nativeViews.js": ["native-view", "native-live", "test-api"],
   "src/extension/lazyActivationOwners.ts|import|./webviewPanel.js": ["test-api"]
 });
 
@@ -181,6 +188,7 @@ export const activationEventClassifications = classifyActivationEvents({
     "onCommand:openWrangler.openNotebookCellResult",
     "onCommand:openWrangler.runPythonCellAndOpenVariable",
     "onCommand:openWrangler.refreshNotebookVariables",
+    "onCommand:openWrangler.openCachedNotebookVariable",
     "onCommand:openWrangler.checkJupyterIntegration",
     "onRenderer:openWrangler.renderer",
     "onNotebook:jupyter-notebook",
@@ -201,7 +209,6 @@ export const activationEventClassifications = classifyActivationEvents({
     "onCommand:openWrangler.revalidateRuntimeDependencies"
   ],
   "native-view": [
-    "onCommand:openWrangler.refreshLiveDataframes",
     "onCommand:openWrangler.startOperation",
     "onCommand:openWrangler.applyStep",
     "onCommand:openWrangler.discardStep",
@@ -220,12 +227,12 @@ export const activationEventClassifications = classifyActivationEvents({
     "onCommand:openWrangler.insertRDocumentCode",
     "onCommand:openWrangler.exportData",
     "onCommand:openWrangler.openSourceFile",
-    "onView:openWrangler.operations",
     "onView:openWrangler.summary",
     "onView:openWrangler.filters",
     "onView:openWrangler.cleaningSteps",
     "onView:openWrangler.codePreview"
   ],
+  "native-live": ["onCommand:openWrangler.refreshLiveDataframes", "onView:openWrangler.operations"],
   utility: [
     "onCommand:openWrangler.openWalkthrough",
     "onCommand:openWrangler.openSettings",
@@ -250,14 +257,21 @@ export async function measureActivationTriggers(repositoryRoot = defaultReposito
       )
     };
   }
-  const dynamicEdges = await measureDynamicEdges(root);
-  const activationEvents = await measureActivationEvents(root);
+  const { dynamicEdges, activationEvents } = await measureActivationInventory(root);
   return {
     metric: "transitive-static-typescript-source-load-surface",
     repositoryRoot: root,
     measurements,
     dynamicEdges,
     activationEvents
+  };
+}
+
+export async function measureActivationInventory(repositoryRoot = defaultRepositoryRoot) {
+  const root = path.resolve(repositoryRoot);
+  return {
+    dynamicEdges: await measureDynamicEdges(root),
+    activationEvents: await measureActivationEvents(root)
   };
 }
 
@@ -300,6 +314,9 @@ export function activationBudgetFailures(report, budgets = activationTriggerBudg
       failures.push(`activation event: stale classification ${event}`);
     for (const mismatch of report.activationEvents.occurrenceMismatches) {
       failures.push(`activation event: ${mismatch.event} occurs ${mismatch.actual} times instead of 1`);
+    }
+    for (const mismatch of report.activationEvents.contributedCommandOccurrenceMismatches) {
+      failures.push(`contributed command: ${mismatch.command} occurs ${mismatch.actual} times instead of 1`);
     }
     for (const trigger of report.activationEvents.unknownTriggerClasses) {
       failures.push(`activation event: unknown trigger class ${trigger}`);
@@ -363,26 +380,54 @@ async function measureActivationEvents(repositoryRoot) {
   ) {
     throw new Error("package.json activationEvents must be a bounded string array.");
   }
-  const discovered = [...manifest.activationEvents].sort();
+  const explicit = [...manifest.activationEvents].sort();
+  const contributedCommands = manifest.contributes?.commands;
+  if (
+    !Array.isArray(contributedCommands) ||
+    !contributedCommands.every(
+      (contribution) =>
+        contribution !== null &&
+        typeof contribution === "object" &&
+        typeof contribution.command === "string" &&
+        contribution.command.length > 0 &&
+        contribution.command.length <= 512
+    )
+  ) {
+    throw new Error("package.json contributes.commands must be a bounded command-object array.");
+  }
+  const contributed = contributedCommands.map(({ command }) => command).sort();
+  const contributionDerived = contributed.map((command) => `onCommand:${command}`);
+  const discovered = [...new Set([...explicit, ...contributionDerived])].sort();
   const classified = Object.keys(activationEventClassifications).sort();
   const discoveredSet = new Set(discovered);
   const occurrenceCounts = new Map();
-  for (const event of discovered) occurrenceCounts.set(event, (occurrenceCounts.get(event) ?? 0) + 1);
+  for (const event of explicit) occurrenceCounts.set(event, (occurrenceCounts.get(event) ?? 0) + 1);
+  const contributedCommandCounts = new Map();
+  for (const command of contributed) {
+    contributedCommandCounts.set(command, (contributedCommandCounts.get(command) ?? 0) + 1);
+  }
   const unclassified = discovered.filter((event) => activationEventClassifications[event] === undefined);
   const staleClassifications = classified.filter((event) => !discoveredSet.has(event));
   const occurrenceMismatches = [...occurrenceCounts]
     .filter(([, occurrences]) => occurrences !== 1)
     .map(([event, actual]) => ({ event, actual }));
+  const contributedCommandOccurrenceMismatches = [...contributedCommandCounts]
+    .filter(([, occurrences]) => occurrences !== 1)
+    .map(([command, actual]) => ({ command, actual }));
   const knownTriggerClasses = new Set(Object.keys(activationTriggerBudgets));
   const unknownTriggerClasses = [...new Set(Object.values(activationEventClassifications))]
     .filter((trigger) => !knownTriggerClasses.has(trigger))
     .sort();
   return {
+    explicit,
+    contributedCommands: contributed,
+    contributionDerived,
     discovered,
     classified,
     unclassified,
     staleClassifications,
     occurrenceMismatches,
+    contributedCommandOccurrenceMismatches,
     unknownTriggerClasses
   };
 }
@@ -442,15 +487,133 @@ async function readBoundedRegularFile(repositoryRoot, file) {
 }
 
 function runtimeCallEdges(source) {
+  const normalized = withoutComments(source);
   const edges = [];
-  const callPattern = /\b(import|require)\s*\(\s*([^)]{0,512})\)/gu;
-  for (const match of source.matchAll(callPattern)) {
-    const prefix = source.slice(Math.max(0, match.index - 64), match.index);
+  const importAliases = new Set();
+  const requireAliases = new Set(["require"]);
+  const createRequireAliases = createRequireBindings(normalized);
+  const wrapperCalls = new Set();
+  const wrapperPattern =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*(import|require)\s*\(\s*\2\s*\)/gu;
+  for (const match of normalized.matchAll(wrapperPattern)) {
+    (match[3] === "import" ? importAliases : requireAliases).add(match[1]);
+    wrapperCalls.add(match.index + match[0].lastIndexOf(match[3]));
+  }
+  const functionWrapperPattern =
+    /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{\s*return\s+(import|require)\s*\(\s*\2\s*\)\s*;?\s*\}/gu;
+  for (const match of normalized.matchAll(functionWrapperPattern)) {
+    (match[3] === "import" ? importAliases : requireAliases).add(match[1]);
+    wrapperCalls.add(match.index + match[0].lastIndexOf(match[3]));
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const match of normalized.matchAll(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;?/gu
+    )) {
+      if (importAliases.has(match[2]) && !importAliases.has(match[1])) {
+        importAliases.add(match[1]);
+        changed = true;
+      }
+      if (requireAliases.has(match[2]) && !requireAliases.has(match[1])) {
+        requireAliases.add(match[1]);
+        changed = true;
+      }
+      if (createRequireAliases.has(match[2]) && !createRequireAliases.has(match[1])) {
+        createRequireAliases.add(match[1]);
+        changed = true;
+      }
+    }
+    for (const match of normalized.matchAll(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\([^;\n]{0,512}\)\s*;?/gu
+    )) {
+      if (createRequireAliases.has(match[2]) && !requireAliases.has(match[1])) {
+        requireAliases.add(match[1]);
+        changed = true;
+      }
+    }
+  }
+  const loaderNames = ["import", ...importAliases, ...requireAliases].sort(
+    (left, right) => right.length - left.length || left.localeCompare(right)
+  );
+  const callPattern = new RegExp(`\\b(${loaderNames.map(regexpEscape).join("|")})\\s*\\(\\s*([^)]{0,512})\\)`, "gu");
+  for (const match of normalized.matchAll(callPattern)) {
+    if (wrapperCalls.has(match.index)) continue;
+    const kind = match[1] === "import" || importAliases.has(match[1]) ? "import" : "require";
+    if (kind === "require" && !requireAliases.has(match[1])) continue;
+    const prefix = normalized.slice(Math.max(0, match.index - 64), match.index);
     if (match[1] === "import" && /\btypeof\s*$/u.test(prefix)) continue;
-    const literal = /^(["'])([^"']+)\1\s*$/u.exec(match[2]);
-    edges.push({ kind: match[1], specifier: literal?.[2] ?? "<non-literal>" });
+    const literal = /^(["'])([^"'\\]+)\1\s*$/u.exec(match[2]);
+    edges.push({ kind, specifier: literal?.[2] ?? "<non-literal>" });
   }
   return edges;
+}
+
+function regexpEscape(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function createRequireBindings(source) {
+  const bindings = new Set();
+  const importPattern = /\bimport\s*\{([^}]{0,512})\}\s*from\s*["'](?:node:)?module["']/gu;
+  for (const match of source.matchAll(importPattern)) {
+    for (const binding of match[1].split(",")) {
+      const createRequire = /^\s*createRequire(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/u.exec(binding);
+      if (createRequire) bindings.add(createRequire[1] ?? "createRequire");
+    }
+  }
+  const destructurePattern =
+    /\b(?:const|let|var)\s*\{\s*createRequire(?:\s*:\s*([A-Za-z_$][\w$]*))?\s*\}\s*=\s*require\s*\(\s*["'](?:node:)?module["']\s*\)/gu;
+  for (const match of source.matchAll(destructurePattern)) bindings.add(match[1] ?? "createRequire");
+  return bindings;
+}
+
+function withoutComments(source) {
+  let result = "";
+  let index = 0;
+  let state = "code";
+  while (index < source.length) {
+    const current = source[index];
+    const next = source[index + 1];
+    if (state === "code" && current === "/" && next === "/") {
+      result += "  ";
+      index += 2;
+      state = "line-comment";
+      continue;
+    }
+    if (state === "code" && current === "/" && next === "*") {
+      result += "  ";
+      index += 2;
+      state = "block-comment";
+      continue;
+    }
+    if (state === "line-comment") {
+      result += current === "\n" ? "\n" : " ";
+      index += 1;
+      if (current === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (current === "*" && next === "/") {
+        result += "  ";
+        index += 2;
+        state = "code";
+      } else {
+        result += current === "\n" ? "\n" : " ";
+        index += 1;
+      }
+      continue;
+    }
+    if (state === "code" && (current === '"' || current === "'" || current === "`")) state = current;
+    else if (state !== "code" && current === "\\") {
+      result += current + (next ?? "");
+      index += next === undefined ? 1 : 2;
+      continue;
+    } else if (state !== "code" && current === state) state = "code";
+    result += current;
+    index += 1;
+  }
+  return result;
 }
 
 function freezeClassifications(classifications) {
@@ -476,6 +639,7 @@ function classifyActivationEvents(groups) {
 }
 
 function staticRuntimeSpecifiers(source) {
+  source = withoutComments(source);
   const specifiers = [];
   const importPattern = /(^|\n)\s*import\s+(?!type\b)(?:(?!\n\s*import\b)[\s\S])*?\bfrom\s*["']([^"']+)["']\s*;?/gu;
   const sideEffectPattern = /(^|\n)\s*import\s*["']([^"']+)["']\s*;?/gu;
