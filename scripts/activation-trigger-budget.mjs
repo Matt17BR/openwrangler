@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { lstat, open, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
@@ -9,6 +9,12 @@ const defaultRepositoryRoot = path.resolve(scriptDirectory, "..");
 const maximumSourceBytes = 2 * 1024 * 1024;
 const maximumAggregateSourceBytes = 16 * 1024 * 1024;
 const maximumProductionSourceFiles = 2_048;
+const maximumProductionDirectoryEntries = 8_192;
+const maximumProductionDirectoryDepth = 32;
+const maximumManifestContributions = 4_096;
+const maximumViewContributionGroups = 256;
+const maximumSyntaxTokens = 500_000;
+const maximumSyntaxNesting = 512;
 const maximumSyntaxNodes = 250_000;
 
 export const activationTriggerBudgets = Object.freeze({
@@ -269,10 +275,10 @@ export async function measureActivationTriggers(repositoryRoot = defaultReposito
   };
 }
 
-export async function measureActivationInventory(repositoryRoot = defaultRepositoryRoot) {
+export async function measureActivationInventory(repositoryRoot = defaultRepositoryRoot, options = {}) {
   const root = path.resolve(repositoryRoot);
   return {
-    dynamicEdges: await measureDynamicEdges(root),
+    dynamicEdges: await measureDynamicEdges(root, options),
     activationEvents: await measureActivationEvents(root)
   };
 }
@@ -329,6 +335,12 @@ export function activationBudgetFailures(report, budgets = activationTriggerBudg
     for (const mismatch of report.activationEvents.contributedCommandOccurrenceMismatches) {
       failures.push(`contributed command: ${mismatch.command} occurs ${mismatch.actual} times instead of 1`);
     }
+    for (const mismatch of report.activationEvents.contributedViewOccurrenceMismatches) {
+      failures.push(`contributed view: ${mismatch.view} occurs ${mismatch.actual} times instead of 1`);
+    }
+    for (const mismatch of report.activationEvents.contributedCustomEditorOccurrenceMismatches) {
+      failures.push(`contributed custom editor: ${mismatch.viewType} occurs ${mismatch.actual} times instead of 1`);
+    }
     for (const trigger of report.activationEvents.unknownTriggerClasses) {
       failures.push(`activation event: unknown trigger class ${trigger}`);
     }
@@ -336,15 +348,15 @@ export function activationBudgetFailures(report, budgets = activationTriggerBudg
   return failures;
 }
 
-async function measureDynamicEdges(repositoryRoot) {
+async function measureDynamicEdges(repositoryRoot, options = {}) {
   const sourceRoot = path.resolve(repositoryRoot, "src/extension");
-  const sourceFiles = await productionTypescriptSources(repositoryRoot, sourceRoot);
+  const sourceFiles = await productionTypescriptSources(repositoryRoot, sourceRoot, options);
   const occurrenceCounts = new Map();
   const aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes);
   for (const file of sourceFiles) {
     const { source } = await readBoundedRegularFile(repositoryRoot, file, aggregateBudget);
     const relativeFile = toPosix(path.relative(repositoryRoot, file));
-    for (const edge of syntaxRuntimeInventory(source, file).dynamicEdges) {
+    for (const edge of syntaxRuntimeInventory(source, file, options).dynamicEdges) {
       const key = `${relativeFile}|${edge.kind}|${edge.specifier}`;
       occurrenceCounts.set(key, (occurrenceCounts.get(key) ?? 0) + 1);
     }
@@ -394,31 +406,27 @@ async function measureActivationEvents(repositoryRoot) {
     throw new Error("package.json activationEvents must be a bounded string array.");
   }
   const explicit = [...manifest.activationEvents].sort();
-  const contributedCommands = manifest.contributes?.commands;
-  if (
-    !Array.isArray(contributedCommands) ||
-    !contributedCommands.every(
-      (contribution) =>
-        contribution !== null &&
-        typeof contribution === "object" &&
-        typeof contribution.command === "string" &&
-        contribution.command.length > 0 &&
-        contribution.command.length <= 512
-    )
-  ) {
-    throw new Error("package.json contributes.commands must be a bounded command-object array.");
-  }
-  const contributed = contributedCommands.map(({ command }) => command).sort();
-  const contributionDerived = contributed.map((command) => `onCommand:${command}`);
+  const contributions = manifest.contributes;
+  if (!isRecord(contributions)) throw new Error("package.json contributes must be an object.");
+  const contributedCommands = contributionIds(contributions.commands, "command", "commands", true);
+  const contributedViews = viewContributionIds(contributions.views);
+  const contributedCustomEditors = contributionIds(contributions.customEditors, "viewType", "customEditors", false);
+  const contributionDerived = [
+    ...contributedCommands.map((command) => `onCommand:${command}`),
+    ...contributedViews.map((view) => `onView:${view}`),
+    ...contributedCustomEditors.map((viewType) => `onCustomEditor:${viewType}`)
+  ].sort();
   const discovered = [...new Set([...explicit, ...contributionDerived])].sort();
   const classified = Object.keys(activationEventClassifications).sort();
   const discoveredSet = new Set(discovered);
   const occurrenceCounts = new Map();
   for (const event of explicit) occurrenceCounts.set(event, (occurrenceCounts.get(event) ?? 0) + 1);
   const contributedCommandCounts = new Map();
-  for (const command of contributed) {
+  for (const command of contributedCommands) {
     contributedCommandCounts.set(command, (contributedCommandCounts.get(command) ?? 0) + 1);
   }
+  const contributedViewCounts = occurrenceCountsFor(contributedViews);
+  const contributedCustomEditorCounts = occurrenceCountsFor(contributedCustomEditors);
   const unclassified = discovered.filter((event) => activationEventClassifications[event] === undefined);
   const staleClassifications = classified.filter((event) => !discoveredSet.has(event));
   const occurrenceMismatches = [...occurrenceCounts]
@@ -427,13 +435,21 @@ async function measureActivationEvents(repositoryRoot) {
   const contributedCommandOccurrenceMismatches = [...contributedCommandCounts]
     .filter(([, occurrences]) => occurrences !== 1)
     .map(([command, actual]) => ({ command, actual }));
+  const contributedViewOccurrenceMismatches = [...contributedViewCounts]
+    .filter(([, occurrences]) => occurrences !== 1)
+    .map(([view, actual]) => ({ view, actual }));
+  const contributedCustomEditorOccurrenceMismatches = [...contributedCustomEditorCounts]
+    .filter(([, occurrences]) => occurrences !== 1)
+    .map(([viewType, actual]) => ({ viewType, actual }));
   const knownTriggerClasses = new Set(Object.keys(activationTriggerBudgets));
   const unknownTriggerClasses = [...new Set(Object.values(activationEventClassifications))]
     .filter((trigger) => !knownTriggerClasses.has(trigger))
     .sort();
   return {
     explicit,
-    contributedCommands: contributed,
+    contributedCommands,
+    contributedViews,
+    contributedCustomEditors,
     contributionDerived,
     discovered,
     classified,
@@ -441,14 +457,70 @@ async function measureActivationEvents(repositoryRoot) {
     staleClassifications,
     occurrenceMismatches,
     contributedCommandOccurrenceMismatches,
+    contributedViewOccurrenceMismatches,
+    contributedCustomEditorOccurrenceMismatches,
     unknownTriggerClasses
   };
+}
+
+function contributionIds(value, key, label, required) {
+  if (value === undefined && !required) return [];
+  if (!Array.isArray(value) || value.length > maximumManifestContributions) {
+    throw new Error(`package.json contributes.${label} must be a bounded array.`);
+  }
+  return value
+    .map((contribution) => {
+      if (!isRecord(contribution) || !boundedContributionId(contribution[key])) {
+        throw new Error(`package.json contributes.${label} contains an invalid ${key}.`);
+      }
+      return contribution[key];
+    })
+    .sort();
+}
+
+function viewContributionIds(value) {
+  if (value === undefined) return [];
+  if (!isRecord(value) || Object.keys(value).length > maximumViewContributionGroups) {
+    throw new Error("package.json contributes.views must be a bounded object of arrays.");
+  }
+  const views = [];
+  for (const contributions of Object.values(value)) {
+    if (!Array.isArray(contributions) || views.length + contributions.length > maximumManifestContributions) {
+      throw new Error("package.json contributes.views must contain bounded arrays.");
+    }
+    for (const contribution of contributions) {
+      if (!isRecord(contribution) || !boundedContributionId(contribution.id)) {
+        throw new Error("package.json contributes.views contains an invalid id.");
+      }
+      views.push(contribution.id);
+    }
+  }
+  return views.sort();
+}
+
+function boundedContributionId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 512;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function occurrenceCountsFor(values) {
+  const counts = new Map();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return counts;
 }
 
 async function discoverTransitiveRuntimeSources(
   repositoryRoot,
   roots,
-  { maximumAggregateBytes = maximumAggregateSourceBytes, beforeDescriptorOpen } = {}
+  {
+    maximumAggregateBytes = maximumAggregateSourceBytes,
+    beforeDescriptorOpen,
+    afterDescriptorRead,
+    ...syntaxOptions
+  } = {}
 ) {
   const pending = roots.map((root) => path.resolve(repositoryRoot, root));
   const visited = new Set();
@@ -457,10 +529,11 @@ async function discoverTransitiveRuntimeSources(
     const file = pending.pop();
     if (visited.has(file)) continue;
     const { source } = await readBoundedRegularFile(repositoryRoot, file, aggregateBudget, {
-      beforeDescriptorOpen
+      beforeDescriptorOpen,
+      afterDescriptorRead
     });
     visited.add(file);
-    for (const specifier of syntaxRuntimeInventory(source, file).staticSpecifiers) {
+    for (const specifier of syntaxRuntimeInventory(source, file, syntaxOptions).staticSpecifiers) {
       if (!specifier.startsWith(".")) continue;
       const resolved = await resolveTypescriptImport(repositoryRoot, file, specifier);
       if (resolved) pending.push(resolved);
@@ -469,18 +542,38 @@ async function discoverTransitiveRuntimeSources(
   return { files: visited, bytes: aggregateBudget.used };
 }
 
-async function productionTypescriptSources(repositoryRoot, sourceRoot) {
+async function productionTypescriptSources(repositoryRoot, sourceRoot, options = {}) {
   assertContained(repositoryRoot, sourceRoot);
-  const pending = [sourceRoot];
+  const maximumEntries = boundedUpperLimit(
+    options.maximumDirectoryEntries ?? maximumProductionDirectoryEntries,
+    maximumProductionDirectoryEntries,
+    "directory entries"
+  );
+  const maximumDepth = boundedUpperLimit(
+    options.maximumDirectoryDepth ?? maximumProductionDirectoryDepth,
+    maximumProductionDirectoryDepth,
+    "directory depth",
+    true
+  );
+  const pending = [{ directory: sourceRoot, depth: 0 }];
   const files = [];
+  let entries = 0;
   while (pending.length > 0) {
-    const directory = pending.pop();
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const { directory, depth } = pending.pop();
+    const directoryHandle = await opendir(directory);
+    for await (const entry of directoryHandle) {
+      entries += 1;
+      if (entries > maximumEntries) {
+        throw new Error(`Production source inventory exceeds ${maximumEntries} directory entries.`);
+      }
       const candidate = path.join(directory, entry.name);
       assertContained(repositoryRoot, candidate);
       if (entry.isSymbolicLink()) throw new Error(`Production source inventory encountered a symlink: ${candidate}`);
       if (entry.isDirectory()) {
-        pending.push(candidate);
+        if (depth >= maximumDepth) {
+          throw new Error(`Production source inventory exceeds directory depth ${maximumDepth}: ${candidate}`);
+        }
+        pending.push({ directory: candidate, depth: depth + 1 });
       } else if (entry.isFile() && /\.(?:cts|mts|ts|tsx)$/u.test(entry.name)) {
         files.push(candidate);
         if (files.length > maximumProductionSourceFiles) {
@@ -496,7 +589,7 @@ async function readBoundedRegularFile(
   repositoryRoot,
   file,
   aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes),
-  { beforeDescriptorOpen } = {}
+  { beforeDescriptorOpen, afterDescriptorRead } = {}
 ) {
   assertContained(repositoryRoot, file);
   const canonicalBefore = await canonicalContainedPath(repositoryRoot, file);
@@ -504,14 +597,36 @@ async function readBoundedRegularFile(
   if (!rootStat.isDirectory())
     throw new Error(`Activation inventory repository root is not a directory: ${repositoryRoot}`);
   const sourceStat = await lstat(file, { bigint: true });
-  if (sourceStat.isSymbolicLink() || !sourceStat.isFile() || sourceStat.size > BigInt(maximumSourceBytes)) {
+  if (
+    sourceStat.isSymbolicLink() ||
+    !sourceStat.isFile() ||
+    sourceStat.nlink !== 1n ||
+    sourceStat.size > BigInt(maximumSourceBytes)
+  ) {
     throw new Error(`Activation inventory source is not a bounded regular file: ${file}`);
   }
   await beforeDescriptorOpen?.(file);
+  const canonicalBeforeOpen = await canonicalContainedPath(repositoryRoot, file);
+  const [pathBeforeOpen, rootBeforeOpen] = await Promise.all([
+    lstat(file, { bigint: true }),
+    lstat(canonicalBeforeOpen.root, { bigint: true })
+  ]);
+  if (
+    pathBeforeOpen.isSymbolicLink() ||
+    !pathBeforeOpen.isFile() ||
+    pathBeforeOpen.nlink !== 1n ||
+    !sameFileVersion(sourceStat, pathBeforeOpen) ||
+    !sameFileIdentity(rootStat, rootBeforeOpen) ||
+    canonicalBeforeOpen.root !== canonicalBefore.root ||
+    canonicalBeforeOpen.file !== canonicalBefore.file
+  ) {
+    throw new Error(`Activation inventory source changed identity before read: ${file}`);
+  }
   const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const nonBlocking = typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0;
   let handle;
   try {
-    handle = await open(file, fsConstants.O_RDONLY | noFollow);
+    handle = await open(file, fsConstants.O_RDONLY | noFollow | nonBlocking);
   } catch (error) {
     if (error?.code === "ELOOP") throw new Error(`Activation inventory source became a symlink: ${file}`);
     throw error;
@@ -522,8 +637,9 @@ async function readBoundedRegularFile(
     const rootAtOpen = await lstat(canonicalAtOpen.root, { bigint: true });
     if (
       !descriptorStat.isFile() ||
+      descriptorStat.nlink !== 1n ||
       descriptorStat.size > BigInt(maximumSourceBytes) ||
-      !sameFileIdentity(sourceStat, descriptorStat) ||
+      !sameFileVersion(sourceStat, descriptorStat) ||
       !sameFileIdentity(rootStat, rootAtOpen) ||
       canonicalAtOpen.root !== canonicalBefore.root ||
       canonicalAtOpen.file !== canonicalBefore.file
@@ -541,6 +657,7 @@ async function readBoundedRegularFile(
       if (bytesRead === 0) throw new Error(`Activation inventory source changed size during read: ${file}`);
       offset += bytesRead;
     }
+    await afterDescriptorRead?.(file);
     const [descriptorAfter, pathAfter, canonicalAfter] = await Promise.all([
       handle.stat({ bigint: true }),
       lstat(file, { bigint: true }),
@@ -549,13 +666,14 @@ async function readBoundedRegularFile(
     const rootAfter = await lstat(canonicalAfter.root, { bigint: true });
     if (
       pathAfter.isSymbolicLink() ||
-      !sameFileIdentity(descriptorStat, descriptorAfter) ||
-      !sameFileIdentity(descriptorAfter, pathAfter) ||
+      descriptorAfter.nlink !== 1n ||
+      pathAfter.nlink !== 1n ||
+      !sameFileVersion(descriptorStat, descriptorAfter) ||
+      !sameFileVersion(descriptorAfter, pathAfter) ||
       !sameFileIdentity(rootStat, rootAfter) ||
       canonicalAfter.root !== canonicalBefore.root ||
       canonicalAfter.file !== canonicalBefore.file ||
-      descriptorAfter.size !== descriptorStat.size ||
-      pathAfter.size !== descriptorStat.size
+      descriptorAfter.size !== descriptorStat.size
     ) {
       throw new Error(`Activation inventory source changed identity during read: ${file}`);
     }
@@ -565,7 +683,8 @@ async function readBoundedRegularFile(
   }
 }
 
-function syntaxRuntimeInventory(source, file) {
+function syntaxRuntimeInventory(source, file, options = {}) {
+  preflightTypeScriptSyntax(source, file, options);
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, scriptKind(file));
   const parseDiagnostic = sourceFile.parseDiagnostics?.[0];
   if (parseDiagnostic) {
@@ -576,6 +695,7 @@ function syntaxRuntimeInventory(source, file) {
   const callExpressions = [];
   const staticSpecifiers = [];
   const createRequireAliases = new Set();
+  const createRequireNamespaces = new Set();
   let syntaxNodes = 0;
   const visit = (node) => {
     syntaxNodes += 1;
@@ -584,7 +704,7 @@ function syntaxRuntimeInventory(source, file) {
     }
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       if (importDeclarationLoadsAtRuntime(node)) staticSpecifiers.push(node.moduleSpecifier.text);
-      collectCreateRequireImport(node, createRequireAliases);
+      collectCreateRequireImport(node, createRequireAliases, createRequireNamespaces);
     } else if (
       ts.isExportDeclaration(node) &&
       node.moduleSpecifier &&
@@ -610,13 +730,22 @@ function syntaxRuntimeInventory(source, file) {
   while (changed) {
     changed = false;
     for (const declaration of variableDeclarations) {
-      changed = collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases) || changed;
+      changed =
+        collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases, createRequireNamespaces) ||
+        changed;
       if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
       const localName = declaration.name.text;
       const initializer = unwrapExpression(declaration.initializer);
       if (ts.isIdentifier(initializer)) {
         changed =
-          copyLoaderAlias(localName, initializer.text, importAliases, requireAliases, createRequireAliases) || changed;
+          copyLoaderAlias(
+            localName,
+            initializer.text,
+            importAliases,
+            requireAliases,
+            createRequireAliases,
+            createRequireNamespaces
+          ) || changed;
       }
       const wrapper = wrapperLoaderCall(declaration.initializer, importAliases, requireAliases);
       if (wrapper) {
@@ -624,8 +753,10 @@ function syntaxRuntimeInventory(source, file) {
         wrapperCalls.add(wrapper.call);
       }
       if (ts.isCallExpression(initializer)) {
-        const callee = identifierName(initializer.expression);
-        if (callee && createRequireAliases.has(callee) && !requireAliases.has(localName)) {
+        if (
+          isCreateRequireCall(initializer, createRequireAliases, createRequireNamespaces) &&
+          !requireAliases.has(localName)
+        ) {
           requireAliases.add(localName);
           changed = true;
         }
@@ -659,6 +790,56 @@ function scriptKind(file) {
   return /\.tsx$/u.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
 }
 
+function preflightTypeScriptSyntax(source, file, options) {
+  const maximumTokens = boundedUpperLimit(
+    options.maximumSyntaxTokens ?? maximumSyntaxTokens,
+    maximumSyntaxTokens,
+    "syntax tokens"
+  );
+  const maximumNesting = boundedUpperLimit(
+    options.maximumSyntaxNesting ?? maximumSyntaxNesting,
+    maximumSyntaxNesting,
+    "syntax nesting",
+    true
+  );
+  const languageVariant = scriptKind(file) === ts.ScriptKind.TSX ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard;
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, languageVariant, source);
+  let tokens = 0;
+  let nesting = 0;
+  while (true) {
+    const token = scanner.scan();
+    if (token === ts.SyntaxKind.EndOfFileToken) return;
+    tokens += 1;
+    if (tokens > maximumTokens) {
+      throw new Error(`Activation inventory source exceeds ${maximumTokens} syntax tokens: ${file}`);
+    }
+    if (isOpeningToken(token)) {
+      nesting += 1;
+      if (nesting > maximumNesting) {
+        throw new Error(`Activation inventory source exceeds syntax nesting ${maximumNesting}: ${file}`);
+      }
+    } else if (isClosingToken(token) && nesting > 0) {
+      nesting -= 1;
+    }
+  }
+}
+
+function isOpeningToken(token) {
+  return (
+    token === ts.SyntaxKind.OpenBraceToken ||
+    token === ts.SyntaxKind.OpenBracketToken ||
+    token === ts.SyntaxKind.OpenParenToken
+  );
+}
+
+function isClosingToken(token) {
+  return (
+    token === ts.SyntaxKind.CloseBraceToken ||
+    token === ts.SyntaxKind.CloseBracketToken ||
+    token === ts.SyntaxKind.CloseParenToken
+  );
+}
+
 function importDeclarationLoadsAtRuntime(declaration) {
   const clause = declaration.importClause;
   if (!clause) return true;
@@ -674,24 +855,28 @@ function exportDeclarationLoadsAtRuntime(declaration) {
   return declaration.exportClause.elements.some((element) => !element.isTypeOnly);
 }
 
-function collectCreateRequireImport(declaration, aliases) {
+function collectCreateRequireImport(declaration, aliases, namespaces) {
   if (
     !ts.isStringLiteral(declaration.moduleSpecifier) ||
     !/^(?:node:)?module$/u.test(declaration.moduleSpecifier.text) ||
-    !declaration.importClause?.namedBindings ||
-    !ts.isNamedImports(declaration.importClause.namedBindings)
+    !declaration.importClause?.namedBindings
   ) {
     return;
   }
-  for (const element of declaration.importClause.namedBindings.elements) {
+  const bindings = declaration.importClause.namedBindings;
+  if (ts.isNamespaceImport(bindings)) {
+    namespaces.add(bindings.name.text);
+    return;
+  }
+  for (const element of bindings.elements) {
     if ((element.propertyName?.text ?? element.name.text) === "createRequire" && !element.isTypeOnly) {
       aliases.add(element.name.text);
     }
   }
 }
 
-function collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases) {
-  if (!ts.isObjectBindingPattern(declaration.name) || !declaration.initializer) return false;
+function collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases, createRequireNamespaces) {
+  if (!declaration.initializer) return false;
   const initializer = unwrapExpression(declaration.initializer);
   if (!ts.isCallExpression(initializer) || loaderCallKind(initializer, new Set(), requireAliases) !== "require") {
     return false;
@@ -699,6 +884,12 @@ function collectCommonJsCreateRequire(declaration, requireAliases, createRequire
   const argument = initializer.arguments[0];
   if (initializer.arguments.length !== 1 || !argument || !ts.isStringLiteral(argument)) return false;
   if (!/^(?:node:)?module$/u.test(argument.text)) return false;
+  if (ts.isIdentifier(declaration.name)) {
+    if (createRequireNamespaces.has(declaration.name.text)) return false;
+    createRequireNamespaces.add(declaration.name.text);
+    return true;
+  }
+  if (!ts.isObjectBindingPattern(declaration.name)) return false;
   let changed = false;
   for (const element of declaration.name.elements) {
     if (!ts.isIdentifier(element.name)) continue;
@@ -712,7 +903,14 @@ function collectCommonJsCreateRequire(declaration, requireAliases, createRequire
   return changed;
 }
 
-function copyLoaderAlias(localName, sourceName, importAliases, requireAliases, createRequireAliases) {
+function copyLoaderAlias(
+  localName,
+  sourceName,
+  importAliases,
+  requireAliases,
+  createRequireAliases,
+  createRequireNamespaces
+) {
   let changed = false;
   if (importAliases.has(sourceName) && !importAliases.has(localName)) {
     importAliases.add(localName);
@@ -726,7 +924,19 @@ function copyLoaderAlias(localName, sourceName, importAliases, requireAliases, c
     createRequireAliases.add(localName);
     changed = true;
   }
+  if (createRequireNamespaces.has(sourceName) && !createRequireNamespaces.has(localName)) {
+    createRequireNamespaces.add(localName);
+    changed = true;
+  }
   return changed;
+}
+
+function isCreateRequireCall(call, aliases, namespaces) {
+  const callee = unwrapExpression(call.expression);
+  if (ts.isIdentifier(callee)) return aliases.has(callee.text);
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "createRequire") return false;
+  const namespace = unwrapExpression(callee.expression);
+  return ts.isIdentifier(namespace) && namespaces.has(namespace.text);
 }
 
 function addLoaderAlias(localName, kind, importAliases, requireAliases) {
@@ -773,11 +983,6 @@ function loaderCallKind(call, importAliases, requireAliases) {
   return requireAliases.has(callee.text) ? "require" : undefined;
 }
 
-function identifierName(expression) {
-  const unwrapped = unwrapExpression(expression);
-  return ts.isIdentifier(unwrapped) ? unwrapped.text : undefined;
-}
-
 function unwrapExpression(expression) {
   while (
     ts.isParenthesizedExpression(expression) ||
@@ -815,9 +1020,32 @@ function classifyActivationEvents(groups) {
 
 async function resolveTypescriptImport(repositoryRoot, importer, specifier) {
   const raw = path.resolve(path.dirname(importer), specifier);
-  const candidates = path.extname(raw)
-    ? [raw.replace(/\.js$/u, ".ts"), raw.replace(/\.js$/u, ".tsx"), raw]
-    : [`${raw}.ts`, `${raw}.tsx`, path.join(raw, "index.ts")];
+  const extension = path.extname(raw);
+  const candidates =
+    extension === ".mjs"
+      ? [raw.replace(/\.mjs$/u, ".mts"), raw]
+      : extension === ".cjs"
+        ? [raw.replace(/\.cjs$/u, ".cts"), raw]
+        : extension === ".js"
+          ? [
+              raw.replace(/\.js$/u, ".ts"),
+              raw.replace(/\.js$/u, ".tsx"),
+              raw.replace(/\.js$/u, ".mts"),
+              raw.replace(/\.js$/u, ".cts"),
+              raw
+            ]
+          : extension
+            ? [raw]
+            : [
+                `${raw}.ts`,
+                `${raw}.tsx`,
+                `${raw}.mts`,
+                `${raw}.cts`,
+                path.join(raw, "index.ts"),
+                path.join(raw, "index.tsx"),
+                path.join(raw, "index.mts"),
+                path.join(raw, "index.cts")
+              ];
   for (const candidate of candidates) {
     assertContained(repositoryRoot, candidate);
     try {
@@ -838,6 +1066,13 @@ function boundedAggregateBudget(maximum) {
     throw new Error(`Activation inventory aggregate byte bound is invalid: ${maximum}`);
   }
   return { maximum, used: 0 };
+}
+
+function boundedUpperLimit(value, maximum, label, allowZero = false) {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1) || value > maximum) {
+    throw new Error(`Activation inventory ${label} bound is invalid: ${value}`);
+  }
+  return value;
 }
 
 function reserveAggregateBytes(budget, bytes) {
@@ -866,6 +1101,15 @@ function assertBoundedRead(budget, fileBytes, offset, length) {
 
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+}
+
+function sameFileVersion(left, right) {
+  return (
+    sameFileIdentity(left, right) &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
 }
 
 async function canonicalContainedPath(repositoryRoot, file) {
