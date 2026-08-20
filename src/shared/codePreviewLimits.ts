@@ -3,6 +3,7 @@ import { MAX_GENERATED_PYTHON_CODE_UTF8_BYTES } from "./protocolLimits.generated
 export const CODE_PREVIEW_MAX_UTF8_BYTES = MAX_GENERATED_PYTHON_CODE_UTF8_BYTES;
 export const CODE_PREVIEW_MAX_CODE_POINTS = MAX_GENERATED_PYTHON_CODE_UTF8_BYTES;
 export const CODE_PREVIEW_EDIT_COALESCE_MS = 100;
+export const CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS = 500;
 
 export type CodePreviewInvalidReason = "codePoints" | "invalidUnicode" | "utf8Bytes";
 
@@ -20,6 +21,24 @@ export const CODE_PREVIEW_INVALID_PLACEHOLDER =
 
 export const CODE_PREVIEW_INVALID_EXPORT_MESSAGE =
   "The Code Preview buffer exceeds the 4 MiB or 4,194,304-code-point limit. Reduce it before copying or exporting generated code.";
+
+export const CODE_PREVIEW_UNAVAILABLE_PLACEHOLDER =
+  "# Code Preview is unavailable because the current editor state could not be confirmed.";
+
+export const CODE_PREVIEW_DISPOSED_ACTION_MESSAGE =
+  "Code Preview is not available. Reopen the view before copying, exporting, or inserting generated code.";
+
+export const CODE_PREVIEW_MISMATCH_ACTION_MESSAGE =
+  "Code Preview changed before the current edit could be confirmed. Review it and try again.";
+
+export const CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE =
+  "Code Preview did not confirm the current edit in time. Reopen the view and try again.";
+
+export const CODE_PREVIEW_GENERATION_EXHAUSTED_ACTION_MESSAGE =
+  "Code Preview exhausted its edit generation. Reopen the view before using generated code.";
+
+export const CODE_PREVIEW_EMPTY_ACTION_MESSAGE =
+  "Code Preview is empty. Add generated code before copying, exporting, or inserting it.";
 
 export function validateCodePreviewText(code: string): CodePreviewTextResult {
   return collectCodePreviewText([code]);

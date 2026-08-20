@@ -84,6 +84,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreviewInvalid",
       generation: 1,
+      acknowledgedSequence: 0,
       reason: "utf8Bytes",
       editable: false,
       runtimeIdentity: {
@@ -101,6 +102,62 @@ describe("native state and presentation commands", () => {
       generation: 2,
       code: active.code,
       editable: true
+    });
+  });
+
+  it("disposes replaced view listeners and ignores their delayed edits", () => {
+    register(noDraftSnapshot());
+    const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
+
+    const createView = () => {
+      const posted: unknown[] = [];
+      let receive: ((message: unknown) => void) | undefined;
+      let disposed = false;
+      const view = {
+        description: undefined as string | undefined,
+        webview: {
+          html: "",
+          options: {},
+          cspSource: "test-csp",
+          asWebviewUri: (uri: unknown) => uri,
+          postMessage: vi.fn(async (message: unknown) => {
+            posted.push(message);
+            return true;
+          }),
+          onDidReceiveMessage: (listener: (message: unknown) => void) => {
+            receive = listener;
+            return {
+              dispose: () => {
+                disposed = true;
+              }
+            };
+          }
+        }
+      };
+      return { view, posted, receive: () => receive, disposed: () => disposed };
+    };
+
+    const first = createView();
+    provider.resolveWebviewView(first.view);
+    first.receive()?.({ kind: "ready" });
+    const second = createView();
+    provider.resolveWebviewView(second.view);
+    second.receive()?.({ kind: "ready" });
+
+    expect(first.disposed()).toBe(true);
+    first.receive()?.({
+      kind: "codeChanged",
+      generation: 1,
+      sequence: 999,
+      code: "raise RuntimeError('late replaced view')"
+    });
+    second.receive()?.({ kind: "ready" });
+    expect(second.posted.at(-1)).toMatchObject({
+      kind: "codePreview",
+      generation: 1,
+      acknowledgedSequence: 0,
+      code: "def clean_data(df):\n    return df\n"
     });
   });
 
@@ -858,6 +915,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       generation: 1,
+      acknowledgedSequence: 0,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
       runtimeIdentity: {
@@ -873,6 +931,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       generation: 1,
+      acknowledgedSequence: 0,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
       runtimeIdentity: {
@@ -888,6 +947,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       generation: 2,
+      acknowledgedSequence: 0,
       code: editable.code,
       editable: true,
       runtimeIdentity: {
@@ -920,6 +980,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreviewInvalid",
       generation: 2,
+      acknowledgedSequence: 2,
       reason: "utf8Bytes",
       editable: true,
       runtimeIdentity: {
@@ -953,6 +1014,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       generation: 4,
+      acknowledgedSequence: 0,
       code: rEditable.code,
       editable: true,
       runtimeIdentity: {
@@ -970,6 +1032,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       generation: 5,
+      acknowledgedSequence: 0,
       code: viewingOnly.code,
       editable: false,
       runtimeIdentity: {

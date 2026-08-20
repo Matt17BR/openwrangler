@@ -10,8 +10,11 @@ import {
   type CodePreviewEditScheduler,
   type CodePreviewWebviewMessage,
   isCodePreviewHostMessage,
-  isCodePreviewWebviewMessage
+  isCodePreviewWebviewMessage,
+  nextCodePreviewGeneration
 } from "../shared/codePreviewMessages";
+
+const REQUEST_ID = "00000000-0000-4000-8000-000000000001";
 
 class FakeScheduler implements CodePreviewEditScheduler {
   private now = 0;
@@ -94,6 +97,7 @@ describe("Code Preview text limits", () => {
       isCodePreviewHostMessage({
         kind: "codePreview",
         generation: 1,
+        acknowledgedSequence: 0,
         code: oversized,
         editable: true,
         runtimeIdentity
@@ -106,6 +110,7 @@ describe("Code Preview text limits", () => {
       isCodePreviewHostMessage({
         kind: "codePreviewInvalid",
         generation: 1,
+        acknowledgedSequence: 0,
         reason: "utf8Bytes",
         editable: true,
         runtimeIdentity
@@ -118,7 +123,7 @@ describe("Code Preview text limits", () => {
 });
 
 describe("Code Preview edit coalescing", () => {
-  it("turns a burst of edits into one latest bounded message and one document read", () => {
+  it("marks a burst pending immediately, then publishes one latest bounded message and one document read", () => {
     const scheduler = new FakeScheduler();
     const messages: CodePreviewWebviewMessage[] = [];
     let reads = 0;
@@ -131,18 +136,21 @@ describe("Code Preview edit coalescing", () => {
       (message) => messages.push(message),
       scheduler
     );
-    coalescer.acceptGeneration(7);
+    expect(coalescer.acceptHostState(7, 0)).toBe(true);
 
     for (let index = 0; index < 10_000; index += 1) {
       code = `edit-${index}`;
       coalescer.schedule();
     }
-    expect(messages).toEqual([]);
+    expect(messages).toEqual([{ kind: "codePending", generation: 7, sequence: 1 }]);
     expect(reads).toBe(0);
 
     scheduler.advance(100);
     expect(reads).toBe(1);
-    expect(messages).toEqual([{ kind: "codeChanged", generation: 7, sequence: 1, code: "edit-9999" }]);
+    expect(messages).toEqual([
+      { kind: "codePending", generation: 7, sequence: 1 },
+      { kind: "codeChanged", generation: 7, sequence: 1, code: "edit-9999" }
+    ]);
   });
 
   it("bounds sustained edit traffic to the fixed coalescing cadence", () => {
@@ -158,7 +166,7 @@ describe("Code Preview edit coalescing", () => {
       (message) => messages.push(message),
       scheduler
     );
-    coalescer.acceptGeneration(1);
+    coalescer.acceptHostState(1, 0);
 
     for (let index = 0; index < 1_000; index += 1) {
       code = `sustained-${index}`;
@@ -167,8 +175,8 @@ describe("Code Preview edit coalescing", () => {
     }
     scheduler.advance(100);
 
-    expect(messages.length).toBeLessThanOrEqual(11);
-    expect(reads).toBe(messages.length);
+    expect(messages.length).toBeLessThanOrEqual(22);
+    expect(reads).toBe(messages.filter(({ kind }) => kind === "codeChanged" || kind === "codeInvalid").length);
     expect(messages.at(-1)).toMatchObject({ kind: "codeChanged", code: "sustained-999" });
   });
 
@@ -181,12 +189,15 @@ describe("Code Preview edit coalescing", () => {
       (message) => messages.push(message),
       scheduler
     );
-    coalescer.acceptGeneration(2);
+    coalescer.acceptHostState(2, 0);
     coalescer.schedule();
     scheduler.advance(100);
 
-    expect(messages).toEqual([{ kind: "codeInvalid", generation: 2, sequence: 1, reason: "utf8Bytes" }]);
-    expect("code" in (messages[0] ?? {})).toBe(false);
+    expect(messages).toEqual([
+      { kind: "codePending", generation: 2, sequence: 1 },
+      { kind: "codeInvalid", generation: 2, sequence: 1, reason: "utf8Bytes" }
+    ]);
+    expect("code" in (messages[1] ?? {})).toBe(false);
 
     code = "recovered <- true";
     coalescer.schedule();
@@ -199,7 +210,68 @@ describe("Code Preview edit coalescing", () => {
     });
   });
 
-  it("cancels a delayed old-generation edit before publishing", () => {
+  it("preserves pending ownership across same-generation host renders and releases it only on acknowledgement", () => {
+    const scheduler = new FakeScheduler();
+    const messages: CodePreviewWebviewMessage[] = [];
+    let code = "valid-local-edit";
+    const coalescer = new CodePreviewEditCoalescer(
+      () => validateCodePreviewText(code),
+      (message) => messages.push(message),
+      scheduler
+    );
+
+    expect(coalescer.acceptHostState(1, 0)).toBe(true);
+    coalescer.schedule();
+    expect(coalescer.acceptHostState(1, 0)).toBe(false);
+    scheduler.advance(100);
+    expect(coalescer.hasUnacknowledgedEdit()).toBe(true);
+    expect(coalescer.acceptHostState(1, 0)).toBe(false);
+
+    code = `${"é".repeat(CODE_PREVIEW_MAX_UTF8_BYTES / 2)}é`;
+    coalescer.schedule();
+    scheduler.advance(100);
+    expect(messages.at(-1)).toEqual({ kind: "codeInvalid", generation: 1, sequence: 2, reason: "utf8Bytes" });
+    expect(coalescer.acceptHostState(1, 1)).toBe(false);
+    expect(coalescer.acceptHostState(1, 2)).toBe(true);
+    expect(coalescer.hasUnacknowledgedEdit()).toBe(false);
+  });
+
+  it("answers an action snapshot from the latest pending document and cancels the delayed duplicate", () => {
+    const scheduler = new FakeScheduler();
+    const messages: CodePreviewWebviewMessage[] = [];
+    let code = "initial";
+    let reads = 0;
+    const coalescer = new CodePreviewEditCoalescer(
+      () => {
+        reads += 1;
+        return validateCodePreviewText(code);
+      },
+      (message) => messages.push(message),
+      scheduler
+    );
+    coalescer.acceptHostState(3, 0);
+    code = "latest unsent edit";
+    coalescer.schedule();
+
+    coalescer.respondToSnapshotRequest(3, REQUEST_ID);
+    scheduler.advance(200);
+
+    expect(reads).toBe(1);
+    expect(messages).toEqual([
+      { kind: "codePending", generation: 3, sequence: 1 },
+      {
+        kind: "codeSnapshot",
+        generation: 3,
+        sequence: 1,
+        requestId: REQUEST_ID,
+        code: "latest unsent edit"
+      }
+    ]);
+    expect(coalescer.hasUnacknowledgedEdit()).toBe(true);
+    expect(coalescer.acceptHostState(3, 1)).toBe(true);
+  });
+
+  it("does not let delayed lower generations roll the document back", () => {
     const scheduler = new FakeScheduler();
     const messages: CodePreviewWebviewMessage[] = [];
     let code = "old";
@@ -208,15 +280,53 @@ describe("Code Preview edit coalescing", () => {
       (message) => messages.push(message),
       scheduler
     );
-    coalescer.acceptGeneration(1);
+    coalescer.acceptHostState(2, 0);
     coalescer.schedule();
-    coalescer.acceptGeneration(2);
-    scheduler.advance(200);
-    expect(messages).toEqual([]);
+    expect(coalescer.acceptHostState(1, 0)).toBe(false);
+    scheduler.advance(100);
+    expect(messages.at(-1)).toEqual({ kind: "codeChanged", generation: 2, sequence: 1, code: "old" });
 
     code = "new";
     coalescer.schedule();
+    expect(coalescer.acceptHostState(3, 0)).toBe(true);
     scheduler.advance(100);
-    expect(messages).toEqual([{ kind: "codeChanged", generation: 2, sequence: 1, code: "new" }]);
+    expect(messages.at(-1)).not.toMatchObject({ code: "new" });
+  });
+
+  it("invalidates pending edits on page disposal and explicitly rejects later snapshots", () => {
+    const scheduler = new FakeScheduler();
+    const messages: CodePreviewWebviewMessage[] = [];
+    const coalescer = new CodePreviewEditCoalescer(
+      () => validateCodePreviewText("latest"),
+      (message) => messages.push(message),
+      scheduler
+    );
+    coalescer.acceptHostState(4, 0);
+    coalescer.schedule();
+    coalescer.dispose();
+    scheduler.advance(200);
+    coalescer.respondToSnapshotRequest(4, REQUEST_ID);
+
+    expect(messages).toEqual([
+      { kind: "codePending", generation: 4, sequence: 1 },
+      { kind: "codePreviewUnavailable", generation: 4, reason: "disposed" },
+      { kind: "codeSnapshotUnavailable", generation: 4, requestId: REQUEST_ID, reason: "disposed" }
+    ]);
+  });
+
+  it("uses monotonic non-reusable generations and fails closed at exhaustion", () => {
+    expect(nextCodePreviewGeneration(0)).toEqual({ available: true, generation: 1 });
+    expect(nextCodePreviewGeneration(Number.MAX_SAFE_INTEGER - 2)).toEqual({
+      available: true,
+      generation: Number.MAX_SAFE_INTEGER - 1
+    });
+    expect(nextCodePreviewGeneration(Number.MAX_SAFE_INTEGER - 1)).toEqual({
+      available: false,
+      generation: Number.MAX_SAFE_INTEGER
+    });
+    expect(nextCodePreviewGeneration(Number.MAX_SAFE_INTEGER)).toEqual({
+      available: false,
+      generation: Number.MAX_SAFE_INTEGER
+    });
   });
 });

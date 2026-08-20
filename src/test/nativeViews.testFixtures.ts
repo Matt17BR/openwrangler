@@ -2,6 +2,9 @@ import { vi } from "vitest";
 import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
 import type { ExportOptions, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { CodePreviewHostMessage, CodePreviewWebviewMessage } from "../shared/codePreviewMessages";
+import type { CodePreviewInvalidReason } from "../shared/codePreviewLimits";
+import { validateCodePreviewText } from "../shared/codePreviewLimits";
 import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
 
@@ -20,6 +23,14 @@ interface TestTreeNode {
 interface TestTreeProvider {
   getChildren(): TestTreeNode[];
   onDidChangeTreeData?(listener: (node: TestTreeNode | undefined) => unknown): { dispose(): void };
+}
+
+interface CodePreviewTestHarness {
+  readonly posted: unknown[];
+  edit(code: string): void;
+  editInvalid(reason: CodePreviewInvalidReason): void;
+  setAutoRespond(enabled: boolean): void;
+  disposeView(): void;
 }
 
 const nativeMocks = vi.hoisted(() => ({
@@ -245,6 +256,8 @@ function register(
     | "unsupported"
     | undefined;
   setCodeForExport(code: string): void;
+  exportCodeTo(destination: unknown): Promise<void>;
+  codePreview: CodePreviewTestHarness;
 } {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
   const sessions = new Map<string, ActiveSessionSnapshot>([[snapshot.sessionId, snapshot]]);
@@ -276,6 +289,107 @@ function register(
     subscriptions: []
   } as unknown as ExtensionContext;
   const nativeViews = registerNativeViews(context, coordinator, pythonVariables, rVariables);
+  const codePreviewProvider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+  if (!codePreviewProvider) throw new Error("Expected the Code Preview provider to be registered.");
+  const posted: unknown[] = [];
+  let receive: ((message: unknown) => void) | undefined;
+  let disposeViewListener: (() => unknown) | undefined;
+  let autoRespond = true;
+  let currentEdit:
+    | {
+        readonly generation: number;
+        readonly sequence: number;
+        readonly result:
+          | { readonly valid: true; readonly code: string }
+          | { readonly valid: false; readonly reason: CodePreviewInvalidReason };
+      }
+    | undefined;
+  const publishToHost = (message: CodePreviewWebviewMessage): void => receive?.(message);
+  const codePreviewView = {
+    description: undefined as string | undefined,
+    onDidDispose: (listener: () => unknown) => {
+      disposeViewListener = listener;
+      return {
+        dispose: () => {
+          if (disposeViewListener === listener) disposeViewListener = undefined;
+        }
+      };
+    },
+    webview: {
+      html: "",
+      options: {},
+      cspSource: "test-csp",
+      asWebviewUri: (uri: unknown) => uri,
+      postMessage: vi.fn(async (message: CodePreviewHostMessage) => {
+        posted.push(message);
+        if (message.kind === "codePreviewSnapshotRequest") {
+          if (autoRespond) {
+            queueMicrotask(() => {
+              if (!currentEdit || currentEdit.generation !== message.generation) {
+                publishToHost({
+                  kind: "codeSnapshotUnavailable",
+                  generation: message.generation,
+                  requestId: message.requestId,
+                  reason: "generationMismatch"
+                });
+              } else if (currentEdit.result.valid) {
+                publishToHost({
+                  kind: "codeSnapshot",
+                  generation: message.generation,
+                  sequence: currentEdit.sequence,
+                  requestId: message.requestId,
+                  code: currentEdit.result.code
+                });
+              } else {
+                publishToHost({
+                  kind: "codeSnapshotInvalid",
+                  generation: message.generation,
+                  sequence: currentEdit.sequence,
+                  requestId: message.requestId,
+                  reason: currentEdit.result.reason
+                });
+              }
+            });
+          }
+          return true;
+        }
+        if (
+          message.kind === "codePreview" ||
+          message.kind === "codePreviewInvalid" ||
+          message.kind === "codePreviewUnavailable"
+        ) {
+          if (
+            !currentEdit ||
+            currentEdit.generation !== message.generation ||
+            message.acknowledgedSequence >= currentEdit.sequence
+          ) {
+            currentEdit = {
+              generation: message.generation,
+              sequence: message.acknowledgedSequence,
+              result:
+                message.kind === "codePreview"
+                  ? { valid: true, code: message.code }
+                  : {
+                      valid: false,
+                      reason: message.kind === "codePreviewInvalid" ? message.reason : "invalidUnicode"
+                    }
+            };
+          }
+        }
+        return true;
+      }),
+      onDidReceiveMessage: (listener: (message: unknown) => void) => {
+        receive = listener;
+        return {
+          dispose: () => {
+            if (receive === listener) receive = undefined;
+          }
+        };
+      }
+    }
+  };
+  codePreviewProvider.resolveWebviewView(codePreviewView);
+  publishToHost({ kind: "ready" });
   return {
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;
@@ -289,7 +403,58 @@ function register(
     clearActiveStepInspection,
     notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
     viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus(),
-    setCodeForExport: (code) => nativeViews.setCodeForExport(code)
+    setCodeForExport: (code) => nativeViews.setCodeForExport(code),
+    exportCodeTo: (destination) => nativeViews.exportCodeTo(destination as never),
+    codePreview: {
+      posted,
+      edit(code) {
+        const hostState = [...posted]
+          .reverse()
+          .find(
+            (candidate): candidate is CodePreviewHostMessage =>
+              typeof candidate === "object" &&
+              candidate !== null &&
+              "kind" in candidate &&
+              ((candidate as { kind?: unknown }).kind === "codePreview" ||
+                (candidate as { kind?: unknown }).kind === "codePreviewInvalid")
+          );
+        if (!hostState || hostState.kind === "codePreviewSnapshotRequest") {
+          throw new Error("Expected a current Code Preview host state.");
+        }
+        const validated = validateCodePreviewText(code);
+        const sequence = Math.max(hostState.acknowledgedSequence, currentEdit?.sequence ?? 0) + 1;
+        currentEdit = {
+          generation: hostState.generation,
+          sequence,
+          result: validated.valid ? { valid: true, code: validated.code } : { valid: false, reason: validated.reason }
+        };
+        publishToHost({ kind: "codePending", generation: hostState.generation, sequence });
+      },
+      editInvalid(reason) {
+        const hostState = [...posted]
+          .reverse()
+          .find(
+            (candidate): candidate is CodePreviewHostMessage =>
+              typeof candidate === "object" &&
+              candidate !== null &&
+              "kind" in candidate &&
+              ((candidate as { kind?: unknown }).kind === "codePreview" ||
+                (candidate as { kind?: unknown }).kind === "codePreviewInvalid")
+          );
+        if (!hostState || hostState.kind === "codePreviewSnapshotRequest") {
+          throw new Error("Expected a current Code Preview host state.");
+        }
+        const sequence = Math.max(hostState.acknowledgedSequence, currentEdit?.sequence ?? 0) + 1;
+        currentEdit = { generation: hostState.generation, sequence, result: { valid: false, reason } };
+        publishToHost({ kind: "codePending", generation: hostState.generation, sequence });
+      },
+      setAutoRespond(enabled) {
+        autoRespond = enabled;
+      },
+      disposeView() {
+        disposeViewListener?.();
+      }
+    }
   };
 }
 

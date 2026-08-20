@@ -1,8 +1,15 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { link, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { CODE_PREVIEW_INVALID_EXPORT_MESSAGE, CODE_PREVIEW_MAX_UTF8_BYTES } from "../shared/codePreviewLimits";
+import {
+  CODE_PREVIEW_DISPOSED_ACTION_MESSAGE,
+  CODE_PREVIEW_INVALID_EXPORT_MESSAGE,
+  CODE_PREVIEW_MAX_UTF8_BYTES,
+  CODE_PREVIEW_MISMATCH_ACTION_MESSAGE,
+  CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS,
+  CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE
+} from "../shared/codePreviewLimits";
 import {
   appliedStep,
   command,
@@ -56,6 +63,94 @@ describe("native export commands", () => {
     await command("openWrangler.copyCode")();
     expect(nativeMocks.clipboardWriteText).toHaveBeenCalledOnce();
     expect(nativeMocks.clipboardWriteText).toHaveBeenCalledWith("def clean_data(df):\n    return df\n");
+  });
+
+  it("copies the acknowledged document snapshot instead of the prior buffer during coalescing", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.edit("def clean_data(df):\n    return df.dropna()\n");
+
+    await command("openWrangler.copyCode")();
+
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledWith("def clean_data(df):\n    return df.dropna()\n");
+    expect(registered.codePreview.posted).toContainEqual(
+      expect.objectContaining({ kind: "codePreviewSnapshotRequest", generation: 1 })
+    );
+  });
+
+  it("exports the acknowledged pending edit instead of the prior generated buffer", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-code-preview-export-"));
+    const source = path.join(directory, "source.csv");
+    const destination = path.join(directory, "source.clean.py");
+    const latest = "def clean_data(df):\n    return df.dropna()\n";
+    try {
+      await writeFile(source, "value\n1\n");
+      const registered = register(
+        snapshot({
+          mode: "editing",
+          steps: [appliedStep],
+          source: { kind: "file", label: "source.csv", path: source, uri: `file://${source}` }
+        })
+      );
+      registered.codePreview.edit(latest);
+
+      await registered.exportCodeTo(resourceUri("file", destination));
+
+      expect(await readFile(destination, "utf8")).toBe(latest);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails copy explicitly when the current pending document is invalid", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.editInvalid("utf8Bytes");
+
+    await command("openWrangler.copyCode")();
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+  });
+
+  it("fails copy explicitly when the current document acknowledgement times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const registered = register(noDraftSnapshot());
+      registered.codePreview.setAutoRespond(false);
+      const copying = command("openWrangler.copyCode")();
+
+      await vi.advanceTimersByTimeAsync(CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS);
+      await copying;
+
+      expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("invalidates an action when its view is disposed before acknowledging the current document", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.setAutoRespond(false);
+    const copying = command("openWrangler.copyCode")();
+    registered.codePreview.disposeView();
+
+    await copying;
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+  });
+
+  it("invalidates an action when a newer generation replaces its requested document", async () => {
+    const active = noDraftSnapshot();
+    const registered = register(active);
+    registered.codePreview.setAutoRespond(false);
+    const copying = command("openWrangler.copyCode")();
+    registered.setActiveSession({ ...active, code: "def clean_data(df):\n    return df.fillna(0)\n" });
+
+    await copying;
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_MISMATCH_ACTION_MESSAGE);
   });
 
   it("uses an R script name and filter when exporting generated R code", async () => {

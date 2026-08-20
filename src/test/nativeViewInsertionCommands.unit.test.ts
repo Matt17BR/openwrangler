@@ -30,6 +30,22 @@ describe("native notebook and document insertion commands", () => {
     );
   });
 
+  it("inserts the acknowledged pending edit instead of the prior generated buffer", async () => {
+    const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+    nativeMocks.notebookDocuments.push(origin);
+    const registered = register(notebookVariableSnapshot(), origin);
+    const latest = "def clean_data(df):\n    return df.dropna()\n";
+    registered.codePreview.edit(latest);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(true);
+
+    expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledWith(origin, 3, latest, {
+      source: "frame",
+      backend: "pandas",
+      languageId: "python"
+    });
+  });
+
   it("inserts generated R into its originating notebook with the R cell language", async () => {
     const origin = notebookDocument("file:///workspace/orders.ipynb", 4);
     const active = rNotebookSnapshot();

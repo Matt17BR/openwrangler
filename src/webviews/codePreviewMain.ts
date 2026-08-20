@@ -5,7 +5,11 @@ import { Compartment, EditorState, type Extension, type Text } from "@codemirror
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { CodePreviewEditCoalescer, isCodePreviewHostMessage } from "../shared/codePreviewMessages";
-import { CODE_PREVIEW_INVALID_PLACEHOLDER, collectCodePreviewText } from "../shared/codePreviewLimits";
+import {
+  CODE_PREVIEW_INVALID_PLACEHOLDER,
+  CODE_PREVIEW_UNAVAILABLE_PLACEHOLDER,
+  collectCodePreviewText
+} from "../shared/codePreviewLimits";
 import { codeDialectLanguageLabel, type CodeDialect, type RuntimeIdentity } from "../shared/runtimeIdentity";
 
 interface VsCodeApi {
@@ -101,8 +105,17 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (event.origin !== window.location.origin) return;
   const message = event.data;
   if (!isCodePreviewHostMessage(message)) return;
-  editCoalescer.acceptGeneration(message.generation);
-  const code = message.kind === "codePreview" ? message.code : CODE_PREVIEW_INVALID_PLACEHOLDER;
+  if (message.kind === "codePreviewSnapshotRequest") {
+    editCoalescer.respondToSnapshotRequest(message.generation, message.requestId);
+    return;
+  }
+  if (!editCoalescer.acceptHostState(message.generation, message.acknowledgedSequence)) return;
+  const code =
+    message.kind === "codePreview"
+      ? message.code
+      : message.kind === "codePreviewInvalid"
+        ? CODE_PREVIEW_INVALID_PLACEHOLDER
+        : CODE_PREVIEW_UNAVAILABLE_PLACEHOLDER;
   const current = collectCodePreviewText(codePreviewDocumentChunks(editor.state.doc));
   const changes =
     current.valid && current.code === code ? undefined : { from: 0, to: editor.state.doc.length, insert: code };
