@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterator
 from typing import Any
 
 MAX_STRICT_RESPONSE_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_FRAME_BYTES = 17 * 1024 * 1024
-MAX_STRICT_JSON_NESTING_DEPTH = 64
+MAX_STRICT_JSON_NESTING_DEPTH = 128
+_JSON_STRING_CHUNK_CHARACTERS = 16 * 1024
+_LOG10_2_LOWER_NUMERATOR = 3_010_299_956_639_811
+_LOG10_2_DENOMINATOR = 10_000_000_000_000_000
 
 
 class ResponseEncodingError(ValueError):
@@ -19,62 +21,93 @@ class ResponseFrameTooLargeError(ValueError):
 
 
 def strict_json_byte_length(value: Any, maximum_bytes: int) -> int:
-    """Return the compact strict-JSON UTF-8 size, stopping once it exceeds a cap."""
-    total = 0
-    for chunk in _iter_strict_json(value):
-        total += len(chunk.encode("utf-8"))
-        if total > maximum_bytes:
-            return total
-    return total
+    """Return the compact strict-JSON UTF-8 size or ``maximum_bytes + 1``."""
+    writer = _StrictJsonWriter(maximum_bytes, retain_bytes=False)
+    try:
+        _write_strict_json(value, writer)
+    except _StrictJsonLimitExceeded:
+        return maximum_bytes + 1
+    return writer.byte_length
 
 
 def encode_response_frame(payload: Any, maximum_bytes: int | None = None) -> bytes:
     """Encode one compact strict-JSON LF frame without retaining oversized prefixes."""
     limit = MAX_RESPONSE_FRAME_BYTES if maximum_bytes is None else maximum_bytes
-    encoded = bytearray()
-    for chunk in _iter_strict_json(payload):
-        chunk_bytes = chunk.encode("utf-8")
-        if len(encoded) + len(chunk_bytes) + 1 > limit:
-            raise ResponseFrameTooLargeError("Response frame exceeds its configured byte limit.")
-        encoded.extend(chunk_bytes)
-    if len(encoded) + 1 > limit:
-        raise ResponseFrameTooLargeError("Response frame exceeds its configured byte limit.")
-    encoded.append(0x0A)
-    return bytes(encoded)
+    writer = _StrictJsonWriter(limit - 1, retain_bytes=True)
+    try:
+        _write_strict_json(payload, writer)
+    except _StrictJsonLimitExceeded:
+        raise ResponseFrameTooLargeError("Response frame exceeds its configured byte limit.") from None
+    return writer.frame()
 
 
-def _iter_strict_json(value: Any) -> Iterator[str]:
+class _StrictJsonLimitExceeded(Exception):
+    """Internal bounded-size sentinel."""
+
+
+class _StrictJsonWriter:
+    def __init__(self, maximum_bytes: int, *, retain_bytes: bool) -> None:
+        self.maximum_bytes = maximum_bytes
+        self.byte_length = 0
+        self._encoded = bytearray() if retain_bytes else None
+
+    @property
+    def remaining_bytes(self) -> int:
+        return self.maximum_bytes - self.byte_length
+
+    def write(self, value: str) -> None:
+        encoded = value.encode("utf-8")
+        if len(encoded) > self.remaining_bytes:
+            raise _StrictJsonLimitExceeded
+        self.byte_length += len(encoded)
+        if self._encoded is not None:
+            self._encoded.extend(encoded)
+
+    def reject_oversized_scalar(self) -> None:
+        raise _StrictJsonLimitExceeded
+
+    def frame(self) -> bytes:
+        if self._encoded is None:
+            raise AssertionError("A sizing-only strict JSON writer has no frame.")
+        self._encoded.append(0x0A)
+        return bytes(self._encoded)
+
+
+def _write_strict_json(value: Any, writer: _StrictJsonWriter) -> None:
     active_containers: set[int] = set()
     try:
-        yield from _iter_strict_json_value(value, 0, active_containers)
+        _write_strict_json_value(value, 0, active_containers, writer)
+    except _StrictJsonLimitExceeded:
+        raise
     except ResponseEncodingError:
         raise
     except (TypeError, ValueError, OverflowError, RecursionError, RuntimeError, UnicodeError) as error:
         raise ResponseEncodingError("Response could not be encoded as strict JSON.") from error
 
 
-def _iter_strict_json_value(
+def _write_strict_json_value(
     value: Any,
     parent_depth: int,
     active_containers: set[int],
-) -> Iterator[str]:
+    writer: _StrictJsonWriter,
+) -> None:
     value_type = type(value)
     if value_type is str:
-        yield _encode_json_string(value)
+        _write_json_string(value, writer)
         return
     if value is None:
-        yield "null"
+        writer.write("null")
         return
     if value_type is bool:
-        yield "true" if value else "false"
+        writer.write("true" if value else "false")
         return
     if value_type is int:
-        yield json.dumps(value, allow_nan=False, separators=(",", ":"))
+        _write_json_integer(value, writer)
         return
     if value_type is float:
         if not math.isfinite(value):
             raise ResponseEncodingError("Response contains a non-finite JSON number.")
-        yield json.dumps(value, allow_nan=False, separators=(",", ":"))
+        writer.write(json.dumps(value, allow_nan=False, separators=(",", ":")))
         return
     if value_type not in {dict, list}:
         raise ResponseEncodingError("Response contains a value outside the strict JSON data model.")
@@ -88,35 +121,82 @@ def _iter_strict_json_value(
     active_containers.add(identity)
     try:
         if value_type is dict:
-            yield "{"
+            writer.write("{")
             first = True
             for key, nested in value.items():
                 if type(key) is not str:
                     raise ResponseEncodingError("Response contains a non-string JSON object key.")
                 if not first:
-                    yield ","
+                    writer.write(",")
                 first = False
-                yield _encode_json_string(key)
-                yield ":"
-                yield from _iter_strict_json_value(nested, depth, active_containers)
-            yield "}"
+                _write_json_string(key, writer)
+                writer.write(":")
+                _write_strict_json_value(nested, depth, active_containers, writer)
+            writer.write("}")
         else:
-            yield "["
+            writer.write("[")
             first = True
             for nested in value:
                 if not first:
-                    yield ","
+                    writer.write(",")
                 first = False
-                yield from _iter_strict_json_value(nested, depth, active_containers)
-            yield "]"
+                _write_strict_json_value(nested, depth, active_containers, writer)
+            writer.write("]")
     finally:
         active_containers.remove(identity)
 
 
-def _encode_json_string(value: str) -> str:
-    try:
-        for offset in range(0, len(value), 16 * 1024):
-            value[offset : offset + 16 * 1024].encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ResponseEncodingError("Response contains text that is not valid UTF-8.") from error
-    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+def _write_json_integer(value: int, writer: _StrictJsonWriter) -> None:
+    sign_bytes = 1 if value < 0 else 0
+    bit_length = value.bit_length()
+    decimal_digits = 1 if bit_length == 0 else ((bit_length - 1) * _LOG10_2_LOWER_NUMERATOR) // _LOG10_2_DENOMINATOR + 1
+    if sign_bytes + decimal_digits > writer.remaining_bytes:
+        writer.reject_oversized_scalar()
+    threshold = 10**decimal_digits
+    if value >= threshold or value <= -threshold:
+        decimal_digits += 1
+    if sign_bytes + decimal_digits > writer.remaining_bytes:
+        writer.reject_oversized_scalar()
+    writer.write(json.dumps(value, allow_nan=False, separators=(",", ":")))
+
+
+def _write_json_string(value: str, writer: _StrictJsonWriter) -> None:
+    writer.write('"')
+    run_start = 0
+    for index, character in enumerate(value):
+        codepoint = ord(character)
+        escaped = _escaped_json_character(character, codepoint)
+        if escaped is None and index - run_start < _JSON_STRING_CHUNK_CHARACTERS:
+            continue
+        if run_start < index:
+            writer.write(value[run_start:index])
+        if escaped is not None:
+            writer.write(escaped)
+            run_start = index + 1
+        else:
+            run_start = index
+    if run_start < len(value):
+        writer.write(value[run_start:])
+    writer.write('"')
+
+
+def _escaped_json_character(character: str, codepoint: int) -> str | None:
+    if character == '"':
+        return '\\"'
+    if character == "\\":
+        return "\\\\"
+    if character == "\b":
+        return "\\b"
+    if character == "\f":
+        return "\\f"
+    if character == "\n":
+        return "\\n"
+    if character == "\r":
+        return "\\r"
+    if character == "\t":
+        return "\\t"
+    if codepoint < 0x20:
+        return f"\\u{codepoint:04x}"
+    if 0xD800 <= codepoint <= 0xDFFF:
+        raise ResponseEncodingError("Response contains text that is not valid UTF-8.")
+    return None

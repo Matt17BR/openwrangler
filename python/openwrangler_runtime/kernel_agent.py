@@ -13,7 +13,7 @@ from .response_framing import (
     ResponseFrameTooLargeError,
     encode_response_frame,
 )
-from .server import dispatch
+from .server import MAX_TRANSPORT_ID_BYTES, dispatch
 from .session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
@@ -43,7 +43,10 @@ def dispatch_json(payload: str) -> str:
     request_kind: str | None = None
     view_request_id = _safe_view_request_id(payload)
     try:
-        request_id, _, request = decode_envelope(json.loads(payload))
+        candidate_request_id, _, request = decode_envelope(json.loads(payload))
+        if _bounded_transport_id(candidate_request_id) is None:
+            raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
+        request_id = candidate_request_id
         request_kind = request["kind"]
         view_request_id = request.get("viewRequestId")
         if request_kind == "cancelRequest":
@@ -109,10 +112,21 @@ def _safe_request_id(payload: str) -> str:
     try:
         decoded = json.loads(payload)
         if isinstance(decoded, dict):
-            return str(decoded.get("requestId", "unknown"))
+            request_id = _bounded_transport_id(decoded.get("requestId"))
+            if request_id is not None:
+                return request_id
     except Exception:
         pass
     return "unknown"
+
+
+def _bounded_transport_id(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return value if len(value.encode("utf-8")) <= MAX_TRANSPORT_ID_BYTES else None
+    except UnicodeEncodeError:
+        return None
 
 
 def _safe_view_request_id(payload: str) -> str | None:
@@ -120,7 +134,7 @@ def _safe_view_request_id(payload: str) -> str | None:
         decoded = json.loads(payload)
         if isinstance(decoded, dict) and isinstance(decoded.get("request"), dict):
             view_request_id = decoded["request"].get("viewRequestId")
-            return view_request_id if isinstance(view_request_id, str) and view_request_id else None
+            return _bounded_transport_id(view_request_id)
     except Exception:
         pass
     return None
