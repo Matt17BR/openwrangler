@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from concurrent.futures import CancelledError
 from typing import Any
 
@@ -961,7 +963,7 @@ def test_ambiguous_view_column_is_returned_as_a_correlated_structured_diagnostic
     }
 
 
-def test_cancel_request_returns_a_protocol_acknowledgement() -> None:
+def test_cancel_request_rejects_an_unknown_target() -> None:
     result = json.loads(
         kernel_agent.dispatch_json(
             _envelope(
@@ -974,5 +976,158 @@ def test_cancel_request_returns_a_protocol_acknowledgement() -> None:
     assert result == {
         "protocolVersion": 2,
         "requestId": "cancel-command",
-        "response": {"kind": "cancelled", "targetRequestId": "target-request"},
+        "response": {
+            "kind": "error",
+            "code": "cancellation_unavailable",
+            "message": "The target request is unknown and cannot be cancelled.",
+            "recoverable": True,
+        },
     }
+
+
+def test_cancel_request_prevents_queued_work_and_original_response_confirms_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+    running_started = threading.Event()
+    release_running = threading.Event()
+    queued_dispatched = threading.Event()
+    results: dict[str, dict[str, Any]] = {}
+
+    def controlled_dispatch(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        request_id: str,
+    ) -> dict[str, Any]:
+        if request_id == "running-request":
+            running_started.set()
+            assert release_running.wait(2)
+        if request_id == "queued-request":
+            queued_dispatched.set()
+        return {"kind": "initialized", "runtimeVersion": "test"}
+
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+    monkeypatch.setattr(kernel_agent, "_dispatch_lock", threading.Lock())
+    monkeypatch.setattr(kernel_agent, "dispatch", controlled_dispatch)
+
+    def run(request_id: str) -> None:
+        results[request_id] = json.loads(
+            kernel_agent.dispatch_json(_envelope({"kind": "initialize"}, request_id=request_id))
+        )
+
+    running_thread = threading.Thread(target=run, args=("running-request",))
+    queued_thread = threading.Thread(target=run, args=("queued-request",))
+    running_thread.start()
+    assert running_started.wait(1)
+    queued_thread.start()
+    deadline = time.monotonic() + 1
+    while registry.state("queued-request") != "queued" and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert registry.state("queued-request") == "queued"
+
+    for cancellation_id in ("cancel-queued", "cancel-queued-again"):
+        cancellation = json.loads(
+            kernel_agent.dispatch_json(
+                _envelope(
+                    {"kind": "cancelRequest", "targetRequestId": "queued-request"},
+                    request_id=cancellation_id,
+                )
+            )
+        )
+        assert cancellation["response"] == {"kind": "cancelled", "targetRequestId": "queued-request"}
+    assert queued_dispatched.is_set() is False
+
+    release_running.set()
+    running_thread.join(2)
+    queued_thread.join(2)
+    assert running_thread.is_alive() is False
+    assert queued_thread.is_alive() is False
+    assert results["running-request"]["response"]["kind"] == "initialized"
+    assert results["queued-request"]["response"] == {
+        "kind": "cancelled",
+        "targetRequestId": "queued-request",
+    }
+    assert queued_dispatched.is_set() is False
+
+    after_completion = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {"kind": "cancelRequest", "targetRequestId": "queued-request"},
+                request_id="cancel-completed-queued",
+            )
+        )
+    )
+    assert after_completion["response"] == {
+        "kind": "error",
+        "code": "cancellation_unavailable",
+        "message": "The target request has already completed; its original correlated response remains authoritative.",
+        "recoverable": True,
+    }
+
+
+def test_cancel_request_does_not_claim_to_interrupt_running_work_or_hide_late_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+    started = threading.Event()
+    release = threading.Event()
+    result: dict[str, Any] = {}
+
+    def running_dispatch(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+    ) -> dict[str, Any]:
+        started.set()
+        assert release.wait(2)
+        return {"kind": "initialized", "runtimeVersion": "late-result"}
+
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+    monkeypatch.setattr(kernel_agent, "_dispatch_lock", threading.Lock())
+    monkeypatch.setattr(kernel_agent, "dispatch", running_dispatch)
+
+    def run() -> None:
+        result.update(
+            json.loads(kernel_agent.dispatch_json(_envelope({"kind": "initialize"}, request_id="running-target")))
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert started.wait(1)
+
+    for cancellation_id in ("cancel-running", "cancel-running-again"):
+        cancellation = json.loads(
+            kernel_agent.dispatch_json(
+                _envelope(
+                    {"kind": "cancelRequest", "targetRequestId": "running-target"},
+                    request_id=cancellation_id,
+                )
+            )
+        )
+        assert cancellation["response"] == {
+            "kind": "error",
+            "code": "cancellation_unavailable",
+            "message": (
+                "The target request is already running and cannot be interrupted; "
+                "its original correlated response remains authoritative."
+            ),
+            "recoverable": True,
+        }
+
+    release.set()
+    thread.join(2)
+    assert thread.is_alive() is False
+    assert result["requestId"] == "running-target"
+    assert result["response"] == {"kind": "initialized", "runtimeVersion": "late-result"}
+
+    completed = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {"kind": "cancelRequest", "targetRequestId": "running-target"},
+                request_id="cancel-after-completion",
+            )
+        )
+    )
+    assert completed["response"]["kind"] == "error"
+    assert completed["response"]["code"] == "cancellation_unavailable"
+    assert "already completed" in completed["response"]["message"]

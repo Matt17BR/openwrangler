@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import traceback
+from collections import OrderedDict
 from collections.abc import Mapping
 from concurrent.futures import CancelledError
+from threading import Lock
 
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
@@ -33,8 +35,67 @@ _RECOVERABLE_RESPONSE_ENCODING_KINDS = {
     "inspectStep",
     "cancelRequest",
 }
+_COMPLETED_REQUEST_HISTORY_LIMIT = 256
+
+
+class _NotebookRequestRegistry:
+    """Track the bounded lifecycle visible to concurrent notebook dispatches."""
+
+    def __init__(self, completed_limit: int = _COMPLETED_REQUEST_HISTORY_LIMIT) -> None:
+        self._completed_limit = completed_limit
+        self._lock = Lock()
+        self._live: dict[str, str] = {}
+        self._completed: OrderedDict[str, None] = OrderedDict()
+
+    def queue(self, request_id: str) -> None:
+        with self._lock:
+            if request_id in self._live:
+                raise ProtocolError("requestId is already active in the notebook runtime.")
+            self._completed.pop(request_id, None)
+            self._live[request_id] = "queued"
+
+    def start(self, request_id: str) -> bool:
+        with self._lock:
+            state = self._live.get(request_id)
+            if state == "cancelled":
+                return False
+            if state != "queued":
+                raise RuntimeError("Notebook request left the queued state before dispatch.")
+            self._live[request_id] = "running"
+            return True
+
+    def complete(self, request_id: str) -> None:
+        with self._lock:
+            self._live.pop(request_id, None)
+            self._completed[request_id] = None
+            self._completed.move_to_end(request_id)
+            while len(self._completed) > self._completed_limit:
+                self._completed.popitem(last=False)
+
+    def cancel(self, request_id: str) -> str:
+        with self._lock:
+            state = self._live.get(request_id)
+            if state == "queued":
+                self._live[request_id] = "cancelled"
+                return "cancelled"
+            if state is not None:
+                return state
+            if request_id in self._completed:
+                self._completed.move_to_end(request_id)
+                return "completed"
+            return "unknown"
+
+    def state(self, request_id: str) -> str:
+        with self._lock:
+            state = self._live.get(request_id)
+            if state is not None:
+                return state
+            return "completed" if request_id in self._completed else "unknown"
+
 
 _manager = SessionManager()
+_request_registry = _NotebookRequestRegistry()
+_dispatch_lock = Lock()
 
 
 def dispatch_json(payload: str) -> str:
@@ -50,9 +111,9 @@ def dispatch_json(payload: str) -> str:
         request_kind = request["kind"]
         view_request_id = request.get("viewRequestId")
         if request_kind == "cancelRequest":
-            response = {"kind": "cancelled", "targetRequestId": request["targetRequestId"]}
+            response = _cancel_request(request["targetRequestId"])
         else:
-            response = dispatch(_manager, request, request_id)
+            response = _dispatch_request(request_id, request)
         return _encode_response(request_id, response)
     except CancelledError:
         response = {"kind": "cancelled", "targetRequestId": request_id}
@@ -98,6 +159,33 @@ def dispatch_json(payload: str) -> str:
     if view_request_id:
         response["viewRequestId"] = view_request_id
     return _encode_response(request_id, response)
+
+
+def _dispatch_request(request_id: str, request: dict[str, object]) -> dict[str, object]:
+    _request_registry.queue(request_id)
+    try:
+        with _dispatch_lock:
+            if not _request_registry.start(request_id):
+                raise CancelledError
+            return dispatch(_manager, request, request_id)
+    finally:
+        _request_registry.complete(request_id)
+
+
+def _cancel_request(target_request_id: str) -> dict[str, object]:
+    state = _request_registry.cancel(target_request_id)
+    if state == "cancelled":
+        return {"kind": "cancelled", "targetRequestId": target_request_id}
+    if state == "running":
+        message = (
+            "The target request is already running and cannot be interrupted; "
+            "its original correlated response remains authoritative."
+        )
+    elif state == "completed":
+        message = "The target request has already completed; its original correlated response remains authoritative."
+    else:
+        message = "The target request is unknown and cannot be cancelled."
+    return error_response(message, code="cancellation_unavailable")
 
 
 def _encode_response(request_id: str, response: Mapping[str, object]) -> str:
