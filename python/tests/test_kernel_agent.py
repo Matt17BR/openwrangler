@@ -8,7 +8,8 @@ import pandas as pd
 import pytest
 
 from openwrangler_runtime import kernel_agent, notebook, server
-from openwrangler_runtime.engines import AmbiguousViewColumnError
+from openwrangler_runtime import session as session_runtime
+from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
 from openwrangler_runtime.protocol import response_envelope
 from openwrangler_runtime.response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 from openwrangler_runtime.session import (
@@ -32,6 +33,53 @@ def _envelope(request: dict[str, Any], *, request_id: str = "kernel-request") ->
             "request": request,
         }
     )
+
+
+def test_standalone_and_kernel_dispatch_share_generated_code_preflight(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "shared-preflight.csv"
+    path.write_text("value\n1\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend="pandas",
+        mode="editing",
+        page_size=20,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    request = {
+        "kind": "previewStep",
+        "sessionId": session_id,
+        "revision": 0,
+        "step": {
+            "id": "shared-code-preflight",
+            "kind": "customCode",
+            "params": {"code": "result = df"},
+        },
+        "offset": 0,
+        "limit": 20,
+        "columnOffset": 0,
+        "columnLimit": 64,
+    }
+    monkeypatch.setattr(session_runtime, "MAX_GENERATED_PYTHON_CODE_UTF8_BYTES", 256)
+
+    with pytest.raises(EngineError, match=r"256 UTF-8 bytes"):
+        server.dispatch(manager, request, "standalone-code-preflight")
+    assert manager.sessions[session_id].revision == 0
+    assert manager.sessions[session_id].draft_step is None
+
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    kernel_response = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id="kernel-code-preflight")))[
+        "response"
+    ]
+    assert kernel_response == {
+        "kind": "error",
+        "code": "engine_error",
+        "message": "Generated Python code may contain at most 256 UTF-8 bytes.",
+        "recoverable": True,
+    }
+    assert manager.sessions[session_id].revision == 0
+    assert manager.sessions[session_id].draft_step is None
+    manager.close_session(session_id, 0)
 
 
 def test_kernel_agent_opens_an_opaque_live_result_handle(monkeypatch) -> None:

@@ -30,6 +30,10 @@ from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
 from .pivot_wider import PivotWiderContractError, checked_pivot_wider_column_count
 from .protocol import MAX_COLUMN_LIMIT
+from .protocol_limits_generated import (
+    MAX_GENERATED_PYTHON_CODE_UTF8_BYTES,
+    MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES,
+)
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
 from .version import __version__
 
@@ -668,6 +672,12 @@ class SessionManager:
                 replace_index = matches[0]
                 if normalized["id"] != replace_step_id:
                     raise EngineError("An edited step must retain the applied step ID it replaces.")
+            candidate_public_plan = (
+                [*session.plan, normalized]
+                if replace_index is None
+                else [*session.plan[:replace_index], normalized, *session.plan[replace_index + 1 :]]
+            )
+            self._preflight_retained_plan(candidate_public_plan)
             retained_steps = session.plan if replace_index is None else session.plan[:replace_index]
             if any(applied["id"] == normalized["id"] for applied in retained_steps):
                 raise EngineError(f"Applied step IDs must be unique: {normalized['id']}")
@@ -683,8 +693,21 @@ class SessionManager:
             base_shape = session.committed_shape
             base_schema = session.committed_schema
             retained_bound_steps = session.bound_plan if replace_index is None else session.bound_plan[:replace_index]
+            binding_schema = session.committed_schema
+            binding_lineage = session.committed_lineage
+            if replace_index is not None:
+                binding_schema = session.plan_input_schemas[replace_index]
+                binding_lineage = self._lineage_from_schema(binding_schema)
+            try:
+                bound_step = bind_step(normalized, binding_schema, binding_lineage)
+            except ColumnBindingError as error:
+                raise EngineError(str(error)) from error
+            candidate_bound_plan = [*retained_bound_steps, bound_step]
+            generated_code = self._compile_plan_with_limits(session.engine, candidate_bound_plan)
             if replace_index is not None:
                 base, base_lineage, base_shape, base_schema = self._replay(session, session.bound_plan[:replace_index])
+                if schema_with_lineage(base_schema, base_lineage) != binding_schema:
+                    raise EngineError("The applied cleaning-step history is inconsistent.")
                 original_bound_step = session.bound_plan[replace_index]
                 diff_base = self._apply_transform_with_row_ids(session, base, original_bound_step, base_shape)
                 diff_base_shape = session.engine.shape(diff_base)
@@ -701,13 +724,6 @@ class SessionManager:
                 diff_base_view_shape = (
                     session.engine.shape(diff_base_view) if reconciled_before_filter["filters"] else diff_base_shape
                 )
-
-            try:
-                bound_step = bind_step(normalized, base_schema, base_lineage)
-            except ColumnBindingError as error:
-                raise EngineError(str(error)) from error
-            candidate_bound_plan = [*retained_bound_steps, bound_step]
-
             draft = self._apply_transform_with_row_ids(session, base, bound_step, base_shape)
             draft_shape = session.engine.shape(draft)
             draft_schema = self._schema_after_transform(session.engine.schema(draft), bound_step)
@@ -788,7 +804,7 @@ class SessionManager:
                     if normalized["kind"] == "fillMissingValues"
                     else {}
                 ),
-                "code": session.engine.compile_plan(candidate_bound_plan),
+                "code": generated_code,
                 "warnings": list(normalized["params"].get("warnings", [])),
             }
             return self._preflight_mutation_response(response, response_preflight)
@@ -816,6 +832,7 @@ class SessionManager:
 
             step_index = matches[0]
             bound_step = session.bound_plan[step_index]
+            generated_code = self._compile_plan_with_limits(session.engine, session.bound_plan[: step_index + 1])
             before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
             after = self._apply_transform_with_row_ids(session, before, bound_step, before_shape)
             after_shape = session.engine.shape(after)
@@ -884,7 +901,7 @@ class SessionManager:
                     before_page=input_page,
                     after_page=output_page,
                 ),
-                "code": session.engine.compile_plan(session.bound_plan[: step_index + 1]),
+                "code": generated_code,
             }
             self._strict_response_payload_size(
                 response,
@@ -930,6 +947,15 @@ class SessionManager:
                 raise EngineError(
                     "An earlier-step replacement must be applied through the host plan-rewrite transaction."
                 )
+            candidate_plan = [*session.plan, session.draft_step]
+            candidate_bound_plan = [*session.bound_plan, session.draft_bound_step]
+            if session.replace_step_id is not None:
+                candidate_plan[-2] = session.draft_step
+                candidate_plan.pop()
+                candidate_bound_plan[-2] = session.draft_bound_step
+                candidate_bound_plan.pop()
+            self._preflight_retained_plan(candidate_plan)
+            generated_code = self._compile_plan_with_limits(session.engine, candidate_bound_plan)
             previous_restore = deepcopy(session.last_applied_view_restore)
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
@@ -955,6 +981,7 @@ class SessionManager:
                 limit,
                 column_offset,
                 column_limit,
+                generated_code=generated_code,
                 reuse_filtered=True,
             )
             if session.view_change_epoch == view_change_epoch_before_draft:
@@ -999,6 +1026,8 @@ class SessionManager:
             ):
                 raise EngineError("There is no draft step to discard.")
             view_changed_during_draft = session.view_change_epoch != session.draft_base_view_change_epoch
+            self._preflight_retained_plan(session.plan)
+            generated_code = self._compile_plan_with_limits(session.engine, session.bound_plan)
             filter_model = deepcopy(
                 session.filter_model if view_changed_during_draft else session.draft_base_filter_model
             )
@@ -1011,6 +1040,7 @@ class SessionManager:
                 limit,
                 column_offset,
                 column_limit,
+                generated_code=generated_code,
                 filter_model=filter_model,
                 previous_schema=previous_schema,
             )
@@ -1046,6 +1076,10 @@ class SessionManager:
                 and restore.after == session.filter_model
                 else None
             )
+            candidate_plan = session.plan[:-1]
+            candidate_bound_plan = session.bound_plan[:-1]
+            self._preflight_retained_plan(candidate_plan)
+            generated_code = self._compile_plan_with_limits(session.engine, candidate_bound_plan)
             previous_schema = session.committed_schema
             session.plan.pop()
             session.bound_plan.pop()
@@ -1063,6 +1097,7 @@ class SessionManager:
                 limit,
                 column_offset,
                 column_limit,
+                generated_code=generated_code,
                 filter_model=restore_filter_model,
                 previous_schema=None if restore_filter_model is not None else previous_schema,
             )
@@ -1503,6 +1538,7 @@ class SessionManager:
         column_offset: int,
         column_limit: int,
         *,
+        generated_code: str,
         filter_model: Mapping[str, Any] | None = None,
         previous_schema: Sequence[Mapping[str, Any]] | None = None,
         reuse_filtered: bool = False,
@@ -1529,8 +1565,107 @@ class SessionManager:
             # An empty cleaning plan has no code to keep or export. This also
             # matches a newly opened session and the R runtime, instead of
             # leaving an identity-function preview behind after Discard/Undo.
-            "code": session.engine.compile_plan(session.bound_plan) if session.bound_plan else "",
+            "code": generated_code,
         }
+
+    @staticmethod
+    def _preflight_retained_plan(plan: Sequence[Mapping[str, Any]]) -> int:
+        try:
+            size = strict_json_byte_length(plan, MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES)
+        except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as error:
+            raise EngineError("The retained cleaning plan must be compact strict-JSON UTF-8 data.") from error
+        if size > MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES:
+            raise EngineError(
+                "The retained cleaning plan may contain at most "
+                f"{MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES:,} compact strict-JSON UTF-8 bytes."
+            )
+        return size
+
+    @classmethod
+    def _compile_plan_with_limits(
+        cls,
+        engine: DataFrameEngine,
+        bound_plan: Sequence[Mapping[str, Any]],
+    ) -> str:
+        if not bound_plan:
+            return ""
+        cls._preflight_custom_code_generation(bound_plan)
+        generated_code = engine.compile_plan(bound_plan)
+        if not isinstance(generated_code, str):
+            raise EngineError("The dataframe engine returned malformed generated Python code.")
+        try:
+            size = cls._bounded_utf8_size(generated_code, MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
+        except UnicodeEncodeError as error:
+            raise EngineError("Generated Python code must contain valid Unicode text.") from error
+        if size > MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:
+            raise EngineError(
+                f"Generated Python code may contain at most {MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:,} UTF-8 bytes."
+            )
+        return generated_code
+
+    @staticmethod
+    def _bounded_utf8_size(value: str, maximum_bytes: int) -> int:
+        total = 0
+        for offset in range(0, len(value), 4096):
+            total += len(value[offset : offset + 4096].encode("utf-8"))
+            if total > maximum_bytes:
+                return total
+        return total
+
+    @classmethod
+    def _preflight_custom_code_generation(cls, bound_plan: Sequence[Mapping[str, Any]]) -> None:
+        """Reject line expansion before an adapter can allocate split custom-code lines."""
+
+        generated_bytes = 0
+        for step in bound_plan:
+            if step.get("kind") != "customCode":
+                continue
+            params = step.get("params")
+            code = params.get("code") if isinstance(params, Mapping) else None
+            if not isinstance(code, str):
+                raise EngineError("The bound Custom Code step is malformed.")
+            code_bytes = cls._bounded_utf8_size(code, MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
+            line_count, separator_bytes = cls._splitlines_shape(code)
+            # Every adapter prefixes each custom-code line with eight spaces
+            # and joins it with one LF. This exact custom-line contribution is
+            # a lower bound for the final program, so crossing the public code
+            # budget here proves rejection without constructing splitlines().
+            generated_bytes += code_bytes - separator_bytes + (line_count * 9)
+            if generated_bytes > MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:
+                raise EngineError(
+                    f"Generated Python code may contain at most {MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:,} UTF-8 bytes."
+                )
+
+    @staticmethod
+    def _splitlines_shape(value: str) -> tuple[int, int]:
+        """Return splitlines() count and removed UTF-8 separator bytes without allocation."""
+
+        line_count = 0
+        separator_bytes = 0
+        index = 0
+        ended_with_separator = False
+        while index < len(value):
+            character = value[index]
+            if character == "\r":
+                line_count += 1
+                separator_bytes += 1
+                index += 1
+                if index < len(value) and value[index] == "\n":
+                    separator_bytes += 1
+                    index += 1
+                ended_with_separator = True
+                continue
+            if character in {"\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}:
+                line_count += 1
+                separator_bytes += len(character.encode("utf-8"))
+                index += 1
+                ended_with_separator = True
+                continue
+            ended_with_separator = False
+            index += 1
+        if value and not ended_with_separator:
+            line_count += 1
+        return line_count, separator_bytes
 
     def _replay(
         self,
