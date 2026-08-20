@@ -57,7 +57,7 @@ export function NumericHistogram({
   const activeBinLabel = activeBin
     ? histogramBinLabel(activeBin, denominator, valueMode, activeBinIndex === visualization.bins.length - 1)
     : undefined;
-  const activeBinStatus = activeBin ? histogramBinStatus(activeBin) : undefined;
+  const activeBinStatus = activeBin ? histogramBinStatus(activeBin, denominator, valueMode) : undefined;
   const interactive = onSelectBin !== undefined;
   const currentBinIndex = activeBinIndex ?? 0;
   const currentBin = visualization.bins[currentBinIndex];
@@ -183,9 +183,14 @@ export function NumericHistogram({
   );
 }
 
-function histogramBinStatus(bin: NumericVisualization["bins"][number]): string {
+function histogramBinStatus(
+  bin: NumericVisualization["bins"][number],
+  denominator: number,
+  valueMode: ProfileValueMode
+): string {
   const count = `${bin.count.toLocaleString()} ${bin.count === 1 ? "row" : "rows"}`;
-  return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${count}`;
+  const value = valueMode === "count" ? count : formatProfilePercent(bin.count, denominator);
+  return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${value}`;
 }
 
 function histogramBinLabel(
