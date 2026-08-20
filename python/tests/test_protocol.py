@@ -26,6 +26,40 @@ def test_protocol_v2_decodes_correlated_request() -> None:
     assert request == {"kind": "initialize"}
 
 
+@pytest.mark.parametrize(
+    "target_request_id",
+    [[], {}, 7, "", "a" * 257, ("\u00e9" * 128) + "a", "\ud800"],
+    ids=["array", "object", "number", "empty", "257-ascii-bytes", "257-multibyte-bytes", "lone-surrogate"],
+)
+def test_cancel_request_rejects_malformed_target_request_ids(target_request_id: object) -> None:
+    with pytest.raises(
+        ProtocolError,
+        match="targetRequestId must be a non-empty string of at most 256 UTF-8 bytes",
+    ):
+        decode_envelope(
+            {
+                "protocolVersion": 2,
+                "requestId": "cancel-malformed",
+                "priority": "interactive",
+                "request": {"kind": "cancelRequest", "targetRequestId": target_request_id},
+            }
+        )
+
+
+@pytest.mark.parametrize("target_request_id", ["a" * 256, "\u00e9" * 128], ids=["ascii", "multibyte"])
+def test_cancel_request_accepts_exactly_256_utf8_bytes(target_request_id: str) -> None:
+    decoded = decode_envelope(
+        {
+            "protocolVersion": 2,
+            "requestId": "cancel-boundary",
+            "priority": "interactive",
+            "request": {"kind": "cancelRequest", "targetRequestId": target_request_id},
+        }
+    )
+
+    assert decoded[2]["targetRequestId"] == target_request_id
+
+
 def test_open_session_accepts_only_a_non_empty_requested_session_identity() -> None:
     envelope = {
         "protocolVersion": 2,

@@ -12,7 +12,7 @@ from typing import Any
 
 from .custom_code_output import isolate_standalone_protocol_output
 from .engines import AmbiguousViewColumnError, EngineError
-from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
+from .protocol import MAX_TRANSPORT_ID_BYTES, ProtocolError, decode_envelope, error_response, response_envelope
 from .response_framing import (
     MAX_RESPONSE_FRAME_BYTES,
     ResponseEncodingError,
@@ -32,7 +32,6 @@ from .session import (
 
 SHUTDOWN_GRACE_SECONDS = 1.5
 MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
-MAX_TRANSPORT_ID_BYTES = 256
 MAX_DIAGNOSTIC_BYTES = 4 * 1024
 MAX_DIAGNOSTIC_DETAIL_BYTES = 16 * 1024
 INTERACTIVE_WORKERS = 4
@@ -564,7 +563,7 @@ def _view_request_id_for_payload(payload: Any) -> str | None:
 def _validate_transport_ids(request_id: str, request: Mapping[str, Any]) -> None:
     if not _is_bounded_transport_id(request_id):
         raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
-    for field in ("sessionId", "requestedSessionId", "viewRequestId", "targetRequestId"):
+    for field in ("sessionId", "requestedSessionId", "viewRequestId"):
         if field in request and not _is_bounded_transport_id(request[field]):
             raise ProtocolError(f"{field} must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
 

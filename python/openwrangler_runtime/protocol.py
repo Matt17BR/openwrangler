@@ -9,6 +9,7 @@ from .operations import OperationError, validate_step
 PROTOCOL_VERSION = 2
 MAX_PAGE_LIMIT = 10_000
 MAX_COLUMN_LIMIT = 256
+MAX_TRANSPORT_ID_BYTES = 256
 REQUEST_PRIORITIES = {"interactive", "background"}
 SOURCE_ALLOWED_FIELDS = {"kind", "label", "path", "uri", "variableName", "importOptions"}
 _ECMASCRIPT_TRIM_CHARACTERS = (
@@ -137,6 +138,9 @@ def decode_request(value: Any) -> dict[str, Any]:
         raise ProtocolError("viewRequestId must be a non-empty string.")
     if "stepId" in request and (not isinstance(request["stepId"], str) or not request["stepId"]):
         raise ProtocolError("stepId must be a non-empty string.")
+    if kind == "cancelRequest":
+        request = dict(request)
+        request["targetRequestId"] = _validate_target_request_id(request["targetRequestId"])
     for field in ("pageSize", "limit"):
         if field in request and (not _is_non_negative_integer(request[field]) or request[field] < 1):
             raise ProtocolError(f"{field} must be a positive integer.")
@@ -311,6 +315,19 @@ def error_response(
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ProtocolError(f"{label} must be a JSON object.")
+    return value
+
+
+def _validate_target_request_id(value: Any) -> str:
+    message = f"targetRequestId must be a non-empty string of at most {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes."
+    if not isinstance(value, str) or not value or len(value) > MAX_TRANSPORT_ID_BYTES:
+        raise ProtocolError(message)
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ProtocolError(message) from None
+    if len(encoded) > MAX_TRANSPORT_ID_BYTES:
+        raise ProtocolError(message)
     return value
 
 
