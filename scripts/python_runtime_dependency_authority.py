@@ -256,6 +256,8 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
         descriptor = os.open(path, flags)
         try:
             opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                _fail("authority_unsafe")
             if _identity(opened) != _identity(before):
                 _fail("authority_changed")
             chunks: list[bytes] = []
@@ -641,11 +643,41 @@ def _consumer_open(
     return os.open(path, flags, mode)
 
 
-def _consumer_unlink(path: Path, parent_receipt: ConsumerParentReceipt | None) -> None:
+def _consumer_unlink(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    expected_identity: tuple[int, int] | None = None,
+) -> bool:
+    if expected_identity is not None:
+        current = _consumer_lstat(path, parent_receipt)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink < 1
+            or (current.st_dev, current.st_ino) != expected_identity
+        ):
+            return False
     if parent_receipt is not None and parent_receipt.descriptor >= 0:
         os.unlink(path.name, dir_fd=parent_receipt.descriptor)
     else:
         path.unlink()
+    return True
+
+
+def _consumer_link(
+    first: Path,
+    second: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+) -> None:
+    if parent_receipt is not None and parent_receipt.descriptor >= 0:
+        os.link(
+            first.name,
+            second.name,
+            src_dir_fd=parent_receipt.descriptor,
+            dst_dir_fd=parent_receipt.descriptor,
+            follow_symlinks=False,
+        )
+    else:
+        os.link(first, second, follow_symlinks=False)
 
 
 def _consumer_snapshot(
@@ -659,6 +691,8 @@ def _consumer_snapshot(
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     try:
         before = _consumer_lstat(path, parent_receipt)
         if (
@@ -674,6 +708,8 @@ def _consumer_snapshot(
         descriptor = _consumer_open(path, flags, parent_receipt)
         try:
             opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                _fail("consumer_unsafe")
             if _identity(opened) != _identity(before):
                 _fail("consumer_changed")
             chunks: list[bytes] = []
@@ -881,44 +917,74 @@ def _claimed_snapshot_matches(
 
 
 def _open_cleanup_descriptor(
-    path: Path, parent_receipt: ConsumerParentReceipt | None
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    *,
+    allowed_links: frozenset[int] = frozenset({1}),
 ) -> int:
-    if os.name != "nt":
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        return _consumer_open(path, flags, parent_receipt)
-    if parent_receipt is not None:
-        _assert_consumer_parent(parent_receipt)
-    import msvcrt
-
-    kernel32 = ctypes.windll.kernel32
-    create_file = kernel32.CreateFileW
-    create_file.argtypes = [
-        ctypes.c_wchar_p,
-        ctypes.c_uint,
-        ctypes.c_uint,
-        ctypes.c_void_p,
-        ctypes.c_uint,
-        ctypes.c_uint,
-        ctypes.c_void_p,
-    ]
-    create_file.restype = ctypes.c_void_p
-    handle = create_file(
-        str(path),
-        0x80000000,
-        0x00000001 | 0x00000002 | 0x00000004,
-        None,
-        3,
-        0x00000080 | 0x00200000,
-        None,
-    )
-    if handle in {None, 0, ctypes.c_void_p(-1).value}:
-        _fail("consumer_changed")
+    descriptor = -1
     try:
-        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+        if os.name != "nt":
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            if hasattr(os, "O_NONBLOCK"):
+                flags |= os.O_NONBLOCK
+            descriptor = _consumer_open(path, flags, parent_receipt)
+        else:
+            if parent_receipt is not None:
+                _assert_consumer_parent(parent_receipt)
+            import msvcrt
+
+            kernel32 = ctypes.windll.kernel32
+            create_file = kernel32.CreateFileW
+            create_file.argtypes = [
+                ctypes.c_wchar_p,
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.c_void_p,
+            ]
+            create_file.restype = ctypes.c_void_p
+            handle = create_file(
+                str(path),
+                0x80000000,
+                0x00000001 | 0x00000002 | 0x00000004,
+                None,
+                3,
+                0x00000080 | 0x00200000,
+                None,
+            )
+            if handle in {None, 0, ctypes.c_void_p(-1).value}:
+                _fail("consumer_changed")
+            try:
+                descriptor = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+            except OSError:
+                kernel32.CloseHandle(ctypes.c_void_p(handle))
+                _fail("consumer_changed")
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink not in allowed_links
+            or opened.st_size > MAX_CONSUMER_BYTES
+        ):
+            _fail("consumer_changed")
+        return descriptor
+    except AuthorityError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
     except OSError:
-        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         _fail("consumer_changed")
 
 
@@ -926,10 +992,14 @@ def _descriptor_snapshot(
     descriptor: int,
     path: Path,
     parent_receipt: ConsumerParentReceipt | None,
+    *,
+    allowed_links: frozenset[int] | None = None,
 ) -> ConsumerSnapshot:
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or (
+            allowed_links is not None and before.st_nlink not in allowed_links
+        ):
             _fail("consumer_unsafe")
         if before.st_size > MAX_CONSUMER_BYTES:
             _fail("consumer_too_large")
@@ -962,33 +1032,109 @@ def _descriptor_snapshot(
     )
 
 
-def _retain_recovery_receipt(
+def _link_recovery_source(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    descriptor: int,
+) -> ConsumerSnapshot:
+    source: Path | None = None
+    for _attempt in range(8):
+        source = path.with_name(
+            f".{path.name}.openwrangler-source-{secrets.token_hex(16)}"
+        )
+        try:
+            _consumer_link(path, source, parent_receipt)
+            break
+        except FileExistsError:
+            source = None
+        except OSError:
+            _fail("consumer_cleanup_failed")
+    if source is None:
+        _fail("consumer_cleanup_failed")
+    snapshot = _descriptor_snapshot(
+        descriptor, source, parent_receipt, allowed_links=frozenset({2})
+    )
+    try:
+        named_path = _consumer_lstat(path, parent_receipt)
+        named_source = _consumer_lstat(source, parent_receipt)
+    except OSError:
+        _fail("consumer_cleanup_failed")
+    if (
+        _identity(named_path) != snapshot.identity
+        or _identity(named_source) != snapshot.identity
+        or named_path.st_nlink != 2
+        or named_source.st_nlink != 2
+        or stat.S_IMODE(named_source.st_mode) != snapshot.mode
+    ):
+        _fail("consumer_cleanup_failed")
+    return snapshot
+
+
+def _settled_recovery_source(
+    descriptor: int,
+    source: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+) -> ConsumerSnapshot:
+    previous: ConsumerSnapshot | None = None
+    for _attempt in range(8):
+        try:
+            current = _descriptor_snapshot(
+                descriptor,
+                source,
+                parent_receipt,
+                allowed_links=frozenset({1}),
+            )
+            named = _consumer_lstat(source, parent_receipt)
+        except (AuthorityError, OSError):
+            previous = None
+            continue
+        if (
+            _identity(named) != current.identity
+            or named.st_nlink != 1
+            or stat.S_IMODE(named.st_mode) != current.mode
+        ):
+            previous = None
+            continue
+        if previous is not None and _exact_snapshot_matches(current, previous):
+            return current
+        previous = current
+    _fail("consumer_cleanup_failed")
+
+
+def _publish_recovery_receipt(
     path: Path,
     snapshot: ConsumerSnapshot,
     parent_receipt: ConsumerParentReceipt | None,
-) -> Path:
-    descriptor = -1
+) -> ConsumerSnapshot:
+    stage: Path | None = None
     recovery: Path | None = None
+    descriptor = -1
+    reopened = -1
     try:
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
         for _attempt in range(8):
-            recovery = path.with_name(
-                f".{path.name}.openwrangler-recovery-{secrets.token_hex(16)}"
+            stage = path.with_name(
+                f".{path.name}.openwrangler-recovery-stage-{secrets.token_hex(16)}"
             )
             try:
-                descriptor = _consumer_open(recovery, flags, parent_receipt, 0o600)
+                descriptor = _consumer_open(stage, flags, parent_receipt, 0o600)
                 break
             except FileExistsError:
-                recovery = None
-        if descriptor < 0 or recovery is None:
+                stage = None
+        if descriptor < 0 or stage is None:
+            _fail("consumer_cleanup_failed")
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             _fail("consumer_cleanup_failed")
         file_chmod = getattr(os, "fchmod", None)
         if file_chmod is not None:
-            file_chmod(descriptor, snapshot.mode)
+            file_chmod(descriptor, 0o600)
         else:
-            os.chmod(recovery, snapshot.mode)
+            os.chmod(stage, 0o600)
         offset = 0
         while offset < len(snapshot.raw):
             written = os.write(descriptor, snapshot.raw[offset:])
@@ -996,41 +1142,72 @@ def _retain_recovery_receipt(
                 _fail("consumer_cleanup_failed")
             offset += written
         os.fsync(descriptor)
-        written_metadata = os.fstat(descriptor)
-        expected = ConsumerSnapshot(
-            path=recovery,
-            raw=snapshot.raw,
-            text="",
-            identity=_identity(written_metadata),
-            mode=stat.S_IMODE(written_metadata.st_mode),
-            parent_receipt=parent_receipt,
+        staged = _descriptor_snapshot(
+            descriptor,
+            stage,
+            parent_receipt,
+            allowed_links=frozenset({1}),
         )
-        os.close(descriptor)
-        descriptor = -1
-        verify_flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            verify_flags |= os.O_NOFOLLOW
-        descriptor = _consumer_open(recovery, verify_flags, parent_receipt)
-        actual = _descriptor_snapshot(descriptor, recovery, parent_receipt)
-        named = _consumer_lstat(recovery, parent_receipt)
+        named_stage = _consumer_lstat(stage, parent_receipt)
         if (
-            not _exact_snapshot_matches(actual, expected)
-            or _identity(named) != actual.identity
-            or stat.S_IMODE(named.st_mode) != actual.mode
-            or named.st_nlink != 1
+            staged.raw != snapshot.raw
+            or staged.mode != 0o600
+            or _identity(named_stage) != staged.identity
+            or named_stage.st_nlink != 1
         ):
             _fail("consumer_cleanup_failed")
+        for _attempt in range(8):
+            recovery = path.with_name(
+                f".{path.name}.openwrangler-recovery-{secrets.token_hex(16)}"
+            )
+            if _rename_noreplace(
+                stage,
+                recovery,
+                parent_receipt,
+                require_named_parent=False,
+            ):
+                break
+            recovery = None
+        if recovery is None:
+            _fail("consumer_cleanup_failed")
+        stage = None
+        pinned = _descriptor_snapshot(
+            descriptor,
+            recovery,
+            parent_receipt,
+            allowed_links=frozenset({1}),
+        )
+        named_recovery = _consumer_lstat(recovery, parent_receipt)
+        if (
+            not _claimed_snapshot_matches(pinned, staged)
+            or _identity(named_recovery) != pinned.identity
+            or named_recovery.st_nlink != 1
+        ):
+            _fail("consumer_cleanup_failed")
+        reopened = _open_cleanup_descriptor(
+            recovery, parent_receipt, allowed_links=frozenset({1})
+        )
+        verified = _descriptor_snapshot(
+            reopened,
+            recovery,
+            parent_receipt,
+            allowed_links=frozenset({1}),
+        )
+        if not _exact_snapshot_matches(verified, pinned):
+            _fail("consumer_cleanup_failed")
+        os.close(reopened)
+        reopened = -1
+        if parent_receipt is not None and parent_receipt.descriptor >= 0:
+            os.fsync(parent_receipt.descriptor)
         os.close(descriptor)
         descriptor = -1
-        return recovery
-    except AuthorityError:
-        if descriptor >= 0:
+        return pinned
+    except (AuthorityError, OSError):
+        if reopened >= 0:
             try:
-                os.close(descriptor)
+                os.close(reopened)
             except OSError:
                 pass
-        raise
-    except (OSError, UnicodeError):
         if descriptor >= 0:
             try:
                 os.close(descriptor)
@@ -1067,41 +1244,14 @@ def _remove_owned(
             require_named_parent=require_named_parent,
         ):
             continue
+        descriptor = -1
         try:
             snapshot = _consumer_snapshot(
                 claimed,
                 parent_receipt,
                 require_named_parent=require_named_parent,
             )
-        except AuthorityError:
-            _rename_noreplace(
-                claimed,
-                path,
-                parent_receipt,
-                require_named_parent=require_named_parent,
-            )
-            return False
-        if not _claimed_snapshot_matches(snapshot, expected):
-            _rename_noreplace(
-                claimed,
-                path,
-                parent_receipt,
-                require_named_parent=require_named_parent,
-            )
-            return False
-        descriptor = -1
-        try:
-            descriptor = _open_cleanup_descriptor(claimed, parent_receipt)
-            held_before = _descriptor_snapshot(descriptor, claimed, parent_receipt)
-            named_before = _consumer_lstat(claimed, parent_receipt)
-            if (
-                not _exact_snapshot_matches(held_before, snapshot)
-                or _identity(named_before) != held_before.identity
-                or stat.S_IMODE(named_before.st_mode) != held_before.mode
-                or named_before.st_nlink != 1
-            ):
-                os.close(descriptor)
-                descriptor = -1
+            if not _claimed_snapshot_matches(snapshot, expected):
                 _rename_noreplace(
                     claimed,
                     path,
@@ -1109,23 +1259,69 @@ def _remove_owned(
                     require_named_parent=require_named_parent,
                 )
                 return False
-            _consumer_unlink(claimed, parent_receipt)
-            held_after = _descriptor_snapshot(descriptor, claimed, parent_receipt)
-            if _claimed_snapshot_matches(held_after, held_before):
-                os.close(descriptor)
-                descriptor = -1
-                return True
-            _retain_recovery_receipt(path, held_after, parent_receipt)
+            descriptor = _open_cleanup_descriptor(
+                claimed, parent_receipt, allowed_links=frozenset({1})
+            )
+            held_before = _descriptor_snapshot(
+                descriptor,
+                claimed,
+                parent_receipt,
+                allowed_links=frozenset({1}),
+            )
+            named_before = _consumer_lstat(claimed, parent_receipt)
+            if (
+                not _exact_snapshot_matches(held_before, snapshot)
+                or _identity(named_before) != held_before.identity
+                or named_before.st_nlink != 1
+            ):
+                _rename_noreplace(
+                    claimed,
+                    path,
+                    parent_receipt,
+                    require_named_parent=require_named_parent,
+                )
+                return False
+            linked = _link_recovery_source(claimed, parent_receipt, descriptor)
+            source = linked.path
+            if not _consumer_unlink(claimed, parent_receipt, linked.identity[:2]):
+                _rename_noreplace(
+                    claimed,
+                    path,
+                    parent_receipt,
+                    require_named_parent=require_named_parent,
+                )
+                return False
+            settled = _settled_recovery_source(descriptor, source, parent_receipt)
+            recovery = _publish_recovery_receipt(path, settled, parent_receipt)
+            confirmed = _settled_recovery_source(descriptor, source, parent_receipt)
+            if not _exact_snapshot_matches(confirmed, settled):
+                return False
+            if not _claimed_snapshot_matches(confirmed, linked):
+                return False
+            if not _consumer_unlink(source, parent_receipt, confirmed.identity[:2]):
+                return False
+            after_source_unlink = _descriptor_snapshot(
+                descriptor,
+                source,
+                parent_receipt,
+                allowed_links=frozenset({0, 1}),
+            )
+            if not _claimed_snapshot_matches(after_source_unlink, confirmed):
+                _publish_recovery_receipt(path, after_source_unlink, parent_receipt)
+                return False
             os.close(descriptor)
             descriptor = -1
-            return False
+            return _consumer_unlink(
+                recovery.path, parent_receipt, recovery.identity[:2]
+            )
         except (AuthorityError, OSError):
+            return False
+        finally:
             if descriptor >= 0:
                 try:
                     os.close(descriptor)
                 except OSError:
                     pass
-            return False
     return False
 
 
@@ -1139,6 +1335,7 @@ def _stage_sibling(
     descriptor = -1
     offset = 0
     owned_snapshot: ConsumerSnapshot | None = None
+    primary_error: AuthorityError | None = None
     try:
         if parent_receipt is not None:
             _assert_consumer_parent(parent_receipt)
@@ -1146,6 +1343,8 @@ def _stage_sibling(
             flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
+            if hasattr(os, "O_NONBLOCK"):
+                flags |= os.O_NONBLOCK
             for _attempt in range(8):
                 temporary = path.with_name(
                     f".{path.name}.openwrangler-{secrets.token_hex(16)}"
@@ -1197,50 +1396,80 @@ def _stage_sibling(
         if not _exact_snapshot_matches(staged, owned_snapshot):
             _fail("consumer_write_failed")
         return staged
-    except (AuthorityError, OSError, UnicodeDecodeError):
-        if descriptor >= 0:
-            if temporary is not None:
-                try:
-                    metadata = os.fstat(descriptor)
-                    owned_snapshot = ConsumerSnapshot(
-                        path=temporary,
-                        raw=raw[:offset],
-                        text="",
-                        identity=_identity(metadata),
-                        mode=stat.S_IMODE(metadata.st_mode),
-                        parent_receipt=parent_receipt,
-                    )
-                except OSError:
-                    owned_snapshot = None
+    except AuthorityError as error:
+        primary_error = error
+    except (OSError, UnicodeDecodeError):
+        primary_error = AuthorityError("consumer_write_failed")
+
+    cleanup_diagnostics: list[str] = []
+    if descriptor >= 0:
+        if temporary is not None:
             try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        if temporary is not None and (
-            owned_snapshot is None
-            or not _remove_owned(
-                temporary,
-                owned_snapshot,
-                parent_receipt,
+                metadata = os.fstat(descriptor)
+                owned_snapshot = ConsumerSnapshot(
+                    path=temporary,
+                    raw=raw[:offset],
+                    text="",
+                    identity=_identity(metadata),
+                    mode=stat.S_IMODE(metadata.st_mode),
+                    parent_receipt=parent_receipt,
+                )
+            except BaseException:  # noqa: BLE001 -- primary failure must survive cleanup
+                owned_snapshot = None
+        try:
+            os.close(descriptor)
+        except BaseException:  # noqa: BLE001 -- primary failure must survive cleanup
+            cleanup_diagnostics.append("staged_descriptor_close_failed")
+    if temporary is not None:
+        cleanup_failed = owned_snapshot is None
+        if owned_snapshot is not None:
+            try:
+                cleanup_failed = not _remove_owned(
+                    temporary,
+                    owned_snapshot,
+                    parent_receipt,
+                    require_named_parent=False,
+                )
+            except BaseException:  # noqa: BLE001 -- every cleanup attempt is isolated
+                cleanup_failed = True
+        if cleanup_failed:
+            cleanup_diagnostics.append("staged_cleanup_failed")
+    assert primary_error is not None
+    if cleanup_diagnostics:
+        diagnostics = (
+            *primary_error.cleanup_diagnostics,
+            *cleanup_diagnostics,
+        )
+        primary_error.cleanup_diagnostics = diagnostics
+        raise primary_error from AuthorityError(
+            "consumer_cleanup_failed", cleanup_diagnostics=tuple(cleanup_diagnostics)
+        )
+    raise primary_error
+
+
+def _cleanup_staged(
+    snapshots: Iterator[ConsumerSnapshot],
+) -> tuple[str, ...]:
+    diagnostics: list[str] = []
+    for snapshot in snapshots:
+        try:
+            removed = _remove_owned(
+                snapshot.path,
+                snapshot,
+                snapshot.parent_receipt,
                 require_named_parent=False,
             )
-        ):
-            _fail("consumer_cleanup_failed")
-        _fail("consumer_write_failed")
+        except BaseException:  # noqa: BLE001 -- every staged cleanup is isolated
+            removed = False
+        if not removed:
+            diagnostics.append("staged_cleanup_failed")
+    return tuple(diagnostics)
 
 
 def _remove_staged(snapshots: Iterator[ConsumerSnapshot]) -> None:
-    cleanup_failed = False
-    for snapshot in snapshots:
-        if not _remove_owned(
-            snapshot.path,
-            snapshot,
-            snapshot.parent_receipt,
-            require_named_parent=False,
-        ):
-            cleanup_failed = True
-    if cleanup_failed:
-        _fail("consumer_cleanup_failed")
+    diagnostics = _cleanup_staged(snapshots)
+    if diagnostics:
+        raise AuthorityError("consumer_cleanup_failed", cleanup_diagnostics=diagnostics)
 
 
 def _same_snapshot(
@@ -1339,6 +1568,7 @@ def _write_consumers_atomically(
     committed: dict[Path, ConsumerSnapshot] = {}
     replaced: list[Path] = []
     error_code: str | None = None
+    primary_error: BaseException | None = None
     try:
         for snapshot in targets:
             replacements[snapshot.path] = _stage_sibling(
@@ -1477,9 +1707,28 @@ def _write_consumers_atomically(
                 continue
             error_code = "consumer_rollback_failed"
         assert error_code is not None
-        _fail(error_code)
-    finally:
-        _remove_staged(iter(replacements.values()))
+        primary_error = AuthorityError(
+            error_code, cleanup_diagnostics=error.cleanup_diagnostics
+        )
+    except BaseException as error:  # noqa: BLE001 -- cleanup precedes propagation
+        primary_error = error
+
+    cleanup_diagnostics = _cleanup_staged(iter(replacements.values()))
+    if cleanup_diagnostics:
+        cleanup_error = AuthorityError(
+            "consumer_cleanup_failed",
+            cleanup_diagnostics=cleanup_diagnostics,
+        )
+        if primary_error is not None:
+            if isinstance(primary_error, AuthorityError):
+                primary_error.cleanup_diagnostics = (
+                    *primary_error.cleanup_diagnostics,
+                    *cleanup_diagnostics,
+                )
+            raise primary_error from cleanup_error
+        raise cleanup_error
+    if primary_error is not None:
+        raise primary_error
 
 
 def _open_authority_file(
@@ -1636,17 +1885,6 @@ def _cleanup_authority_lock_resources(
         except BaseException:  # noqa: BLE001 -- every cleanup attempt must be isolated
             diagnostics.append(code)
 
-    if os.name == "nt" and mutex_handle is not None:
-        kernel32 = ctypes.windll.kernel32
-        if mutex_acquired:
-            attempt(
-                "mutex_release_failed",
-                lambda: kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle)),
-            )
-        attempt(
-            "mutex_close_failed",
-            lambda: kernel32.CloseHandle(ctypes.c_void_p(mutex_handle)),
-        )
     if authority_descriptor >= 0:
         attempt(
             "authority_descriptor_close_failed",
@@ -1668,6 +1906,17 @@ def _cleanup_authority_lock_resources(
         attempt(
             "namespace_descriptor_close_failed",
             lambda: os.close(namespace_descriptor),
+        )
+    if os.name == "nt" and mutex_handle is not None:
+        kernel32 = ctypes.windll.kernel32
+        if mutex_acquired:
+            attempt(
+                "mutex_release_failed",
+                lambda: kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle)),
+            )
+        attempt(
+            "mutex_close_failed",
+            lambda: kernel32.CloseHandle(ctypes.c_void_p(mutex_handle)),
         )
     return tuple(diagnostics)
 
