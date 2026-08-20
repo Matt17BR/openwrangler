@@ -1355,15 +1355,19 @@ function childExit(child) {
   });
 }
 
-function childClose(child) {
-  return new Promise((resolveClose) => {
+function createChildCloseObserver(child) {
+  let release;
+  const promise = new Promise((resolveClose) => {
     let settled = false;
     let spawnError;
+    const removeListeners = () => {
+      child.off("error", onError);
+      child.off("close", onClose);
+    };
     const settle = (state) => {
       if (settled) return;
       settled = true;
-      child.off("error", onError);
-      child.off("close", onClose);
+      removeListeners();
       resolveClose(state);
     };
     const onError = (error) => {
@@ -1373,9 +1377,15 @@ function childClose(child) {
       if (child.pid === undefined) spawnError ??= error;
     };
     const onClose = (code, signal) => settle(spawnError ? { error: spawnError, code, signal } : { code, signal });
+    release = () => settle({ released: true });
     child.on("error", onError);
     child.once("close", onClose);
   });
+  return Object.freeze({ promise, release });
+}
+
+function childClose(child) {
+  return createChildCloseObserver(child).promise;
 }
 
 async function stopChild(child, exit) {
@@ -1976,9 +1986,16 @@ async function compileWindowsEditorProcessSupervisor(
     throw new Error("The Windows editor Job Object supervisor compilation stage could not start.", { cause: error });
   }
   const output = createBoundedCommandOutput(WINDOWS_JOB_BUILD_OUTPUT_MAX_BYTES);
-  child.stdout?.on("data", (chunk) => output.append("stdout", chunk));
-  child.stderr?.on("data", (chunk) => output.append("stderr", chunk));
-  const close = childClose(child);
+  const onCompilerStdout = (chunk) => output.append("stdout", chunk);
+  const onCompilerStderr = (chunk) => output.append("stderr", chunk);
+  const releaseCompilerOutputListeners = () => {
+    child.stdout?.off("data", onCompilerStdout);
+    child.stderr?.off("data", onCompilerStderr);
+  };
+  child.stdout?.on("data", onCompilerStdout);
+  child.stderr?.on("data", onCompilerStderr);
+  const closeObserver = createChildCloseObserver(child);
+  const close = closeObserver.promise;
   let deadlineTimer;
   let onBuildAbort;
   const observations = [
@@ -2018,12 +2035,13 @@ async function compileWindowsEditorProcessSupervisor(
       reason === "deadline"
         ? `The Windows editor Job Object supervisor compilation stage exceeded ${effectiveBuildTimeoutMs} ms.`
         : "The Windows editor Job Object supervisor compilation stage was cancelled.";
-    const settlement = await settleWindowsCompilerProcessTree(child, close, {
+    const settlement = await settleWindowsCompilerProcessTree(child, closeObserver, {
       buildSettlementTimeoutMs: effectiveBuildSettlementTimeoutMs,
       buildRoot,
       systemRoot,
       terminateBuildProcessTree,
-      spawnTaskkillProcess
+      spawnTaskkillProcess,
+      releaseCompilerOutputListeners
     });
     if (!settlement.treeVerifiedStopped) {
       unsafeWindowsJobSupervisorRoots.add(buildRoot);
@@ -2059,6 +2077,7 @@ async function compileWindowsEditorProcessSupervisor(
     };
     throw failure;
   }
+  releaseCompilerOutputListeners();
   destroyCapturedCommandStdio(child);
   const { state } = observation;
   if (state.error || state.code !== 0 || output.exceeded()) {
@@ -2109,18 +2128,20 @@ function windowsSupervisorBuildAbortReason(signal) {
 
 async function settleWindowsCompilerProcessTree(
   child,
-  close,
-  { buildSettlementTimeoutMs, buildRoot, systemRoot, terminateBuildProcessTree, spawnTaskkillProcess }
+  closeObserver,
+  {
+    buildSettlementTimeoutMs,
+    buildRoot,
+    systemRoot,
+    terminateBuildProcessTree,
+    spawnTaskkillProcess,
+    releaseCompilerOutputListeners
+  }
 ) {
   const errors = [];
   let compilerTreeTerminated = false;
   let compilerClosed = false;
-  let settlementDeadlineExceeded = false;
   const settlementController = new AbortController();
-  const settlementTimer = setTimeout(() => {
-    settlementDeadlineExceeded = true;
-    settlementController.abort(Object.freeze({ reason: "deadline", timeoutMs: buildSettlementTimeoutMs }));
-  }, buildSettlementTimeoutMs);
   const termination = Promise.resolve()
     .then(() =>
       terminateBuildProcessTree(child, {
@@ -2135,21 +2156,51 @@ async function settleWindowsCompilerProcessTree(
       (result) => ({ kind: "result", result }),
       (error) => ({ kind: "error", error })
     );
-  const closure = close.then(
+  const closure = closeObserver.promise.then(
     (state) => ({ kind: "close", state }),
     (error) => ({ kind: "error", error })
   );
+  const completeSettlement = Promise.all([termination, closure]).then(
+    ([terminationObservation, closureObservation]) => ({
+      kind: "settled",
+      terminationObservation,
+      closureObservation
+    }),
+    (error) => ({ kind: "error", error })
+  );
+  let settlementTimer;
+  const settlementDeadline = new Promise((resolveDeadline) => {
+    settlementTimer = setTimeout(() => {
+      const reason = Object.freeze({ reason: "deadline", timeoutMs: buildSettlementTimeoutMs });
+      resolveDeadline({ kind: "deadline", reason });
+      settlementController.abort(reason);
+    }, buildSettlementTimeoutMs);
+  });
+  let observation;
   try {
-    const [terminationObservation, closureObservation] = await Promise.all([termination, closure]);
+    observation = await Promise.race([completeSettlement, settlementDeadline]);
+  } finally {
+    clearTimeout(settlementTimer);
+  }
+  if (observation.kind === "deadline") {
+    const deadlineError = new Error(
+      `Windows editor Job Object supervisor compiler settlement exceeded ${buildSettlementTimeoutMs} ms.`
+    );
+    deadlineError.code = "EDITOR_ACCEPTANCE_DEADLINE";
+    errors.push(deadlineError);
+    closeObserver.release();
+    // The mapped promises never reject, but retain an explicit observer so a
+    // late custom terminator or native close cannot become unhandled work.
+    void completeSettlement.then(
+      () => undefined,
+      () => undefined
+    );
+  } else if (observation.kind === "error") {
+    errors.push(observation.error);
+  } else {
+    const { terminationObservation, closureObservation } = observation;
     compilerClosed = closureObservation.kind === "close";
     if (closureObservation.kind === "error") errors.push(closureObservation.error);
-    if (settlementDeadlineExceeded) {
-      const deadlineError = new Error(
-        `Windows editor Job Object supervisor compiler settlement exceeded ${buildSettlementTimeoutMs} ms.`
-      );
-      deadlineError.code = "EDITOR_ACCEPTANCE_DEADLINE";
-      errors.push(deadlineError);
-    }
     if (terminationObservation.kind === "error") {
       errors.push(terminationObservation.error);
     } else {
@@ -2158,8 +2209,11 @@ async function settleWindowsCompilerProcessTree(
         errors.push(new Error("The Windows supervisor compiler tree terminator did not attest complete termination."));
       }
     }
-  } finally {
-    clearTimeout(settlementTimer);
+  }
+  try {
+    releaseCompilerOutputListeners();
+  } catch (error) {
+    errors.push(error);
   }
   try {
     destroyCapturedCommandStdio(child);
@@ -2209,9 +2263,14 @@ async function terminateWindowsCompilerProcessTree(
           stdio: "ignore"
         }
       );
-      const taskkillClose = childClose(taskkill);
+      const taskkillCloseObserver = createChildCloseObserver(taskkill);
+      let resolveAbort;
+      const taskkillAbort = new Promise((resolve) => {
+        resolveAbort = resolve;
+      });
       onAbort = () => {
         settlementExpired = true;
+        resolveAbort({ kind: "aborted" });
         try {
           taskkill?.kill("SIGKILL");
         } catch (error) {
@@ -2222,10 +2281,15 @@ async function terminateWindowsCompilerProcessTree(
         } catch (error) {
           errors.push(error);
         }
+        taskkillCloseObserver.release();
       };
       abortSignal.addEventListener("abort", onAbort, { once: true });
       if (abortSignal.aborted) onAbort();
-      taskkillState = await taskkillClose;
+      const taskkillObservation = await Promise.race([
+        taskkillCloseObserver.promise.then((state) => ({ kind: "close", state })),
+        taskkillAbort
+      ]);
+      if (taskkillObservation.kind === "close") taskkillState = taskkillObservation.state;
     }
     if (!settlementExpired && (taskkillState?.error || taskkillState?.code !== 0 || taskkillState?.signal !== null)) {
       errors.push(
