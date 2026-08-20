@@ -11,9 +11,25 @@ import type {
 } from "../shared/protocol";
 
 const postMessage = vi.hoisted(() => vi.fn());
+const capabilityOverrides = vi.hoisted(() => new Map<string, boolean>());
 vi.mock("../webviews/vscodeApi", () => ({
   vscode: { postMessage, getState: () => undefined, setState: () => undefined }
 }));
+vi.mock("../shared/cleaningHistoryCapabilities", async () => {
+  const actual = await vi.importActual<typeof import("../shared/cleaningHistoryCapabilities")>(
+    "../shared/cleaningHistoryCapabilities"
+  );
+  return {
+    ...actual,
+    cleaningHistoryActionAvailable: (
+      capabilityId: Parameters<typeof actual.cleaningHistoryActionAvailable>[0],
+      context: Parameters<typeof actual.cleaningHistoryActionAvailable>[1]
+    ) =>
+      capabilityOverrides.has(capabilityId)
+        ? capabilityOverrides.get(capabilityId)
+        : actual.cleaningHistoryActionAvailable(capabilityId, context)
+  };
+});
 
 import { App } from "../webviews/App";
 
@@ -118,7 +134,90 @@ function inspection(offset = 0): StepInspectionResponse {
 }
 
 describe("App applied-step inspection", () => {
-  beforeEach(() => postMessage.mockClear());
+  beforeEach(() => {
+    postMessage.mockClear();
+    capabilityOverrides.clear();
+  });
+
+  it("uses the production capability authority before inspecting a selected step", async () => {
+    capabilityOverrides.set("inspect", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+    postMessage.mockClear();
+
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    expect(runtimeRequests("inspectStep")).toHaveLength(0);
+    expect(screen.queryByLabelText("Selected applied-step inspection")).toBeNull();
+  });
+
+  it("keeps Edit visible when the authority disables Undo and blocks every Undo entry point", async () => {
+    capabilityOverrides.set("undo", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+
+    expect(screen.getByRole("button", { name: "Edit latest" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /reorder/iu })).toBeNull();
+
+    postMessage.mockClear();
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    fireEvent.keyDown(screen.getByRole("main"), { key: "z", ctrlKey: true, altKey: true });
+    expect(runtimeRequests("undoStep")).toHaveLength(0);
+  });
+
+  it("keeps Undo visible when the authority disables Edit and blocks native and keyboard Edit", async () => {
+    capabilityOverrides.set("edit", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+
+    expect(screen.queryByRole("button", { name: "Edit latest" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeVisible();
+
+    dispatch({
+      kind: "editorAction",
+      action: "editLatest",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
+    fireEvent.keyDown(screen.getByRole("main"), { key: "e", ctrlKey: true, shiftKey: true });
+    expect(screen.queryByRole("button", { name: "Preview changes" })).toBeNull();
+  });
+
+  it("governs inspected-step Edit and Delete visibility independently", async () => {
+    capabilityOverrides.set("delete", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    await screen.findByLabelText("Selected applied-step inspection");
+
+    expect(screen.getByRole("button", { name: "Edit step" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Delete step" })).toBeNull();
+    postMessage.mockClear();
+    dispatch({
+      kind: "editorAction",
+      action: "deleteStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision,
+      stepId: step.id
+    });
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps inspected-step Delete visible when the authority disables Edit", async () => {
+    capabilityOverrides.set("edit", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    await screen.findByLabelText("Selected applied-step inspection");
+
+    expect(screen.queryByRole("button", { name: "Edit step" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete step" })).toBeVisible();
+  });
 
   it("ignores an applied-step selection addressed to a different session", async () => {
     render(<App />);
@@ -365,7 +464,7 @@ type HostMessage =
   | OpenWranglerResponse
   | {
       kind: "editorAction";
-      action: "selectStep" | "editStep" | "deleteStep";
+      action: "selectStep" | "editLatest" | "editStep" | "deleteStep" | "undoStep";
       expectedSessionId?: string;
       expectedRevision?: number;
       stepId?: string;

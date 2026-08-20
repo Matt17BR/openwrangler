@@ -831,7 +831,7 @@ describe("App progressive profiling and view correlation", () => {
 
   it("restores confirmed profile and value state after mutation errors and cancellation", async () => {
     render(<App />);
-    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({ kind: "sessionOpened", metadata: { ...metadata, steps: [cloneStep] }, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
     const cityRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityRequest) throw new Error("Expected the city summary request.");
@@ -1146,7 +1146,7 @@ describe("App progressive profiling and view correlation", () => {
 
   it("restores confirmed profiling diagnostics after a foreground mutation fails", async () => {
     render(<App />);
-    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({ kind: "sessionOpened", metadata: { ...metadata, steps: [cloneStep] }, page, summaries: [] });
     await screen.findByText("Berlin");
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Dataset");

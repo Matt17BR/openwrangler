@@ -7,7 +7,8 @@ interface StepInspectionPanelProps {
   pageSize: number;
   error?: string;
   diff?: DataDiff;
-  canModify?: boolean;
+  canEdit?: boolean;
+  canDelete?: boolean;
   onEdit?: () => void;
   onDelete?: () => void;
   onClear: () => void;
@@ -19,7 +20,8 @@ export function StepInspectionPanel({
   pageSize,
   error,
   diff,
-  canModify = false,
+  canEdit = false,
+  canDelete = false,
   onEdit = () => undefined,
   onDelete = () => undefined,
   onClear
@@ -37,17 +39,17 @@ export function StepInspectionPanel({
           </span>
         </div>
         <div className="inspectionActions">
-          {canModify && !confirmingDelete && (
-            <>
-              <button type="button" className="secondaryButton" onClick={onEdit}>
-                Edit step
-              </button>
-              <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(true)}>
-                Delete step
-              </button>
-            </>
+          {canEdit && !confirmingDelete && (
+            <button type="button" className="secondaryButton" onClick={onEdit}>
+              Edit step
+            </button>
           )}
-          {canModify && confirmingDelete && (
+          {canDelete && !confirmingDelete && (
+            <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(true)}>
+              Delete step
+            </button>
+          )}
+          {canDelete && confirmingDelete && (
             <div role="group" aria-label="Confirm step deletion">
               <span>Delete this step and replay every later step?</span>
               <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(false)}>
