@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import {
+  DATA_WRANGLER_COMPARISON_AUTHORITY,
+  renderComparisonAgentCompletionPolicy,
+  renderComparisonAgentSamplePolicy,
+  renderComparisonDocumentationCompletionSummary,
+  renderComparisonDocumentationSampleSummary
+} from "./data-wrangler-comparison-contract.mjs";
 import { createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
 import {
   DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
@@ -38,13 +45,49 @@ import {
 
 const SHA = "a".repeat(64);
 
+test("comparison policy and guide derive their sample counts from the protocol authority", () => {
+  const root = resolve(import.meta.dirname, "..");
+  const agents = readFileSync(join(root, "AGENTS.md"), "utf8");
+  const guide = readFileSync(join(root, "docs/performance-comparison.md"), "utf8");
+  assert.ok(agents.includes(renderComparisonAgentSamplePolicy()));
+  assert.ok(agents.includes(renderComparisonAgentCompletionPolicy()));
+  assert.ok(guide.includes(renderComparisonDocumentationSampleSummary()));
+  assert.ok(guide.includes(renderComparisonDocumentationCompletionSummary()));
+  assert.equal(WARM_REPETITIONS, DATA_WRANGLER_COMPARISON_AUTHORITY.release.samplesPerSession);
+  assert.equal(
+    DATA_WRANGLER_COMPARISON_AUTHORITY.release.totalSamples,
+    createDataWranglerComparisonSchedule().length * WARM_REPETITIONS
+  );
+});
+
 test("validates a release report before writing it", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-comparison-report-"));
   const output = join(root, "report.json");
   const report = { protocol: "openwrangler-data-wrangler-study-report-v2", completedSessions: 1 };
   try {
-    assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /eight complete sessions/u);
+    assert.throws(
+      () => writeDataWranglerComparisonStudyReport(output, report),
+      /comparison report has missing or unknown fields/u
+    );
     assert.equal(existsSync(output), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writes a validated inconclusive report with its explicit disposition", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-inconclusive-report-"));
+  const output = join(root, "report.json");
+  const manifest = manifestFixture();
+  const report = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: manifest.schedule.slice(0, 7).map((entry) => sessionResult(entry, manifest))
+  });
+  try {
+    assert.equal(report.decision.disposition, "inconclusive");
+    assert.equal(writeDataWranglerComparisonStudyReport(output, report), true);
+    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")).decision, report.decision);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -87,7 +130,7 @@ test("retries a valid comparison report larger than the generic JSON limit", () 
   }
 });
 
-test("schedule has one five-sample session per product and workload and no cold launches", () => {
+test("schedule has one ten-sample session per product and workload and no cold launches", () => {
   const schedule = createDataWranglerComparisonSchedule();
   assert.equal(schedule.length, 8);
   assert.deepEqual(
@@ -272,14 +315,14 @@ test("local profile records all four arms through the existing study runner", as
   }
 });
 
-test("manifest records eight sessions, five repetitions, fixed workloads, and public provenance", () => {
+test("manifest records eight sessions, ten repetitions, fixed workloads, and public provenance", () => {
   const manifest = manifestFixture();
   assert.equal(manifest.protocol, STUDY_PROTOCOL);
   assert.equal(manifest.schedule.length, 8);
-  assert.equal(manifest.method.repetitionsPerSession, 5);
+  assert.equal(manifest.method.repetitionsPerSession, DATA_WRANGLER_COMPARISON_AUTHORITY.release.samplesPerSession);
   assert.match(
     manifest.method.statistics,
-    /five planned warm samples.*Open Wrangler requires five successes.*Data Wrangler at least three/u
+    /ten planned warm samples.*Open Wrangler requires ten successes.*Data Wrangler at least six/u
   );
   assert.equal(Object.hasOwn(manifest.method, "coldOrder"), false);
   assert.equal(manifest.provenance.dataWrangler.version, DATA_WRANGLER_VERSION);
@@ -341,7 +384,7 @@ test("study resumes at session granularity without replacing completed samples",
         .map(({ id }) => id)
         .sort()
     );
-    assert.equal(loadStudyResults(root).trials[0].samples.length, 5);
+    assert.equal(loadStudyResults(root).trials[0].samples.length, WARM_REPETITIONS);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -384,7 +427,7 @@ test("an interrupted session is recorded and rerun without replacing successful 
     assert.equal(status.completed, 0);
     assert.equal(status.remaining, 8);
     const [trial] = loadStudyResults(root).trials;
-    assert.equal(trial.samples.length, 5);
+    assert.equal(trial.samples.length, WARM_REPETITIONS);
     assert.equal(
       trial.samples.every(({ status: sampleStatus }) => sampleStatus === "failure"),
       true
@@ -432,20 +475,20 @@ test("a measured product failure remains in the study instead of being retried",
   }
 });
 
-test("session deadline yields five timeout samples", async () => {
+test("session deadline yields ten timeout samples", async () => {
   const manifest = manifestFixture();
   const entry = manifest.schedule[0];
   const request = requestForEntry(entry, manifest);
   const result = await runOneTrial({ entry, request, runTrial: () => new Promise(() => {}), timeoutMs: 5 });
   assert.equal(result.protocol, TRIAL_RESULT_PROTOCOL);
-  assert.equal(result.samples.length, 5);
+  assert.equal(result.samples.length, WARM_REPETITIONS);
   assert.equal(
     result.samples.every(({ status }) => status === "timeout"),
     true
   );
 });
 
-test("prepared request loads one resident dataframe and asks the host for five measured samples", () => {
+test("prepared request loads one resident dataframe and asks the host for ten measured samples", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-batched-prepare-"));
   const csv = join(root, "fixture.csv");
   const parquet = join(root, "fixture.parquet");
