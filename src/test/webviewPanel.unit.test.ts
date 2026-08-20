@@ -274,7 +274,7 @@ describe("OpenWranglerPanel retained view state", () => {
   it("loads the production webview as an ES module under a restrictive nonce CSP", async () => {
     const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
     await harness.open();
-    const script = harness.html.match(/<script type="module" nonce="([A-Za-z0-9]+)" src="([^"]+)"><\/script>/u);
+    const script = harness.html.match(/<script type="module" nonce="([0-9a-f]{32})" src="([^"]+)"><\/script>/u);
     const style = harness.html.match(/<link rel="stylesheet" href="([^"]+)">/u);
     const csp = harness.html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/u)?.[1];
     expect(script).not.toBeNull();

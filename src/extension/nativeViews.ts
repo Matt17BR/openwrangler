@@ -18,6 +18,7 @@ import { cleaningUnavailableReason } from "../shared/sessionMode";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { createNativeViewsDataExport } from "./nativeViewsDataExport";
+import { createSecureNonce } from "./secureNonce";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
 import { exportFileSafely } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
@@ -319,7 +320,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const script = webview.asWebviewUri(
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "codePreview.js"))
     );
-    const nonce = randomNonce();
+    const nonce = createSecureNonce();
     return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0;overflow:hidden;background:var(--vscode-editor-background)}</style></head><body><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
   }
 }
@@ -1268,9 +1269,4 @@ async function requireTrustedWorkspace(action: string): Promise<boolean> {
   if (vscode.workspace.isTrusted) return true;
   void vscode.window.showWarningMessage(`Trust this workspace before Open Wrangler can ${action}.`);
   return false;
-}
-
-function randomNonce(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  return Array.from({ length: 32 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join("");
 }

@@ -1,6 +1,7 @@
 import type { OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionPresentation } from "./dataBridge";
+import { createSecureNonce } from "./secureNonce";
 
 const DEFAULT_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 const DEFAULT_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
@@ -94,7 +95,7 @@ export class RendererSynchronizationCoordinator {
     private readonly callbacks: RendererSynchronizationCallbacks,
     options: RendererSynchronizationOptions = {}
   ) {
-    this.createId = options.createId ?? randomNonce;
+    this.createId = options.createId ?? createSecureNonce;
     this.importPreparationTimeoutMs = options.importPreparationTimeoutMs ?? DEFAULT_IMPORT_PREPARATION_TIMEOUT_MS;
     this.startupRecoveryTimeoutMs = options.startupRecoveryTimeoutMs ?? DEFAULT_STARTUP_RECOVERY_TIMEOUT_MS;
     this.maxStartupRecoveryAttempts = options.maxStartupRecoveryAttempts ?? DEFAULT_MAX_STARTUP_RECOVERY_ATTEMPTS;
@@ -460,12 +461,3 @@ export class RendererSynchronizationCoordinator {
     }
   }
 }
-
-const randomNonce = (): string => {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let nonce = "";
-  for (let index = 0; index < 32; index += 1) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
-};

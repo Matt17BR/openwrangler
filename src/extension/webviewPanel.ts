@@ -24,6 +24,7 @@ import {
   type RendererImportPreparation,
   type RendererSynchronizationIdentity
 } from "./rendererSynchronizationCoordinator";
+import { createSecureNonce } from "./secureNonce";
 import { decodeWebviewMessage } from "./webviewMessage";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
@@ -1600,7 +1601,7 @@ export class OpenWranglerPanel {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
     );
-    const nonce = randomNonce();
+    const nonce = createSecureNonce();
     const { pageSize: fetchBlockSize, columnLimit: columnBlockSize } = fetchGridBlockSize(this.backend);
     const defaultColumnWidth = getSetting<number>("defaultColumnWidth", 190);
     const insightsOnOpen = getSetting<boolean>("insightsOnOpen", true);
@@ -1721,12 +1722,3 @@ export type EditorActionMessage =
       stepId?: string;
       column?: string;
     };
-
-const randomNonce = (): string => {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let nonce = "";
-  for (let i = 0; i < 32; i += 1) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
-};

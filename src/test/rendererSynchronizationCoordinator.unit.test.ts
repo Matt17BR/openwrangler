@@ -76,6 +76,7 @@ describe("RendererSynchronizationCoordinator", () => {
     await harness.coordinator.enqueueSynchronization(true);
 
     const synchronization = latestSynchronization(harness.posted);
+    expect(synchronization.syncId).toBe("synchronization-0000000000000001");
     expect(harness.clearStepInspection).toHaveBeenCalledOnce();
     expect(harness.posted).toEqual([
       { kind: "stepInspectionCleared", resumeProfiling: false },

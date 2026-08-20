@@ -32,6 +32,27 @@ describe("native state and presentation commands", () => {
     });
   });
 
+  it("uses a 128-bit nonce in the native Code Preview CSP and script", () => {
+    register(noDraftSnapshot());
+    const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
+    const webview = {
+      html: "",
+      options: {},
+      cspSource: "test-csp",
+      asWebviewUri: (uri: unknown) => uri,
+      postMessage: vi.fn(async () => true),
+      onDidReceiveMessage: () => ({ dispose: () => undefined })
+    };
+
+    provider.resolveWebviewView({ description: undefined, webview });
+
+    const script = webview.html.match(/<script nonce="([0-9a-f]{32})" src="([^"]+)"><\/script>/u);
+    expect(script).not.toBeNull();
+    expect(webview.html).toContain(`font-src test-csp; script-src 'nonce-${script?.[1]}'`);
+    expect(script?.[2]).toBe("file:///tmp/openwrangler/media/codePreview.js");
+  });
+
   it("offers a file entry point before a dataframe is open", () => {
     const registered = register(noDraftSnapshot());
     registered.setActiveSession(undefined);
