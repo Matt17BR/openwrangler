@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -44,6 +45,7 @@ import {
   PREVIEW_README_RELEASE_SECTION
 } from "./release-documents.mjs";
 import {
+  classifyCurrentCompletedPerformanceReport,
   HISTORICAL_PERFORMANCE_DISCLOSURE,
   inspectPerformanceEvidenceCandidateReadiness,
   inspectPerformanceEvidenceSourceReadiness,
@@ -58,6 +60,7 @@ import {
   PRIMARY_PARITY_SCOPE,
   R_PREVIEW_PARITY_SCOPE,
   R_STABLE_PARITY_SCOPE,
+  readBoundedGitBlobSnapshot,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
   readStableVsixPayload,
@@ -1136,7 +1139,7 @@ test("constrains historical and current Performance summaries to exact evidence-
   ]);
 
   const structuralProblem =
-    "README Performance must use the exact linked historical-evidence summary while no current completed report is proven.";
+    "README Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.";
   for (const claim of [
     "Open Wrangler uses less memory than Data Wrangler.",
     "Open Wrangler takes half the time for notebook previews.",
@@ -1157,7 +1160,44 @@ test("constrains historical and current Performance summaries to exact evidence-
   assert.deepEqual(inspectPerformanceSummary(currentReadme, { currentReport }), []);
   const neutralCurrentReadme =
     `# Open Wrangler\n\n## Performance\n\n` + `[dated report](${performanceReportUrl(currentPath)})\n`;
+  assert.deepEqual(inspectPerformanceSummary(neutralCurrentReadme), []);
   assert.deepEqual(inspectPerformanceSummary(neutralCurrentReadme, { currentReport }), []);
+
+  assert.deepEqual(inspectPerformanceSummary(historicalReadme.replace("## Performance", "## Performance ##")), []);
+  assert.deepEqual(
+    inspectPerformanceSummary(historicalReadme.replace("## Performance", "Performance\n-----------")),
+    []
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      `${historicalReadme}\n## Performance ##\n\n${historicalPerformanceCopy(historicalPath)}\n`
+    ),
+    ["README must contain exactly one Performance section with one versioned Data Wrangler review."]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      `${historicalReadme}\nPerformance\n-----------\n\n${historicalPerformanceCopy(historicalPath)}\n`
+    ),
+    ["README must contain exactly one Performance section with one versioned Data Wrangler review."]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace(HISTORICAL_PERFORMANCE_DISCLOSURE, `    ${HISTORICAL_PERFORMANCE_DISCLOSURE}`)
+    ),
+    [structuralProblem]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(historicalReadme.replace("See the [historical", "    See the [historical")),
+    ["README Performance must link exactly one versioned Data Wrangler review."]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme
+        .replace("See the [historical", "```text\nSee the [historical")
+        .replace("reviewed results.", "reviewed results.\n```")
+    ),
+    ["README Performance must link exactly one versioned Data Wrangler review."]
+  );
 
   const qualificationProblem =
     "README Performance must use the exact linked historical summary, neutral current-report link, or report-derived current summary.";
@@ -1180,7 +1220,49 @@ test("constrains historical and current Performance summaries to exact evidence-
     inspectPerformanceSummary(neutralCurrentReadme.replace("2.0.0/review.md", "2.0.1/review.md"), {
       currentReport
     }),
-    [qualificationProblem]
+    []
+  );
+});
+
+test("requires candidate, report, and source provenance before classifying current performance", () => {
+  const report = createReleaseComparisonReport();
+  const input = {
+    candidateSha256: COMPARISON_TEST_SHA,
+    performanceReportSourceCommit: TEST_SOURCE_COMMIT,
+    report,
+    reportVersion: "2.0.0",
+    sourceCommit: TEST_SOURCE_COMMIT,
+    sourceVersion: "2.0.0"
+  };
+  assert.equal(classifyCurrentCompletedPerformanceReport(input).current, true, "trusted canonical caller");
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({ ...input, candidateSha256: undefined }).current,
+    false,
+    "missing candidate"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({ ...input, performanceReportSourceCommit: OTHER_SOURCE_COMMIT }).current,
+    false,
+    "wrong report source"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({
+      ...input,
+      performanceReportSourceCommit: undefined,
+      sourceCommit: undefined
+    }).current,
+    false,
+    "missing source binding"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({
+      ...input,
+      performanceReportSourceCommit: undefined,
+      requireCandidateMatch: true,
+      sourceCommit: undefined
+    }).current,
+    true,
+    "trusted canonical caller with an exact candidate-bound immutable source snapshot"
   );
 });
 
@@ -1279,7 +1361,7 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   for (const label of ["README.md", "Packaged README"]) {
     assert.ok(
       staleClaimProblems.includes(
-        `${label} Performance must use the exact linked historical-evidence summary while no current completed report is proven.`
+        `${label} Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.`
       )
     );
   }
@@ -1299,7 +1381,7 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     );
     assert.ok(
       staleSourceProblems.includes(
-        `${label} Performance must use the exact linked historical-evidence summary while no current completed report is proven.`
+        `${label} Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.`
       )
     );
   }
@@ -2333,6 +2415,93 @@ test("reads release documentation from the exact immutable Git commit", () => {
   }
 });
 
+test("reads performance evidence only from bounded regular immutable Git blobs", (context) => {
+  const repository = mkdtempSync(join(tmpdir(), "ow-release-evidence-blob-"));
+  context.after(() => rmSync(repository, { force: true, recursive: true }));
+  const relativePath = "docs/performance/data-wrangler-2.0.0/review.md";
+  const evidence = join(repository, relativePath);
+  mkdirSync(join(repository, "docs", "performance", "data-wrangler-2.0.0"), { recursive: true });
+  writeFileSync(evidence, "committed evidence\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: repository });
+  const commit = (message) => {
+    execFileSync("git", ["add", "-A"], { cwd: repository });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Open Wrangler Tests",
+        "-c",
+        "user.email=tests@openwrangler.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        message
+      ],
+      { cwd: repository }
+    );
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+  };
+  const committed = commit("evidence");
+  const readCommitted = () =>
+    readBoundedGitBlobSnapshot({ commit: committed, maxBytes: 64, path: relativePath, root: repository });
+  assert.equal(readCommitted(), "committed evidence\n");
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: committed,
+        maxBytes: 64,
+        path: `${relativePath}\nignored`,
+        root: repository
+      }),
+    /normalized repository-relative path/u
+  );
+
+  if (process.platform !== "win32") {
+    unlinkSync(evidence);
+    symlinkSync("/dev/null", evidence);
+    assert.equal(readCommitted(), "committed evidence\n", "device-targeting worktree symlink must not be opened");
+  }
+  if (existsSync(evidence)) unlinkSync(evidence);
+  const foreign = join(repository, "foreign-evidence.md");
+  writeFileSync(foreign, "foreign evidence\n");
+  linkSync(foreign, evidence);
+  assert.equal(readCommitted(), "committed evidence\n", "hard-linked worktree replacement must not be opened");
+  unlinkSync(evidence);
+  writeFileSync(evidence, "x".repeat(4096));
+  assert.equal(readCommitted(), "committed evidence\n", "oversized worktree replacement must not be opened");
+
+  if (process.platform !== "win32") {
+    unlinkSync(evidence);
+    symlinkSync("/dev/null", evidence);
+    const symlinkCommit = commit("symlink evidence");
+    assert.throws(
+      () =>
+        readBoundedGitBlobSnapshot({
+          commit: symlinkCommit,
+          maxBytes: 64,
+          path: relativePath,
+          root: repository
+        }),
+      /must be one regular tracked Git blob/u
+    );
+    unlinkSync(evidence);
+  }
+  writeFileSync(evidence, "x".repeat(65));
+  const oversizedCommit = commit("oversized evidence");
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: oversizedCommit,
+        maxBytes: 64,
+        path: relativePath,
+        root: repository
+      }),
+    /exceeds its 64-byte commit snapshot limit/u
+  );
+});
+
 test("reads the linked performance report from the immutable release commit", () => {
   const repository = mkdtempSync(join(tmpdir(), "ow-release-performance-source-"));
   try {
@@ -2373,6 +2542,7 @@ test("reads the linked performance report from the immutable release commit", ()
     );
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
     const source = readReleaseSourceSnapshot({ expectedCommit: commit, root: repository });
+    assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/review.md"), "# Review\n");
     assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/report.json"), reportSource);
   } finally {
     rmSync(repository, { force: true, recursive: true });

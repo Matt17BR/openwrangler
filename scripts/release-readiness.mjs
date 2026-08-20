@@ -215,6 +215,8 @@ const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
 );
 const PERFORMANCE_REPORT_LINK =
   /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
+const MAX_PERFORMANCE_README_BYTES = 2 * 1024 * 1024;
+const MAX_PERFORMANCE_REVIEW_BYTES = 2 * 1024 * 1024;
 export const HISTORICAL_PERFORMANCE_DISCLOSURE =
   "The linked comparison is retained historical evidence for an earlier Open Wrangler release. It does not describe current performance. New results will be summarized here only after a release-candidate study produces a complete reviewed report.";
 const PERFORMANCE_OVERVIEW =
@@ -232,21 +234,87 @@ function stableRParityProblems(featureParity, version, trackedEvidencePaths) {
     : [];
 }
 
-function performanceSection(readme) {
-  const normalized = readme.replace(/\r\n?/gu, "\n");
-  const headings = [...normalized.matchAll(/^## Performance[ \t]*$/gmu)];
-  if (headings.length !== 1 || headings[0]?.index === undefined) return undefined;
+function markdownAtxHeading(line) {
+  const match = /^ {0,3}(?<marks>#{1,6})(?:(?:[ \t]+(?<body>.*))|[ \t]*)$/u.exec(line);
+  if (match === null) return undefined;
+  const body = (match.groups?.body ?? "").replace(/[ \t]+#+[ \t]*$/u, "").trim();
+  return { level: match.groups?.marks.length, span: 1, text: body };
+}
 
-  const sectionStart = headings[0].index + headings[0][0].length;
-  const following = normalized.slice(sectionStart);
-  const nextHeading = /^## [^\n]+$/mu.exec(following);
-  return nextHeading === null ? following : following.slice(0, nextHeading.index);
+function markdownFence(line) {
+  const match = /^ {0,3}(?<marks>`{3,}|~{3,})(?<info>.*)$/u.exec(line);
+  if (match === null) return undefined;
+  const marks = match.groups?.marks;
+  const info = match.groups?.info ?? "";
+  if (marks === undefined || (marks.startsWith("`") && info.includes("`"))) return undefined;
+  return { character: marks[0], length: marks.length };
+}
+
+function closesMarkdownFence(line, fence) {
+  const match = /^ {0,3}(?<marks>`{3,}|~{3,})[ \t]*$/u.exec(line);
+  const marks = match?.groups?.marks;
+  return marks !== undefined && marks[0] === fence.character && marks.length >= fence.length;
+}
+
+function performanceSection(readme) {
+  if (typeof readme !== "string" || Buffer.byteLength(readme, "utf8") > MAX_PERFORMANCE_README_BYTES) {
+    return undefined;
+  }
+  const lines = readme.replace(/\r\n?/gu, "\n").split("\n");
+  const rendered = [];
+  let fence;
+  for (const line of lines) {
+    if (fence !== undefined) {
+      rendered.push({ code: true, heading: undefined, line });
+      if (closesMarkdownFence(line, fence)) fence = undefined;
+      continue;
+    }
+    const openingFence = markdownFence(line);
+    if (openingFence !== undefined) {
+      fence = openingFence;
+      rendered.push({ code: true, heading: undefined, line });
+      continue;
+    }
+    const code = /^(?: {4}|\t)/u.test(line);
+    rendered.push({ code, heading: code ? undefined : markdownAtxHeading(line), line });
+  }
+  for (let index = 0; index + 1 < rendered.length; index += 1) {
+    const entry = rendered[index];
+    const underline = rendered[index + 1];
+    if (
+      !entry.code &&
+      entry.heading === undefined &&
+      entry.line.trim() !== "" &&
+      !underline.code &&
+      /^ {0,3}-+[ \t]*$/u.test(underline.line)
+    ) {
+      entry.heading = { level: 2, span: 2, text: entry.line.trim() };
+    }
+  }
+
+  const headings = rendered
+    .map((entry, index) => ({ ...entry.heading, index }))
+    .filter((entry) => entry.level === 2 && entry.text === "Performance");
+  if (headings.length !== 1) return undefined;
+  const sectionStart = headings[0].index + headings[0].span;
+  const followingHeading = rendered.findIndex(
+    (entry, index) => index >= sectionStart && entry.heading !== undefined && entry.heading.level <= 2
+  );
+  const sectionEnd = followingHeading === -1 ? rendered.length : followingHeading;
+  const entries = rendered.slice(sectionStart, sectionEnd);
+  return {
+    hasCodeContent: entries.some((entry) => entry.code && entry.line.trim() !== ""),
+    text: entries
+      .filter((entry) => !entry.code)
+      .map((entry) => entry.line)
+      .join("\n")
+  };
 }
 
 export function performanceReportLink(readme) {
   const section = performanceSection(readme);
   if (section === undefined) return undefined;
-  const links = [...section.matchAll(PERFORMANCE_REPORT_LINK)];
+  const links = [...section.text.matchAll(PERFORMANCE_REPORT_LINK)];
   if (links.length !== 1) return undefined;
 
   const path = links[0]?.groups?.path;
@@ -291,15 +359,17 @@ export function inspectPerformanceSummary(readme, { currentReport } = {}) {
     return ["README Performance must link exactly one versioned Data Wrangler review."];
   }
 
-  const observed = normalizedPerformanceCopy(section);
-  if (observed === normalizedPerformanceCopy(historicalPerformanceCopy(report))) return [];
+  const observed = normalizedPerformanceCopy(section.text);
+  if (!section.hasCodeContent && observed === normalizedPerformanceCopy(historicalPerformanceCopy(report))) return [];
+  if (!section.hasCodeContent && observed === normalizedPerformanceCopy(currentPerformanceLinkOnlyCopy(report)))
+    return [];
   if (currentReport !== undefined) {
     try {
       assertReleaseCompleteStudyReport(currentReport);
       if (
         currentReport.provenance.openWrangler.version === report.version &&
-        (observed === normalizedPerformanceCopy(currentPerformanceLinkOnlyCopy(report)) ||
-          observed === normalizedPerformanceCopy(currentPerformanceCopy(currentReport, report)))
+        !section.hasCodeContent &&
+        observed === normalizedPerformanceCopy(currentPerformanceCopy(currentReport, report))
       ) {
         return [];
       }
@@ -309,7 +379,7 @@ export function inspectPerformanceSummary(readme, { currentReport } = {}) {
   }
   return [
     currentReport === undefined
-      ? "README Performance must use the exact linked historical-evidence summary while no current completed report is proven."
+      ? "README Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven."
       : "README Performance must use the exact linked historical summary, neutral current-report link, or report-derived current summary."
   ];
 }
@@ -335,11 +405,10 @@ export function classifyCurrentCompletedPerformanceReport({
 
   const provenanceVersion = report.provenance.openWrangler.version;
   const candidateMatches =
-    candidateSha256 === undefined
-      ? requireCandidateMatch !== true
-      : SHA256.test(candidateSha256) && report.provenance.openWrangler.sha256 === candidateSha256;
+    typeof candidateSha256 === "string" &&
+    SHA256.test(candidateSha256) &&
+    report.provenance.openWrangler.sha256 === candidateSha256;
   const hasExplicitSourceBinding = sourceCommit !== undefined || performanceReportSourceCommit !== undefined;
-  // Candidate-aware callers first bind that exact candidate to their immutable source snapshot.
   const sourceMatches = hasExplicitSourceBinding
     ? typeof sourceCommit === "string" &&
       sourceCommit === sourceCommit.toLowerCase() &&
@@ -892,6 +961,79 @@ function decodeUtf8(contents, label) {
   }
 }
 
+function containsAsciiControl(value) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
+}
+
+export function readBoundedGitBlobSnapshot({ commit, maxBytes, path, required = true, root }) {
+  if (typeof commit !== "string" || !FULL_COMMIT_ID.test(commit)) {
+    throw new Error("A bounded Git blob read requires one full hexadecimal commit ID.");
+  }
+  if (
+    typeof path !== "string" ||
+    Buffer.byteLength(path, "utf8") > 1024 ||
+    containsAsciiControl(path) ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    path.split("/").some((part) => part === "" || part === "." || part === "..")
+  ) {
+    throw new Error("A bounded Git blob read requires one normalized repository-relative path.");
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > DATA_WRANGLER_STUDY_REPORT_MAX_BYTES) {
+    throw new Error("A bounded Git blob read requires a safe positive byte limit.");
+  }
+
+  const absoluteRoot = resolve(root);
+  const resolvedCommit = runGit(absoluteRoot, ["rev-parse", "--verify", `${commit}^{commit}`], {
+    encoding: "utf8",
+    maxBuffer: 1024
+  }).trim();
+  if (resolvedCommit !== commit.toLowerCase()) {
+    throw new Error("A bounded Git blob read must resolve the exact requested commit.");
+  }
+  const entry = runGit(absoluteRoot, ["ls-tree", "-z", resolvedCommit, "--", path], {
+    maxBuffer: 4096
+  });
+  if (!Buffer.isBuffer(entry) || entry.length === 0) {
+    if (!required) return undefined;
+    throw new Error(`Release commit is missing required tracked source ${path}.`);
+  }
+  const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) (?<object>[0-9a-f]{40,64})\t(?<path>[^\0]+)\0$/u.exec(
+    entry.toString("utf8")
+  );
+  const groups = match?.groups;
+  if (
+    groups === undefined ||
+    groups.path !== path ||
+    groups.type !== "blob" ||
+    !["100644", "100755"].includes(groups.mode)
+  ) {
+    throw new Error(`Release source ${path} must be one regular tracked Git blob.`);
+  }
+  const object = groups.object;
+  const sizeText = runGit(absoluteRoot, ["cat-file", "-s", object], {
+    encoding: "utf8",
+    maxBuffer: 1024
+  }).trim();
+  if (!/^(?:0|[1-9]\d*)$/u.test(sizeText)) {
+    throw new Error(`Release source ${path} has an invalid Git object size.`);
+  }
+  const size = Number(sizeText);
+  if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
+    throw new Error(`Release source ${path} exceeds its ${maxBytes}-byte commit snapshot limit.`);
+  }
+  const contents = runGit(absoluteRoot, ["cat-file", "blob", object], {
+    maxBuffer: maxBytes + 1
+  });
+  if (!Buffer.isBuffer(contents) || contents.length !== size) {
+    throw new Error(`Release source ${path} did not match its Git object size.`);
+  }
+  return decodeUtf8(contents, path);
+}
+
 export function readReleaseSourceSnapshot({ expectedCommit, root }) {
   if (typeof expectedCommit !== "string" || !FULL_COMMIT_ID.test(expectedCommit)) {
     throw new Error("EXPECTED_SHA must be one full hexadecimal Git commit ID.");
@@ -915,29 +1057,8 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
   );
   const files = new Map();
   const readCommitFile = (path, maxBytes, required) => {
-    if (!trackedPaths.has(path)) {
-      if (!required) return;
-      throw new Error(`Release commit is missing required tracked source ${path}.`);
-    }
-    const object = `${commit}:${path}`;
-    const sizeText = runGit(absoluteRoot, ["cat-file", "-s", object], {
-      encoding: "utf8",
-      maxBuffer: 1024
-    }).trim();
-    if (!/^(?:0|[1-9]\d*)$/u.test(sizeText)) {
-      throw new Error(`Release source ${path} has an invalid Git object size.`);
-    }
-    const size = Number(sizeText);
-    if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
-      throw new Error(`Release source ${path} exceeds its ${maxBytes}-byte commit snapshot limit.`);
-    }
-    const contents = runGit(absoluteRoot, ["cat-file", "blob", object], {
-      maxBuffer: maxBytes + 1
-    });
-    if (!Buffer.isBuffer(contents) || contents.length !== size) {
-      throw new Error(`Release source ${path} did not match its Git object size.`);
-    }
-    files.set(path, decodeUtf8(contents, path));
+    const contents = readBoundedGitBlobSnapshot({ commit, maxBytes, path, required, root: absoluteRoot });
+    if (contents !== undefined) files.set(path, contents);
   };
   for (const [path, maxBytes] of RELEASE_SOURCE_FILES) {
     readCommitFile(path, maxBytes, true);
@@ -952,6 +1073,7 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
   if (sourceMajor !== undefined && BigInt(sourceMajor) >= 2n) {
     const linkedReport = performanceReportLink(files.get("README.md"));
     if (linkedReport !== undefined) {
+      readCommitFile(linkedReport.path, MAX_PERFORMANCE_REVIEW_BYTES, false);
       readCommitFile(
         linkedReport.path.replace(/review\.md$/u, "report.json"),
         DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
