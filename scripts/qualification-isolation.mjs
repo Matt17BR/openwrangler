@@ -14,6 +14,7 @@ import {
   win32 as windowsPath
 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { TextDecoder } from "node:util";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const ASSIGNMENT_PROTOCOL = "openwrangler-qualification-assignment-v1";
@@ -1120,8 +1121,10 @@ async function pinnedMountIdentity(handle, path, platform, mountIdentityForTest)
   fail(`pytest temporary mount identity is unsupported on ${platform}`);
 }
 
-function addTreeDigest(accumulator, value) {
-  const entry = createHash("sha256").update(value).digest();
+function addTreeDigest(accumulator, values) {
+  const hash = createHash("sha256");
+  for (const value of Array.isArray(values) ? values : [values]) hash.update(value);
+  const entry = hash.digest();
   for (let index = 0; index < entry.length; index += 1) accumulator.xor[index] ^= entry[index];
   accumulator.sum = (accumulator.sum + BigInt(`0x${entry.toString("hex")}`)) & ((1n << 256n) - 1n);
 }
@@ -1149,27 +1152,46 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
     if (identity !== rootMount) fail(`${label} contains an aliased or mounted entry`);
     return identity;
   };
-  const visit = async (directoryPin, relativeDirectory) => {
+  const decodeRawName = (value) => {
+    const bytes = Buffer.isBuffer(value) ? Buffer.from(value) : Buffer.from(value, "utf8");
+    let name;
+    try {
+      name = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      fail(`${label} contains an undecodable path before inspection`);
+    }
+    if (name.length === 0 || !Buffer.from(name, "utf8").equals(bytes)) {
+      fail(`${label} contains an undecodable path before inspection`);
+    }
+    return { bytes, name };
+  };
+  const visit = async (directoryPin, relativeDirectory, relativeDirectoryBytes) => {
     await verifyPinnedDirectory(directoryPin, label);
     await requireOwnedMount(directoryPin.handle, directoryPin.path);
-    const stream = await opendir(directoryPin.path);
+    const stream = await opendir(directoryPin.path, { encoding: platform === "win32" ? "utf8" : "buffer" });
     try {
       for await (const directoryEntry of stream) {
         entries += 1;
         if (entries > limits.entries) fail(`${label} contains too many entries`);
+        const entryName = decodeRawName(directoryEntry.name);
         if (relativeDirectory === "" && options.allowedTopLevelName !== undefined) {
-          if (options.allowedTopLevelName === null || directoryEntry.name !== options.allowedTopLevelName) {
+          if (options.allowedTopLevelName === null || entryName.name !== options.allowedTopLevelName) {
             fail(`${label} contains an unreceipted sibling entry`);
           }
         }
-        const path = join(directoryPin.path, directoryEntry.name);
+        const path = join(directoryPin.path, entryName.name);
         const relativePath = relative(rootPin.path, path);
-        const currentPathBytes = Buffer.byteLength(relativePath, "utf8");
+        const relativePathBytes =
+          relativeDirectoryBytes.length === 0
+            ? entryName.bytes
+            : Buffer.concat([relativeDirectoryBytes, Buffer.from("/", "ascii"), entryName.bytes]);
+        const currentPathBytes = relativePathBytes.length;
         pathBytes += currentPathBytes;
         if (
           relativePath === "" ||
           relativePath.startsWith("..") ||
           isAbsolute(relativePath) ||
+          !Buffer.from(relativePath, "utf8").equals(relativePathBytes) ||
           currentPathBytes > 4096
         ) {
           fail(`${label} contains an invalid path`);
@@ -1177,9 +1199,10 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
         if (pathBytes > limits.pathBytes) fail(`${label} contains too many path bytes`);
         const namedBefore = await lstat(path, { bigint: true });
         let kind;
-        let linkIdentity = "";
+        let linkIdentity = Buffer.alloc(0);
         if (namedBefore.isSymbolicLink()) {
-          const linkText = await readlink(path);
+          const rawLinkText = await readlink(path, { encoding: platform === "win32" ? "utf8" : "buffer" });
+          const linkText = decodeRawName(rawLinkText);
           const target = await realpath(path);
           if (!isInside(target, rootPin.path)) fail(`${label} contains an escaping symbolic link`);
           const targetValue = await lstat(target, { bigint: true });
@@ -1203,7 +1226,12 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
             await targetHandle.close();
           }
           kind = "symbolic-link";
-          linkIdentity = `${linkText}\0${target}\0`;
+          linkIdentity = Buffer.concat([
+            linkText.bytes,
+            Buffer.from("\0", "ascii"),
+            Buffer.from(target, "utf8"),
+            Buffer.from("\0", "ascii")
+          ]);
           symbolicLinks += 1;
         } else if ((await realpath(path)) !== path) {
           fail(`${label} contains an aliased or mounted entry`);
@@ -1214,7 +1242,7 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
             await requireOwnedMount(childPin.handle, path);
             kind = "directory";
             directories += 1;
-            await visit(childPin, relativePath);
+            await visit(childPin, relativePath, relativePathBytes);
           } finally {
             await childPin.handle.close();
           }
@@ -1236,10 +1264,16 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
         }
         const namedAfter = await lstat(path, { bigint: true });
         if (!sameImmutableSnapshot(namedBefore, namedAfter)) fail(`${label} changed while it was inspected`);
-        addTreeDigest(
-          accumulator,
-          `${kind}\0${relativePath}\0${linkIdentity}${rootMount}\0${namedBefore.dev.toString()}\0${namedBefore.ino.toString()}\0${namedBefore.mode.toString()}\0${namedBefore.nlink.toString()}\0${namedBefore.size.toString()}\0${namedBefore.mtimeNs.toString()}\0${namedBefore.ctimeNs.toString()}\0`
-        );
+        addTreeDigest(accumulator, [
+          Buffer.from(`${kind}\0`, "utf8"),
+          relativePathBytes,
+          Buffer.from("\0", "ascii"),
+          linkIdentity,
+          Buffer.from(
+            `${rootMount}\0${namedBefore.dev.toString()}\0${namedBefore.ino.toString()}\0${namedBefore.mode.toString()}\0${namedBefore.nlink.toString()}\0${namedBefore.size.toString()}\0${namedBefore.mtimeNs.toString()}\0${namedBefore.ctimeNs.toString()}\0`,
+            "utf8"
+          )
+        ]);
       }
     } finally {
       await stream.close().catch((error) => {
@@ -1249,7 +1283,7 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
     await verifyPinnedDirectory(directoryPin, label);
   };
 
-  await visit(rootPin, "");
+  await visit(rootPin, "", Buffer.alloc(0));
   await verifyPinnedDirectory(rootPin, label);
   return {
     bytes: Number(totalBytes),
@@ -1904,7 +1938,7 @@ async function runPosixOwnedCommand(command, arguments_, options) {
 
 function windowsSupervisorSignals(stream, loadedToken, attestationToken) {
   const markers = [
-    { bytes: Buffer.from(`${WINDOWS_JOB_LOADED_PREFIX}${loadedToken}\n`, "ascii"), count: 0, kind: "loaded" },
+    { bytes: Buffer.from(`${WINDOWS_JOB_LOADED_PREFIX}${loadedToken}\r\n`, "ascii"), count: 0, kind: "loaded" },
     {
       bytes: Buffer.from(`${WINDOWS_JOB_ATTESTATION_PREFIX}${attestationToken}\n`, "ascii"),
       count: 0,
@@ -2780,6 +2814,7 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
     return openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, "test regular file", { afterOpenForTest });
   },
   windowsSupervisorLoader,
+  windowsSupervisorSignals,
   windowsSystemRootCandidate
 });
 

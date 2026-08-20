@@ -6,6 +6,7 @@ import {
   access,
   chmod,
   copyFile,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -17,6 +18,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, extname, isAbsolute, join, relative } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   ASSIGNMENT_PROTOCOL,
@@ -825,6 +827,42 @@ test("rejects replacement, escape, and linked leftovers in a created pytest base
   assert.equal((await receipt(linked)).eligible, false);
 });
 
+test(
+  "rejects an undecodable raw POSIX name before it can alias a U+FFFD entry during hardlink inspection",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const value = await fixture(context, "pytest-raw-name");
+    const task = await addTask(value, "pytest-raw-name");
+    const linkedSource = join(value.root, "raw-name-external-hardlink.txt");
+    await writeFile(linkedSource, "outside\n", { flag: "wx", mode: 0o600 });
+    const original = await readFile(linkedSource);
+    await assert.rejects(
+      runQualification({
+        afterCommandSettlementForTest: async () => {
+          const parent = join(task.assignment.stateRoot, "python", "pytest-temp");
+          const [basetemp] = await readdir(parent);
+          const root = join(parent, basetemp);
+          await writeFile(join(root, "\uFFFD"), "private\n", { flag: "wx", mode: 0o600 });
+          await link(linkedSource, Buffer.concat([Buffer.from(`${root}/`, "utf8"), Buffer.from([0xff])]));
+        },
+        assignmentPath: task.assignmentPath,
+        command: [
+          process.execPath,
+          "-e",
+          "const fs=require(\"node:fs\");const b=process.env.PYTEST_ADDOPTS.match(/--basetemp='([^']+)'/u)[1];fs.mkdirSync(b,{mode:0o700});"
+        ],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /pytest temporary parent contains an undecodable path before inspection/u
+    );
+    assert.deepEqual(await readFile(linkedSource), original);
+    assert.equal((await receipt(task)).eligible, false);
+  }
+);
+
 test("makes an authoritative Git config mutation terminal and ineligible", async (context) => {
   const value = await fixture(context, "git-config-mutation");
   const task = await addTask(value, "git-config-mutation");
@@ -1290,6 +1328,54 @@ test("builds a bounded Windows loader that pins the exact Job Object script byte
   assert.match(loader, /OPEN_WRANGLER_WINDOWS_JOB_LOADED:loaded-token/u);
   assert.doesNotMatch(loader, /FileShare\]::ReadWrite/u);
 });
+
+test("parses the exact CRLF Windows loader marker and LF Job Object attestation once", async () => {
+  const loadedToken = "loaded-token";
+  const attestationToken = "attestation-token";
+  const stream = new PassThrough();
+  const signals = QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSupervisorSignals(stream, loadedToken, attestationToken);
+  stream.write(Buffer.from(`OPEN_WRANGLER_WINDOWS_JOB_LOADED:${loadedToken}\r`, "ascii"));
+  stream.write(Buffer.from(`\nOPEN_WRANGLER_WINDOWS_JOB_EMPTY:${attestationToken}\n`, "ascii"));
+  stream.end();
+  assert.equal(await signals.loaded, true);
+  assert.deepEqual(await signals.completed, { attested: true, loaded: true });
+
+  const duplicate = new PassThrough();
+  const duplicateSignals = QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSupervisorSignals(
+    duplicate,
+    loadedToken,
+    attestationToken
+  );
+  duplicate.end(
+    Buffer.from(
+      `OPEN_WRANGLER_WINDOWS_JOB_LOADED:${loadedToken}\r\nOPEN_WRANGLER_WINDOWS_JOB_LOADED:${loadedToken}\r\nOPEN_WRANGLER_WINDOWS_JOB_EMPTY:${attestationToken}\n`,
+      "ascii"
+    )
+  );
+  assert.deepEqual(await duplicateSignals.completed, { attested: true, loaded: false });
+});
+
+test(
+  "loads the pinned Windows Job Object script before launching the qualification target",
+  { skip: process.platform !== "win32" },
+  async (context) => {
+    const value = await fixture(context, "windows-loader-launch");
+    const task = await addTask(value, "windows-loader-launch");
+    const valueReceipt = await runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    });
+    assert.equal(valueReceipt.eligible, true);
+    assert.equal(valueReceipt.result.status, 0);
+    assert.equal(valueReceipt.result.treeEmpty, true);
+    assert.ok(valueReceipt.result.executable.supervisor.jobScript);
+    await access(valueReceipt.environment.testResult);
+  }
+);
 
 test(
   "rejects a Windows Job Object script replacement after spawn and before the pinned loader opens it",
