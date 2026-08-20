@@ -95,7 +95,6 @@ class _NotebookRequestRegistry:
 
 _manager = SessionManager()
 _request_registry = _NotebookRequestRegistry()
-_dispatch_lock = Lock()
 
 
 def dispatch_json(payload: str) -> str:
@@ -164,10 +163,9 @@ def dispatch_json(payload: str) -> str:
 def _dispatch_request(request_id: str, request: dict[str, object]) -> dict[str, object]:
     _request_registry.queue(request_id)
     try:
-        with _dispatch_lock:
-            if not _request_registry.start(request_id):
-                raise CancelledError
-            return dispatch(_manager, request, request_id)
+        if not _request_registry.start(request_id):
+            raise CancelledError
+        return dispatch(_manager, request, request_id)
     finally:
         _request_registry.complete(request_id)
 
