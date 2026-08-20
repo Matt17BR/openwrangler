@@ -15,10 +15,12 @@ from typing import Any
 import pytest
 import tomllib
 from pip._vendor.packaging.specifiers import SpecifierSet
+from pip._vendor.packaging.utils import canonicalize_name
 from pip._vendor.packaging.version import Version
 from scripts import python_runtime_dependency_authority as authority
 
 from openwrangler_runtime import dependency_guard
+from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).parents[2]
 
@@ -252,6 +254,22 @@ def test_parser_resource_failures_are_bounded(
         authority.load_authority(path)
 
 
+def test_deep_valid_json_has_a_stable_bounded_failure_taxonomy(
+    tmp_path: Path,
+) -> None:
+    near_limit = tmp_path / "near-limit.json"
+    near_limit.write_bytes(b"[" * authority.MAX_AUTHORITY_JSON_DEPTH + b"0" + b"]" * authority.MAX_AUTHORITY_JSON_DEPTH)
+    with pytest.raises(authority.AuthorityError, match="^invalid_authority_shape$"):
+        authority.load_authority(near_limit)
+
+    over_limit = tmp_path / "over-limit.json"
+    over_limit.write_bytes(
+        b"[" * (authority.MAX_AUTHORITY_JSON_DEPTH + 1) + b"0" + b"]" * (authority.MAX_AUTHORITY_JSON_DEPTH + 1)
+    )
+    with pytest.raises(authority.AuthorityError, match="^invalid_authority_json$"):
+        authority.load_authority(over_limit)
+
+
 def test_epoch_and_supported_pandas_cohorts_have_pep440_boundaries(tmp_path: Path) -> None:
     value = _authority_json()
     entry = copy.deepcopy(value["dependencies"][0])
@@ -335,8 +353,186 @@ def _write_probe_workbook(path: Path) -> Path:
     return path
 
 
+def _probe_xls_bytes() -> bytes:
+    free_sector = 0xFFFFFFFF
+    end_of_chain = 0xFFFFFFFE
+    fat_sector = 0xFFFFFFFD
+    no_stream = 0xFFFFFFFF
+
+    def record(identifier: int, data: bytes) -> bytes:
+        return struct.pack("<HH", identifier, len(data)) + data
+
+    globals_bof = record(
+        0x0809,
+        struct.pack("<HHHHII", 0x0600, 0x0005, 0x0DBB, 0x07CC, 0x41, 0x06),
+    )
+    sheet_name = b"Probe"
+    boundsheet_size = 8 + len(sheet_name)
+    worksheet_offset = len(globals_bof) + 4 + boundsheet_size + 4
+    boundsheet = record(
+        0x0085,
+        struct.pack("<IBBBB", worksheet_offset, 0, 0, len(sheet_name), 0) + sheet_name,
+    )
+    worksheet = b"".join(
+        (
+            record(
+                0x0809,
+                struct.pack("<HHHHII", 0x0600, 0x0010, 0x0DBB, 0x07CC, 0x41, 0x06),
+            ),
+            record(0x0200, struct.pack("<IIHHH", 0, 2, 0, 1, 0)),
+            record(0x0203, struct.pack("<HHHd", 0, 0, 0, 5.0)),
+            record(0x0203, struct.pack("<HHHd", 1, 0, 0, 7.0)),
+            record(0x000A, b""),
+        )
+    )
+    workbook = globals_bof + boundsheet + record(0x000A, b"") + worksheet
+    workbook = workbook.ljust(4096, b"\x00")
+
+    def directory_entry(
+        name: str,
+        object_type: int,
+        child: int,
+        start_sector: int,
+        stream_size: int,
+    ) -> bytes:
+        encoded_name = name.encode("utf-16le") + b"\x00\x00"
+        return struct.pack(
+            "<64sHBBIII16sIQQIQ",
+            encoded_name.ljust(64, b"\x00"),
+            len(encoded_name),
+            object_type,
+            1,
+            no_stream,
+            no_stream,
+            child,
+            b"\x00" * 16,
+            0,
+            0,
+            0,
+            start_sector,
+            stream_size,
+        )
+
+    directory = b"".join(
+        (
+            directory_entry("Root Entry", 5, 1, end_of_chain, 0),
+            directory_entry("Workbook", 2, no_stream, 1, len(workbook)),
+            b"\x00" * 128,
+            b"\x00" * 128,
+        )
+    )
+    fat = [free_sector] * 128
+    fat[0] = end_of_chain
+    for sector in range(1, 8):
+        fat[sector] = sector + 1
+    fat[8] = end_of_chain
+    fat[9] = fat_sector
+    header = struct.pack(
+        "<8s16sHHHHH6sIIIIIIIII",
+        bytes.fromhex("D0CF11E0A1B11AE1"),
+        b"\x00" * 16,
+        0x003E,
+        0x0003,
+        0xFFFE,
+        9,
+        6,
+        b"\x00" * 6,
+        0,
+        1,
+        0,
+        0,
+        4096,
+        end_of_chain,
+        0,
+        end_of_chain,
+        0,
+    ) + struct.pack("<109I", 9, *([free_sector] * 108))
+    result = header + directory + workbook + struct.pack("<128I", *fat)
+    assert len(result) == 5632
+    return result
+
+
+def _write_probe_xls(path: Path) -> Path:
+    path.write_bytes(_probe_xls_bytes())
+    return path
+
+
+def _import_qualified_module(dependency: authority.Dependency, version: str) -> Any:
+    distribution = importlib.metadata.distribution(dependency.distribution)
+    if Version(distribution.version) != Version(version):
+        raise AssertionError("qualified_distribution_version_mismatch")
+    files = distribution.files
+    if files is None:
+        raise AssertionError("qualified_distribution_files_missing")
+    module = importlib.import_module(dependency.import_module)
+    origin = getattr(module, "__file__", None)
+    if not isinstance(origin, str):
+        raise AssertionError("qualified_module_origin_missing")
+    try:
+        resolved_origin = Path(origin).resolve(strict=True)
+        owned_files = {Path(str(distribution.locate_file(file))).resolve(strict=True) for file in files}
+    except OSError as error:
+        raise AssertionError("qualified_module_origin_unreadable") from error
+    if resolved_origin not in owned_files:
+        raise AssertionError("qualified_module_not_distribution_owned")
+    root_module = dependency.import_module.partition(".")[0]
+    owners = importlib.metadata.packages_distributions().get(root_module, ())
+    if canonicalize_name(dependency.distribution) not in {canonicalize_name(owner) for owner in owners}:
+        raise AssertionError("qualified_module_distribution_mapping_mismatch")
+    return module
+
+
+def _exercise_openwrangler_runtime(tmp_path: Path) -> None:
+    source = tmp_path / "qualified-runtime.csv"
+    source.write_text("value,label\n1,a\n2,b\n", encoding="utf-8")
+    for backend in ("pandas", "polars", "duckdb"):
+        manager = SessionManager()
+        opened = manager.open_session(
+            {"kind": "file", "label": source.name, "path": str(source)},
+            backend=backend,
+            page_size=10,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        try:
+            column = next(item for item in opened["metadata"]["schema"] if item["name"] == "value")
+            preview = manager.preview_step(
+                session_id,
+                0,
+                {
+                    "id": "qualified-rename",
+                    "kind": "renameColumn",
+                    "params": {
+                        "column": {"id": column["id"], "name": column["name"]},
+                        "newName": "qualified_value",
+                    },
+                },
+                0,
+                10,
+            )
+            assert any(item["name"] == "qualified_value" for item in preview["metadata"]["schema"])
+            namespace: dict[str, Any] = {}
+            exec(compile(preview["code"], f"<qualified-{backend}>", "exec"), namespace)
+            pandas_module = importlib.import_module("pandas")
+            if backend == "pandas":
+                native = pandas_module.DataFrame({"value": [1, 2], "label": ["a", "b"]})
+            elif backend == "polars":
+                polars_module = importlib.import_module("polars")
+                native = polars_module.DataFrame({"value": [1, 2], "label": ["a", "b"]})
+            else:
+                duckdb_module = importlib.import_module("duckdb")
+                native = duckdb_module.sql("SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS source(value, label)")
+            generated = namespace["clean_data"](native)
+            assert list(generated.columns) == ["qualified_value", "label"]
+            applied = manager.apply_draft(session_id, 1, 0, 10)
+            assert applied["revision"] == 2
+            assert applied["page"]["totalRows"] == 2
+        finally:
+            manager.close_session(session_id, 0)
+
+
 def _exercise_dependency(dependency: authority.Dependency, module: Any, tmp_path: Path) -> None:
     workbook_path = _write_probe_workbook(tmp_path / "qualified.xlsx")
+    legacy_workbook_path = _write_probe_xls(tmp_path / "qualified.xls")
     if dependency.identifier == "pandas":
         assert module.DataFrame({"value": [1, 2]})["value"].sum() == 3
         return
@@ -376,10 +572,26 @@ def _exercise_dependency(dependency: authority.Dependency, module: Any, tmp_path
             loaded.close()
         return
     if dependency.identifier == "xlrd":
-        bof = struct.pack("<HHHHII", 0x0600, 0x0005, 0x0DBB, 0x07CC, 0x00000041, 0x00000006)
-        workbook_bytes = struct.pack("<HH", 0x0809, len(bof)) + bof
-        workbook_bytes += struct.pack("<HH", 0x000A, 0)
-        assert module.open_workbook(file_contents=workbook_bytes).nsheets == 0
+        workbook = module.open_workbook(legacy_workbook_path)
+        assert workbook.sheet_names() == ["Probe"]
+        sheet = workbook.sheet_by_index(0)
+        assert (sheet.nrows, sheet.ncols) == (2, 1)
+        assert sheet.cell_value(1, 0) == 7.0
+        manager = SessionManager()
+        opened = manager.open_session(
+            {
+                "kind": "file",
+                "label": legacy_workbook_path.name,
+                "path": str(legacy_workbook_path),
+            },
+            backend="pandas",
+            page_size=10,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        try:
+            assert opened["page"]["totalRows"] == 1
+        finally:
+            manager.close_session(session_id, 0)
         return
     if dependency.identifier == "ipython":
         transformer = module.core.inputtransformer2.TransformerManager()
@@ -406,6 +618,8 @@ def test_generated_cohort_job_maps_every_exact_qualification_once() -> None:
     )
     rendered = authority._render_workflow(dependencies)
     assert rendered.count("          - id: ") == len(expected)
+    assert 'python -m pip install -e "python[dev]" "${{ matrix.requirement }}"' in rendered
+    assert "PYTHONPATH:" not in rendered
     for identifier, version, requirement in expected:
         row = (
             f"          - id: {json.dumps(identifier)}\n"
@@ -434,10 +648,38 @@ def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
     assert version in dependency.qualified_versions
     assert not Version(version).is_prerelease
     assert not Version(version).is_devrelease
-    observed = importlib.metadata.version(dependency.distribution)
-    assert Version(observed) == Version(version)
-    module = importlib.import_module(dependency.import_module)
+    module = _import_qualified_module(dependency, version)
     _exercise_dependency(dependency, module, tmp_path)
+    _exercise_openwrangler_runtime(tmp_path)
+
+
+def test_qualified_module_binding_rejects_local_source_shadowing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependency = next(item for item in authority.load_authority() if item.identifier == "fsspec")
+    observed_version = importlib.metadata.version(dependency.distribution)
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "fsspec.py").write_text("SHADOWED = True\n", encoding="utf-8")
+    saved_modules = {
+        name: module for name, module in tuple(sys.modules.items()) if name == "fsspec" or name.startswith("fsspec.")
+    }
+    for name in saved_modules:
+        sys.modules.pop(name, None)
+    monkeypatch.syspath_prepend(str(shadow))
+    importlib.invalidate_caches()
+    try:
+        with pytest.raises(AssertionError, match="^qualified_module_not_distribution_owned$"):
+            _import_qualified_module(dependency, observed_version)
+    finally:
+        for name in tuple(sys.modules):
+            if name == "fsspec" or name.startswith("fsspec."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
+
+
+def test_qualified_probe_exercises_all_runtime_engines(tmp_path: Path) -> None:
+    _exercise_openwrangler_runtime(tmp_path)
 
 
 def test_generation_markers_are_exact_ordered_standalone_lines() -> None:
@@ -467,6 +709,7 @@ def test_generation_markers_are_exact_ordered_standalone_lines() -> None:
 def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     pyproject = tmp_path / "pyproject.toml"
     host = tmp_path / "pythonEnvironmentModel.ts"
+    workflow = tmp_path / "cross-platform.yml"
     pyproject.write_text(
         authority.PYPROJECT_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
         encoding="utf-8",
@@ -475,8 +718,10 @@ def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
         authority.HOST_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
         encoding="utf-8",
     )
+    workflow.write_bytes(authority.WORKFLOW_PATH.read_bytes())
     monkeypatch.setattr(authority, "PYPROJECT_PATH", pyproject)
     monkeypatch.setattr(authority, "HOST_PATH", host)
+    monkeypatch.setattr(authority, "WORKFLOW_PATH", workflow)
     return pyproject, host
 
 
@@ -487,6 +732,32 @@ def test_synchronize_repairs_both_consumers_without_partial_files(
     assert authority.synchronize(write=False) == (pyproject, host)
     assert authority.synchronize(write=True) == (pyproject, host)
     assert authority.synchronize(write=False) == ()
+    assert not list(tmp_path.glob(".*.openwrangler-*"))
+
+
+def test_transaction_revalidates_an_initially_current_consumer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    workflow = authority.WORKFLOW_PATH
+    original_pyproject = pyproject.read_bytes()
+    original_host = host.read_bytes()
+    foreign_workflow = workflow.read_bytes() + b"# concurrent workflow owner\n"
+    real_exchange = authority._exchange_paths
+    drifted = False
+
+    def exchange_then_drift(target: Path, replacement: Path) -> Path:
+        nonlocal drifted
+        displaced = real_exchange(target, replacement)
+        if target == pyproject and not drifted:
+            drifted = True
+            workflow.write_bytes(foreign_workflow)
+        return displaced
+
+    monkeypatch.setattr(authority, "_exchange_paths", exchange_then_drift)
+    with pytest.raises(authority.AuthorityError, match="^consumer_changed$"):
+        authority.synchronize(write=True)
+    assert pyproject.read_bytes() == original_pyproject
+    assert host.read_bytes() == original_host
+    assert workflow.read_bytes() == foreign_workflow
     assert not list(tmp_path.glob(".*.openwrangler-*"))
 
 
@@ -629,6 +900,8 @@ def test_authority_lock_detects_replacement_and_preserves_its_identity(
         authority._authority_write_lock(),
     ):
         os.replace(replacement, authority_path)
+        with pytest.raises(authority.AuthorityError, match="^consumer_write_busy$"), authority._authority_write_lock():
+            pytest.fail("replacement authority bypassed the path-stable lock")
 
     metadata = authority_path.stat()
     assert (metadata.st_dev, metadata.st_ino) == replacement_identity
@@ -730,6 +1003,34 @@ def test_staged_cleanup_preserves_a_foreign_path_identity(tmp_path: Path) -> Non
     assert (metadata.st_dev, metadata.st_ino) == foreign_identity
 
 
+def test_staged_cleanup_atomically_claims_before_checking_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"foreign cleanup race bytes\n")
+    foreign_metadata = foreign.stat()
+    foreign_identity = (foreign_metadata.st_dev, foreign_metadata.st_ino)
+    real_rename = authority._rename_noreplace
+    raced = False
+
+    def replace_before_claim(first: Path, second: Path) -> bool:
+        nonlocal raced
+        if first == staged.path and not raced:
+            raced = True
+            os.replace(foreign, staged.path)
+        return real_rename(first, second)
+
+    monkeypatch.setattr(authority, "_rename_noreplace", replace_before_claim)
+    authority._remove_staged(iter((staged,)))
+
+    assert staged.path.read_bytes() == b"foreign cleanup race bytes\n"
+    metadata = staged.path.stat()
+    assert (metadata.st_dev, metadata.st_ino) == foreign_identity
+
+
 def test_rollback_does_not_overwrite_a_concurrently_changed_committed_consumer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -797,6 +1098,34 @@ def test_rollback_exchange_preserves_a_foreign_post_check_replacement(
     assert len(retained) == 1
     assert retained[0].read_bytes() == foreign_bytes
     assert (retained[0].stat().st_dev, retained[0].stat().st_ino) == foreign_identity[0]
+
+
+def test_consumer_snapshot_revalidates_the_named_path_after_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumer = tmp_path / "consumer"
+    consumer.write_bytes(b"owned bytes\n")
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"foreign exact bytes\n")
+    replacement_metadata = replacement.stat()
+    replacement_identity = (replacement_metadata.st_dev, replacement_metadata.st_ino)
+    real_read = authority.os.read
+    raced = False
+
+    def replace_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal raced
+        chunk = real_read(descriptor, size)
+        if not chunk and not raced:
+            raced = True
+            os.replace(replacement, consumer)
+        return chunk
+
+    monkeypatch.setattr(authority.os, "read", replace_after_read)
+    with pytest.raises(authority.AuthorityError, match="^consumer_changed$"):
+        authority._consumer_snapshot(consumer)
+    metadata = consumer.stat()
+    assert (metadata.st_dev, metadata.st_ino) == replacement_identity
+    assert consumer.read_bytes() == b"foreign exact bytes\n"
 
 
 def test_consumer_reads_reject_links_invalid_utf8_and_oversized_input(tmp_path: Path) -> None:

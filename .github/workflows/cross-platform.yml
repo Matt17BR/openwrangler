@@ -119,15 +119,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install exact qualified dependency
-        run: python -m pip install pytest "${{ matrix.requirement }}"
+      - name: Install Open Wrangler and exact qualified dependency
+        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"
       - name: Exercise exact qualified dependency
         run: >-
           python -m pytest
           python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe
           -q
         env:
-          PYTHONPATH: python:.
           OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}
           OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}
   # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS

@@ -56,9 +56,9 @@ const TEST_DEPENDENCIES: readonly PythonDependency[] = [
   {
     importModule: "pandas",
     distribution: "pandas",
-    installSpec: "pandas>=2.2,<3",
+    installSpec: "pandas>=2.2,<4",
     minimumVersion: "2.2",
-    maximumVersionExclusive: "3"
+    maximumVersionExclusive: "4"
   },
   {
     importModule: "xlrd",
@@ -132,7 +132,7 @@ describe("owned dependency installation", () => {
     });
     expect(existsSync(privateCwd)).toBe(true);
     if (process.platform !== "win32") expect(statSync(privateCwd).mode & 0o077).toBe(0);
-    expect(operation.requirements).toEqual(["pandas>=2.2,<3", "xlrd>=2.0.1"]);
+    expect(operation.requirements).toEqual(["pandas>=2.2,<4", "xlrd>=2.0.1"]);
     expect(operation.didSpawn()).toBe(false);
     expect(operation.didAuthorize()).toBe(false);
 
@@ -160,10 +160,10 @@ describe("owned dependency installation", () => {
           {
             importModule: "pandas",
             distribution: "pandas",
-            installSpec: "pandas>=2.2,<3",
+            installSpec: "pandas>=2.2,<4",
             exactVersion: null,
             minimumVersion: "2.2",
-            maximumVersionExclusive: "3"
+            maximumVersionExclusive: "4"
           },
           {
             importModule: "xlrd",

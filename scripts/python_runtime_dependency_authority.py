@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 import tempfile
@@ -29,6 +31,7 @@ HOST_PATH = ROOT / "src" / "extension" / "pythonEnvironmentModel.ts"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "cross-platform.yml"
 
 MAX_AUTHORITY_BYTES = 65_536
+MAX_AUTHORITY_JSON_DEPTH = 128
 MAX_DEPENDENCIES = 64
 MAX_QUALIFIED_VERSIONS = 16
 MAX_CONSUMER_BYTES = 2_097_152
@@ -162,7 +165,35 @@ def _cohorts_are_contiguous(versions: list[Version], kind: str) -> bool:
     return True
 
 
-def load_authority(path: Path = AUTHORITY_PATH) -> tuple[Dependency, ...]:
+def _validate_json_nesting(raw: bytes) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == 0x5C:
+                escaped = True
+            elif character == 0x22:
+                in_string = False
+            continue
+        if character == 0x22:
+            in_string = True
+        elif character in {0x5B, 0x7B}:
+            depth += 1
+            if depth > MAX_AUTHORITY_JSON_DEPTH:
+                _fail("invalid_authority_json")
+        elif character in {0x5D, 0x7D}:
+            depth -= 1
+            if depth < 0:
+                _fail("invalid_authority_json")
+    if in_string or depth != 0:
+        _fail("invalid_authority_json")
+
+
+def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
+    path = AUTHORITY_PATH if path is None else path
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -202,6 +233,7 @@ def load_authority(path: Path = AUTHORITY_PATH) -> tuple[Dependency, ...]:
         _fail("authority_unreadable")
     if len(raw) > MAX_AUTHORITY_BYTES or b"\x00" in raw:
         _fail("authority_too_large")
+    _validate_json_nesting(raw)
     try:
         decoded = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
     except AuthorityError:
@@ -408,13 +440,14 @@ def _consumer_snapshot(path: Path) -> ConsumerSnapshot:
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
+        current = path.lstat()
     except AuthorityError:
         raise
     except OSError:
         _fail("consumer_unreadable")
     if len(raw) > MAX_CONSUMER_BYTES:
         _fail("consumer_too_large")
-    if _identity(after) != _identity(before):
+    if _identity(after) != _identity(before) or _identity(current) != _identity(before):
         _fail("consumer_changed")
     try:
         text = raw.decode("utf-8")
@@ -468,24 +501,56 @@ def _replace_blocks(text: str, blocks: tuple[tuple[str, str, str], ...]) -> str:
     return "\n".join(lines)
 
 
-def _path_matches_identity(
-    path: Path, identity: tuple[int, int, int, int, int]
-) -> bool:
+def _rename_noreplace(first: Path, second: Path) -> bool:
     try:
-        metadata = path.lstat()
-    except OSError:
+        if sys.platform.startswith("linux"):
+            function = ctypes.CDLL(None, use_errno=True).renameat2
+            function.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            function.restype = ctypes.c_int
+            return function(-100, os.fsencode(first), -100, os.fsencode(second), 1) == 0
+        if sys.platform == "darwin":
+            function = ctypes.CDLL(None, use_errno=True).renamex_np
+            function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            function.restype = ctypes.c_int
+            return function(os.fsencode(first), os.fsencode(second), 4) == 0
+        if os.name == "nt":
+            os.rename(first, second)
+            return True
+    except (AttributeError, OSError, ValueError):
         return False
-    return stat.S_ISREG(metadata.st_mode) and _identity(metadata) == identity
+    return False
 
 
-def _unlink_owned(path: Path, identity: tuple[int, int, int, int, int]) -> bool:
-    if not _path_matches_identity(path, identity):
-        return False
-    try:
-        path.unlink()
-    except OSError:
-        return False
-    return True
+def _remove_owned(path: Path, identity: tuple[int, int, int, int, int]) -> bool:
+    # Atomically remove the published name before inspecting it. The claimed name
+    # is random and never shared, so a foreign replacement at ``path`` is restored
+    # rather than being unlinked by a later pathname operation.
+    for _attempt in range(8):
+        claimed = path.with_name(
+            f".{path.name}.openwrangler-dispose-{secrets.token_hex(16)}"
+        )
+        if not _rename_noreplace(path, claimed):
+            continue
+        try:
+            snapshot = _consumer_snapshot(claimed)
+        except AuthorityError:
+            _rename_noreplace(claimed, path)
+            return False
+        if snapshot.identity[:4] != identity[:4]:
+            _rename_noreplace(claimed, path)
+            return False
+        try:
+            claimed.unlink()
+        except OSError:
+            return False
+        return True
+    return False
 
 
 def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
@@ -527,13 +592,13 @@ def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
             except OSError:
                 pass
         if temporary is not None and owned_identity is not None:
-            _unlink_owned(temporary, owned_identity)
+            _remove_owned(temporary, owned_identity)
         _fail("consumer_write_failed")
 
 
 def _remove_staged(snapshots: Iterator[ConsumerSnapshot]) -> None:
     for snapshot in snapshots:
-        _unlink_owned(snapshot.path, snapshot.identity)
+        _remove_owned(snapshot.path, snapshot.identity)
 
 
 def _same_snapshot(snapshot: ConsumerSnapshot) -> bool:
@@ -569,14 +634,9 @@ def _exchange_paths(first: Path, second: Path) -> Path:
             function.restype = ctypes.c_int
             result = function(os.fsencode(first), os.fsencode(second), 2)
         elif os.name == "nt":
-            descriptor, name = tempfile.mkstemp(
-                prefix=f".{first.name}.openwrangler-exchange-", dir=first.parent
+            backup = first.with_name(
+                f".{first.name}.openwrangler-exchange-{secrets.token_hex(16)}"
             )
-            backup = Path(name)
-            backup_identity = _identity(os.fstat(descriptor))
-            os.close(descriptor)
-            if not _unlink_owned(backup, backup_identity):
-                _fail("consumer_write_failed")
             replace_file = ctypes.windll.kernel32.ReplaceFileW
             replace_file.argtypes = [
                 ctypes.c_wchar_p,
@@ -599,33 +659,55 @@ def _exchange_paths(first: Path, second: Path) -> Path:
     return second
 
 
+def _assert_consumer_states(
+    snapshots: tuple[ConsumerSnapshot, ...],
+    committed: dict[Path, ConsumerSnapshot],
+) -> None:
+    for snapshot in snapshots:
+        expected_snapshot = committed.get(snapshot.path, snapshot)
+        if not _same_snapshot(expected_snapshot):
+            _fail("consumer_changed")
+
+
 def _write_consumers_atomically(
     snapshots: tuple[ConsumerSnapshot, ...],
     expected: dict[Path, str],
     *,
     authority_identity: tuple[int, int, int, int, int] | None = None,
 ) -> None:
+    targets = tuple(
+        snapshot
+        for snapshot in snapshots
+        if snapshot.raw != expected[snapshot.path].encode("utf-8")
+    )
     replacements: dict[Path, ConsumerSnapshot] = {}
     committed: dict[Path, ConsumerSnapshot] = {}
     replaced: list[Path] = []
     error_code: str | None = None
     try:
-        for snapshot in snapshots:
+        for snapshot in targets:
             replacements[snapshot.path] = _stage_sibling(
                 snapshot.path, expected[snapshot.path].encode("utf-8"), snapshot.mode
             )
-        for snapshot in snapshots:
+        _assert_consumer_states(snapshots, committed)
+        for snapshot in targets:
+            _assert_consumer_states(snapshots, committed)
             replacement = replacements[snapshot.path]
-            if not _same_snapshot(snapshot):
-                _fail("consumer_changed")
             if not _same_snapshot(replacement):
                 _fail("consumer_write_failed")
             if authority_identity is not None:
                 _assert_authority_identity(authority_identity)
             displaced_path = _exchange_paths(snapshot.path, replacement.path)
+            replacements[snapshot.path] = ConsumerSnapshot(
+                path=displaced_path,
+                raw=snapshot.raw,
+                text=snapshot.text,
+                identity=snapshot.identity,
+                mode=snapshot.mode,
+            )
+            replaced.append(snapshot.path)
             displaced = _consumer_snapshot(displaced_path)
             replacements[snapshot.path] = displaced
-            replaced.append(snapshot.path)
             committed_snapshot = _consumer_snapshot(snapshot.path)
             committed[snapshot.path] = committed_snapshot
             if (
@@ -639,10 +721,9 @@ def _write_consumers_atomically(
                 or displaced.mode != snapshot.mode
             ):
                 _fail("consumer_changed")
+            _assert_consumer_states(snapshots, committed)
         directories = (
-            {snapshot.path.parent for snapshot in snapshots}
-            if os.name != "nt"
-            else set()
+            {snapshot.path.parent for snapshot in targets} if os.name != "nt" else set()
         )
         for directory in directories:
             try:
@@ -653,6 +734,7 @@ def _write_consumers_atomically(
                     os.close(descriptor)
             except OSError:
                 _fail("consumer_write_failed")
+        _assert_consumer_states(snapshots, committed)
         if authority_identity is not None:
             _assert_authority_identity(authority_identity)
     except AuthorityError as error:
@@ -712,8 +794,7 @@ def _assert_authority_identity(identity: tuple[int, int, int, int, int]) -> None
         _fail("authority_changed")
 
 
-@contextmanager
-def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
+def _authority_file_identity() -> tuple[int, int, int, int, int]:
     descriptor = -1
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -730,17 +811,70 @@ def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
             _fail("authority_unsafe")
         descriptor = os.open(AUTHORITY_PATH, flags)
         opened = os.fstat(descriptor)
-        if _identity(opened) != _identity(before):
+        current = AUTHORITY_PATH.lstat()
+        if _identity(opened) != _identity(before) or _identity(current) != _identity(
+            before
+        ):
             _fail("authority_changed")
-        identity = _identity(opened)
-        if os.name == "nt":
-            import msvcrt
+        return _identity(opened)
+    except AuthorityError:
+        raise
+    except OSError:
+        _fail("authority_unsafe")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            except OSError:
+
+def _windows_mutex_name(path: Path) -> str:
+    normalized = os.path.normcase(os.path.abspath(os.fspath(path)))
+    digest = hashlib.sha256(os.fsencode(normalized)).hexdigest()
+    return f"Local\\OpenWranglerDependencyAuthority-{digest}"
+
+
+@contextmanager
+def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
+    descriptor = -1
+    mutex_handle: int | None = None
+    mutex_acquired = False
+    try:
+        if os.name == "nt":
+            kernel32 = ctypes.windll.kernel32
+            create_mutex = kernel32.CreateMutexW
+            create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+            create_mutex.restype = ctypes.c_void_p
+            mutex_handle = create_mutex(
+                None, False, _windows_mutex_name(AUTHORITY_PATH)
+            )
+            if not mutex_handle:
+                _fail("consumer_write_failed")
+            wait = kernel32.WaitForSingleObject
+            wait.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            wait.restype = ctypes.c_uint
+            wait_result = wait(mutex_handle, 0)
+            if wait_result == 0x00000102:
                 _fail("consumer_write_busy")
+            if wait_result not in {0x00000000, 0x00000080}:
+                _fail("consumer_write_failed")
+            mutex_acquired = True
         else:
+            parent = AUTHORITY_PATH.parent
+            before = parent.lstat()
+            if not stat.S_ISDIR(before.st_mode):
+                _fail("authority_unsafe")
+            flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(parent, flags)
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+            ):
+                _fail("authority_changed")
             import fcntl
 
             try:
@@ -749,6 +883,14 @@ def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
                 _fail("consumer_write_busy")
             except OSError:
                 _fail("consumer_write_failed")
+            current = parent.lstat()
+            if (
+                not stat.S_ISDIR(current.st_mode)
+                or current.st_dev != opened.st_dev
+                or current.st_ino != opened.st_ino
+            ):
+                _fail("authority_changed")
+        identity = _authority_file_identity()
         _assert_authority_identity(identity)
         yield identity
         _assert_authority_identity(identity)
@@ -757,17 +899,16 @@ def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
     except OSError:
         _fail("consumer_write_failed")
     finally:
+        if os.name == "nt" and mutex_handle is not None:
+            kernel32 = ctypes.windll.kernel32
+            if mutex_acquired:
+                kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle))
+            kernel32.CloseHandle(ctypes.c_void_p(mutex_handle))
         if descriptor >= 0:
             try:
-                if os.name == "nt":
-                    import msvcrt
+                import fcntl
 
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
             except OSError:
                 pass
             os.close(descriptor)
@@ -829,15 +970,14 @@ def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
             "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
             "        with:",
             '          python-version: "3.12"',
-            "      - name: Install exact qualified dependency",
-            '        run: python -m pip install pytest "${{ matrix.requirement }}"',
+            "      - name: Install Open Wrangler and exact qualified dependency",
+            '        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"',
             "      - name: Exercise exact qualified dependency",
             "        run: >-",
             "          python -m pytest",
             "          python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe",
             "          -q",
             "        env:",
-            "          PYTHONPATH: python:.",
             "          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}",
             "          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}",
         )
@@ -906,11 +1046,8 @@ def _synchronize_unlocked(
         if snapshot.raw != expected[snapshot.path].encode("utf-8")
     )
     if write and mismatches:
-        mismatch_snapshots = tuple(
-            snapshot for snapshot in snapshots if snapshot.path in mismatches
-        )
         _write_consumers_atomically(
-            mismatch_snapshots,
+            snapshots,
             expected,
             authority_identity=authority_identity,
         )
