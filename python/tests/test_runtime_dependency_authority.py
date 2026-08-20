@@ -746,6 +746,17 @@ def test_distribution_module_ownership_rejects_ambiguous_import_identities(
         symlink.symlink_to(regular)
         assert not dependency_guard._distribution_owns_module(distribution_for(symlink), module_for(symlink))
 
+        real_package = tmp_path / "real_package"
+        real_package.mkdir()
+        package_module = real_package / "__init__.py"
+        package_module.write_text("VALUE = 5\n", encoding="utf-8")
+        linked_package = tmp_path / "linked_package"
+        linked_package.symlink_to(real_package, target_is_directory=True)
+        linked_module = linked_package / "__init__.py"
+        assert not dependency_guard._distribution_owns_module(
+            distribution_for(linked_module), module_for(linked_module)
+        )
+
     hardlink_source = tmp_path / "hardlink_source.py"
     hardlink_source.write_text("VALUE = 2\n", encoding="utf-8")
     hardlink = tmp_path / "hardlink_module.py"
@@ -974,6 +985,38 @@ def test_completed_consumer_writes_roll_back_on_final_authority_replacement(
     assert not list(tmp_path.glob(".*.openwrangler-*"))
 
 
+def test_locked_authority_descriptor_prevents_aba_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    authority_path = tmp_path / "authority.json"
+    authority_bytes = authority.AUTHORITY_PATH.read_bytes()
+    authority_path.write_bytes(authority_bytes)
+    alternate_authority = tmp_path / "authority-alternate.json"
+    alternate_value = json.loads(authority_path.read_text(encoding="utf-8"))
+    fsspec = next(dependency for dependency in alternate_value["dependencies"] if dependency["id"] == "fsspec")
+    fsspec["exactVersion"] = "2026.8.0"
+    fsspec["qualification"]["qualifiedVersions"] = ["2026.8.0"]
+    alternate_authority.write_text(json.dumps(alternate_value, indent=2) + "\n", encoding="utf-8")
+    alternate_dependencies = authority.load_authority(alternate_authority)
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+    path_reparses = 0
+
+    def aba_path_reparse(_path: Path | None = None) -> tuple[authority.Dependency, ...]:
+        nonlocal path_reparses
+        path_reparses += 1
+        return alternate_dependencies
+
+    # This models the vulnerable pathname returning B between two A receipts. A
+    # locked write must read its retained A descriptor and never call this seam.
+    monkeypatch.setattr(authority, "load_authority", aba_path_reparse)
+    assert authority.synchronize(write=True) == (pyproject, host)
+    assert path_reparses == 0
+    assert b"fsspec==2026.7.0" in pyproject.read_bytes()
+    assert b"fsspec==2026.8.0" not in pyproject.read_bytes()
+    assert b"fsspec==2026.7.0" in host.read_bytes()
+    assert b"fsspec==2026.8.0" not in host.read_bytes()
+    assert authority_path.read_bytes() == authority_bytes
+
+
 def test_concurrent_generator_writer_fails_closed_with_a_stable_code() -> None:
     with authority._authority_write_lock():
         result = subprocess.run(
@@ -1155,7 +1198,7 @@ def test_failed_stage_cleanup_preserves_a_foreign_temporary_replacement(
 
     monkeypatch.setattr(authority.tempfile, "mkstemp", tracked_mkstemp)
     monkeypatch.setattr(authority.os, "fsync", replace_then_fail)
-    with pytest.raises(authority.AuthorityError, match="^consumer_write_failed$"):
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
         authority._stage_sibling(target, b"generated", 0o644)
     assert created[0].read_bytes() == b"foreign staged bytes\n"
     metadata = created[0].stat()
@@ -1172,7 +1215,8 @@ def test_staged_cleanup_preserves_a_foreign_path_identity(tmp_path: Path) -> Non
     foreign_identity = (foreign_metadata.st_dev, foreign_metadata.st_ino)
     os.replace(foreign, staged.path)
 
-    authority._remove_staged(iter((staged,)))
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+        authority._remove_staged(iter((staged,)))
 
     assert staged.path.read_bytes() == b"foreign cleanup bytes\n"
     metadata = staged.path.stat()
@@ -1200,11 +1244,67 @@ def test_staged_cleanup_atomically_claims_before_checking_identity(
         return real_rename(first, second, *args, **kwargs)
 
     monkeypatch.setattr(authority, "_rename_noreplace", replace_before_claim)
-    authority._remove_staged(iter((staged,)))
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+        authority._remove_staged(iter((staged,)))
 
     assert staged.path.read_bytes() == b"foreign cleanup race bytes\n"
     metadata = staged.path.stat()
     assert (metadata.st_dev, metadata.st_ino) == foreign_identity
+
+
+def test_staged_cleanup_preserves_same_inode_edit_with_restored_mtime(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    before = staged.path.stat()
+    with staged.path.open("r+b") as stream:
+        stream.write(b"changed!!")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.utime(
+        staged.path,
+        ns=(before.st_atime_ns, before.st_mtime_ns),
+        follow_symlinks=False,
+    )
+    changed = staged.path.stat()
+    assert changed.st_ino == before.st_ino
+    assert changed.st_size == before.st_size
+    assert changed.st_mtime_ns == before.st_mtime_ns
+    assert changed.st_ctime_ns != before.st_ctime_ns
+
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+        authority._remove_staged(iter((staged,)))
+
+    assert staged.path.read_bytes() == b"changed!!"
+    assert not list(tmp_path.glob(".*.openwrangler-dispose-*"))
+
+
+def test_failed_staged_unlink_is_explicit_and_retains_transaction_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    originals = {path.read_bytes() for path in (pyproject, host)}
+    real_unlink = authority._consumer_unlink
+    failed = False
+
+    def fail_one_owned_unlink(path: Path, parent_receipt: authority.ConsumerParentReceipt | None) -> None:
+        nonlocal failed
+        if ".openwrangler-dispose-" in path.name and not failed:
+            failed = True
+            raise OSError("bounded-test-unlink-failure")
+        real_unlink(path, parent_receipt)
+
+    monkeypatch.setattr(authority, "_consumer_unlink", fail_one_owned_unlink)
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+        authority.synchronize(write=True)
+
+    assert failed
+    assert authority.synchronize(write=False) == ()
+    retained = list(tmp_path.glob(".*.openwrangler-dispose-*"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() in originals
 
 
 def test_rollback_does_not_overwrite_a_concurrently_changed_committed_consumer(

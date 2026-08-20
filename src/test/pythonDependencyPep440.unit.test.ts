@@ -104,6 +104,19 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
         await writeFile(modulePath, "VALUE = 1\n", "utf8");
       }
 
+      const linkedPackageSource = path.join(root, "linked-package-source");
+      const linkedPackage = path.join(purelib, fixture.dependency.importModule);
+      await unlink(modulePath);
+      await mkdir(linkedPackageSource);
+      await writeFile(path.join(linkedPackageSource, "__init__.py"), "VALUE = 1\n", "utf8");
+      await symlink(linkedPackageSource, linkedPackage, process.platform === "win32" ? "junction" : "dir");
+      await writeFile(recordPath, `${fixture.dependency.importModule}/__init__.py,,\n`, "utf8");
+      await expect(probeDependencies(executable, [fixture.dependency]), "symlinked package directory").resolves.toEqual(
+        rejected
+      );
+      await unlink(linkedPackage);
+      await writeFile(modulePath, "VALUE = 1\n", "utf8");
+
       const namespaceName = "openwrangler_namespace_probe";
       const namespaceRoot = path.join(purelib, namespaceName);
       await mkdir(namespaceRoot);

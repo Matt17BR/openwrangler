@@ -270,6 +270,10 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
         raise
     except OSError:
         _fail("authority_unreadable")
+    return _parse_authority_bytes(raw)
+
+
+def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
     if len(raw) > MAX_AUTHORITY_BYTES or b"\x00" in raw:
         _fail("authority_too_large")
     _validate_json_budget(raw)
@@ -464,6 +468,7 @@ class AuthorityLockReceipt:
     authority_identity: tuple[int, int, int, int, int]
     parent_identity: tuple[int, int]
     namespace_identity: tuple[int, int]
+    authority_descriptor: int = -1
     parent_descriptor: int = -1
     namespace_descriptor: int = -1
 
@@ -843,14 +848,47 @@ def _rename_noreplace(
     return False
 
 
+def _exact_snapshot_matches(
+    actual: ConsumerSnapshot, expected: ConsumerSnapshot
+) -> bool:
+    return (
+        actual.identity == expected.identity
+        and actual.mode == expected.mode
+        and actual.raw == expected.raw
+    )
+
+
+def _claimed_snapshot_matches(
+    actual: ConsumerSnapshot, expected: ConsumerSnapshot
+) -> bool:
+    # Renaming the owned inode changes ctime on supported POSIX filesystems. The
+    # complete pre-claim snapshot proves ctime; the claimed snapshot then proves
+    # the stable identity fields, mode, and content before unlink.
+    return (
+        actual.identity[:4] == expected.identity[:4]
+        and actual.mode == expected.mode
+        and actual.raw == expected.raw
+    )
+
+
 def _remove_owned(
     path: Path,
-    identity: tuple[int, int, int, int, int],
+    expected: ConsumerSnapshot,
     parent_receipt: ConsumerParentReceipt | None = None,
     *,
     require_named_parent: bool = True,
 ) -> bool:
     for _attempt in range(8):
+        try:
+            before = _consumer_snapshot(
+                path,
+                parent_receipt,
+                require_named_parent=require_named_parent,
+            )
+        except AuthorityError:
+            return False
+        if not _exact_snapshot_matches(before, expected):
+            return False
         claimed = path.with_name(
             f".{path.name}.openwrangler-dispose-{secrets.token_hex(16)}"
         )
@@ -875,7 +913,7 @@ def _remove_owned(
                 require_named_parent=require_named_parent,
             )
             return False
-        if snapshot.identity[:4] != identity[:4]:
+        if not _claimed_snapshot_matches(snapshot, expected):
             _rename_noreplace(
                 claimed,
                 path,
@@ -899,7 +937,8 @@ def _stage_sibling(
 ) -> ConsumerSnapshot:
     temporary: Path | None = None
     descriptor = -1
-    owned_identity: tuple[int, int, int, int, int] | None = None
+    offset = 0
+    owned_snapshot: ConsumerSnapshot | None = None
     try:
         if parent_receipt is not None:
             _assert_consumer_parent(parent_receipt)
@@ -928,48 +967,80 @@ def _stage_sibling(
             file_chmod(descriptor, mode)
         else:
             os.chmod(temporary, mode)
-        offset = 0
         while offset < len(raw):
             written = os.write(descriptor, raw[offset:])
             if written <= 0:
                 _fail("consumer_write_failed")
             offset += written
+        metadata = os.fstat(descriptor)
+        owned_snapshot = ConsumerSnapshot(
+            path=temporary,
+            raw=raw,
+            text=raw.decode("utf-8"),
+            identity=_identity(metadata),
+            mode=stat.S_IMODE(metadata.st_mode),
+            parent_receipt=parent_receipt,
+        )
         os.fsync(descriptor)
-        owned_identity = _identity(os.fstat(descriptor))
+        metadata = os.fstat(descriptor)
+        owned_snapshot = ConsumerSnapshot(
+            path=temporary,
+            raw=raw,
+            text=owned_snapshot.text,
+            identity=_identity(metadata),
+            mode=stat.S_IMODE(metadata.st_mode),
+            parent_receipt=parent_receipt,
+        )
         os.close(descriptor)
         descriptor = -1
         staged = _consumer_snapshot(temporary, parent_receipt)
-        if staged.raw != raw or staged.mode != mode:
+        if not _exact_snapshot_matches(staged, owned_snapshot):
             _fail("consumer_write_failed")
         return staged
-    except (AuthorityError, OSError):
+    except (AuthorityError, OSError, UnicodeDecodeError):
         if descriptor >= 0:
-            try:
-                owned_identity = _identity(os.fstat(descriptor))
-            except OSError:
-                owned_identity = None
+            if temporary is not None:
+                try:
+                    metadata = os.fstat(descriptor)
+                    owned_snapshot = ConsumerSnapshot(
+                        path=temporary,
+                        raw=raw[:offset],
+                        text="",
+                        identity=_identity(metadata),
+                        mode=stat.S_IMODE(metadata.st_mode),
+                        parent_receipt=parent_receipt,
+                    )
+                except OSError:
+                    owned_snapshot = None
             try:
                 os.close(descriptor)
             except OSError:
                 pass
-        if temporary is not None and owned_identity is not None:
-            _remove_owned(
+        if temporary is not None and (
+            owned_snapshot is None
+            or not _remove_owned(
                 temporary,
-                owned_identity,
+                owned_snapshot,
                 parent_receipt,
                 require_named_parent=False,
             )
+        ):
+            _fail("consumer_cleanup_failed")
         _fail("consumer_write_failed")
 
 
 def _remove_staged(snapshots: Iterator[ConsumerSnapshot]) -> None:
+    cleanup_failed = False
     for snapshot in snapshots:
-        _remove_owned(
+        if not _remove_owned(
             snapshot.path,
-            snapshot.identity,
+            snapshot,
             snapshot.parent_receipt,
             require_named_parent=False,
-        )
+        ):
+            cleanup_failed = True
+    if cleanup_failed:
+        _fail("consumer_cleanup_failed")
 
 
 def _same_snapshot(
@@ -1211,9 +1282,9 @@ def _write_consumers_atomically(
         _remove_staged(iter(replacements.values()))
 
 
-def _authority_file_identity(
+def _open_authority_file(
     parent_descriptor: int = -1,
-) -> tuple[int, int, int, int, int]:
+) -> tuple[int, tuple[int, int, int, int, int]]:
     descriptor = -1
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -1242,20 +1313,57 @@ def _authority_file_identity(
             before
         ):
             _fail("authority_changed")
-        return _identity(opened)
+        return descriptor, _identity(opened)
+    except AuthorityError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    except OSError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        _fail("authority_unsafe")
+
+
+def _load_locked_authority(
+    receipt: AuthorityLockReceipt,
+) -> tuple[Dependency, ...]:
+    _assert_authority_receipt(receipt)
+    try:
+        os.lseek(receipt.authority_descriptor, 0, os.SEEK_SET)
+        before = os.fstat(receipt.authority_descriptor)
+        if _identity(before) != receipt.authority_identity:
+            _fail("authority_changed")
+        chunks: list[bytes] = []
+        remaining = MAX_AUTHORITY_BYTES + 1
+        while remaining:
+            chunk = os.read(receipt.authority_descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(receipt.authority_descriptor)
     except AuthorityError:
         raise
     except OSError:
-        _fail("authority_unsafe")
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        _fail("authority_changed")
+    if _identity(after) != receipt.authority_identity:
+        _fail("authority_changed")
+    raw = b"".join(chunks)
+    dependencies = _parse_authority_bytes(raw)
+    _assert_authority_receipt(receipt)
+    return dependencies
 
 
 def _assert_authority_receipt(receipt: AuthorityLockReceipt) -> None:
     try:
         parent = AUTHORITY_PATH.parent
         namespace = parent.parent
+        authority_opened = os.fstat(receipt.authority_descriptor)
+        if _identity(authority_opened) != receipt.authority_identity:
+            _fail("authority_changed")
         if receipt.namespace_descriptor >= 0:
             namespace_opened = os.fstat(receipt.namespace_descriptor)
             parent_opened = os.fstat(receipt.parent_descriptor)
@@ -1315,6 +1423,7 @@ def _authority_write_lock(
 ) -> Iterator[AuthorityLockReceipt]:
     namespace_descriptor = -1
     parent_descriptor = -1
+    authority_descriptor = -1
     mutex_handle: int | None = None
     mutex_acquired = False
     try:
@@ -1398,10 +1507,13 @@ def _authority_write_lock(
                 != (parent_metadata.st_dev, parent_metadata.st_ino)
             ):
                 _fail("authority_changed")
-        authority_identity = _authority_file_identity(parent_descriptor)
+        authority_descriptor, authority_identity = _open_authority_file(
+            parent_descriptor
+        )
         receipt = AuthorityLockReceipt(
             authority_identity=authority_identity,
             parent_identity=(parent_metadata.st_dev, parent_metadata.st_ino),
+            authority_descriptor=authority_descriptor,
             namespace_identity=(
                 namespace_metadata.st_dev,
                 namespace_metadata.st_ino,
@@ -1423,6 +1535,8 @@ def _authority_write_lock(
             if mutex_acquired:
                 kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle))
             kernel32.CloseHandle(ctypes.c_void_p(mutex_handle))
+        if authority_descriptor >= 0:
+            os.close(authority_descriptor)
         if parent_descriptor >= 0:
             os.close(parent_descriptor)
         if namespace_descriptor >= 0:
@@ -1552,9 +1666,11 @@ def _synchronize_unlocked(
 ) -> tuple[Path, ...]:
     if authority_receipt is not None:
         _assert_authority_receipt(authority_receipt)
-    dependencies = load_authority()
-    if authority_receipt is not None:
-        _assert_authority_receipt(authority_receipt)
+    dependencies = (
+        _load_locked_authority(authority_receipt)
+        if authority_receipt is not None
+        else load_authority()
+    )
     paths = (PYPROJECT_PATH, HOST_PATH, WORKFLOW_PATH)
     with _consumer_parent_receipts(paths) as parent_receipts:
         snapshots = tuple(

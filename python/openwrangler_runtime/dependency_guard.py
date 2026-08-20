@@ -2369,47 +2369,248 @@ def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> 
         return False
 
 
+def _stat_entry_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _stat_file_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _posix_regular_module_file_identity(
+    path: str,
+) -> tuple[int, int, int, int, int] | None:
+    normalized = os.path.normpath(path)
+    if os.path.normcase(normalized) != os.path.normcase(path):
+        return None
+    parts = Path(normalized).parts
+    if len(parts) < 2 or parts[0] != os.path.sep:
+        return None
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    ancestors: list[tuple[int, str, int, tuple[int, int, int, int, int, int, int]]] = []
+    try:
+        current_descriptor = os.open(parts[0], directory_flags)
+        descriptors.append(current_descriptor)
+        for component in parts[1:-1]:
+            if component in {"", ".", ".."}:
+                return None
+            named = os.stat(
+                component,
+                dir_fd=current_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(named.st_mode):
+                return None
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=current_descriptor,
+            )
+            descriptors.append(child_descriptor)
+            opened = os.fstat(child_descriptor)
+            expected = _stat_entry_identity(named)
+            if not stat.S_ISDIR(opened.st_mode) or _stat_entry_identity(opened) != expected:
+                return None
+            ancestors.append((current_descriptor, component, child_descriptor, expected))
+            current_descriptor = child_descriptor
+        filename = parts[-1]
+        named_file = os.stat(
+            filename,
+            dir_fd=current_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(named_file.st_mode) or named_file.st_nlink != 1:
+            return None
+        file_descriptor = os.open(
+            filename,
+            file_flags,
+            dir_fd=current_descriptor,
+        )
+        descriptors.append(file_descriptor)
+        opened_file = os.fstat(file_descriptor)
+        current_file = os.stat(
+            filename,
+            dir_fd=current_descriptor,
+            follow_symlinks=False,
+        )
+        expected_file = _stat_entry_identity(named_file)
+        if (
+            not stat.S_ISREG(opened_file.st_mode)
+            or opened_file.st_nlink != 1
+            or _stat_entry_identity(opened_file) != expected_file
+            or _stat_entry_identity(current_file) != expected_file
+        ):
+            return None
+        for parent_descriptor, component, child_descriptor, expected in ancestors:
+            named = os.stat(
+                component,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            opened = os.fstat(child_descriptor)
+            if (
+                not stat.S_ISDIR(named.st_mode)
+                or not stat.S_ISDIR(opened.st_mode)
+                or _stat_entry_identity(named) != expected
+                or _stat_entry_identity(opened) != expected
+            ):
+                return None
+        return _stat_file_identity(named_file)
+    except (OSError, ValueError):
+        return None
+    finally:
+        for descriptor in reversed(descriptors):
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
+class _WindowsFileTime(ctypes.Structure):
+    _fields_ = [
+        ("low", ctypes.c_uint32),
+        ("high", ctypes.c_uint32),
+    ]
+
+
+class _WindowsFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("attributes", ctypes.c_uint32),
+        ("creation_time", _WindowsFileTime),
+        ("last_access_time", _WindowsFileTime),
+        ("last_write_time", _WindowsFileTime),
+        ("volume_serial", ctypes.c_uint32),
+        ("size_high", ctypes.c_uint32),
+        ("size_low", ctypes.c_uint32),
+        ("links", ctypes.c_uint32),
+        ("index_high", ctypes.c_uint32),
+        ("index_low", ctypes.c_uint32),
+    ]
+
+
+def _windows_file_information_identity(
+    value: _WindowsFileInformation,
+) -> tuple[int, int, int, int, int]:
+    return (
+        value.volume_serial,
+        (value.index_high << 32) | value.index_low,
+        (value.size_high << 32) | value.size_low,
+        (value.last_write_time.high << 32) | value.last_write_time.low,
+        (value.creation_time.high << 32) | value.creation_time.low,
+    )
+
+
+def _windows_regular_module_file_identity(
+    path: str,
+) -> tuple[int, int, int, int, int] | None:
+    normalized = os.path.normpath(path)
+    if os.path.normcase(normalized) != os.path.normcase(path):
+        return None
+    drive, tail = os.path.splitdrive(normalized)
+    components = [item for item in re.split(r"[\\/]", tail) if item]
+    if not drive or not components:
+        return None
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        return None
+    kernel32 = loader("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_WindowsFileInformation),
+    ]
+    get_information.restype = ctypes.c_int
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    handles: list[tuple[int, _WindowsFileInformation]] = []
+    try:
+        current = f"{drive}{os.path.sep}"
+        for index, component in enumerate(components):
+            current = os.path.join(current, component)
+            is_file = index == len(components) - 1
+            flags = 0x00200000
+            if not is_file:
+                flags |= 0x02000000
+            handle = create_file(
+                current,
+                0,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                flags,
+                None,
+            )
+            if handle in {None, 0, ctypes.c_void_p(-1).value}:
+                return None
+            numeric_handle = int(handle)
+            information = _WindowsFileInformation()
+            if not get_information(ctypes.c_void_p(numeric_handle), ctypes.byref(information)):
+                close_handle(ctypes.c_void_p(numeric_handle))
+                return None
+            is_directory = bool(information.attributes & 0x00000010)
+            if (
+                bool(information.attributes & 0x00000400)
+                or is_directory == is_file
+                or (is_file and information.links != 1)
+            ):
+                close_handle(ctypes.c_void_p(numeric_handle))
+                return None
+            handles.append((numeric_handle, information))
+        for numeric_handle, expected in handles:
+            current_information = _WindowsFileInformation()
+            if not get_information(ctypes.c_void_p(numeric_handle), ctypes.byref(current_information)) or (
+                current_information.attributes != expected.attributes
+                or current_information.links != expected.links
+                or _windows_file_information_identity(current_information)
+                != _windows_file_information_identity(expected)
+            ):
+                return None
+        return _windows_file_information_identity(handles[-1][1])
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    finally:
+        for numeric_handle, _information in reversed(handles):
+            close_handle(ctypes.c_void_p(numeric_handle))
+
+
 def _regular_module_file_identity(
     path: str,
 ) -> tuple[int, int, int, int, int] | None:
     if not os.path.isabs(path) or "\x00" in path or any(ord(character) < 0x20 for character in path):
         return None
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        before = os.lstat(path)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            return None
-        descriptor = os.open(path, flags)
-        try:
-            opened = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-        current = os.lstat(path)
-    except (OSError, ValueError):
-        return None
-
-    def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
-        return (
-            value.st_dev,
-            value.st_ino,
-            value.st_size,
-            value.st_mtime_ns,
-            value.st_ctime_ns,
-        )
-
-    before_identity = identity(before)
-    if (
-        not stat.S_ISREG(opened.st_mode)
-        or opened.st_nlink != 1
-        or not stat.S_ISREG(current.st_mode)
-        or current.st_nlink != 1
-        or identity(opened) != before_identity
-        or identity(current) != before_identity
-    ):
-        return None
-    return before_identity
+    if os.name == "nt":
+        return _windows_regular_module_file_identity(path)
+    return _posix_regular_module_file_identity(path)
 
 
 def _distribution_owns_module(distribution: Any, module: Any) -> bool:
