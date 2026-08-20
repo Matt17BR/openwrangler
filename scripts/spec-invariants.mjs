@@ -574,10 +574,70 @@ export function renderCleaningHistoryClaims(model) {
   };
 }
 
+const markdownNamedEntities = new Map([
+  ["amp", "&"],
+  ["apos", "'"],
+  ["gt", ">"],
+  ["lt", "<"],
+  ["nbsp", " "],
+  ["quot", '"']
+]);
+
+function decodeMarkdownEntities(source) {
+  return source.replace(/&(?:#(?<decimal>[0-9]+)|#x(?<hex>[0-9a-f]+)|(?<named>[a-z]+));/giu, (entity, ...args) => {
+    const groups = args.at(-1);
+    if (groups.named !== undefined) return markdownNamedEntities.get(groups.named.toLowerCase()) ?? entity;
+    const value = Number.parseInt(groups.hex ?? groups.decimal, groups.hex === undefined ? 10 : 16);
+    return Number.isInteger(value) && value > 0 && value <= 0x10ffff && !(value >= 0xd800 && value <= 0xdfff)
+      ? String.fromCodePoint(value)
+      : "\ufffd";
+  });
+}
+
+function renderMarkdownInlineLine(source) {
+  const exampleContext = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu.test(source);
+  let rendered = "";
+  for (let offset = 0; offset < source.length;) {
+    if (source[offset] !== "`") {
+      rendered += source[offset];
+      offset += 1;
+      continue;
+    }
+    let runLength = 1;
+    while (source[offset + runLength] === "`") runLength += 1;
+    const marker = "`".repeat(runLength);
+    const end = source.indexOf(marker, offset + runLength);
+    if (end < 0) {
+      rendered += marker;
+      offset += runLength;
+      continue;
+    }
+    if (!exampleContext) rendered += ` ${source.slice(offset + runLength, end)} `;
+    else rendered += " ";
+    offset = end + runLength;
+  }
+  return decodeMarkdownEntities(
+    rendered
+      .replace(/<[^>\n]+>/gu, " ")
+      .replace(/!\[(?<alt>[^\]\n]*)\]\([^\n)]*\)/gu, "$<alt>")
+      .replace(/\[(?<label>[^\]\n]+)\]\([^\n)]*\)/gu, "$<label>")
+      .replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/gu, "$1")
+      .replace(/[*_~]+/gu, "")
+  );
+}
+
+function renderMarkdownInline(source) {
+  return source
+    .replace(/<!--[^]*?-->/gu, " ")
+    .split("\n")
+    .map(renderMarkdownInlineLine)
+    .join("\n");
+}
+
 function parseMarkdownHeading(line) {
   const match = /^ {0,3}(?<marks>#{1,6})[\t ]+(?<text>.*?)(?:[\t ]+#+[\t ]*)?$/u.exec(line);
   if (match === null) return undefined;
-  return { level: match.groups.marks.length, text: match.groups.text.trim() };
+  return { level: match.groups.marks.length, text: renderMarkdownInline(match.groups.text).trim() };
 }
 
 function visibleMarkdownLines(document) {
@@ -606,6 +666,15 @@ function visibleMarkdownLines(document) {
       continue;
     }
     result.push({ line, heading: parseMarkdownHeading(line) });
+  }
+  for (let index = 1; index < result.length; index += 1) {
+    const underline = /^ {0,3}(?<marks>=+|-+)[\t ]*$/u.exec(result[index].line);
+    const candidate = result[index - 1];
+    if (underline === null || candidate.heading !== undefined || candidate.line.trim() === "") continue;
+    const text = renderMarkdownInline(candidate.line).trim();
+    if (text === "") continue;
+    result[index - 1] = { ...candidate, heading: { level: underline.groups.marks[0] === "=" ? 1 : 2, text } };
+    result[index] = { line: "", heading: undefined };
   }
   return result;
 }
@@ -686,35 +755,12 @@ function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
   }
 }
 
-function stripInlineCode(source) {
-  let result = "";
-  for (let offset = 0; offset < source.length;) {
-    if (source[offset] !== "`") {
-      result += source[offset];
-      offset += 1;
-      continue;
-    }
-    let runLength = 1;
-    while (source[offset + runLength] === "`") runLength += 1;
-    const marker = "`".repeat(runLength);
-    const end = source.indexOf(marker, offset + runLength);
-    if (end < 0) {
-      result += marker;
-      offset += runLength;
-      continue;
-    }
-    result += " ";
-    offset = end + runLength;
-  }
-  return result;
-}
-
 function tokenMatches(token, stems) {
   return stems.some((stem) => token === stem || token.startsWith(stem));
 }
 
 function containsContradictoryCleaningHistoryClaim(source) {
-  const statements = stripInlineCode(source.replace(/<!--[\s\S]*?-->/gu, " "))
+  const statements = renderMarkdownInline(source)
     .replace(/([\p{L}])-([\p{L}])/gu, "$1$2")
     .split(/[.!?;\n]+/u)
     .map((statement) =>
@@ -739,8 +785,7 @@ function containsContradictoryCleaningHistoryClaim(source) {
     "entry",
     "entries",
     "plan",
-    "history",
-    "workflow"
+    "history"
   ];
   const negativeWords = [
     "cannot",
@@ -770,7 +815,9 @@ function containsContradictoryCleaningHistoryClaim(source) {
   ];
 
   return statements.some((tokens) => {
-    const hasSubject = has(tokens, subjectWords);
+    const hasSubject =
+      has(tokens, subjectWords) || (tokens.includes("workflow") && has(tokens, ["applied", "cleaning", "committed"]));
+    const hasCleaningContext = hasStem(tokens, ["cleaning"]);
     const inspectEditDelete = hasStem(tokens, [
       "inspect",
       "edit",
@@ -801,7 +848,7 @@ function containsContradictoryCleaningHistoryClaim(source) {
       (tokens.includes("not") && has(tokens, ["supported", "available", "implemented", "enabled", "allowed"]));
     const latestOnly = hasSubject && inspectEditDelete && latest && exclusivity && !tokens.includes("not");
     const priorDenied = hasSubject && inspectEditDelete && prior && negative;
-    const implementedActionDenied = hasSubject && inspectEditDelete && unavailable;
+    const implementedActionDenied = (hasSubject || hasCleaningContext) && inspectEditDelete && unavailable;
 
     const undo = hasStem(tokens, ["undo", "rollback", "revert", "revers", "restor"]);
     const arbitraryTarget =
@@ -818,7 +865,8 @@ function containsContradictoryCleaningHistoryClaim(source) {
         "whichever"
       ]) || hasStem(tokens, ["specif"]);
     const arbitraryUndo = hasSubject && undo && arbitraryTarget && !negative;
-    const undoDenied = undo && unavailable;
+    const standaloneUndoClaim = undo && tokens.length <= 5;
+    const undoDenied = undo && unavailable && (hasSubject || hasCleaningContext || standaloneUndoClaim);
 
     const explicitReorder = hasStem(tokens, ["reorder", "rearrang", "shuffl", "permut"]);
     const reorder =
@@ -826,8 +874,9 @@ function containsContradictoryCleaningHistoryClaim(source) {
       (hasSubject &&
         (hasStem(tokens, ["ordering", "sequenc"]) ||
           (tokens.includes("order") && hasStem(tokens, ["chang", "edit", "mutab"]))));
+    const standaloneReorderClaim = explicitReorder && tokens.length <= 5;
     const positiveReorder =
-      (hasSubject || explicitReorder) &&
+      (hasSubject || hasCleaningContext || standaloneReorderClaim) &&
       reorder &&
       !negative &&
       hasStem(tokens, [

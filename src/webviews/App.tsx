@@ -1468,6 +1468,16 @@ export function App() {
           }
           deleteStep(response.stepId);
         } else if (response.action === "undoStep") {
+          const currentMetadata = metadataRef.current;
+          if (
+            !currentMetadata ||
+            typeof response.expectedSessionId !== "string" ||
+            !Number.isInteger(response.expectedRevision) ||
+            response.expectedSessionId !== currentMetadata.sessionId ||
+            response.expectedRevision !== currentMetadata.revision
+          ) {
+            return;
+          }
           sendPlanAction("undoStep");
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
