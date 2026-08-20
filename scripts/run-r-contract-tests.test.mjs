@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   createRContractPhases,
   orderRContractPhases,
   parseRContractSelection,
+  R_CONTRACT_SHARD_ALIASES,
   R_CONTRACT_SHARDS,
   R_FRAME_CONTRACT_CASES,
   runRContractPhase,
@@ -158,6 +162,34 @@ test("named R contract shards are an exhaustive disjoint phase partition with th
     selectRContractPhases(configured, { kind: "shard", id: "kernel-agent" }).map(({ id }) => id),
     ["kernel-agent"]
   );
+  assert.deepEqual(R_CONTRACT_SHARD_ALIASES, [
+    {
+      id: "frame-and-interactive-transport",
+      phaseIds: [
+        ...R_FRAME_CONTRACT_CASES.map((caseId) => `frame:${caseId}`),
+        "kernel-transport",
+        "interactive-transport"
+      ]
+    },
+    {
+      id: "catalog-and-process-transport",
+      phaseIds: ["catalog", "typescript-frame", "process-transport"]
+    }
+  ]);
+});
+
+test("every package-exposed R contract shard remains an exact compatibility selector", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const runnerPrefix = "node scripts/run-r-contract-tests.mjs --shard ";
+  const exposed = Object.values(packageJson.scripts)
+    .filter((command) => command.startsWith(runnerPrefix))
+    .map((command) => command.slice(runnerPrefix.length));
+  assert.ok(exposed.length > 0 && exposed.length <= 16);
+  assert.deepEqual(exposed.toSorted(), ["catalog-and-process-transport", "frame-and-interactive-transport"]);
+  for (const shardId of exposed) {
+    assert.match(shardId, /^[a-z][a-z0-9-]{0,63}$/u);
+    assert.ok(selectRContractPhases(phases(), { kind: "shard", id: shardId }).length > 0);
+  }
 });
 
 test("R contract phase and shard selectors are exact, mutually exclusive, and fail closed", () => {
@@ -226,14 +258,14 @@ test("seeded R contract ordering is deterministic, complete, and immutable", () 
   assert.throws(() => orderRContractPhases(configured, 0x1_0000_0000), /unsigned 32-bit integer/u);
 });
 
-test("R contract execution reports every selected phase after unrelated failures", () => {
+test("R contract execution reports every selected phase after unrelated failures", async () => {
   const selected = phases().slice(0, 4);
   const visited = [];
   const lines = [];
   let failure;
   try {
-    runRContractPhases(selected, {
-      runPhase: (phase) => {
+    await runRContractPhases(selected, {
+      runPhase: async (phase) => {
         visited.push(phase.id);
         if (phase === selected[0] || phase === selected[2]) throw new Error(`fixture failure ${phase.id}`);
       },
@@ -259,16 +291,27 @@ test("R contract execution reports every selected phase after unrelated failures
   ]);
 });
 
-test("native R phase receipts identify success, timeout, and ordinary failure exactly", () => {
+function fixtureChild(pid, { code, error, signal = null } = {}) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  queueMicrotask(() => {
+    if (error) child.emit("error", error);
+    if (code !== undefined || signal !== null || error) child.emit("close", code ?? null, signal);
+  });
+  return child;
+}
+
+test("native R phase receipts identify success, timeout, and ordinary failure exactly", async () => {
   const [phase] = phases();
   const lines = [];
   let clock = 1_000;
-  runRContractPhase(phase, {
+  await runRContractPhase(phase, {
     now: () => {
       clock += 1_250;
       return clock;
     },
-    spawn: () => ({ error: undefined, signal: null, status: 0 }),
+    spawnProcess: () => fixtureChild(41001, { code: 0 }),
+    isGroupRunning: () => false,
     writeLine: (line) => lines.push(line)
   });
   assert.deepEqual(lines, [
@@ -276,23 +319,167 @@ test("native R phase receipts identify success, timeout, and ordinary failure ex
     "[r-contract] PASS native frame contract: decimal-ordering in 1.3s"
   ]);
 
-  const timeout = Object.assign(new Error("spawn timed out"), { code: "ETIMEDOUT" });
-  assert.throws(
-    () =>
-      runRContractPhase(phase, {
+  let live = true;
+  let timeoutChild;
+  await assert.rejects(
+    runRContractPhase(
+      { ...phase, timeoutMs: 2 },
+      {
         now: () => 5_000,
-        spawn: () => ({ error: timeout, signal: "SIGTERM", status: null }),
+        spawnProcess: () => {
+          timeoutChild = fixtureChild(41002);
+          return timeoutChild;
+        },
+        isGroupRunning: () => live,
+        signalProcess: (_pid, signal) => {
+          if (signal === "SIGTERM") {
+            live = false;
+            timeoutChild.emit("close", null, "SIGTERM");
+          }
+        },
+        terminationGraceMs: 25,
+        killGraceMs: 25,
         writeLine: () => {}
-      }),
-    /TIMEOUT native frame contract: decimal-ordering after 0\.0s; phase limit 120\.0s/u
+      }
+    ),
+    /TIMEOUT native frame contract: decimal-ordering after 0\.0s; phase limit 0\.0s/u
   );
-  assert.throws(
-    () =>
-      runRContractPhase(phase, {
-        now: () => 5_000,
-        spawn: () => ({ error: undefined, signal: null, status: 17 }),
-        writeLine: () => {}
-      }),
+  await assert.rejects(
+    runRContractPhase(phase, {
+      now: () => 5_000,
+      spawnProcess: () => fixtureChild(41003, { code: 17 }),
+      isGroupRunning: () => false,
+      writeLine: () => {}
+    }),
     /FAIL native frame contract: decimal-ordering after 0\.0s with exit 17/u
   );
+});
+
+test("Windows R contract phases launch through the existing Job Object supervisor", async () => {
+  const [phase] = phases();
+  const launches = [];
+  let spawnReceipt;
+  await runRContractPhase(
+    { ...phase, environment: { ...phase.environment, SYSTEMROOT: "C:\\Windows" } },
+    {
+      platform: "win32",
+      randomToken: () => "00000000-0000-4000-8000-000000000695",
+      spawnProcess: (command, args, options) => {
+        spawnReceipt = { command, args, options };
+        const child = new EventEmitter();
+        child.stdin = new PassThrough();
+        child.stderr = new PassThrough();
+        child.stdin.setEncoding("utf8");
+        child.stdin.on("data", (frame) => {
+          const parsed = JSON.parse(frame.trim());
+          launches.push(parsed);
+          child.stderr.end("OPEN_WRANGLER_WINDOWS_JOB_EMPTY:00000000-0000-4000-8000-000000000695\n");
+          queueMicrotask(() => child.emit("close", 0, null));
+        });
+        return child;
+      },
+      writeError: () => {},
+      writeLine: () => {}
+    }
+  );
+  assert.equal(spawnReceipt.command, "C:\\Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+  assert.deepEqual(spawnReceipt.args.slice(-2), [
+    "-File",
+    new URL("./windows-job-supervisor.ps1", import.meta.url).pathname
+  ]);
+  assert.equal(spawnReceipt.options.detached, false);
+  assert.deepEqual(spawnReceipt.options.stdio, ["pipe", "inherit", "pipe"]);
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].command, "launch");
+  assert.equal(launches[0].executable, phase.command);
+  assert.deepEqual(launches[0].args, phase.args);
+});
+
+test(
+  "a timed-out SIGTERM-ignoring phase and descendant settle before the next phase starts",
+  { skip: process.platform === "win32" },
+  async () => {
+    const stubborn = {
+      id: "stubborn",
+      label: "stubborn process tree",
+      command: process.execPath,
+      args: [
+        "-e",
+        [
+          'const { spawn } = require("node:child_process");',
+          'spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+          'process.on("SIGTERM", () => {});',
+          "setInterval(() => {}, 1000);"
+        ].join("\n")
+      ],
+      environment: process.env,
+      timeoutMs: 150
+    };
+    const next = {
+      id: "next",
+      label: "next phase",
+      command: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      environment: process.env,
+      timeoutMs: 2_000
+    };
+    let firstPid;
+    let spawnCount = 0;
+    const lines = [];
+    await assert.rejects(
+      runRContractPhases([stubborn, next], {
+        spawnProcess: (...arguments_) => {
+          const child = spawn(...arguments_);
+          if (spawnCount++ === 0) firstPid = child.pid;
+          return child;
+        },
+        terminationGraceMs: 100,
+        killGraceMs: 2_000,
+        writeLine: (line) => {
+          if (line.startsWith("[r-contract] START next phase")) {
+            assert.throws(
+              () => process.kill(-firstPid, 0),
+              (error) => error?.code === "ESRCH"
+            );
+          }
+          lines.push(line);
+        }
+      }),
+      /1 of 2 selected phases failed/u
+    );
+    assert.ok(lines.some((line) => line.startsWith("[r-contract] START next phase")));
+    assert.throws(
+      () => process.kill(-firstPid, 0),
+      (error) => error?.code === "ESRCH"
+    );
+  }
+);
+
+test("timeout diagnostics preserve primary then cleanup failure and stop later phases", async () => {
+  const first = { ...phases()[0], timeoutMs: 2 };
+  const second = phases()[1];
+  let phaseStarts = 0;
+  let failure;
+  try {
+    await runRContractPhases([first, second], {
+      spawnProcess: () => {
+        phaseStarts += 1;
+        return fixtureChild(41999);
+      },
+      isGroupRunning: () => true,
+      signalProcess: () => {},
+      sleepFor: async () => {},
+      terminationGraceMs: 1,
+      killGraceMs: 1,
+      writeLine: () => {}
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure instanceof AggregateError);
+  assert.equal(phaseStarts, 1);
+  assert.match(failure.message, /stopped after frame:decimal-ordering/u);
+  assert.ok(failure.errors[0] instanceof AggregateError);
+  assert.match(failure.errors[0].errors[0].message, /TIMEOUT native frame contract: decimal-ordering/u);
+  assert.match(failure.errors[0].errors[1].message, /remained live after bounded SIGTERM and SIGKILL/u);
 });
