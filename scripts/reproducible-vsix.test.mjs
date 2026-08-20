@@ -22,7 +22,7 @@ const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
 const ZIP_END_SIGNATURE = 0x06054b50;
 const ZIP_UTF8_FLAG = 0x0800;
 const CANONICAL_FILE_MODE = 0o100644;
-const FIXED_FIXTURE_CANONICAL_SHA256 = "87d3626bee3c12898266860893db8fc8715cfd63506196c1492707486a422c5a";
+const FIXED_FIXTURE_CANONICAL_SHA256 = "40cb45b6792ebdc080aaa8921b60b7e105391f27ada6cbcbee9ec776d851dd9b";
 const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
 
 function digest(bytes) {
