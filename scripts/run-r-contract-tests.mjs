@@ -11,15 +11,56 @@ const SHORT_VITEST_PHASE_TIMEOUT_MS = 60_000;
 const TRANSPORT_VITEST_PHASE_TIMEOUT_MS = 90_000;
 const R_WARNING_CONTRACT_RUNNER = "r/tests/run_warning_strict.R";
 
+export const R_FRAME_CONTRACT_CASES = Object.freeze([
+  "decimal-ordering",
+  "capture-and-export",
+  "custom-code",
+  "group-by",
+  "column-operations",
+  "by-example",
+  "formula",
+  "text",
+  "numeric-and-datetime",
+  "fill-missing",
+  "cast-and-structure",
+  "profiling",
+  "interactive",
+  "validation-and-categorical"
+]);
+
+const framePhaseId = (caseId) => `frame:${caseId}`;
+
 export const R_CONTRACT_SHARDS = Object.freeze([
-  Object.freeze({ id: "kernel-agent", phaseIds: Object.freeze(["kernel-agent"]) }),
   Object.freeze({
-    id: "frame-and-interactive-transport",
-    phaseIds: Object.freeze(["frame", "kernel-transport", "interactive-transport"])
+    id: "frame-foundations",
+    phaseIds: Object.freeze(
+      ["decimal-ordering", "capture-and-export", "custom-code", "validation-and-categorical"].map(framePhaseId)
+    )
   }),
   Object.freeze({
-    id: "catalog-and-process-transport",
-    phaseIds: Object.freeze(["catalog", "typescript-frame", "process-transport"])
+    id: "frame-transformations",
+    phaseIds: Object.freeze(
+      [
+        "group-by",
+        "column-operations",
+        "by-example",
+        "formula",
+        "text",
+        "numeric-and-datetime",
+        "fill-missing",
+        "cast-and-structure"
+      ].map(framePhaseId)
+    )
+  }),
+  Object.freeze({ id: "frame-query", phaseIds: Object.freeze(["profiling", "interactive"].map(framePhaseId)) }),
+  Object.freeze({ id: "kernel-agent", phaseIds: Object.freeze(["kernel-agent"]) }),
+  Object.freeze({
+    id: "catalog-and-unit",
+    phaseIds: Object.freeze(["catalog", "typescript-frame"])
+  }),
+  Object.freeze({
+    id: "runtime-transport",
+    phaseIds: Object.freeze(["kernel-transport", "process-transport", "interactive-transport"])
   })
 ]);
 
@@ -58,13 +99,17 @@ function vitestPhase(id, label, files, timeoutMs, { environment, node, vitest })
   });
 }
 
-function nativeRPhase(id, label, testFile, timeoutMs, { environment, rscript }) {
+function nativeRPhase(id, label, testFile, timeoutMs, { environment, phaseEnvironment = {}, rscript }) {
   return Object.freeze({
     id,
     label,
     command: rscript,
     args: Object.freeze(["--vanilla", R_WARNING_CONTRACT_RUNNER]),
-    environment: Object.freeze({ ...environment, OPEN_WRANGLER_R_CONTRACT_TEST: testFile }),
+    environment: Object.freeze({
+      ...environment,
+      ...phaseEnvironment,
+      OPEN_WRANGLER_R_CONTRACT_TEST: testFile
+    }),
     timeoutMs
   });
 }
@@ -78,11 +123,21 @@ export function createRContractPhases({
 }) {
   const rEnvironment = Object.freeze({ ...environment, R: r, RSCRIPT: rscript });
   const vitestEnvironment = Object.freeze({ ...rEnvironment, OPEN_WRANGLER_R_CONTRACT_TESTS: "1" });
+  const framePhases = R_FRAME_CONTRACT_CASES.map((caseId) =>
+    nativeRPhase(
+      framePhaseId(caseId),
+      `native frame contract: ${caseId}`,
+      caseId === "interactive" ? "r/tests/interactive_contract.R" : "r/tests/frame_contract.R",
+      FRAME_CONTRACT_TIMEOUT_MS,
+      {
+        environment: rEnvironment,
+        phaseEnvironment: { OPEN_WRANGLER_R_FRAME_CASE: caseId },
+        rscript
+      }
+    )
+  );
   return Object.freeze([
-    nativeRPhase("frame", "native frame contract", "r/tests/frame_contract.R", FRAME_CONTRACT_TIMEOUT_MS, {
-      environment: rEnvironment,
-      rscript
-    }),
+    ...framePhases,
     nativeRPhase("kernel-agent", "native kernel-agent contract", "r/tests/kernel_agent.R", KERNEL_AGENT_TIMEOUT_MS, {
       environment: rEnvironment,
       rscript
@@ -131,13 +186,34 @@ export function createRContractPhases({
 
 export function parseRContractSelection(arguments_) {
   if (!Array.isArray(arguments_)) throw new TypeError("R contract arguments must be an array.");
-  if (arguments_.length === 0) return Object.freeze({ kind: "all" });
-  if (arguments_.length !== 2 || (arguments_[0] !== "--phase" && arguments_[0] !== "--shard")) {
-    throw new Error("Usage: run-r-contract-tests.mjs [--phase <phase-id> | --shard <shard-id>]");
+  let selection;
+  let seed;
+  for (let index = 0; index < arguments_.length; index += 2) {
+    const option = arguments_[index];
+    const value = arguments_[index + 1];
+    if (value === undefined) {
+      throw new Error("Usage: run-r-contract-tests.mjs [--phase <phase-id> | --shard <shard-id>] [--seed <uint32>]");
+    }
+    if (option === "--seed") {
+      if (seed !== undefined || !/^(0|[1-9][0-9]*)$/u.test(value)) {
+        throw new Error("The R contract random-order seed must be one canonical unsigned 32-bit integer.");
+      }
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed) || parsed > 0xffff_ffff) {
+        throw new Error("The R contract random-order seed must be one canonical unsigned 32-bit integer.");
+      }
+      seed = parsed;
+      continue;
+    }
+    if (option !== "--phase" && option !== "--shard") {
+      throw new Error("Usage: run-r-contract-tests.mjs [--phase <phase-id> | --shard <shard-id>] [--seed <uint32>]");
+    }
+    if (selection !== undefined || typeof value !== "string" || value.length === 0) {
+      throw new Error("The R contract selection must contain one non-empty phase or shard ID.");
+    }
+    selection = { kind: option === "--phase" ? "phase" : "shard", id: value };
   }
-  const id = arguments_[1];
-  if (typeof id !== "string" || id.length === 0) throw new Error("The R contract selection ID must be non-empty.");
-  return Object.freeze({ kind: arguments_[0] === "--phase" ? "phase" : "shard", id });
+  return Object.freeze({ ...(selection ?? { kind: "all" }), ...(seed === undefined ? {} : { seed }) });
 }
 
 export function selectRContractPhases(phases, selection) {
@@ -179,6 +255,28 @@ export function selectRContractPhases(phases, selection) {
   throw new Error("The R contract selection must be all, phase, or shard.");
 }
 
+export function orderRContractPhases(phases, seed) {
+  if (!Array.isArray(phases)) throw new TypeError("R contract phases must be an array.");
+  const ordered = [...phases];
+  if (seed === undefined) return Object.freeze(ordered);
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+    throw new RangeError("The R contract random-order seed must be an unsigned 32-bit integer.");
+  }
+  let state = seed >>> 0;
+  const next = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 0x1_0000_0000;
+  };
+  for (let index = ordered.length - 1; index > 0; index -= 1) {
+    const other = Math.floor(next() * (index + 1));
+    [ordered[index], ordered[other]] = [ordered[other], ordered[index]];
+  }
+  return Object.freeze(ordered);
+}
+
 function formattedSeconds(milliseconds) {
   return `${(milliseconds / 1000).toFixed(1)}s`;
 }
@@ -214,8 +312,26 @@ export function runRContractPhase(
   writeLine(`[r-contract] PASS ${phase.label} in ${formattedSeconds(elapsed)}`);
 }
 
-export function runRContractPhases(phases, options) {
-  for (const phase of phases) runRContractPhase(phase, options);
+export function runRContractPhases(
+  phases,
+  { runPhase = runRContractPhase, writeLine = (line) => process.stdout.write(`${line}\n`), ...phaseOptions } = {}
+) {
+  const failures = [];
+  for (const phase of phases) {
+    try {
+      runPhase(phase, { ...phaseOptions, writeLine });
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      failures.push(normalized);
+      writeLine(`[r-contract] RECORDED ${phase.id}: ${normalized.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `[r-contract] ${failures.length} of ${phases.length} selected phases failed after all selected phases settled.`
+    );
+  }
 }
 
 function main() {
@@ -223,7 +339,7 @@ function main() {
   const rscript = resolveExecutable(process.env.RSCRIPT ?? "Rscript");
   const r = resolveExecutable(process.env.R ?? "R");
   const phases = createRContractPhases({ environment: process.env, r, rscript });
-  runRContractPhases(selectRContractPhases(phases, selection));
+  runRContractPhases(orderRContractPhases(selectRContractPhases(phases, selection), selection.seed));
 }
 
 function invokedDirectly() {
