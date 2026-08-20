@@ -11,6 +11,7 @@ import {
   createEditorAcceptanceEnvironmentForPlatform,
   editorProcessTreeMayBeLive,
   prepareWindowsEditorProcessSupervisor,
+  prepareWindowsEditorProcessSupervisorWithSignals,
   runBoundedEditorCommand,
   spawnOwnedEditorProcess
 } from "./editor-acceptance.mjs";
@@ -38,6 +39,7 @@ async function runWindowsNativeStage(
   if (outerAbortSignal !== undefined && !(outerAbortSignal instanceof AbortSignal)) {
     throw new Error(`The native Windows supervisor ${stage} outer abort signal must be an AbortSignal.`);
   }
+  const stageStartedAt = performance.now();
   const controller = new AbortController();
   let resolveOuterAbort;
   const outerAbortObservation = outerAbortSignal
@@ -53,7 +55,20 @@ async function runWindowsNativeStage(
     outerAbortSignal.addEventListener("abort", onOuterAbort, { once: true });
     if (outerAbortSignal.aborted) onOuterAbort();
   }
-  const execution = Promise.resolve().then(() => operation(controller.signal));
+  let releaseAfterSettlementDeadline;
+  const execution = Promise.resolve().then(() => {
+    const ownedOperation = operation(controller.signal);
+    if (
+      ownedOperation &&
+      typeof ownedOperation === "object" &&
+      ownedOperation.promise instanceof Promise &&
+      typeof ownedOperation.releaseAfterSettlementDeadline === "function"
+    ) {
+      releaseAfterSettlementDeadline = ownedOperation.releaseAfterSettlementDeadline;
+      return ownedOperation.promise;
+    }
+    return ownedOperation;
+  });
   const observed = execution.then(
     (value) => ({ kind: "result", value }),
     (error) => ({ kind: "error", error })
@@ -84,6 +99,7 @@ async function runWindowsNativeStage(
   }
 
   if (!controller.signal.aborted) controller.abort();
+  const settlementStartedAt = performance.now();
   let settlementTimer;
   let settlement;
   try {
@@ -100,11 +116,26 @@ async function runWindowsNativeStage(
     clearTimeout(settlementTimer);
   }
   if (settlement.kind === "settlement-deadline") {
+    let releaseError;
+    try {
+      releaseAfterSettlementDeadline?.();
+    } catch (error) {
+      releaseError = error;
+    }
     const failure = new Error(
-      `The native Windows supervisor ${stage} stage exceeded ${timeoutMs} ms and did not settle within ${settlementTimeoutMs} ms after cancellation.`
+      `The native Windows supervisor ${stage} stage exceeded ${timeoutMs} ms and did not settle within ${settlementTimeoutMs} ms after cancellation.`,
+      releaseError ? { cause: releaseError } : undefined
     );
     failure.code = "EDITOR_PROCESS_TREE_UNVERIFIED";
-    failure.details = { stage, treeVerifiedStopped: false };
+    failure.details = {
+      stage,
+      reason: "settlement-deadline",
+      elapsedMs: Math.max(0, performance.now() - settlementStartedAt),
+      limitMs: settlementTimeoutMs,
+      stageElapsedMs: Math.max(0, performance.now() - stageStartedAt),
+      triggerReason: observation.kind === "outer-abort" ? "outer-abort" : "deadline",
+      treeVerifiedStopped: false
+    };
     throw failure;
   }
   const cause = settlement.kind === "error" ? settlement.error : undefined;
@@ -116,13 +147,27 @@ async function runWindowsNativeStage(
     failure.details = {
       stage,
       reason: "outer-abort",
+      elapsedMs: Math.max(0, performance.now() - stageStartedAt),
+      limitMs: timeoutMs,
       treeVerifiedStopped: !editorProcessTreeMayBeLive(cause)
     };
     throw failure;
   }
-  throw new Error(`The native Windows supervisor ${stage} stage exceeded its ${timeoutMs} ms correctness bound.`, {
-    cause
-  });
+  const failure = new Error(
+    `The native Windows supervisor ${stage} stage exceeded its ${timeoutMs} ms correctness bound.`,
+    {
+      cause
+    }
+  );
+  failure.code = "EDITOR_ACCEPTANCE_STAGE_DEADLINE";
+  failure.details = {
+    stage,
+    reason: "deadline",
+    elapsedMs: Math.max(0, performance.now() - stageStartedAt),
+    limitMs: timeoutMs,
+    treeVerifiedStopped: !editorProcessTreeMayBeLive(cause)
+  };
+  throw failure;
 }
 
 async function runWindowsNativeCommandStage(stage, stageOptions, command, commandOptions) {
@@ -139,15 +184,26 @@ async function runWindowsNativeCommandStage(stage, stageOptions, command, comman
   });
 }
 
-async function runWindowsNativeFilesystemStage(stage, stageOptions, script, args) {
+async function runWindowsNativeFilesystemStage(
+  stage,
+  stageOptions,
+  script,
+  args,
+  { spawnFilesystemWorker = spawnChild } = {}
+) {
   return runWindowsNativeStage(stage, stageOptions, (abortSignal) => {
-    const child = spawnChild(process.execPath, ["-e", script, ...args], {
+    const child = spawnFilesystemWorker(process.execPath, ["-e", script, ...args], {
       detached: false,
       windowsHide: true,
       stdio: "ignore"
     });
-    return new Promise((resolve, reject) => {
-      let settled = false;
+    let settled = false;
+    let released = false;
+    let cancellationError;
+    let onAbort;
+    let onError;
+    let onClose;
+    const promise = new Promise((resolve, reject) => {
       const settle = (operation, value) => {
         if (settled) return;
         settled = true;
@@ -156,8 +212,7 @@ async function runWindowsNativeFilesystemStage(stage, stageOptions, script, args
         child.off("close", onClose);
         operation(value);
       };
-      let cancellationError;
-      const onAbort = () => {
+      onAbort = () => {
         try {
           child.kill("SIGKILL");
         } catch (error) {
@@ -168,8 +223,8 @@ async function runWindowsNativeFilesystemStage(stage, stageOptions, script, args
           cancellationError.details = { stage, treeVerifiedStopped: false };
         }
       };
-      const onError = (error) => settle(reject, error);
-      const onClose = (code, signal) => {
+      onError = (error) => settle(reject, error);
+      onClose = (code, signal) => {
         if (cancellationError) settle(reject, cancellationError);
         else if (code === 0 && signal === null) settle(resolve);
         else {
@@ -186,6 +241,24 @@ async function runWindowsNativeFilesystemStage(stage, stageOptions, script, args
       child.once("close", onClose);
       if (abortSignal.aborted) onAbort();
     });
+    return {
+      promise,
+      releaseAfterSettlementDeadline() {
+        if (settled || released) return;
+        released = true;
+        const onLateError = () => undefined;
+        const onLateClose = () => {
+          child.off("error", onLateError);
+          child.off("close", onLateClose);
+        };
+        child.on("error", onLateError);
+        child.once("close", onLateClose);
+        abortSignal.removeEventListener("abort", onAbort);
+        child.off("error", onError);
+        child.off("close", onClose);
+        child.unref?.();
+      }
+    };
   });
 }
 
@@ -221,7 +294,26 @@ test("native stage deadlines cancel and settle their operation before reporting"
           );
         })
     ),
-    /exceeded its 10 ms correctness bound/u
+    (error) => {
+      assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+      assert.deepEqual(
+        {
+          stage: error.details?.stage,
+          reason: error.details?.reason,
+          limitMs: error.details?.limitMs,
+          treeVerifiedStopped: error.details?.treeVerifiedStopped
+        },
+        {
+          stage: "deadline settlement probe",
+          reason: "deadline",
+          limitMs: 10,
+          treeVerifiedStopped: true
+        }
+      );
+      assert.equal(error.details?.elapsedMs >= 10, true);
+      assert.equal(error.details?.elapsedMs < 1_000, true);
+      return true;
+    }
   );
   assert.equal(cancellationObserved, true);
   assert.equal(operationSettled, true);
@@ -257,6 +349,9 @@ test(
       assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
       assert.equal(error.details?.stage, "outer cancellation probe");
       assert.equal(error.details?.reason, "outer-abort");
+      assert.equal(error.details?.limitMs, 1_000);
+      assert.equal(error.details?.elapsedMs >= 0, true);
+      assert.equal(error.details?.elapsedMs < 1_000, true);
       assert.equal(error.details?.treeVerifiedStopped, true);
       return true;
     });
@@ -264,6 +359,110 @@ test(
     assert.equal(operationSettled, true);
   }
 );
+
+test("a never-closing filesystem worker releases ordinary callbacks and absorbs one late error", async () => {
+  const worker = new EventEmitter();
+  worker.pid = 17922;
+  worker.exitCode = null;
+  worker.signalCode = null;
+  let killCount = 0;
+  let unrefCount = 0;
+  worker.kill = () => {
+    killCount += 1;
+    return true;
+  };
+  worker.unref = () => {
+    unrefCount += 1;
+  };
+  const startedAt = performance.now();
+  await assert.rejects(
+    runWindowsNativeFilesystemStage(
+      "never-close filesystem probe",
+      { timeoutMs: 10, settlementTimeoutMs: 20 },
+      "",
+      [],
+      { spawnFilesystemWorker: () => worker }
+    ),
+    (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.deepEqual(
+        {
+          stage: error.details?.stage,
+          reason: error.details?.reason,
+          limitMs: error.details?.limitMs,
+          triggerReason: error.details?.triggerReason,
+          treeVerifiedStopped: error.details?.treeVerifiedStopped
+        },
+        {
+          stage: "never-close filesystem probe",
+          reason: "settlement-deadline",
+          limitMs: 20,
+          triggerReason: "deadline",
+          treeVerifiedStopped: false
+        }
+      );
+      assert.equal(error.details?.elapsedMs >= 20, true);
+      assert.equal(error.details?.elapsedMs < 1_000, true);
+      assert.equal(error.details?.stageElapsedMs >= 30, true);
+      return true;
+    }
+  );
+  assert.equal(performance.now() - startedAt < 1_000, true);
+  assert.equal(killCount, 1);
+  assert.equal(unrefCount, 1);
+  assert.equal(worker.listenerCount("error"), 1);
+  assert.equal(worker.listenerCount("close"), 1);
+  assert.doesNotThrow(() => worker.emit("error", new Error("synthetic late filesystem worker error")));
+  worker.emit("close", null, "SIGKILL");
+  assert.equal(worker.listenerCount("error"), 0);
+  assert.equal(worker.listenerCount("close"), 0);
+});
+
+test("production signal ownership cancels supervisor compilation before target launch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-production-signal-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const signalSource = new EventEmitter();
+  const compiler = fakeWindowsCompiler({ closeOnKill: true, pid: 17923 });
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisorWithSignals(
+        environment,
+        {
+          platform: "win32",
+          buildTimeoutMs: 1_000,
+          buildSettlementTimeoutMs: 100,
+          spawnProcess: () => {
+            queueMicrotask(() => signalSource.emit("SIGTERM"));
+            return compiler.child;
+          },
+          terminateBuildProcessTree(child) {
+            child.kill("SIGKILL");
+            return { treeVerifiedStopped: true };
+          }
+        },
+        signalSource
+      ),
+      (error) => {
+        assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+        assert.equal(error.details?.stage, "windows-supervisor-compilation");
+        assert.equal(error.details?.reason, "cancelled");
+        assert.equal(error.details?.limitMs, 1_000);
+        assert.equal(error.details?.elapsedMs >= 0, true);
+        assert.equal(error.details?.elapsedMs < 1_000, true);
+        assert.equal(error.details?.treeVerifiedStopped, true);
+        assert.equal(error.details?.compilerClosed, true);
+        assert.equal(error.details?.compilerTreeTerminated, true);
+        return true;
+      }
+    );
+    assert.equal(signalSource.listenerCount("SIGINT"), 0);
+    assert.equal(signalSource.listenerCount("SIGTERM"), 0);
+    assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 1, closeTimerActive: false });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 function fakeWindowsCompiler({ closeOnKill, closeDelayMs = 0, pid }) {
   const child = new EventEmitter();
@@ -519,6 +718,10 @@ test(
           assert.equal(editorProcessTreeMayBeLive(error), true);
           assert.equal(error.details?.stage, "windows-supervisor-compilation");
           assert.equal(error.details?.reason, "deadline");
+          assert.equal(error.details?.limitMs, 10);
+          assert.equal(error.details?.elapsedMs >= 10, true);
+          assert.equal(error.details?.elapsedMs < 1_000, true);
+          assert.equal(error.details?.treeVerifiedStopped, false);
           assert.equal(error.details?.compilerClosed, true);
           assert.match(error.message, /compilation stage exceeded 10 ms/u);
           return true;
@@ -621,8 +824,29 @@ test("a Windows supervisor settlement deadline reports before a late compiler cl
         assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
         assert.equal(error.details?.stage, "windows-supervisor-compilation");
         assert.equal(error.details?.reason, "deadline");
+        assert.equal(error.details?.limitMs, 10);
+        assert.equal(error.details?.elapsedMs >= 30, true);
+        assert.equal(error.details?.elapsedMs < 1_000, true);
         assert.equal(error.details?.compilerClosed, false);
         assert.equal(error.details?.buildSettlementTimeoutMs, 20);
+        assert.deepEqual(
+          {
+            code: error.details?.settlementDeadline?.code,
+            stage: error.details?.settlementDeadline?.stage,
+            reason: error.details?.settlementDeadline?.reason,
+            limitMs: error.details?.settlementDeadline?.limitMs,
+            treeVerifiedStopped: error.details?.settlementDeadline?.treeVerifiedStopped
+          },
+          {
+            code: "EDITOR_ACCEPTANCE_DEADLINE",
+            stage: "windows-supervisor-compilation-settlement",
+            reason: "settlement-deadline",
+            limitMs: 20,
+            treeVerifiedStopped: false
+          }
+        );
+        assert.equal(error.details?.settlementDeadline?.elapsedMs >= 20, true);
+        assert.equal(error.details?.settlementDeadline?.elapsedMs < 1_000, true);
         assert.match(String(error.cause), /settlement exceeded 20 ms/u);
         return true;
       }
@@ -630,8 +854,8 @@ test("a Windows supervisor settlement deadline reports before a late compiler cl
     assert.equal(reportedBeforeClose, true);
     assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 0, closeTimerActive: true });
     assert.deepEqual(compiler.lifecycle(), {
-      closeListeners: 0,
-      errorListeners: 0,
+      closeListeners: 1,
+      errorListeners: 1,
       stderrDataListeners: 0,
       stdoutDataListeners: 0,
       unrefCount: 1
@@ -640,6 +864,13 @@ test("a Windows supervisor settlement deadline reports before a late compiler cl
     assert.equal(compiler.child.stderr.destroyed, true);
     await new Promise((resolve) => setTimeout(resolve, 75));
     assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 1, closeTimerActive: false });
+    assert.deepEqual(compiler.lifecycle(), {
+      closeListeners: 0,
+      errorListeners: 0,
+      stderrDataListeners: 0,
+      stdoutDataListeners: 0,
+      unrefCount: 1
+    });
     await assert.rejects(
       prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
@@ -715,6 +946,9 @@ test("a caller deadline starts before synchronous private-root preparation", { t
         assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
         assert.equal(error.details?.stage, "windows-supervisor-compilation");
         assert.equal(error.details?.reason, "deadline");
+        assert.equal(error.details?.elapsedMs, 11);
+        assert.equal(error.details?.limitMs, 10);
+        assert.equal(error.details?.treeVerifiedStopped, true);
         return true;
       }
     );
@@ -749,6 +983,9 @@ test("a caller deadline includes synchronous compiler spawn and owns its settlem
         assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
         assert.equal(error.details?.stage, "windows-supervisor-compilation");
         assert.equal(error.details?.reason, "deadline");
+        assert.equal(error.details?.elapsedMs >= 0, true);
+        assert.equal(error.details?.elapsedMs < 1_000, true);
+        assert.equal(error.details?.limitMs, 10);
         assert.equal(error.details?.treeVerifiedStopped, true);
         assert.equal(error.details?.buildTimeoutMs, undefined);
         return true;
@@ -794,7 +1031,11 @@ test("joined Windows supervisor callers retain independent compilation deadlines
       (error) => {
         assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
         assert.equal(error.details?.reason, "deadline");
+        assert.equal(error.details?.limitMs, 10);
+        assert.equal(error.details?.elapsedMs >= 10, true);
+        assert.equal(error.details?.elapsedMs < 1_000, true);
         assert.equal(error.details?.buildStillOwned, true);
+        assert.equal(error.details?.treeVerifiedStopped, null);
         assert.match(error.message, /caller exceeded 10 ms/u);
         return true;
       }
@@ -836,11 +1077,17 @@ test(
       });
       await assert.rejects(creator, (error) => {
         assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+        assert.equal(error.details?.limitMs, 10);
+        assert.equal(error.details?.elapsedMs >= 10, true);
+        assert.equal(error.details?.treeVerifiedStopped, null);
         assert.equal(error.details?.buildStillOwned, true);
         return true;
       });
       await assert.rejects(finalJoiner, (error) => {
         assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+        assert.equal(error.details?.limitMs, 30);
+        assert.equal(error.details?.elapsedMs >= 30, true);
+        assert.equal(error.details?.treeVerifiedStopped, true);
         assert.equal(error.details?.buildSettlementTimeoutMs, 25);
         return true;
       });
@@ -939,15 +1186,23 @@ test("never-settling taskkill and compiler handles return bounded uncertainty", 
     assert.equal(performance.now() - startedAt < 1_000, true);
     assert.equal(taskkillKillCount, 1);
     assert.equal(taskkillUnrefCount, 1);
-    assert.equal(taskkill.listenerCount("close"), 0);
-    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 1);
+    assert.equal(taskkill.listenerCount("error"), 1);
     assert.deepEqual(compiler.lifecycle(), {
-      closeListeners: 0,
-      errorListeners: 0,
+      closeListeners: 1,
+      errorListeners: 1,
       stderrDataListeners: 0,
       stdoutDataListeners: 0,
       unrefCount: 1
     });
+    assert.doesNotThrow(() => compiler.child.emit("error", new Error("synthetic late taskkill error")));
+    compiler.child.emit("close", null, "SIGKILL");
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
+    assert.doesNotThrow(() => taskkill.emit("error", new Error("synthetic late taskkill-process error")));
+    taskkill.emit("close", null, "SIGKILL");
+    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 0);
     await assert.rejects(
       prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
@@ -989,12 +1244,16 @@ test("a never-settling custom terminator cannot pin compiler settlement", { time
     assert.equal(compiler.child.stdout.destroyed, true);
     assert.equal(compiler.child.stderr.destroyed, true);
     assert.deepEqual(compiler.lifecycle(), {
-      closeListeners: 0,
-      errorListeners: 0,
+      closeListeners: 1,
+      errorListeners: 1,
       stderrDataListeners: 0,
       stdoutDataListeners: 0,
       unrefCount: 1
     });
+    assert.doesNotThrow(() => compiler.child.emit("error", new Error("synthetic late native-handle error")));
+    compiler.child.emit("close", null, "SIGKILL");
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1025,10 +1284,30 @@ test("compiler stdio cleanup faults preserve the tree-unverified classification"
         assert.equal(editorProcessTreeMayBeLive(error), true);
         assert.equal(error.cause instanceof AggregateError, true);
         assert.equal(error.cause.errors[0].code, "EDITOR_ACCEPTANCE_DEADLINE");
+        assert.deepEqual(
+          {
+            stage: error.cause.errors[0].details?.stage,
+            reason: error.cause.errors[0].details?.reason,
+            limitMs: error.cause.errors[0].details?.limitMs,
+            treeVerifiedStopped: error.cause.errors[0].details?.treeVerifiedStopped
+          },
+          {
+            stage: "windows-supervisor-compilation-settlement",
+            reason: "settlement-deadline",
+            limitMs: 20,
+            treeVerifiedStopped: false
+          }
+        );
+        assert.equal(error.cause.errors[0].details?.elapsedMs >= 20, true);
+        assert.equal(error.cause.errors[0].details?.elapsedMs < 1_000, true);
         assert.match(error.cause.errors[1].message, /cleanup failure/u);
         return true;
       }
     );
+    assert.doesNotThrow(() => compiler.child.emit("error", new Error("synthetic late cleanup error")));
+    compiler.child.emit("close", null, "SIGKILL");
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
     await assert.rejects(
       prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
