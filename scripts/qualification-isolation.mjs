@@ -1873,6 +1873,7 @@ async function runOwnedCommand(command, arguments_, options) {
     if (result.treeEmpty) {
       try {
         await verifyExecutableLaunch(launch);
+        if (supervisorLaunch) await verifyExecutableLaunch(supervisorLaunch);
       } catch (error) {
         result.spawnError ??= error instanceof Error ? error.message : String(error);
       }

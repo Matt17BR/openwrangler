@@ -926,6 +926,47 @@ test("executes the verified Windows supervisor snapshot and rejects an original-
   assert.equal(sha256(await readFile(supervisor)), expectedDigest);
 });
 
+test("rejects supervisor identity replacement after dispatch and before final eligibility", async (context) => {
+  const value = await fixture(context, "windows-supervisor-final-identity");
+  for (const identity of ["source", "snapshot"]) {
+    const task = await addTask(value, `windows-supervisor-final-${identity}`);
+    const supervisor = await copiedExecutable(
+      join(value.root, `windows-supervisor-final-${identity}${extname(process.execPath)}`)
+    );
+    const expectedDigest = sha256(await readFile(supervisor));
+    let replacedPath;
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "record"],
+        commandPlatformForTest: "win32",
+        commandRunnerForTest: async (command, arguments_, options) => {
+          const outcome = await simulatedWindowsSnapshotRunner(command, arguments_, options);
+          replacedPath = identity === "source" ? options.supervisorSourceCommand : options.supervisorExecutedPath;
+          const original = await readFile(replacedPath);
+          await rename(replacedPath, `${replacedPath}.retained`);
+          await writeFile(replacedPath, Buffer.alloc(original.length, 0x5a), { flag: "wx", mode: 0o700 });
+          return outcome;
+        },
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        windowsSupervisorCommandForTest: supervisor,
+        writeOutput: false
+      }),
+      /qualification command identity changed/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.equal(valueReceipt.result.status, 0);
+    assert.equal(valueReceipt.result.treeEmpty, true);
+    assert.ok(replacedPath);
+    assert.equal(valueReceipt.result.executable.supervisor.sha256, expectedDigest);
+    assert.match(valueReceipt.failures.join("\n"), /qualification command identity changed/u);
+    await access(valueReceipt.environment.testResult);
+  }
+});
+
 test("derives the Windows supervisor root independently of inherited Windows paths", () => {
   assert.equal(
     QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSystemRootCandidate("C:\\hostedtoolcache\\node\\node.exe"),
