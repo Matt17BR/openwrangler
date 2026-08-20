@@ -1119,6 +1119,97 @@ def test_authority_parent_replacement_cannot_bypass_the_namespace_lock(
     assert (metadata.st_dev, metadata.st_ino) == replacement_identity
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX lock cleanup behavior")
+def test_authority_lock_cleanup_preserves_primary_and_attempts_every_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+    import fcntl
+
+    real_close = authority.os.close
+    real_flock = fcntl.flock
+    close_attempts: list[int] = []
+    unlock_attempts: list[int] = []
+    targets: set[int] = set()
+
+    def close_then_fail(descriptor: int) -> None:
+        close_attempts.append(descriptor)
+        real_close(descriptor)
+        if descriptor in targets:
+            raise OSError("bounded-close-failure")
+
+    def unlock_then_fail(descriptor: int, operation: int) -> None:
+        real_flock(descriptor, operation)
+        if descriptor in targets and operation == fcntl.LOCK_UN:
+            unlock_attempts.append(descriptor)
+            raise OSError("bounded-unlock-failure")
+
+    with (
+        pytest.raises(authority.AuthorityError, match="^consumer_changed$") as captured,
+        authority._authority_write_lock() as receipt,
+    ):
+        targets.update(
+            {
+                receipt.authority_descriptor,
+                receipt.parent_descriptor,
+                receipt.namespace_descriptor,
+            }
+        )
+        monkeypatch.setattr(authority.os, "close", close_then_fail)
+        monkeypatch.setattr(fcntl, "flock", unlock_then_fail)
+        raise authority.AuthorityError("consumer_changed")
+
+    expected = (
+        "authority_descriptor_close_failed",
+        "parent_descriptor_close_failed",
+        "namespace_unlock_failed",
+        "namespace_descriptor_close_failed",
+    )
+    assert captured.value.cleanup_diagnostics == expected
+    assert isinstance(captured.value.__cause__, authority.AuthorityError)
+    assert str(captured.value.__cause__) == "authority_lock_cleanup_failed"
+    assert captured.value.__cause__.cleanup_diagnostics == expected
+    assert set(close_attempts) == targets
+    assert unlock_attempts == [receipt.namespace_descriptor]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX lock cleanup behavior")
+def test_authority_lock_aggregates_multiple_close_failures_without_a_primary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+    real_close = authority.os.close
+    close_attempts: list[int] = []
+    failing: set[int] = set()
+
+    def close_with_two_failures(descriptor: int) -> None:
+        close_attempts.append(descriptor)
+        real_close(descriptor)
+        if descriptor in failing:
+            raise OSError("bounded-close-failure")
+
+    with (
+        pytest.raises(authority.AuthorityError, match="^authority_lock_cleanup_failed$") as captured,
+        authority._authority_write_lock() as receipt,
+    ):
+        failing.update({receipt.authority_descriptor, receipt.parent_descriptor})
+        monkeypatch.setattr(authority.os, "close", close_with_two_failures)
+
+    assert captured.value.cleanup_diagnostics == (
+        "authority_descriptor_close_failed",
+        "parent_descriptor_close_failed",
+    )
+    assert close_attempts == [
+        receipt.authority_descriptor,
+        receipt.parent_descriptor,
+        receipt.namespace_descriptor,
+    ]
+
+
 def test_authority_lock_detects_replacement_between_check_and_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1279,6 +1370,53 @@ def test_staged_cleanup_preserves_same_inode_edit_with_restored_mtime(
 
     assert staged.path.read_bytes() == b"changed!!"
     assert not list(tmp_path.glob(".*.openwrangler-dispose-*"))
+
+
+def test_staged_cleanup_retains_a_same_inode_postcheck_unlink_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    real_unlink = authority._consumer_unlink
+    raced = False
+    raced_identity: tuple[int, int] | None = None
+
+    def edit_after_final_check(
+        path: Path,
+        parent_receipt: authority.ConsumerParentReceipt | None,
+    ) -> None:
+        nonlocal raced, raced_identity
+        if ".openwrangler-dispose-" in path.name and not raced:
+            raced = True
+            before = path.stat()
+            with path.open("r+b") as stream:
+                stream.write(b"changed!!")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.utime(
+                path,
+                ns=(before.st_atime_ns, before.st_mtime_ns),
+                follow_symlinks=False,
+            )
+            changed = path.stat()
+            raced_identity = (changed.st_dev, changed.st_ino)
+            assert changed.st_ino == before.st_ino
+            assert changed.st_size == before.st_size
+            assert changed.st_mtime_ns == before.st_mtime_ns
+        real_unlink(path, parent_receipt)
+
+    monkeypatch.setattr(authority, "_consumer_unlink", edit_after_final_check)
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+        authority._remove_staged(iter((staged,)))
+
+    assert raced
+    assert raced_identity is not None
+    assert not staged.path.exists()
+    assert not list(tmp_path.glob(".*.openwrangler-dispose-*"))
+    recovery = list(tmp_path.glob(".*.openwrangler-recovery-*"))
+    assert len(recovery) == 1
+    assert recovery[0].read_bytes() == b"changed!!"
 
 
 def test_failed_staged_unlink_is_explicit_and_retains_transaction_evidence(

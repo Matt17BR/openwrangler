@@ -13,7 +13,7 @@ import secrets
 import stat
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -57,6 +57,15 @@ _DISTRIBUTION = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
 
 class AuthorityError(Exception):
     """A bounded authority or generation failure."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        cleanup_diagnostics: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(code)
+        self.cleanup_diagnostics = cleanup_diagnostics
 
 
 @dataclass(frozen=True)
@@ -871,6 +880,165 @@ def _claimed_snapshot_matches(
     )
 
 
+def _open_cleanup_descriptor(
+    path: Path, parent_receipt: ConsumerParentReceipt | None
+) -> int:
+    if os.name != "nt":
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        return _consumer_open(path, flags, parent_receipt)
+    if parent_receipt is not None:
+        _assert_consumer_parent(parent_receipt)
+    import msvcrt
+
+    kernel32 = ctypes.windll.kernel32
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0x80000000,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00000080 | 0x00200000,
+        None,
+    )
+    if handle in {None, 0, ctypes.c_void_p(-1).value}:
+        _fail("consumer_changed")
+    try:
+        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+    except OSError:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        _fail("consumer_changed")
+
+
+def _descriptor_snapshot(
+    descriptor: int,
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+) -> ConsumerSnapshot:
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            _fail("consumer_unsafe")
+        if before.st_size > MAX_CONSUMER_BYTES:
+            _fail("consumer_too_large")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = MAX_CONSUMER_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+    except AuthorityError:
+        raise
+    except OSError:
+        _fail("consumer_changed")
+    if len(raw) > MAX_CONSUMER_BYTES:
+        _fail("consumer_too_large")
+    if _identity(after) != _identity(before):
+        _fail("consumer_changed")
+    return ConsumerSnapshot(
+        path=path,
+        raw=raw,
+        text="",
+        identity=_identity(after),
+        mode=stat.S_IMODE(after.st_mode),
+        parent_receipt=parent_receipt,
+    )
+
+
+def _retain_recovery_receipt(
+    path: Path,
+    snapshot: ConsumerSnapshot,
+    parent_receipt: ConsumerParentReceipt | None,
+) -> Path:
+    descriptor = -1
+    recovery: Path | None = None
+    try:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        for _attempt in range(8):
+            recovery = path.with_name(
+                f".{path.name}.openwrangler-recovery-{secrets.token_hex(16)}"
+            )
+            try:
+                descriptor = _consumer_open(recovery, flags, parent_receipt, 0o600)
+                break
+            except FileExistsError:
+                recovery = None
+        if descriptor < 0 or recovery is None:
+            _fail("consumer_cleanup_failed")
+        file_chmod = getattr(os, "fchmod", None)
+        if file_chmod is not None:
+            file_chmod(descriptor, snapshot.mode)
+        else:
+            os.chmod(recovery, snapshot.mode)
+        offset = 0
+        while offset < len(snapshot.raw):
+            written = os.write(descriptor, snapshot.raw[offset:])
+            if written <= 0:
+                _fail("consumer_cleanup_failed")
+            offset += written
+        os.fsync(descriptor)
+        written_metadata = os.fstat(descriptor)
+        expected = ConsumerSnapshot(
+            path=recovery,
+            raw=snapshot.raw,
+            text="",
+            identity=_identity(written_metadata),
+            mode=stat.S_IMODE(written_metadata.st_mode),
+            parent_receipt=parent_receipt,
+        )
+        os.close(descriptor)
+        descriptor = -1
+        verify_flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            verify_flags |= os.O_NOFOLLOW
+        descriptor = _consumer_open(recovery, verify_flags, parent_receipt)
+        actual = _descriptor_snapshot(descriptor, recovery, parent_receipt)
+        named = _consumer_lstat(recovery, parent_receipt)
+        if (
+            not _exact_snapshot_matches(actual, expected)
+            or _identity(named) != actual.identity
+            or stat.S_IMODE(named.st_mode) != actual.mode
+            or named.st_nlink != 1
+        ):
+            _fail("consumer_cleanup_failed")
+        os.close(descriptor)
+        descriptor = -1
+        return recovery
+    except AuthorityError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+    except (OSError, UnicodeError):
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        _fail("consumer_cleanup_failed")
+
+
 def _remove_owned(
     path: Path,
     expected: ConsumerSnapshot,
@@ -921,11 +1089,43 @@ def _remove_owned(
                 require_named_parent=require_named_parent,
             )
             return False
+        descriptor = -1
         try:
+            descriptor = _open_cleanup_descriptor(claimed, parent_receipt)
+            held_before = _descriptor_snapshot(descriptor, claimed, parent_receipt)
+            named_before = _consumer_lstat(claimed, parent_receipt)
+            if (
+                not _exact_snapshot_matches(held_before, snapshot)
+                or _identity(named_before) != held_before.identity
+                or stat.S_IMODE(named_before.st_mode) != held_before.mode
+                or named_before.st_nlink != 1
+            ):
+                os.close(descriptor)
+                descriptor = -1
+                _rename_noreplace(
+                    claimed,
+                    path,
+                    parent_receipt,
+                    require_named_parent=require_named_parent,
+                )
+                return False
             _consumer_unlink(claimed, parent_receipt)
-        except OSError:
+            held_after = _descriptor_snapshot(descriptor, claimed, parent_receipt)
+            if _claimed_snapshot_matches(held_after, held_before):
+                os.close(descriptor)
+                descriptor = -1
+                return True
+            _retain_recovery_receipt(path, held_after, parent_receipt)
+            os.close(descriptor)
+            descriptor = -1
             return False
-        return True
+        except (AuthorityError, OSError):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            return False
     return False
 
 
@@ -1417,6 +1617,61 @@ def _windows_mutex_name(path: Path) -> str:
     return f"Local\\OpenWranglerDependencyAuthority-{digest}"
 
 
+def _cleanup_authority_lock_resources(
+    *,
+    mutex_handle: int | None,
+    mutex_acquired: bool,
+    authority_descriptor: int,
+    parent_descriptor: int,
+    namespace_descriptor: int,
+    namespace_acquired: bool,
+) -> tuple[str, ...]:
+    diagnostics: list[str] = []
+
+    def attempt(code: str, cleanup: Callable[[], Any]) -> None:
+        try:
+            result = cleanup()
+            if result is False or result == 0:
+                diagnostics.append(code)
+        except BaseException:  # noqa: BLE001 -- every cleanup attempt must be isolated
+            diagnostics.append(code)
+
+    if os.name == "nt" and mutex_handle is not None:
+        kernel32 = ctypes.windll.kernel32
+        if mutex_acquired:
+            attempt(
+                "mutex_release_failed",
+                lambda: kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle)),
+            )
+        attempt(
+            "mutex_close_failed",
+            lambda: kernel32.CloseHandle(ctypes.c_void_p(mutex_handle)),
+        )
+    if authority_descriptor >= 0:
+        attempt(
+            "authority_descriptor_close_failed",
+            lambda: os.close(authority_descriptor),
+        )
+    if parent_descriptor >= 0:
+        attempt(
+            "parent_descriptor_close_failed",
+            lambda: os.close(parent_descriptor),
+        )
+    if namespace_descriptor >= 0:
+        if namespace_acquired:
+            import fcntl
+
+            attempt(
+                "namespace_unlock_failed",
+                lambda: fcntl.flock(namespace_descriptor, fcntl.LOCK_UN),
+            )
+        attempt(
+            "namespace_descriptor_close_failed",
+            lambda: os.close(namespace_descriptor),
+        )
+    return tuple(diagnostics)
+
+
 @contextmanager
 def _authority_write_lock(
     *, validate_on_exit: bool = True
@@ -1426,6 +1681,8 @@ def _authority_write_lock(
     authority_descriptor = -1
     mutex_handle: int | None = None
     mutex_acquired = False
+    namespace_acquired = False
+    primary_error: BaseException | None = None
     try:
         parent = AUTHORITY_PATH.parent
         namespace = parent.parent
@@ -1478,6 +1735,7 @@ def _authority_write_lock(
                     namespace_descriptor,
                     fcntl.LOCK_EX | fcntl.LOCK_NB,
                 )
+                namespace_acquired = True
             except BlockingIOError:
                 _fail("consumer_write_busy")
             except OSError:
@@ -1525,28 +1783,33 @@ def _authority_write_lock(
         yield receipt
         if validate_on_exit:
             _assert_authority_receipt(receipt)
-    except AuthorityError:
-        raise
+    except AuthorityError as error:
+        primary_error = error
     except OSError:
-        _fail("consumer_write_failed")
-    finally:
-        if os.name == "nt" and mutex_handle is not None:
-            kernel32 = ctypes.windll.kernel32
-            if mutex_acquired:
-                kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle))
-            kernel32.CloseHandle(ctypes.c_void_p(mutex_handle))
-        if authority_descriptor >= 0:
-            os.close(authority_descriptor)
-        if parent_descriptor >= 0:
-            os.close(parent_descriptor)
-        if namespace_descriptor >= 0:
-            try:
-                import fcntl
+        primary_error = AuthorityError("consumer_write_failed")
+    except BaseException as error:  # noqa: BLE001 -- cleanup precedes propagation
+        primary_error = error
 
-                fcntl.flock(namespace_descriptor, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            os.close(namespace_descriptor)
+    cleanup_diagnostics = _cleanup_authority_lock_resources(
+        mutex_handle=mutex_handle,
+        mutex_acquired=mutex_acquired,
+        authority_descriptor=authority_descriptor,
+        parent_descriptor=parent_descriptor,
+        namespace_descriptor=namespace_descriptor,
+        namespace_acquired=namespace_acquired,
+    )
+    if cleanup_diagnostics:
+        cleanup_error = AuthorityError(
+            "authority_lock_cleanup_failed",
+            cleanup_diagnostics=cleanup_diagnostics,
+        )
+        if primary_error is not None:
+            if isinstance(primary_error, AuthorityError):
+                primary_error.cleanup_diagnostics = cleanup_diagnostics
+            raise primary_error from cleanup_error
+        raise cleanup_error
+    if primary_error is not None:
+        raise primary_error
 
 
 def _render_pyproject(dependencies: tuple[Dependency, ...], group: str) -> str:
