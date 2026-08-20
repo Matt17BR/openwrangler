@@ -25,6 +25,7 @@ import {
   CODE_PREVIEW_INVALID_EXPORT_MESSAGE,
   CODE_PREVIEW_INVALID_PLACEHOLDER,
   CODE_PREVIEW_MISMATCH_ACTION_MESSAGE,
+  CODE_PREVIEW_POST_FAILED_ACTION_MESSAGE,
   CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS,
   CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE,
   CODE_PREVIEW_UNAVAILABLE_PLACEHOLDER,
@@ -69,7 +70,23 @@ export type NotebookInsertionDiagnosticStatus =
   | "unsupported-source"
   | "missing-notebook"
   | "missing-source-document"
+  | "empty-code"
+  | "invalid-code"
+  | "code-unavailable"
+  | "code-timeout"
+  | "code-post-failure"
+  | "code-stale"
   | "dispatching";
+
+type CodePreviewCodeOutcome =
+  | { readonly kind: "success"; readonly code: string }
+  | { readonly kind: "noGeneratedCode" }
+  | { readonly kind: "emptyBuffer" }
+  | { readonly kind: "invalidBuffer"; readonly reason: CodePreviewInvalidReason }
+  | { readonly kind: "unavailable"; readonly reason: "disposed" | "sequenceExhausted" | "generationExhausted" }
+  | { readonly kind: "timeout" }
+  | { readonly kind: "postFailure" }
+  | { readonly kind: "stale"; readonly reason: "generation" | "sequence" };
 
 class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<ViewNode | undefined>();
@@ -285,8 +302,8 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         readonly view: vscode.WebviewView;
         readonly generation: number;
         readonly requestId: string;
-        readonly promise: Promise<string | undefined>;
-        readonly resolve: (code: string | undefined) => void;
+        readonly promise: Promise<CodePreviewCodeOutcome>;
+        readonly resolve: (outcome: CodePreviewCodeOutcome) => void;
         timer: ReturnType<typeof setTimeout>;
       }
     | undefined;
@@ -304,7 +321,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   resolveWebviewView(view: vscode.WebviewView): void {
     if (this.disposed) return;
-    if (this.view) this.releaseView(this.view, CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+    if (this.view) this.releaseView(this.view);
     this.view = view;
     this.viewReady = false;
     this.viewUnavailableReason = undefined;
@@ -321,7 +338,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       view as vscode.WebviewView & { readonly onDidDispose?: (listener: () => unknown) => vscode.Disposable }
     ).onDidDispose;
     this.viewDisposeSubscription = onDidDispose?.(() => {
-      if (this.view === view) this.releaseView(view, CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+      if (this.view === view) this.releaseView(view);
     });
   }
 
@@ -329,35 +346,34 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (this.disposed) return;
     this.disposed = true;
     this.subscription.dispose();
-    if (this.view) this.releaseView(this.view, CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
-    else this.settlePendingCodeRequest(undefined, CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+    if (this.view) this.releaseView(this.view);
+    else this.settlePendingCodeRequest({ kind: "unavailable", reason: "disposed" });
   }
 
-  async codeForExport(): Promise<string | undefined> {
+  async codeForAction(): Promise<CodePreviewCodeOutcome> {
     const view = this.view;
     if (this.disposed || !view || !this.viewReady || this.viewUnavailableReason) {
-      void vscode.window.showErrorMessage(
-        this.viewUnavailableReason === "sequenceExhausted"
-          ? CODE_PREVIEW_MISMATCH_ACTION_MESSAGE
-          : CODE_PREVIEW_DISPOSED_ACTION_MESSAGE
-      );
-      return undefined;
+      return {
+        kind: "unavailable",
+        reason: this.viewUnavailableReason === "sequenceExhausted" ? "sequenceExhausted" : "disposed"
+      };
     }
     if (this.generationExhausted) {
-      void vscode.window.showErrorMessage(CODE_PREVIEW_GENERATION_EXHAUSTED_ACTION_MESSAGE);
-      return undefined;
+      return { kind: "unavailable", reason: "generationExhausted" };
     }
-    if (!this.hasSnapshot || !this.generatedCode) {
-      if (this.bufferInvalidReason) void vscode.window.showErrorMessage(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
-      return undefined;
+    if (!this.hasSnapshot) return { kind: "noGeneratedCode" };
+    if (!this.generatedCode) {
+      return this.bufferInvalidReason
+        ? { kind: "invalidBuffer", reason: this.bufferInvalidReason }
+        : { kind: "noGeneratedCode" };
     }
     const existing = this.pendingCodeRequest;
     if (existing && existing.view === view && existing.generation === this.generation) return existing.promise;
-    if (existing) this.settlePendingCodeRequest(undefined, CODE_PREVIEW_MISMATCH_ACTION_MESSAGE);
+    if (existing) this.settlePendingCodeRequest({ kind: "stale", reason: "generation" });
 
     const requestId = randomUUID();
-    let resolveRequest: (code: string | undefined) => void = () => undefined;
-    const promise = new Promise<string | undefined>((resolve) => {
+    let resolveRequest: (outcome: CodePreviewCodeOutcome) => void = () => undefined;
+    const promise = new Promise<CodePreviewCodeOutcome>((resolve) => {
       resolveRequest = resolve;
     });
     const pending = {
@@ -370,7 +386,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     };
     pending.timer = setTimeout(() => {
       if (this.pendingCodeRequest === pending) {
-        this.settlePendingCodeRequest(undefined, CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE);
+        this.settlePendingCodeRequest({ kind: "timeout" });
       }
     }, CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS);
     this.pendingCodeRequest = pending;
@@ -383,12 +399,12 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     ).then(
       (posted) => {
         if (!posted && this.pendingCodeRequest === pending) {
-          this.settlePendingCodeRequest(undefined, CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+          this.settlePendingCodeRequest({ kind: "postFailure" });
         }
       },
       () => {
         if (this.pendingCodeRequest === pending) {
-          this.settlePendingCodeRequest(undefined, CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+          this.settlePendingCodeRequest({ kind: "postFailure" });
         }
       }
     );
@@ -424,18 +440,18 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.viewReady = false;
       this.viewUnavailableReason = message.reason;
       this.settlePendingCodeRequest(
-        undefined,
         message.reason === "sequenceExhausted"
-          ? CODE_PREVIEW_MISMATCH_ACTION_MESSAGE
-          : CODE_PREVIEW_DISPOSED_ACTION_MESSAGE
+          ? { kind: "unavailable", reason: "sequenceExhausted" }
+          : { kind: "unavailable", reason: "disposed" }
       );
       return;
     }
     if (message.kind === "codeSnapshotUnavailable") {
       if (!this.matchesPendingCodeRequest(view, message.generation, message.requestId)) return;
       this.settlePendingCodeRequest(
-        undefined,
-        message.reason === "disposed" ? CODE_PREVIEW_DISPOSED_ACTION_MESSAGE : CODE_PREVIEW_MISMATCH_ACTION_MESSAGE
+        message.reason === "disposed"
+          ? { kind: "unavailable", reason: "disposed" }
+          : { kind: "stale", reason: "generation" }
       );
       return;
     }
@@ -449,7 +465,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (message.kind === "codeSnapshot" || message.kind === "codeSnapshotInvalid") {
       if (!this.matchesPendingCodeRequest(view, message.generation, message.requestId)) return;
       if (message.sequence < this.acceptedSequence || message.sequence < (this.pendingSequence ?? 0)) {
-        this.settlePendingCodeRequest(undefined, CODE_PREVIEW_MISMATCH_ACTION_MESSAGE);
+        this.settlePendingCodeRequest({ kind: "stale", reason: "sequence" });
         return;
       }
       this.acceptedSequence = message.sequence;
@@ -458,16 +474,13 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.bufferInvalidReason = message.reason;
         this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
         this.render();
-        this.settlePendingCodeRequest(undefined, CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+        this.settlePendingCodeRequest({ kind: "invalidBuffer", reason: message.reason });
         return;
       }
       this.bufferInvalidReason = undefined;
       this.displayedCode = message.code;
       this.render();
-      this.settlePendingCodeRequest(
-        message.code || undefined,
-        message.code ? undefined : CODE_PREVIEW_EMPTY_ACTION_MESSAGE
-      );
+      this.settlePendingCodeRequest(message.code ? { kind: "success", code: message.code } : { kind: "emptyBuffer" });
       return;
     }
     if (message.sequence <= this.acceptedSequence || message.sequence < (this.pendingSequence ?? 0)) return;
@@ -490,16 +503,15 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     );
   }
 
-  private settlePendingCodeRequest(code: string | undefined, errorMessage?: string): void {
+  private settlePendingCodeRequest(outcome: CodePreviewCodeOutcome): void {
     const pending = this.pendingCodeRequest;
     if (!pending) return;
     this.pendingCodeRequest = undefined;
     clearTimeout(pending.timer);
-    if (errorMessage) void vscode.window.showErrorMessage(errorMessage);
-    pending.resolve(code);
+    pending.resolve(outcome);
   }
 
-  private releaseView(view: vscode.WebviewView, errorMessage: string): void {
+  private releaseView(view: vscode.WebviewView): void {
     if (this.view !== view) return;
     this.view = undefined;
     this.viewReady = false;
@@ -510,7 +522,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.viewDisposeSubscription = undefined;
     messageSubscription?.dispose();
     disposeSubscription?.dispose();
-    this.settlePendingCodeRequest(undefined, errorMessage);
+    this.settlePendingCodeRequest({ kind: "unavailable", reason: "disposed" });
   }
 
   private render(): void {
@@ -587,7 +599,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.generation = next.generation;
     this.acceptedSequence = 0;
     this.pendingSequence = undefined;
-    this.settlePendingCodeRequest(undefined, CODE_PREVIEW_MISMATCH_ACTION_MESSAGE);
+    this.settlePendingCodeRequest({ kind: "stale", reason: "generation" });
     if (next.available) return true;
     this.generationExhausted = true;
     this.generatedCode = "";
@@ -603,6 +615,60 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     );
     const nonce = createSecureNonce();
     return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0;overflow:hidden;background:var(--vscode-editor-background)}</style></head><body><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
+  }
+}
+
+function codePreviewActionFailureMessage(outcome: Exclude<CodePreviewCodeOutcome, { kind: "success" }>): string {
+  switch (outcome.kind) {
+    case "noGeneratedCode":
+      return "Add a cleaning step before using generated code.";
+    case "emptyBuffer":
+      return CODE_PREVIEW_EMPTY_ACTION_MESSAGE;
+    case "invalidBuffer":
+      return CODE_PREVIEW_INVALID_EXPORT_MESSAGE;
+    case "timeout":
+      return CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE;
+    case "postFailure":
+      return CODE_PREVIEW_POST_FAILED_ACTION_MESSAGE;
+    case "stale":
+      return CODE_PREVIEW_MISMATCH_ACTION_MESSAGE;
+    case "unavailable":
+      if (outcome.reason === "generationExhausted") return CODE_PREVIEW_GENERATION_EXHAUSTED_ACTION_MESSAGE;
+      return outcome.reason === "sequenceExhausted"
+        ? CODE_PREVIEW_MISMATCH_ACTION_MESSAGE
+        : CODE_PREVIEW_DISPOSED_ACTION_MESSAGE;
+  }
+}
+
+function reportCodePreviewActionFailure(
+  outcome: Exclude<CodePreviewCodeOutcome, { kind: "success" }>,
+  action: "copying" | "exporting" | "inserting"
+): void {
+  if (outcome.kind === "noGeneratedCode") {
+    void vscode.window.showInformationMessage(`Add a cleaning step before ${action} generated code.`);
+    return;
+  }
+  void vscode.window.showErrorMessage(codePreviewActionFailureMessage(outcome));
+}
+
+function codePreviewInsertionFailureStatus(
+  outcome: Exclude<CodePreviewCodeOutcome, { kind: "success" }>
+): NotebookInsertionDiagnosticStatus {
+  switch (outcome.kind) {
+    case "noGeneratedCode":
+      return "missing-code";
+    case "emptyBuffer":
+      return "empty-code";
+    case "invalidBuffer":
+      return "invalid-code";
+    case "timeout":
+      return "code-timeout";
+    case "postFailure":
+      return "code-post-failure";
+    case "stale":
+      return "code-stale";
+    case "unavailable":
+      return "code-unavailable";
   }
 }
 
@@ -929,28 +995,28 @@ export function registerNativeViews(
       OpenWranglerPanel.sendEditorAction({ action: "undoStep" })
     ),
     vscode.commands.registerCommand("openWrangler.copyCode", async () => {
-      const code = await codePreview.codeForExport();
-      if (!code) {
-        void vscode.window.showInformationMessage("Add a cleaning step before copying generated code.");
+      const outcome = await codePreview.codeForAction();
+      if (outcome.kind !== "success") {
+        reportCodePreviewActionFailure(outcome, "copying");
         return;
       }
-      await vscode.env.clipboard.writeText(code);
+      await vscode.env.clipboard.writeText(outcome.code);
       void vscode.window.showInformationMessage("Open Wrangler code copied to the clipboard.");
-      return code;
+      return outcome.code;
     }),
     vscode.commands.registerCommand("openWrangler.exportCode", async () => {
       if (!(await requireTrustedWorkspace("export code"))) return;
       const snapshot = coordinator.activeSession();
-      const code = await codePreview.codeForExport();
-      if (!snapshot || !code) {
-        void vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
+      const outcome = await codePreview.codeForAction();
+      if (!snapshot || outcome.kind !== "success") {
+        reportCodePreviewActionFailure(outcome.kind === "success" ? { kind: "noGeneratedCode" } : outcome, "exporting");
         return;
       }
       const destination = await vscode.window.showSaveDialog(generatedScriptSaveOptions(snapshot));
       if (!destination) return false;
       if (!(await requireTrustedWorkspace("export code"))) return false;
       try {
-        await exportGeneratedCode(snapshot, code, destination);
+        await exportGeneratedCode(snapshot, outcome.code, destination);
         const destinationLabel = destination.scheme === "file" ? destination.fsPath : destination.toString();
         void vscode.window.showInformationMessage(`Exported Open Wrangler code to ${destinationLabel}.`);
         return true;
@@ -968,10 +1034,11 @@ export function registerNativeViews(
         return false;
       }
       const snapshot = coordinator.activeSession();
-      const code = await codePreview.codeForExport();
-      if (!snapshot || !code) {
-        lastNotebookInsertionStatus = "missing-code";
-        void vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
+      const outcome = await codePreview.codeForAction();
+      if (!snapshot || outcome.kind !== "success") {
+        const failure = outcome.kind === "success" ? ({ kind: "noGeneratedCode" } as const) : outcome;
+        lastNotebookInsertionStatus = codePreviewInsertionFailureStatus(failure);
+        reportCodePreviewActionFailure(failure, "inserting");
         return false;
       }
       if (!snapshot.metadata.capabilities.documentInsert || snapshot.metadata.source.kind !== "documentVariable") {
@@ -993,7 +1060,7 @@ export function registerNativeViews(
         return false;
       }
       lastNotebookInsertionStatus = "dispatching";
-      const insertion = await insertGeneratedRDocumentCode(origin, code);
+      const insertion = await insertGeneratedRDocumentCode(origin, outcome.code);
       lastNotebookInsertionStatus = insertion.status;
       if (insertion.status === "stale") {
         void vscode.window.showWarningMessage(
@@ -1023,10 +1090,11 @@ export function registerNativeViews(
         return false;
       }
       const snapshot = coordinator.activeSession();
-      const code = await codePreview.codeForExport();
-      if (!snapshot || !code) {
-        lastNotebookInsertionStatus = "missing-code";
-        void vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
+      const outcome = await codePreview.codeForAction();
+      if (!snapshot || outcome.kind !== "success") {
+        const failure = outcome.kind === "success" ? ({ kind: "noGeneratedCode" } as const) : outcome;
+        lastNotebookInsertionStatus = codePreviewInsertionFailureStatus(failure);
+        reportCodePreviewActionFailure(failure, "inserting");
         return false;
       }
       if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
@@ -1046,7 +1114,7 @@ export function registerNativeViews(
         activeEditor?.notebook === notebook
           ? (activeEditor.selections[0]?.end ?? notebook.cellCount)
           : notebook.cellCount;
-      const insertion = await insertGeneratedNotebookCell(notebook, insertionIndex, code, {
+      const insertion = await insertGeneratedNotebookCell(notebook, insertionIndex, outcome.code, {
         source: snapshot.metadata.source.label,
         backend: snapshot.metadata.backend,
         languageId: runtimeIdentityForSessionMetadata(snapshot.metadata).runtimeLanguage
@@ -1127,9 +1195,12 @@ export function registerNativeViews(
     exportCodeTo: async (destination) => {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler can export code.");
       const snapshot = coordinator.activeSession();
-      const code = await codePreview.codeForExport();
-      if (!snapshot || !code) throw new Error("Add a cleaning step before exporting generated code.");
-      await exportGeneratedCode(snapshot, code, destination);
+      const outcome = await codePreview.codeForAction();
+      if (!snapshot || outcome.kind !== "success") {
+        const failure = outcome.kind === "success" ? ({ kind: "noGeneratedCode" } as const) : outcome;
+        throw new Error(codePreviewActionFailureMessage(failure));
+      }
+      await exportGeneratedCode(snapshot, outcome.code, destination);
     }
   };
 }

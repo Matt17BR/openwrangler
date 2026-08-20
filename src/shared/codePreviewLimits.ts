@@ -4,6 +4,10 @@ export const CODE_PREVIEW_MAX_UTF8_BYTES = MAX_GENERATED_PYTHON_CODE_UTF8_BYTES;
 export const CODE_PREVIEW_MAX_CODE_POINTS = MAX_GENERATED_PYTHON_CODE_UTF8_BYTES;
 export const CODE_PREVIEW_EDIT_COALESCE_MS = 100;
 export const CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS = 500;
+export const CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS = 100;
+export const CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES = CODE_PREVIEW_MAX_UTF8_BYTES * 4;
+export const CODE_PREVIEW_HISTORY_MAX_VALID_EDIT_TRANSIENT_UTF8_BYTES =
+  CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES + CODE_PREVIEW_MAX_UTF8_BYTES * 2;
 
 export type CodePreviewInvalidReason = "codePoints" | "invalidUnicode" | "utf8Bytes";
 
@@ -17,10 +21,10 @@ export type CodePreviewTextResult =
   | { readonly valid: false; readonly reason: CodePreviewInvalidReason };
 
 export const CODE_PREVIEW_INVALID_PLACEHOLDER =
-  "# Code Preview is unavailable because the buffer exceeds its Unicode or UTF-8 limit.";
+  "# Code Preview is unavailable because the buffer contains malformed Unicode or exceeds its Unicode or UTF-8 limit.";
 
 export const CODE_PREVIEW_INVALID_EXPORT_MESSAGE =
-  "The Code Preview buffer exceeds the 4 MiB or 4,194,304-code-point limit. Reduce it before copying or exporting generated code.";
+  "The Code Preview buffer contains malformed Unicode or exceeds the 4 MiB or 4,194,304-code-point limit. Correct or reduce it before copying, exporting, or inserting generated code.";
 
 export const CODE_PREVIEW_UNAVAILABLE_PLACEHOLDER =
   "# Code Preview is unavailable because the current editor state could not be confirmed.";
@@ -33,6 +37,9 @@ export const CODE_PREVIEW_MISMATCH_ACTION_MESSAGE =
 
 export const CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE =
   "Code Preview did not confirm the current edit in time. Reopen the view and try again.";
+
+export const CODE_PREVIEW_POST_FAILED_ACTION_MESSAGE =
+  "Code Preview could not request the current edit. Reopen the view and try again.";
 
 export const CODE_PREVIEW_GENERATION_EXHAUSTED_ACTION_MESSAGE =
   "Code Preview exhausted its edit generation. Reopen the view before using generated code.";

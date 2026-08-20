@@ -7,6 +7,7 @@ import {
   CODE_PREVIEW_INVALID_EXPORT_MESSAGE,
   CODE_PREVIEW_MAX_UTF8_BYTES,
   CODE_PREVIEW_MISMATCH_ACTION_MESSAGE,
+  CODE_PREVIEW_POST_FAILED_ACTION_MESSAGE,
   CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS,
   CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE
 } from "../shared/codePreviewLimits";
@@ -109,6 +110,42 @@ describe("native export commands", () => {
 
     expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
     expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
+  });
+
+  it("reports malformed Unicode truthfully for copy and the shared export path", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.setCodeForExport("\ud83d");
+
+    await command("openWrangler.copyCode")();
+    await expect(registered.exportCodeTo(resourceUri("file", "/tmp/code-preview-invalid.clean.py"))).rejects.toThrow(
+      CODE_PREVIEW_INVALID_EXPORT_MESSAGE
+    );
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
+  });
+
+  it("uses the next valid pending edit after an acknowledged invalid buffer", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.editInvalid("utf8Bytes");
+    await command("openWrangler.copyCode")();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+
+    nativeMocks.showErrorMessage.mockClear();
+    registered.codePreview.setPublishPendingMarker(false);
+    registered.codePreview.edit("def clean_data(df):\n    return df.dropna()\n");
+    await command("openWrangler.copyCode")();
+
+    expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledOnce();
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledWith("def clean_data(df):\n    return df.dropna()\n");
   });
 
   it("fails copy explicitly when the current document acknowledgement times out", async () => {
@@ -123,6 +160,9 @@ describe("native export commands", () => {
 
       expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
       expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE);
+      expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+        "Add a cleaning step before copying generated code."
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -138,6 +178,9 @@ describe("native export commands", () => {
 
     expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
     expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
   });
 
   it("invalidates an action when a newer generation replaces its requested document", async () => {
@@ -151,6 +194,38 @@ describe("native export commands", () => {
 
     expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
     expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_MISMATCH_ACTION_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
+  });
+
+  it.each(["false", "reject"] as const)("fails copy explicitly when the snapshot post returns %s", async (result) => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.setSnapshotPostResult(result);
+
+    await command("openWrangler.copyCode")();
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_POST_FAILED_ACTION_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
+  });
+
+  it("fails copy explicitly when the acknowledged sequence is stale", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.edit("def clean_data(df):\n    return df.dropna()\n");
+    registered.codePreview.setSnapshotSequenceOffset(-1);
+
+    await command("openWrangler.copyCode")();
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_MISMATCH_ACTION_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
   });
 
   it("uses an R script name and filter when exporting generated R code", async () => {

@@ -1,5 +1,8 @@
 import {
   CODE_PREVIEW_EDIT_COALESCE_MS,
+  CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS,
+  CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES,
+  CODE_PREVIEW_MAX_UTF8_BYTES,
   type CodePreviewInvalidReason,
   type CodePreviewTextResult,
   validateCodePreviewText
@@ -82,12 +85,69 @@ export function nextCodePreviewGeneration(current: number): NextCodePreviewGener
   return { available: true, generation: current + 1 };
 }
 
+export type CodePreviewHostAcceptance = "rejected" | "sameGeneration" | "newGeneration";
+
+export interface CodePreviewHistoryBudgetReceipt {
+  readonly generation: number;
+  readonly localEdits: number;
+  readonly retainedUtf8Bytes: number;
+}
+
+export class CodePreviewHistoryBudget {
+  private generation = 0;
+  private localEdits = 0;
+  private retainedUtf8Bytes = 0;
+
+  acceptGeneration(generation: number): void {
+    if (!isPositiveSafeInteger(generation) || generation === this.generation) return;
+    this.generation = generation;
+    this.reset();
+  }
+
+  recordEdit(beforeUtf8Bytes: number, afterUtf8Bytes: number): "retain" | "reset" {
+    if (
+      !isNonNegativeSafeInteger(beforeUtf8Bytes) ||
+      !isNonNegativeSafeInteger(afterUtf8Bytes) ||
+      beforeUtf8Bytes > CODE_PREVIEW_MAX_UTF8_BYTES ||
+      afterUtf8Bytes > CODE_PREVIEW_MAX_UTF8_BYTES
+    ) {
+      this.reset();
+      return "reset";
+    }
+    const charge = beforeUtf8Bytes + afterUtf8Bytes;
+    if (
+      this.localEdits >= CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS ||
+      charge > CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES - this.retainedUtf8Bytes
+    ) {
+      this.reset();
+      return "reset";
+    }
+    this.localEdits += 1;
+    this.retainedUtf8Bytes += charge;
+    return "retain";
+  }
+
+  reset(): void {
+    this.localEdits = 0;
+    this.retainedUtf8Bytes = 0;
+  }
+
+  receipt(): CodePreviewHistoryBudgetReceipt {
+    return {
+      generation: this.generation,
+      localEdits: this.localEdits,
+      retainedUtf8Bytes: this.retainedUtf8Bytes
+    };
+  }
+}
+
 export class CodePreviewEditCoalescer {
   private generation = 0;
   private sequence = 0;
   private acknowledgedSequence = 0;
   private pending = false;
   private invalidated = false;
+  private acceptedInvalidReason: CodePreviewInvalidReason | undefined;
   private timerScheduled = false;
   private timer: unknown;
 
@@ -97,25 +157,31 @@ export class CodePreviewEditCoalescer {
     private readonly scheduler: CodePreviewEditScheduler
   ) {}
 
-  acceptHostState(generation: number, acknowledgedSequence: number): boolean {
+  acceptHostState(
+    generation: number,
+    acknowledgedSequence: number,
+    acceptedInvalidReason?: CodePreviewInvalidReason
+  ): CodePreviewHostAcceptance {
     if (
       this.invalidated ||
       !isPositiveSafeInteger(generation) ||
       !isNonNegativeSafeInteger(acknowledgedSequence) ||
       generation < this.generation
     ) {
-      return false;
+      return "rejected";
     }
     if (generation > this.generation) {
       this.cancelPending();
       this.generation = generation;
       this.sequence = acknowledgedSequence;
       this.acknowledgedSequence = acknowledgedSequence;
-      return true;
+      this.acceptedInvalidReason = acceptedInvalidReason;
+      return "newGeneration";
     }
-    if (acknowledgedSequence < this.acknowledgedSequence || acknowledgedSequence > this.sequence) return false;
+    if (acknowledgedSequence < this.acknowledgedSequence || acknowledgedSequence > this.sequence) return "rejected";
     this.acknowledgedSequence = acknowledgedSequence;
-    return !this.pending && this.sequence === this.acknowledgedSequence;
+    this.acceptedInvalidReason = acceptedInvalidReason;
+    return !this.pending && this.sequence === this.acknowledgedSequence ? "sameGeneration" : "rejected";
   }
 
   schedule(): void {
@@ -144,9 +210,13 @@ export class CodePreviewEditCoalescer {
       this.publish({ kind: "codeSnapshotUnavailable", generation, requestId, reason: "generationMismatch" });
       return;
     }
+    const hasLocalEdit = this.pending || this.sequence > this.acknowledgedSequence;
     this.cancelTimer();
     this.pending = false;
-    const result = this.readCode();
+    const result =
+      !hasLocalEdit && this.acceptedInvalidReason
+        ? ({ valid: false, reason: this.acceptedInvalidReason } as const)
+        : this.readCode();
     this.publish(
       result.valid
         ? { kind: "codeSnapshot", generation, sequence: this.sequence, requestId, code: result.code }
@@ -174,12 +244,21 @@ export class CodePreviewEditCoalescer {
   }
 
   dispose(): void {
+    if (this.invalidated) return;
+    if (this.pending) {
+      this.cancelTimer();
+      this.publishPendingEdit();
+    }
     this.invalidate("disposed");
   }
 
   private flush(): void {
     this.timerScheduled = false;
     this.timer = undefined;
+    this.publishPendingEdit();
+  }
+
+  private publishPendingEdit(): void {
     if (!this.pending || this.generation === 0 || this.invalidated) return;
     this.pending = false;
     const result = this.readCode();

@@ -30,6 +30,9 @@ interface CodePreviewTestHarness {
   edit(code: string): void;
   editInvalid(reason: CodePreviewInvalidReason): void;
   setAutoRespond(enabled: boolean): void;
+  setSnapshotPostResult(result: "success" | "false" | "reject"): void;
+  setSnapshotSequenceOffset(offset: number): void;
+  setPublishPendingMarker(enabled: boolean): void;
   disposeView(): void;
 }
 
@@ -244,6 +247,12 @@ function register(
     | "unsupported-source"
     | "missing-notebook"
     | "missing-source-document"
+    | "empty-code"
+    | "invalid-code"
+    | "code-unavailable"
+    | "code-timeout"
+    | "code-post-failure"
+    | "code-stale"
     | "dispatching"
     | undefined;
   viewSortDispatchStatus():
@@ -295,6 +304,9 @@ function register(
   let receive: ((message: unknown) => void) | undefined;
   let disposeViewListener: (() => unknown) | undefined;
   let autoRespond = true;
+  let snapshotPostResult: "success" | "false" | "reject" = "success";
+  let snapshotSequenceOffset = 0;
+  let publishPendingMarker = true;
   let currentEdit:
     | {
         readonly generation: number;
@@ -323,6 +335,8 @@ function register(
       postMessage: vi.fn(async (message: CodePreviewHostMessage) => {
         posted.push(message);
         if (message.kind === "codePreviewSnapshotRequest") {
+          if (snapshotPostResult === "reject") throw new Error("snapshot post failed");
+          if (snapshotPostResult === "false") return false;
           if (autoRespond) {
             queueMicrotask(() => {
               if (!currentEdit || currentEdit.generation !== message.generation) {
@@ -336,7 +350,7 @@ function register(
                 publishToHost({
                   kind: "codeSnapshot",
                   generation: message.generation,
-                  sequence: currentEdit.sequence,
+                  sequence: currentEdit.sequence + snapshotSequenceOffset,
                   requestId: message.requestId,
                   code: currentEdit.result.code
                 });
@@ -344,7 +358,7 @@ function register(
                 publishToHost({
                   kind: "codeSnapshotInvalid",
                   generation: message.generation,
-                  sequence: currentEdit.sequence,
+                  sequence: currentEdit.sequence + snapshotSequenceOffset,
                   requestId: message.requestId,
                   reason: currentEdit.result.reason
                 });
@@ -428,7 +442,7 @@ function register(
           sequence,
           result: validated.valid ? { valid: true, code: validated.code } : { valid: false, reason: validated.reason }
         };
-        publishToHost({ kind: "codePending", generation: hostState.generation, sequence });
+        if (publishPendingMarker) publishToHost({ kind: "codePending", generation: hostState.generation, sequence });
       },
       editInvalid(reason) {
         const hostState = [...posted]
@@ -450,6 +464,15 @@ function register(
       },
       setAutoRespond(enabled) {
         autoRespond = enabled;
+      },
+      setSnapshotPostResult(result) {
+        snapshotPostResult = result;
+      },
+      setSnapshotSequenceOffset(offset) {
+        snapshotSequenceOffset = offset;
+      },
+      setPublishPendingMarker(enabled) {
+        publishPendingMarker = enabled;
       },
       disposeView() {
         disposeViewListener?.();
