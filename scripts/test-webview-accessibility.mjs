@@ -1637,21 +1637,21 @@ console.log(
 function recordAxeScanResult(harness, violations) {
   try {
     const result = axeResults.record({ harness, violations });
-    console.log(serializeAxeMachineResult(result));
+    process.stdout.write(serializeAxeMachineResult(result));
     if (result.unapprovedFindingCount === 0) {
       console.log(`Accessibility verified: ${harness}`);
     }
   } catch (error) {
-    console.error(serializeAxeClassificationError(error));
+    process.stderr.write(serializeAxeClassificationError(error));
     throw error;
   }
 }
 
 function printAxeMachineResult(result) {
   try {
-    console.log(serializeAxeMachineResult(result));
+    process.stdout.write(serializeAxeMachineResult(result));
   } catch (error) {
-    console.error(serializeAxeClassificationError(error));
+    process.stderr.write(serializeAxeClassificationError(error));
     throw error;
   }
 }
