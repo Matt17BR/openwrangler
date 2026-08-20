@@ -186,6 +186,34 @@ describe("App applied-step inspection", () => {
     expect(screen.queryByRole("button", { name: "Preview changes" })).toBeNull();
   });
 
+  it("requires both native Undo identity fields while the capability is enabled", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+    postMessage.mockClear();
+
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId
+    });
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedRevision: metadata.revision
+    });
+    expect(runtimeRequests("undoStep")).toHaveLength(0);
+
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
+    expect(runtimeRequests("undoStep")).toHaveLength(1);
+  });
+
   it("rejects a delayed native Undo after the public session is replaced", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });

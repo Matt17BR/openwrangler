@@ -1,3 +1,4 @@
+import MarkdownIt from "markdown-it";
 import { createHash } from "node:crypto";
 import { constants as fileConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
@@ -574,137 +575,111 @@ export function renderCleaningHistoryClaims(model) {
   };
 }
 
-const markdownNamedEntities = new Map([
-  ["amp", "&"],
-  ["apos", "'"],
-  ["gt", ">"],
-  ["lt", "<"],
-  ["nbsp", " "],
-  ["quot", '"']
-]);
+const cleaningHistoryMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
+const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]+;/iu;
+const markdownClauseBoundary = /(?:[.!?;,\n]|\b(?:but|however|whereas)\b)/iu;
 
-function decodeMarkdownEntities(source) {
-  return source.replace(/&(?:#(?<decimal>[0-9]+)|#x(?<hex>[0-9a-f]+)|(?<named>[a-z]+));/giu, (entity, ...args) => {
-    const groups = args.at(-1);
-    if (groups.named !== undefined) return markdownNamedEntities.get(groups.named.toLowerCase()) ?? entity;
-    const value = Number.parseInt(groups.hex ?? groups.decimal, groups.hex === undefined ? 10 : 16);
-    return Number.isInteger(value) && value > 0 && value <= 0x10ffff && !(value >= 0xd800 && value <= 0xdfff)
-      ? String.fromCodePoint(value)
-      : "\ufffd";
-  });
+function maskMarkdownComments(source) {
+  return source.replace(/<!--[^]*?-->/gu, (comment) => comment.replace(/[^\n]/gu, " "));
 }
 
-function renderMarkdownInlineLine(source) {
-  const exampleContext = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu.test(source);
-  let rendered = "";
-  for (let offset = 0; offset < source.length;) {
-    if (source[offset] !== "`") {
-      rendered += source[offset];
-      offset += 1;
-      continue;
-    }
-    let runLength = 1;
-    while (source[offset + runLength] === "`") runLength += 1;
-    const marker = "`".repeat(runLength);
-    const end = source.indexOf(marker, offset + runLength);
-    if (end < 0) {
-      rendered += marker;
-      offset += runLength;
-      continue;
-    }
-    if (!exampleContext) rendered += ` ${source.slice(offset + runLength, end)} `;
-    else rendered += " ";
-    offset = end + runLength;
+function parseCleaningHistoryMarkdown(source, label) {
+  try {
+    return cleaningHistoryMarkdown.parse(maskMarkdownComments(source.replace(/\r\n?/gu, "\n")), {});
+  } catch (error) {
+    throw new Error(`${label} is not valid bounded Markdown.`, { cause: error });
   }
-  return decodeMarkdownEntities(
-    rendered
-      .replace(/<[^>\n]+>/gu, " ")
-      .replace(/!\[(?<alt>[^\]\n]*)\]\([^\n)]*\)/gu, "$<alt>")
-      .replace(/\[(?<label>[^\]\n]+)\]\([^\n)]*\)/gu, "$<label>")
-      .replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/gu, "$1")
-      .replace(/[*_~]+/gu, "")
+}
+
+function normalizeVisibleMarkdownText(value, label) {
+  const normalized = value.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+  if (unresolvedVisibleNamedEntity.test(normalized)) {
+    throw new Error(`${label} contains an unresolved visible named Markdown entity.`);
+  }
+  return normalized;
+}
+
+function childVisibleText(child, label) {
+  if (child.type === "text" || child.type === "code_inline" || child.type === "image") {
+    return normalizeVisibleMarkdownText(child.content, label);
+  }
+  return child.type === "softbreak" || child.type === "hardbreak" ? "\n" : "";
+}
+
+function adjacentClause(value, side) {
+  const clauses = value.split(markdownClauseBoundary);
+  return side === "before" ? (clauses.at(-1) ?? "") : (clauses[0] ?? "");
+}
+
+function isExampleCodeSpan(children, index, label) {
+  const visibleOutsideCode = (child) => (child.type === "code_inline" ? " " : childVisibleText(child, label));
+  const before = adjacentClause(children.slice(0, index).map(visibleOutsideCode).join(""), "before");
+  const after = adjacentClause(
+    children
+      .slice(index + 1)
+      .map(visibleOutsideCode)
+      .join(""),
+    "after"
   );
+  const context = `${before} ${after}`.normalize("NFKC");
+  const namesExample = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu.test(context);
+  const presentsExample =
+    /\b(?:use|uses|used|show|shows|shown|write|writes|written|quote|quotes|quoted|present|presents|presented|label|labels|labeled|call|calls|called|read|reads|say|says)\b/iu.test(
+      context
+    ) || /\bfor example\b/iu.test(context);
+  return namesExample && presentsExample;
 }
 
-function renderMarkdownInline(source) {
-  return source
-    .replace(/<!--[^]*?-->/gu, " ")
-    .split("\n")
-    .map(renderMarkdownInlineLine)
-    .join("\n");
+function renderedInlineText(token, label, { excludeExampleCode = false } = {}) {
+  if (token?.type !== "inline" || !Array.isArray(token.children)) return "";
+  return token.children
+    .map((child, index, children) =>
+      excludeExampleCode && child.type === "code_inline" && isExampleCodeSpan(children, index, label)
+        ? " "
+        : childVisibleText(child, label)
+    )
+    .join("");
 }
 
-function parseMarkdownHeading(line) {
-  const match = /^ {0,3}(?<marks>#{1,6})[\t ]+(?<text>.*?)(?:[\t ]+#+[\t ]*)?$/u.exec(line);
-  if (match === null) return undefined;
-  return { level: match.groups.marks.length, text: renderMarkdownInline(match.groups.text).trim() };
-}
-
-function visibleMarkdownLines(document) {
-  const result = [];
-  let fence;
-  for (const line of document.split("\n")) {
-    if (fence !== undefined) {
-      const close = /^ {0,3}(?<marks>`+|~+)[\t ]*$/u.exec(line);
-      if (close !== null && close.groups.marks[0] === fence.character && close.groups.marks.length >= fence.length) {
-        fence = undefined;
+function markdownHeadingRecords(tokens, label) {
+  return tokens.flatMap((token, index) => {
+    if (token.type !== "heading_open" || !Array.isArray(token.map) || !/^h[1-6]$/u.test(token.tag)) return [];
+    return [
+      {
+        index,
+        level: Number.parseInt(token.tag.slice(1), 10),
+        map: token.map,
+        text: renderedInlineText(tokens[index + 1], `${label} heading`)
+          .replace(/\s+/gu, " ")
+          .trim()
       }
-      result.push({ line: "", heading: undefined });
-      continue;
-    }
-
-    const openFence = /^ {0,3}(?<marks>`{3,}|~{3,})(?<info>.*)$/u.exec(line);
-    const validFence =
-      openFence !== null && !(openFence.groups.marks[0] === "`" && openFence.groups.info.includes("`"));
-    if (validFence) {
-      fence = { character: openFence.groups.marks[0], length: openFence.groups.marks.length };
-      result.push({ line: "", heading: undefined });
-      continue;
-    }
-    if (/^(?: {4}|\t)/u.test(line)) {
-      result.push({ line: "", heading: undefined });
-      continue;
-    }
-    result.push({ line, heading: parseMarkdownHeading(line) });
-  }
-  for (let index = 1; index < result.length; index += 1) {
-    const underline = /^ {0,3}(?<marks>=+|-+)[\t ]*$/u.exec(result[index].line);
-    const candidate = result[index - 1];
-    if (underline === null || candidate.heading !== undefined || candidate.line.trim() === "") continue;
-    const text = renderMarkdownInline(candidate.line).trim();
-    if (text === "") continue;
-    result[index - 1] = { ...candidate, heading: { level: underline.groups.marks[0] === "=" ? 1 : 2, text } };
-    result[index] = { line: "", heading: undefined };
-  }
-  return result;
+    ];
+  });
 }
 
 function extractMarkdownSection(document, path, heading) {
   assertBoundedUtf8(document, CLEANING_HISTORY_DOCUMENT_MAX_BYTES, path);
-  const requestedHeading = parseMarkdownHeading(heading);
-  if (requestedHeading === undefined) {
+  const normalizedDocument = document.replace(/\r\n?/gu, "\n");
+  const tokens = parseCleaningHistoryMarkdown(normalizedDocument, path);
+  const headings = markdownHeadingRecords(tokens, path);
+  const requestedHeadings = markdownHeadingRecords(
+    parseCleaningHistoryMarkdown(heading, "claim-section heading"),
+    "claim-section heading"
+  );
+  if (requestedHeadings.length !== 1) {
     throw new Error(`Invalid claim-section heading ${heading}.`);
   }
-  const lines = visibleMarkdownLines(document);
-  const indexes = lines.flatMap(({ heading: candidate }, index) =>
-    candidate?.level === requestedHeading.level && candidate.text === requestedHeading.text ? [index] : []
+  const requestedHeading = requestedHeadings[0];
+  const matches = headings.filter(
+    (candidate) => candidate.level === requestedHeading.level && candidate.text === requestedHeading.text
   );
-  if (indexes.length !== 1) {
+  if (matches.length !== 1) {
     throw new Error(`${path} must contain exactly one ${heading} heading.`);
   }
-
-  let end = lines.length;
-  for (let index = indexes[0] + 1; index < lines.length; index += 1) {
-    if (lines[index].heading !== undefined && lines[index].heading.level <= requestedHeading.level) {
-      end = index;
-      break;
-    }
-  }
-
-  const section = lines
-    .slice(indexes[0] + 1, end)
-    .map(({ line }) => line)
-    .join("\n");
+  const selected = matches[0];
+  const next = headings.find((candidate) => candidate.index > selected.index && candidate.level <= selected.level);
+  const lines = normalizedDocument.split("\n");
+  const section = lines.slice(selected.map[1], next?.map[0] ?? lines.length).join("\n");
   assertBoundedUtf8(section, CLEANING_HISTORY_SECTION_MAX_BYTES, `${path} ${heading} section`);
   return section;
 }
@@ -760,7 +735,11 @@ function tokenMatches(token, stems) {
 }
 
 function containsContradictoryCleaningHistoryClaim(source) {
-  const statements = renderMarkdownInline(source)
+  const rendered = parseCleaningHistoryMarkdown(source, "cleaning-history claim prose")
+    .filter((token) => token.type === "inline")
+    .map((token) => renderedInlineText(token, "cleaning-history claim prose", { excludeExampleCode: true }))
+    .join("\n");
+  const statements = rendered
     .replace(/([\p{L}])-([\p{L}])/gu, "$1$2")
     .split(/[.!?;\n]+/u)
     .map((statement) =>
@@ -775,18 +754,8 @@ function containsContradictoryCleaningHistoryClaim(source) {
 
   const has = (tokens, words) => tokens.some((token) => words.includes(token));
   const hasStem = (tokens, stems) => tokens.some((token) => tokenMatches(token, stems));
-  const subjectWords = [
-    "step",
-    "steps",
-    "operation",
-    "operations",
-    "transformation",
-    "transformations",
-    "entry",
-    "entries",
-    "plan",
-    "history"
-  ];
+  const directSubjectWords = ["step", "steps", "transformation", "transformations", "plan"];
+  const ambiguousSubjectWords = ["operation", "operations", "entry", "entries", "history"];
   const negativeWords = [
     "cannot",
     "can't",
@@ -815,8 +784,11 @@ function containsContradictoryCleaningHistoryClaim(source) {
   ];
 
   return statements.some((tokens) => {
+    const hasExplicitCleaningContext = has(tokens, ["applied", "cleaning", "committed"]);
     const hasSubject =
-      has(tokens, subjectWords) || (tokens.includes("workflow") && has(tokens, ["applied", "cleaning", "committed"]));
+      has(tokens, directSubjectWords) ||
+      (has(tokens, ambiguousSubjectWords) && hasExplicitCleaningContext) ||
+      (tokens.includes("workflow") && hasExplicitCleaningContext);
     const hasCleaningContext = hasStem(tokens, ["cleaning"]);
     const inspectEditDelete = hasStem(tokens, [
       "inspect",
