@@ -132,6 +132,7 @@ const owners = vi.hoisted(() => ({
   customEditorResolved: vi.fn(),
   nativeRegistered: vi.fn(),
   notebookVariablesDisposed: vi.fn(),
+  notebookRefresh: vi.fn(),
   notebookCellResultsStarted: vi.fn(),
   notebookCellResultsDisposed: vi.fn(),
   previewDisposed: vi.fn()
@@ -228,7 +229,7 @@ vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
     const variables = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       snapshot: vi.fn(),
-      refreshFromCommand: vi.fn(async () => undefined),
+      refreshFromCommand: owners.notebookRefresh,
       dispose: owners.notebookVariablesDisposed,
       diagnosticsForTesting: vi.fn()
     };
@@ -280,7 +281,6 @@ vi.mock("../extension/nativeViews", () => ({
       nativeVariables.r = r;
       owners.nativeRegistered();
       registerMockCommands(context, [
-        "openWrangler.refreshLiveDataframes",
         "openWrangler.clearViewFilterColumn",
         "openWrangler.openViewSort",
         "openWrangler.moveViewSortUp",
@@ -305,6 +305,15 @@ vi.mock("../extension/nativeViews", () => ({
         "openWrangler.openSettings",
         "openWrangler.reportIssue"
       ]);
+      context.subscriptions.push(
+        host.registerCommand("openWrangler.refreshLiveDataframes", async () => {
+          if (notebook?.snapshot()) {
+            await notebook.refreshFromCommand();
+            return;
+          }
+          if (r) await r.refreshFromCommand();
+        })
+      );
       return {
         setCodeForExport: vi.fn(),
         exportCodeTo: vi.fn(),
@@ -327,6 +336,7 @@ describe("lazy activation owners", () => {
     owners.bridgeShutdown.mockResolvedValue(undefined);
     owners.coordinatorShutdown.mockResolvedValue(undefined);
     owners.rShutdown.mockResolvedValue(undefined);
+    owners.notebookRefresh.mockResolvedValue(undefined);
     rVariables.snapshot.mockReset().mockReturnValue({
       state: "empty",
       terminalLabel: "R session",
@@ -465,6 +475,21 @@ describe("lazy activation owners", () => {
       expect(owners.rDiscovery).toHaveBeenCalledOnce();
     });
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
+  });
+
+  it("awaits a pending lazy notebook refresh without starting or refreshing R", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await (host.treeProviders.get("openWrangler.summary") as { getChildren(): Promise<unknown[]> }).getChildren();
+
+    expect(nativeVariables.notebook?.snapshot()).toBeUndefined();
+    await host.executeCommand("openWrangler.refreshLiveDataframes");
+
+    expect(owners.notebookRegistered).toHaveBeenCalledOnce();
+    expect(owners.notebookRefresh).toHaveBeenCalledOnce();
+    expect(owners.rRegistered).not.toHaveBeenCalled();
+    expect(owners.rDiscovery).not.toHaveBeenCalled();
+    expect(rVariables.refreshFromCommand).not.toHaveBeenCalled();
   });
 
   it("constructs notebook formatter preparation synchronously for an initially visible notebook", async () => {
