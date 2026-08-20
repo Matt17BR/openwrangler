@@ -216,9 +216,9 @@ const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
 const PERFORMANCE_REPORT_LINK =
   /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
 export const HISTORICAL_PERFORMANCE_DISCLOSURE =
-  "The linked comparison is retained historical evidence for an earlier Open Wrangler release. It does not describe current performance.";
-const UNSUPPORTED_PERFORMANCE_COMPARISON =
-  /\b(?:faster|slower|speedier|quicker|outperform(?:s|ed|ing)?|perform(?:s|ed|ing)? (?:better|worse))\b|\b(?:higher|lower) (?:latency|memory|PSS)\b|\b(?:latest|current) (?:completed )?(?:reviewed )?(?:comparison|benchmark|performance report)\b/iu;
+  "The linked comparison is retained historical evidence for an earlier Open Wrangler release. It does not describe current performance. New results will be summarized here only after a release-candidate study produces a complete reviewed report.";
+const PERFORMANCE_OVERVIEW =
+  "Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed Polars sessions use lazy scans, and live notebook LazyFrames keep their existing lazy plan. Filtering, sorting, and column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in Pandas, and DuckDB relations stay in DuckDB.";
 
 function numericReleaseMajor(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
@@ -254,35 +254,73 @@ export function performanceReportLink(readme) {
   return path === undefined || version === undefined ? undefined : { path, version };
 }
 
-export function inspectPerformanceSummary(readme, { currentCompletedReport = false } = {}) {
+function normalizedPerformanceCopy(value) {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function performanceReportUrl(path) {
+  return `https://github.com/Matt17BR/openwrangler/blob/main/${path}`;
+}
+
+function historicalPerformanceCopy(report) {
+  return `${PERFORMANCE_OVERVIEW} ${HISTORICAL_PERFORMANCE_DISCLOSURE} See the [historical benchmark report](${performanceReportUrl(report.path)}) for that release's test setup and reviewed results.`;
+}
+
+function currentPerformanceCopy(report, link) {
+  const generatedDate = report.generatedAtUtc.slice(0, 10);
+  const openWranglerVersion = report.provenance.openWrangler.version;
+  const dataWranglerVersion = report.provenance.dataWrangler.version;
+  const context =
+    `Open Wrangler ${openWranglerVersion} and Data Wrangler ${dataWranglerVersion}; completed ${generatedDate}; ` +
+    `Pandas and Polars with CSV and Parquet; ${report.completedSessions}/${report.plannedSessions} sessions and ` +
+    `${report.completedSamples}/${report.plannedSamples} samples`;
+  return `${PERFORMANCE_OVERVIEW} The [current comparison: ${context}](${performanceReportUrl(link.path)}) recorded no material median regressions under its release gate.`;
+}
+
+function currentPerformanceLinkOnlyCopy(link) {
+  return `[dated report](${performanceReportUrl(link.path)})`;
+}
+
+export function inspectPerformanceSummary(readme, { currentReport } = {}) {
   const section = performanceSection(readme);
-  if (section === undefined) return [];
-  const problems = [];
-  if (/\b(?:Open|Data) Wrangler v?\d+\.\d+\.\d+\b/u.test(section)) {
-    problems.push("README Performance prose must keep release numbers in the dated report link.");
+  if (section === undefined) {
+    return ["README must contain exactly one Performance section with one versioned Data Wrangler review."];
   }
-  if (/^[ \t]*\|[^\r\n]*\|[ \t]*$/mu.test(section)) {
-    problems.push("README Performance must link to detailed results instead of embedding a table.");
+  const report = performanceReportLink(readme);
+  if (report === undefined) {
+    return ["README Performance must link exactly one versioned Data Wrangler review."];
   }
-  if (currentCompletedReport !== true) {
-    const prose = section.replace(/\s+/gu, " ").trim();
-    if (!prose.includes(HISTORICAL_PERFORMANCE_DISCLOSURE)) {
-      problems.push(
-        "README Performance must identify its linked comparison as historical and say that it does not describe current performance."
-      );
+
+  const observed = normalizedPerformanceCopy(section);
+  if (observed === normalizedPerformanceCopy(historicalPerformanceCopy(report))) return [];
+  if (currentReport !== undefined) {
+    try {
+      assertReleaseCompleteStudyReport(currentReport);
+      if (
+        currentReport.provenance.openWrangler.version === report.version &&
+        (observed === normalizedPerformanceCopy(currentPerformanceLinkOnlyCopy(report)) ||
+          observed === normalizedPerformanceCopy(currentPerformanceCopy(currentReport, report)))
+      ) {
+        return [];
+      }
+    } catch {
+      // A malformed or incomplete report cannot authorize current comparative copy.
     }
-    if (UNSUPPORTED_PERFORMANCE_COMPARISON.test(prose)) {
-      problems.push("README Performance must not make comparative claims without a current completed report.");
-    }
   }
-  return problems;
+  return [
+    currentReport === undefined
+      ? "README Performance must use the exact linked historical-evidence summary while no current completed report is proven."
+      : "README Performance must use the exact linked historical summary, neutral current-report link, or report-derived current summary."
+  ];
 }
 
 export function classifyCurrentCompletedPerformanceReport({
   candidateSha256,
+  performanceReportSourceCommit,
   report,
   reportVersion,
   requireCandidateMatch = false,
+  sourceCommit,
   sourceVersion
 }) {
   try {
@@ -300,17 +338,25 @@ export function classifyCurrentCompletedPerformanceReport({
     candidateSha256 === undefined
       ? requireCandidateMatch !== true
       : SHA256.test(candidateSha256) && report.provenance.openWrangler.sha256 === candidateSha256;
+  const hasExplicitSourceBinding = sourceCommit !== undefined || performanceReportSourceCommit !== undefined;
+  // Candidate-aware callers first bind that exact candidate to their immutable source snapshot.
+  const sourceMatches = hasExplicitSourceBinding
+    ? typeof sourceCommit === "string" &&
+      sourceCommit === sourceCommit.toLowerCase() &&
+      FULL_COMMIT_ID.test(sourceCommit) &&
+      performanceReportSourceCommit === sourceCommit
+    : requireCandidateMatch === true && candidateMatches;
   return {
     candidateMatches,
-    current: reportVersion === sourceVersion && provenanceVersion === reportVersion && candidateMatches,
-    provenanceVersion
+    current:
+      reportVersion === sourceVersion && provenanceVersion === reportVersion && candidateMatches && sourceMatches,
+    provenanceVersion,
+    sourceMatches
   };
 }
 
-function inspectLabeledPerformanceSummary(readme, label, currentCompletedReport) {
-  return inspectPerformanceSummary(readme, { currentCompletedReport }).map((problem) =>
-    problem.replace(/^README\b/u, label)
-  );
+function inspectLabeledPerformanceSummary(readme, label, currentReport) {
+  return inspectPerformanceSummary(readme, { currentReport }).map((problem) => problem.replace(/^README\b/u, label));
 }
 
 function inspectStablePerformanceEvidence(
@@ -319,7 +365,9 @@ function inspectStablePerformanceEvidence(
   version,
   trackedEvidencePaths,
   performanceReportFiles,
-  candidateSha256
+  candidateSha256,
+  sourceCommit,
+  performanceReportSourceCommit
 ) {
   const major = /^(?<major>0|[1-9]\d*)\./u.exec(version ?? "")?.groups?.major;
   if (major === undefined || BigInt(major) < 2n) return [];
@@ -328,7 +376,7 @@ function inspectStablePerformanceEvidence(
   if (report === undefined) {
     return [
       `${label} Performance section must link exactly one versioned Data Wrangler review.`,
-      ...inspectLabeledPerformanceSummary(readme, label, false)
+      ...inspectLabeledPerformanceSummary(readme, label, undefined)
     ];
   }
 
@@ -356,24 +404,26 @@ function inspectStablePerformanceEvidence(
   const reportSource = performanceReportFiles.get(reportJsonPath);
   if (reportSource === undefined) {
     problems.push(`${label} Performance data ${reportJsonPath} must be read from the release commit.`);
-    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, false)];
+    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, undefined)];
   }
   const reportData = parseJsonObject(reportSource, `${label} Performance data ${reportJsonPath}`, problems);
   if (reportData === undefined) {
-    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, false)];
+    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, undefined)];
   }
   const classification = classifyCurrentCompletedPerformanceReport({
     candidateSha256,
+    performanceReportSourceCommit,
     report: reportData,
     reportVersion: report.version,
     requireCandidateMatch: true,
+    sourceCommit,
     sourceVersion: version
   });
   if (classification.completenessError !== undefined) {
     problems.push(
       `${label} Performance data ${reportJsonPath} is incomplete or invalid: ${classification.completenessError}`
     );
-    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, false)];
+    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, undefined)];
   }
   const reportedVersion = classification.provenanceVersion;
   if (reportedVersion !== report.version) {
@@ -384,9 +434,14 @@ function inspectStablePerformanceEvidence(
   if (report.version === version && classification.candidateMatches !== true) {
     problems.push(`${label} Performance data ${reportJsonPath} does not match the release candidate VSIX.`);
   }
-  const currentCompletedReport =
-    trackedEvidencePaths.has(report.path) && trackedEvidencePaths.has(reportJsonPath) && classification.current;
-  problems.push(...inspectLabeledPerformanceSummary(readme, label, currentCompletedReport));
+  if (report.version === version && classification.sourceMatches !== true) {
+    problems.push(`${label} Performance data ${reportJsonPath} is not bound to the exact release source commit.`);
+  }
+  const currentReport =
+    trackedEvidencePaths.has(report.path) && trackedEvidencePaths.has(reportJsonPath) && classification.current
+      ? reportData
+      : undefined;
+  problems.push(...inspectLabeledPerformanceSummary(readme, label, currentReport));
   return problems;
 }
 
@@ -498,7 +553,9 @@ function inspectReleaseReadiness(
     vsixManifest,
     trackedEvidencePaths = new Set(),
     performanceReportFiles = new Map(),
-    candidateSha256
+    candidateSha256,
+    sourceCommit,
+    performanceReportSourceCommit
   },
   {
     allowedIncompleteRows = new Map(),
@@ -576,7 +633,9 @@ function inspectReleaseReadiness(
         sourceVersion,
         trackedEvidencePaths,
         performanceReportFiles,
-        candidateSha256
+        candidateSha256,
+        sourceCommit,
+        performanceReportSourceCommit
       )
     );
     problems.push(
@@ -586,7 +645,9 @@ function inspectReleaseReadiness(
         sourceVersion,
         trackedEvidencePaths,
         performanceReportFiles,
-        candidateSha256
+        candidateSha256,
+        sourceCommit,
+        performanceReportSourceCommit
       )
     );
   }
@@ -1193,7 +1254,9 @@ async function runCli() {
     packagedPythonVersionFile: packaged.packagedPythonVersionFile,
     packagedReadme: packaged.packagedReadme,
     performanceReportFiles: source.files,
+    performanceReportSourceCommit: source.commit,
     candidateSha256: snapshot.sha256,
+    sourceCommit: source.commit,
     trackedEvidencePaths: source.trackedPaths,
     vsixManifest: packaged.vsixManifest
   });

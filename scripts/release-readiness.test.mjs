@@ -82,6 +82,27 @@ const stablePackage = {
   version: "1.0.0",
   preview: false
 };
+const TEST_SOURCE_COMMIT = "1".repeat(40);
+const OTHER_SOURCE_COMMIT = "2".repeat(40);
+const PERFORMANCE_OVERVIEW =
+  "Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed Polars sessions use lazy scans, and live notebook LazyFrames keep their existing lazy plan. Filtering, sorting, and column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in Pandas, and DuckDB relations stay in DuckDB.";
+
+function performanceReportUrl(path) {
+  return `https://github.com/Matt17BR/openwrangler/blob/main/${path}`;
+}
+
+function historicalPerformanceCopy(path) {
+  return `${PERFORMANCE_OVERVIEW}\n\n${HISTORICAL_PERFORMANCE_DISCLOSURE}\n\nSee the [historical benchmark report](${performanceReportUrl(path)}) for that release's test setup and reviewed results.`;
+}
+
+function currentPerformanceCopy(path, report) {
+  const context =
+    `Open Wrangler ${report.provenance.openWrangler.version} and Data Wrangler ${report.provenance.dataWrangler.version}; ` +
+    `completed ${report.generatedAtUtc.slice(0, 10)}; Pandas and Polars with CSV and Parquet; ` +
+    `${report.completedSessions}/${report.plannedSessions} sessions and ` +
+    `${report.completedSamples}/${report.plannedSamples} samples`;
+  return `${PERFORMANCE_OVERVIEW}\n\nThe [current comparison: ${context}](${performanceReportUrl(path)}) recorded no material median regressions under its release gate.`;
+}
 
 function manifest({ id = "openwrangler", publisher = "Matt17BR", version = "1.0.0", properties = "" } = {}) {
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -226,7 +247,7 @@ ${STABLE_README_RELEASE_SECTION}
 
 ## Performance
 
-[dated report](https://github.com/Matt17BR/openwrangler/blob/main/${stableV2ReportPath})
+${historicalPerformanceCopy(stableV2ReportPath)}
 `;
 
 function stableV2Ready(overrides = {}) {
@@ -260,7 +281,9 @@ function stableV2Ready(overrides = {}) {
         JSON.stringify(createReleaseComparisonReport({ version: stableV2Version, sha256: COMPARISON_TEST_SHA }))
       ]
     ]),
+    performanceReportSourceCommit: TEST_SOURCE_COMMIT,
     candidateSha256: COMPARISON_TEST_SHA,
+    sourceCommit: TEST_SOURCE_COMMIT,
     vsixManifest: manifest({ version: stableV2Version }),
     ...overrides
   });
@@ -1098,37 +1121,66 @@ test("stable public copy rejects leftover 1.99 preview labels", () => {
   );
 });
 
-test("allows comparative summaries only for a current completed performance report", () => {
-  const comparativeReadme =
-    "# Open Wrangler\n\n## Performance\n\nOur latest reviewed comparison found faster notebook previews.\n";
-  assert.deepEqual(inspectPerformanceSummary(comparativeReadme, { currentCompletedReport: true }), []);
-  assert.deepEqual(inspectPerformanceSummary(comparativeReadme), [
-    "README Performance must identify its linked comparison as historical and say that it does not describe current performance.",
-    "README Performance must not make comparative claims without a current completed report."
+test("constrains historical and current Performance summaries to exact evidence-backed structures", () => {
+  const historicalPath = "docs/performance/data-wrangler-1.2.1/review.md";
+  const historicalReadme = `# Open Wrangler\n\n## Performance\n\n${historicalPerformanceCopy(historicalPath)}\n`;
+  assert.deepEqual(inspectPerformanceSummary(historicalReadme), []);
+  assert.deepEqual(inspectPerformanceSummary("# Open Wrangler\n"), [
+    "README must contain exactly one Performance section with one versioned Data Wrangler review."
   ]);
-  assert.deepEqual(
-    inspectPerformanceSummary(`# Open Wrangler\n\n## Performance\n\n${HISTORICAL_PERFORMANCE_DISCLOSURE}\n`),
-    []
-  );
+
+  const missingLink =
+    `# Open Wrangler\n\n## Performance\n\n${PERFORMANCE_OVERVIEW}\n\n` + `${HISTORICAL_PERFORMANCE_DISCLOSURE}\n`;
+  assert.deepEqual(inspectPerformanceSummary(missingLink), [
+    "README Performance must link exactly one versioned Data Wrangler review."
+  ]);
+
+  const structuralProblem =
+    "README Performance must use the exact linked historical-evidence summary while no current completed report is proven.";
+  for (const claim of [
+    "Open Wrangler uses less memory than Data Wrangler.",
+    "Open Wrangler takes half the time for notebook previews.",
+    "Open Wrangler is twice as fast on CSV workloads.",
+    "Open Wrangler beats Data Wrangler for profiling.",
+    "Open Wrangler reduced latency for the workbench."
+  ]) {
+    const mutated = historicalReadme.replace(
+      HISTORICAL_PERFORMANCE_DISCLOSURE,
+      `${HISTORICAL_PERFORMANCE_DISCLOSURE} ${claim}`
+    );
+    assert.deepEqual(inspectPerformanceSummary(mutated), [structuralProblem], claim);
+  }
+
+  const currentPath = "docs/performance/data-wrangler-2.0.0/review.md";
+  const currentReport = createReleaseComparisonReport();
+  const currentReadme = `# Open Wrangler\n\n## Performance\n\n${currentPerformanceCopy(currentPath, currentReport)}\n`;
+  assert.deepEqual(inspectPerformanceSummary(currentReadme, { currentReport }), []);
+  const neutralCurrentReadme =
+    `# Open Wrangler\n\n## Performance\n\n` + `[dated report](${performanceReportUrl(currentPath)})\n`;
+  assert.deepEqual(inspectPerformanceSummary(neutralCurrentReadme, { currentReport }), []);
+
+  const qualificationProblem =
+    "README Performance must use the exact linked historical summary, neutral current-report link, or report-derived current summary.";
+  for (const incomplete of [
+    currentReadme.replace("Open Wrangler 2.0.0 and Data Wrangler 1.24.2; ", ""),
+    currentReadme.replace("completed 2026-08-04; ", ""),
+    currentReadme.replace("Pandas and Polars with CSV and Parquet; ", ""),
+    currentReadme.replace("8/8 sessions and 80/80 samples", "completed study")
+  ]) {
+    assert.deepEqual(inspectPerformanceSummary(incomplete, { currentReport }), [qualificationProblem]);
+  }
   assert.deepEqual(
     inspectPerformanceSummary(
-      "# Open Wrangler\n\n## Performance\n\nOpen Wrangler 1.2.1 was faster for notebook previews.\n",
-      { currentCompletedReport: true }
+      neutralCurrentReadme.replace("[dated report]", "Open Wrangler is twice as fast; see the [dated report]"),
+      { currentReport }
     ),
-    ["README Performance prose must keep release numbers in the dated report link."]
+    [qualificationProblem]
   );
   assert.deepEqual(
-    inspectPerformanceSummary("# Open Wrangler\n\n## Performance\n\nThe comparison used Data Wrangler 1.24.2.\n", {
-      currentCompletedReport: true
+    inspectPerformanceSummary(neutralCurrentReadme.replace("2.0.0/review.md", "2.0.1/review.md"), {
+      currentReport
     }),
-    ["README Performance prose must keep release numbers in the dated report link."]
-  );
-  assert.deepEqual(
-    inspectPerformanceSummary(
-      "# Open Wrangler\n\n## Performance\n\n| Product | Time |\n| --- | ---: |\n| Open Wrangler | 1 s |\n",
-      { currentCompletedReport: true }
-    ),
-    ["README Performance must link to detailed results instead of embedding a table."]
+    [qualificationProblem]
   );
 });
 
@@ -1138,8 +1190,8 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   const reportDataPath = (reportVersion) => `docs/performance/data-wrangler-${reportVersion}/report.json`;
   const reportUrl = (reportVersion) =>
     `https://github.com/Matt17BR/openwrangler/blob/main/${reportPath(reportVersion)}`;
-  const readmeWithReport = (reportVersion, prefix = "", performanceProse = "") =>
-    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${prefix}## Performance\n\n${performanceProse}[dated report](${reportUrl(reportVersion)})\n`;
+  const readmeWithReport = (reportVersion, prefix = "", performanceCopy) =>
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${prefix}## Performance\n\n${performanceCopy ?? historicalPerformanceCopy(reportPath(reportVersion))}\n`;
   const reportSources = new Map();
   const reportSource = (reportVersion, sha256 = COMPARISON_TEST_SHA) => {
     const key = `${reportVersion}:${sha256}`;
@@ -1166,13 +1218,21 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
         reportDataPath(reportVersion)
       ]),
       performanceReportFiles: new Map([[reportDataPath(reportVersion), reportSource(reportVersion)]]),
+      performanceReportSourceCommit: TEST_SOURCE_COMMIT,
       candidateSha256: COMPARISON_TEST_SHA,
+      sourceCommit: TEST_SOURCE_COMMIT,
       vsixManifest: manifest({ version: sourceVersion }),
       ...overrides
     });
 
   assert.deepEqual(inspectStableReleaseReadiness(candidate(version)), []);
-  const currentClaim = "The current completed comparison found faster notebook previews.\n\n";
+  assert.deepEqual(
+    inspectStableReleaseReadiness(
+      candidate(version, { performanceReportSourceCommit: undefined, sourceCommit: undefined })
+    ),
+    []
+  );
+  const currentClaim = currentPerformanceCopy(reportPath(version), createReleaseComparisonReport({ version }));
   assert.deepEqual(
     inspectStableReleaseReadiness(
       candidate(version, {
@@ -1192,14 +1252,13 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     );
   }
 
-  const historicalDisclosure = `${HISTORICAL_PERFORMANCE_DISCLOSURE}\n\n`;
   assert.deepEqual(
     inspectStableReleaseReadiness(
       candidate(
         "2.0.0",
         {
-          readme: readmeWithReport("2.0.0", "", historicalDisclosure),
-          packagedReadme: readmeWithReport("2.0.0", "", historicalDisclosure)
+          readme: readmeWithReport("2.0.0"),
+          packagedReadme: readmeWithReport("2.0.0")
         },
         "2.0.1"
       )
@@ -1220,7 +1279,27 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   for (const label of ["README.md", "Packaged README"]) {
     assert.ok(
       staleClaimProblems.includes(
-        `${label} Performance must not make comparative claims without a current completed report.`
+        `${label} Performance must use the exact linked historical-evidence summary while no current completed report is proven.`
+      )
+    );
+  }
+
+  const staleSourceProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportSourceCommit: OTHER_SOURCE_COMMIT,
+      readme: readmeWithReport(version, "", currentClaim),
+      packagedReadme: readmeWithReport(version, "", currentClaim)
+    })
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      staleSourceProblems.includes(
+        `${label} Performance data ${reportDataPath(version)} is not bound to the exact release source commit.`
+      )
+    );
+    assert.ok(
+      staleSourceProblems.includes(
+        `${label} Performance must use the exact linked historical-evidence summary while no current completed report is proven.`
       )
     );
   }
@@ -1358,8 +1437,8 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
         "2.0.0",
         {
           candidateSha256: "b".repeat(64),
-          readme: readmeWithReport("2.0.0", "", historicalDisclosure),
-          packagedReadme: readmeWithReport("2.0.0", "", historicalDisclosure)
+          readme: readmeWithReport("2.0.0"),
+          packagedReadme: readmeWithReport("2.0.0")
         },
         "2.0.1"
       )

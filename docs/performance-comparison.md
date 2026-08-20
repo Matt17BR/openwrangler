@@ -184,11 +184,16 @@ A comparison becomes current completed evidence only when all of these condition
 
 - its versioned `review.md` and sibling `report.json` are both tracked;
 - the report passes the complete release-study schema and disposition checks;
-- the report directory and provenance name the exact current Open Wrangler source version; and
-- release readiness confirms that the report's candidate digest matches the VSIX being released.
+- the report, package metadata, and report directory are bound to the same exact source commit and Open Wrangler
+  version; and
+- candidate-aware release readiness confirms that the report's candidate digest matches the VSIX being released.
 
-Until those conditions hold, the README must identify its linked comparison as historical, state that it does not
-describe current performance, and make no comparative performance claim. After a current report is complete, the
-README may keep a short evidence-backed summary and a link to the dated review instead of copying the results table.
+Every README Performance section links one tracked review. Without current completed evidence, it uses the exact
+historical disclosure and contains no other result claim. With current evidence, the only accepted comparative copy
+is the report-derived summary. A neutral link-only section is also valid because it makes no performance claim. A
+report-derived summary's visible link names both tested versions, the completion date, Pandas and Polars CSV and
+Parquet workloads, and completed session and sample counts. The detailed timings remain in the report rather than in
+a README table or free-form claim.
+
 Create a new versioned directory when a release reruns the comparison with the VSIX that will be published, and
 commit its `review.md` and `report.json` together.

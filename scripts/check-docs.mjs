@@ -74,6 +74,20 @@ const trackedEvidencePaths = new Set(
     .split("\0")
     .filter(Boolean)
 );
+const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+  cwd: root,
+  encoding: "utf8",
+  maxBuffer: 4096,
+  windowsHide: true
+}).trim();
+const sourcePackageIsCommitted =
+  /^[0-9a-f]{40}$/u.test(sourceCommit) &&
+  execFileSync("git", ["show", `${sourceCommit}:package.json`], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    windowsHide: true
+  }) === packageJsonSource;
 const readmeProblems = inspectReleaseDocumentationSource({
   featureParity,
   preview: packageJson.preview,
@@ -85,7 +99,7 @@ if (readmeProblems.length > 0) {
   throw new Error(`Release documentation is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
-let currentCompletedComparison = false;
+let currentReport;
 const packageMajor = /^(?<major>0|[1-9]\d*)\./u.exec(packageJson.version ?? "")?.groups?.major;
 const requiresVersionedComparison =
   packageJson.preview === false && packageMajor !== undefined && BigInt(packageMajor) >= 2n;
@@ -94,6 +108,9 @@ if (requiresVersionedComparison && linkedComparison === undefined) {
 }
 if (linkedComparison !== undefined) {
   const reviewPath = resolve(root, linkedComparison.path);
+  if (!trackedEvidencePaths.has(linkedComparison.path) || !existsSync(reviewPath)) {
+    throw new Error(`README Performance review ${linkedComparison.path} must exist and be tracked.`);
+  }
   const reportPath = join(dirname(reviewPath), "report.json");
   if (!existsSync(reportPath)) {
     if (requiresVersionedComparison) {
@@ -102,29 +119,47 @@ if (linkedComparison !== undefined) {
       );
     }
   } else {
-    const report = parseStrictJson(readFileSync(reportPath, "utf8"));
+    const reviewSource = readFileSync(reviewPath, "utf8");
+    const reportSource = readFileSync(reportPath, "utf8");
+    const report = parseStrictJson(reportSource);
     if (report?.provenance?.openWrangler?.version !== linkedComparison.version) {
       throw new Error(
         `Data Wrangler comparison report version ${String(report?.provenance?.openWrangler?.version)} does not match its ${linkedComparison.version} directory.`
       );
     }
-    const comparisonProblems = inspectDataWranglerComparisonReview(readFileSync(reviewPath, "utf8"), report);
+    const comparisonProblems = inspectDataWranglerComparisonReview(reviewSource, report);
     if (comparisonProblems.length > 0) {
       throw new Error(`Data Wrangler comparison review is stale:\n- ${comparisonProblems.join("\n- ")}`);
     }
     const reportDataPath = join(dirname(linkedComparison.path), "report.json");
-    currentCompletedComparison =
+    const evidenceIsCommitted =
+      sourcePackageIsCommitted &&
       trackedEvidencePaths.has(linkedComparison.path) &&
       trackedEvidencePaths.has(reportDataPath) &&
-      classifyCurrentCompletedPerformanceReport({
-        report,
-        reportVersion: linkedComparison.version,
-        sourceVersion: packageJson.version
-      }).current;
+      execFileSync("git", ["show", `${sourceCommit}:${linkedComparison.path}`], {
+        cwd: root,
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true
+      }) === reviewSource &&
+      execFileSync("git", ["show", `${sourceCommit}:${reportDataPath}`], {
+        cwd: root,
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true
+      }) === reportSource;
+    const classification = classifyCurrentCompletedPerformanceReport({
+      performanceReportSourceCommit: evidenceIsCommitted ? sourceCommit : undefined,
+      report,
+      reportVersion: linkedComparison.version,
+      sourceCommit: sourcePackageIsCommitted ? sourceCommit : undefined,
+      sourceVersion: packageJson.version
+    });
+    if (classification.current) currentReport = report;
   }
 }
 const performanceSummaryProblems = inspectPerformanceSummary(readme, {
-  currentCompletedReport: currentCompletedComparison
+  currentReport
 });
 if (performanceSummaryProblems.length > 0) {
   throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
