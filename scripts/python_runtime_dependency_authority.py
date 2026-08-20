@@ -15,7 +15,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, NoReturn
@@ -35,6 +35,7 @@ MAX_AUTHORITY_JSON_DEPTH = 128
 MAX_AUTHORITY_JSON_NODES = 4_096
 MAX_AUTHORITY_JSON_STRING_BYTES = 4_096
 MAX_AUTHORITY_JSON_TEXT_BYTES = 32_768
+MAX_AUTHORITY_JSON_NUMBER_BYTES = 256
 MAX_DEPENDENCIES = 64
 MAX_QUALIFIED_VERSIONS = 16
 MAX_CONSUMER_BYTES = 2_097_152
@@ -176,6 +177,8 @@ def _validate_json_budget(raw: bytes) -> None:
     in_string = False
     escaped = False
     in_scalar = False
+    number_bytes = 0
+    in_number = False
     for character in raw:
         if in_string:
             string_bytes += 1
@@ -196,22 +199,32 @@ def _validate_json_budget(raw: bytes) -> None:
             nodes += 1
             string_bytes = 0
             in_string = True
+            in_number = False
         elif character in {0x5B, 0x7B}:
             nodes += 1
             in_scalar = False
+            in_number = False
             depth += 1
             if depth > MAX_AUTHORITY_JSON_DEPTH:
                 _fail("invalid_authority_json")
         elif character in {0x5D, 0x7D}:
             in_scalar = False
+            in_number = False
             depth -= 1
             if depth < 0:
                 _fail("invalid_authority_json")
         elif character in {0x09, 0x0A, 0x0D, 0x20, 0x2C, 0x3A}:
             in_scalar = False
+            in_number = False
         elif not in_scalar:
             nodes += 1
             in_scalar = True
+            in_number = character == 0x2D or 0x30 <= character <= 0x39
+            number_bytes = 1 if in_number else 0
+        elif in_number:
+            number_bytes += 1
+        if in_number and number_bytes > MAX_AUTHORITY_JSON_NUMBER_BYTES:
+            _fail("invalid_authority_json")
         if nodes > MAX_AUTHORITY_JSON_NODES:
             _fail("invalid_authority_json")
     if in_string or depth != 0:
@@ -264,7 +277,13 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
         decoded = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
     except AuthorityError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError, MemoryError, RecursionError):
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        MemoryError,
+        RecursionError,
+    ):
         _fail("invalid_authority_json")
     if not isinstance(decoded, dict) or set(decoded) != {
         "schemaVersion",
@@ -421,12 +440,23 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
 
 
 @dataclass(frozen=True)
+class ConsumerParentReceipt:
+    path: Path
+    identity: tuple[int, int]
+    descriptor: int = -1
+    windows_handle: int | None = None
+
+
+@dataclass(frozen=True)
 class ConsumerSnapshot:
     path: Path
     raw: bytes
     text: str
     identity: tuple[int, int, int, int, int]
     mode: int
+    parent_receipt: ConsumerParentReceipt | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True)
@@ -448,12 +478,175 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
     )
 
 
-def _consumer_snapshot(path: Path) -> ConsumerSnapshot:
+def _assert_consumer_parent(
+    receipt: ConsumerParentReceipt, *, require_named: bool = True
+) -> None:
+    try:
+        if receipt.descriptor >= 0:
+            opened = os.fstat(receipt.descriptor)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != receipt.identity
+            ):
+                _fail("consumer_changed")
+        if require_named:
+            current = receipt.path.lstat()
+            if (
+                not stat.S_ISDIR(current.st_mode)
+                or (current.st_dev, current.st_ino) != receipt.identity
+            ):
+                _fail("consumer_changed")
+    except AuthorityError:
+        raise
+    except OSError:
+        _fail("consumer_changed")
+
+
+def _windows_directory_handle(path: Path) -> int:
+    if os.name != "nt":
+        _fail("consumer_unreadable")
+    kernel32 = ctypes.windll.kernel32
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0,
+        0x00000001 | 0x00000002,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    if handle in {None, 0, ctypes.c_void_p(-1).value}:
+        _fail("consumer_unreadable")
+    return int(handle)
+
+
+@contextmanager
+def _consumer_parent_receipts(
+    paths: tuple[Path, ...],
+) -> Iterator[dict[Path, ConsumerParentReceipt]]:
+    receipts: dict[Path, ConsumerParentReceipt] = {}
+    try:
+        for parent in dict.fromkeys(path.parent for path in paths):
+            before = parent.lstat()
+            is_junction = getattr(parent, "is_junction", lambda: False)
+            if not stat.S_ISDIR(before.st_mode) or parent.is_symlink() or is_junction():
+                _fail("consumer_unsafe")
+            descriptor = -1
+            windows_handle: int | None = None
+            if os.name == "nt":
+                windows_handle = _windows_directory_handle(parent)
+                receipt = ConsumerParentReceipt(
+                    path=parent,
+                    identity=(before.st_dev, before.st_ino),
+                    windows_handle=windows_handle,
+                )
+                receipts[parent] = receipt
+                current = parent.lstat()
+                if (current.st_dev, current.st_ino) != (
+                    before.st_dev,
+                    before.st_ino,
+                ):
+                    _fail("consumer_changed")
+            else:
+                flags = os.O_RDONLY
+                if hasattr(os, "O_DIRECTORY"):
+                    flags |= os.O_DIRECTORY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                descriptor = os.open(parent, flags)
+                receipt = ConsumerParentReceipt(
+                    path=parent,
+                    identity=(before.st_dev, before.st_ino),
+                    descriptor=descriptor,
+                )
+                receipts[parent] = receipt
+                opened = os.fstat(descriptor)
+                current = parent.lstat()
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or (current.st_dev, current.st_ino)
+                    != (before.st_dev, before.st_ino)
+                ):
+                    _fail("consumer_changed")
+            _assert_consumer_parent(receipt)
+        yield receipts
+    except AuthorityError:
+        raise
+    except OSError:
+        _fail("consumer_unreadable")
+    finally:
+        for receipt in receipts.values():
+            if receipt.descriptor >= 0:
+                try:
+                    os.close(receipt.descriptor)
+                except OSError:
+                    pass
+            if os.name == "nt" and receipt.windows_handle is not None:
+                ctypes.windll.kernel32.CloseHandle(
+                    ctypes.c_void_p(receipt.windows_handle)
+                )
+
+
+def _consumer_lstat(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+) -> os.stat_result:
+    if parent_receipt is not None and parent_receipt.descriptor >= 0:
+        return os.stat(
+            path.name,
+            dir_fd=parent_receipt.descriptor,
+            follow_symlinks=False,
+        )
+    return path.lstat()
+
+
+def _consumer_open(
+    path: Path,
+    flags: int,
+    parent_receipt: ConsumerParentReceipt | None,
+    mode: int | None = None,
+) -> int:
+    if parent_receipt is not None and parent_receipt.descriptor >= 0:
+        if mode is None:
+            return os.open(path.name, flags, dir_fd=parent_receipt.descriptor)
+        return os.open(path.name, flags, mode, dir_fd=parent_receipt.descriptor)
+    if mode is None:
+        return os.open(path, flags)
+    return os.open(path, flags, mode)
+
+
+def _consumer_unlink(path: Path, parent_receipt: ConsumerParentReceipt | None) -> None:
+    if parent_receipt is not None and parent_receipt.descriptor >= 0:
+        os.unlink(path.name, dir_fd=parent_receipt.descriptor)
+    else:
+        path.unlink()
+
+
+def _consumer_snapshot(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None = None,
+    *,
+    require_named_parent: bool = True,
+) -> ConsumerSnapshot:
+    if parent_receipt is not None:
+        _assert_consumer_parent(parent_receipt, require_named=require_named_parent)
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        before = path.lstat()
+        before = _consumer_lstat(path, parent_receipt)
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_nlink != 1
@@ -464,7 +657,7 @@ def _consumer_snapshot(path: Path) -> ConsumerSnapshot:
                 if before.st_size > MAX_CONSUMER_BYTES
                 else "consumer_unsafe"
             )
-        descriptor = os.open(path, flags)
+        descriptor = _consumer_open(path, flags, parent_receipt)
         try:
             opened = os.fstat(descriptor)
             if _identity(opened) != _identity(before):
@@ -481,7 +674,9 @@ def _consumer_snapshot(path: Path) -> ConsumerSnapshot:
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
-        current = path.lstat()
+        current = _consumer_lstat(path, parent_receipt)
+        if parent_receipt is not None:
+            _assert_consumer_parent(parent_receipt, require_named=require_named_parent)
     except AuthorityError:
         raise
     except OSError:
@@ -502,6 +697,7 @@ def _consumer_snapshot(path: Path) -> ConsumerSnapshot:
         text=text,
         identity=_identity(before),
         mode=stat.S_IMODE(before.st_mode),
+        parent_receipt=parent_receipt,
     )
 
 
@@ -542,8 +738,22 @@ def _replace_blocks(text: str, blocks: tuple[tuple[str, str, str], ...]) -> str:
     return "\n".join(lines)
 
 
-def _rename_noreplace(first: Path, second: Path) -> bool:
+def _rename_posix(
+    first: Path,
+    second: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    *,
+    linux_flags: int,
+    darwin_flags: int,
+) -> bool:
     try:
+        descriptor = (
+            parent_receipt.descriptor
+            if parent_receipt is not None and parent_receipt.descriptor >= 0
+            else -100
+        )
+        first_name = first.name if descriptor >= 0 else os.fspath(first)
+        second_name = second.name if descriptor >= 0 else os.fspath(second)
         if sys.platform.startswith("linux"):
             function = ctypes.CDLL(None, use_errno=True).renameat2
             function.argtypes = [
@@ -554,55 +764,165 @@ def _rename_noreplace(first: Path, second: Path) -> bool:
                 ctypes.c_uint,
             ]
             function.restype = ctypes.c_int
-            return function(-100, os.fsencode(first), -100, os.fsencode(second), 1) == 0
+            return (
+                function(
+                    descriptor,
+                    os.fsencode(first_name),
+                    descriptor,
+                    os.fsencode(second_name),
+                    linux_flags,
+                )
+                == 0
+            )
         if sys.platform == "darwin":
+            if descriptor >= 0:
+                function = ctypes.CDLL(None, use_errno=True).renameatx_np
+                function.argtypes = [
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_uint,
+                ]
+                function.restype = ctypes.c_int
+                return (
+                    function(
+                        descriptor,
+                        os.fsencode(first_name),
+                        descriptor,
+                        os.fsencode(second_name),
+                        darwin_flags,
+                    )
+                    == 0
+                )
             function = ctypes.CDLL(None, use_errno=True).renamex_np
-            function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            function.argtypes = [
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
             function.restype = ctypes.c_int
-            return function(os.fsencode(first), os.fsencode(second), 4) == 0
-        if os.name == "nt":
-            os.rename(first, second)
-            return True
+            return (
+                function(
+                    os.fsencode(first_name),
+                    os.fsencode(second_name),
+                    darwin_flags,
+                )
+                == 0
+            )
     except (AttributeError, OSError, ValueError):
         return False
     return False
 
 
-def _remove_owned(path: Path, identity: tuple[int, int, int, int, int]) -> bool:
-    # Atomically remove the published name before inspecting it. The claimed name
-    # is random and never shared, so a foreign replacement at ``path`` is restored
-    # rather than being unlinked by a later pathname operation.
-    for _attempt in range(8):
-        claimed = path.with_name(
-            f".{path.name}.openwrangler-dispose-{secrets.token_hex(16)}"
+def _rename_noreplace(
+    first: Path,
+    second: Path,
+    parent_receipt: ConsumerParentReceipt | None = None,
+    *,
+    require_named_parent: bool = True,
+) -> bool:
+    if parent_receipt is not None:
+        _assert_consumer_parent(parent_receipt, require_named=require_named_parent)
+        if first.parent != parent_receipt.path or second.parent != parent_receipt.path:
+            return False
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        return _rename_posix(
+            first,
+            second,
+            parent_receipt,
+            linux_flags=1,
+            darwin_flags=4,
         )
-        if not _rename_noreplace(path, claimed):
-            continue
+    if os.name == "nt":
         try:
-            snapshot = _consumer_snapshot(claimed)
-        except AuthorityError:
-            _rename_noreplace(claimed, path)
-            return False
-        if snapshot.identity[:4] != identity[:4]:
-            _rename_noreplace(claimed, path)
-            return False
-        try:
-            claimed.unlink()
+            os.rename(first, second)
         except OSError:
             return False
         return True
     return False
 
 
-def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
+def _remove_owned(
+    path: Path,
+    identity: tuple[int, int, int, int, int],
+    parent_receipt: ConsumerParentReceipt | None = None,
+    *,
+    require_named_parent: bool = True,
+) -> bool:
+    for _attempt in range(8):
+        claimed = path.with_name(
+            f".{path.name}.openwrangler-dispose-{secrets.token_hex(16)}"
+        )
+        if not _rename_noreplace(
+            path,
+            claimed,
+            parent_receipt,
+            require_named_parent=require_named_parent,
+        ):
+            continue
+        try:
+            snapshot = _consumer_snapshot(
+                claimed,
+                parent_receipt,
+                require_named_parent=require_named_parent,
+            )
+        except AuthorityError:
+            _rename_noreplace(
+                claimed,
+                path,
+                parent_receipt,
+                require_named_parent=require_named_parent,
+            )
+            return False
+        if snapshot.identity[:4] != identity[:4]:
+            _rename_noreplace(
+                claimed,
+                path,
+                parent_receipt,
+                require_named_parent=require_named_parent,
+            )
+            return False
+        try:
+            _consumer_unlink(claimed, parent_receipt)
+        except OSError:
+            return False
+        return True
+    return False
+
+
+def _stage_sibling(
+    path: Path,
+    raw: bytes,
+    mode: int,
+    parent_receipt: ConsumerParentReceipt | None = None,
+) -> ConsumerSnapshot:
     temporary: Path | None = None
     descriptor = -1
     owned_identity: tuple[int, int, int, int, int] | None = None
     try:
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.name}.openwrangler-", dir=path.parent
-        )
-        temporary = Path(name)
+        if parent_receipt is not None:
+            _assert_consumer_parent(parent_receipt)
+        if parent_receipt is not None and parent_receipt.descriptor >= 0:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            for _attempt in range(8):
+                temporary = path.with_name(
+                    f".{path.name}.openwrangler-{secrets.token_hex(16)}"
+                )
+                try:
+                    descriptor = _consumer_open(temporary, flags, parent_receipt, 0o600)
+                    break
+                except FileExistsError:
+                    temporary = None
+            if descriptor < 0 or temporary is None:
+                _fail("consumer_write_failed")
+        else:
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{path.name}.openwrangler-", dir=path.parent
+            )
+            temporary = Path(name)
         file_chmod = getattr(os, "fchmod", None)
         if file_chmod is not None:
             file_chmod(descriptor, mode)
@@ -618,7 +938,7 @@ def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
         owned_identity = _identity(os.fstat(descriptor))
         os.close(descriptor)
         descriptor = -1
-        staged = _consumer_snapshot(temporary)
+        staged = _consumer_snapshot(temporary, parent_receipt)
         if staged.raw != raw or staged.mode != mode:
             _fail("consumer_write_failed")
         return staged
@@ -633,48 +953,62 @@ def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
             except OSError:
                 pass
         if temporary is not None and owned_identity is not None:
-            _remove_owned(temporary, owned_identity)
+            _remove_owned(
+                temporary,
+                owned_identity,
+                parent_receipt,
+                require_named_parent=False,
+            )
         _fail("consumer_write_failed")
 
 
 def _remove_staged(snapshots: Iterator[ConsumerSnapshot]) -> None:
     for snapshot in snapshots:
-        _remove_owned(snapshot.path, snapshot.identity)
+        _remove_owned(
+            snapshot.path,
+            snapshot.identity,
+            snapshot.parent_receipt,
+            require_named_parent=False,
+        )
 
 
-def _same_snapshot(snapshot: ConsumerSnapshot) -> bool:
+def _same_snapshot(
+    snapshot: ConsumerSnapshot, *, require_named_parent: bool = True
+) -> bool:
     try:
-        current = _consumer_snapshot(snapshot.path)
+        current = _consumer_snapshot(
+            snapshot.path,
+            snapshot.parent_receipt,
+            require_named_parent=require_named_parent,
+        )
     except AuthorityError:
         return False
     return current.identity == snapshot.identity and current.raw == snapshot.raw
 
 
-def _exchange_paths(first: Path, second: Path) -> Path:
-    try:
-        if sys.platform.startswith("linux"):
-            function = ctypes.CDLL(None, use_errno=True).renameat2
-            function.argtypes = [
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_uint,
-            ]
-            function.restype = ctypes.c_int
-            result = function(
-                -100,
-                os.fsencode(first),
-                -100,
-                os.fsencode(second),
-                2,
-            )
-        elif sys.platform == "darwin":
-            function = ctypes.CDLL(None, use_errno=True).renamex_np
-            function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-            function.restype = ctypes.c_int
-            result = function(os.fsencode(first), os.fsencode(second), 2)
-        elif os.name == "nt":
+def _exchange_paths(
+    first: Path,
+    second: Path,
+    parent_receipt: ConsumerParentReceipt | None = None,
+    *,
+    require_named_parent: bool = True,
+) -> Path:
+    if parent_receipt is not None:
+        _assert_consumer_parent(parent_receipt, require_named=require_named_parent)
+        if first.parent != parent_receipt.path or second.parent != parent_receipt.path:
+            _fail("consumer_write_failed")
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        if not _rename_posix(
+            first,
+            second,
+            parent_receipt,
+            linux_flags=2,
+            darwin_flags=2,
+        ):
+            _fail("consumer_write_failed")
+        return second
+    if os.name == "nt":
+        try:
             backup = first.with_name(
                 f".{first.name}.openwrangler-exchange-{secrets.token_hex(16)}"
             )
@@ -691,13 +1025,9 @@ def _exchange_paths(first: Path, second: Path) -> Path:
             if not replace_file(str(first), str(second), str(backup), 1, None, None):
                 _fail("consumer_write_failed")
             return backup
-        else:
+        except (AttributeError, OSError, ValueError):
             _fail("consumer_write_failed")
-    except (AttributeError, OSError, ValueError):
-        _fail("consumer_write_failed")
-    if result != 0:
-        _fail("consumer_write_failed")
-    return second
+    _fail("consumer_write_failed")
 
 
 def _assert_consumer_states(
@@ -710,12 +1040,25 @@ def _assert_consumer_states(
             _fail("consumer_changed")
 
 
+def _snapshot_matches(
+    actual: ConsumerSnapshot,
+    expected: ConsumerSnapshot,
+) -> bool:
+    return (
+        actual.identity[:2] == expected.identity[:2]
+        and actual.raw == expected.raw
+        and actual.mode == expected.mode
+    )
+
+
 def _write_consumers_atomically(
     snapshots: tuple[ConsumerSnapshot, ...],
     expected: dict[Path, str],
     *,
     authority_receipt: AuthorityLockReceipt | None = None,
 ) -> None:
+    if any(snapshot.parent_receipt is None for snapshot in snapshots):
+        _fail("consumer_unreadable")
     targets = tuple(
         snapshot
         for snapshot in snapshots
@@ -728,7 +1071,10 @@ def _write_consumers_atomically(
     try:
         for snapshot in targets:
             replacements[snapshot.path] = _stage_sibling(
-                snapshot.path, expected[snapshot.path].encode("utf-8"), snapshot.mode
+                snapshot.path,
+                expected[snapshot.path].encode("utf-8"),
+                snapshot.mode,
+                snapshot.parent_receipt,
             )
         _assert_consumer_states(snapshots, committed)
         for snapshot in targets:
@@ -738,43 +1084,55 @@ def _write_consumers_atomically(
                 _fail("consumer_write_failed")
             if authority_receipt is not None:
                 _assert_authority_receipt(authority_receipt)
-            displaced_path = _exchange_paths(snapshot.path, replacement.path)
+            displaced_path = _exchange_paths(
+                snapshot.path,
+                replacement.path,
+                snapshot.parent_receipt,
+            )
             replacements[snapshot.path] = ConsumerSnapshot(
                 path=displaced_path,
                 raw=snapshot.raw,
                 text=snapshot.text,
                 identity=snapshot.identity,
                 mode=snapshot.mode,
+                parent_receipt=snapshot.parent_receipt,
             )
             replaced.append(snapshot.path)
-            displaced = _consumer_snapshot(displaced_path)
+            displaced = _consumer_snapshot(
+                displaced_path,
+                snapshot.parent_receipt,
+                require_named_parent=False,
+            )
             replacements[snapshot.path] = displaced
-            committed_snapshot = _consumer_snapshot(snapshot.path)
+            committed_snapshot = _consumer_snapshot(
+                snapshot.path,
+                snapshot.parent_receipt,
+                require_named_parent=False,
+            )
             committed[snapshot.path] = committed_snapshot
+            if snapshot.parent_receipt is not None:
+                _assert_consumer_parent(snapshot.parent_receipt)
             if (
                 committed_snapshot.raw != replacement.raw
                 or committed_snapshot.mode != replacement.mode
             ):
                 _fail("consumer_write_failed")
-            if (
-                displaced.identity[:2] != snapshot.identity[:2]
-                or displaced.raw != snapshot.raw
-                or displaced.mode != snapshot.mode
-            ):
+            if not _snapshot_matches(displaced, snapshot):
                 _fail("consumer_changed")
             _assert_consumer_states(snapshots, committed)
-        directories = (
-            {snapshot.path.parent for snapshot in targets} if os.name != "nt" else set()
-        )
-        for directory in directories:
-            try:
-                descriptor = os.open(directory, os.O_RDONLY)
+        parent_receipts = {
+            snapshot.parent_receipt
+            for snapshot in targets
+            if snapshot.parent_receipt is not None
+        }
+        if os.name != "nt":
+            for parent_receipt in parent_receipts:
+                assert parent_receipt.descriptor >= 0
                 try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-            except OSError:
-                _fail("consumer_write_failed")
+                    os.fsync(parent_receipt.descriptor)
+                except OSError:
+                    _fail("consumer_write_failed")
+                _assert_consumer_parent(parent_receipt)
         _assert_consumer_states(snapshots, committed)
         if authority_receipt is not None:
             _assert_authority_receipt(authority_receipt)
@@ -785,37 +1143,68 @@ def _write_consumers_atomically(
             committed_snapshot = committed.get(path)
             if (
                 committed_snapshot is None
-                or not _same_snapshot(committed_snapshot)
-                or not _same_snapshot(rollback)
+                or not _same_snapshot(committed_snapshot, require_named_parent=False)
+                or not _same_snapshot(rollback, require_named_parent=False)
             ):
                 replacements.pop(path, None)
                 error_code = "consumer_rollback_failed"
                 continue
             try:
-                removed_path = _exchange_paths(path, rollback.path)
+                removed_path = _exchange_paths(
+                    path,
+                    rollback.path,
+                    rollback.parent_receipt,
+                    require_named_parent=False,
+                )
+                restored = _consumer_snapshot(
+                    path,
+                    rollback.parent_receipt,
+                    require_named_parent=False,
+                )
+                removed = _consumer_snapshot(
+                    removed_path,
+                    rollback.parent_receipt,
+                    require_named_parent=False,
+                )
             except AuthorityError:
                 replacements.pop(path, None)
                 error_code = "consumer_rollback_failed"
                 continue
-            restored = _consumer_snapshot(path)
-            removed = _consumer_snapshot(removed_path)
-            if (
-                restored.identity[:2] != rollback.identity[:2]
-                or restored.raw != rollback.raw
-                or restored.mode != rollback.mode
+            if _snapshot_matches(restored, rollback) and _snapshot_matches(
+                removed, committed_snapshot
             ):
+                replacements[path] = removed
+                continue
+
+            try:
+                _exchange_paths(
+                    path,
+                    removed_path,
+                    rollback.parent_receipt,
+                    require_named_parent=False,
+                )
+                current = _consumer_snapshot(
+                    path,
+                    rollback.parent_receipt,
+                    require_named_parent=False,
+                )
+                recovery = _consumer_snapshot(
+                    removed_path,
+                    rollback.parent_receipt,
+                    require_named_parent=False,
+                )
+            except AuthorityError:
                 replacements.pop(path, None)
                 error_code = "consumer_rollback_failed"
                 continue
-            if (
-                removed.identity[:2] != committed_snapshot.identity[:2]
-                or removed.raw != committed_snapshot.raw
-                or removed.mode != committed_snapshot.mode
+            replacements.pop(path, None)
+            if not (
+                _snapshot_matches(current, removed)
+                and _snapshot_matches(recovery, rollback)
             ):
-                replacements.pop(path, None)
                 error_code = "consumer_rollback_failed"
                 continue
-            replacements[path] = removed
+            error_code = "consumer_rollback_failed"
         assert error_code is not None
         _fail(error_code)
     finally:
@@ -1122,11 +1511,11 @@ def rendered_consumers(
     snapshots: tuple[ConsumerSnapshot, ...] | None = None,
 ) -> dict[Path, str]:
     if snapshots is None:
-        snapshots = (
-            _consumer_snapshot(PYPROJECT_PATH),
-            _consumer_snapshot(HOST_PATH),
-            _consumer_snapshot(WORKFLOW_PATH),
-        )
+        paths = (PYPROJECT_PATH, HOST_PATH, WORKFLOW_PATH)
+        with _consumer_parent_receipts(paths) as parent_receipts:
+            snapshots = tuple(
+                _consumer_snapshot(path, parent_receipts[path.parent]) for path in paths
+            )
     sources = {snapshot.path: snapshot.text for snapshot in snapshots}
     if set(sources) != {PYPROJECT_PATH, HOST_PATH, WORKFLOW_PATH}:
         _fail("consumer_unreadable")
@@ -1166,26 +1555,26 @@ def _synchronize_unlocked(
     dependencies = load_authority()
     if authority_receipt is not None:
         _assert_authority_receipt(authority_receipt)
-    snapshots = (
-        _consumer_snapshot(PYPROJECT_PATH),
-        _consumer_snapshot(HOST_PATH),
-        _consumer_snapshot(WORKFLOW_PATH),
-    )
-    expected = rendered_consumers(dependencies, snapshots)
-    mismatches = tuple(
-        snapshot.path
-        for snapshot in snapshots
-        if snapshot.raw != expected[snapshot.path].encode("utf-8")
-    )
-    if write and mismatches:
-        _write_consumers_atomically(
-            snapshots,
-            expected,
-            authority_receipt=authority_receipt,
+    paths = (PYPROJECT_PATH, HOST_PATH, WORKFLOW_PATH)
+    with _consumer_parent_receipts(paths) as parent_receipts:
+        snapshots = tuple(
+            _consumer_snapshot(path, parent_receipts[path.parent]) for path in paths
         )
-    elif authority_receipt is not None:
-        _assert_authority_receipt(authority_receipt)
-    return mismatches
+        expected = rendered_consumers(dependencies, snapshots)
+        mismatches = tuple(
+            snapshot.path
+            for snapshot in snapshots
+            if snapshot.raw != expected[snapshot.path].encode("utf-8")
+        )
+        if write and mismatches:
+            _write_consumers_atomically(
+                snapshots,
+                expected,
+                authority_receipt=authority_receipt,
+            )
+        elif authority_receipt is not None:
+            _assert_authority_receipt(authority_receipt)
+        return mismatches
 
 
 def synchronize(*, write: bool) -> tuple[Path, ...]:

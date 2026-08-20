@@ -2369,22 +2369,92 @@ def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> 
         return False
 
 
-def _distribution_owns_module(distribution: Any, module: Any) -> bool:
-    files = distribution.files
-    origin = getattr(module, "__file__", None)
-    if files is None or not isinstance(origin, str):
-        return False
+def _regular_module_file_identity(
+    path: str,
+) -> tuple[int, int, int, int, int] | None:
+    if not os.path.isabs(path) or "\x00" in path or any(ord(character) < 0x20 for character in path):
+        return None
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        resolved_origin = Path(origin).resolve(strict=True)
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return None
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        current = os.lstat(path)
+    except (OSError, ValueError):
+        return None
+
+    def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    before_identity = identity(before)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or not stat.S_ISREG(current.st_mode)
+        or current.st_nlink != 1
+        or identity(opened) != before_identity
+        or identity(current) != before_identity
+    ):
+        return None
+    return before_identity
+
+
+def _distribution_owns_module(distribution: Any, module: Any) -> bool:
+    try:
+        files = distribution.files
+        origin = getattr(module, "__file__", None)
+        specification = getattr(module, "__spec__", None)
+        specification_origin = getattr(specification, "origin", None)
+        loader = getattr(specification, "loader", None)
+        if (
+            files is None
+            or not isinstance(origin, str)
+            or not isinstance(specification_origin, str)
+            or loader is None
+            or not os.path.isabs(origin)
+            or os.path.normcase(os.path.abspath(origin)) != os.path.normcase(os.path.abspath(specification_origin))
+        ):
+            return False
+        origin_identity = _regular_module_file_identity(origin)
+        if origin_identity is None:
+            return False
+        normalized_origin = os.path.normcase(os.path.abspath(origin))
         for index, item in enumerate(files):
             if index >= 100_000:
                 return False
             try:
-                candidate = Path(distribution.locate_file(item)).resolve(strict=True)
-            except (OSError, RuntimeError):
+                candidate_value = os.fspath(distribution.locate_file(item))
+            except (OSError, TypeError, ValueError):
                 continue
-            if candidate == resolved_origin:
-                return True
+            if (
+                not isinstance(candidate_value, str)
+                or not os.path.isabs(candidate_value)
+                or os.path.normcase(os.path.abspath(candidate_value)) != normalized_origin
+            ):
+                continue
+            candidate_identity = _regular_module_file_identity(candidate_value)
+            if candidate_identity != origin_identity:
+                return False
+            return not (
+                getattr(module, "__file__", None) != origin
+                or getattr(module, "__spec__", None) is not specification
+                or getattr(specification, "origin", None) != specification_origin
+                or getattr(specification, "loader", None) is not loader
+                or _regular_module_file_identity(origin) != origin_identity
+            )
     except BaseException:
         return False
     return False

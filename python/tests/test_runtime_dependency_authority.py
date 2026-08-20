@@ -8,6 +8,7 @@ import os
 import struct
 import subprocess
 import sys
+import types
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -250,7 +251,7 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
         authority.load_authority(oversized)
 
 
-@pytest.mark.parametrize("failure", [RecursionError, MemoryError])
+@pytest.mark.parametrize("failure", [RecursionError, MemoryError, ValueError])
 def test_parser_resource_failures_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
 ) -> None:
@@ -264,7 +265,7 @@ def test_parser_resource_failures_are_bounded(
         authority.load_authority(path)
 
 
-def test_json_structure_and_text_budgets_precede_full_decode(
+def test_json_structure_text_and_number_budgets_precede_full_decode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -274,6 +275,7 @@ def test_json_structure_and_text_budgets_precede_full_decode(
         b"["
         + b",".join(b'"' + b"x" * 1_024 + b'"' for _ in range(authority.MAX_AUTHORITY_JSON_TEXT_BYTES // 1_024 + 1))
         + b"]",
+        b'{"schemaVersion":' + b"9" * (authority.MAX_AUTHORITY_JSON_NUMBER_BYTES + 1) + b',"dependencies":[]}',
     )
 
     def unexpected_decode(*_args: Any, **_kwargs: Any) -> Any:
@@ -513,15 +515,7 @@ def _import_qualified_module(dependency: authority.Dependency, version: str) -> 
     if files is None:
         raise AssertionError("qualified_distribution_files_missing")
     module = importlib.import_module(dependency.import_module)
-    origin = getattr(module, "__file__", None)
-    if not isinstance(origin, str):
-        raise AssertionError("qualified_module_origin_missing")
-    try:
-        resolved_origin = Path(origin).resolve(strict=True)
-        owned_files = {Path(str(distribution.locate_file(file))).resolve(strict=True) for file in files}
-    except OSError as error:
-        raise AssertionError("qualified_module_origin_unreadable") from error
-    if resolved_origin not in owned_files:
+    if not dependency_guard._distribution_owns_module(distribution, module):
         raise AssertionError("qualified_module_not_distribution_owned")
     root_module = dependency.import_module.partition(".")[0]
     owners = importlib.metadata.packages_distributions().get(root_module, ())
@@ -726,6 +720,65 @@ def test_qualified_module_binding_rejects_local_source_shadowing(
         sys.modules.update(saved_modules)
 
 
+def test_distribution_module_ownership_rejects_ambiguous_import_identities(
+    tmp_path: Path,
+) -> None:
+    regular = tmp_path / "owned_module.py"
+    regular.write_text("VALUE = 1\n", encoding="utf-8")
+
+    def module_for(path: Path) -> Any:
+        specification = types.SimpleNamespace(origin=str(path), loader=object())
+        return types.SimpleNamespace(__file__=str(path), __spec__=specification)
+
+    def distribution_for(path: Path, callback: Any | None = None) -> Any:
+        def locate_file(_item: Any) -> Path:
+            if callback is not None:
+                callback()
+            return path
+
+        return types.SimpleNamespace(files=(path.name,), locate_file=locate_file)
+
+    regular_module = module_for(regular)
+    assert dependency_guard._distribution_owns_module(distribution_for(regular), regular_module)
+
+    if os.name != "nt":
+        symlink = tmp_path / "symlink_module.py"
+        symlink.symlink_to(regular)
+        assert not dependency_guard._distribution_owns_module(distribution_for(symlink), module_for(symlink))
+
+    hardlink_source = tmp_path / "hardlink_source.py"
+    hardlink_source.write_text("VALUE = 2\n", encoding="utf-8")
+    hardlink = tmp_path / "hardlink_module.py"
+    os.link(hardlink_source, hardlink)
+    assert not dependency_guard._distribution_owns_module(distribution_for(hardlink), module_for(hardlink))
+
+    namespace_module = types.SimpleNamespace(
+        __file__=None,
+        __spec__=types.SimpleNamespace(origin=None, loader=None),
+    )
+    assert not dependency_guard._distribution_owns_module(
+        types.SimpleNamespace(files=("namespace/data.txt",)),
+        namespace_module,
+    )
+
+    archive = tmp_path / "modules.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("archived_module.py", "VALUE = 3\n")
+    archived_origin = Path(f"{archive}/archived_module.py")
+    assert not dependency_guard._distribution_owns_module(
+        distribution_for(archived_origin), module_for(archived_origin)
+    )
+
+    changed = module_for(regular)
+    alternate = tmp_path / "alternate_module.py"
+    alternate.write_text("VALUE = 4\n", encoding="utf-8")
+
+    def change_import_path() -> None:
+        changed.__file__ = str(alternate)
+
+    assert not dependency_guard._distribution_owns_module(distribution_for(regular, change_import_path), changed)
+
+
 def test_qualified_probe_exercises_all_runtime_engines(tmp_path: Path) -> None:
     _exercise_openwrangler_runtime(tmp_path)
 
@@ -792,9 +845,9 @@ def test_transaction_revalidates_an_initially_current_consumer(tmp_path: Path, m
     real_exchange = authority._exchange_paths
     drifted = False
 
-    def exchange_then_drift(target: Path, replacement: Path) -> Path:
+    def exchange_then_drift(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
         nonlocal drifted
-        displaced = real_exchange(target, replacement)
+        displaced = real_exchange(target, replacement, *args, **kwargs)
         if target == pyproject and not drifted:
             drifted = True
             workflow.write_bytes(foreign_workflow)
@@ -817,12 +870,12 @@ def test_atomic_rewrite_rolls_back_the_first_consumer_when_the_second_fails(
     real_exchange = authority._exchange_paths
     failed = False
 
-    def fail_second(target: Path, replacement: Path) -> Path:
+    def fail_second(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
         nonlocal failed
         if target == host and not failed:
             failed = True
             raise authority.AuthorityError("consumer_write_failed")
-        return real_exchange(target, replacement)
+        return real_exchange(target, replacement, *args, **kwargs)
 
     monkeypatch.setattr(authority, "_exchange_paths", fail_second)
     with pytest.raises(authority.AuthorityError, match="^consumer_write_failed$"):
@@ -841,9 +894,9 @@ def test_atomic_rewrite_detects_drift_without_overwriting_the_racing_file(
     real_exchange = authority._exchange_paths
     drifted = False
 
-    def exchange_then_drift(target: Path, replacement: Path) -> Path:
+    def exchange_then_drift(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
         nonlocal drifted
-        displaced = real_exchange(target, replacement)
+        displaced = real_exchange(target, replacement, *args, **kwargs)
         if target == pyproject and not drifted:
             drifted = True
             host.write_bytes(racing_host)
@@ -867,7 +920,7 @@ def test_exchange_restores_a_foreign_post_check_replacement(tmp_path: Path, monk
     raced = False
     foreign_identity: list[tuple[int, int]] = []
 
-    def replace_then_exchange(target: Path, replacement: Path) -> Path:
+    def replace_then_exchange(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
         nonlocal raced
         if target == pyproject and not raced:
             foreign_path.write_bytes(foreign_bytes)
@@ -875,7 +928,7 @@ def test_exchange_restores_a_foreign_post_check_replacement(tmp_path: Path, monk
             foreign_identity.append((metadata.st_dev, metadata.st_ino))
             real_replace(foreign_path, target)
             raced = True
-        return real_exchange(target, replacement)
+        return real_exchange(target, replacement, *args, **kwargs)
 
     monkeypatch.setattr(authority, "_exchange_paths", replace_then_exchange)
     with pytest.raises(authority.AuthorityError, match="^consumer_changed$"):
@@ -1139,12 +1192,12 @@ def test_staged_cleanup_atomically_claims_before_checking_identity(
     real_rename = authority._rename_noreplace
     raced = False
 
-    def replace_before_claim(first: Path, second: Path) -> bool:
+    def replace_before_claim(first: Path, second: Path, *args: Any, **kwargs: Any) -> bool:
         nonlocal raced
         if first == staged.path and not raced:
             raced = True
             os.replace(foreign, staged.path)
-        return real_rename(first, second)
+        return real_rename(first, second, *args, **kwargs)
 
     monkeypatch.setattr(authority, "_rename_noreplace", replace_before_claim)
     authority._remove_staged(iter((staged,)))
@@ -1165,13 +1218,13 @@ def test_rollback_does_not_overwrite_a_concurrently_changed_committed_consumer(
     real_exchange = authority._exchange_paths
     failed = False
 
-    def race_then_fail(target: Path, replacement: Path) -> Path:
+    def race_then_fail(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
         nonlocal failed
         if target == host and not failed:
             failed = True
             pyproject.write_bytes(concurrent_pyproject)
             raise authority.AuthorityError("consumer_write_failed")
-        return real_exchange(target, replacement)
+        return real_exchange(target, replacement, *args, **kwargs)
 
     monkeypatch.setattr(authority, "_exchange_paths", race_then_fail)
     with pytest.raises(authority.AuthorityError, match="^consumer_rollback_failed$"):
@@ -1198,7 +1251,7 @@ def test_rollback_exchange_preserves_a_foreign_post_check_replacement(
     real_exchange = authority._exchange_paths
     calls = 0
 
-    def race_rollback_exchange(target: Path, replacement: Path) -> Path:
+    def race_rollback_exchange(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
         nonlocal calls
         calls += 1
         if target == host and calls == 2:
@@ -1208,19 +1261,71 @@ def test_rollback_exchange_preserves_a_foreign_post_check_replacement(
             metadata = foreign_path.stat()
             foreign_identity.append((metadata.st_dev, metadata.st_ino))
             os.replace(foreign_path, pyproject)
-        return real_exchange(target, replacement)
+        return real_exchange(target, replacement, *args, **kwargs)
 
     monkeypatch.setattr(authority, "_exchange_paths", race_rollback_exchange)
     with pytest.raises(authority.AuthorityError, match="^consumer_rollback_failed$"):
         authority.synchronize(write=True)
-    assert pyproject.read_bytes() == original_pyproject
+    assert pyproject.read_bytes() == foreign_bytes
     metadata = pyproject.stat()
-    assert (metadata.st_dev, metadata.st_ino) == original_identity
+    assert (metadata.st_dev, metadata.st_ino) == foreign_identity[0]
     assert host.read_bytes() == original_host
     retained = list(tmp_path.glob(".*.openwrangler-*"))
     assert len(retained) == 1
-    assert retained[0].read_bytes() == foreign_bytes
-    assert (retained[0].stat().st_dev, retained[0].stat().st_ino) == foreign_identity[0]
+    assert retained[0].read_bytes() == original_pyproject
+    assert (retained[0].stat().st_dev, retained[0].stat().st_ino) == original_identity
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative namespace behavior")
+def test_consumer_parent_replacement_preserves_the_foreign_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "consumers"
+    parent.mkdir()
+    pyproject = parent / "pyproject.toml"
+    host = parent / "pythonEnvironmentModel.ts"
+    workflow = parent / "cross-platform.yml"
+    pyproject.write_text(
+        authority.PYPROJECT_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
+        encoding="utf-8",
+    )
+    host.write_text(
+        authority.HOST_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
+        encoding="utf-8",
+    )
+    workflow.write_bytes(authority.WORKFLOW_PATH.read_bytes())
+    originals = {path.name: path.read_bytes() for path in (pyproject, host, workflow)}
+    monkeypatch.setattr(authority, "PYPROJECT_PATH", pyproject)
+    monkeypatch.setattr(authority, "HOST_PATH", host)
+    monkeypatch.setattr(authority, "WORKFLOW_PATH", workflow)
+
+    displaced = tmp_path / "displaced-consumers"
+    foreign = {path.name: f"foreign {path.name}\n".encode() for path in (pyproject, host, workflow)}
+    real_exchange = authority._exchange_paths
+    swapped = False
+
+    def exchange_then_swap_parent(target: Path, replacement: Path, *args: Any, **kwargs: Any) -> Path:
+        nonlocal swapped
+        result = real_exchange(target, replacement, *args, **kwargs)
+        if not swapped:
+            swapped = True
+            os.replace(parent, displaced)
+            parent.mkdir()
+            for name, raw in foreign.items():
+                (parent / name).write_bytes(raw)
+        return result
+
+    monkeypatch.setattr(authority, "_exchange_paths", exchange_then_swap_parent)
+    with pytest.raises(authority.AuthorityError, match="^consumer_changed$"):
+        authority.synchronize(write=True)
+
+    assert swapped
+    for name, raw in foreign.items():
+        assert (parent / name).read_bytes() == raw
+    for name, raw in originals.items():
+        assert (displaced / name).read_bytes() == raw
+    assert not list(parent.glob(".*.openwrangler-*"))
+    assert not list(displaced.glob(".*.openwrangler-*"))
 
 
 def test_consumer_snapshot_revalidates_the_named_path_after_read(

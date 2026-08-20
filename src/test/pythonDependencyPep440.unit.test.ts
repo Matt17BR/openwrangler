@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -52,7 +52,8 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
         { timeout: 10_000 }
       );
       const purelib = stdout.trim();
-      await writeFile(path.join(purelib, `${fixture.dependency.importModule}.py`), "VALUE = 1\n", "utf8");
+      const modulePath = path.join(purelib, `${fixture.dependency.importModule}.py`);
+      await writeFile(modulePath, "VALUE = 1\n", "utf8");
       const metadataRoot = path.join(purelib, `${fixture.dependency.importModule}-0.dist-info`);
       await mkdir(metadataRoot);
       const metadataPath = path.join(metadataRoot, "METADATA");
@@ -71,7 +72,70 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
         missing: [fixture.dependency.installSpec]
       });
       await writeFile(recordPath, `${fixture.dependency.importModule}.py,,\n`, "utf8");
+      const rejected = { available: [], missing: [fixture.dependency.installSpec] };
 
+      await writeFile(modulePath, "__file__ = __file__ + '.moved'\n", "utf8");
+      await expect(probeDependencies(executable, [fixture.dependency]), "path-changing module").resolves.toEqual(
+        rejected
+      );
+      await writeFile(modulePath, "VALUE = 1\n", "utf8");
+
+      const hardlinkSource = path.join(purelib, "hardlink-source.py");
+      await unlink(modulePath);
+      await writeFile(hardlinkSource, "VALUE = 1\n", "utf8");
+      await link(hardlinkSource, modulePath);
+      await expect(probeDependencies(executable, [fixture.dependency]), "hard-linked module").resolves.toEqual(
+        rejected
+      );
+      await unlink(modulePath);
+      await unlink(hardlinkSource);
+      await writeFile(modulePath, "VALUE = 1\n", "utf8");
+
+      if (process.platform !== "win32") {
+        const symlinkSource = path.join(purelib, "symlink-source.py");
+        await unlink(modulePath);
+        await writeFile(symlinkSource, "VALUE = 1\n", "utf8");
+        await symlink(symlinkSource, modulePath);
+        await expect(probeDependencies(executable, [fixture.dependency]), "symlinked module").resolves.toEqual(
+          rejected
+        );
+        await unlink(modulePath);
+        await unlink(symlinkSource);
+        await writeFile(modulePath, "VALUE = 1\n", "utf8");
+      }
+
+      const namespaceName = "openwrangler_namespace_probe";
+      const namespaceRoot = path.join(purelib, namespaceName);
+      await mkdir(namespaceRoot);
+      await writeFile(path.join(namespaceRoot, "data.txt"), "namespace\n", "utf8");
+      await writeFile(recordPath, `${namespaceName}/data.txt,,\n`, "utf8");
+      await expect(
+        probeDependencies(executable, [{ ...fixture.dependency, importModule: namespaceName }]),
+        "namespace module"
+      ).resolves.toEqual(rejected);
+
+      const archiveName = "openwrangler-probe-modules.zip";
+      const archivePath = path.join(purelib, archiveName);
+      const archivedModule = "openwrangler_archived_probe";
+      await execFileAsync(
+        executable,
+        [
+          "-I",
+          "-c",
+          "import sys,zipfile; zipfile.ZipFile(sys.argv[1],'w').writestr(sys.argv[2]+'.py','VALUE = 1\\n')",
+          archivePath,
+          archivedModule
+        ],
+        { timeout: 10_000 }
+      );
+      await writeFile(path.join(purelib, "openwrangler-archive.pth"), `${archivePath}\n`, "utf8");
+      await writeFile(recordPath, `${archiveName}/${archivedModule}.py,,\n`, "utf8");
+      await expect(
+        probeDependencies(executable, [{ ...fixture.dependency, importModule: archivedModule }]),
+        "zip-imported module"
+      ).resolves.toEqual(rejected);
+
+      await writeFile(recordPath, `${fixture.dependency.importModule}.py,,\n`, "utf8");
       for (const entry of fixture.cases) {
         await writeFile(
           path.join(metadataRoot, "METADATA"),
