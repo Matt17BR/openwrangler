@@ -39,6 +39,7 @@ import {
 import { decodeGridViewState, emptyGridViewState, encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
+import { cleaningHistoryActionAvailable } from "../shared/cleaningHistoryCapabilities";
 import { sessionModeAction } from "../shared/sessionMode";
 import { ActiveFilterBar, type FilterBarRequestLifecycle } from "./filters/ActiveFilterBar";
 import { FilterPanel } from "./filters/FilterPanel";
@@ -925,12 +926,22 @@ export function App() {
           : intent.action === "editLatest"
             ? currentMetadata?.steps.at(-1)
             : undefined;
+      const selectedStepIndex = selectedStep ? (currentMetadata?.steps.indexOf(selectedStep) ?? -1) : -1;
+      const historyActionAvailable =
+        intent.action === "editStep" || intent.action === "editLatest"
+          ? cleaningHistoryActionAvailable("edit", {
+              stepCount: currentMetadata?.steps.length ?? 0,
+              stepIndex: selectedStepIndex
+            })
+          : true;
       const canOpen =
         intent.action === "open"
           ? canStartOperation(currentMetadata, intent.operationKind)
           : intent.action === "editLatest"
-            ? canEditLatestStep(currentMetadata)
-            : selectedStep !== undefined && canStartOperation(currentMetadata, selectedStep.kind);
+            ? canEditLatestStep(currentMetadata) && historyActionAvailable
+            : selectedStep !== undefined &&
+              historyActionAvailable &&
+              canStartOperation(currentMetadata, selectedStep.kind);
       if (
         !currentMetadata ||
         (expectedSessionId !== undefined && expectedSessionId !== currentMetadata.sessionId) ||
@@ -995,7 +1006,11 @@ export function App() {
         }
         return;
       }
-      if (!currentMetadata?.steps.some((step) => step.id === stepId)) {
+      const stepIndex = currentMetadata?.steps.findIndex((step) => step.id === stepId) ?? -1;
+      if (
+        !currentMetadata ||
+        !cleaningHistoryActionAvailable("inspect", { stepCount: currentMetadata.steps.length, stepIndex })
+      ) {
         return;
       }
       const previousTarget = stepInspectionTargetRef.current;
@@ -1081,7 +1096,13 @@ export function App() {
   const deleteStep = useCallback(
     (stepId: string) => {
       const currentMetadata = metadataRef.current;
-      if (!currentMetadata?.steps.some((step) => step.id === stepId) || !beginMutation()) return;
+      const stepIndex = currentMetadata?.steps.findIndex((step) => step.id === stepId) ?? -1;
+      if (
+        !currentMetadata ||
+        !cleaningHistoryActionAvailable("delete", { stepCount: currentMetadata.steps.length, stepIndex }) ||
+        !beginMutation()
+      )
+        return;
       const columnWindow = desiredColumnWindow.current;
       vscode.postMessage({
         kind: "rewriteCleaningPlan",
@@ -2082,6 +2103,9 @@ export function App() {
       : stepInspection?.outputPage
     : page;
   const selectedInspectionStep = metadata?.steps.find((step) => step.id === stepInspectionTarget?.stepId);
+  const selectedInspectionStepIndex = selectedInspectionStep
+    ? (metadata?.steps.indexOf(selectedInspectionStep) ?? -1)
+    : -1;
   const inspectionGridViewState = useMemo<GridViewState>(() => {
     const columnIds = new Set(stepInspection?.outputSchema.map((column) => column.id) ?? []);
     return {
@@ -2720,39 +2744,45 @@ export function App() {
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
               )}
-              {metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
-                <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
-                  <span className="toolbarPlanStatus">
-                    <span className="codicon codicon-layers" aria-hidden="true" />
-                    <span>
-                      {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+              {metadata.mode === "editing" &&
+                metadata.steps.length > 0 &&
+                !metadata.draftStep &&
+                cleaningHistoryActionAvailable("undo", {
+                  stepCount: metadata.steps.length,
+                  stepIndex: metadata.steps.length - 1
+                }) && (
+                  <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
+                    <span className="toolbarPlanStatus">
+                      <span className="codicon codicon-layers" aria-hidden="true" />
+                      <span>
+                        {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+                      </span>
                     </span>
-                  </span>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    disabled={loading || projectionLoading || importOptionsPending}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                    title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                    onClick={() => requestOperationIntent({ action: "editLatest" })}
-                  >
-                    Edit latest
-                  </button>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    data-cleaning-plan-undo
-                    disabled={loading || projectionLoading || importOptionsPending}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                    title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
-                    onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
-                  >
-                    <span className="codicon codicon-discard" aria-hidden="true" /> Undo
-                  </button>
-                </div>
-              )}
+                    <button
+                      type="button"
+                      className="secondaryButton"
+                      disabled={loading || projectionLoading || importOptionsPending}
+                      aria-describedby={projectionStatusId}
+                      aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                      title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                      onClick={() => requestOperationIntent({ action: "editLatest" })}
+                    >
+                      Edit latest
+                    </button>
+                    <button
+                      type="button"
+                      className="secondaryButton"
+                      data-cleaning-plan-undo
+                      disabled={loading || projectionLoading || importOptionsPending}
+                      aria-describedby={projectionStatusId}
+                      aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                      title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                      onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
+                    >
+                      <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+                    </button>
+                  </div>
+                )}
               {(metadata.capabilities.exportCsv || metadata.capabilities.exportParquet) && (
                 <button
                   type="button"
@@ -2941,6 +2971,15 @@ export function App() {
             canModify={Boolean(
               selectedInspectionStep &&
               stepInspection &&
+              metadata &&
+              cleaningHistoryActionAvailable("edit", {
+                stepCount: metadata.steps.length,
+                stepIndex: selectedInspectionStepIndex
+              }) &&
+              cleaningHistoryActionAvailable("delete", {
+                stepCount: metadata.steps.length,
+                stepIndex: selectedInspectionStepIndex
+              }) &&
               metadata.mode === "editing" &&
               !metadata.draftStep &&
               !loading &&

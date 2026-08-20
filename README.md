@@ -161,8 +161,12 @@ a partial rectangle.
 
 Choose from 32 operations, including filling missing values, multi-output literal splitting, portable
 regular-expression extraction, deterministic Pivot longer and Pivot wider, engine-native custom Python or R code, and
-transformations inferred from examples. A draft stays separate until you apply it. Any applied step can be inspected,
-edited, or deleted. Cleaning Undo removes the most recent committed step. Reordering committed steps is not supported.
+transformations inferred from examples. A draft stays separate until you apply it.
+
+<!-- cleaning-history-capabilities:readme-transformations:start -->
+
+Any applied step can be inspected, edited, or deleted. Cleaning Undo removes the most recent committed step. Reordering committed steps is not supported.
+<!-- cleaning-history-capabilities:readme-transformations:end -->
 
 Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
 sort key, or fallback column appear only when the dataframe has a compatible column.
@@ -317,8 +321,14 @@ missing or blank categories, and can keep or drop their selected inputs.
 Transform by Example accepts ordered source columns and example input/output rows, deterministically infers a portable
 program, and shows that canonical program with its generated R before creating a new column. Retained plans replay the
 same program instead of inferring it again.
-Every draft shows the changed data and generated R before it is applied. Applied steps can be inspected, edited, or
-undone. A generated script publishes `open_wrangler_result`; if the source already uses that name, it preserves the
+Every draft shows the changed data and generated R before it is applied.
+
+<!-- cleaning-history-capabilities:readme-native-r:start -->
+
+Any applied step can be inspected, edited, or deleted. Cleaning Undo removes the most recent committed step. Reordering committed steps is not supported.
+<!-- cleaning-history-capabilities:readme-native-r:end -->
+
+A generated script publishes `open_wrangler_result`; if the source already uses that name, it preserves the
 source and publishes `open_wrangler_result_2`. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
 lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
 

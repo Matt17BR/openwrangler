@@ -12,7 +12,10 @@ import {
   checkGeneratedFiles,
   extractInvariantSection,
   parseCleaningHistoryCapabilityModel,
+  parseCleaningHistoryProductionAuthority,
   parseInvariantEntries,
+  readBoundedUtf8File,
+  renderCleaningHistoryClaimBlock,
   renderCleaningHistoryClaims,
   renderCrosswalk,
   scanExplicitReferences
@@ -60,13 +63,54 @@ function cleaningHistoryModel() {
   };
 }
 
+function cleaningHistoryProductionAuthoritySource(model = cleaningHistoryModel()) {
+  const entries = model.capabilities.map(
+    (capability, index) =>
+      `  ${capability.id}: Object.freeze({ status: "${capability.status}", scope: "${capability.scope}" })${
+        index === model.capabilities.length - 1 ? "" : ","
+      }`
+  );
+  return [
+    "export type Unrelated = string;",
+    "// cleaning-history-capability-authority:start",
+    "export const CLEANING_HISTORY_CAPABILITY_AUTHORITY = Object.freeze({",
+    ...entries,
+    "});",
+    "// cleaning-history-capability-authority:end"
+  ].join("\n");
+}
+
 function cleaningHistoryDocuments(model) {
   const claims = renderCleaningHistoryClaims(model);
   return {
-    "README.md": `# README\n\n## Transformations\n\n${claims.readme.join(" ")}\n\n## Notebook workflows\n`,
-    "docs/product-roadmap.md": `# Roadmap\n\n### P1: fidelity and daily use\n\n${claims.roadmap.join(
-      " "
-    )}\n\n### P2: next\n\n## Audit disposition\n\n${claims.roadmap.join(" ")}\n\n## Evidence\n`
+    "README.md": [
+      "# README",
+      "",
+      "## Transformations",
+      "",
+      renderCleaningHistoryClaimBlock("readme-transformations", claims.readme),
+      "",
+      "## Notebook workflows",
+      "",
+      renderCleaningHistoryClaimBlock("readme-native-r", claims.readme),
+      "",
+      "## Export"
+    ].join("\n"),
+    "docs/product-roadmap.md": [
+      "# Roadmap",
+      "",
+      "### P1: fidelity and daily use",
+      "",
+      renderCleaningHistoryClaimBlock("roadmap-p1", claims.roadmap),
+      "",
+      "### P2: next",
+      "",
+      "## Audit disposition",
+      "",
+      renderCleaningHistoryClaimBlock("roadmap-audit", claims.roadmap),
+      "",
+      "## Evidence"
+    ].join("\n")
   };
 }
 
@@ -99,6 +143,8 @@ test("the repository archive and crosswalk match their authoritative inputs", as
 
 test("the cleaning-history registry drives every current claim surface", async () => {
   const model = parseCleaningHistoryCapabilityModel(JSON.stringify(cleaningHistoryModel()));
+  const productionAuthority = parseCleaningHistoryProductionAuthority(cleaningHistoryProductionAuthoritySource());
+  assert.deepEqual(productionAuthority, model);
   assert.deepEqual(
     model.capabilities.map(({ id }) => id),
     ["inspect", "edit", "delete", "undo", "reorder"]
@@ -135,9 +181,10 @@ test("the cleaning-history validator reproduces the audited latest-step contradi
     () =>
       assertCleaningHistoryClaimsCurrent({
         modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
         documents
       }),
-    /README\.md ## Transformations must contain the generated claim exactly once/u
+    /readme-transformations claim block must exclusively match/u
   );
 });
 
@@ -153,10 +200,95 @@ test("each cleaning-history capability is mutation-sensitive", () => {
       () =>
         assertCleaningHistoryClaimsCurrent({
           modelSource: JSON.stringify(mutant),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
           documents
         }),
-      /must contain the generated claim exactly once/u,
+      /must match the production authority/u,
       `${id} mutation must invalidate the checked claims`
+    );
+  }
+});
+
+test("self-consistent semantic claim mutants still fail against production behavior", () => {
+  const productionAuthoritySource = cleaningHistoryProductionAuthoritySource();
+  const mutants = [
+    ["edit", { status: "implemented", scope: "latest_committed_step" }],
+    ["delete", { status: "implemented", scope: "latest_committed_step" }],
+    ["undo", { status: "implemented", scope: "any_committed_step" }],
+    ["reorder", { status: "implemented", scope: "committed_steps" }]
+  ];
+
+  for (const [id, replacement] of mutants) {
+    const mutant = cleaningHistoryModel();
+    Object.assign(
+      mutant.capabilities.find((capability) => capability.id === id),
+      replacement
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(mutant),
+          productionAuthoritySource,
+          documents: cleaningHistoryDocuments(mutant)
+        }),
+      /must match the production authority/u,
+      `${id} model and prose must not override the product authority together`
+    );
+  }
+});
+
+test("every cleaning-history claim block rejects additive contradictory prose", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  const surfaces = [
+    ["README.md", "readme-transformations"],
+    ["README.md", "readme-native-r"],
+    ["docs/product-roadmap.md", "roadmap-p1"],
+    ["docs/product-roadmap.md", "roadmap-audit"]
+  ];
+
+  for (const [path, marker] of surfaces) {
+    const mutantDocuments = structuredClone(documents);
+    mutantDocuments[path] = mutantDocuments[path].replace(
+      `<!-- cleaning-history-capabilities:${marker}:end -->`,
+      `Only the latest committed step can be edited.\n<!-- cleaning-history-capabilities:${marker}:end -->`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: mutantDocuments
+        }),
+      new RegExp(`${marker} claim block must exclusively match`, "u")
+    );
+  }
+});
+
+test("cleaning-history claim surfaces reject contradictory prose outside their exclusive blocks", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  const surfaces = [
+    ["README.md", "readme-transformations"],
+    ["README.md", "readme-native-r"],
+    ["docs/product-roadmap.md", "roadmap-p1"],
+    ["docs/product-roadmap.md", "roadmap-audit"]
+  ];
+
+  for (const [path, marker] of surfaces) {
+    const mutantDocuments = structuredClone(documents);
+    mutantDocuments[path] = mutantDocuments[path].replace(
+      `<!-- cleaning-history-capabilities:${marker}:end -->`,
+      `<!-- cleaning-history-capabilities:${marker}:end -->\nOnly the latest committed step can be edited.`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: mutantDocuments
+        }),
+      /capability language outside its exclusive claim block/u
     );
   }
 });
@@ -173,6 +305,51 @@ test("the cleaning-history model is bounded and keeps capability identities dist
     () => parseCleaningHistoryCapabilityModel(JSON.stringify(duplicate)),
     /capability 2 must be edit, found inspect/u
   );
+
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel('{"schemaVersion":1,"schemaVersion":1,"capabilities":[]}'),
+    /duplicate JSON key "schemaVersion"/u
+  );
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel('{"schemaVersion":1,"capabilities":[],"nested":{"a":1,"a":2}}'),
+    /duplicate JSON key "a"/u
+  );
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel('{"schemaVersion":1,"capabilities":[],"nested":{"a":1,"\\u0061":2}}'),
+    /duplicate JSON key "a"/u
+  );
+});
+
+test("the cleaning-history JSON scanner enforces entry, depth, and text budgets before native parsing", () => {
+  const tooManyEntries = `{${Array.from({ length: 65 }, (_, index) => `"k${index}":null`).join(",")}}`;
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel(tooManyEntries),
+    /object with more than 64 entries|more than 128 total entries/u
+  );
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel(`${"[".repeat(9)}null${"]".repeat(9)}`),
+    /maximum JSON depth of 8/u
+  );
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel(`{"value":"${"x".repeat(513)}"}`),
+    /string over 512 UTF-8 bytes/u
+  );
+});
+
+test("bounded cleaning-history reads reject hostile size before decoding the complete file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-bound-"));
+  const path = join(directory, "oversized.json");
+  const handle = await open(path, "w");
+  try {
+    await handle.truncate(8 * 1024 + 1);
+  } finally {
+    await handle.close();
+  }
+  try {
+    await assert.rejects(readBoundedUtf8File(path, 8 * 1024, "hostile model"), /exceeds the 8192-byte/u);
+  } finally {
+    await rm(directory, { recursive: true });
+  }
 });
 
 test("the generated-file check rejects stale archive and evidence bytes", () => {

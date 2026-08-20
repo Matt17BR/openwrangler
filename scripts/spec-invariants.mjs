@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_INVARIANT_COUNT = 58;
@@ -9,11 +10,53 @@ const ARCHIVE_PATH = "docs/contracts/invariants-v1.md";
 const EVIDENCE_PATH = "docs/evidence/invariant-crosswalk.json";
 const SCANNED_DOCUMENTS = ["docs/architecture.md", "docs/feature-parity.md", "docs/releasing.md", "docs/testing.md"];
 const CLEANING_HISTORY_MODEL_PATH = "fixtures/cleaning-history-capabilities.json";
+const CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH = "src/shared/cleaningHistoryCapabilities.ts";
 const CLEANING_HISTORY_DOCUMENTS = ["README.md", "docs/product-roadmap.md"];
 const CLEANING_HISTORY_CAPABILITY_IDS = ["inspect", "edit", "delete", "undo", "reorder"];
 const CLEANING_HISTORY_MODEL_MAX_BYTES = 8 * 1024;
+const CLEANING_HISTORY_PRODUCTION_AUTHORITY_MAX_BYTES = 32 * 1024;
 const CLEANING_HISTORY_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const CLEANING_HISTORY_SECTION_MAX_BYTES = 128 * 1024;
+const CLEANING_HISTORY_JSON_MAX_DEPTH = 8;
+const CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES = 64;
+const CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES = 128;
+const CLEANING_HISTORY_JSON_MAX_STRING_SOURCE_UNITS = 1024;
+const CLEANING_HISTORY_JSON_MAX_STRING_BYTES = 512;
+const CLEANING_HISTORY_AUTHORITY_START = "// cleaning-history-capability-authority:start";
+const CLEANING_HISTORY_AUTHORITY_END = "// cleaning-history-capability-authority:end";
+const cleaningHistoryClaimLanguagePatterns = [
+  /\b(?:Any|Only the (?:latest|most recent)) (?:applied|committed) step can be (?:inspected|edited|deleted)/iu,
+  /\bCleaning Undo\b/u,
+  /\bReordering committed steps\b/u,
+  /\bCommitted steps can be reordered\b/u
+];
+
+const cleaningHistoryClaimSurfaces = [
+  {
+    path: "README.md",
+    heading: "## Transformations",
+    marker: "readme-transformations",
+    claimKind: "readme"
+  },
+  {
+    path: "README.md",
+    heading: "## Notebook workflows",
+    marker: "readme-native-r",
+    claimKind: "readme"
+  },
+  {
+    path: "docs/product-roadmap.md",
+    heading: "### P1: fidelity and daily use",
+    marker: "roadmap-p1",
+    claimKind: "roadmap"
+  },
+  {
+    path: "docs/product-roadmap.md",
+    heading: "## Audit disposition",
+    marker: "roadmap-audit",
+    claimKind: "roadmap"
+  }
+];
 
 const cleaningHistoryScopes = new Map([
   ["inspect", new Set(["any_committed_step", "latest_committed_step"])],
@@ -49,6 +92,196 @@ function assertBoundedUtf8(value, maximumBytes, label) {
   }
 }
 
+export async function readBoundedUtf8File(path, maximumBytes, label = path) {
+  const handle = await open(path, "r");
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) {
+      throw new Error(`${label} must be a regular file.`);
+    }
+    if (metadata.size > maximumBytes) {
+      throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
+    }
+
+    const chunks = [];
+    let totalBytes = 0;
+    while (totalBytes <= maximumBytes) {
+      const remaining = maximumBytes + 1 - totalBytes;
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      chunks.push(buffer.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
+    if (totalBytes > maximumBytes) {
+      throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
+    }
+
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, totalBytes));
+    } catch {
+      throw new Error(`${label} must be valid UTF-8 text.`);
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+function inspectBoundedJson(source, label) {
+  let offset = 0;
+  let totalEntries = 0;
+
+  const fail = (message) => {
+    throw new Error(`${label} ${message} at byte ${Buffer.byteLength(source.slice(0, offset), "utf8")}.`);
+  };
+  const skipWhitespace = () => {
+    while (/\s/u.test(source[offset] ?? "")) offset += 1;
+  };
+
+  const parseString = () => {
+    if (source[offset] !== '"') fail("contains an invalid JSON string");
+    const start = offset;
+    offset += 1;
+    let sourceUnits = 0;
+    while (offset < source.length) {
+      const character = source[offset];
+      if (character === '"') {
+        offset += 1;
+        const token = source.slice(start, offset);
+        let value;
+        try {
+          value = JSON.parse(token);
+        } catch {
+          fail("contains an invalid JSON string");
+        }
+        if (Buffer.byteLength(value, "utf8") > CLEANING_HISTORY_JSON_MAX_STRING_BYTES) {
+          fail(`contains a string over ${CLEANING_HISTORY_JSON_MAX_STRING_BYTES} UTF-8 bytes`);
+        }
+        return value;
+      }
+      if (character === "\\") {
+        offset += 1;
+        const escape = source[offset];
+        if (escape === "u") {
+          if (!/^[0-9a-fA-F]{4}$/u.test(source.slice(offset + 1, offset + 5))) {
+            fail("contains an invalid Unicode escape");
+          }
+          offset += 5;
+          sourceUnits += 6;
+        } else if ('"\\/bfnrt'.includes(escape ?? "")) {
+          offset += 1;
+          sourceUnits += 2;
+        } else {
+          fail("contains an invalid escape");
+        }
+      } else {
+        if (character.charCodeAt(0) < 0x20) fail("contains an unescaped control character");
+        offset += 1;
+        sourceUnits += 1;
+      }
+      if (sourceUnits > CLEANING_HISTORY_JSON_MAX_STRING_SOURCE_UNITS) {
+        fail(`contains a string token over ${CLEANING_HISTORY_JSON_MAX_STRING_SOURCE_UNITS} source units`);
+      }
+    }
+    fail("contains an unterminated JSON string");
+  };
+
+  const recordEntry = () => {
+    totalEntries += 1;
+    if (totalEntries > CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES) {
+      fail(`contains more than ${CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES} total entries`);
+    }
+  };
+
+  const parseValue = (depth) => {
+    if (depth > CLEANING_HISTORY_JSON_MAX_DEPTH) {
+      fail(`exceeds the maximum JSON depth of ${CLEANING_HISTORY_JSON_MAX_DEPTH}`);
+    }
+    skipWhitespace();
+    const character = source[offset];
+    if (character === "{") {
+      offset += 1;
+      skipWhitespace();
+      const keys = new Set();
+      let entries = 0;
+      if (source[offset] === "}") {
+        offset += 1;
+        return;
+      }
+      while (offset < source.length) {
+        const key = parseString();
+        if (keys.has(key)) fail(`contains duplicate JSON key ${JSON.stringify(key)}`);
+        keys.add(key);
+        entries += 1;
+        recordEntry();
+        if (entries > CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES) {
+          fail(`contains an object with more than ${CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES} entries`);
+        }
+        skipWhitespace();
+        if (source[offset] !== ":") fail("contains an object key without a value");
+        offset += 1;
+        parseValue(depth + 1);
+        skipWhitespace();
+        if (source[offset] === "}") {
+          offset += 1;
+          return;
+        }
+        if (source[offset] !== ",") fail("contains an invalid object separator");
+        offset += 1;
+        skipWhitespace();
+      }
+      fail("contains an unterminated object");
+    }
+    if (character === "[") {
+      offset += 1;
+      skipWhitespace();
+      let entries = 0;
+      if (source[offset] === "]") {
+        offset += 1;
+        return;
+      }
+      while (offset < source.length) {
+        entries += 1;
+        recordEntry();
+        if (entries > CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES) {
+          fail(`contains an array with more than ${CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES} entries`);
+        }
+        parseValue(depth + 1);
+        skipWhitespace();
+        if (source[offset] === "]") {
+          offset += 1;
+          return;
+        }
+        if (source[offset] !== ",") fail("contains an invalid array separator");
+        offset += 1;
+      }
+      fail("contains an unterminated array");
+    }
+    if (character === '"') {
+      parseString();
+      return;
+    }
+    for (const literal of ["true", "false", "null"]) {
+      if (source.startsWith(literal, offset)) {
+        offset += literal.length;
+        return;
+      }
+    }
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(source.slice(offset));
+    if (number !== null) {
+      if (number[0].length > 64) fail("contains an overlong number token");
+      offset += number[0].length;
+      return;
+    }
+    fail("contains an invalid JSON value");
+  };
+
+  skipWhitespace();
+  parseValue(1);
+  skipWhitespace();
+  if (offset !== source.length) fail("contains trailing JSON content");
+}
+
 function assertPlainObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object.`);
@@ -65,6 +298,7 @@ function assertExactKeys(value, expectedKeys, label) {
 
 export function parseCleaningHistoryCapabilityModel(source) {
   assertBoundedUtf8(source, CLEANING_HISTORY_MODEL_MAX_BYTES, CLEANING_HISTORY_MODEL_PATH);
+  inspectBoundedJson(source, CLEANING_HISTORY_MODEL_PATH);
 
   let model;
   try {
@@ -101,6 +335,71 @@ export function parseCleaningHistoryCapabilityModel(source) {
   });
 
   return model;
+}
+
+export function parseCleaningHistoryProductionAuthority(source) {
+  assertBoundedUtf8(
+    source,
+    CLEANING_HISTORY_PRODUCTION_AUTHORITY_MAX_BYTES,
+    CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH
+  );
+  const startCount = countOccurrences(source, CLEANING_HISTORY_AUTHORITY_START);
+  const endCount = countOccurrences(source, CLEANING_HISTORY_AUTHORITY_END);
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error(`${CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH} must contain one exact capability authority block.`);
+  }
+
+  const start = source.indexOf(CLEANING_HISTORY_AUTHORITY_START) + CLEANING_HISTORY_AUTHORITY_START.length;
+  const end = source.indexOf(CLEANING_HISTORY_AUTHORITY_END, start);
+  const lines = source
+    .slice(start, end)
+    .trim()
+    .split("\n")
+    .map((line) => line.trimEnd());
+  if (lines[0] !== "export const CLEANING_HISTORY_CAPABILITY_AUTHORITY = Object.freeze({" || lines.at(-1) !== "});") {
+    throw new Error(`${CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH} capability authority block has invalid framing.`);
+  }
+
+  const entryPattern =
+    /^ {2}(?<id>inspect|edit|delete|undo|reorder): Object\.freeze\(\{ status: "(?<status>implemented|not_committed)", scope: "(?<scope>any_committed_step|latest_committed_step|most_recent_committed_step|committed_steps)" \}\)(?<comma>,?)$/u;
+  const capabilities = lines.slice(1, -1).map((line, index, entries) => {
+    const match = entryPattern.exec(line);
+    if (match === null) {
+      throw new Error(`${CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH} authority entry ${index + 1} is invalid.`);
+    }
+    const expectedId = CLEANING_HISTORY_CAPABILITY_IDS[index];
+    if (
+      match.groups.id !== expectedId ||
+      (index < entries.length - 1 ? match.groups.comma !== "," : match.groups.comma)
+    ) {
+      throw new Error(
+        `${CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH} authority entry ${index + 1} must be ${expectedId}.`
+      );
+    }
+    return { id: match.groups.id, status: match.groups.status, scope: match.groups.scope };
+  });
+  if (capabilities.length !== CLEANING_HISTORY_CAPABILITY_IDS.length) {
+    throw new Error(
+      `${CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH} must define exactly ${CLEANING_HISTORY_CAPABILITY_IDS.length} capabilities.`
+    );
+  }
+  return { schemaVersion: 1, capabilities };
+}
+
+function assertCleaningHistoryModelMatchesProduction(model, productionAuthority) {
+  model.capabilities.forEach((capability, index) => {
+    const expected = productionAuthority.capabilities[index];
+    if (
+      capability.id !== expected?.id ||
+      capability.status !== expected.status ||
+      capability.scope !== expected.scope
+    ) {
+      throw new Error(
+        `${CLEANING_HISTORY_MODEL_PATH} capability ${capability.id} must match the production authority ` +
+          `${expected?.status ?? "missing"}/${expected?.scope ?? "missing"}.`
+      );
+    }
+  });
 }
 
 function formatPassiveList(values) {
@@ -200,42 +499,77 @@ function countOccurrences(source, value) {
   return count;
 }
 
-function assertSectionClaims(document, path, heading, claims) {
-  const section = extractMarkdownSection(document, path, heading).replace(/\s+/gu, " ").trim();
-  for (const claim of claims) {
-    const normalizedClaim = claim.replace(/\s+/gu, " ").trim();
-    const count = countOccurrences(section, normalizedClaim);
-    if (count !== 1) {
-      throw new Error(`${path} ${heading} must contain the generated claim exactly once: ${claim}`);
-    }
+export function renderCleaningHistoryClaimBlock(marker, claims) {
+  return [
+    `<!-- cleaning-history-capabilities:${marker}:start -->`,
+    claims.join(" "),
+    `<!-- cleaning-history-capabilities:${marker}:end -->`
+  ].join("\n");
+}
+
+function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
+  const section = extractMarkdownSection(document, path, heading);
+  const startMarker = `<!-- cleaning-history-capabilities:${marker}:start -->`;
+  const endMarker = `<!-- cleaning-history-capabilities:${marker}:end -->`;
+  if (countOccurrences(section, startMarker) !== 1 || countOccurrences(section, endMarker) !== 1) {
+    throw new Error(`${path} ${heading} must contain one exclusive ${marker} claim block.`);
+  }
+  const start = section.indexOf(startMarker) + startMarker.length;
+  const end = section.indexOf(endMarker, start);
+  if (end < start) {
+    throw new Error(`${path} ${heading} has an invalid ${marker} claim block.`);
+  }
+  const actual = section.slice(start, end).replace(/\s+/gu, " ").trim();
+  const expected = claims.join(" ").replace(/\s+/gu, " ").trim();
+  assertBoundedUtf8(actual, CLEANING_HISTORY_SECTION_MAX_BYTES, `${path} ${marker} claim block`);
+  if (actual !== expected) {
+    throw new Error(
+      `${path} ${heading} ${marker} claim block must exclusively match the production capability claims.`
+    );
+  }
+  const outside = `${section.slice(0, section.indexOf(startMarker))}${section.slice(end + endMarker.length)}`;
+  if (cleaningHistoryClaimLanguagePatterns.some((pattern) => pattern.test(outside))) {
+    throw new Error(
+      `${path} ${heading} contains cleaning-history capability language outside its exclusive claim block.`
+    );
   }
 }
 
-export function assertCleaningHistoryClaimsCurrent({ modelSource, documents }) {
+export function assertCleaningHistoryClaimsCurrent({ modelSource, productionAuthoritySource, documents }) {
   const model = parseCleaningHistoryCapabilityModel(modelSource);
+  const productionAuthority = parseCleaningHistoryProductionAuthority(productionAuthoritySource);
+  assertCleaningHistoryModelMatchesProduction(model, productionAuthority);
   const claims = renderCleaningHistoryClaims(model);
-  assertSectionClaims(documents["README.md"], "README.md", "## Transformations", claims.readme);
-  assertSectionClaims(
-    documents["docs/product-roadmap.md"],
-    "docs/product-roadmap.md",
-    "### P1: fidelity and daily use",
-    claims.roadmap
-  );
-  assertSectionClaims(
-    documents["docs/product-roadmap.md"],
-    "docs/product-roadmap.md",
-    "## Audit disposition",
-    claims.roadmap
-  );
+  for (const surface of cleaningHistoryClaimSurfaces) {
+    assertExclusiveClaimBlock(
+      documents[surface.path],
+      surface.path,
+      surface.heading,
+      surface.marker,
+      claims[surface.claimKind]
+    );
+  }
 }
 
 async function readCleaningHistoryInputs() {
-  const [modelSource, ...contents] = await Promise.all([
-    readFile(resolve(root, CLEANING_HISTORY_MODEL_PATH), "utf8"),
-    ...CLEANING_HISTORY_DOCUMENTS.map((path) => readFile(resolve(root, path), "utf8"))
+  const [modelSource, productionAuthoritySource, ...contents] = await Promise.all([
+    readBoundedUtf8File(
+      resolve(root, CLEANING_HISTORY_MODEL_PATH),
+      CLEANING_HISTORY_MODEL_MAX_BYTES,
+      CLEANING_HISTORY_MODEL_PATH
+    ),
+    readBoundedUtf8File(
+      resolve(root, CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH),
+      CLEANING_HISTORY_PRODUCTION_AUTHORITY_MAX_BYTES,
+      CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH
+    ),
+    ...CLEANING_HISTORY_DOCUMENTS.map((path) =>
+      readBoundedUtf8File(resolve(root, path), CLEANING_HISTORY_DOCUMENT_MAX_BYTES, path)
+    )
   ]);
   return {
     modelSource,
+    productionAuthoritySource,
     documents: Object.fromEntries(CLEANING_HISTORY_DOCUMENTS.map((path, index) => [path, contents[index]]))
   };
 }
