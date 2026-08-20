@@ -349,6 +349,78 @@ test("cleaning-history structural claims reject synonym and word-order contradic
   }
 });
 
+test("cleaning-history claims use rendered inline Markdown and decoded entity text", () => {
+  const model = cleaningHistoryModel();
+  const examples = [
+    "Only the `latest` committed step can be **edited**.",
+    "Earlier *applied steps* cannot be mod&#x69;fied or removed.",
+    "Undo can remove any&nbsp;committed step.",
+    "Committed steps may be re&#x2d;arranged."
+  ];
+  for (const example of examples) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+});
+
+test("cleaning-history claims accept truthful prose about unrelated editable and ordered surfaces", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  documents["README.md"] = documents["README.md"].replace(
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    [
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      "Only the latest generated report is editable before publication.",
+      "Undo keyboard shortcuts are unavailable while an input is focused.",
+      "The renderer can reorder table rows in an example.",
+      "The previous workflow can be inspected in logs.",
+      "Use `Committed steps may be reordered` only as a rejected-input example."
+    ].join("\n")
+  );
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents
+    })
+  );
+});
+
+test("a code example cannot hide a separate rendered inline contradiction", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  documents["README.md"] = documents["README.md"].replace(
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    [
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      "Use `Committed steps may be reordered` only as a rejected-input example.",
+      "Only the `latest` committed step can be edited."
+    ].join("\n")
+  );
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents
+      }),
+    /contradictory cleaning-history capability claim/u
+  );
+});
+
 test("cleaning-history structural claims preserve valid code examples but reject malformed fences", () => {
   const model = cleaningHistoryModel();
   const valid = cleaningHistoryDocuments(model);
@@ -407,6 +479,35 @@ test("cleaning-history structural claims reject duplicate visible sections", () 
       }),
     /exactly one ## Transformations heading/u
   );
+});
+
+test("cleaning-history section ownership recognizes Setext and entity-encoded headings", () => {
+  const model = cleaningHistoryModel();
+  for (const replacement of ["Trans*formations*\n-----------------", "## Trans&#102;ormations"]) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace("## Transformations", replacement);
+    assert.doesNotThrow(() =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents
+      })
+    );
+  }
+
+  for (const duplicate of ["Transformations\n---------------", "## Trans&#102;ormations"]) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] += `\n${duplicate}\n\nA second visible section.\n`;
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /exactly one ## Transformations heading/u
+    );
+  }
 });
 
 test("cleaning-history Markdown headings and claim markers inside fences are not structural", () => {

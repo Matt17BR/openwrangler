@@ -186,6 +186,60 @@ describe("App applied-step inspection", () => {
     expect(screen.queryByRole("button", { name: "Preview changes" })).toBeNull();
   });
 
+  it("rejects a delayed native Undo after the public session is replaced", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+
+    const replacement = { ...metadata, sessionId: "replacement-session" };
+    dispatch({ kind: "sessionOpened", metadata: replacement, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+    postMessage.mockClear();
+
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
+    expect(runtimeRequests("undoStep")).toHaveLength(0);
+
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: replacement.sessionId,
+      expectedRevision: replacement.revision
+    });
+    expect(runtimeRequests("undoStep")).toHaveLength(1);
+  });
+
+  it("rejects a queued native Undo after the public revision advances", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+
+    const advanced = { ...metadata, revision: metadata.revision + 1 };
+    dispatch({ kind: "sessionOpened", metadata: advanced, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+    postMessage.mockClear();
+
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
+    expect(runtimeRequests("undoStep")).toHaveLength(0);
+
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: advanced.sessionId,
+      expectedRevision: advanced.revision
+    });
+    expect(runtimeRequests("undoStep")).toHaveLength(1);
+  });
+
   it("governs inspected-step Edit and Delete visibility independently", async () => {
     capabilityOverrides.set("delete", false);
     render(<App />);
