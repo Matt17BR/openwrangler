@@ -398,6 +398,46 @@ export function createPackagedFileLaunchSurfaces(
       () => JSON.stringify(activeEditorTabDiagnostic())
     );
     const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
+    recordAcceptanceProgress("verify:file-launch:title-action:histogram-modes");
+    const insightsToggle = gridTarget.frame.getByRole("button", { name: "Column profiles and filters" });
+    if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
+    const insights = gridTarget.frame.getByRole("complementary", { name: "Column profiles and filters" });
+    await insights.waitFor({ state: "visible", timeout: 10_000 });
+    const histogramControl = insights.locator(".numericHistogramHitTarget");
+    const histogramStatus = insights.locator(".summaryDistributionChart .miniChartCaption");
+    await histogramControl.waitFor({ state: "visible", timeout: 30_000 });
+    assert.equal(await histogramControl.count(), 1, "The full packaged journey must expose one histogram control.");
+    await histogramControl.focus();
+    await histogramControl.press("Home");
+    const countLabel = await histogramControl.getAttribute("aria-label");
+    const countStatus = (await histogramStatus.innerText()).trim();
+    assert.match(countStatus, /: [\d,.]+ rows?$/u);
+    assert.match(countLabel ?? "", /: [\d,.]+ rows? \([\d.,]+%\);/u);
+    assert.ok(countLabel?.startsWith(`${countStatus} (`));
+    assert.equal(await histogramStatus.getAttribute("title"), countLabel);
+    assert.equal(await histogramStatus.getAttribute("role"), null);
+    assert.equal(await histogramStatus.getAttribute("aria-live"), null);
+
+    const counts = insights.getByRole("button", { name: "Counts", exact: true });
+    const percent = insights.getByRole("button", { name: "%", exact: true });
+    assert.equal(await counts.getAttribute("aria-pressed"), "true");
+    assert.equal(await percent.getAttribute("aria-pressed"), "false");
+    await percent.click();
+    assert.equal(await counts.getAttribute("aria-pressed"), "false");
+    assert.equal(await percent.getAttribute("aria-pressed"), "true");
+    await histogramControl.focus();
+    await histogramControl.press("Home");
+    const percentLabel = await histogramControl.getAttribute("aria-label");
+    const percentStatus = (await histogramStatus.innerText()).trim();
+    assert.match(percentStatus, /: [\d.,]+%$/u);
+    assert.doesNotMatch(percentStatus, /rows?/u);
+    assert.match(percentLabel ?? "", /: [\d.,]+% \([\d,.]+ rows?\);/u);
+    assert.ok(percentLabel?.startsWith(`${percentStatus} (`));
+    assert.equal(await histogramStatus.getAttribute("title"), percentLabel);
+    await counts.click();
+    assert.equal(await counts.getAttribute("aria-pressed"), "true");
+    await insights.getByRole("button", { name: "Close panel" }).click();
+    await insights.waitFor({ state: "hidden", timeout: 10_000 });
     await exercisePrimarySortJourney(
       testing,
       page,
