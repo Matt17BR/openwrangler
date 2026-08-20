@@ -35,6 +35,7 @@ const nativeMocks = vi.hoisted(() => ({
   showSaveDialog: vi.fn(async () => undefined as unknown),
   showQuickPick: vi.fn<(items: readonly unknown[], options?: unknown) => Promise<unknown>>(async () => undefined),
   showInputBox: vi.fn<(options?: unknown) => Promise<string | undefined>>(async () => undefined),
+  clipboardWriteText: vi.fn(async () => undefined),
   withProgress: vi.fn(async (_options: unknown, task: () => Promise<unknown>) => task()),
   workspaceFolders: [] as Array<{ uri: unknown }>,
   workspaceTrusted: true,
@@ -150,7 +151,7 @@ vi.mock("vscode", () => {
       fs: {}
     },
     env: {
-      clipboard: { writeText: vi.fn(async () => undefined) },
+      clipboard: { writeText: nativeMocks.clipboardWriteText },
       openExternal: vi.fn(async () => true)
     }
   };
@@ -199,6 +200,7 @@ function resetNativeViewMocks(): void {
   nativeMocks.showQuickPick.mockResolvedValue(undefined);
   nativeMocks.showInputBox.mockReset();
   nativeMocks.showInputBox.mockResolvedValue(undefined);
+  nativeMocks.clipboardWriteText.mockClear();
   nativeMocks.withProgress.mockClear();
   nativeMocks.workspaceFolders.length = 0;
   nativeMocks.workspaceTrusted = true;
@@ -242,6 +244,7 @@ function register(
     | "panel-unavailable"
     | "unsupported"
     | undefined;
+  setCodeForExport(code: string): void;
 } {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
   const sessions = new Map<string, ActiveSessionSnapshot>([[snapshot.sessionId, snapshot]]);
@@ -285,7 +288,8 @@ function register(
     exportData,
     clearActiveStepInspection,
     notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
-    viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus()
+    viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus(),
+    setCodeForExport: (code) => nativeViews.setCodeForExport(code)
   };
 }
 

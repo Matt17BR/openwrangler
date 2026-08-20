@@ -1,10 +1,11 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, type Extension, type Text } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
-import { isCodePreviewHostMessage } from "../shared/codePreviewMessages";
+import { CodePreviewEditCoalescer, isCodePreviewHostMessage } from "../shared/codePreviewMessages";
+import { CODE_PREVIEW_INVALID_PLACEHOLDER, collectCodePreviewText } from "../shared/codePreviewLimits";
 import { codeDialectLanguageLabel, type CodeDialect, type RuntimeIdentity } from "../shared/runtimeIdentity";
 
 interface VsCodeApi {
@@ -19,6 +20,7 @@ if (!host) throw new Error("Code Preview root was not found.");
 publishRuntimeIdentity(host, null);
 
 let applyingHostUpdate = false;
+let scheduleCodePreviewEdit = (): void => undefined;
 const editability = new Compartment();
 const generatedCodeLanguage = new Compartment();
 const pythonHighlightStyle = HighlightStyle.define([
@@ -48,7 +50,7 @@ const editor = new EditorView({
       editability.of(codePreviewEditability(false, undefined)),
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !applyingHostUpdate) {
-          vscode.postMessage({ kind: "codeChanged", code: update.state.doc.toString() });
+          scheduleCodePreviewEdit();
         }
       }),
       EditorView.theme({
@@ -85,15 +87,25 @@ const editor = new EditorView({
     ]
   })
 });
+const editCoalescer = new CodePreviewEditCoalescer(
+  () => collectCodePreviewText(codePreviewDocumentChunks(editor.state.doc)),
+  (message) => vscode.postMessage(message),
+  {
+    schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
+    cancel: (handle) => window.clearTimeout(handle as number)
+  }
+);
+scheduleCodePreviewEdit = () => editCoalescer.schedule();
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (event.origin !== window.location.origin) return;
   const message = event.data;
   if (!isCodePreviewHostMessage(message)) return;
+  editCoalescer.acceptGeneration(message.generation);
+  const code = message.kind === "codePreview" ? message.code : CODE_PREVIEW_INVALID_PLACEHOLDER;
+  const current = collectCodePreviewText(codePreviewDocumentChunks(editor.state.doc));
   const changes =
-    editor.state.doc.toString() === message.code
-      ? undefined
-      : { from: 0, to: editor.state.doc.length, insert: message.code };
+    current.valid && current.code === code ? undefined : { from: 0, to: editor.state.doc.length, insert: code };
   applyingHostUpdate = true;
   const codeDialect = message.runtimeIdentity?.codeDialect ?? null;
   const languageLabel = codeDialectLanguageLabel(codeDialect);
@@ -112,6 +124,12 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 });
 
 vscode.postMessage({ kind: "ready" });
+window.addEventListener("pagehide", () => editCoalescer.dispose(), { once: true });
+
+function* codePreviewDocumentChunks(document: Text): Iterable<string> {
+  const iterator = document.iter();
+  while (!iterator.next().done) yield iterator.value;
+}
 
 function codePreviewLanguage(codeDialect: CodeDialect | null): Extension {
   switch (codeDialect) {

@@ -13,6 +13,12 @@ import {
 import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
+import {
+  CODE_PREVIEW_INVALID_EXPORT_MESSAGE,
+  CODE_PREVIEW_INVALID_PLACEHOLDER,
+  type CodePreviewInvalidReason,
+  validateCodePreviewText
+} from "../shared/codePreviewLimits";
 import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../shared/runtimeIdentity";
 import { cleaningUnavailableReason } from "../shared/sessionMode";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
@@ -244,33 +250,25 @@ function isOwnRecord(value: unknown): value is Record<string, unknown> {
 
 class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
-  private snapshot: ActiveSessionSnapshot | undefined;
   private readonly subscription: vscode.Disposable;
+  private hasSnapshot = false;
+  private sessionId: string | undefined;
+  private runtimeIdentity: ReturnType<typeof runtimeIdentityForSessionMetadata> | null = null;
   private generatedCode = "";
   private inspectionStepId: string | undefined;
   private displayedCode = "# Open a dataframe to preview generated code.";
+  private sourceInvalidReason: CodePreviewInvalidReason | undefined;
+  private bufferInvalidReason: CodePreviewInvalidReason | undefined;
+  private generation = 0;
+  private acceptedSequence = 0;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     coordinator: SessionCoordinator
   ) {
-    this.snapshot = coordinator.activeSession();
-    this.generatedCode = this.snapshot?.code ?? "";
-    this.inspectionStepId = this.snapshot?.stepInspection?.stepId;
-    this.displayedCode = this.generatedCode || placeholderCode(this.snapshot);
+    this.applySnapshot(coordinator.activeSession());
     this.subscription = coordinator.onDidChangeActiveSession((snapshot) => {
-      const nextGenerated = snapshot?.code ?? "";
-      const nextInspectionStepId = snapshot?.stepInspection?.stepId;
-      if (
-        snapshot?.sessionId !== this.snapshot?.sessionId ||
-        nextGenerated !== this.generatedCode ||
-        nextInspectionStepId !== this.inspectionStepId
-      ) {
-        this.generatedCode = nextGenerated;
-        this.displayedCode = nextGenerated || placeholderCode(snapshot);
-      }
-      this.inspectionStepId = nextInspectionStepId;
-      this.snapshot = snapshot;
+      this.applySnapshot(snapshot);
       this.render();
     });
   }
@@ -284,8 +282,22 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     view.webview.html = this.html(view.webview);
     view.webview.onDidReceiveMessage((message: unknown) => {
       if (!isCodePreviewWebviewMessage(message)) return;
-      if (message.kind === "ready") this.render();
-      if (message.kind === "codeChanged" && this.generatedCode) this.displayedCode = message.code;
+      if (message.kind === "ready") {
+        this.render();
+        return;
+      }
+      if (!this.generatedCode || message.generation !== this.generation || message.sequence <= this.acceptedSequence) {
+        return;
+      }
+      this.acceptedSequence = message.sequence;
+      if (message.kind === "codeChanged") {
+        this.bufferInvalidReason = undefined;
+        this.displayedCode = message.code;
+      } else {
+        this.bufferInvalidReason = message.reason;
+        this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
+      }
+      this.render();
     });
   }
 
@@ -294,26 +306,90 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   codeForExport(): string | undefined {
-    return this.snapshot && this.generatedCode ? this.displayedCode : undefined;
+    if (this.bufferInvalidReason) {
+      void vscode.window.showErrorMessage(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+      return undefined;
+    }
+    return this.hasSnapshot && this.generatedCode ? this.displayedCode : undefined;
   }
 
   setCodeForExportForTests(code: string): void {
-    this.generatedCode = code;
-    this.displayedCode = code;
+    const validated = validateCodePreviewText(code);
+    this.advanceGeneration();
+    if (validated.valid) {
+      this.generatedCode = validated.code;
+      this.displayedCode = validated.code;
+      this.sourceInvalidReason = undefined;
+      this.bufferInvalidReason = undefined;
+    } else {
+      this.generatedCode = "";
+      this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
+      this.sourceInvalidReason = validated.reason;
+      this.bufferInvalidReason = validated.reason;
+    }
     this.render();
   }
 
   private render(): void {
     if (!this.view) return;
-    const runtimeIdentity = this.snapshot ? runtimeIdentityForSessionMetadata(this.snapshot.metadata) : null;
-    const message: CodePreviewHostMessage = {
-      kind: "codePreview",
-      code: this.displayedCode,
-      editable: Boolean(this.snapshot && this.generatedCode && runtimeIdentity?.codeDialect),
-      runtimeIdentity
-    };
+    const message: CodePreviewHostMessage = this.bufferInvalidReason
+      ? {
+          kind: "codePreviewInvalid",
+          generation: this.generation,
+          reason: this.bufferInvalidReason,
+          editable: Boolean(this.hasSnapshot && this.generatedCode && this.runtimeIdentity?.codeDialect),
+          runtimeIdentity: this.runtimeIdentity
+        }
+      : {
+          kind: "codePreview",
+          generation: this.generation,
+          code: this.displayedCode,
+          editable: Boolean(this.hasSnapshot && this.generatedCode && this.runtimeIdentity?.codeDialect),
+          runtimeIdentity: this.runtimeIdentity
+        };
     this.view.description = codeDialectLanguageLabel(message.runtimeIdentity?.codeDialect ?? null);
     void this.view.webview.postMessage(message);
+  }
+
+  private applySnapshot(snapshot: ActiveSessionSnapshot | undefined): void {
+    const nextSessionId = snapshot?.sessionId;
+    const nextInspectionStepId = snapshot?.stepInspection?.stepId;
+    const nextRuntimeIdentity = snapshot ? runtimeIdentityForSessionMetadata(snapshot.metadata) : null;
+    const validated = validateCodePreviewText(snapshot?.code ?? "");
+    const nextGeneratedCode = validated.valid ? validated.code : "";
+    const nextSourceInvalidReason = validated.valid ? undefined : validated.reason;
+    const generatedStateChanged =
+      nextGeneratedCode !== this.generatedCode || nextSourceInvalidReason !== this.sourceInvalidReason;
+    const identityChanged =
+      nextRuntimeIdentity?.runtimeLanguage !== this.runtimeIdentity?.runtimeLanguage ||
+      nextRuntimeIdentity?.dataframeFlavor !== this.runtimeIdentity?.dataframeFlavor ||
+      nextRuntimeIdentity?.codeDialect !== this.runtimeIdentity?.codeDialect;
+    if (
+      this.generation === 0 ||
+      nextSessionId !== this.sessionId ||
+      nextInspectionStepId !== this.inspectionStepId ||
+      generatedStateChanged ||
+      identityChanged
+    ) {
+      this.generatedCode = nextGeneratedCode;
+      this.sourceInvalidReason = nextSourceInvalidReason;
+      this.bufferInvalidReason = nextSourceInvalidReason;
+      const validatedPlaceholder = validateCodePreviewText(placeholderCode(snapshot));
+      this.displayedCode = nextSourceInvalidReason
+        ? CODE_PREVIEW_INVALID_PLACEHOLDER
+        : nextGeneratedCode ||
+          (validatedPlaceholder.valid ? validatedPlaceholder.code : CODE_PREVIEW_INVALID_PLACEHOLDER);
+      this.advanceGeneration();
+    }
+    this.hasSnapshot = Boolean(snapshot);
+    this.sessionId = nextSessionId;
+    this.inspectionStepId = nextInspectionStepId;
+    this.runtimeIdentity = nextRuntimeIdentity;
+  }
+
+  private advanceGeneration(): void {
+    this.generation = this.generation === Number.MAX_SAFE_INTEGER ? 1 : this.generation + 1;
+    this.acceptedSequence = 0;
   }
 
   private html(webview: vscode.Webview): string {

@@ -84,6 +84,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        generation: 1,
         code: "def clean_data(df):\n    return df\n",
         editable: true,
         runtimeIdentity: polarsIdentity
@@ -92,6 +93,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        generation: 1,
         code: "# Open a dataframe to preview generated code.",
         editable: false,
         runtimeIdentity: null
@@ -100,6 +102,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        generation: 1,
         code: "# PySpark viewing-only session.",
         editable: false,
         runtimeIdentity: pysparkIdentity
@@ -108,19 +111,26 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        generation: 1,
         code: "clean_data <- function(df) df\n",
         editable: true,
         runtimeIdentity: rIdentity
       })
     ).toBe(true);
     expect(isCodePreviewWebviewMessage({ kind: "ready" })).toBe(true);
-    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", code: "# edited" })).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", generation: 1, sequence: 1, code: "# edited" })).toBe(
+      true
+    );
+    expect(isCodePreviewWebviewMessage({ kind: "codeInvalid", generation: 1, sequence: 2, reason: "utf8Bytes" })).toBe(
+      true
+    );
   });
 
   it.each([
-    { kind: "codePreview", code: "# missing identity", editable: false },
+    { kind: "codePreview", generation: 1, code: "# missing identity", editable: false },
     {
       kind: "codePreview",
+      generation: 1,
       code: "# unknown field",
       editable: false,
       runtimeIdentity: polarsIdentity,
@@ -128,6 +138,7 @@ describe("private Code Preview messages", () => {
     },
     {
       kind: "codePreview",
+      generation: 1,
       code: "# no generated dialect",
       editable: true,
       runtimeIdentity: pysparkIdentity
@@ -139,7 +150,10 @@ describe("private Code Preview messages", () => {
   it.each([
     { kind: "ready", unknown: true },
     { kind: "codeChanged" },
-    { kind: "codeChanged", code: "# edited", unknown: true },
+    { kind: "codeChanged", generation: 0, sequence: 1, code: "# edited" },
+    { kind: "codeChanged", generation: 1, sequence: 0, code: "# edited" },
+    { kind: "codeChanged", generation: 1, sequence: 1, code: "# edited", unknown: true },
+    { kind: "codeInvalid", generation: 1, sequence: 1, reason: "unknown" },
     { kind: "future" }
   ])("rejects a malformed private webview message: %j", (candidate) => {
     expect(isCodePreviewWebviewMessage(candidate)).toBe(false);

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { link, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { CODE_PREVIEW_INVALID_EXPORT_MESSAGE, CODE_PREVIEW_MAX_UTF8_BYTES } from "../shared/codePreviewLimits";
 import {
   appliedStep,
   command,
@@ -36,6 +37,25 @@ describe("native export commands", () => {
       })
     );
     expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("blocks copy and export for an oversized edited buffer, then recovers on valid code", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.setCodeForExport("é".repeat(CODE_PREVIEW_MAX_UTF8_BYTES / 2 + 1));
+
+    await command("openWrangler.copyCode")();
+    await expect(command("openWrangler.exportCode")()).resolves.toBeUndefined();
+
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(2);
+    expect(nativeMocks.showErrorMessage).toHaveBeenNthCalledWith(1, CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+    expect(nativeMocks.showErrorMessage).toHaveBeenNthCalledWith(2, CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+
+    registered.setCodeForExport("def clean_data(df):\n    return df\n");
+    await command("openWrangler.copyCode")();
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledOnce();
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledWith("def clean_data(df):\n    return df\n");
   });
 
   it("uses an R script name and filter when exporting generated R code", async () => {
