@@ -13,6 +13,8 @@ from openwrangler_runtime.custom_code_scope import (
     CUSTOM_CODE_FUNCTION_NAME,
     CustomCodeScopeError,
     custom_code_definition_lines,
+    custom_code_generated_utf8_bytes,
+    custom_code_step_lines,
 )
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBSqlPlan
@@ -145,6 +147,14 @@ def test_operation_validation_rejects_invalid_multiline_syntax() -> None:
         validate_step(custom_step("if True\n    result = df", "invalid-multiline"))
 
 
+def test_operation_validation_maps_parser_and_compiler_complexity_failures() -> None:
+    for repetitions in (1_000, 10_000):
+        code = "result = " + ("not " * repetitions) + "df"
+        assert len(code.encode("utf-8")) < 65_536
+        with pytest.raises(OperationError, match="syntax is too complex"):
+            validate_step(custom_step(code, f"complex-{repetitions}"))
+
+
 @pytest.mark.parametrize(("_case_name", "code", "message"), REJECTED_SCOPES)
 def test_live_and_generated_engine_seams_reject_the_same_scopes(
     engine_and_frame: tuple[str, Any, Any], _case_name: str, code: str, message: str
@@ -171,22 +181,55 @@ def test_import_closure_and_multiline_code_matches_executable_generated_output(
     assert materialize(live)[1] == [(2,), (3,)]
 
 
-@pytest.mark.parametrize(
-    "code",
-    ["result = df\n", "marker = 1;\fresult = df\f"],
-    ids=["terminal-lf", "form-feed"],
-)
+SPLITLINE_SEPARATORS = [
+    ("lf", "\n"),
+    ("cr", "\r"),
+    ("crlf", "\r\n"),
+    ("vertical-tab", "\v"),
+    ("form-feed", "\f"),
+    ("file-separator", "\x1c"),
+    ("group-separator", "\x1d"),
+    ("record-separator", "\x1e"),
+    ("next-line", "\x85"),
+    ("line-separator", "\u2028"),
+    ("paragraph-separator", "\u2029"),
+]
+SPLITLINE_CASES = [
+    (f"marker = 1{separator}result = df", f"{name}-interior") for name, separator in SPLITLINE_SEPARATORS
+] + [(f"result = df{separator}", f"{name}-terminal") for name, separator in SPLITLINE_SEPARATORS]
+
+
+@pytest.mark.parametrize("code", [case[0] for case in SPLITLINE_CASES], ids=[case[1] for case in SPLITLINE_CASES])
 def test_generated_renderer_matches_streaming_splitlines_shape(code: str) -> None:
     line_count, separator_bytes = SessionManager._splitlines_shape(code)
     definition = custom_code_definition_lines(code, index=0)
-    rendered_user_lines = definition[2:-3]
+    rendered_user_lines = definition[1 : line_count + 1]
 
-    assert rendered_user_lines == [f"        {line}" for line in code.splitlines()]
+    assert rendered_user_lines == [f"    {line}" for line in code.splitlines()]
     assert len(rendered_user_lines) == line_count
     assert sum(len(f"{line}\n".encode()) for line in rendered_user_lines) == (
-        len(code.encode("utf-8")) - separator_bytes + (line_count * 9)
+        len(code.encode("utf-8")) - separator_bytes + (line_count * 5)
     )
     compile("\n".join(definition), "<generated-custom-definition>", "exec")
+
+
+@pytest.mark.parametrize("engine_name", ["pandas", "polars", "duckdb"])
+def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str) -> None:
+    code = "marker = 'é'\u2028result = df"
+    index = 4_999
+    line_count, separator_bytes = SessionManager._splitlines_shape(code)
+    rendered_lines = [
+        *custom_code_definition_lines(code, index=index),
+        *custom_code_step_lines(prefix="    ", engine_name=engine_name, index=index),
+    ]
+
+    assert custom_code_generated_utf8_bytes(
+        code_utf8_bytes=len(code.encode("utf-8")),
+        separator_utf8_bytes=separator_bytes,
+        line_count=line_count,
+        engine_name=engine_name,
+        index=index,
+    ) == sum(len(line.encode("utf-8")) + 1 for line in rendered_lines)
 
 
 def test_generated_result_type_validation_and_series_normalization_match_live(
@@ -216,12 +259,37 @@ def test_live_and_generated_custom_code_receive_the_same_exact_globals(
 ) -> None:
     backend, engine, frame = engine_and_frame
     alias = {"pandas": "pd", "polars": "pl", "duckdb": "duckdb"}[backend]
-    expected = sorted([CUSTOM_CODE_FUNCTION_NAME, alias])
-    code = (
-        "visible = sorted(name for name in globals() if name != '__builtins__')\n"
-        f"result = df if visible == {expected!r} else None"
-    )
+    expected = [alias, "__builtins__", CUSTOM_CODE_FUNCTION_NAME]
+    code = f"result = df if list(globals()) == {expected!r} else None"
     operation = custom_step(code, "globals")
+
+    assert materialize(engine.apply_transform(frame, operation)) == materialize(
+        execute_generated(engine, frame, operation)
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_name", "code"),
+    [
+        (
+            "private-name",
+            'globals()["__private"] = True\nresult = df if __private else None',
+        ),
+        (
+            "class-cell",
+            'globals()["__class__"] = True\nresult = df if __class__ else None',
+        ),
+        (
+            "qualname",
+            f"result = df if {CUSTOM_CODE_FUNCTION_NAME}.__qualname__ == {CUSTOM_CODE_FUNCTION_NAME!r} else None",
+        ),
+    ],
+)
+def test_module_scope_wrapper_semantics_match_live_on_every_engine(
+    engine_and_frame: tuple[str, Any, Any], case_name: str, code: str
+) -> None:
+    _backend, engine, frame = engine_and_frame
+    operation = custom_step(code, case_name)
 
     assert materialize(engine.apply_transform(frame, operation)) == materialize(
         execute_generated(engine, frame, operation)

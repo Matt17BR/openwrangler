@@ -16,7 +16,7 @@ from uuid import uuid4
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
-    custom_code_execution_lines,
+    custom_code_step_lines,
     execute_custom_code,
 )
 from ..export_target import ExportWriterPath
@@ -1353,14 +1353,7 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {_by_example_expression(params['program'])!r})"
             ]
         if kind == "customCode":
-            custom_lines, result = custom_code_execution_lines(prefix=prefix, module_name="duckdb", index=index)
-            return [
-                f"{prefix}df = _ow_visible_relation(df)",
-                *custom_lines,
-                f"{prefix}if not isinstance({result}, duckdb.DuckDBPyRelation):",
-                f"{prefix}    raise ValueError('Custom DuckDB code must assign a DuckDBPyRelation to result.')",
-                f"{prefix}df = {result}",
-            ]
+            return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
         raise EngineError(f"DuckDB cannot compile transformation: {kind}")
 
     @contextmanager
