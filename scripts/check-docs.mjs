@@ -5,6 +5,7 @@ import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
 import { inspectStablePublicCopy } from "./release-documents.mjs";
 import {
+  classifyCurrentCompletedPerformanceReport,
   inspectPerformanceSummary,
   inspectReleaseDocumentationSource,
   performanceReportLink
@@ -84,10 +85,7 @@ if (readmeProblems.length > 0) {
   throw new Error(`Release documentation is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
-const performanceSummaryProblems = inspectPerformanceSummary(readme);
-if (performanceSummaryProblems.length > 0) {
-  throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
-}
+let currentCompletedComparison = false;
 const packageMajor = /^(?<major>0|[1-9]\d*)\./u.exec(packageJson.version ?? "")?.groups?.major;
 const requiresVersionedComparison =
   packageJson.preview === false && packageMajor !== undefined && BigInt(packageMajor) >= 2n;
@@ -114,7 +112,22 @@ if (linkedComparison !== undefined) {
     if (comparisonProblems.length > 0) {
       throw new Error(`Data Wrangler comparison review is stale:\n- ${comparisonProblems.join("\n- ")}`);
     }
+    const reportDataPath = join(dirname(linkedComparison.path), "report.json");
+    currentCompletedComparison =
+      trackedEvidencePaths.has(linkedComparison.path) &&
+      trackedEvidencePaths.has(reportDataPath) &&
+      classifyCurrentCompletedPerformanceReport({
+        report,
+        reportVersion: linkedComparison.version,
+        sourceVersion: packageJson.version
+      }).current;
   }
+}
+const performanceSummaryProblems = inspectPerformanceSummary(readme, {
+  currentCompletedReport: currentCompletedComparison
+});
+if (performanceSummaryProblems.length > 0) {
+  throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
 }
 if (!packageJson.preview) {
   const galleryProblems = inspectStablePublicCopy(mediaGallery, "docs/media-gallery.md");

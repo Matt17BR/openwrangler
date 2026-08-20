@@ -177,7 +177,18 @@ Before publication, a second reviewer checks the eight session IDs, ten samples 
 the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
-The latest completed review is the
-[`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md). Create a new versioned directory when a release
-reruns the comparison with the VSIX that will be published. Commit its `review.md` and `report.json` together. The
-README keeps a short summary and a link to the dated review instead of copying the results table.
+The retained [`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md) is historical evidence. It predates the
+machine-readable report contract and does not describe current Open Wrangler performance.
+
+A comparison becomes current completed evidence only when all of these conditions hold:
+
+- its versioned `review.md` and sibling `report.json` are both tracked;
+- the report passes the complete release-study schema and disposition checks;
+- the report directory and provenance name the exact current Open Wrangler source version; and
+- release readiness confirms that the report's candidate digest matches the VSIX being released.
+
+Until those conditions hold, the README must identify its linked comparison as historical, state that it does not
+describe current performance, and make no comparative performance claim. After a current report is complete, the
+README may keep a short evidence-backed summary and a link to the dated review instead of copying the results table.
+Create a new versioned directory when a release reruns the comparison with the VSIX that will be published, and
+commit its `review.md` and `report.json` together.

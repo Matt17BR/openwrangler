@@ -215,6 +215,10 @@ const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
 );
 const PERFORMANCE_REPORT_LINK =
   /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
+export const HISTORICAL_PERFORMANCE_DISCLOSURE =
+  "The linked comparison is retained historical evidence for an earlier Open Wrangler release. It does not describe current performance.";
+const UNSUPPORTED_PERFORMANCE_COMPARISON =
+  /\b(?:faster|slower|speedier|quicker|outperform(?:s|ed|ing)?|perform(?:s|ed|ing)? (?:better|worse))\b|\b(?:higher|lower) (?:latency|memory|PSS)\b|\b(?:latest|current) (?:completed )?(?:reviewed )?(?:comparison|benchmark|performance report)\b/iu;
 
 function numericReleaseMajor(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
@@ -250,7 +254,7 @@ export function performanceReportLink(readme) {
   return path === undefined || version === undefined ? undefined : { path, version };
 }
 
-export function inspectPerformanceSummary(readme) {
+export function inspectPerformanceSummary(readme, { currentCompletedReport = false } = {}) {
   const section = performanceSection(readme);
   if (section === undefined) return [];
   const problems = [];
@@ -260,7 +264,53 @@ export function inspectPerformanceSummary(readme) {
   if (/^[ \t]*\|[^\r\n]*\|[ \t]*$/mu.test(section)) {
     problems.push("README Performance must link to detailed results instead of embedding a table.");
   }
+  if (currentCompletedReport !== true) {
+    const prose = section.replace(/\s+/gu, " ").trim();
+    if (!prose.includes(HISTORICAL_PERFORMANCE_DISCLOSURE)) {
+      problems.push(
+        "README Performance must identify its linked comparison as historical and say that it does not describe current performance."
+      );
+    }
+    if (UNSUPPORTED_PERFORMANCE_COMPARISON.test(prose)) {
+      problems.push("README Performance must not make comparative claims without a current completed report.");
+    }
+  }
   return problems;
+}
+
+export function classifyCurrentCompletedPerformanceReport({
+  candidateSha256,
+  report,
+  reportVersion,
+  requireCandidateMatch = false,
+  sourceVersion
+}) {
+  try {
+    assertReleaseCompleteStudyReport(report);
+  } catch (error) {
+    return {
+      completenessError: String(error?.message ?? error),
+      current: false,
+      provenanceVersion: report?.provenance?.openWrangler?.version
+    };
+  }
+
+  const provenanceVersion = report.provenance.openWrangler.version;
+  const candidateMatches =
+    candidateSha256 === undefined
+      ? requireCandidateMatch !== true
+      : SHA256.test(candidateSha256) && report.provenance.openWrangler.sha256 === candidateSha256;
+  return {
+    candidateMatches,
+    current: reportVersion === sourceVersion && provenanceVersion === reportVersion && candidateMatches,
+    provenanceVersion
+  };
+}
+
+function inspectLabeledPerformanceSummary(readme, label, currentCompletedReport) {
+  return inspectPerformanceSummary(readme, { currentCompletedReport }).map((problem) =>
+    problem.replace(/^README\b/u, label)
+  );
 }
 
 function inspectStablePerformanceEvidence(
@@ -276,7 +326,10 @@ function inspectStablePerformanceEvidence(
 
   const report = performanceReportLink(readme);
   if (report === undefined) {
-    return [`${label} Performance section must link exactly one versioned Data Wrangler review.`];
+    return [
+      `${label} Performance section must link exactly one versioned Data Wrangler review.`,
+      ...inspectLabeledPerformanceSummary(readme, label, false)
+    ];
   }
 
   const problems = [];
@@ -303,30 +356,37 @@ function inspectStablePerformanceEvidence(
   const reportSource = performanceReportFiles.get(reportJsonPath);
   if (reportSource === undefined) {
     problems.push(`${label} Performance data ${reportJsonPath} must be read from the release commit.`);
-    return problems;
+    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, false)];
   }
   const reportData = parseJsonObject(reportSource, `${label} Performance data ${reportJsonPath}`, problems);
-  if (reportData === undefined) return problems;
-  try {
-    assertReleaseCompleteStudyReport(reportData);
-  } catch (error) {
-    problems.push(
-      `${label} Performance data ${reportJsonPath} is incomplete or invalid: ${String(error?.message ?? error)}`
-    );
-    return problems;
+  if (reportData === undefined) {
+    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, false)];
   }
-  const reportedVersion = reportData?.provenance?.openWrangler?.version;
+  const classification = classifyCurrentCompletedPerformanceReport({
+    candidateSha256,
+    report: reportData,
+    reportVersion: report.version,
+    requireCandidateMatch: true,
+    sourceVersion: version
+  });
+  if (classification.completenessError !== undefined) {
+    problems.push(
+      `${label} Performance data ${reportJsonPath} is incomplete or invalid: ${classification.completenessError}`
+    );
+    return [...problems, ...inspectLabeledPerformanceSummary(readme, label, false)];
+  }
+  const reportedVersion = classification.provenanceVersion;
   if (reportedVersion !== report.version) {
     problems.push(
       `${label} Performance data ${reportJsonPath} describes Open Wrangler ${String(reportedVersion)}, not ${report.version}.`
     );
   }
-  if (report.version === version) {
-    const reportedSha256 = reportData?.provenance?.openWrangler?.sha256;
-    if (!SHA256.test(candidateSha256 ?? "") || reportedSha256 !== candidateSha256) {
-      problems.push(`${label} Performance data ${reportJsonPath} does not match the release candidate VSIX.`);
-    }
+  if (report.version === version && classification.candidateMatches !== true) {
+    problems.push(`${label} Performance data ${reportJsonPath} does not match the release candidate VSIX.`);
   }
+  const currentCompletedReport =
+    trackedEvidencePaths.has(report.path) && trackedEvidencePaths.has(reportJsonPath) && classification.current;
+  problems.push(...inspectLabeledPerformanceSummary(readme, label, currentCompletedReport));
   return problems;
 }
 
