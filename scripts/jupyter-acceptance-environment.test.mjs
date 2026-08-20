@@ -20,6 +20,7 @@ import ts from "typescript";
 import { editorProcessTreeMayBeLive, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 import {
   R_ACCEPTANCE_PACKAGE_VERSIONS,
+  RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
   RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION,
   acceptancePythonForPhase,
   addJupyterAcceptancePythonKernel,
@@ -1282,6 +1283,14 @@ test("packaged-editor candidate Python Jupyter resolves one owner before editor 
     source,
     /const pythonJupyterPlan = packagedPythonJupyterEditorPlan\(\s*pythonJupyterProfile,\s*editor\.key,\s*remoteJupyterEnabled\s*\)/u
   );
+  assert.match(
+    source.slice(profile, preflight),
+    /const pysparkDistribution = packagedPythonJupyterPySparkDistribution\(\s*pythonJupyterProfile,\s*RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION\s*\)/u
+  );
+  assert.match(
+    source,
+    /createJupyterAcceptanceKernelPython\(\s*resolve\(temporaryRoot, "jv"\),\s*testPython,\s*\{ containedBy: temporaryRoot, pysparkDistribution \}\s*\)/u
+  );
   assert.match(source, /const genericPackagedPhasesEnabled = !pythonJupyterPlan\.integrationOnly/u);
   assert.match(
     source,
@@ -1300,7 +1309,10 @@ test("packaged-editor candidate Python Jupyter resolves one owner before editor 
     /if \(acceptanceMode === "full" && genericPackagedPhasesEnabled\) \{\s*for \(const phase of \["seed", "verify"\]\)/u
   );
   assert.match(source, /for \(const phase of pythonJupyterPlan\.phases\)/u);
-  assert.match(source, /testSelector: phase === "jupyter-allow" \? pythonJupyterPlan\.allowSelector : undefined/u);
+  assert.match(
+    source,
+    /testSelector:\s*phase === "jupyter-allow"\s*\? pythonJupyterPlan\.allowSelector\s*:\s*phase === "jupyter-pyspark"\s*\? pythonJupyterPlan\.pysparkSelector\s*:\s*undefined/u
+  );
   assert.match(source, /if \(pythonJupyterPlan\.remote\) \{[\s\S]*fixtureKind: "python"/u);
   assert.doesNotMatch(source, /for \(const phase of \["jupyter-deny", "jupyter-allow", "jupyter-pyspark"\]\)/u);
 });
@@ -1734,19 +1746,27 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
   const environmentDirectory = join(directory, "private-kernel");
   const commands = [];
   const requirement =
-    `pyspark @ https://files.pythonhosted.org/packages/aa/bb/` +
-    `pyspark-${RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION}.tar.gz#sha256=${"a".repeat(64)}`;
+    `${RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.package} @ ` +
+    `${RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.url}` +
+    `#sha256=${RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.sha256}`;
   try {
+    assert.equal(Object.isFrozen(RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION), true);
+    assert.deepEqual(RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION, {
+      filename: "pyspark-4.2.0.dev5.tar.gz",
+      mode: "prerelease-denial",
+      package: "pyspark",
+      schemaVersion: 1,
+      sha256: "1f19b5a9ae018aa45ad6a3db100a334fda898bbd8f5f91e9868bf4dc5bc23118",
+      size: 448801345,
+      url: "https://files.pythonhosted.org/packages/6f/f4/6b342ab92a8c28724fc1ba456851c9ca8881659d67cf1c352c6bc7fff6ee/pyspark-4.2.0.dev5.tar.gz",
+      version: RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION
+    });
     await writeFile(basePython, "test interpreter placeholder\n");
     const kernelPython = await createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
       containedBy: directory,
       environment: Object.freeze({ PATH: "/bounded-test-path" }),
       platform: "linux",
-      pysparkDistribution: {
-        mode: "prerelease-denial",
-        requirement,
-        version: RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION
-      },
+      pysparkDistribution: RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
       async runCommand(input, options) {
         commands.push({ input, options });
         if (input.label === "Released-Jupyter PySpark Java compatibility probe") return javaReport();
@@ -1787,10 +1807,8 @@ test("released-Jupyter rejects mismatched prerelease-denial distribution receipt
       createJupyterAcceptanceKernelPython(join(directory, "private-kernel"), basePython, {
         containedBy: directory,
         pysparkDistribution: {
-          mode: "prerelease-denial",
-          requirement:
-            `pyspark @ https://files.pythonhosted.org/packages/aa/bb/` +
-            `pyspark-4.2.0.tar.gz#sha256=${"a".repeat(64)}`,
+          ...RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
+          filename: "pyspark-4.2.0.tar.gz",
           version: "4.2.0"
         },
         async runCommand() {
@@ -1798,7 +1816,7 @@ test("released-Jupyter rejects mismatched prerelease-denial distribution receipt
           return { stdout: "" };
         }
       }),
-      /mode does not match its exact expected version/u
+      /exact bounded distribution receipt/u
     );
     assert.equal(commands, 0);
   } finally {

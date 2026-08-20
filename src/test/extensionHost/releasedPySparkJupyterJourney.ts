@@ -6,7 +6,10 @@ import type { Jupyter } from "@vscode/jupyter-extension";
 import type { Locator, Page } from "playwright-core";
 import * as vscode from "vscode";
 import type { LiveGridPage, OpenWranglerResponse } from "../../shared/protocol";
-import { isSupportedPySparkVersion } from "../../extension/notebooks/pysparkVersionPolicy.generated";
+import {
+  isSupportedPySparkVersion,
+  MAX_PYSPARK_VERSION_CHARACTERS
+} from "../../extension/notebooks/pysparkVersionPolicy.generated";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import type { ExtensionApi, TestApi } from "./extensionHostTestApi";
 import { failedAcceptanceProgressCheckpoint } from "./progress";
@@ -37,13 +40,34 @@ interface ReleasedPySparkVariableExpectation {
   readonly notebookInsert: false;
 }
 
-export function releasedPySparkInstalledAcceptanceMode(version: unknown): "stable-qualification" | "prerelease-denial" {
-  if (typeof version !== "string" || version.length === 0 || version.length > 64 || /[\0\r\n]/u.test(version)) {
+export type ReleasedPySparkInstalledAcceptanceMode = "stable-qualification" | "prerelease-denial";
+export const RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION = "4.2.0.dev5";
+
+export function releasedPySparkInstalledAcceptanceMode(version: unknown): ReleasedPySparkInstalledAcceptanceMode {
+  if (
+    typeof version !== "string" ||
+    version.length === 0 ||
+    version.length > MAX_PYSPARK_VERSION_CHARACTERS ||
+    /[\0\r\n]/u.test(version)
+  ) {
     throw new Error("Released PySpark acceptance received an unsafe installed version.");
   }
   if (isSupportedPySparkVersion(version)) return "stable-qualification";
-  if (/^0*4\.0*2\.[0-9]+(?:(?:a|b|rc)[0-9]+|\.dev[0-9]+)$/u.test(version)) return "prerelease-denial";
-  throw new Error("Released PySpark acceptance received neither a supported final release nor a prerelease denial.");
+  if (version === RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION) return "prerelease-denial";
+  throw new Error(
+    "Released PySpark acceptance received neither a supported final release nor its pinned denial build."
+  );
+}
+
+export function assertReleasedPySparkInstalledAcceptanceMode(
+  version: unknown,
+  expected: ReleasedPySparkInstalledAcceptanceMode
+): ReleasedPySparkInstalledAcceptanceMode {
+  const actual = releasedPySparkInstalledAcceptanceMode(version);
+  if (actual !== expected) {
+    throw new Error(`Released PySpark acceptance expected ${expected} but received ${actual}.`);
+  }
+  return actual;
 }
 
 export interface ReleasedPySparkJupyterJourneyDependencies {
@@ -173,7 +197,7 @@ export function createReleasedPySparkJupyterJourney({
     testing: TestApi,
     notebook: vscode.NotebookDocument,
     workbench: Page,
-    sparkVersion: string,
+    productVersion: string,
     screenshotOutput: string | undefined
   ): Promise<void> {
     const checkpoint = "jupyter-pyspark:installed-prerelease-denial";
@@ -198,7 +222,7 @@ export function createReleasedPySparkJupyterJourney({
     }
     const denial = (await waitForReleasedJupyterTerminalPanelError(workbench, testing)).replace(/\s+/gu, " ").trim();
     assert.match(denial, /requires a final PySpark 4\.2\.x release/u);
-    assert.equal(denial.includes(sparkVersion), false, "The denial must not echo the rejected installed version.");
+    assert.equal(denial.includes(productVersion), false, "The denial must not echo the rejected installed version.");
     await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
     assert.equal(testing.diagnostics().sessionCount, 0);
     assert.equal(testing.activeSession(), undefined);
@@ -221,13 +245,14 @@ export function createReleasedPySparkJupyterJourney({
     await closeReleasedJupyterSessionTabs();
     assert.equal(releasedJupyterSessionTabs().length, 0);
     recordAcceptanceProgress(`${checkpoint}:complete`);
-    console.log(`Open Wrangler installed PySpark prerelease denial passed for ${sparkVersion}.`);
+    console.log("Open Wrangler installed PySpark prerelease denial passed.");
   }
 
   return async function exerciseReleasedPySparkJupyterExtension(
     testing: TestApi,
     extension: vscode.Extension<ExtensionApi>,
-    testPython: string
+    testPython: string,
+    expectedAcceptanceMode: ReleasedPySparkInstalledAcceptanceMode = "stable-qualification"
   ): Promise<void> {
     const phase: ReleasedJupyterPhase = "jupyter-pyspark";
     assert.equal(
@@ -307,8 +332,11 @@ export function createReleasedPySparkJupyterJourney({
         RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
         "PySpark Classic setup"
       );
-      const sparkVersion = classicSetup.sparkVersion;
-      const installedAcceptanceMode = releasedPySparkInstalledAcceptanceMode(sparkVersion);
+      const productVersion = classicSetup.productVersion;
+      const installedAcceptanceMode = assertReleasedPySparkInstalledAcceptanceMode(
+        productVersion,
+        expectedAcceptanceMode
+      );
       const classicJavaMajor = Number(classicSetup.javaVersion);
       assert.ok(
         Number.isSafeInteger(classicJavaMajor) && classicJavaMajor >= 17,
@@ -324,12 +352,12 @@ export function createReleasedPySparkJupyterJourney({
           testing,
           notebook,
           workbench,
-          String(sparkVersion),
+          String(productVersion),
           screenshotOutput
         );
         return;
       }
-      assert.equal(sparkVersion, "4.2.0", "Stable qualification must use the pinned released PySpark version.");
+      assert.equal(productVersion, "4.2.0", "Stable qualification must use the pinned released PySpark version.");
 
       if (screenshotOutput) {
         await captureReleasedJupyterPySparkPicker(workbench, testing, notebook, classicEditor, screenshotOutput);
@@ -675,7 +703,7 @@ export function createReleasedPySparkJupyterJourney({
         RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
         "local Spark Connect setup"
       );
-      assert.equal(connectSetup.sparkVersion, "4.2.0");
+      assert.equal(connectSetup.productVersion, "4.2.0");
       assert.equal(connectSetup.module, "pyspark.sql.connect.dataframe");
       assert.equal(connectSetup.workerPythonPinned, true);
       assert.deepEqual(connectSetup.conversionTraps, ["toPandas", "toArrow", "mapInPandas", "mapInArrow"]);
