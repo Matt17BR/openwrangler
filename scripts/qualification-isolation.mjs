@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, realpath, readlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, realpath, readlink, writeFile } from "node:fs/promises";
 import {
   delimiter,
   dirname,
@@ -23,6 +23,8 @@ const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 const MAX_GIT_CONFIG_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
+const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_PYTEST_TEMP_ENTRIES = 100_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TERMINATION_GRACE_MS = 10_000;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
@@ -937,7 +939,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     pipConfig: join(assignment.stateRoot, "python", "pip.conf"),
     playwrightBrowsers: join(assignment.stateRoot, "browser", "playwright"),
     pytestCache: join(assignment.stateRoot, "python", "pytest-cache"),
-    pytestTemp: join(assignment.stateRoot, "python", "pytest-temp"),
+    pytestTempParent: join(assignment.stateRoot, "python", "pytest-temp"),
     pythonBytecode: join(assignment.stateRoot, "python", "bytecode"),
     pythonExecutable,
     pythonUserBase: join(assignment.stateRoot, "python", "user-base"),
@@ -961,6 +963,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     xdgRuntime: join(assignment.stateRoot, "xdg", "runtime"),
     xdgState: join(assignment.stateRoot, "xdg", "state")
   };
+  layout.pytestTemp = join(layout.pytestTempParent, `basetemp-${randomUUID()}`);
   const directoryKeys = Object.keys(layout).filter(
     (key) =>
       ![
@@ -969,6 +972,7 @@ async function createStateLayout(assignment, assignmentDigest) {
         "gitWrapperProgram",
         "npmUserConfig",
         "pipConfig",
+        "pytestTemp",
         "pythonExecutable",
         "receipt",
         "stateRoot",
@@ -1026,6 +1030,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     ownerPins.stateRoot = await openPinnedDirectory(layout.stateRoot, "stateRoot owner");
     ownerPins.artifacts = await openPinnedDirectory(layout.artifacts, "artifact owner");
     ownerPins.executableSnapshots = await openPinnedDirectory(layout.executableSnapshots, "executable-snapshot owner");
+    ownerPins.pytestTempParent = await openPinnedDirectory(layout.pytestTempParent, "pytest-temp parent owner");
     for (const [key, pin] of Object.entries(ownerPins)) {
       const identity = key === "stateRoot" ? stateRootIdentity : identities[key];
       if (pin.snapshot.dev.toString() !== identity.device || pin.snapshot.ino.toString() !== identity.inode) {
@@ -1037,7 +1042,147 @@ async function createStateLayout(assignment, assignmentDigest) {
     await receiptHandle.close();
     throw error;
   }
-  return { identities, layout, ownerPins, receiptHandle, receiptSnapshot, runnerFilePins: [], stateRootIdentity };
+  return {
+    identities,
+    layout,
+    ownerPins,
+    pytestTempTree: null,
+    receiptHandle,
+    receiptSnapshot,
+    runnerFilePins: [],
+    stateRootIdentity
+  };
+}
+
+async function requireAbsentPath(path, label) {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  fail(`${label} must be absent before qualification`);
+}
+
+async function inspectPrivateTree(rootPin, parentPin, label) {
+  await verifyPinnedDirectory(parentPin, `${label} parent`);
+  await verifyPinnedDirectory(rootPin, label);
+  if (rootPin.snapshot.dev !== parentPin.snapshot.dev) {
+    fail(`${label} must not cross a filesystem mount`);
+  }
+  const digest = createHash("sha256");
+  let directories = 1;
+  let entries = 0;
+  let files = 0;
+  let symbolicLinks = 0;
+  let totalBytes = 0n;
+  const visit = async (directory) => {
+    const before = await lstat(directory, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink() || before.dev !== rootPin.snapshot.dev) {
+      fail(`${label} contains an invalid directory`);
+    }
+    const names = (await readdir(directory)).sort((left, right) => left.localeCompare(right));
+    for (const name of names) {
+      entries += 1;
+      if (entries > MAX_PYTEST_TEMP_ENTRIES) fail(`${label} contains too many entries`);
+      const path = join(directory, name);
+      const relativePath = relative(rootPin.path, path);
+      if (
+        relativePath === "" ||
+        relativePath.startsWith("..") ||
+        isAbsolute(relativePath) ||
+        Buffer.byteLength(relativePath, "utf8") > 4096
+      ) {
+        fail(`${label} contains an invalid path`);
+      }
+      const opened = await lstat(path, { bigint: true });
+      if (opened.dev !== rootPin.snapshot.dev) {
+        fail(`${label} contains an aliased or mounted entry`);
+      }
+      let kind;
+      let linkIdentity = "";
+      if (opened.isSymbolicLink()) {
+        const linkText = await readlink(path);
+        const target = await realpath(path);
+        const targetIdentity = await lstat(target, { bigint: true });
+        if (
+          !isInside(target, rootPin.path) ||
+          targetIdentity.isSymbolicLink() ||
+          targetIdentity.dev !== rootPin.snapshot.dev
+        ) {
+          fail(`${label} contains an escaping symbolic link`);
+        }
+        kind = "symbolic-link";
+        linkIdentity = `${linkText}\0${target}\0`;
+        symbolicLinks += 1;
+      } else if ((await realpath(path)) !== path) {
+        fail(`${label} contains an aliased or mounted entry`);
+      } else if (opened.isDirectory()) {
+        kind = "directory";
+        directories += 1;
+        await visit(path);
+      } else if (opened.isFile() && opened.nlink === 1n) {
+        kind = "file";
+        files += 1;
+        totalBytes += opened.size;
+        if (totalBytes > BigInt(MAX_PYTEST_TEMP_BYTES)) fail(`${label} contains too many bytes`);
+      } else {
+        fail(`${label} contains a linked or unsupported entry`);
+      }
+      const closed = await lstat(path, { bigint: true });
+      if (!sameImmutableSnapshot(opened, closed)) fail(`${label} changed while it was inspected`);
+      digest.update(
+        `${kind}\0${relativePath}\0${linkIdentity}${opened.dev.toString()}\0${opened.ino.toString()}\0${opened.mode.toString()}\0${opened.nlink.toString()}\0${opened.size.toString()}\0${opened.mtimeNs.toString()}\0${opened.ctimeNs.toString()}\0`
+      );
+    }
+    const after = await lstat(directory, { bigint: true });
+    if (!sameImmutableSnapshot(before, after)) fail(`${label} changed while it was inspected`);
+  };
+  await visit(rootPin.path);
+  await verifyPinnedDirectory(rootPin, label);
+  await verifyPinnedDirectory(parentPin, `${label} parent`);
+  return {
+    bytes: Number(totalBytes),
+    device: rootPin.snapshot.dev.toString(),
+    directories,
+    entries,
+    files,
+    root: fileIdentityRecord(rootPin.path, rootPin.snapshot),
+    sha256: digest.digest("hex"),
+    symbolicLinks
+  };
+}
+
+function fileIdentityRecord(path, value) {
+  return {
+    device: value.dev.toString(),
+    inode: value.ino.toString(),
+    links: value.nlink.toString(),
+    mode: Number(value.mode & 0o777n),
+    path
+  };
+}
+
+async function bindPytestTempTree(layoutState, afterOpenForTest) {
+  let pin;
+  try {
+    pin = await openPinnedDirectory(layoutState.layout.pytestTemp, "pytest basetemp", { afterOpenForTest });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      await requireAbsentPath(layoutState.layout.pytestTemp, "pytest basetemp");
+      return null;
+    }
+    throw error;
+  }
+  try {
+    const accounting = await inspectPrivateTree(pin, layoutState.ownerPins.pytestTempParent, "pytest basetemp");
+    layoutState.ownerPins.pytestTemp = pin;
+    layoutState.pytestTempTree = accounting;
+    return accounting;
+  } catch (error) {
+    await pin.handle.close();
+    throw error;
+  }
 }
 
 function quotePytestPath(path) {
@@ -1244,11 +1389,11 @@ function validateBound(value, maximum, label) {
   }
 }
 
-async function openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget) {
+async function openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget, options) {
   if (!allowedSymbolicLinkTarget) {
     fail("qualification command must not be a symbolic link");
   }
-  const target = await openPinnedExecutable(allowedSymbolicLinkTarget);
+  const target = await openPinnedExecutable(allowedSymbolicLinkTarget, undefined, options);
   try {
     const before = await lstat(path, { bigint: true });
     const linkText = await readlink(path);
@@ -1269,14 +1414,18 @@ async function openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget) {
   }
 }
 
-async function openPinnedExecutable(path, allowedSymbolicLinkTarget, { afterOpenForTest } = {}) {
+async function openPinnedExecutable(
+  path,
+  allowedSymbolicLinkTarget,
+  { afterOpenForTest, requireExecutable = true } = {}
+) {
   assertCanonicalAbsolutePath(path, "qualification command");
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   } catch (error) {
     if (error?.code === "ELOOP") {
-      return openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget);
+      return openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget, { afterOpenForTest, requireExecutable });
     }
     throw error;
   }
@@ -1294,7 +1443,7 @@ async function openPinnedExecutable(path, allowedSymbolicLinkTarget, { afterOpen
     if (
       !opened.isFile() ||
       opened.nlink !== 1n ||
-      (process.platform !== "win32" && (opened.mode & 0o111n) === 0n) ||
+      (requireExecutable && process.platform !== "win32" && (opened.mode & 0o111n) === 0n) ||
       namedAfter.isSymbolicLink() ||
       !sameImmutableSnapshot(opened, namedBefore) ||
       !sameImmutableSnapshot(namedBefore, namedAfter) ||
@@ -1375,7 +1524,11 @@ async function hashPinnedExecutable(executable) {
   return digest.digest("hex");
 }
 
-async function createExecutableSnapshot(executable, snapshotRoot, { afterWriteForTest } = {}) {
+async function createExecutableSnapshot(
+  executable,
+  snapshotRoot,
+  { afterWriteForTest, requireExecutable = true } = {}
+) {
   await verifyPinnedExecutable(executable);
   const source = executableLeaf(executable);
   if (source.before.size <= 0n || source.before.size > BigInt(MAX_EXECUTABLE_BYTES)) {
@@ -1424,7 +1577,7 @@ async function createExecutableSnapshot(executable, snapshotRoot, { afterWriteFo
   const sourceDigest = digest.digest("hex");
   await afterWriteForTest?.({ snapshotPath });
   await verifyPinnedExecutable(executable);
-  const snapshot = await openPinnedExecutable(snapshotPath);
+  const snapshot = await openPinnedExecutable(snapshotPath, undefined, { requireExecutable });
   const snapshotLeaf = executableLeaf(snapshot);
   if (snapshotLeaf.before.size !== source.before.size || (await hashPinnedExecutable(snapshot)) !== sourceDigest) {
     await closePinnedExecutable(snapshot);
@@ -1656,6 +1809,8 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   await options.beforeSpawnForTest?.({
     executedPath: command,
     sourcePath: options.sourceCommand,
+    supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
+    supervisorScriptSourcePath: options.supervisorScriptSourcePath,
     strategy: options.executionStrategy
   });
   try {
@@ -1680,11 +1835,29 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       treeEmpty: true
     };
   }
+  if (!options.supervisorScriptExecutedPath || !isAbsolute(options.supervisorScriptExecutedPath)) {
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: "Windows process ownership requires a pinned Job Object script",
+      status: null,
+      timedOut: false,
+      treeEmpty: true
+    };
+  }
   let supervisor;
   try {
     supervisor = spawn(
       options.supervisorExecutedPath,
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", WINDOWS_JOB_SUPERVISOR_PATH],
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        options.supervisorScriptExecutedPath
+      ],
       {
         cwd: options.cwd,
         detached: false,
@@ -1725,6 +1898,8 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   await options.afterSpawnForTest?.({
     executedPath: command,
     sourcePath: options.sourceCommand,
+    supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
+    supervisorScriptSourcePath: options.supervisorScriptSourcePath,
     strategy: options.executionStrategy
   });
   try {
@@ -1813,6 +1988,8 @@ async function runOwnedCommand(command, arguments_, options) {
   let launch;
   let supervisorExecutable;
   let supervisorLaunch;
+  let supervisorScriptExecutable;
+  let supervisorScriptLaunch;
   try {
     executable = await openPinnedExecutable(
       command,
@@ -1828,12 +2005,22 @@ async function runOwnedCommand(command, arguments_, options) {
     } else if (options.windowsSupervisorCommand) {
       supervisorExecutable = await openPinnedExecutable(options.windowsSupervisorCommand);
       supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
+      supervisorScriptExecutable = await openPinnedExecutable(options.windowsJobSupervisorScript, undefined, {
+        requireExecutable: false
+      });
+      supervisorScriptLaunch = await createExecutableSnapshot(
+        supervisorScriptExecutable,
+        options.executableSnapshotRoot,
+        { requireExecutable: false }
+      );
     }
   } catch (error) {
     if (launch) await closeExecutableLaunch(launch);
     else await closePinnedExecutable(executable);
     if (supervisorLaunch) await closeExecutableLaunch(supervisorLaunch);
     else await closePinnedExecutable(supervisorExecutable);
+    if (supervisorScriptLaunch) await closeExecutableLaunch(supervisorScriptLaunch);
+    else await closePinnedExecutable(supervisorScriptExecutable);
     return {
       executable: null,
       lingeringDescendants: false,
@@ -1858,22 +2045,37 @@ async function runOwnedCommand(command, arguments_, options) {
         platform === "win32" && supervisorLaunch ? executableLeaf(supervisorLaunch.source).path : null,
       supervisorExecutedPath:
         platform === "win32" ? (supervisorLaunch ? executableLeaf(supervisorLaunch.snapshot).path : null) : "/dev/fd/3",
+      supervisorScriptSourcePath:
+        platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.source).path : null,
+      supervisorScriptExecutedPath:
+        platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.snapshot).path : null,
       supervisorExecutableFd: platform === "win32" ? null : executableLeaf(supervisorLaunch.snapshot).handle.fd,
       targetExecutableFd: platform === "win32" ? null : executableLeaf(launch.snapshot).handle.fd,
       verifyExecutableForSpawn: async () => {
         await verifyExecutableLaunch(launch);
         if (supervisorLaunch) await verifyExecutableLaunch(supervisorLaunch);
+        if (supervisorScriptLaunch) await verifyExecutableLaunch(supervisorScriptLaunch);
       }
+    });
+    await options.afterSettlementForTest?.({
+      result,
+      supervisorScriptExecutedPath:
+        platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.snapshot).path : null,
+      supervisorScriptSourcePath:
+        platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.source).path : null
     });
     result.executable = {
       ...launch.record,
       strategy: executionStrategy,
-      supervisor: supervisorLaunch?.record ?? null
+      supervisor: supervisorLaunch
+        ? { ...supervisorLaunch.record, jobScript: supervisorScriptLaunch?.record ?? null }
+        : null
     };
     if (result.treeEmpty) {
       try {
         await verifyExecutableLaunch(launch);
         if (supervisorLaunch) await verifyExecutableLaunch(supervisorLaunch);
+        if (supervisorScriptLaunch) await verifyExecutableLaunch(supervisorScriptLaunch);
       } catch (error) {
         result.spawnError ??= error instanceof Error ? error.message : String(error);
       }
@@ -1882,6 +2084,7 @@ async function runOwnedCommand(command, arguments_, options) {
   } finally {
     await closeExecutableLaunch(launch);
     await closeExecutableLaunch(supervisorLaunch);
+    await closeExecutableLaunch(supervisorScriptLaunch);
   }
 }
 
@@ -2034,6 +2237,18 @@ async function verifyLayout(layoutState) {
   if (layoutState.pythonEntry) {
     await verifyVenvPythonIdentity(layoutState.pythonEntry);
   }
+  if (layoutState.pytestTempTree) {
+    const after = await inspectPrivateTree(
+      layoutState.ownerPins.pytestTemp,
+      layoutState.ownerPins.pytestTempParent,
+      "pytest basetemp"
+    );
+    if (JSON.stringify(after) !== JSON.stringify(layoutState.pytestTempTree)) {
+      fail("pytest basetemp changed after it was bound");
+    }
+  } else {
+    await requireAbsentPath(layoutState.layout.pytestTemp, "pytest basetemp");
+  }
   for (const { label, pin } of layoutState.runnerFilePins) {
     await verifyPinnedRegularFile(pin, MAX_ASSIGNMENT_BYTES, label);
   }
@@ -2080,6 +2295,7 @@ async function writeReceipt(layoutState, value) {
 
 async function runQualification({
   afterCommandSpawnForTest,
+  afterCommandSettlementForTest,
   afterExecutableSnapshotWriteForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
@@ -2087,8 +2303,10 @@ async function runQualification({
   commandPlatformForTest,
   commandRunnerForTest,
   environment = process.env,
+  pytestTempAfterOpenForTest,
   terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  windowsJobSupervisorScriptForTest,
   windowsSupervisorCommandForTest,
   writeOutput = true
 }) {
@@ -2137,16 +2355,26 @@ async function runQualification({
       treeEmpty: true
     };
     if (failures.length === 0) {
+      try {
+        await verifyPinnedDirectory(layoutState.ownerPins.pytestTempParent, "pytest-temp parent owner");
+        await requireAbsentPath(layoutState.layout.pytestTemp, "pytest basetemp");
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (failures.length === 0) {
       result = await runOwnedCommand(command[0], command.slice(1), {
         cwd: assignment.worktree,
         environment: isolatedEnvironment(assignmentPath, assignment, layoutState.layout, environment),
         executableSnapshotRoot: layoutState.layout.executableSnapshots,
         afterSpawnForTest: afterCommandSpawnForTest,
+        afterSettlementForTest: afterCommandSettlementForTest,
         beforeSpawnForTest: beforeCommandSpawnForTest,
         executableSnapshotAfterWriteForTest: afterExecutableSnapshotWriteForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
         posixSupervisorCommand: bootstrap.bootstrapPython,
+        windowsJobSupervisorScript: windowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
         windowsSupervisorCommand: windowsSupervisorCommandForTest ?? layoutState.layout.windowsSupervisorCommand,
         terminationGraceMs,
         timeoutMs
@@ -2158,6 +2386,11 @@ async function runQualification({
       result.treeEmpty && (bootstrap?.result?.treeEmpty ?? true) && (bootstrap?.verification?.treeEmpty ?? true);
     if (!processTreesEmpty) {
       fail("a qualification process tree could not be attested empty; source and receipt paths were not reopened");
+    }
+    try {
+      await bindPytestTempTree(layoutState, pytestTempAfterOpenForTest);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
     }
     let finalAssignmentDigest = null;
     let finalGit = null;
@@ -2214,6 +2447,7 @@ async function runQualification({
       identity: initialGit,
       postIdentity: finalGit,
       protocol: RECEIPT_PROTOCOL,
+      pytestTemp: layoutState.pytestTempTree,
       result,
       startedAt
     };

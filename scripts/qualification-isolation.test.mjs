@@ -262,6 +262,8 @@ async function simulatedWindowsSnapshotRunner(command, arguments_, options) {
   await options.beforeSpawnForTest?.({
     executedPath: command,
     sourcePath: options.sourceCommand,
+    supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
+    supervisorScriptSourcePath: options.supervisorScriptSourcePath,
     strategy: options.executionStrategy
   });
   try {
@@ -281,6 +283,8 @@ async function simulatedWindowsSnapshotRunner(command, arguments_, options) {
       child: childProcess,
       executedPath: command,
       sourcePath: options.sourceCommand,
+      supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
+      supervisorScriptSourcePath: options.supervisorScriptSourcePath,
       strategy: options.executionStrategy
     });
   }
@@ -577,7 +581,18 @@ test("routes pytest cache and temporary state through the private task root", as
   const testFile = join(value.root, "test_private_cache.py");
   await writeFile(
     testFile,
-    'def test_private_cache(pytestconfig):\n    pytestconfig.cache.set("issue-728/proof", "private")\n',
+    [
+      "import os",
+      "import shlex",
+      "from pathlib import Path",
+      "",
+      "def test_private_cache(pytestconfig, tmp_path):",
+      '    pytestconfig.cache.set("issue-728/proof", "private")',
+      '    basetemp = next(value.split("=", 1)[1] for value in shlex.split(os.environ["PYTEST_ADDOPTS"]) if value.startswith("--basetemp="))',
+      "    tmp_path.relative_to(Path(basetemp))",
+      '    (tmp_path / "proof.txt").write_text("private tmp_path\\n", encoding="utf-8")',
+      ""
+    ].join("\n"),
     { flag: "wx", mode: 0o600 }
   );
   const valueReceipt = await runQualification({
@@ -589,13 +604,90 @@ test("routes pytest cache and temporary state through the private task root", as
     writeOutput: false
   });
   assert.equal(valueReceipt.eligible, true);
+  assert.equal(valueReceipt.pytestTemp.root.path, valueReceipt.environment.pytestTemp);
+  assert.ok(valueReceipt.pytestTemp.directories >= 2);
+  assert.ok(valueReceipt.pytestTemp.files >= 1);
+  assert.ok(valueReceipt.pytestTemp.entries >= 2);
   assert.match(valueReceipt.environment.pytestCache, new RegExp(`^${task.assignment.stateRoot}`, "u"));
+  assert.equal(
+    relative(valueReceipt.environment.pytestTempParent, valueReceipt.environment.pytestTemp).startsWith(".."),
+    false
+  );
   assert.equal(
     await readFile(join(valueReceipt.environment.pytestCache, "v", "issue-728", "proof"), "utf8"),
     '"private"'
   );
   assert.equal(existsSync(join(value.root, ".pytest_cache")), false);
   assert.equal(existsSync(join(task.worktree, ".pytest_cache")), false);
+});
+
+test("rejects replacement, escape, and linked leftovers in a created pytest basetemp", async (context) => {
+  const value = await fixture(context, "pytest-basetemp-adversaries");
+  const pytestFile = join(value.root, "test_tmp_path.py");
+  await writeFile(pytestFile, 'def test_tmp_path(tmp_path):\n    (tmp_path / "owned.txt").write_text("owned\\n")\n', {
+    flag: "wx",
+    mode: 0o600
+  });
+
+  const replaced = await addTask(value, "pytest-basetemp-replaced");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: replaced.assignmentPath,
+      command: [bootstrapPython(), "-m", "pytest", "-q", pytestFile],
+      environment: runnerEnvironment(),
+      pytestTempAfterOpenForTest: async ({ path }) => {
+        await rename(path, `${path}.retained`);
+        await mkdir(path, { mode: 0o700 });
+      },
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest basetemp changed while it was opened/u
+  );
+  assert.equal((await receipt(replaced)).eligible, false);
+
+  const escaped = await addTask(value, "pytest-basetemp-escaped");
+  const escapeTarget = join(value.root, "pytest-escape-target");
+  await mkdir(escapeTarget);
+  await assert.rejects(
+    runQualification({
+      assignmentPath: escaped.assignmentPath,
+      command: [
+        bootstrapPython(),
+        "-c",
+        'import os, pathlib, shlex, sys; target = pathlib.Path(next(value.split("=", 1)[1] for value in shlex.split(os.environ["PYTEST_ADDOPTS"]) if value.startswith("--basetemp="))); target.symlink_to(sys.argv[1], target_is_directory=True)',
+        escapeTarget
+      ],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest basetemp must be one canonical non-symbolic-link directory/u
+  );
+  assert.equal((await receipt(escaped)).eligible, false);
+
+  const linked = await addTask(value, "pytest-basetemp-linked");
+  const linkedSource = join(value.root, "pytest-linked-source.txt");
+  await writeFile(linkedSource, "outside\n", { flag: "wx", mode: 0o600 });
+  await assert.rejects(
+    runQualification({
+      assignmentPath: linked.assignmentPath,
+      command: [
+        bootstrapPython(),
+        "-c",
+        'import os, pathlib, shlex, sys; target = pathlib.Path(next(value.split("=", 1)[1] for value in shlex.split(os.environ["PYTEST_ADDOPTS"]) if value.startswith("--basetemp="))); target.mkdir(); os.link(sys.argv[1], target / "linked.txt")',
+        linkedSource
+      ],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest basetemp contains a linked or unsupported entry/u
+  );
+  assert.equal((await receipt(linked)).eligible, false);
 });
 
 test("makes an authoritative Git config mutation terminal and ineligible", async (context) => {
@@ -962,6 +1054,87 @@ test("rejects supervisor identity replacement after dispatch and before final el
     assert.equal(valueReceipt.result.treeEmpty, true);
     assert.ok(replacedPath);
     assert.equal(valueReceipt.result.executable.supervisor.sha256, expectedDigest);
+    assert.match(valueReceipt.failures.join("\n"), /qualification command identity changed/u);
+    await access(valueReceipt.environment.testResult);
+  }
+});
+
+test("rejects a Job Object script replacement before launch without dispatching the target", async (context) => {
+  const value = await fixture(context, "windows-job-script-prelaunch");
+  for (const identity of ["source", "snapshot"]) {
+    const task = await addTask(value, `windows-job-script-prelaunch-${identity}`);
+    const supervisor = await copiedExecutable(
+      join(value.root, `windows-job-script-prelaunch-supervisor-${identity}${extname(process.execPath)}`)
+    );
+    const jobScript = join(value.root, `windows-job-script-prelaunch-${identity}.ps1`);
+    await copyFile(join(import.meta.dirname, "windows-job-supervisor.ps1"), jobScript);
+    const expectedDigest = sha256(await readFile(jobScript));
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        beforeCommandSpawnForTest: async ({ supervisorScriptExecutedPath, supervisorScriptSourcePath }) => {
+          const path = identity === "source" ? supervisorScriptSourcePath : supervisorScriptExecutedPath;
+          const original = await readFile(path);
+          await rename(path, `${path}.retained`);
+          await writeFile(path, Buffer.alloc(original.length, 0x5a), { flag: "wx", mode: 0o600 });
+        },
+        command: [process.execPath, child, "record"],
+        commandPlatformForTest: "win32",
+        commandRunnerForTest: process.platform === "win32" ? undefined : simulatedWindowsSnapshotRunner,
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        windowsJobSupervisorScriptForTest: jobScript,
+        windowsSupervisorCommandForTest: process.platform === "win32" ? undefined : supervisor,
+        writeOutput: false
+      }),
+      /qualification command identity changed/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.equal(valueReceipt.result.status, null);
+    assert.equal(valueReceipt.result.treeEmpty, true);
+    assert.equal(valueReceipt.result.executable.supervisor.jobScript.sha256, expectedDigest);
+    assert.equal(existsSync(valueReceipt.environment.testResult), false);
+  }
+});
+
+test("rejects a Job Object script replacement after dispatch and before final eligibility", async (context) => {
+  const value = await fixture(context, "windows-job-script-final");
+  for (const identity of ["source", "snapshot"]) {
+    const task = await addTask(value, `windows-job-script-final-${identity}`);
+    const supervisor = await copiedExecutable(
+      join(value.root, `windows-job-script-final-supervisor-${identity}${extname(process.execPath)}`)
+    );
+    const jobScript = join(value.root, `windows-job-script-final-${identity}.ps1`);
+    await copyFile(join(import.meta.dirname, "windows-job-supervisor.ps1"), jobScript);
+    const expectedDigest = sha256(await readFile(jobScript));
+    await assert.rejects(
+      runQualification({
+        afterCommandSettlementForTest: async ({ supervisorScriptExecutedPath, supervisorScriptSourcePath }) => {
+          const path = identity === "source" ? supervisorScriptSourcePath : supervisorScriptExecutedPath;
+          const original = await readFile(path);
+          await rename(path, `${path}.retained`);
+          await writeFile(path, Buffer.alloc(original.length, 0x5a), { flag: "wx", mode: 0o600 });
+        },
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "record"],
+        commandPlatformForTest: "win32",
+        commandRunnerForTest: process.platform === "win32" ? undefined : simulatedWindowsSnapshotRunner,
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        windowsJobSupervisorScriptForTest: jobScript,
+        windowsSupervisorCommandForTest: process.platform === "win32" ? undefined : supervisor,
+        writeOutput: false
+      }),
+      /qualification command identity changed/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.equal(valueReceipt.result.status, 0);
+    assert.equal(valueReceipt.result.treeEmpty, true);
+    assert.equal(valueReceipt.result.executable.supervisor.jobScript.sha256, expectedDigest);
     assert.match(valueReceipt.failures.join("\n"), /qualification command identity changed/u);
     await access(valueReceipt.environment.testResult);
   }
