@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   constants,
   existsSync,
@@ -19,7 +20,7 @@ import {
 } from "node:fs";
 import { chmod, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { editorProcessTreeMayBeLive, runBoundedEditorCommand } from "./editor-acceptance.mjs";
@@ -87,8 +88,14 @@ function testPySparkArtifactAcquirer(records = []) {
         assert.equal(platform, "linux");
         record.readyChecks += 1;
         record.launchArguments = [
-          ...args,
-          `${distribution.package} @ file:///private-pyspark-boundary/${distribution.filename}#sha256=${distribution.sha256}`
+          "-I",
+          "-c",
+          "sealed-test-descriptor-bootstrap",
+          distribution.package,
+          distribution.filename,
+          distribution.sha256,
+          String(distribution.size),
+          ...args.slice(3)
         ];
         return {
           args: record.launchArguments,
@@ -212,6 +219,13 @@ async function assertScrubbedPySparkArtifact(directory, artifactPath) {
   const linkedPath = join(directory, quarantineNames[0], quarantineEntries[0]);
   assert.equal(statSync(linkedPath).size, 0);
   assert.equal(statSync(linkedPath).ino, statSync(artifactPath).ino);
+}
+
+async function assertDetachedPySparkArtifactDisposed(directory, artifactPath) {
+  assert.equal(existsSync(artifactPath), false);
+  const quarantineNames = (await readdir(directory)).filter((name) => name.startsWith(".ow-pyspark-cleanup-"));
+  assert.equal(quarantineNames.length, 1);
+  assert.deepEqual(await readdir(join(directory, quarantineNames[0])), []);
 }
 
 function acceptanceErrorTree(error) {
@@ -1815,34 +1829,37 @@ test("PySpark acquisition streams one exact receipt to a private local artifact 
     assert.equal(artifact.sha256, distribution.sha256);
     assert.deepEqual(await readFile(artifact.path), payload);
     const launch = artifact.preparePipLaunch(["-I", "-m", "pip", "install"], "linux");
-    assert.equal(
-      launch.args.at(-1),
-      `pyspark @ file://${join(
-        directory,
-        `.ow-pyspark-pip-${"41".repeat(16)}`,
-        distribution.filename
-      )}#sha256=${distribution.sha256}`
-    );
+    assert.deepEqual(launch.args.slice(0, 2), ["-I", "-c"]);
+    assert.match(launch.args[2], /pip\._internal\.cli\.main/u);
+    assert.deepEqual(launch.args.slice(3, 7), [
+      "pyspark",
+      distribution.filename,
+      distribution.sha256,
+      String(distribution.size)
+    ]);
+    assert.deepEqual(launch.args.slice(7), ["install"]);
     assert.equal(artifact.path, join(directory, `.ow-pyspark-pip-${"41".repeat(16)}`, distribution.filename));
+    assert.equal(existsSync(artifact.path), false);
     assert.equal(launch.inheritedFileDescriptors.length, 1);
     assert.deepEqual(readFileSync(launch.inheritedFileDescriptors[0]), payload);
     launch.release();
     assert.throws(() => fstatSync(launch.inheritedFileDescriptors[0]), /EBADF/u);
     await artifact.dispose();
-    await assertScrubbedPySparkArtifact(directory, artifact.path);
+    await assertDetachedPySparkArtifactDisposed(directory, artifact.path);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
 test(
-  "PySpark pip installs from the sealed verified boundary after the acquisition name is replaced",
+  "PySpark pip rejects success when the active private pathname is replaced during descriptor consumption",
   { skip: process.platform !== "linux" && process.platform !== "darwin", timeout: 30_000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-real-pip-"));
     const sourceDirectory = join(directory, "pyspark-4.2.0");
     const packageDirectory = join(sourceDirectory, "pyspark");
     const sourceArchive = join(directory, "fixture.tar.gz");
+    const maliciousArchive = join(directory, "malicious-fixture.tar.gz");
     const installDirectory = join(directory, "installed");
     const basePython = process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3";
     const commandEnvironment = Object.freeze({
@@ -1882,13 +1899,33 @@ test(
         { timeoutMs: 10_000 }
       );
       const payload = await readFile(sourceArchive);
+      writeFileSync(join(packageDirectory, "__init__.py"), "SEALED_PIP_FIXTURE = 'unverified-π'\n", {
+        encoding: "utf8",
+        mode: 0o600
+      });
+      await runBoundedEditorCommand(
+        {
+          executable: basePython,
+          args: [
+            "-I",
+            "-c",
+            "import sys, tarfile; t=tarfile.open(sys.argv[2], 'w:gz'); t.add(sys.argv[1], arcname='pyspark-4.2.0'); t.close()",
+            sourceDirectory,
+            maliciousArchive
+          ],
+          environment: commandEnvironment,
+          label: "PySpark active-path mutation fixture creation"
+        },
+        { timeoutMs: 10_000 }
+      );
+      const maliciousPayload = await readFile(maliciousArchive);
       const distribution = testPySparkDistribution(payload);
+      assert.notEqual(createHash("sha256").update(maliciousPayload).digest("hex"), distribution.sha256);
       artifact = await acquireVerifiedPySparkArtifact(directory, distribution, {
         fetchImpl: async () => streamedResponse([payload.subarray(0, 65), payload.subarray(65)]),
         randomBytesImpl: () => Buffer.alloc(16, 0x49),
         timeoutMs: 2_000
       });
-      const acquisitionPath = artifact.path;
       const pipArguments = [
         "-I",
         "-m",
@@ -1905,39 +1942,71 @@ test(
         installDirectory
       ];
       let spawnCalls = 0;
-      await runBoundedEditorCommand(
-        {
-          executable: basePython,
-          args: pipArguments,
-          environment: commandEnvironment,
-          label: "PySpark sealed-boundary real pip replacement proof",
-          beforeSpawn() {
-            return artifact.preparePipLaunch(pipArguments, process.platform);
+      let activePipPath;
+      let mutationCompleted = false;
+      let mutationError;
+      await assert.rejects(
+        runBoundedEditorCommand(
+          {
+            executable: basePython,
+            args: pipArguments,
+            environment: commandEnvironment,
+            label: "PySpark active-path descriptor-consumption replacement proof",
+            beforeSpawn() {
+              const preparation = artifact.preparePipLaunch(pipArguments, process.platform);
+              activePipPath = artifact.path;
+              assert.equal(existsSync(activePipPath), false);
+              return preparation;
+            }
+          },
+          {
+            timeoutMs: 20_000,
+            spawnProcess(executable, args, options) {
+              spawnCalls += 1;
+              assert.equal(args.includes(activePipPath), false);
+              assert.deepEqual(args.slice(0, 2), ["-I", "-c"]);
+              const child = spawn(executable, args, options);
+              child.once("spawn", () => {
+                try {
+                  chmodSync(dirname(activePipPath), 0o700);
+                  writeFileSync(activePipPath, maliciousPayload, { flag: "wx", mode: 0o600 });
+                  chmodSync(dirname(activePipPath), 0o500);
+                  mutationCompleted = true;
+                } catch (error) {
+                  mutationError = error;
+                }
+              });
+              return child;
+            }
           }
-        },
-        {
-          timeoutMs: 20_000,
-          spawnProcess(executable, args, options) {
-            spawnCalls += 1;
-            assert.equal(existsSync(acquisitionPath), false);
-            assert.match(args.at(-1), /\.ow-pyspark-pip-[a-f0-9]{32}\/pyspark-4\.2\.0\.tar\.gz#sha256=[a-f0-9]{64}$/u);
-            writeFileSync(acquisitionPath, "post-seal replacement", { flag: "wx", mode: 0o600 });
-            return spawn(executable, args, options);
-          }
-        }
+        ),
+        (error) =>
+          error?.code === "EDITOR_COMMAND_RESOURCE_RELEASE_FAILED" &&
+          acceptanceErrorTree(error).some((candidate) =>
+            /active pip pathname was recreated during consumption/u.test(String(candidate))
+          )
       );
       assert.equal(spawnCalls, 1);
+      assert.equal(mutationCompleted, true);
+      assert.equal(mutationError, undefined);
       assert.equal(
         await readFile(join(installDirectory, "pyspark", "__init__.py"), "utf8"),
         "SEALED_PIP_FIXTURE = 'verified-π'\n"
       );
-      assert.equal(await readFile(acquisitionPath, "utf8"), "post-seal replacement");
+      assert.notEqual(
+        await readFile(join(installDirectory, "pyspark", "__init__.py"), "utf8"),
+        "SEALED_PIP_FIXTURE = 'unverified-π'\n"
+      );
+      assert.deepEqual(await readFile(activePipPath), maliciousPayload);
       assert.throws(
         () => artifact.preparePipLaunch(pipArguments, process.platform),
         /not available for a new pip launch/u
       );
       await artifact.dispose();
-      await assertScrubbedPySparkArtifact(directory, artifact.path);
+      assert.deepEqual(await readFile(activePipPath), maliciousPayload);
+      const quarantineNames = (await readdir(directory)).filter((name) => name.startsWith(".ow-pyspark-cleanup-"));
+      assert.equal(quarantineNames.length, 1);
+      assert.deepEqual(await readdir(join(directory, quarantineNames[0])), []);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -1990,7 +2059,7 @@ test(
           /not available for a new pip launch/u
         );
         await artifact.dispose();
-        await assertScrubbedPySparkArtifact(directory, artifact.path);
+        await assertDetachedPySparkArtifactDisposed(directory, artifact.path);
       } finally {
         await rm(directory, { recursive: true, force: true });
       }
@@ -2158,10 +2227,6 @@ test("PySpark artifact cleanup refuses a substituted pathname and preserves the 
       randomBytesImpl: () => Buffer.alloc(16, 0x43),
       timeoutMs: 1_000
     });
-    if (process.platform === "linux" || process.platform === "darwin") {
-      const launch = artifact.preparePipLaunch(["-I", "-m", "pip", "install"], process.platform);
-      launch.release();
-    }
     const verifiedDescriptor = process.platform === "linux" ? descriptorForExactPath(artifact.path) : undefined;
     renameSync(artifact.path, displaced);
     writeFileSync(artifact.path, "replacement", { flag: "wx", mode: 0o600 });
@@ -2493,8 +2558,13 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.ok(commands[4].input.args.includes("--no-deps"));
     assert.deepEqual(commands[4].input.args.slice(-2), ["--no-cache-dir", "--no-deps"]);
     assert.equal(commands[4].input.args.includes(artifacts[0].path), false);
-    assert.match(artifacts[0].launchArguments.at(-1), /^pyspark @ file:\/\/\/private-pyspark-boundary\//u);
-    assert.match(artifacts[0].launchArguments.at(-1), /#sha256=[a-f0-9]{64}$/u);
+    assert.deepEqual(artifacts[0].launchArguments.slice(0, 3), ["-I", "-c", "sealed-test-descriptor-bootstrap"]);
+    assert.deepEqual(artifacts[0].launchArguments.slice(3, 7), [
+      "pyspark",
+      artifacts[0].distribution.filename,
+      artifacts[0].distribution.sha256,
+      String(artifacts[0].distribution.size)
+    ]);
     assert.equal(
       commands[4].input.args.some((value) => /^https?:/u.test(value)),
       false
@@ -2580,8 +2650,13 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
     assert.equal(kernelPython, join(environmentDirectory, "v", "bin", "python"));
     assert.equal(commands[4].input.label, "Released-Jupyter private kernel PySpark installation");
     assert.equal(commands[4].input.args.includes(artifacts[0].path), false);
-    assert.match(artifacts[0].launchArguments.at(-1), /^pyspark @ file:\/\/\/private-pyspark-boundary\//u);
-    assert.match(artifacts[0].launchArguments.at(-1), /#sha256=[a-f0-9]{64}$/u);
+    assert.deepEqual(artifacts[0].launchArguments.slice(0, 3), ["-I", "-c", "sealed-test-descriptor-bootstrap"]);
+    assert.deepEqual(artifacts[0].launchArguments.slice(3, 7), [
+      "pyspark",
+      artifacts[0].distribution.filename,
+      artifacts[0].distribution.sha256,
+      String(artifacts[0].distribution.size)
+    ]);
     assert.equal(
       commands[4].input.args.some((value) => /^https?:/u.test(value)),
       false

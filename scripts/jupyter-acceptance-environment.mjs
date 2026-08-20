@@ -16,11 +16,11 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
   writeSync
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   createEditorAcceptanceEnvironment,
   readBoundedAcceptanceText,
@@ -85,6 +85,153 @@ const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
 const REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES = 2_048;
+const PYSPARK_PIP_DESCRIPTOR_BOOTSTRAP = `exec(${JSON.stringify(String.raw`
+import hashlib
+import os
+import secrets
+import socket
+import stat
+import sys
+import threading
+from urllib.parse import quote
+
+if len(sys.argv) < 6:
+    raise RuntimeError("Released-Jupyter PySpark pip bootstrap received an incomplete invocation.")
+package, filename, expected_sha256, expected_size_text, *pip_arguments = sys.argv[1:]
+if (
+    package != "pyspark"
+    or not filename.startswith("pyspark-")
+    or not filename.endswith(".tar.gz")
+    or len(filename) > 96
+    or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in filename)
+    or len(expected_sha256) != 64
+    or any(character not in "0123456789abcdef" for character in expected_sha256)
+    or not expected_size_text.isascii()
+    or not expected_size_text.isdecimal()
+    or len(pip_arguments) > 64
+    or any(not isinstance(argument, str) or len(argument) > 4096 for argument in pip_arguments)
+):
+    raise RuntimeError("Released-Jupyter PySpark pip bootstrap rejected its bounded artifact authority.")
+expected_size = int(expected_size_text)
+if expected_size <= 0 or expected_size > 512 * 1024 * 1024:
+    raise RuntimeError("Released-Jupyter PySpark pip bootstrap rejected its bounded artifact size.")
+
+descriptor = 3
+def snapshot():
+    metadata = os.fstat(descriptor)
+    identity = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+    )
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0 or metadata.st_size != expected_size:
+        raise RuntimeError("Released-Jupyter PySpark pip bootstrap lost its detached artifact identity.")
+    return identity
+
+artifact_identity = snapshot()
+def digest_descriptor():
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < expected_size:
+        chunk = os.pread(descriptor, min(65536, expected_size - offset), offset)
+        if not chunk:
+            raise RuntimeError("Released-Jupyter PySpark pip bootstrap reached an early artifact boundary.")
+        digest.update(chunk)
+        offset += len(chunk)
+    if os.pread(descriptor, 1, expected_size):
+        raise RuntimeError("Released-Jupyter PySpark pip bootstrap exceeded its artifact boundary.")
+    return digest.hexdigest()
+
+if digest_descriptor() != expected_sha256 or snapshot() != artifact_identity:
+    raise RuntimeError("Released-Jupyter PySpark pip bootstrap rejected changed verified bytes.")
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+server.bind(("127.0.0.1", 0))
+server.listen(1)
+server.settimeout(30)
+token = secrets.token_hex(32)
+request_path = "/" + token + "/" + quote(filename, safe="")
+served = {"complete": False, "error": None}
+
+def serve_once():
+    connection = None
+    try:
+        connection, address = server.accept()
+        if address[0] != "127.0.0.1":
+            raise RuntimeError("Released-Jupyter PySpark pip source rejected a non-loopback client.")
+        connection.settimeout(30)
+        request = bytearray()
+        while b"\r\n\r\n" not in request:
+            chunk = connection.recv(1024)
+            if not chunk or len(request) + len(chunk) > 8192:
+                raise RuntimeError("Released-Jupyter PySpark pip source rejected a malformed request.")
+            request.extend(chunk)
+        request_line = bytes(request).split(b"\r\n", 1)[0]
+        expected_line = f"GET {request_path} HTTP/1.1".encode("ascii")
+        if request_line != expected_line:
+            raise RuntimeError("Released-Jupyter PySpark pip source rejected an unexpected request.")
+        connection.sendall(
+            (
+                "HTTP/1.1 200 OK\r\n"
+                + f"Content-Length: {expected_size}\r\n"
+                + "Content-Type: application/gzip\r\n"
+                + "Connection: close\r\n\r\n"
+            ).encode("ascii")
+        )
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < expected_size:
+            if snapshot() != artifact_identity:
+                raise RuntimeError("Released-Jupyter PySpark pip source lost its detached artifact identity.")
+            chunk = os.pread(descriptor, min(65536, expected_size - offset), offset)
+            if not chunk:
+                raise RuntimeError("Released-Jupyter PySpark pip source reached an early artifact boundary.")
+            connection.sendall(chunk)
+            digest.update(chunk)
+            offset += len(chunk)
+        if digest.hexdigest() != expected_sha256 or snapshot() != artifact_identity:
+            raise RuntimeError("Released-Jupyter PySpark pip source rejected changed artifact bytes.")
+        served["complete"] = True
+    except BaseException as error:
+        served["error"] = error
+    finally:
+        if connection is not None:
+            connection.close()
+        server.close()
+
+server_thread = threading.Thread(target=serve_once, name="openwrangler-pyspark-pip-source", daemon=True)
+server_thread.start()
+requirement = f"{package} @ http://127.0.0.1:{server.getsockname()[1]}{request_path}#sha256={expected_sha256}"
+for proxy_name in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy"):
+    os.environ.pop(proxy_name, None)
+os.environ["NO_PROXY"] = "127.0.0.1"
+os.environ["no_proxy"] = "127.0.0.1"
+pip_exit_code = None
+pip_failure = None
+try:
+    from pip._internal.cli.main import main as pip_main
+    pip_exit_code = pip_main([*pip_arguments, requirement])
+except BaseException as error:
+    pip_failure = error
+server_thread.join(timeout=30)
+if server_thread.is_alive():
+    server.close()
+    server_thread.join(timeout=1)
+    raise RuntimeError("Released-Jupyter PySpark pip source did not settle after consumption.")
+if served["error"] is not None:
+    raise RuntimeError("Released-Jupyter PySpark pip source failed during exact consumption.") from served["error"]
+if pip_failure is not None:
+    raise RuntimeError("Released-Jupyter PySpark pip failed during exact consumption.") from pip_failure
+if not served["complete"] or digest_descriptor() != expected_sha256 or snapshot() != artifact_identity:
+    raise RuntimeError("Released-Jupyter PySpark pip source did not complete exact consumption.")
+if pip_exit_code != 0:
+    raise SystemExit(pip_exit_code)
+`)})`;
 const R_ACCEPTANCE_PRIMARY_SNAPSHOT = "2026-03-10";
 const R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT = "2026-06-01";
 export const R_ACCEPTANCE_REPOSITORY = `https://p3m.dev/cran/__linux__/noble/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`;
@@ -890,6 +1037,7 @@ export async function acquireVerifiedPySparkArtifact(
       throw new Error("Released-Jupyter PySpark download path changed after verification.");
     }
     let activeArtifactPath = artifactPath;
+    let artifactDetached = false;
     let disposed = false;
     let pipBoundaryDirectoryIdentity;
     let pipBoundaryPrepared = false;
@@ -903,6 +1051,9 @@ export async function acquireVerifiedPySparkArtifact(
           args.length === 0 ||
           args.length > 64 ||
           !args.every((argument) => typeof argument === "string" && !/[\0\r\n]/u.test(argument)) ||
+          args[0] !== "-I" ||
+          args[1] !== "-m" ||
+          args[2] !== "pip" ||
           (platform !== "linux" && platform !== "darwin")
         ) {
           throw new Error("Released-Jupyter PySpark pip launch requires one bounded POSIX invocation.");
@@ -927,6 +1078,20 @@ export async function acquireVerifiedPySparkArtifact(
           activeArtifactPath = pipBoundaryPath;
           pipBoundaryPrepared = true;
           assertVerifiedPySparkArtifact(launchDescriptor, activeArtifactPath, identity, receipt);
+          unlinkSync(activeArtifactPath);
+          artifactDetached = true;
+          const detachedLaunchMetadata = fstatSync(launchDescriptor, { bigint: true });
+          const detachedCleanupMetadata = fstatSync(descriptor, { bigint: true });
+          if (
+            detachedLaunchMetadata.nlink !== 0n ||
+            detachedCleanupMetadata.nlink !== 0n ||
+            detachedLaunchMetadata.size !== BigInt(receipt.size) ||
+            detachedCleanupMetadata.size !== BigInt(receipt.size) ||
+            !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(detachedLaunchMetadata)) ||
+            !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(detachedCleanupMetadata))
+          ) {
+            throw new Error("Released-Jupyter PySpark artifact could not detach before pip launch.");
+          }
           chmodSync(pipBoundaryDirectory, 0o500);
           const sealedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
           if (
@@ -959,15 +1124,30 @@ export async function acquireVerifiedPySparkArtifact(
           throw new Error("Released-Jupyter PySpark artifact identity changed before pip launch.", { cause: error });
         }
         let released = false;
-        const pipArtifactUrl = pathToFileURL(activeArtifactPath);
-        pipArtifactUrl.hash = `sha256=${receipt.sha256}`;
         return Object.freeze({
-          args: Object.freeze([...args, `${receipt.package} @ ${pipArtifactUrl.href}`]),
+          args: Object.freeze([
+            "-I",
+            "-c",
+            PYSPARK_PIP_DESCRIPTOR_BOOTSTRAP,
+            receipt.package,
+            receipt.filename,
+            receipt.sha256,
+            String(receipt.size),
+            ...args.slice(3)
+          ]),
           inheritedFileDescriptors: Object.freeze([launchDescriptor]),
           release() {
             if (released) throw new Error("Released-Jupyter PySpark launch descriptor was already released.");
             released = true;
             const releaseFailures = [];
+            try {
+              lstatSync(activeArtifactPath);
+              releaseFailures.push(
+                new Error("Released-Jupyter PySpark active pip pathname was recreated during consumption.")
+              );
+            } catch (error) {
+              if (error?.code !== "ENOENT") releaseFailures.push(error);
+            }
             try {
               const sealedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
               if (
@@ -1020,15 +1200,19 @@ export async function acquireVerifiedPySparkArtifact(
         disposed = true;
         const cleanupFailures = [];
         try {
-          scrubIdentifiedPySparkArtifact({
-            artifactPath: activeArtifactPath,
-            beforeCleanupLink,
-            cleanupDirectory,
-            cleanupDirectoryIdentity,
-            cleanupTarget,
-            descriptor,
-            identity
-          });
+          if (artifactDetached) {
+            scrubDetachedPySparkArtifact({ descriptor, identity });
+          } else {
+            scrubIdentifiedPySparkArtifact({
+              artifactPath: activeArtifactPath,
+              beforeCleanupLink,
+              cleanupDirectory,
+              cleanupDirectoryIdentity,
+              cleanupTarget,
+              descriptor,
+              identity
+            });
+          }
         } catch (error) {
           cleanupFailures.push(error);
         }
@@ -1222,6 +1406,27 @@ function assertVerifiedPySparkArtifact(descriptor, path, identity, receipt) {
     !sameDownloadedArtifactIdentity(identity, downloadedArtifactIdentity(namedAfter))
   ) {
     throw new Error("Released-Jupyter PySpark artifact changed during its pre-spawn digest.");
+  }
+}
+
+function scrubDetachedPySparkArtifact({ descriptor, identity }) {
+  const opened = fstatSync(descriptor, { bigint: true });
+  if (
+    !opened.isFile() ||
+    opened.nlink !== 0n ||
+    !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(opened))
+  ) {
+    throw new Error("Released-Jupyter PySpark detached artifact identity changed before cleanup.");
+  }
+  ftruncateSync(descriptor, 0);
+  fsyncSync(descriptor);
+  const scrubbed = fstatSync(descriptor, { bigint: true });
+  if (
+    scrubbed.size !== 0n ||
+    scrubbed.nlink !== 0n ||
+    !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(scrubbed))
+  ) {
+    throw new Error("Released-Jupyter PySpark detached artifact cleanup could not verify its exact scrubbed inode.");
   }
 }
 
