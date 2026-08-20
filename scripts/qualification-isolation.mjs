@@ -596,8 +596,7 @@ async function openPinnedDirectory(path, label, { afterOpenForTest } = {}) {
     }
     return { handle, path, snapshot: opened };
   } catch (error) {
-    await handle.close();
-    throw error;
+    await finishWithOwnedCleanup(error, [{ label, run: () => handle.close() }]);
   }
 }
 
@@ -675,8 +674,7 @@ async function openPinnedRegularFile(path, maximumBytes, label, { afterOpenForTe
     }
     return { bytes, handle, path, snapshot };
   } catch (error) {
-    await handle.close();
-    throw error;
+    await finishWithOwnedCleanup(error, [{ label, run: () => handle.close() }]);
   }
 }
 
@@ -849,8 +847,7 @@ async function openGitOwnerPins(assignment, gitIdentity, worktreePin, hostEnviro
     }
     return pins;
   } catch (error) {
-    await closeDirectoryPins(pins);
-    throw error;
+    await finishWithOwnedCleanup(error, [{ label: "partial Git owners", run: () => closeDirectoryPins(pins) }]);
   }
 }
 
@@ -873,16 +870,18 @@ async function verifyGitOwnerPins(pins) {
 }
 
 async function closeDirectoryPins(pins) {
-  const handles = [];
+  const actions = [];
   for (const [key, value] of Object.entries(pins ?? {})) {
     if (key === "configManifest") continue;
     if (key === "configSources") {
-      handles.push(...value.map((source) => source.pin.handle));
+      for (const [index, source] of value.entries()) {
+        actions.push({ label: `Git config source ${String(index)}`, run: () => source.pin.handle.close() });
+      }
     } else {
-      handles.push(value.handle);
+      actions.push({ label: `${key} owner`, run: () => value.handle.close() });
     }
   }
-  await Promise.all(handles.map((handle) => handle.close()));
+  await finishWithOwnedCleanup(null, actions);
 }
 
 async function captureGitConfigIdentity(assignment, pins, hostEnvironment) {
@@ -919,7 +918,14 @@ async function captureGitConfigIdentity(assignment, pins, hostEnvironment) {
 
 async function captureGitMetadataIdentity(pins) {
   const indexBytes = await verifyPinnedRegularFile(pins.gitIndex, MAX_GIT_INDEX_BYTES, "Git index owner");
+  const gitDirectory = await inspectPrivateTree(pins.gitDirectory, "Git-directory owner");
+  const commonDirectory =
+    pins.commonDirectory.path === pins.gitDirectory.path
+      ? null
+      : await inspectPrivateTree(pins.commonDirectory, "Git common-directory owner");
   return {
+    commonDirectory,
+    gitDirectory,
     index: {
       device: pins.gitIndex.snapshot.dev.toString(),
       inode: pins.gitIndex.snapshot.ino.toString(),
@@ -1101,8 +1107,7 @@ async function createStateLayout(assignment, assignmentDigest) {
       fail("receipt reservation is invalid");
     }
   } catch (error) {
-    await receiptHandle.close();
-    throw error;
+    await finishWithOwnedCleanup(error, [{ label: "receipt owner", run: () => receiptHandle.close() }]);
   }
   const ownerPins = {};
   try {
@@ -1117,9 +1122,10 @@ async function createStateLayout(assignment, assignmentDigest) {
       }
     }
   } catch (error) {
-    await Promise.all(Object.values(ownerPins).map((pin) => pin.handle.close()));
-    await receiptHandle.close();
-    throw error;
+    await finishWithOwnedCleanup(error, [
+      ...Object.entries(ownerPins).map(([key, pin]) => ({ label: `${key} owner`, run: () => pin.handle.close() })),
+      { label: "receipt owner", run: () => receiptHandle.close() }
+    ]);
   }
   return {
     identities,
@@ -1213,6 +1219,7 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
   const limits = pytestTreeLimits(options.limits);
   const platform = options.platformForTest ?? process.platform;
   await verifyPinnedDirectory(rootPin, label);
+  const rootBefore = await rootPin.handle.stat({ bigint: true });
   const rootMount = await pinnedMountIdentity(rootPin.handle, rootPin.path, platform, options.mountIdentityForTest);
   const accumulator = { sum: 0n, xor: Buffer.alloc(32) };
   let directories = 1;
@@ -1360,6 +1367,8 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
 
   await visit(rootPin, "", Buffer.alloc(0));
   await verifyPinnedDirectory(rootPin, label);
+  const rootAfter = await rootPin.handle.stat({ bigint: true });
+  if (!sameImmutableSnapshot(rootBefore, rootAfter)) fail(`${label} changed while it was inspected`);
   return {
     bytes: Number(totalBytes),
     device: rootPin.snapshot.dev.toString(),
@@ -1368,7 +1377,13 @@ async function inspectPrivateTree(rootPin, label, options = {}) {
     files,
     mount: rootMount,
     pathBytes,
-    root: fileIdentityRecord(rootPin.path, rootPin.snapshot),
+    root: {
+      ...fileIdentityRecord(rootPin.path, rootBefore),
+      birthtimeNanoseconds: rootBefore.birthtimeNs.toString(),
+      changeNanoseconds: rootBefore.ctimeNs.toString(),
+      modificationNanoseconds: rootBefore.mtimeNs.toString(),
+      size: Number(rootBefore.size)
+    },
     sha256: finishTreeDigest(accumulator, entries),
     symbolicLinks
   };
@@ -1412,8 +1427,7 @@ async function bindPytestTempTree(layoutState, { afterOpenForTest, limits, mount
     layoutState.pytestTempTree = { ...accounting, basetemp: fileIdentityRecord(pin.path, pin.snapshot) };
     return layoutState.pytestTempTree;
   } catch (error) {
-    await pin.handle.close();
-    throw error;
+    await finishWithOwnedCleanup(error, [{ label: "pytest basetemp", run: () => pin.handle.close() }]);
   }
 }
 
@@ -1450,26 +1464,22 @@ function rejectConfigurationInjection(argument) {
     argument.startsWith("--config-env=")
   );
 }
-function rejectOwnerOverrides(arguments_) {
+function validateGlobalOptions(arguments_) {
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
-    if (argument === "--") break;
-    if (!argument.startsWith("-")) break;
-    if (
-      argument === "--bare" ||
-      argument === "--git-dir" ||
-      argument.startsWith("--git-dir=") ||
-      argument === "--namespace" ||
-      argument.startsWith("--namespace=") ||
-      argument === "--work-tree" ||
-      argument.startsWith("--work-tree=")
-    ) {
-      throw new Error("qualification Git metadata ownership cannot be overridden");
-    }
+    if (argument === "--" || !argument.startsWith("-")) return;
     if (rejectConfigurationInjection(argument)) {
       throw new Error("qualification Git configuration cannot be overridden");
     }
-    if (argument === "-C") index += 1;
+    if (argument === "-C") {
+      if (typeof arguments_[index + 1] !== "string" || arguments_[index + 1].length === 0) {
+        throw new Error("qualification Git -C owner is malformed");
+      }
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("-C") && argument.length > 2) continue;
+    throw new Error("qualification Git global option is not allowed");
   }
 }
 function effectiveWorkingDirectory(initial, arguments_) {
@@ -1503,6 +1513,45 @@ function commandAfterGlobalOptions(arguments_) {
   }
   return { command: undefined, rest: [] };
 }
+function rejectUnsafeReadOption(argument) {
+  const name = argument.includes("=") ? argument.slice(0, argument.indexOf("=")) : argument;
+  return (
+    name === "-o" ||
+    (name.startsWith("-o") && !name.startsWith("--")) ||
+    name === "--output" ||
+    name === "--config-env" ||
+    name === "--ext-diff" ||
+    name === "--textconv" ||
+    name === "--filters" ||
+    name === "--filter" ||
+    name === "--exec-path" ||
+    name === "--upload-pack" ||
+    name === "--receive-pack" ||
+    name === "--show-signature" ||
+    name === "--no-index" ||
+    name === "--index-info" ||
+    name === "--alternate-refs" ||
+    name.startsWith("--write") ||
+    name.startsWith("--update") ||
+    name.includes("helper")
+  );
+}
+function validateReadOnlyArguments(command, rest) {
+  let pathsOnly = false;
+  for (const argument of rest) {
+    if (pathsOnly) continue;
+    if (argument === "--") {
+      pathsOnly = true;
+      continue;
+    }
+    if (rejectConfigurationInjection(argument)) {
+      throw new Error("qualification Git configuration cannot be overridden");
+    }
+    if (argument.startsWith("-") && rejectUnsafeReadOption(argument)) {
+      throw new Error("qualification Git " + command + " option is not read-only");
+    }
+  }
+}
 function requireReadOnlyAssignedCommand(arguments_) {
   const { command, rest } = commandAfterGlobalOptions(arguments_);
   const ordinary = new Set([
@@ -1529,6 +1578,7 @@ function requireReadOnlyAssignedCommand(arguments_) {
     if (rest.length !== 1 || rest[0] !== "--show-current") {
       throw new Error("qualification Git branch access is read-only");
     }
+    validateReadOnlyArguments(command, rest);
     return;
   }
   if (command === "config") {
@@ -1544,11 +1594,38 @@ function requireReadOnlyAssignedCommand(arguments_) {
     if ((mode === "--list" || mode === "-l") ? positional.length !== 0 : positional.length < 1 || positional.length > 2) {
       throw new Error("qualification Git config access is read-only");
     }
+    validateReadOnlyArguments(command, rest);
     return;
   }
   if (!ordinary.has(command)) {
     throw new Error("qualification Git command is not read-only for the authoritative worktree");
   }
+  validateReadOnlyArguments(command, rest);
+}
+function hardenedAssignedArguments(arguments_) {
+  const { command } = commandAfterGlobalOptions(arguments_);
+  const commandIndex = arguments_.findIndex((argument, index) => {
+    if (index > 0 && arguments_[index - 1] === "-C") return false;
+    return argument === command;
+  });
+  if (commandIndex < 0) throw new Error("qualification Git command is missing");
+  const hardened = [...arguments_];
+  if (["diff", "diff-index", "diff-tree", "log", "show"].includes(command)) {
+    hardened.splice(commandIndex + 1, 0, "--no-ext-diff", "--no-textconv");
+  }
+  return [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "core.pager=",
+    "--git-dir",
+    binding.gitDirectory,
+    "--work-tree",
+    binding.worktree,
+    ...hardened
+  ];
 }
 const environment = { ...process.env };
 for (const key of Object.keys(environment)) {
@@ -1557,18 +1634,20 @@ for (const key of Object.keys(environment)) {
 }
 Object.assign(environment, binding.configSelectionEnvironment);
 environment.GIT_OPTIONAL_LOCKS = "0";
+environment.GIT_NO_REPLACE_OBJECTS = "1";
+environment.GIT_PAGER = "";
+environment.GIT_TERMINAL_PROMPT = "0";
+environment.PAGER = "";
 const cwd = realpathSync.native(process.cwd());
 const arguments_ = process.argv.slice(2);
-rejectOwnerOverrides(arguments_);
+validateGlobalOptions(arguments_);
 const effectiveCwd = effectiveWorkingDirectory(cwd, arguments_);
 const usesAssignedWorktree = isInside(binding.worktree, effectiveCwd);
 if (!usesAssignedWorktree && !isInside(binding.stateRoot, effectiveCwd)) {
   throw new Error("unbound qualification Git is permitted only inside the private task root");
 }
 if (usesAssignedWorktree) requireReadOnlyAssignedCommand(arguments_);
-const commandArguments = usesAssignedWorktree
-  ? ["--git-dir", binding.gitDirectory, "--work-tree", binding.worktree, ...arguments_]
-  : arguments_;
+const commandArguments = usesAssignedWorktree ? hardenedAssignedArguments(arguments_) : arguments_;
 function verifyOpenedExecutable(handle) {
   const value = fstatSync(handle, { bigint: true });
   if (!value.isFile() || value.nlink !== 1n || value.size !== BigInt(binding.gitExecutableSize)) {
@@ -1645,8 +1724,9 @@ async function prepareGitWrapper(layoutState, assignment, configSelectionEnviron
       }
     );
   } catch (error) {
-    await closePinnedExecutable(executable);
-    throw error;
+    await finishWithOwnedCleanup(error, [
+      { label: "private Git executable source", run: () => closePinnedExecutable(executable) }
+    ]);
   }
   const windowsPowerShell =
     process.platform === "win32"
@@ -1720,8 +1800,10 @@ async function trustedToolDirectories(assignment) {
       directories.push(canonical);
     }
   } catch (error) {
-    await Promise.all(pins.map((pin) => pin.handle.close()));
-    throw error;
+    await finishWithOwnedCleanup(
+      error,
+      pins.map((pin, index) => ({ label: `trusted tool directory ${String(index)}`, run: () => pin.handle.close() }))
+    );
   }
   return { directories, pins, windowsCommandProcessor, windowsSupervisorCommand, windowsSystemRoot };
 }
@@ -1769,6 +1851,57 @@ function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
+const SETTLEMENT_UNCERTAIN = Symbol("settlement-uncertain");
+
+async function boundedWait(promise, milliseconds) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout(SETTLEMENT_UNCERTAIN), milliseconds);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function appendCleanupErrors(target, error) {
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) appendCleanupErrors(target, nested);
+    return;
+  }
+  target.push(error instanceof Error ? error : new Error(String(error)));
+}
+
+async function collectOwnedCleanup(actions, graceMilliseconds = DEFAULT_TERMINATION_GRACE_MS) {
+  const errors = [];
+  for (const action of actions) {
+    if (!action?.run) continue;
+    try {
+      const outcome = await boundedWait(Promise.resolve().then(action.run), graceMilliseconds);
+      if (outcome === SETTLEMENT_UNCERTAIN) {
+        errors.push(new Error(`${action.label} cleanup did not settle within its bound`));
+      }
+    } catch (error) {
+      appendCleanupErrors(errors, error);
+    }
+  }
+  return errors;
+}
+
+async function finishWithOwnedCleanup(primaryError, actions, graceMilliseconds = DEFAULT_TERMINATION_GRACE_MS) {
+  const cleanupErrors = await collectOwnedCleanup(actions, graceMilliseconds);
+  if (primaryError && cleanupErrors.length > 0) {
+    throw new AggregateError([primaryError, ...cleanupErrors], "qualification failed and owned cleanup also failed");
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, "owned qualification cleanup failed");
+  }
+}
+
 function validateBound(value, maximum, label) {
   if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
     fail(`${label} must be a positive safe integer no larger than ${maximum}`);
@@ -1795,8 +1928,9 @@ async function openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget, opt
     }
     return { before, linkText, path, symbolicLinkTarget: allowedSymbolicLinkTarget, target };
   } catch (error) {
-    await closePinnedExecutable(target);
-    throw error;
+    await finishWithOwnedCleanup(error, [
+      { label: "qualification command symbolic target", run: () => closePinnedExecutable(target) }
+    ]);
   }
 }
 
@@ -1839,8 +1973,7 @@ async function openPinnedExecutable(
     }
     return { before: opened, handle, path };
   } catch (error) {
-    await handle?.close();
-    throw error;
+    await finishWithOwnedCleanup(error, [{ label: "qualification command", run: () => handle?.close() }]);
   }
 }
 
@@ -1988,8 +2121,10 @@ async function verifyExecutableLaunch(value) {
 
 async function closeExecutableLaunch(value) {
   if (!value) return;
-  await closePinnedExecutable(value.snapshot);
-  await closePinnedExecutable(value.source);
+  await finishWithOwnedCleanup(null, [
+    { label: "qualification command snapshot", run: () => closePinnedExecutable(value.snapshot) },
+    { label: "qualification command source", run: () => closePinnedExecutable(value.source) }
+  ]);
 }
 
 function waitForSpawnedProcess(child) {
@@ -2008,10 +2143,11 @@ function waitForSpawnedProcess(child) {
 async function terminateAndAwaitProcess(child, completion, graceMilliseconds) {
   child.stdin?.destroy();
   child.kill("SIGTERM");
-  const graceful = await Promise.race([completion, delay(graceMilliseconds).then(() => null)]);
-  if (graceful !== null) return graceful;
+  const graceful = await boundedWait(completion, graceMilliseconds);
+  if (graceful !== SETTLEMENT_UNCERTAIN) return graceful;
   child.kill("SIGKILL");
-  return completion;
+  const forced = await boundedWait(completion, graceMilliseconds);
+  return forced === SETTLEMENT_UNCERTAIN ? null : forced;
 }
 
 function readPosixSupervisorControl(stream) {
@@ -2125,11 +2261,16 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       strategy: options.executionStrategy
     });
   } catch (error) {
-    await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError:
+        settlement === null
+          ? `${error instanceof Error ? error.message : String(error)}; POSIX supervisor did not settle after forced termination`
+          : error instanceof Error
+            ? error.message
+            : String(error),
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2137,11 +2278,14 @@ async function runPosixOwnedCommand(command, arguments_, options) {
   }
   const controlStream = options.posixMissingControlPipeForTest ? null : child.stdio[5];
   if (!controlStream) {
-    await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: "POSIX containment supervisor control pipe is unavailable",
+      spawnError:
+        settlement === null
+          ? "POSIX containment supervisor control pipe is unavailable and forced termination did not settle"
+          : "POSIX containment supervisor control pipe is unavailable",
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2161,17 +2305,22 @@ async function runPosixOwnedCommand(command, arguments_, options) {
   clearTimeout(timer);
   if (outcome.timedOut === true) {
     const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
-    const reported = await control;
+    const boundedControl = await boundedWait(control, 5 * options.terminationGraceMs);
+    const reported = boundedControl === SETTLEMENT_UNCERTAIN ? null : boundedControl;
     return {
       lingeringDescendants: reported?.lingeringDescendants === true,
-      signal: settlement.signal ?? null,
-      spawnError: "POSIX containment supervisor exceeded its bounded settlement",
+      signal: settlement?.signal ?? null,
+      spawnError:
+        settlement === null
+          ? "POSIX containment supervisor exceeded its bounded settlement and did not settle after forced termination"
+          : "POSIX containment supervisor exceeded its bounded settlement",
       status: null,
       timedOut: true,
-      treeEmpty: reported?.treeEmpty === true
+      treeEmpty: settlement !== null && reported?.treeEmpty === true
     };
   }
-  const reported = await control;
+  const boundedControl = await boundedWait(control, 5 * options.terminationGraceMs);
+  const reported = boundedControl === SETTLEMENT_UNCERTAIN ? null : boundedControl;
   if (outcome.error || outcome.status !== 0 || outcome.signal !== null || !reported) {
     return {
       lingeringDescendants: false,
@@ -2384,11 +2533,16 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       strategy: options.executionStrategy
     });
   } catch (error) {
-    await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError:
+        settlement === null
+          ? `${error instanceof Error ? error.message : String(error)}; Windows supervisor did not settle after forced termination`
+          : error instanceof Error
+            ? error.message
+            : String(error),
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2397,11 +2551,14 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   const controlPipesAvailable =
     !options.windowsMissingControlPipeForTest && supervisor.stdin !== null && supervisor.stderr !== null;
   if (!controlPipesAvailable) {
-    await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: "Windows Job Object supervisor pipes are unavailable",
+      spawnError:
+        settlement === null
+          ? "Windows Job Object supervisor pipes are unavailable and forced termination did not settle"
+          : "Windows Job Object supervisor pipes are unavailable",
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2415,13 +2572,16 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   try {
     await options.verifyExecutableForSpawn();
   } catch (error) {
-    supervisor.stdin.destroy();
-    supervisor.kill("SIGKILL");
-    await completion;
+    const settlement = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError:
+        settlement === null
+          ? `${error instanceof Error ? error.message : String(error)}; Windows supervisor did not settle after forced termination`
+          : error instanceof Error
+            ? error.message
+            : String(error),
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2436,13 +2596,16 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       strategy: options.executionStrategy
     });
   } catch (error) {
-    supervisor.stdin.destroy();
-    supervisor.kill("SIGKILL");
-    await completion;
+    const settlement = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError:
+        settlement === null
+          ? `${error instanceof Error ? error.message : String(error)}; Windows supervisor did not settle after forced termination`
+          : error instanceof Error
+            ? error.message
+            : String(error),
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2457,11 +2620,14 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
     delay(Math.min(options.timeoutMs, 30_000)).then(() => false)
   ]);
   if (!loaded) {
-    await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: "Windows Job Object supervisor did not bind its pinned script before launch",
+      spawnError:
+        settlement === null
+          ? "Windows Job Object supervisor did not bind its pinned script before launch and did not settle after forced termination"
+          : "Windows Job Object supervisor did not bind its pinned script before launch",
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2470,13 +2636,16 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   try {
     await options.verifyExecutableForSpawn();
   } catch (error) {
-    supervisor.stdin.destroy();
-    supervisor.kill("SIGKILL");
-    await completion;
+    const settlement = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError:
+        settlement === null
+          ? `${error instanceof Error ? error.message : String(error)}; Windows supervisor did not settle after forced termination`
+          : error instanceof Error
+            ? error.message
+            : String(error),
       status: null,
       timedOut: false,
       treeEmpty: false
@@ -2505,32 +2674,39 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
     })
   ]);
   clearTimeout(timer);
+  let finalOutcome = outcome;
   if (outcome.timedOut === true) {
     supervisor.stdin.write('{"protocol":1,"command":"terminate"}\n', "utf8", (error) => {
       controlError ??= error;
     });
-    let graceOutcome = await Promise.race([completion, delay(options.terminationGraceMs).then(() => null)]);
-    if (graceOutcome === null) {
-      graceOutcome = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
+    const graceful = await boundedWait(completion, options.terminationGraceMs);
+    if (graceful === SETTLEMENT_UNCERTAIN) {
+      finalOutcome = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
+    } else {
+      finalOutcome = graceful;
     }
   }
-  const finalOutcome = outcome.timedOut === true ? await completion : outcome;
   supervisor.stdin.destroy();
-  const signalResult = await signals.completed;
-  const treeEmpty = signalResult.loaded && signalResult.attested;
+  const boundedSignals = await boundedWait(signals.completed, options.terminationGraceMs);
+  const signalResult = boundedSignals === SETTLEMENT_UNCERTAIN ? null : boundedSignals;
+  const treeEmpty = finalOutcome !== null && signalResult?.loaded === true && signalResult.attested === true;
   return {
     lingeringDescendants: false,
-    signal: finalOutcome.signal ?? null,
+    signal: finalOutcome?.signal ?? null,
     spawnError: controlError
       ? controlError instanceof Error
         ? controlError.message
         : String(controlError)
-      : finalOutcome.error
-        ? finalOutcome.error instanceof Error
-          ? finalOutcome.error.message
-          : String(finalOutcome.error)
-        : null,
-    status: finalOutcome.status ?? null,
+      : finalOutcome === null
+        ? "Windows supervisor did not settle after forced termination"
+        : signalResult === null
+          ? "Windows supervisor control stream did not settle within its bound"
+          : finalOutcome.error
+            ? finalOutcome.error instanceof Error
+              ? finalOutcome.error.message
+              : String(finalOutcome.error)
+            : null,
+    status: finalOutcome?.status ?? null,
     timedOut: outcome.timedOut === true,
     treeEmpty
   };
@@ -2569,22 +2745,36 @@ async function runOwnedCommand(command, arguments_, options) {
       );
     }
   } catch (error) {
-    if (launch) await closeExecutableLaunch(launch);
-    else await closePinnedExecutable(executable);
-    if (supervisorLaunch) await closeExecutableLaunch(supervisorLaunch);
-    else await closePinnedExecutable(supervisorExecutable);
-    if (supervisorScriptLaunch) await closeExecutableLaunch(supervisorScriptLaunch);
-    else await closePinnedExecutable(supervisorScriptExecutable);
+    const cleanupErrors = await collectOwnedCleanup([
+      {
+        label: "qualification command owner",
+        run: () => (launch ? closeExecutableLaunch(launch) : closePinnedExecutable(executable))
+      },
+      {
+        label: "qualification supervisor owner",
+        run: () =>
+          supervisorLaunch ? closeExecutableLaunch(supervisorLaunch) : closePinnedExecutable(supervisorExecutable)
+      },
+      {
+        label: "qualification supervisor script owner",
+        run: () =>
+          supervisorScriptLaunch
+            ? closeExecutableLaunch(supervisorScriptLaunch)
+            : closePinnedExecutable(supervisorScriptExecutable)
+      }
+    ]);
+    const messages = [error instanceof Error ? error.message : String(error), ...cleanupErrors.map(String)];
     return {
       executable: null,
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError: messages.join("; "),
       status: null,
       timedOut: false,
       treeEmpty: true
     };
   }
+  let primaryError;
   try {
     const executionStrategy = platform === "win32" ? "private-snapshot" : "inherited-descriptor";
     const executedPath = platform === "win32" ? executableLeaf(launch.snapshot).path : "/dev/fd/4";
@@ -2636,10 +2826,15 @@ async function runOwnedCommand(command, arguments_, options) {
       }
     }
     return result;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await closeExecutableLaunch(launch);
-    await closeExecutableLaunch(supervisorLaunch);
-    await closeExecutableLaunch(supervisorScriptLaunch);
+    await finishWithOwnedCleanup(primaryError, [
+      { label: "qualification command launch", run: () => closeExecutableLaunch(launch) },
+      { label: "qualification supervisor launch", run: () => closeExecutableLaunch(supervisorLaunch) },
+      { label: "qualification supervisor script launch", run: () => closeExecutableLaunch(supervisorScriptLaunch) }
+    ]);
   }
 }
 
@@ -2729,8 +2924,11 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     cwd: assignment.worktree,
     environment,
     executableSnapshotRoot: layoutState.layout.executableSnapshots,
+    ownedRunnerForTest: options.ownedRunnerForTest,
+    platformForTest: options.platformForTest,
     posixSupervisorCommand: bootstrapPython,
-    windowsSupervisorCommand: layoutState.layout.windowsSupervisorCommand,
+    windowsJobSupervisorScript: options.windowsJobSupervisorScript,
+    windowsSupervisorCommand: options.windowsSupervisorCommand ?? layoutState.layout.windowsSupervisorCommand,
     terminationGraceMs: options.terminationGraceMs,
     timeoutMs: 120_000
   });
@@ -2756,8 +2954,11 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
       cwd: assignment.worktree,
       environment: verificationEnvironment,
       executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      ownedRunnerForTest: options.ownedRunnerForTest,
+      platformForTest: options.platformForTest,
       posixSupervisorCommand: bootstrapPython,
-      windowsSupervisorCommand: layoutState.layout.windowsSupervisorCommand,
+      windowsJobSupervisorScript: options.windowsJobSupervisorScript,
+      windowsSupervisorCommand: options.windowsSupervisorCommand ?? layoutState.layout.windowsSupervisorCommand,
       terminationGraceMs: options.terminationGraceMs,
       timeoutMs: 30_000
     }
@@ -2870,6 +3071,10 @@ async function runQualification({
   assignmentPath,
   beforeCommandSpawnForTest,
   beforeWindowsLoaderReleaseForTest,
+  bootstrapCommandPlatformForTest,
+  bootstrapCommandRunnerForTest,
+  bootstrapWindowsJobSupervisorScriptForTest,
+  bootstrapWindowsSupervisorCommandForTest,
   command,
   commandPlatformForTest,
   commandRunnerForTest,
@@ -2892,6 +3097,7 @@ async function runQualification({
   const initialAssignment = await readAssignment(assignmentPath);
   let layoutState;
   let gitOwnerPins;
+  let primaryError;
   try {
     const assignment = initialAssignment.value;
     const worktreePin = await openPinnedDirectory(assignment.worktree, "worktree owner");
@@ -2899,8 +3105,7 @@ async function runQualification({
     try {
       initialGit = await captureGitIdentity(assignment, environment);
     } catch (error) {
-      await worktreePin.handle.close();
-      throw error;
+      await finishWithOwnedCleanup(error, [{ label: "worktree owner", run: () => worktreePin.handle.close() }]);
     }
     gitOwnerPins = await openGitOwnerPins(assignment, initialGit, worktreePin, environment);
     await verifyGitOwnerPins(gitOwnerPins);
@@ -2926,8 +3131,12 @@ async function runQualification({
     let bootstrap;
     try {
       bootstrap = await bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, environment, {
+        ownedRunnerForTest: bootstrapCommandRunnerForTest,
+        platformForTest: bootstrapCommandPlatformForTest,
         terminationGraceMs,
-        timeoutMs
+        timeoutMs,
+        windowsJobSupervisorScript: bootstrapWindowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
+        windowsSupervisorCommand: bootstrapWindowsSupervisorCommandForTest
       });
       if (bootstrap.failure) failures.push(bootstrap.failure);
     } catch (error) {
@@ -3063,13 +3272,21 @@ async function runQualification({
       fail(failures.join("; "));
     }
     return receipt;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await closeExecutableLaunch(layoutState?.gitExecutableLaunch);
-    await Promise.all((layoutState?.runnerFilePins ?? []).map(({ pin }) => pin.handle.close()));
-    await closeDirectoryPins(layoutState?.ownerPins);
-    await closeDirectoryPins(gitOwnerPins);
-    await layoutState?.receiptHandle?.close();
-    await initialAssignment.pinned.handle.close();
+    await finishWithOwnedCleanup(primaryError, [
+      { label: "private Git executable launch", run: () => closeExecutableLaunch(layoutState?.gitExecutableLaunch) },
+      ...(layoutState?.runnerFilePins ?? []).map(({ label, pin }) => ({
+        label,
+        run: () => pin.handle.close()
+      })),
+      { label: "layout owners", run: () => closeDirectoryPins(layoutState?.ownerPins) },
+      { label: "Git owners", run: () => closeDirectoryPins(gitOwnerPins) },
+      { label: "receipt owner", run: () => layoutState?.receiptHandle?.close() },
+      { label: "assignment owner", run: () => initialAssignment.pinned.handle.close() }
+    ]);
   }
 }
 
@@ -3087,6 +3304,7 @@ function parseCommandLine(arguments_) {
 }
 
 const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
+  finishWithOwnedCleanup,
   parseGitConfigManifestBytes,
   openDirectory(path, afterOpenForTest) {
     return openPinnedDirectory(path, "test directory", { afterOpenForTest });
@@ -3097,6 +3315,7 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   openRegularFile(path, afterOpenForTest) {
     return openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, "test regular file", { afterOpenForTest });
   },
+  terminateAndAwaitProcess,
   windowsSupervisorLoader,
   windowsSupervisorSignals,
   windowsSystemRootCandidate

@@ -947,9 +947,21 @@ test(
   }
 );
 
-test("rejects config, index, object, -c, and --config-env writes against authoritative Git", async (context) => {
+test("rejects every config, output, helper, index, object, and ref escape against authoritative Git", async (context) => {
   const value = await fixture(context, "git-authoritative-mutations");
-  for (const kind of ["config", "configEnv", "configParameter", "index", "object"]) {
+  for (const kind of [
+    "config",
+    "configEnv",
+    "configParameter",
+    "diffOutput",
+    "externalDiff",
+    "index",
+    "object",
+    "ref",
+    "showOutput",
+    "showShortOutput",
+    "textconv"
+  ]) {
     const task = await addTask(value, `git-authoritative-${kind}`);
     const resultPath = join(task.assignment.stateRoot, "temp", `${kind}.txt`);
     await assert.rejects(
@@ -969,13 +981,18 @@ test("rejects config, index, object, -c, and --config-env writes against authori
     assert.equal(existsSync(resultPath), false);
     assert.deepEqual(valueReceipt.identity.gitConfig, valueReceipt.postIdentity.gitConfig);
     assert.deepEqual(valueReceipt.identity.gitMetadata, valueReceipt.postIdentity.gitMetadata);
+    assert.ok(valueReceipt.identity.gitMetadata.gitDirectory.entries >= 1);
+    assert.equal(
+      valueReceipt.identity.gitMetadata.commonDirectory === null,
+      valueReceipt.identity.gitDirectory.path === valueReceipt.identity.commonDirectory.path
+    );
     assert.equal(assignedGit(task, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
   }
 });
 
-test("receipts direct authoritative Git index and object writes as terminal mutations", async (context) => {
+test("receipts direct authoritative Git index, object, and ref writes as terminal mutations", async (context) => {
   const value = await fixture(context, "git-authoritative-direct-mutations");
-  for (const kind of ["index", "object"]) {
+  for (const kind of ["index", "object", "ref"]) {
     const task = await addTask(value, `git-authoritative-direct-${kind}`);
     await assert.rejects(
       runQualification({
@@ -986,13 +1003,13 @@ test("receipts direct authoritative Git index and object writes as terminal muta
         timeoutMs: 120_000,
         writeOutput: false
       }),
-      /Git (?:index owner bytes are invalid|object-directory owner changed|index or object inventory changed)/u
+      /Git (?:index owner bytes are invalid|object-directory owner changed|Git-directory owner changed|index or object inventory changed)/u
     );
     const valueReceipt = await receipt(task);
     assert.equal(valueReceipt.eligible, false);
     assert.ok(
       valueReceipt.failures.some((failure) =>
-        /Git (?:index owner bytes are invalid|object-directory owner changed|index or object inventory changed)/u.test(
+        /Git (?:index owner bytes are invalid|object-directory owner changed|Git-directory owner changed|index or object inventory changed)/u.test(
           failure
         )
       )
@@ -1314,6 +1331,54 @@ test("executes the verified Windows supervisor snapshot and rejects an original-
   assert.equal(valueReceipt.result.executable.supervisor.sourcePath, supervisor);
   assert.equal(valueReceipt.result.executable.supervisor.sha256, expectedDigest);
   assert.equal(sha256(await readFile(supervisor)), expectedDigest);
+});
+
+test("binds the pinned Windows Job Object supervisor through venv creation and verification", async (context) => {
+  const value = await fixture(context, "windows-bootstrap-supervisor");
+  const task = await addTask(value, "windows-bootstrap-supervisor");
+  const supervisor = await copiedExecutable(
+    join(value.root, `windows-bootstrap-supervisor${extname(process.execPath)}`)
+  );
+  const jobScript = join(value.root, "windows-bootstrap-supervisor.ps1");
+  await copyFile(join(import.meta.dirname, "windows-job-supervisor.ps1"), jobScript);
+  const expectedScriptDigest = sha256(await readFile(jobScript));
+  const bootstrapRecords = [];
+  const valueReceipt = await runQualification({
+    assignmentPath: task.assignmentPath,
+    bootstrapCommandPlatformForTest: "win32",
+    bootstrapCommandRunnerForTest: async (command, arguments_, options) => {
+      assert.equal(options.supervisorScriptSourcePath, jobScript);
+      assert.notEqual(options.supervisorScriptExecutedPath, jobScript);
+      assert.equal(options.supervisorScriptRecord.sha256, expectedScriptDigest);
+      bootstrapRecords.push({
+        arguments_,
+        jobScript: options.supervisorScriptRecord,
+        supervisorScriptExecutedPath: options.supervisorScriptExecutedPath
+      });
+      return simulatedWindowsSnapshotRunner(command, arguments_, options);
+    },
+    bootstrapWindowsJobSupervisorScriptForTest: jobScript,
+    bootstrapWindowsSupervisorCommandForTest: supervisor,
+    command: [process.execPath, child, "record"],
+    environment: runnerEnvironment(),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.equal(bootstrapRecords.length, 2);
+  assert.ok(bootstrapRecords[0].arguments_.includes("venv"));
+  assert.ok(
+    bootstrapRecords[1].arguments_.includes(
+      "import os,sys; expected=os.path.realpath(sys.argv[1]); raise SystemExit(0 if os.path.realpath(sys.prefix)==expected and os.path.realpath(sys.base_prefix)!=expected else 1)"
+    )
+  );
+  for (const record of bootstrapRecords) {
+    assert.equal(record.jobScript.sha256, expectedScriptDigest);
+    assert.ok(record.supervisorScriptExecutedPath.startsWith(valueReceipt.environment.executableSnapshots));
+  }
+  assert.equal(valueReceipt.bootstrap.result.executable.supervisor.jobScript.sha256, expectedScriptDigest);
+  assert.equal(valueReceipt.bootstrap.verification.executable.supervisor.jobScript.sha256, expectedScriptDigest);
 });
 
 test("rejects supervisor identity replacement after dispatch and before final eligibility", async (context) => {
@@ -1777,6 +1842,79 @@ test("terminates an escaping descendant, blocks post-exit mutation, and bounds h
   assert.equal(hungReceipt.eligible, false);
   assert.equal(hungReceipt.result.timedOut, true);
   assert.equal(hungReceipt.result.treeEmpty, true);
+});
+
+test("bounds a never-settling forced close after both termination signals", async () => {
+  const signals = [];
+  let stdinDestroyed = false;
+  const started = Date.now();
+  const result = await QUALIFICATION_ISOLATION_TEST_BOUNDARY.terminateAndAwaitProcess(
+    {
+      kill(signal) {
+        signals.push(signal);
+        return true;
+      },
+      stdin: {
+        destroy() {
+          stdinDestroyed = true;
+        }
+      }
+    },
+    new Promise(() => {}),
+    20
+  );
+  assert.equal(result, null);
+  assert.equal(stdinDestroyed, true);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.ok(Date.now() - started < 1_000, "forced close exceeded its bounded wait");
+});
+
+test("attempts every owned cleanup and preserves primary plus ordered cleanup faults", async () => {
+  const order = [];
+  const primary = new Error("primary failure");
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.finishWithOwnedCleanup(
+      primary,
+      [
+        {
+          label: "first owner",
+          run() {
+            order.push("first");
+            throw new Error("first cleanup failure");
+          }
+        },
+        {
+          label: "stalled owner",
+          run() {
+            order.push("stalled");
+            return new Promise(() => {});
+          }
+        },
+        {
+          label: "last owner",
+          run() {
+            order.push("last");
+            throw new Error("last cleanup failure");
+          }
+        }
+      ],
+      20
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(
+        error.errors.map((value) => value.message),
+        [
+          "primary failure",
+          "first cleanup failure",
+          "stalled owner cleanup did not settle within its bound",
+          "last cleanup failure"
+        ]
+      );
+      return true;
+    }
+  );
+  assert.deepEqual(order, ["first", "stalled", "last"]);
 });
 
 test(

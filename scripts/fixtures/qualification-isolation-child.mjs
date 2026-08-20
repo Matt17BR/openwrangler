@@ -282,12 +282,19 @@ if (mode === "hold") {
   });
 } else if (mode === "mutate-authoritative-git") {
   const kind = argument("--kind");
+  const result = argument("--result");
   const commands = {
     config: ["config", "user.name", "Mutated qualification fixture"],
     configEnv: ["--config-env=user.name=QUALIFICATION_ATTACK_VALUE", "rev-parse", "HEAD"],
     configParameter: ["-c", "user.name=Mutated qualification fixture", "rev-parse", "HEAD"],
+    diffOutput: ["diff", "--output", result, "HEAD", "HEAD"],
+    externalDiff: ["diff", "--ext-diff", "HEAD", "HEAD"],
     index: ["update-index", "--chmod=+x", "tracked.txt"],
-    object: ["hash-object", "-w", "tracked.txt"]
+    object: ["hash-object", "-w", "tracked.txt"],
+    ref: ["update-ref", "refs/heads/qualification-attack", "HEAD"],
+    showOutput: ["show", `--output=${result}`, "--format=%H", "HEAD"],
+    showShortOutput: ["show", `-o${result}`, "--format=%H", "HEAD"],
+    textconv: ["show", "--textconv", "HEAD:tracked.txt"]
   };
   assert.ok(Object.hasOwn(commands, kind), `unknown authoritative Git mutation ${kind}`);
   try {
@@ -300,7 +307,7 @@ if (mode === "hold") {
   } catch {
     process.exit(1);
   }
-  await writeFile(argument("--result"), "escaped\n", { flag: "wx", mode: 0o600 });
+  await writeFile(result, "escaped\n", { flag: "wx", mode: 0o600 });
 } else if (mode === "mutate-authoritative-git-direct") {
   const kind = argument("--kind");
   const assignment = JSON.parse(await readFile(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT, "utf8"));
@@ -315,6 +322,8 @@ if (mode === "hold") {
       mode: 0o600
     });
     command = ["hash-object", "-w", source];
+  } else if (kind === "ref") {
+    command = ["update-ref", "refs/heads/qualification-direct-attack", "HEAD"];
   } else {
     throw new Error(`unknown direct authoritative Git mutation ${kind}`);
   }
