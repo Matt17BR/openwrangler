@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { link, mkdtemp, open as openFile, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, open as openFile, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -317,6 +317,98 @@ test("cleaning-history claim surfaces ignore fenced examples but reject equivale
   }
 });
 
+test("cleaning-history structural claims reject synonym and word-order contradictions", () => {
+  const model = cleaningHistoryModel();
+  const examples = [
+    "Modification of the final operation is the sole form supported.",
+    "The prior transformation is read-only and cannot be revised.",
+    "Amending a preceding plan entry is impossible.",
+    "Rollback is available for a specifically chosen plan entry.",
+    "Every operation can be restored independently.",
+    "A selected older operation is reversible through Undo.",
+    "Plan entries have a mutable sequence.",
+    "You may rearrange the applied workflow.",
+    "Shuffling the cleaning plan is offered."
+  ];
+  for (const example of examples) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+});
+
+test("cleaning-history structural claims preserve valid code examples but reject malformed fences", () => {
+  const model = cleaningHistoryModel();
+  const valid = cleaningHistoryDocuments(model);
+  valid["README.md"] = valid["README.md"].replace(
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    [
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      "```markdown title=legacy",
+      "Only the latest step can be edited.",
+      "```",
+      "",
+      "    Undo can remove any committed step.",
+      "",
+      "Use `Committed steps may be reordered` only as a rejected-input example."
+    ].join("\n")
+  );
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents: valid
+    })
+  );
+
+  const malformed = cleaningHistoryDocuments(model);
+  malformed["README.md"] = malformed["README.md"].replace(
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    [
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      "```bad`info",
+      "Editing operations is restricted to the newest one.",
+      "```"
+    ].join("\n")
+  );
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: malformed
+      }),
+    /contradictory cleaning-history capability claim/u
+  );
+});
+
+test("cleaning-history structural claims reject duplicate visible sections", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  documents["README.md"] += "\n## Transformations\n\nA second visible section.\n";
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents
+      }),
+    /exactly one ## Transformations heading/u
+  );
+});
+
 test("cleaning-history Markdown headings and claim markers inside fences are not structural", () => {
   const model = cleaningHistoryModel();
   const documents = cleaningHistoryDocuments(model);
@@ -416,6 +508,53 @@ test("bounded cleaning-history reads reject symlinks and hard-link aliases", asy
     await rm(directory, { recursive: true });
   }
 });
+
+test("bounded cleaning-history reads reject a symlinked ancestor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-ancestor-"));
+  const realDirectory = join(directory, "real");
+  const aliasDirectory = join(directory, "alias");
+  try {
+    await mkdir(realDirectory, { mode: 0o700 });
+    await writeFile(join(realDirectory, "model.json"), "{}", { encoding: "utf8", mode: 0o600 });
+    await symlink(realDirectory, aliasDirectory);
+    await assert.rejects(
+      readBoundedUtf8File(join(aliasDirectory, "model.json"), 8 * 1024, "ancestor-alias model"),
+      /non-symbolic-link ancestor directories/u
+    );
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test(
+  "bounded cleaning-history reads reject a regular-to-FIFO swap without blocking or leaking the descriptor",
+  { skip: process.platform === "win32" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-fifo-swap-"));
+    const path = join(directory, "model.json");
+    const retired = join(directory, "retired.json");
+    try {
+      await writeFile(path, "{}", { encoding: "utf8", mode: 0o600 });
+      const started = Date.now();
+      await assert.rejects(
+        readBoundedUtf8File(path, 8 * 1024, "FIFO-swap model", {
+          afterInitialLeafIdentity: async () => {
+            await rename(path, retired);
+            const result = spawnSync("mkfifo", [path], { encoding: "utf8" });
+            assert.equal(result.status, 0, result.stderr);
+          }
+        }),
+        /remain one regular file|changed identity/u
+      );
+      assert.ok(Date.now() - started < 2_000, "the no-follow FIFO rejection must not wait for a writer");
+      await rm(path);
+      await rename(retired, path);
+      assert.equal(await readBoundedUtf8File(path, 8 * 1024, "restored model"), "{}");
+    } finally {
+      await rm(directory, { recursive: true });
+    }
+  }
+);
 
 test(
   "bounded cleaning-history reads reject a FIFO before allocating a read buffer",

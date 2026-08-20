@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants as fileConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, parse, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
@@ -86,20 +86,108 @@ function assertBoundedUtf8(value, maximumBytes, label) {
   }
 }
 
-export async function readBoundedUtf8File(path, maximumBytes, label = path) {
-  const expected = await lstat(path, { bigint: true });
-  if (!expected.isFile()) {
-    throw new Error(`${label} must be a regular file, not a symbolic link or special file.`);
+function ancestorDirectories(path) {
+  const absolute = resolve(path);
+  const rootDirectory = parse(absolute).root;
+  const result = [];
+  let current = dirname(absolute);
+  while (true) {
+    result.unshift(current);
+    if (current === rootDirectory) break;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
-  if (expected.nlink !== 1n) {
-    throw new Error(`${label} must have exactly one hard link.`);
-  }
-  if (expected.size > BigInt(maximumBytes)) {
-    throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
-  }
+  return { absolute, directories: result };
+}
 
-  const handle = await open(path, fileConstants.O_RDONLY | (fileConstants.O_NOFOLLOW ?? 0));
+function assertSameDirectoryIdentity(expected, actual, label) {
+  if (!expected.isDirectory() || !actual.isDirectory()) {
+    throw new Error(`${label} must have only regular, non-symbolic-link ancestor directories.`);
+  }
+  for (const field of ["dev", "ino", "mode", "uid", "gid"]) {
+    if (actual[field] !== expected[field]) {
+      throw new Error(`${label} ancestor changed identity while it was being read.`);
+    }
+  }
+}
+
+async function closeBoundedReadHandles(handles, label) {
+  const results = await Promise.allSettled(handles.map((handle) => handle.close()));
+  const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `${label} file-identity descriptors did not close cleanly.`);
+  }
+}
+
+async function openBoundedAncestorChain(path, label) {
+  const { absolute, directories } = ancestorDirectories(path);
+  const records = [];
   try {
+    for (const directory of directories) {
+      const expected = await lstat(directory, { bigint: true });
+      if (!expected.isDirectory()) {
+        throw new Error(`${label} must have only regular, non-symbolic-link ancestor directories.`);
+      }
+      const parent = records.at(-1);
+      const descriptorPath =
+        process.platform === "linux" && parent ? `/proc/self/fd/${parent.handle.fd}/${basename(directory)}` : directory;
+      const handle = await open(
+        descriptorPath,
+        fileConstants.O_RDONLY |
+          (fileConstants.O_DIRECTORY ?? 0) |
+          (fileConstants.O_NOFOLLOW ?? 0) |
+          (fileConstants.O_NONBLOCK ?? 0)
+      );
+      const opened = await handle.stat({ bigint: true });
+      assertSameDirectoryIdentity(expected, opened, label);
+      records.push({ path: directory, expected: opened, handle });
+    }
+    return { absolute, records };
+  } catch (error) {
+    await closeBoundedReadHandles(
+      records.reverse().map(({ handle }) => handle),
+      label
+    );
+    throw error;
+  }
+}
+
+async function assertAncestorChainCurrent(records, label) {
+  for (const record of records) {
+    const [opened, current] = await Promise.all([
+      record.handle.stat({ bigint: true }),
+      lstat(record.path, { bigint: true })
+    ]);
+    assertSameDirectoryIdentity(record.expected, opened, label);
+    assertSameDirectoryIdentity(record.expected, current, label);
+  }
+}
+
+export async function readBoundedUtf8File(path, maximumBytes, label = path, testHooks = undefined) {
+  const ancestorChain = await openBoundedAncestorChain(path, label);
+  let handle;
+  try {
+    const expected = await lstat(ancestorChain.absolute, { bigint: true });
+    if (!expected.isFile()) {
+      throw new Error(`${label} must be a regular file, not a symbolic link or special file.`);
+    }
+    if (expected.nlink !== 1n) {
+      throw new Error(`${label} must have exactly one hard link.`);
+    }
+    if (expected.size > BigInt(maximumBytes)) {
+      throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
+    }
+    await testHooks?.afterInitialLeafIdentity?.();
+    const parent = ancestorChain.records.at(-1);
+    const descriptorPath =
+      process.platform === "linux" && parent
+        ? `/proc/self/fd/${parent.handle.fd}/${basename(ancestorChain.absolute)}`
+        : ancestorChain.absolute;
+    handle = await open(
+      descriptorPath,
+      fileConstants.O_RDONLY | (fileConstants.O_NOFOLLOW ?? 0) | (fileConstants.O_NONBLOCK ?? 0)
+    );
     const opened = await handle.stat({ bigint: true });
     assertSameRegularFile(expected, opened, label);
 
@@ -118,9 +206,10 @@ export async function readBoundedUtf8File(path, maximumBytes, label = path) {
     }
 
     const completed = await handle.stat({ bigint: true });
-    const current = await lstat(path, { bigint: true });
+    const current = await lstat(ancestorChain.absolute, { bigint: true });
     assertSameRegularFile(opened, completed, label);
     assertSameRegularFile(opened, current, label);
+    await assertAncestorChainCurrent(ancestorChain.records, label);
     if (completed.size !== BigInt(totalBytes)) {
       throw new Error(`${label} changed while it was being read.`);
     }
@@ -131,7 +220,10 @@ export async function readBoundedUtf8File(path, maximumBytes, label = path) {
       throw new Error(`${label} must be valid UTF-8 text.`);
     }
   } finally {
-    await handle.close();
+    await closeBoundedReadHandles(
+      [...(handle ? [handle] : []), ...ancestorChain.records.reverse().map(({ handle: ancestor }) => ancestor)],
+      label
+    );
   }
 }
 
@@ -502,8 +594,14 @@ function visibleMarkdownLines(document) {
     }
 
     const openFence = /^ {0,3}(?<marks>`{3,}|~{3,})(?<info>.*)$/u.exec(line);
-    if (openFence !== null) {
+    const validFence =
+      openFence !== null && !(openFence.groups.marks[0] === "`" && openFence.groups.info.includes("`"));
+    if (validFence) {
       fence = { character: openFence.groups.marks[0], length: openFence.groups.marks.length };
+      result.push({ line: "", heading: undefined });
+      continue;
+    }
+    if (/^(?: {4}|\t)/u.test(line)) {
       result.push({ line: "", heading: undefined });
       continue;
     }
@@ -588,40 +686,167 @@ function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
   }
 }
 
+function stripInlineCode(source) {
+  let result = "";
+  for (let offset = 0; offset < source.length;) {
+    if (source[offset] !== "`") {
+      result += source[offset];
+      offset += 1;
+      continue;
+    }
+    let runLength = 1;
+    while (source[offset + runLength] === "`") runLength += 1;
+    const marker = "`".repeat(runLength);
+    const end = source.indexOf(marker, offset + runLength);
+    if (end < 0) {
+      result += marker;
+      offset += runLength;
+      continue;
+    }
+    result += " ";
+    offset = end + runLength;
+  }
+  return result;
+}
+
+function tokenMatches(token, stems) {
+  return stems.some((stem) => token === stem || token.startsWith(stem));
+}
+
 function containsContradictoryCleaningHistoryClaim(source) {
-  const normalized = source
-    .replace(/<!--[\s\S]*?-->/gu, " ")
-    .replace(/[`*_~[\]()>#|]/gu, " ")
-    .replace(/\s+/gu, " ")
-    .toLowerCase();
-  const step = "(?:applied|committed|cleaning|history)?\\s*steps?";
-  const inspectEditDelete =
-    "(?:inspect(?:ed|ing|ion)?|edit(?:ed|ing)?|delet(?:e|ed|ing|ion)|modif(?:y|ied|ying|ication)|remov(?:e|ed|ing|al))";
-  const unavailable = "(?:not\\s+supported|unavailable|unsupported|not\\s+available)";
-  return [
-    new RegExp(`\\bonly\\s+(?:the\\s+)?(?:latest|newest|most\\s+recent)[^.!?]{0,100}\\b${inspectEditDelete}\\b`, "iu"),
-    new RegExp(
-      `\\b${inspectEditDelete}\\b[^.!?]{0,100}\\b(?:is|are)\\s+(?:limited|restricted)\\s+to\\s+(?:the\\s+)?(?:latest|newest|most\\s+recent)\\b`,
-      "iu"
-    ),
-    new RegExp(
-      `\\b(?:earlier|older|non-latest)\\s+${step}\\b[^.!?]{0,100}\\b(?:cannot|can't|may\\s+not|must\\s+not|are\\s+not\\s+allowed\\s+to)[^.!?]{0,80}\\b${inspectEditDelete}\\b`,
-      "iu"
-    ),
-    new RegExp(
-      `\\b(?:cannot|can't|may\\s+not|must\\s+not|not\\s+allowed\\s+to)[^.!?]{0,80}\\b${inspectEditDelete}\\b[^.!?]{0,100}\\b(?:earlier|older|non-latest)\\s+${step}\\b`,
-      "iu"
-    ),
-    new RegExp(`\\b${inspectEditDelete}\\b[^.!?]{0,100}\\b(?:is|are|remains?)\\s+${unavailable}\\b`, "iu"),
-    new RegExp(`\\bundo\\b[^.!?]{0,120}\\b(?:any|an\\s+earlier|a\\s+selected|a\\s+specific)\\s+${step}\\b`, "iu"),
-    new RegExp(`\\bundo\\b[^.!?]{0,80}\\b(?:is|remains)\\s+${unavailable}\\b`, "iu"),
-    new RegExp(
-      "\\b(?:reorder(?:ed|ing)?|re-arrang(?:e|ed|ing))\\b[^.!?]{0,120}\\b(?:is\\s+supported|is\\s+available|is\\s+implemented|can|may|enabled)\\b",
-      "iu"
-    ),
-    new RegExp(`\\b${step}\\b[^.!?]{0,100}\\b(?:can|may)\\s+be\\s+(?:reordered|re-arranged)\\b`, "iu"),
-    /\b(?:cleaning\s+)?history\s+(?:order|ordering)\b[^.!?]{0,100}\b(?:can|may|supported|available|editable|change(?:d|able)?)\b/iu
-  ].some((pattern) => pattern.test(normalized));
+  const statements = stripInlineCode(source.replace(/<!--[\s\S]*?-->/gu, " "))
+    .replace(/([\p{L}])-([\p{L}])/gu, "$1$2")
+    .split(/[.!?;\n]+/u)
+    .map((statement) =>
+      statement
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}']+/gu, " ")
+        .trim()
+        .split(/\s+/u)
+        .filter(Boolean)
+    )
+    .filter((tokens) => tokens.length > 0);
+
+  const has = (tokens, words) => tokens.some((token) => words.includes(token));
+  const hasStem = (tokens, stems) => tokens.some((token) => tokenMatches(token, stems));
+  const subjectWords = [
+    "step",
+    "steps",
+    "operation",
+    "operations",
+    "transformation",
+    "transformations",
+    "entry",
+    "entries",
+    "plan",
+    "history",
+    "workflow"
+  ];
+  const negativeWords = [
+    "cannot",
+    "can't",
+    "never",
+    "not",
+    "unavailable",
+    "unsupported",
+    "disabled",
+    "forbidden",
+    "disallowed",
+    "impossible",
+    "prohibited",
+    "blocked",
+    "readonly"
+  ];
+  const unavailableWords = [
+    "unavailable",
+    "unsupported",
+    "disabled",
+    "forbidden",
+    "disallowed",
+    "impossible",
+    "prohibited",
+    "blocked",
+    "readonly"
+  ];
+
+  return statements.some((tokens) => {
+    const hasSubject = has(tokens, subjectWords);
+    const inspectEditDelete = hasStem(tokens, [
+      "inspect",
+      "edit",
+      "delet",
+      "modif",
+      "revis",
+      "amend",
+      "alter",
+      "remov",
+      "eras"
+    ]);
+    const latest =
+      has(tokens, ["latest", "newest", "last", "final"]) || (tokens.includes("most") && tokens.includes("recent"));
+    const exclusivity = has(tokens, [
+      "only",
+      "sole",
+      "solely",
+      "exclusively",
+      "limited",
+      "restricted",
+      "confined",
+      "reserved"
+    ]);
+    const prior = has(tokens, ["earlier", "older", "prior", "previous", "preceding", "nonlatest", "noncurrent"]);
+    const negative = has(tokens, negativeWords);
+    const unavailable =
+      has(tokens, unavailableWords) ||
+      (tokens.includes("not") && has(tokens, ["supported", "available", "implemented", "enabled", "allowed"]));
+    const latestOnly = hasSubject && inspectEditDelete && latest && exclusivity && !tokens.includes("not");
+    const priorDenied = hasSubject && inspectEditDelete && prior && negative;
+    const implementedActionDenied = hasSubject && inspectEditDelete && unavailable;
+
+    const undo = hasStem(tokens, ["undo", "rollback", "revert", "revers", "restor"]);
+    const arbitraryTarget =
+      has(tokens, [
+        "any",
+        "every",
+        "earlier",
+        "older",
+        "prior",
+        "selected",
+        "chosen",
+        "arbitrary",
+        "individual",
+        "whichever"
+      ]) || hasStem(tokens, ["specif"]);
+    const arbitraryUndo = hasSubject && undo && arbitraryTarget && !negative;
+    const undoDenied = undo && unavailable;
+
+    const explicitReorder = hasStem(tokens, ["reorder", "rearrang", "shuffl", "permut"]);
+    const reorder =
+      explicitReorder ||
+      (hasSubject &&
+        (hasStem(tokens, ["ordering", "sequenc"]) ||
+          (tokens.includes("order") && hasStem(tokens, ["chang", "edit", "mutab"]))));
+    const positiveReorder =
+      (hasSubject || explicitReorder) &&
+      reorder &&
+      !negative &&
+      hasStem(tokens, [
+        "can",
+        "may",
+        "support",
+        "availab",
+        "implement",
+        "enabl",
+        "allow",
+        "possib",
+        "offer",
+        "mutab",
+        "chang",
+        "edit"
+      ]);
+
+    return latestOnly || priorDenied || implementedActionDenied || arbitraryUndo || undoDenied || positiveReorder;
+  });
 }
 
 export function assertCleaningHistoryClaimsCurrent({ modelSource, productionAuthoritySource, documents }) {
