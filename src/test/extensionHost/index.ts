@@ -166,7 +166,10 @@ import { createReleasedPythonFileEntrypointJourney } from "./releasedPythonFileE
 import { createPackagedExcelDependencyInstallJourney } from "./packagedExcelDependencyInstallJourney";
 import { createDependencyMutationRecoveryJourney } from "./dependencyMutationRecoveryJourney";
 import { createPackagedFirstUseInteractionJourney } from "./packagedFirstUseInteractionJourney";
-import { exercisePackagedGridRangeCopyJourney } from "./packagedGridRangeCopyJourney";
+import {
+  exercisePackagedGridRangeCopyJourney,
+  runPackagedGridRangeCopyLifecycle
+} from "./packagedGridRangeCopyJourney";
 import { createPackagedReopenAndUndoJourney } from "./packagedReopenAndUndoJourney";
 import { createPackagedLinkedRendererLiveOpen } from "./packagedLinkedRendererLiveOpen";
 import { createPackagedRendererProvenanceJourneys } from "./packagedRendererProvenanceJourney";
@@ -7359,42 +7362,88 @@ function trustedPickleSiblingTemporaries(directory: string): string[] {
 }
 
 async function exercisePackagedGridRangeCopyAcceptance(testing: TestApi, fixture: vscode.Uri): Promise<void> {
-  assert.equal(
-    testing.diagnostics().sessionCount,
-    0,
-    "The focused packaged grid range-copy journey must start without another dataframe session."
-  );
-  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
-  const workbench = await connectToEditorWorkbench();
-  recordAcceptanceProgress("platform-smoke:grid-range-copy:open");
-  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
-  await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:grid-range-copy:import");
-  const active = testing.activeSession();
-  assert.ok(active, "The focused packaged grid range-copy journey must publish one live session.");
-  assert.equal(active.metadata.source.uri, fixture.toString());
-  assert.deepEqual(active.metadata.shape, {
-    rows: PACKAGED_FIRST_USE_ROW_COUNT,
-    columns: PACKAGED_SCREENSHOT_COLUMNS.length
-  });
-  const target = await waitForOpenWranglerGridTarget(workbench, testing, active.metadata.sessionId);
-  await exercisePackagedGridRangeCopyJourney({
-    frame: target.frame,
-    hostClipboard: vscode.env.clipboard,
-    platform: process.platform,
-    recordProgress: recordAcceptanceProgress
-  });
-  assertExactBytes(
-    await vscode.workspace.fs.readFile(fixture),
-    sourceBytes,
-    "The packaged grid range-copy journey must not modify its source."
-  );
-
-  recordAcceptanceProgress("platform-smoke:grid-range-copy:cleanup");
-  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
-  await waitFor(
-    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-    10_000,
-    "the focused packaged grid range-copy session and runtime to terminate"
+  let sourceBytes: Uint8Array | undefined;
+  let editorMayBeOpen = false;
+  await runPackagedGridRangeCopyLifecycle(
+    async () => {
+      assert.equal(
+        testing.diagnostics().sessionCount,
+        0,
+        "The focused packaged grid range-copy journey must start without another dataframe session."
+      );
+      sourceBytes = await vscode.workspace.fs.readFile(fixture);
+      const workbench = await connectToEditorWorkbench();
+      recordAcceptanceProgress("platform-smoke:grid-range-copy:open");
+      editorMayBeOpen = true;
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One),
+        10_000,
+        "the focused packaged grid range-copy editor to open"
+      );
+      await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:grid-range-copy:import");
+      const active = testing.activeSession();
+      assert.ok(active, "The focused packaged grid range-copy journey must publish one live session.");
+      assert.equal(active.metadata.source.uri, fixture.toString());
+      assert.deepEqual(active.metadata.shape, {
+        rows: PACKAGED_FIRST_USE_ROW_COUNT,
+        columns: PACKAGED_SCREENSHOT_COLUMNS.length
+      });
+      const target = await waitForOpenWranglerGridTarget(workbench, testing, active.metadata.sessionId);
+      await exercisePackagedGridRangeCopyJourney({
+        frame: target.frame,
+        hostClipboard: vscode.env.clipboard,
+        platform: process.platform,
+        recordProgress: recordAcceptanceProgress
+      });
+      assertExactBytes(
+        await vscode.workspace.fs.readFile(fixture),
+        sourceBytes,
+        "The packaged grid range-copy journey must not modify its source."
+      );
+    },
+    async () => {
+      const failures: unknown[] = [];
+      if (editorMayBeOpen) {
+        try {
+          recordAcceptanceProgress("platform-smoke:grid-range-copy:cleanup");
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await withBoundedAcceptancePromise(
+            vscode.commands.executeCommand("workbench.action.closeAllEditors"),
+            10_000,
+            "the focused packaged grid range-copy editors to close"
+          );
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await waitFor(
+            () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+            10_000,
+            "the focused packaged grid range-copy session and runtime to terminate"
+          );
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (sourceBytes) {
+        try {
+          assertExactBytes(
+            await vscode.workspace.fs.readFile(fixture),
+            sourceBytes,
+            "The packaged grid range-copy cleanup must preserve its source."
+          );
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "The packaged grid range-copy journey had multiple cleanup failures.");
+      }
+    }
   );
 }
 

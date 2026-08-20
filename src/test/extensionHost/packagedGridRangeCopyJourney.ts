@@ -20,6 +20,42 @@ export function packagedGridCopyShortcut(platform: NodeJS.Platform): "Meta+c" | 
   return platform === "darwin" ? "Meta+c" : "Control+c";
 }
 
+export async function runPackagedGridRangeCopyLifecycle(
+  exercise: () => Promise<void>,
+  cleanup: () => Promise<void>
+): Promise<void> {
+  let exerciseFailed = false;
+  let exerciseFailure: unknown;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
+  try {
+    try {
+      await exercise();
+    } catch (error) {
+      exerciseFailed = true;
+      exerciseFailure = error;
+    }
+  } finally {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupFailed = true;
+      cleanupFailure = error;
+    }
+  }
+
+  if (exerciseFailed) {
+    if (cleanupFailed) {
+      throw new AggregateError(
+        [exerciseFailure, cleanupFailure],
+        "The packaged grid range-copy journey failed and its bounded cleanup also failed."
+      );
+    }
+    throw exerciseFailure;
+  }
+  if (cleanupFailed) throw cleanupFailure;
+}
+
 function normalizeClipboardText(value: string): string {
   return value.replaceAll("\r\n", "\n");
 }
@@ -80,7 +116,7 @@ export async function exercisePackagedGridRangeCopyJourney({
     recordProgress("platform-smoke:grid-range-copy:context-menu");
     await hostClipboard.writeText("open-wrangler-grid-range-copy-menu-pending");
     await start.click({ button: "right" });
-    const menu = frame.getByRole("menu", { name: "Cell and selection actions for order_id", exact: true });
+    const menu = frame.getByRole("menu", { name: "Cell and range actions for order_id", exact: true });
     await menu.waitFor({ state: "visible", timeout: 5_000 });
     assert.equal(
       await menu.getByRole("menuitem").count(),
