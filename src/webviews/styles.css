@@ -1176,12 +1176,16 @@ td {
 }
 
 th {
+  --grid-header-surface: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+  background-color: var(--vscode-editor-background);
+  background-image: linear-gradient(var(--grid-header-surface), var(--grid-header-surface));
+  isolation: isolate;
+  overflow: clip;
   position: sticky;
   top: 0;
-  z-index: 1;
-  background: var(--vscode-editorGroupHeader-tabsBackground);
   text-align: left;
   vertical-align: top;
+  z-index: 3;
 }
 
 th[data-grid-column] {
@@ -1189,14 +1193,18 @@ th[data-grid-column] {
 }
 
 th[data-grid-column]:hover:not(.selectedColumn) {
-  background: var(--vscode-list-hoverBackground);
+  --grid-header-surface: var(--vscode-list-hoverBackground);
 }
 
 tbody tr:hover td {
   background: var(--vscode-list-hoverBackground);
 }
 
-th.selectedColumn,
+th.selectedColumn {
+  --grid-header-surface: var(--vscode-list-inactiveSelectionBackground);
+  color: var(--vscode-list-inactiveSelectionForeground);
+}
+
 td.selectedColumn {
   background: var(--vscode-list-inactiveSelectionBackground);
   color: var(--vscode-list-inactiveSelectionForeground);
@@ -1366,7 +1374,11 @@ tbody tr:hover td.gridClipboardSelected {
   text-decoration: line-through;
 }
 
-th.diffAddedColumn,
+th.diffAddedColumn {
+  --grid-header-surface: var(--vscode-diffEditor-insertedLineBackground, rgba(35, 134, 54, 0.18));
+  box-shadow: inset 3px 0 var(--vscode-testing-iconPassed, var(--vscode-charts-green, #2ea043));
+}
+
 td.diffAddedColumn {
   background: var(--vscode-diffEditor-insertedLineBackground, rgba(35, 134, 54, 0.18));
   box-shadow: inset 3px 0 var(--vscode-testing-iconPassed, var(--vscode-charts-green, #2ea043));
@@ -1568,6 +1580,7 @@ th:hover .columnResizeHandle,
   gap: 5px;
   line-height: 1.25;
   min-width: 0;
+  overflow: clip;
   width: 100%;
 }
 
@@ -1593,6 +1606,8 @@ th:hover .columnResizeHandle,
   border-top: 1px solid var(--vscode-panel-border);
   display: grid;
   gap: 2px;
+  min-width: 0;
+  overflow: clip;
   padding-top: 4px;
 }
 
@@ -1865,8 +1880,8 @@ button.categoryMiniRow.interactive:focus-visible {
 }
 
 th.rowHeader {
-  z-index: 2;
-  background: var(--vscode-editorGroupHeader-tabsBackground);
+  --grid-header-surface: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+  z-index: 4;
 }
 
 .missingCell {

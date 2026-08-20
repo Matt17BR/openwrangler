@@ -12384,13 +12384,36 @@ async function capturePackagedHistogramInteractionScene(
   );
   assert.equal((await histogramStatus.innerText()).trim(), "20,174-21,357: 398 rows");
   assert.ok(label?.startsWith(`${(await histogramStatus.innerText()).trim()} (`));
+  assert.equal(await histogramStatus.getAttribute("title"), label);
   assert.equal(await profiles.getByRole("tooltip").count(), 0);
   mkdirSync(outputDirectory, { recursive: true });
   await captureWorkbenchScreenshot(workbench, path.resolve(outputDirectory, `${editor}-histogram-hover-dark.png`));
+
+  await percent.click();
+  assert.equal(await counts.getAttribute("aria-pressed"), "false");
+  assert.equal(await percent.getAttribute("aria-pressed"), "true");
+  await histogramControl.focus();
+  await histogramControl.press("Home");
+  for (let index = 0; index < 17; index += 1) await histogramControl.press("ArrowRight");
+  const percentLabel = await histogramControl.getAttribute("aria-label");
+  assert.equal(
+    percentLabel,
+    "20,174-21,357: 0.4% (398 rows); lower bound included, upper bound excluded",
+    "The percentage-mode histogram must lead with the selected value mode while retaining its exact row count."
+  );
+  assert.equal((await histogramStatus.innerText()).trim(), "20,174-21,357: 0.4%");
+  assert.ok(percentLabel?.startsWith(`${(await histogramStatus.innerText()).trim()} (`));
+  assert.equal(await histogramStatus.getAttribute("title"), percentLabel);
+  await captureWorkbenchScreenshot(
+    workbench,
+    path.resolve(outputDirectory, `${editor}-histogram-hover-percent-dark.png`)
+  );
   await histogramControl.evaluate((element) => {
     (element as unknown as { blur(): void }).blur();
   });
   assert.equal((await histogramStatus.innerText()).trim(), restingStatus);
+  await counts.click();
+  assert.equal(await counts.getAttribute("aria-pressed"), "true");
 }
 
 async function capturePackagedFilterResultScene(

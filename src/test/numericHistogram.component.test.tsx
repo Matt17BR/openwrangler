@@ -60,7 +60,7 @@ describe("NumericHistogram", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
-  it("shows row counts below the chart while preserving the selected value mode in the control label", () => {
+  it("keeps the visible caption aligned with the selected value mode and control label", () => {
     const { container, rerender } = render(
       <NumericHistogram
         visualization={visualization}
@@ -74,14 +74,16 @@ describe("NumericHistogram", () => {
     const status = container.querySelector<HTMLElement>(".miniChartCaption");
 
     act(() => control.focus());
-    expect(status).toHaveTextContent("1-2.5: 100 rows");
+    expect(status).toHaveTextContent("1-2.5: 99%");
     expect(status).toHaveAttribute("title", "1-2.5: 99% (100 rows); lower bound included, upper bound excluded");
+    expect(control.getAttribute("aria-label")?.startsWith(status?.textContent ?? "unavailable")).toBe(true);
     expect(status).not.toHaveAttribute("role");
     expect(status).not.toHaveAttribute("aria-live");
 
     fireEvent.keyDown(control, { key: "End" });
-    expect(status).toHaveTextContent("2.5-4: 1 row");
+    expect(status).toHaveTextContent("2.5-4: 1%");
     expect(control).toHaveAccessibleName("2.5-4: 1% (1 row); both bounds included");
+    expect(control.getAttribute("aria-label")?.startsWith(status?.textContent ?? "unavailable")).toBe(true);
 
     rerender(
       <NumericHistogram
@@ -128,6 +130,11 @@ describe("NumericHistogram", () => {
     expect(stylesheet).toMatch(
       /\.numericHistogramHitTarget:not\(:disabled\):hover\s*\{[^}]*background:\s*transparent;/u
     );
+    expect(stylesheet).toMatch(
+      /th\s*\{[^}]*background-color:\s*var\(--vscode-editor-background\);[^}]*background-image:\s*linear-gradient\(var\(--grid-header-surface\),\s*var\(--grid-header-surface\)\);[^}]*isolation:\s*isolate;[^}]*overflow:\s*clip;[^}]*z-index:\s*3;/u
+    );
+    expect(stylesheet).toMatch(/\.columnInsight\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*clip;/u);
+    expect(stylesheet).toMatch(/\.summaryDistribution\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*clip;/u);
     expect(stylesheet).not.toContain(".numericHistogramTooltip");
   });
 });

@@ -2175,6 +2175,169 @@ async function verifyGridKeyboardWorkflow(browser) {
       `The narrow production grid did not retain an occluded first row beside an exposed click target and clipped rendered neighbor: ${JSON.stringify(retainedCellGeometry)}.`
     );
   }
+
+  const stickyProfileScrollTop = await scroller.evaluate((element) => {
+    const header = element.querySelector('th[data-grid-column="0"]');
+    if (!(header instanceof HTMLElement)) throw new Error("The production grid did not expose its first header.");
+    element.scrollTop = Math.ceil(header.getBoundingClientRect().height) + 29;
+    element.dispatchEvent(new Event("scroll"));
+    return element.scrollTop;
+  });
+  await page.waitForFunction((scrollTop) => {
+    const element = document.querySelector("[data-testid='data-grid-scroller']");
+    return element instanceof HTMLElement && Math.abs(element.scrollTop - scrollTop) <= 1;
+  }, stickyProfileScrollTop);
+  const stickyHistogram = page.locator('th[data-grid-column="0"] .numericHistogram').first();
+  const stickyHistogramControl = stickyHistogram.locator(".numericHistogramHitTarget");
+  await stickyHistogramControl.waitFor();
+  const stickyProfileGeometry = await page.evaluate(() => {
+    const scroller = document.querySelector("[data-testid='data-grid-scroller']");
+    const header = document.querySelector('th[data-grid-column="0"]');
+    const bodyRowHeader = document.querySelector("tbody [role='rowheader']");
+    const insight = header?.querySelector(".columnInsight");
+    const metrics = header?.querySelector(".exactSummaryStats");
+    const chart = header?.querySelector(".miniChart");
+    const caption = header?.querySelector(".miniChartCaption");
+    const bars = [...(header?.querySelectorAll(".numericHistogramBar") ?? [])];
+    if (
+      !(scroller instanceof HTMLElement) ||
+      !(header instanceof HTMLElement) ||
+      !(bodyRowHeader instanceof HTMLElement) ||
+      !(insight instanceof HTMLElement) ||
+      !(metrics instanceof HTMLElement) ||
+      !(chart instanceof SVGElement) ||
+      !(caption instanceof HTMLElement)
+    ) {
+      return undefined;
+    }
+    const headerBounds = header.getBoundingClientRect();
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const profileElements = [insight, metrics, chart, caption];
+    const bodyCells = [...scroller.querySelectorAll("td[data-grid-row][data-grid-column]")];
+    const regions = [metrics, chart, caption].map((element) => {
+      const bounds = element.getBoundingClientRect();
+      const x = Math.min(bounds.right - 1, Math.max(bounds.left + 1, bounds.left + bounds.width / 2));
+      const y = Math.min(bounds.bottom - 1, Math.max(bounds.top + 1, bounds.top + bounds.height / 2));
+      const layers = document.elementsFromPoint(x, y);
+      const topTableCell = layers.map((layer) => layer.closest("th, td")).find(Boolean);
+      return {
+        bodyCellBehind: bodyCells.some((cell) => {
+          const cellBounds = cell.getBoundingClientRect();
+          return x >= cellBounds.left && x <= cellBounds.right && y >= cellBounds.top && y <= cellBounds.bottom;
+        }),
+        topCellIsHeader: topTableCell === header
+      };
+    });
+    const style = getComputedStyle(header);
+    const rowHeaderStyle = getComputedStyle(bodyRowHeader);
+    return {
+      allProfileContentClippedToHeader: profileElements.every((element) => {
+        const bounds = element.getBoundingClientRect();
+        return (
+          bounds.left >= headerBounds.left - 1 &&
+          bounds.right <= headerBounds.right + 1 &&
+          bounds.top >= headerBounds.top - 1 &&
+          bounds.bottom <= headerBounds.bottom + 1
+        );
+      }),
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+      bodyRowsPassBehindProfile: regions.some((region) => region.bodyCellBehind),
+      headerAboveBodyRowHeader: Number.parseInt(style.zIndex, 10) > Number.parseInt(rowHeaderStyle.zIndex, 10),
+      headerInsideScroller:
+        headerBounds.top >= scrollerBounds.top - 1 && headerBounds.bottom <= scrollerBounds.bottom + 1,
+      isolation: style.isolation,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      regions,
+      totalBars: bars.length,
+      visibleBars: bars.filter((bar) => {
+        const bounds = bar.getBoundingClientRect();
+        const barStyle = getComputedStyle(bar);
+        return bounds.width > 0 && bounds.height > 0 && barStyle.display !== "none" && barStyle.visibility !== "hidden";
+      }).length
+    };
+  });
+  if (
+    !stickyProfileGeometry ||
+    !stickyProfileGeometry.allProfileContentClippedToHeader ||
+    !stickyProfileGeometry.bodyRowsPassBehindProfile ||
+    !stickyProfileGeometry.headerAboveBodyRowHeader ||
+    !stickyProfileGeometry.headerInsideScroller ||
+    stickyProfileGeometry.backgroundColor === "rgba(0, 0, 0, 0)" ||
+    stickyProfileGeometry.backgroundColor === "transparent" ||
+    stickyProfileGeometry.backgroundImage === "none" ||
+    stickyProfileGeometry.isolation !== "isolate" ||
+    stickyProfileGeometry.overflowX !== "clip" ||
+    stickyProfileGeometry.overflowY !== "clip" ||
+    stickyProfileGeometry.totalBars === 0 ||
+    stickyProfileGeometry.visibleBars !== stickyProfileGeometry.totalBars ||
+    stickyProfileGeometry.regions.some((region) => !region.topCellIsHeader)
+  ) {
+    throw new Error(
+      `The narrow scrolled production grid did not keep its complete profile opaque, clipped, and above body rows: ${JSON.stringify(stickyProfileGeometry)}.`
+    );
+  }
+
+  const assertStickyHistogramMode = async (mode) => {
+    const controlBounds = await stickyHistogramControl.boundingBox();
+    if (!controlBounds) throw new Error(`The scrolled ${mode} histogram control had no bounds.`);
+    await stickyHistogramControl.hover({ position: { x: controlBounds.width / 3, y: 1 } });
+    const state = await stickyHistogram.evaluate((element) => {
+      const control = element.querySelector(".numericHistogramHitTarget");
+      const caption = element.querySelector(".miniChartCaption");
+      const bars = [...element.querySelectorAll(".numericHistogramBar")];
+      if (!(control instanceof HTMLButtonElement) || !(caption instanceof HTMLElement)) return undefined;
+      const status = caption.textContent?.trim() ?? "";
+      return {
+        activeBins: element.querySelectorAll(".numericHistogramBin.active").length,
+        ariaLabel: control.getAttribute("aria-label") ?? "",
+        captionTitle: caption.getAttribute("title") ?? "",
+        status,
+        totalBars: bars.length,
+        visibleBars: bars.filter((bar) => {
+          const bounds = bar.getBoundingClientRect();
+          const style = getComputedStyle(bar);
+          return bounds.width > 0 && bounds.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+        }).length
+      };
+    });
+    const usesSelectedMode =
+      mode === "count" ? state?.status.includes("row") : state?.status.includes("%") && !state.status.includes("row");
+    if (
+      !state ||
+      state.activeBins !== 1 ||
+      state.totalBars === 0 ||
+      state.visibleBars !== state.totalBars ||
+      !usesSelectedMode ||
+      !state.ariaLabel.startsWith(state.status) ||
+      !state.captionTitle.startsWith(state.status)
+    ) {
+      throw new Error(
+        `The narrow scrolled production grid did not align its ${mode} caption with the complete active histogram: ${JSON.stringify(state)}.`
+      );
+    }
+  };
+  const countToggle = page.getByRole("button", { name: "Show header profile counts", exact: true });
+  const percentToggle = page.getByRole("button", { name: "Show header profile percentages", exact: true });
+  if ((await countToggle.getAttribute("aria-pressed")) !== "true") {
+    throw new Error("The scrolled production grid did not begin in count mode.");
+  }
+  await assertStickyHistogramMode("count");
+  await percentToggle.click();
+  if ((await percentToggle.getAttribute("aria-pressed")) !== "true") {
+    throw new Error("The scrolled production grid did not enter percentage mode.");
+  }
+  await assertStickyHistogramMode("percent");
+  await countToggle.click();
+  await scroller.evaluate((element, scrollTop) => {
+    element.scrollTop = scrollTop;
+    element.dispatchEvent(new Event("scroll"));
+  }, retainedCellScrollTop);
+  await page.waitForFunction((scrollTop) => {
+    const element = document.querySelector("[data-testid='data-grid-scroller']");
+    return element instanceof HTMLElement && Math.abs(element.scrollTop - scrollTop) <= 1;
+  }, retainedCellScrollTop);
   const exposedCell = page.locator('[data-grid-row="4"][data-grid-column="0"]');
   await exposedCell.click();
   await waitForFocusedGridCell(page, 4, 0);
