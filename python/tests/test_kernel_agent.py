@@ -9,11 +9,14 @@ import pytest
 
 from openwrangler_runtime import kernel_agent, notebook, server
 from openwrangler_runtime import session as session_runtime
+from openwrangler_runtime.by_example import evaluate_program
 from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
+from openwrangler_runtime.live_page_payload import validate_live_page_payload
 from openwrangler_runtime.protocol import response_envelope
 from openwrangler_runtime.response_framing import (
     MAX_RESPONSE_FRAME_BYTES,
     ResponseEncodingError,
+    ResponseFrameTooLargeError,
     encode_response_frame,
 )
 from openwrangler_runtime.session import (
@@ -367,6 +370,113 @@ def test_kernel_response_uses_the_bounded_compact_utf8_frame_encoder() -> None:
     assert len(json.dumps(envelope).encode("utf-8")) > MAX_RESPONSE_FRAME_BYTES
 
 
+def test_response_transports_preserve_existing_page_and_plan_depth_boundaries() -> None:
+    raw: Any = "leaf"
+    for _ in range(64):
+        raw = [raw]
+    page: dict[str, Any] = {
+        "offset": 0,
+        "limit": 1,
+        "totalRows": 1,
+        "columnIds": ["c:source:0"],
+        "rows": [
+            {
+                "id": "0",
+                "values": [
+                    {
+                        "kind": "json",
+                        "raw": raw,
+                        "display": "nested",
+                        "isNull": False,
+                        "isNaN": False,
+                    }
+                ],
+            }
+        ],
+    }
+    assert validate_live_page_payload(page) > 0
+
+    program: dict[str, Any] = {"kind": "literal", "value": "x"}
+    for _ in range(64):
+        program = {"kind": "case", "style": "upper", "input": program}
+    assert evaluate_program(program, [], []) == "X"
+
+    responses = (
+        {"kind": "page", "page": page},
+        {
+            "kind": "planUpdated",
+            "action": {"step": {"kind": "byExample", "params": {"program": program}}},
+        },
+    )
+    for response in responses:
+        envelope = response_envelope("depth-boundary", response)
+        assert kernel_agent._encode_response("depth-boundary", response) == encode_response_frame(
+            envelope, MAX_RESPONSE_FRAME_BYTES
+        )[:-1].decode("utf-8")
+
+
+def test_pandas_regex_extraction_journey_responses_are_strict_json(tmp_path) -> None:
+    path = tmp_path / "regex-extraction.csv"
+    path.write_bytes(b"value,score\nalpha-12,1\nplain,2\n,3\n")
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {
+                "kind": "file",
+                "label": path.name,
+                "path": str(path),
+                "uri": path.as_uri(),
+                "importOptions": {
+                    "delimiter": ",",
+                    "encoding": "utf-8",
+                    "quoteChar": '"',
+                    "hasHeader": True,
+                },
+            },
+            backend="pandas",
+            mode="editing",
+            page_size=20,
+            column_offset=0,
+            column_limit=64,
+        )
+        metadata = opened["metadata"]
+        session_id = metadata["sessionId"]
+        source_column = next(column for column in metadata["schema"] if column["name"] == "value")
+        responses = [opened]
+        responses.append(
+            manager.get_page(
+                session_id,
+                0,
+                0,
+                3,
+                metadata["filterModel"],
+                source_column["position"],
+                1,
+            )
+        )
+        step = {
+            "id": "regex-extraction",
+            "kind": "extractRegexGroup",
+            "params": {
+                "column": {"id": source_column["id"], "name": "value"},
+                "pattern": "([A-Za-z]{5})-([0-9]{2})()",
+                "group": 3,
+                "newColumn": "regex_capture",
+            },
+        }
+        preview = manager.preview_step(session_id, 0, step, 0, 200, None, 0, 64)
+        responses.append(preview)
+        for name in ("value", "regex_capture"):
+            column = next(column for column in preview["metadata"]["schema"] if column["name"] == name)
+            responses.append(manager.get_page(session_id, 1, 0, 3, metadata["filterModel"], column["position"], 1))
+
+        for index, response in enumerate(responses):
+            frame = encode_response_frame(response_envelope(f"regex-{index}", response))
+            assert json.loads(frame) == response_envelope(f"regex-{index}", response)
+    finally:
+        manager.close_all()
+
+
 def test_kernel_response_encoding_failure_is_correlated_bounded_and_not_coerced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -460,6 +570,52 @@ def test_kernel_does_not_synthesize_an_error_after_a_mutation_encoding_failure(
         )
 
     assert value.calls == 0
+
+
+@pytest.mark.parametrize("mutation", (False, True), ids=("read", "mutation"))
+def test_kernel_oversized_string_response_preserves_publication_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: bool,
+) -> None:
+    request = {
+        "kind": "applyDraft" if mutation else "getPage",
+        "sessionId": "session",
+        "revision": 0,
+        "offset": 0,
+        "limit": 20,
+        "columnOffset": 0,
+        "columnLimit": 64,
+    }
+    if not mutation:
+        request.update({"viewRequestId": "oversized-view", "filterModel": EMPTY_FILTER})
+
+    def oversized_response(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "kind": "planUpdated" if mutation else "page",
+            "private": "private-oversized-response-" + ("é" * 1_000),
+        }
+
+    monkeypatch.setattr(kernel_agent, "MAX_RESPONSE_FRAME_BYTES", 512)
+    monkeypatch.setattr(kernel_agent, "dispatch", oversized_response)
+    payload = _envelope(request, request_id="oversized-response")
+
+    if mutation:
+        with pytest.raises(ResponseFrameTooLargeError):
+            kernel_agent.dispatch_json(payload)
+        return
+
+    encoded = kernel_agent.dispatch_json(payload)
+    result = json.loads(encoded)
+    assert result["requestId"] == "oversized-response"
+    assert result["response"]["code"] == "response_too_large"
+    assert result["response"]["viewRequestId"] == "oversized-view"
+    assert "private-oversized-response" not in encoded
+
+    assert len(encoded.encode("utf-8")) < 512
 
 
 def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(monkeypatch) -> None:
@@ -668,6 +824,37 @@ def test_malformed_envelope_preserves_its_available_request_id() -> None:
             "recoverable": False,
         },
     }
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    (
+        {"private": "secret-request-id"},
+        "x" * 257,
+        "",
+        "\ud800",
+    ),
+    ids=("object", "oversized", "empty", "invalid-unicode"),
+)
+def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(request_id: object) -> None:
+    encoded = kernel_agent.dispatch_json(
+        json.dumps(
+            {
+                "protocolVersion": 2,
+                "requestId": request_id,
+                "priority": "interactive",
+                "request": {"kind": "initialize"},
+            }
+        )
+    )
+    result = json.loads(encoded)
+
+    assert result["protocolVersion"] == 2
+    assert result["requestId"] == "unknown"
+    assert result["response"]["kind"] == "error"
+    assert result["response"]["code"] == "invalid_request"
+    assert "secret-request-id" not in encoded
+    assert len(encoded.encode("utf-8")) < 512
 
 
 def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch) -> None:

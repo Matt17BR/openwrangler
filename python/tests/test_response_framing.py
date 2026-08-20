@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import openwrangler_runtime.response_framing as response_framing
 import openwrangler_runtime.server as server
 from openwrangler_runtime.response_framing import (
     MAX_STRICT_JSON_NESTING_DEPTH,
@@ -144,6 +145,7 @@ def test_response_frame_rejects_cycles_without_partial_output() -> None:
 
 
 def test_response_frame_accepts_exact_depth_and_rejects_one_more_level() -> None:
+    assert MAX_STRICT_JSON_NESTING_DEPTH == 128
     accepted: Any = "leaf"
     for _ in range(MAX_STRICT_JSON_NESTING_DEPTH):
         accepted = [accepted]
@@ -167,13 +169,94 @@ def test_response_frame_cap_counts_multibyte_utf8_and_lf_exactly() -> None:
     assert strict_json_byte_length(payload, len(expected)) == len(expected) - 1
 
 
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"value": "x" * 64},
+        {"value": "é" * 64},
+        {"x" * 64: None},
+        {"é" * 64: None},
+    ),
+    ids=("ascii-value", "multibyte-value", "ascii-key", "multibyte-key"),
+)
+def test_response_frame_cap_is_exact_for_one_string_value_or_key(payload: dict[str, Any]) -> None:
+    expected = (
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+    assert encode_response_frame(payload, len(expected)) == expected
+    with pytest.raises(ResponseFrameTooLargeError):
+        encode_response_frame(payload, len(expected) - 1)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"value": "x" * 100_000},
+        {"value": "é" * 100_000},
+        {"x" * 100_000: None},
+        {"é" * 100_000: None},
+    ),
+    ids=("ascii-value", "multibyte-value", "ascii-key", "multibyte-key"),
+)
+def test_oversized_single_string_is_rejected_without_json_dumps(
+    payload: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    serializer_calls = 0
+
+    def serializer_must_not_run(*_args: Any, **_kwargs: Any) -> str:
+        nonlocal serializer_calls
+        serializer_calls += 1
+        raise AssertionError("json.dumps received an oversized string scalar")
+
+    monkeypatch.setattr(response_framing.json, "dumps", serializer_must_not_run)
+
+    with pytest.raises(ResponseFrameTooLargeError):
+        encode_response_frame(payload, 128)
+    assert strict_json_byte_length(payload, 128) == 129
+    assert serializer_calls == 0
+
+
+def test_string_chunk_boundaries_match_canonical_json_escaping() -> None:
+    value = ("x" * (16 * 1024 - 1)) + '\n"\\\t\x01é' + ("z" * (16 * 1024 + 1))
+    payload = {value: value}
+    expected = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    assert encode_response_frame(payload, len(expected)) == expected
+
+
+def test_oversized_integer_is_rejected_before_decimal_serialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = 10**10_000
+    serializer_calls = 0
+
+    def serializer_must_not_run(*_args: Any, **_kwargs: Any) -> str:
+        nonlocal serializer_calls
+        serializer_calls += 1
+        raise AssertionError("json.dumps received an oversized integer scalar")
+
+    monkeypatch.setattr(response_framing.json, "dumps", serializer_must_not_run)
+
+    with pytest.raises(ResponseFrameTooLargeError):
+        encode_response_frame({"value": value}, 128)
+    assert strict_json_byte_length({"value": value}, 128) == 129
+    assert serializer_calls == 0
+
+
 def test_strict_json_byte_length_stops_after_crossing_the_bound() -> None:
     payload = {"secret": "private-response-payload-" + ("x" * 100_000)}
 
     measured = strict_json_byte_length(payload, 128)
 
-    assert measured > 128
-    assert measured <= len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    assert measured == 129
 
 
 def test_strict_json_byte_length_does_not_traverse_after_crossing_the_bound() -> None:
@@ -185,7 +268,7 @@ def test_strict_json_byte_length_does_not_traverse_after_crossing_the_bound() ->
         128,
     )
 
-    assert measured > 128
+    assert measured == 129
 
 
 def test_response_payload_error_maps_to_a_correlated_recoverable_response(
