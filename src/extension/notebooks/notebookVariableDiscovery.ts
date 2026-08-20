@@ -422,12 +422,10 @@ __ow_candidate_version = (
 )
 __ow_version_classification = __ow_classify_pyspark_version_v1(__ow_candidate_version)
 __ow_version = __ow_safe_pyspark_version_diagnostic_v1(__ow_candidate_version)
-__ow_version_supported = __ow_version_classification == "supported-final"
-if not __ow_version_supported and (${expectedBackend === "pyspark" ? "True" : "False"} or __ow_module is not None):
-    __ow_is_pyspark = True
-else:
+__ow_is_pyspark = ${expectedBackend === "pyspark" ? "True" : "False"}
+if not __ow_is_pyspark:
     __ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
-    if __ow_value is __ow_missing:
+    if __ow_value is __ow_missing and ${/^__openwrangler_live_result_[0-9a-f]{32}$/.test(variableName) ? "True" : "False"}:
         __ow_notebook_module = __ow_sys.modules.get("openwrangler_runtime.notebook")
         __ow_notebook_dict = None if __ow_notebook_module is None else __ow_notebook_module.__dict__
         if __ow_builtins.isinstance(__ow_notebook_dict, dict):
@@ -443,7 +441,6 @@ else:
                 except Exception:
                     __ow_value = __ow_missing
     __ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
-    __ow_is_pyspark = False
     if __ow_value is not __ow_missing:
         for __ow_module_name in (
             "pyspark.sql.dataframe.DataFrame",
