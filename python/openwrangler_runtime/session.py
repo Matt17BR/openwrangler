@@ -415,6 +415,7 @@ class SessionManager:
             source_kind = str(source.get("kind", ""))
             if clone_from is None:
                 engine = self._engine_for_source(source, backend)
+                engine.validate_runtime()
                 if source_kind not in engine.capabilities.source_kinds:
                     raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
                 source_fingerprint = self._source_fingerprint(source, engine)

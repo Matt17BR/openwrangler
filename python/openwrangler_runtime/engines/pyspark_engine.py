@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,6 +11,7 @@ from importlib import import_module
 from math import isfinite
 from typing import Any
 
+from ..pyspark_version_policy_generated import is_supported_pyspark_version as _is_supported_pyspark_version
 from .base import (
     INTERNAL_ROW_ID_PREFIX,
     VIEW_COMPARABLE_TYPES,
@@ -43,11 +43,6 @@ from .base import (
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
-_MAX_PYSPARK_VERSION_CHARACTERS = 64
-_FINAL_PYSPARK_VERSION = re.compile(
-    r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.[0-9]+"
-    r"(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$"
-)
 _ACTIVE_PYSPARK_REQUEST_ID: ContextVar[str | None] = ContextVar(
     "openwrangler_active_pyspark_request_id",
     default=None,
@@ -68,19 +63,15 @@ _SPARK_CONNECT_LOST_CONDITIONS = frozenset(
 )
 
 
-def _is_supported_pyspark_version(version: str) -> bool:
-    if not 0 < len(version) <= _MAX_PYSPARK_VERSION_CHARACTERS:
-        return False
-    match = _FINAL_PYSPARK_VERSION.fullmatch(version)
-    if match is None:
-        return False
-    # PEP 440 release components compare numerically, while a local version
-    # does not change whether the public release is final.
-    return _normalize_release_component(match["major"]) == "4" and _normalize_release_component(match["minor"]) == "2"
-
-
-def _normalize_release_component(component: str) -> str:
-    return component.lstrip("0") or "0"
+def _require_supported_pyspark_runtime() -> None:
+    pyspark_module = import_module("pyspark")
+    raw_version = pyspark_module.__dict__.get("__version__")
+    version = raw_version if isinstance(raw_version, str) else ""
+    if not _is_supported_pyspark_version(version):
+        raise EngineError(
+            "Open Wrangler requires a final PySpark 4.2.x release for notebook viewing. "
+            "Install a supported final release in the selected kernel, restart it, and rerun the defining cell."
+        )
 
 
 _UNSUPPORTED_PROFILE_TYPE_ROOTS = frozenset({"variant", "time", "geometry", "geography"})
@@ -117,6 +108,13 @@ class PySparkEngine(DataFrameEngine):
         self._paging_frame: Any | None = None
         self._paging_anchors: dict[int, Any] = {}
         self._closed = False
+
+    def prepare(self, source: Mapping[str, Any] | None = None) -> None:
+        del source
+        self.validate_runtime()
+
+    def validate_runtime(self) -> None:
+        _require_supported_pyspark_runtime()
 
     @contextmanager
     def request_scope(self, request_id: str) -> Iterator[None]:
@@ -164,8 +162,9 @@ class PySparkEngine(DataFrameEngine):
 
     def detect(self, value: Any) -> bool:
         try:
+            self.validate_runtime()
             dataframe_type = import_module("pyspark.sql").DataFrame
-        except (ImportError, AttributeError):
+        except (ImportError, AttributeError, EngineError):
             return False
         return isinstance(value, dataframe_type)
 
@@ -192,6 +191,7 @@ class PySparkEngine(DataFrameEngine):
         raise EngineError("PySpark supports live notebook variables only.")
 
     def validate_internal_row_id_namespace(self, frame: Any, allowed_internal: Any | None = None) -> None:
+        self.validate_runtime()
         matches = [label for label in self._raw_column_labels(frame) if is_internal_row_id_label(label)]
         if allowed_internal is None:
             unexpected = matches
@@ -1231,18 +1231,11 @@ class PySparkEngine(DataFrameEngine):
 
     @staticmethod
     def _require_supported_frame(frame: Any) -> None:
+        _require_supported_pyspark_runtime()
         if bool(frame.isStreaming):
             raise EngineError(
                 "This PySpark dataframe is streaming. Write the stream to a table or files, then open a static "
                 "dataframe read from that output."
-            )
-        pyspark_module = import_module("pyspark")
-        raw_version = pyspark_module.__dict__.get("__version__")
-        version = raw_version if isinstance(raw_version, str) else ""
-        if not _is_supported_pyspark_version(version):
-            raise EngineError(
-                f"Open Wrangler requires a final PySpark 4.2.x release for notebook viewing, "
-                f"not {version or 'unknown'}."
             )
         if not callable(getattr(frame, "withColumn", None)):
             raise EngineError(

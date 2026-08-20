@@ -1,5 +1,22 @@
 {
-  "acceptedFinal": ["4.2.0", "4.2.17", "04.02.000", "4.2.0+vendor.1", "4.2.17+vendor-2", "4.2.0+Vendor_01"],
+  "policy": {
+    "maxCharacters": 64,
+    "supportedRelease": { "major": 4, "minor": 2 },
+    "versionGrammar": {
+      "releaseCharacters": "0123456789",
+      "localCharacters": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+      "localSeparators": "._-"
+    }
+  },
+  "acceptedFinal": [
+    "4.2.0",
+    "4.2.17",
+    "04.02.000",
+    "4.2.0+vendor.1",
+    "4.2.17+vendor-2",
+    "4.2.0+Vendor_01",
+    "4.2.0+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
   "rejected": {
     "alpha": ["4.2.0a1", "4.2.0alpha1", "4.2.0-alpha1", "4.2.0a1+vendor.1"],
     "beta": ["4.2.0b2", "4.2.0beta2", "4.2.0-beta2", "4.2.0b2+vendor.1"],
@@ -19,10 +36,13 @@
       "4.2.0+vendor..1",
       "4.2.0+vendor!1",
       "4.2.00000000000000000000000000000000000000000000000000000000000000000",
+      "4.2.0+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "4.2.٠",
       "4.2.0rc١",
       "v4.2.0",
-      "4.2.0\n"
+      "4.2.0\n",
+      "4.2.0\t",
+      "4.2.0\u0000"
     ]
   }
 }

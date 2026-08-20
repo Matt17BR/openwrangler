@@ -54,9 +54,7 @@ _PYSPARK_VERSION_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
 )
 _REJECTED_PYSPARK_VERSIONS = [
-    (category, version)
-    for category, versions in _PYSPARK_VERSION_CONTRACT["rejected"].items()
-    for version in versions
+    (category, version) for category, versions in _PYSPARK_VERSION_CONTRACT["rejected"].items() for version in versions
 ]
 
 
@@ -94,7 +92,17 @@ def test_runtime_gate_rejects_nonfinal_pyspark_versions_before_frame_use(
     monkeypatch: pytest.MonkeyPatch, _category: str, version: str
 ) -> None:
     class UnqualifiedFrame:
-        isStreaming = False
+        @property
+        def isStreaming(self) -> None:
+            raise AssertionError("An unqualified PySpark build must fail before isStreaming is inspected.")
+
+        @property
+        def columns(self) -> None:
+            raise AssertionError("An unqualified PySpark build must fail before columns are inspected.")
+
+        @property
+        def schema(self) -> None:
+            raise AssertionError("An unqualified PySpark build must fail before schema is inspected.")
 
         @property
         def withColumn(self) -> None:
@@ -104,6 +112,52 @@ def test_runtime_gate_rejects_nonfinal_pyspark_versions_before_frame_use(
 
     with pytest.raises(EngineError, match="requires a final PySpark 4[.]2[.]x release"):
         PySparkEngine._require_supported_frame(UnqualifiedFrame())
+
+    with pytest.raises(EngineError, match="requires a final PySpark 4[.]2[.]x release"):
+        PySparkEngine().validate_internal_row_id_namespace(UnqualifiedFrame())
+
+
+@pytest.mark.parametrize("version", ["4.2.0\n", "4.2.0\x00", "x" * 65])
+def test_runtime_version_diagnostics_are_bounded_and_do_not_embed_rejected_input(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    monkeypatch.setattr(pyspark_engine_module, "import_module", lambda name: SimpleNamespace(__version__=version))
+
+    with pytest.raises(EngineError) as captured:
+        PySparkEngine().validate_runtime()
+
+    message = str(captured.value)
+    assert message == (
+        "Open Wrangler requires a final PySpark 4.2.x release for notebook viewing. "
+        "Install a supported final release in the selected kernel, restart it, and rerun the defining cell."
+    )
+    assert version not in message
+
+
+def test_runtime_rejects_unqualified_pyspark_before_notebook_namespace_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = "4.2.0.dev1"
+    monkeypatch.setattr(pyspark_engine_module, "import_module", lambda name: SimpleNamespace(__version__=version))
+    manager = SessionManager()
+    resolution_calls = 0
+
+    def fail_resolution(_source: Mapping[str, Any]) -> Any:
+        nonlocal resolution_calls
+        resolution_calls += 1
+        raise AssertionError("An unqualified PySpark runtime must fail before resolving the notebook namespace.")
+
+    monkeypatch.setattr(manager, "_resolve_notebook_variable", fail_resolution)
+
+    with pytest.raises(EngineError, match="requires a final PySpark 4[.]2[.]x release") as captured:
+        manager.open_session(
+            {"kind": "notebookVariable", "variableName": "spark_frame", "label": "spark_frame"},
+            backend="pyspark",
+        )
+
+    assert version not in str(captured.value)
+    assert resolution_calls == 0
+    assert manager.sessions == {}
 
 
 def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
@@ -784,6 +838,7 @@ def test_index_is_lazy_and_close_releases_without_an_action(monkeypatch: pytest.
         "_require_supported_frame",
         staticmethod(lambda _frame: None),
     )
+    monkeypatch.setattr(PySparkEngine, "validate_runtime", lambda _self: None)
     real_import_module = pyspark_engine_module.import_module
     monkeypatch.setattr(
         pyspark_engine_module,

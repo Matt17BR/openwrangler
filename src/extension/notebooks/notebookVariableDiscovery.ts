@@ -5,6 +5,15 @@ import type { DataBackend } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import {
+  MAX_PYSPARK_VERSION_CHARACTERS,
+  PYSPARK_FINAL_VERSION_PATTERN,
+  PYSPARK_SUPPORTED_MAJOR,
+  PYSPARK_SUPPORTED_MINOR,
+  isSupportedPySparkVersion
+} from "./pysparkVersionPolicy.generated";
+
+export { isSupportedPySparkVersion } from "./pysparkVersionPolicy.generated";
 
 const DISCOVERY_PROTOCOL_VERSION = 1;
 const MAX_DISCOVERY_VARIABLES = 256;
@@ -14,8 +23,6 @@ const MAX_DISCOVERY_OUTPUT_BYTES = 64 * 1024;
 const MAX_DISCOVERY_OUTPUTS = 128;
 const MAX_DISCOVERY_OUTPUT_ITEMS = 256;
 const PYSPARK_VERSION_PROTOCOL_VERSION = 1;
-const MAX_PYSPARK_VERSION_CHARACTERS = 64;
-const FINAL_PYSPARK_VERSION = /^([0-9]+)\.([0-9]+)\.[0-9]+(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$/u;
 
 const NOTEBOOK_VARIABLE_TYPES = {
   "pandas.DataFrame": { backend: "pandas", family: "Pandas", kind: "DataFrame" },
@@ -303,6 +310,7 @@ export function buildNotebookVariableDiscoveryCode(marker: string): string {
   return `
 def __ow_discover_variables_v1():
     import json as __ow_json
+    import re as __ow_re
     import sys as __ow_sys
     __ow_specs = {
         ("pandas", "DataFrame"): ("pandas.DataFrame", "pandas"),
@@ -318,6 +326,26 @@ def __ow_discover_variables_v1():
         ("_duckdb", "DuckDBPyRelation"): ("_duckdb.DuckDBPyRelation", "duckdb"),
         ("duckdb.duckdb", "DuckDBPyRelation"): ("duckdb.duckdb.DuckDBPyRelation", "duckdb"),
     }
+    __ow_pyspark_module = __ow_sys.modules.get("pyspark")
+    __ow_pyspark_namespace = None if __ow_pyspark_module is None else __ow_pyspark_module.__dict__
+    __ow_pyspark_version = (
+        None
+        if not isinstance(__ow_pyspark_namespace, dict)
+        else __ow_pyspark_namespace.get("__version__")
+    )
+    __ow_pyspark_match = (
+        None
+        if (
+            not isinstance(__ow_pyspark_version, str)
+            or not 0 < len(__ow_pyspark_version) <= ${MAX_PYSPARK_VERSION_CHARACTERS}
+        )
+        else __ow_re.fullmatch(${JSON.stringify(PYSPARK_FINAL_VERSION_PATTERN)}, __ow_pyspark_version)
+    )
+    __ow_pyspark_supported = bool(
+        __ow_pyspark_match is not None
+        and (__ow_pyspark_match.group(1).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MAJOR)}
+        and (__ow_pyspark_match.group(2).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MINOR)}
+    )
     __ow_variables = []
     __ow_truncated = False
     __ow_scanned = 0
@@ -350,6 +378,8 @@ def __ow_discover_variables_v1():
             or __ow_module_namespace.get(__ow_type_name) is not __ow_actual_type
         ):
             continue
+        if __ow_spec[1] == "pyspark" and not __ow_pyspark_supported:
+            continue
         if len(__ow_variables) >= ${MAX_DISCOVERY_VARIABLES}:
             __ow_truncated = True
             break
@@ -376,7 +406,11 @@ del __ow_discover_variables_v1
 `;
 }
 
-export function buildPySparkNotebookPreflightCode(marker: string, variableName: string): string {
+export function buildPySparkNotebookPreflightCode(
+  marker: string,
+  variableName: string,
+  expectedBackend?: DataBackend
+): string {
   if (!/^[a-f0-9]{32}$/.test(marker)) {
     throw new Error("PySpark preflight marker must be 32 lowercase hexadecimal characters.");
   }
@@ -385,53 +419,66 @@ export function buildPySparkNotebookPreflightCode(marker: string, variableName: 
   }
   const isolatedSource = `
 __ow_json = __ow_builtins.__import__("json")
+__ow_re = __ow_builtins.__import__("re")
 __ow_sys = __ow_builtins.__import__("sys")
 __ow_missing = __ow_builtins.object()
-__ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
-if __ow_value is __ow_missing:
-    __ow_notebook_module = __ow_sys.modules.get("openwrangler_runtime.notebook")
-    __ow_notebook_dict = None if __ow_notebook_module is None else __ow_notebook_module.__dict__
-    if __ow_builtins.isinstance(__ow_notebook_dict, dict):
-        __ow_is_live_handle = __ow_notebook_dict.get("is_live_result_handle")
-        __ow_resolve_live_handle = __ow_notebook_dict.get("resolve_live_result")
-        if (
-            __ow_builtins.callable(__ow_is_live_handle)
-            and __ow_builtins.callable(__ow_resolve_live_handle)
-            and __ow_is_live_handle(${JSON.stringify(variableName)})
-        ):
-            try:
-                __ow_value = __ow_resolve_live_handle(${JSON.stringify(variableName)})
-            except Exception:
-                __ow_value = __ow_missing
-__ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
-__ow_is_pyspark = False
-if __ow_value is not __ow_missing:
-    for __ow_module_name in (
-        "pyspark.sql.dataframe.DataFrame",
-        "pyspark.sql.classic.dataframe.DataFrame",
-        "pyspark.sql.connect.dataframe.DataFrame",
-    ):
-        __ow_class_module = __ow_sys.modules.get(__ow_module_name.rsplit(".", 1)[0])
-        __ow_class_module_dict = None if __ow_class_module is None else __ow_class_module.__dict__
-        if (
-            __ow_builtins.isinstance(__ow_class_module_dict, dict)
-            and __ow_class_module_dict.get("DataFrame") is __ow_value_type
-        ):
-            __ow_is_pyspark = True
-            break
 __ow_version = None
-if __ow_is_pyspark:
-    __ow_module = __ow_sys.modules.get("pyspark")
-    __ow_module_dict = None if __ow_module is None else __ow_module.__dict__
-    if __ow_builtins.isinstance(__ow_module_dict, dict):
-        __ow_candidate_version = __ow_module_dict.get("__version__")
-        if (
-            __ow_builtins.isinstance(__ow_candidate_version, str)
-            and 0 < __ow_builtins.len(__ow_candidate_version) <= ${MAX_PYSPARK_VERSION_CHARACTERS}
-            and __ow_candidate_version.isascii()
-            and __ow_candidate_version.isprintable()
+__ow_module = __ow_sys.modules.get("pyspark")
+__ow_module_dict = None if __ow_module is None else __ow_module.__dict__
+if __ow_builtins.isinstance(__ow_module_dict, dict):
+    __ow_candidate_version = __ow_module_dict.get("__version__")
+    if (
+        __ow_builtins.isinstance(__ow_candidate_version, str)
+        and 0 < __ow_builtins.len(__ow_candidate_version) <= ${MAX_PYSPARK_VERSION_CHARACTERS}
+        and __ow_candidate_version.isascii()
+        and __ow_candidate_version.isprintable()
+    ):
+        __ow_version = __ow_candidate_version
+__ow_version_match = (
+    None
+    if __ow_version is None
+    else __ow_re.fullmatch(${JSON.stringify(PYSPARK_FINAL_VERSION_PATTERN)}, __ow_version)
+)
+__ow_version_supported = bool(
+    __ow_version_match is not None
+    and (__ow_version_match.group(1).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MAJOR)}
+    and (__ow_version_match.group(2).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MINOR)}
+)
+if ${expectedBackend === "pyspark" ? "True" : "False"} and not __ow_version_supported:
+    __ow_is_pyspark = True
+else:
+    __ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
+    if __ow_value is __ow_missing:
+        __ow_notebook_module = __ow_sys.modules.get("openwrangler_runtime.notebook")
+        __ow_notebook_dict = None if __ow_notebook_module is None else __ow_notebook_module.__dict__
+        if __ow_builtins.isinstance(__ow_notebook_dict, dict):
+            __ow_is_live_handle = __ow_notebook_dict.get("is_live_result_handle")
+            __ow_resolve_live_handle = __ow_notebook_dict.get("resolve_live_result")
+            if (
+                __ow_builtins.callable(__ow_is_live_handle)
+                and __ow_builtins.callable(__ow_resolve_live_handle)
+                and __ow_is_live_handle(${JSON.stringify(variableName)})
+            ):
+                try:
+                    __ow_value = __ow_resolve_live_handle(${JSON.stringify(variableName)})
+                except Exception:
+                    __ow_value = __ow_missing
+    __ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
+    __ow_is_pyspark = False
+    if __ow_value is not __ow_missing:
+        for __ow_module_name in (
+            "pyspark.sql.dataframe.DataFrame",
+            "pyspark.sql.classic.dataframe.DataFrame",
+            "pyspark.sql.connect.dataframe.DataFrame",
         ):
-            __ow_version = __ow_candidate_version
+            __ow_class_module = __ow_sys.modules.get(__ow_module_name.rsplit(".", 1)[0])
+            __ow_class_module_dict = None if __ow_class_module is None else __ow_class_module.__dict__
+            if (
+                __ow_builtins.isinstance(__ow_class_module_dict, dict)
+                and __ow_class_module_dict.get("DataFrame") is __ow_value_type
+            ):
+                __ow_is_pyspark = True
+                break
 print("__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__")
 print(__ow_json.dumps(
     {
@@ -469,23 +516,10 @@ export function assertSupportedPySparkNotebookPreflight(
   }
   if (!isSupportedPySparkVersion(result.version)) {
     throw new PySparkNotebookPreflightError(
-      `Open Wrangler requires a final PySpark 4.2.x release for live viewing, but the selected notebook kernel has PySpark ${result.version}. Upgrade that kernel, restart it, and rerun the cell that creates the DataFrame.`
+      "Open Wrangler requires a final PySpark 4.2.x release for live viewing. Install a supported final release in the selected notebook kernel, restart it, and rerun the cell that creates the DataFrame."
     );
   }
   return true;
-}
-
-export function isSupportedPySparkVersion(version: string): boolean {
-  if (version.length === 0 || version.length > MAX_PYSPARK_VERSION_CHARACTERS) return false;
-  const match = FINAL_PYSPARK_VERSION.exec(version);
-  if (!match) return false;
-  // PEP 440 release components compare numerically, while a local version
-  // does not change whether the public release is final.
-  return normalizeReleaseComponent(match[1]!) === "4" && normalizeReleaseComponent(match[2]!) === "2";
-}
-
-function normalizeReleaseComponent(component: string): string {
-  return component.replace(/^0+/u, "") || "0";
 }
 
 async function resolvePythonNotebookKernel(notebook: vscode.NotebookDocument): Promise<Kernel> {

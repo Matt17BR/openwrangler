@@ -101,6 +101,21 @@ describe("kernel retry classification", () => {
     expect(stages).toEqual(["acquiringKernel", "bootstrappingRuntime", "openingNotebookVariable"]);
   });
 
+  it("pins a preflight-qualified automatic PySpark open before runtime namespace resolution", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controlledPySparkKernel("4.2.3+vendor.1", requests);
+    mockKernel(controller.kernel);
+
+    await expect(createKernelBridge().request(unpinnedOpenRequest("auto-spark-pinned"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { backend: "pyspark", sessionId: "auto-spark-pinned" }
+    });
+
+    expect(controller.preflightExecutionCount()).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ kind: "openSession", backend: "pyspark" });
+  });
+
   it("rejects a pinned PySpark open when the variable is no longer a PySpark DataFrame", async () => {
     const requests: OpenWranglerRequest[] = [];
     const controller = controlledNonPySparkKernel("pandas", requests);
@@ -209,7 +224,7 @@ describe("kernel retry classification", () => {
         metadata: { backend: "pyspark", sessionId: "switch-supported" }
       });
     } else {
-      await expect(operation).rejects.toThrow("selected notebook kernel has PySpark 4.3.0");
+      await expect(operation).rejects.toThrow("requires a final PySpark 4.2.x release for live viewing");
     }
 
     expect(kernelA.preflightExecutionCount()).toBe(1);
@@ -247,6 +262,64 @@ describe("kernel retry classification", () => {
     expect(requestsB.map((request) => request.kind)).toEqual(["openSession"]);
     expect(getExtension).toHaveBeenCalledTimes(2);
   });
+
+  it("does not cache a rejected prerelease across replacement-kernel recovery and reprobes the final runtime", async () => {
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const requestsC: OpenWranglerRequest[] = [];
+    const kernelA = controlledPySparkKernel("4.2.0", requestsA);
+    const kernelB = controlledPySparkKernel("4.2.1rc1", requestsB);
+    const kernelC = controlledPySparkKernel("4.2.1+vendor.3", requestsC);
+    let currentKernel = kernelA.kernel;
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(openRequest("prerelease-reprobe-a", "pyspark"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "prerelease-reprobe-a" }
+    });
+    currentKernel = kernelB.kernel;
+    kernelA.setStatus("restarting");
+    await expect(bridge.request(openRequest("prerelease-reprobe-b", "pyspark"))).rejects.toThrow(
+      "requires a final PySpark 4.2.x release for live viewing"
+    );
+    currentKernel = kernelC.kernel;
+    kernelB.setStatus("restarting");
+    await expect(bridge.request(openRequest("prerelease-reprobe-c", "pyspark"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "prerelease-reprobe-c" }
+    });
+
+    expect(kernelA.preflightExecutionCount()).toBe(1);
+    expect(kernelB.preflightExecutionCount()).toBe(1);
+    expect(kernelC.preflightExecutionCount()).toBe(1);
+    expect(requestsA.map((request) => request.kind)).toEqual(["openSession"]);
+    expect(requestsB).toEqual([]);
+    expect(requestsC.map((request) => request.kind)).toEqual(["openSession"]);
+  });
+
+  it.each(["4.3.0", "4.2.0rc1", "x".repeat(64)])(
+    "keeps rejected PySpark version %s out of user-facing diagnostics",
+    async (version) => {
+      const requests: OpenWranglerRequest[] = [];
+      const controller = controlledPySparkKernel(version, requests);
+      mockKernel(controller.kernel);
+
+      let message = "";
+      try {
+        await createKernelBridge().request(openRequest("sanitized-version", "pyspark"));
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toContain("requires a final PySpark 4.2.x release for live viewing");
+      expect(message).not.toContain(version);
+      expect(message.length).toBeLessThan(300);
+      expect(requests).toEqual([]);
+    }
+  );
 
   it("never redirects a live-source recovery open to a newly selected kernel", async () => {
     const requestsA: OpenWranglerRequest[] = [];

@@ -25,6 +25,21 @@ interface PySparkVersionContract {
 }
 
 describe("notebook variable discovery Python contract", () => {
+  it("keeps both generated runtime validators byte-for-byte current with the declarative policy", () => {
+    const result = spawnSync(process.execPath, ["scripts/generate-pyspark-version-policy.mjs", "--check"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("Generated PySpark version policies are current.\n");
+  });
+
   it("executes the emitted code against the installed Pandas DataFrame and Series types", () => {
     const { discovery, facts } = executeDiscovery(`
 import pandas as pd
@@ -69,6 +84,57 @@ legacy_series_spoof = LegacySeriesSpoof()
 `);
 
     expect(discovery).toEqual({ truncated: false, variables: [] });
+  });
+
+  it.each(["4.2.0rc1", "4.2.0.dev1"])(
+    "omits PySpark %s frames during real emitted discovery while retaining other backends",
+    (version) => {
+      const discovery = executeDiscoveryOnly(`
+import sys
+import types
+
+pandas_module = types.ModuleType("pandas")
+PandasFrame = type("DataFrame", (), {"__module__": "pandas"})
+pandas_module.__dict__["DataFrame"] = PandasFrame
+sys.modules["pandas"] = pandas_module
+pandas_frame = PandasFrame()
+
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__version__"] = ${JSON.stringify(version)}
+pyspark_frame_module = types.ModuleType("pyspark.sql.classic.dataframe")
+PySparkFrame = type("DataFrame", (), {"__module__": "pyspark.sql.classic.dataframe"})
+pyspark_frame_module.__dict__["DataFrame"] = PySparkFrame
+sys.modules["pyspark"] = pyspark_module
+sys.modules["pyspark.sql.classic.dataframe"] = pyspark_frame_module
+pyspark_frame = PySparkFrame()
+`);
+
+      expect(discovery).toEqual({
+        truncated: false,
+        variables: [{ name: "pandas_frame", type: "pandas.DataFrame", backend: "pandas" }]
+      });
+    }
+  );
+
+  it("publishes a final local-version PySpark frame from real emitted discovery", () => {
+    const discovery = executeDiscoveryOnly(`
+import sys
+import types
+
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__version__"] = "4.2.7+Vendor_01"
+pyspark_frame_module = types.ModuleType("pyspark.sql.connect.dataframe")
+PySparkFrame = type("DataFrame", (), {"__module__": "pyspark.sql.connect.dataframe"})
+pyspark_frame_module.__dict__["DataFrame"] = PySparkFrame
+sys.modules["pyspark"] = pyspark_module
+sys.modules["pyspark.sql.connect.dataframe"] = pyspark_frame_module
+pyspark_frame = PySparkFrame()
+`);
+
+    expect(discovery).toEqual({
+      truncated: false,
+      variables: [{ name: "pyspark_frame", type: "pyspark.sql.connect.dataframe.DataFrame", backend: "pyspark" }]
+    });
   });
 
   it("preflights in isolated locals without mutating collisions or invoking module __getattr__", () => {
@@ -129,6 +195,39 @@ print("__OPEN_WRANGLER_PYSPARK_FACTS__" + json.dumps({
     });
   });
 
+  it("checks a pinned PySpark version before emitted notebook addressability logic", () => {
+    const probeCode = buildPySparkNotebookPreflightCode(DISCOVERY_MARKER, "missing_spark_frame", "pyspark");
+    const versionIndex = probeCode.indexOf("__ow_module =");
+    const namespaceIndex = probeCode.indexOf("__ow_user_ns.get");
+
+    expect(versionIndex).toBeGreaterThanOrEqual(0);
+    expect(namespaceIndex).toBeGreaterThan(versionIndex);
+    const result = spawnSync(
+      testPythonExecutable(),
+      [
+        "-I",
+        "-c",
+        `
+import sys
+import types
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__version__"] = "4.2.0rc1"
+sys.modules["pyspark"] = pyspark_module
+${probeCode}
+`
+      ],
+      { encoding: "utf8", maxBuffer: 128 * 1024, timeout: 30_000, windowsHide: true }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
+    expect(parsePySparkNotebookPreflightOutput(result.stdout, DISCOVERY_MARKER)).toEqual({
+      isPySpark: true,
+      version: "4.2.0rc1"
+    });
+  });
+
   it("matches the shared strict PySpark 4.2 version contract", () => {
     const contract = JSON.parse(
       readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
@@ -170,6 +269,21 @@ print("${FACTS_MARKER}" + __import__("json").dumps({
     discovery: parseNotebookVariableDiscoveryOutput(result.stdout, DISCOVERY_MARKER),
     facts
   };
+}
+
+function executeDiscoveryOnly(prelude: string): ReturnType<typeof parseNotebookVariableDiscoveryOutput> {
+  const discoveryCode = buildNotebookVariableDiscoveryCode(DISCOVERY_MARKER);
+  const result = spawnSync(testPythonExecutable(), ["-I", "-c", `${prelude}\n${discoveryCode}`], {
+    encoding: "utf8",
+    maxBuffer: 128 * 1024,
+    timeout: 30_000,
+    windowsHide: true
+  });
+
+  expect(result.error).toBeUndefined();
+  expect(result.signal).toBeNull();
+  expect(result.status, result.stderr).toBe(0);
+  return parseNotebookVariableDiscoveryOutput(result.stdout, DISCOVERY_MARKER);
 }
 
 function testPythonExecutable(): string {
