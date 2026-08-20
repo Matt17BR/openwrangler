@@ -186,7 +186,8 @@ Concurrent agent qualification must use `npm run qualification:isolate` with one
 assignment names a distinct canonical worktree, authoritative Git metadata owner and executable, exact base/head/tree,
 and absent task-owned state root. Never alias or reuse another task's Git metadata, Python environment,
 `node_modules`, tool path, cache, browser profile, process tree, temporary directory, or artifact directory. The runner
-validates and records ownership; it does not create, delete, or recycle worktrees or state roots.
+binds worktree Git commands to that exact metadata owner, receipts every effective config source, validates and
+records ownership, and does not create, delete, or recycle worktrees or state roots.
 
 ```bash
 npm run check:pr

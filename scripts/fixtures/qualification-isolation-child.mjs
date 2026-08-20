@@ -141,6 +141,17 @@ if (mode === "delayed-write") {
   await appendFile(argument("--path"), "late mutation\n", "utf8");
   process.exit(0);
 }
+if (mode === "nested-escape-parent") {
+  process.on("SIGTERM", () => {});
+  const descendant = spawn(
+    process.execPath,
+    [import.meta.filename, "delayed-write", "--delay", "2000", "--path", argument("--path")],
+    { detached: true, env: process.env, stdio: "ignore", windowsHide: true }
+  );
+  descendant.unref();
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
 await recordEnvironment();
 
 if (mode === "hold") {
@@ -163,6 +174,15 @@ if (mode === "hold") {
     windowsHide: true
   });
 } else if (mode === "nested-git") {
+  const runTopLevelGit = (arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: process.env,
+      windowsHide: true
+    }).trim();
+  const topLevelHead = runTopLevelGit(["rev-parse", "HEAD"]);
+  const topLevelStatus = runTopLevelGit(["status", "--porcelain=v1", "--untracked-files=all"]);
   const repository = join(process.env.RUNNER_TEMP, "nested-git");
   await mkdir(repository, { mode: 0o700 });
   const runGit = (arguments_) =>
@@ -186,7 +206,15 @@ if (mode === "hold") {
   ]).split("\n");
   await writeFile(
     argument("--path"),
-    `${JSON.stringify({ authorEmail, authorName, committerEmail, committerName, repository })}\n`,
+    `${JSON.stringify({
+      authorEmail,
+      authorName,
+      committerEmail,
+      committerName,
+      repository,
+      topLevelHead,
+      topLevelStatus
+    })}\n`,
     { flag: "wx", mode: 0o600 }
   );
 } else if (mode === "mutate-git-config") {
@@ -195,12 +223,21 @@ if (mode === "hold") {
     env: process.env,
     windowsHide: true
   });
+} else if (mode === "mutate-git-config-source") {
+  await appendFile(argument("--path"), "\n[user]\n\tname = Mutated included config\n", "utf8");
 } else if (mode === "mutate-assignment") {
   await appendFile(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT, "\n", "utf8");
 } else if (mode === "escape-parent") {
   const descendant = spawn(
     process.execPath,
     [import.meta.filename, "delayed-write", "--delay", "2000", "--path", argument("--path")],
+    { detached: true, env: process.env, stdio: "ignore", windowsHide: true }
+  );
+  descendant.unref();
+} else if (mode === "escape-nested-parent") {
+  const descendant = spawn(
+    process.execPath,
+    [import.meta.filename, "nested-escape-parent", "--path", argument("--path")],
     { detached: true, env: process.env, stdio: "ignore", windowsHide: true }
   );
   descendant.unref();
