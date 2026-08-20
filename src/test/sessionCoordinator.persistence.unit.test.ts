@@ -1,0 +1,63 @@
+import { describe, expect, it, vi } from "vitest";
+import * as vscode from "vscode";
+import type { Memento } from "vscode";
+import type { OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
+import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import { SessionCoordinator } from "../extension/sessionCoordinator";
+import { openedResponse, openRequest } from "./sessionCoordinatorTestFixtures";
+
+describe("SessionCoordinator persistence diagnostics", () => {
+  it("shows one warning per degraded epoch while recording every failed save", async () => {
+    let stored: Record<string, unknown> = {};
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      const attempt = update.mock.calls.length;
+      if (attempt === 1 || attempt === 2 || attempt === 4) {
+        throw new Error(`workspace write ${attempt} failed`);
+      }
+      stored = value;
+    });
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update,
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const diagnosticSink = vi.fn();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+    const runtimeOpened = openedResponse();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected persistence diagnostic request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState, diagnosticSink);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+
+    for (const scrollLeft of [10, 20, 30, 40]) {
+      await bridge.updateViewState?.(opened.metadata.sessionId, {
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 0, scrollLeft }
+      });
+    }
+
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(diagnosticSink.mock.calls.map(([message]) => message)).toEqual([
+      "Open Wrangler workspace persistence ordinary save failed: Error: workspace write 1 failed",
+      "Open Wrangler workspace persistence ordinary save failed: Error: workspace write 2 failed",
+      "Open Wrangler workspace persistence ordinary save failed: Error: workspace write 4 failed"
+    ]);
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenNthCalledWith(
+      1,
+      "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
+    );
+    expect(warning).toHaveBeenNthCalledWith(
+      2,
+      "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
+    );
+    expect(coordinator.activeSession()?.viewState.viewport.scrollLeft).toBe(40);
+
+    await coordinator.shutdown();
+  });
+});

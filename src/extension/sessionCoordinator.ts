@@ -28,7 +28,7 @@ import {
   type CoordinatedSessionOrigin,
   type TextDocumentSessionOrigin
 } from "./sessionOrigin";
-import { SessionPersistenceStore } from "./sessionPersistenceStore";
+import { type SessionPersistenceFailure, SessionPersistenceStore } from "./sessionPersistenceStore";
 import { protocolError, SessionResponseCommitter, stepInspectionKey } from "./sessionResponseCommitter";
 import { requestViewId } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
@@ -92,7 +92,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
     this.diagnosticSink = diagnosticSink;
-    this.persistence = new SessionPersistenceStore(workspaceState);
+    this.persistence = new SessionPersistenceStore(workspaceState, (failure) => this.reportPersistenceFailure(failure));
     this.responseCommitter = new SessionResponseCommitter(this.persistence);
     this.runtimeRequestExecutor = new SessionRuntimeRequestExecutor(this.responseCommitter);
     this.runtimeCleanup = new SessionRuntimeCleanup(
@@ -154,6 +154,28 @@ export class SessionCoordinator implements vscode.Disposable {
       this.diagnosticSink?.(message);
     } catch {
       // Diagnostics must never destabilize the active renderer or session.
+    }
+  }
+
+  private reportPersistenceFailure(failure: SessionPersistenceFailure): void {
+    const operation =
+      failure.kind === "save" ? "ordinary save" : failure.kind === "rollback" ? "rollback" : "runtime replacement";
+    const detail =
+      failure.error instanceof Error ? `${failure.error.name}: ${failure.error.message}` : String(failure.error);
+    try {
+      this.diagnosticSink?.(`Open Wrangler workspace persistence ${operation} failed: ${detail}`);
+    } catch {
+      // Diagnostics must never destabilize the active renderer or session.
+    }
+    if (!failure.firstInEpoch) return;
+    try {
+      void Promise.resolve(
+        vscode.window.showWarningMessage(
+          "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
+        )
+      ).catch(() => undefined);
+    } catch {
+      // A failed warning surface must not destabilize the active session.
     }
   }
 
