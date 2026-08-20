@@ -254,6 +254,7 @@ import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEdi
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   dispatchExtensionHostPhase,
+  dispatchPlatformSmokeJourney,
   GRID_RANGE_COPY_SELECTOR,
   parseExtensionHostPhaseSelection,
   type DataWranglerCoexistencePhase
@@ -996,21 +997,24 @@ export async function run(): Promise<void> {
       assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
       recordAcceptanceProgress("platform-smoke:start");
       const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
-      if (testSelector === GRID_RANGE_COPY_SELECTOR) {
-        await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
-        recordAcceptanceProgress("platform-smoke:complete");
-        console.log("Open Wrangler packaged grid range-copy acceptance passed.");
-        return;
-      }
-      await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
-      recordAcceptanceProgress("platform-smoke:excel-dependency-install");
-      await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
-      if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
-        recordAcceptanceProgress("platform-smoke:screenshots");
-        await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
-      }
-      recordAcceptanceProgress("platform-smoke:complete");
-      console.log("Open Wrangler packaged platform smoke passed.");
+      await dispatchPlatformSmokeJourney(phaseSelection, {
+        gridRangeCopy: async () => {
+          await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
+          recordAcceptanceProgress("platform-smoke:complete");
+          console.log("Open Wrangler packaged grid range-copy acceptance passed.");
+        },
+        standard: async () => {
+          await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
+          recordAcceptanceProgress("platform-smoke:excel-dependency-install");
+          await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
+          if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+            recordAcceptanceProgress("platform-smoke:screenshots");
+            await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+          }
+          recordAcceptanceProgress("platform-smoke:complete");
+          console.log("Open Wrangler packaged platform smoke passed.");
+        }
+      });
     },
     remoteWorkspace: async () => {
       assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");

@@ -179,6 +179,156 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
+  it("leaves a newer menu and its focus untouched when an older clipboard write finishes", async () => {
+    const delayedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedWrite.promise);
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 31);
+    openClipboardMenu(milan, 32);
+
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    openClipboardMenu(emptySales, 33);
+    const newerMenu = screen.getByRole("menu", { name: "Cell and range actions for sales" });
+    const newerAction = within(newerMenu).getByRole("menuitem", { name: "Copy selection" });
+    expect(document.activeElement).toBe(newerAction);
+
+    await act(async () => delayedWrite.resolve());
+
+    expect(screen.getByRole("menu", { name: "Cell and range actions for sales" })).toBe(newerMenu);
+    expect(document.activeElement).toBe(newerAction);
+    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+  });
+
+  it("does not start a fallback when a rejected clipboard write has lost menu ownership", async () => {
+    const delayedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedWrite.promise);
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 42);
+    openClipboardMenu(milan, 43);
+
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    openClipboardMenu(emptySales, 44);
+
+    await act(async () => delayedWrite.reject(new Error("primary adapter denied")));
+
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu", { name: "Cell and range actions for sales" })).toBeInTheDocument();
+    expect(screen.queryByText(/Could not write|Copied 2 by 2/u)).toBeNull();
+  });
+
+  it("lets only the latest action from one menu publish and restore focus", async () => {
+    const firstWrite = deferred<void>();
+    const secondWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => firstWrite.promise).mockImplementationOnce(() => secondWrite.promise);
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 34);
+    openClipboardMenu(milan, 35);
+    const copySelection = within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole(
+      "menuitem",
+      { name: "Copy selection" }
+    );
+
+    fireEvent.click(copySelection);
+    fireEvent.click(copySelection);
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    await act(async () => firstWrite.resolve());
+
+    expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
+    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+
+    await act(async () => secondWrite.resolve());
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(document.activeElement).toBe(emptySales);
+    expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("does not publish or restore a delayed copy after grid focus moves elsewhere", async () => {
+    const delayedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedWrite.promise);
+    render(
+      <>
+        <button type="button">Outside grid</button>
+        {grid("view-a")}
+      </>
+    );
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 36);
+    openClipboardMenu(milan, 37);
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const outside = screen.getByRole("button", { name: "Outside grid" });
+    act(() => outside.focus());
+
+    await act(async () => delayedWrite.resolve());
+
+    expect(document.activeElement).toBe(outside);
+    expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
+    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+  });
+
+  it("makes a delayed copy inert after view replacement or disposal", async () => {
+    const staleViewWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => staleViewWrite.promise);
+    const rendered = renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 38);
+    openClipboardMenu(milan, 39);
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    rendered.rerender(grid("view-b"));
+    await act(async () => staleViewWrite.resolve());
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+
+    const disposedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => disposedWrite.promise);
+    const replacementMilan = screen.getByRole("cell", { name: "Milan" });
+    const replacementSales = screen.getByRole("cell", { name: "" });
+    pointerDrag(replacementMilan, replacementSales, 40);
+    openClipboardMenu(replacementMilan, 41);
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    rendered.unmount();
+
+    await act(async () => disposedWrite.resolve());
+    expect(writeText).toHaveBeenCalledTimes(2);
+  });
+
   it("routes every copy action to the visible whole column instead of a stale prior rectangle", async () => {
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
@@ -559,6 +709,21 @@ function pointerDrag(start: HTMLElement, end: HTMLElement, pointerId: number): v
   fireEvent.pointerDown(start, pointerEvent(pointerId));
   fireEvent.pointerMove(end, pointerEvent(pointerId));
   fireEvent.pointerUp(end, pointerEvent(pointerId, { buttons: 0 }));
+}
+
+function openClipboardMenu(cell: HTMLElement, pointerId: number): void {
+  expect(fireEvent.pointerDown(cell, { button: 2, buttons: 2, pointerId, pointerType: "mouse" })).toBe(false);
+  fireEvent.contextMenu(cell, { button: 2 });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 function pointerEvent(pointerId: number, overrides: { buttons?: number } = {}) {

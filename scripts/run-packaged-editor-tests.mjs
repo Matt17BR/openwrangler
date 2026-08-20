@@ -80,6 +80,10 @@ import {
   packagedPythonJupyterEditorPlan,
   resolvePackagedPythonJupyterProfile
 } from "./packaged-python-jupyter.mjs";
+import {
+  resolvePackagedGridRangeCopySelector,
+  runPackagedPlatformSmokePhase
+} from "./packaged-grid-range-copy-selector.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
 import {
@@ -221,6 +225,10 @@ try {
             .map((value) => value.trim())
             .filter(Boolean);
           const acceptanceMode = process.env.OPEN_WRANGLER_PACKAGED_MODE ?? "full";
+          const platformSmokeSelector = resolvePackagedGridRangeCopySelector({
+            acceptanceMode,
+            selector: process.env.OPEN_WRANGLER_TEST_SELECTOR
+          });
           const rJourneySelector = process.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY;
           if (
             acceptanceMode !== "full" &&
@@ -1427,20 +1435,24 @@ try {
                 };
                 if (acceptanceMode === "platform-smoke") {
                   activePhase = "platform-smoke";
-                  await runEditorAcceptancePhase({
-                    editor: identifiedEditor,
-                    workspace,
-                    userData,
-                    extensions,
-                    developmentPaths: [fakeJupyter],
-                    testModule,
-                    python: acceptancePythonForPhase("platform-smoke", testPython, jupyterKernelPython),
-                    phase: "platform-smoke",
-                    resultPath: resultPaths["platform-smoke"],
-                    runId: runIds["platform-smoke"],
-                    progressPath: progressPaths["platform-smoke"],
-                    requiresWorkbenchCdp: true
-                  });
+                  await runPackagedPlatformSmokePhase(
+                    runEditorAcceptancePhase,
+                    {
+                      editor: identifiedEditor,
+                      workspace,
+                      userData,
+                      extensions,
+                      developmentPaths: [fakeJupyter],
+                      testModule,
+                      python: acceptancePythonForPhase("platform-smoke", testPython, jupyterKernelPython),
+                      phase: "platform-smoke",
+                      resultPath: resultPaths["platform-smoke"],
+                      runId: runIds["platform-smoke"],
+                      progressPath: progressPaths["platform-smoke"],
+                      requiresWorkbenchCdp: true
+                    },
+                    platformSmokeSelector
+                  );
                 } else if (acceptanceMode === "full" && genericPackagedPhasesEnabled) {
                   activePhase = "restricted";
                   await runEditorAcceptancePhase({

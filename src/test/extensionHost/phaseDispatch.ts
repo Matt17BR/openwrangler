@@ -46,6 +46,11 @@ export interface ExtensionHostPhaseHandlers {
   readonly seed: () => Promise<void>;
 }
 
+export interface PlatformSmokeJourneyHandlers {
+  readonly gridRangeCopy: () => Promise<void>;
+  readonly standard: () => Promise<void>;
+}
+
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
   'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy".';
 
@@ -140,4 +145,18 @@ export async function dispatchExtensionHostPhase(
     return true;
   }
   return false;
+}
+
+export async function dispatchPlatformSmokeJourney(
+  selection: ExtensionHostPhaseSelection,
+  handlers: PlatformSmokeJourneyHandlers
+): Promise<void> {
+  if (selection.phase !== "platform-smoke") {
+    throw new Error("The packaged platform-smoke journey dispatcher requires the platform-smoke phase.");
+  }
+  if (selection.selector === GRID_RANGE_COPY_SELECTOR) {
+    await handlers.gridRangeCopy();
+    return;
+  }
+  await handlers.standard();
 }

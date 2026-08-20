@@ -15,8 +15,8 @@ import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
 
 export interface GridClipboardController {
   announcement: string;
-  copy(mode: GridClipboardMode): Promise<void>;
-  copyColumn(): Promise<void>;
+  copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<void>;
+  copyColumn(ownsResult?: () => boolean): Promise<void>;
   focusCell(coordinate: GridCellCoordinate): void;
   isColumnSelected(columnId: string): boolean;
   isRangeSelected(coordinate: GridCellCoordinate): boolean;
@@ -107,14 +107,15 @@ export function useGridClipboard({
     [contextId, resetWholeColumn]
   );
   const copy = useCallback(
-    async (mode: GridClipboardMode): Promise<void> => {
+    async (mode: GridClipboardMode, ownsResult: () => boolean = () => true): Promise<void> => {
       const result = results[mode];
       if (!result.ok) {
-        setAnnouncement(result.reason);
+        if (ownsResult()) setAnnouncement(result.reason);
         return;
       }
       try {
-        await writeGridClipboardText(result.payload.text);
+        await writeGridClipboardText(result.payload.text, ownsResult);
+        if (!ownsResult()) return;
         setAnnouncement(
           mode === "cell"
             ? "Copied cell."
@@ -123,7 +124,9 @@ export function useGridClipboard({
               : `Copied ${result.payload.rowCount.toLocaleString()} by ${result.payload.columnCount.toLocaleString()} cell range.`
         );
       } catch {
-        setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+        if (ownsResult()) {
+          setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+        }
       }
     },
     [results]
