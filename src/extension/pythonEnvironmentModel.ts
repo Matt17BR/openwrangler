@@ -48,9 +48,9 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
     pandas: Object.freeze({
       importModule: "pandas",
       distribution: "pandas",
-      installSpec: "pandas>=2.2,<3",
+      installSpec: "pandas>=2.2,<4",
       minimumVersion: "2.2",
-      maximumVersionExclusive: "3"
+      maximumVersionExclusive: "4"
     }),
     pyarrow: Object.freeze({
       importModule: "pyarrow",

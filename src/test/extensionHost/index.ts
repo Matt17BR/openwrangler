@@ -19000,7 +19000,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       );
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         page,
-        "Install pandas>=2.2,<3, xlrd>=2.0.1,<3"
+        "Install pandas>=2.2,<4, xlrd>=2.0.1,<3"
       );
       try {
         await confirmationPage.bringToFront();
@@ -19008,7 +19008,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
         const confirmationDetail = await confirmation.locator(".dialog-message-detail").innerText();
         assert.equal(
           confirmationMessage,
-          `Install pandas>=2.2,<3, xlrd>=2.0.1,<3 into ${isolatedPython}?`,
+          `Install pandas>=2.2,<4, xlrd>=2.0.1,<3 into ${isolatedPython}?`,
           "The real dependency confirmation must identify the exact requirements and interpreter."
         );
         assert.equal(confirmationDetail, "Open Wrangler never installs packages without this confirmation.");

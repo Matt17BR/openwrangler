@@ -1064,7 +1064,7 @@ describe("PythonBridge trusted pickle preflight", () => {
     Object.assign(bridge as object, { spawnProcess });
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas>=2.2,<3", "pyarrow>=25,<26"],
+      missing: ["pandas>=2.2,<4", "pyarrow>=25,<26"],
       available: []
     });
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
@@ -1076,15 +1076,15 @@ describe("PythonBridge trusted pickle preflight", () => {
         executable: environment.executable,
         version: environment.version,
         source: environment.source,
-        missing: ["pandas>=2.2,<3", "pyarrow>=25,<26"]
+        missing: ["pandas>=2.2,<4", "pyarrow>=25,<26"]
       });
       expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(environment.executable, [
         {
           importModule: "pandas",
           distribution: "pandas",
-          installSpec: "pandas>=2.2,<3",
+          installSpec: "pandas>=2.2,<4",
           minimumVersion: "2.2",
-          maximumVersionExclusive: "3"
+          maximumVersionExclusive: "4"
         },
         {
           importModule: "pyarrow",
@@ -1105,7 +1105,7 @@ describe("PythonBridge trusted pickle preflight", () => {
 
       await expect(bridge.installTrustedPickleDependencies(preflight)).resolves.toBe(false);
       expect(warning).toHaveBeenCalledWith(
-        `Install pandas>=2.2,<3, pyarrow>=25,<26 into ${environment.executable}?`,
+        `Install pandas>=2.2,<4, pyarrow>=25,<26 into ${environment.executable}?`,
         { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
         "Install"
       );
@@ -2240,7 +2240,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas>=2.2,<3", "xlrd>=2.0.1,<3"],
+      missing: ["pandas>=2.2,<4", "xlrd>=2.0.1,<3"],
       available: []
     });
 
@@ -2255,9 +2255,9 @@ describe("PythonBridge dependency guard recovery", () => {
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<3",
+        installSpec: "pandas>=2.2,<4",
         minimumVersion: "2.2",
-        maximumVersionExclusive: "3"
+        maximumVersionExclusive: "4"
       },
       {
         importModule: "xlrd",

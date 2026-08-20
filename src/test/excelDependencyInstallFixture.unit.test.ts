@@ -41,7 +41,7 @@ describe("Excel dependency-install fixture", () => {
     expect(source).toContain(`integrity_checks_path = ${JSON.stringify(integrityChecks)}`);
     expect(source).toContain("from pip._internal.cli.main import main as pip_main");
     expect(source).toContain("stream.write('clean\\n')");
-    expect(source).toContain("expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']");
+    expect(source).toContain("expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5,<4']");
     expect(source).toContain("raise SystemExit(91)");
     for (const field of [
       "'args': sys.argv[1:]",
@@ -61,9 +61,9 @@ describe("Excel dependency-install fixture", () => {
       source.indexOf("with open(marker_temporary, 'xb') as stream:")
     );
     expect(source.indexOf("if sys.argv[1:] == ['check', '--disable-pip-version-check']:")).toBeLessThan(
-      source.indexOf("expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']")
+      source.indexOf("expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5,<4']")
     );
-    expect(source).toContain("stream.write(b'openpyxl>=3.1.5\\n')");
+    expect(source).toContain("stream.write(b'openpyxl>=3.1.5,<4\\n')");
     expect(source.endsWith("\n")).toBe(true);
   });
 });

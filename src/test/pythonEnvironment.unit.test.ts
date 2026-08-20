@@ -46,16 +46,16 @@ describe("Python environment requirements", () => {
       }
     ]);
     expect(requiredDependencies("pandas", parquet).map((item) => item.installSpec)).toEqual([
-      "pandas>=2.2,<3",
+      "pandas>=2.2,<4",
       "pyarrow>=25,<26"
     ]);
     expect(requiredDependencies("pandas", xlsx)).toEqual([
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<3",
+        installSpec: "pandas>=2.2,<4",
         minimumVersion: "2.2",
-        maximumVersionExclusive: "3"
+        maximumVersionExclusive: "4"
       },
       {
         importModule: "openpyxl",
@@ -69,9 +69,9 @@ describe("Python environment requirements", () => {
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<3",
+        installSpec: "pandas>=2.2,<4",
         minimumVersion: "2.2",
-        maximumVersionExclusive: "3"
+        maximumVersionExclusive: "4"
       },
       {
         importModule: "xlrd",
@@ -96,9 +96,9 @@ describe("Python environment requirements", () => {
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<3",
+        installSpec: "pandas>=2.2,<4",
         minimumVersion: "2.2",
-        maximumVersionExclusive: "3"
+        maximumVersionExclusive: "4"
       },
       {
         importModule: "pyarrow",
@@ -147,7 +147,7 @@ describe("Python environment requirements", () => {
     expect(automaticBackends(utf16Le)).toEqual(["pandas"]);
     expect(automaticBackends(utf16Be)).toEqual(["pandas"]);
     expect(requiredDependencies(automaticBackends(lossyUtf8)[0], lossyUtf8).map((item) => item.installSpec)).toEqual([
-      "pandas>=2.2,<3"
+      "pandas>=2.2,<4"
     ]);
     expect(isFileDataBackend("pyspark")).toBe(false);
     expect(automaticBackends(parquet)).not.toContain("pyspark");
