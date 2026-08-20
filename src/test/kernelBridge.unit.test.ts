@@ -51,6 +51,10 @@ const PREVIEW_PYSPARK_VERSIONS = [
     (category) => PYSPARK_VERSION_CONTRACT.rejected[category] ?? []
   )
 ];
+const REJECTED_PYSPARK_VERSIONS = [
+  ...PYSPARK_VERSION_CONTRACT.acceptancePrereleaseDenial,
+  ...Object.values(PYSPARK_VERSION_CONTRACT.rejected).flat()
+];
 
 describe("kernel retry classification", () => {
   it("reports Spark preparation for pinned and auto-detected PySpark opens", async () => {
@@ -254,6 +258,22 @@ describe("kernel retry classification", () => {
     expect(controller.preflightExecutionCount()).toBe(1);
     expect(requests).toEqual([]);
   });
+
+  it.each(REJECTED_PYSPARK_VERSIONS.map((version, index) => [index, version] as const))(
+    "fails closed for rejected PySpark contract case %i before runtime dispatch",
+    async (index, version) => {
+      const requests: OpenWranglerRequest[] = [];
+      const controller = controlledPySparkKernel(version, requests);
+      mockKernel(controller.kernel);
+
+      await expect(
+        createKernelBridge().request(openRequest(`rejected-contract-${index}`, "pyspark"))
+      ).rejects.toThrow();
+
+      expect(controller.preflightExecutionCount()).toBe(1);
+      expect(requests).toEqual([]);
+    }
+  );
 
   it.each(PYSPARK_VERSION_CONTRACT.acceptedFinal)(
     "dispatches a final PySpark %s release after preflight",

@@ -449,6 +449,7 @@ class SessionManager:
                     if requested_mode != source_session.mode:
                         raise EngineError("The clone mode no longer matches the confirmed runtime mode.")
                     engine = self.registry.create(source_session.backend)
+                    engine.validate_runtime()
                     source_fingerprint = source_session.source_fingerprint
                     live_source_value = source_session.live_source_value
                     frame = engine.clone_session_source(source_session.original)

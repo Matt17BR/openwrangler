@@ -66,8 +66,7 @@ _SPARK_CONNECT_LOST_CONDITIONS = frozenset(
 def _require_supported_pyspark_runtime() -> None:
     pyspark_module = import_module("pyspark")
     raw_version = pyspark_module.__dict__.get("__version__")
-    version = raw_version if isinstance(raw_version, str) else ""
-    if not _is_supported_pyspark_version(version):
+    if not _is_supported_pyspark_version(raw_version):
         raise EngineError(
             "Open Wrangler requires a final PySpark 4.2.x release for notebook viewing. "
             "Install a supported final release in the selected kernel, restart it, and rerun the defining cell."

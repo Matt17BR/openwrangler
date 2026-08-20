@@ -7,10 +7,9 @@ import { withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import {
   MAX_PYSPARK_VERSION_CHARACTERS,
-  PYSPARK_FINAL_VERSION_PATTERN,
-  PYSPARK_SUPPORTED_MAJOR,
-  PYSPARK_SUPPORTED_MINOR,
-  isSupportedPySparkVersion
+  PYSPARK_VERSION_POLICY_PYTHON_SOURCE,
+  isSupportedPySparkVersion,
+  safePySparkVersionDiagnostic
 } from "./pysparkVersionPolicy.generated";
 
 export { isSupportedPySparkVersion } from "./pysparkVersionPolicy.generated";
@@ -230,7 +229,7 @@ export function parsePySparkNotebookPreflightOutput(output: string, marker: stri
       (typeof parsed.version !== "string" ||
         parsed.version.length < 1 ||
         parsed.version.length > MAX_PYSPARK_VERSION_CHARACTERS ||
-        !/^[\x20-\x7e]+$/u.test(parsed.version))) ||
+        safePySparkVersionDiagnostic(parsed.version) !== parsed.version)) ||
     (!parsed.isPySpark && parsed.version !== null)
   ) {
     throw malformedPySparkVersionResponse();
@@ -307,11 +306,12 @@ export function buildNotebookVariableDiscoveryCode(marker: string): string {
   if (!/^[a-f0-9]{32}$/.test(marker)) {
     throw new Error("Notebook variable discovery marker must be 32 lowercase hexadecimal characters.");
   }
+  const policySource = indentPythonSource(PYSPARK_VERSION_POLICY_PYTHON_SOURCE, 4);
   return `
 def __ow_discover_variables_v1():
     import json as __ow_json
-    import re as __ow_re
     import sys as __ow_sys
+${policySource}
     __ow_specs = {
         ("pandas", "DataFrame"): ("pandas.DataFrame", "pandas"),
         ("pandas", "Series"): ("pandas.Series", "pandas"),
@@ -320,32 +320,25 @@ def __ow_discover_variables_v1():
         ("polars.dataframe.frame", "DataFrame"): ("polars.dataframe.frame.DataFrame", "polars"),
         ("polars.lazyframe.frame", "LazyFrame"): ("polars.lazyframe.frame.LazyFrame", "polars"),
         ("polars.series.series", "Series"): ("polars.series.series.Series", "polars"),
-        ("pyspark.sql.dataframe", "DataFrame"): ("pyspark.sql.dataframe.DataFrame", "pyspark"),
-        ("pyspark.sql.classic.dataframe", "DataFrame"): ("pyspark.sql.classic.dataframe.DataFrame", "pyspark"),
-        ("pyspark.sql.connect.dataframe", "DataFrame"): ("pyspark.sql.connect.dataframe.DataFrame", "pyspark"),
         ("_duckdb", "DuckDBPyRelation"): ("_duckdb.DuckDBPyRelation", "duckdb"),
         ("duckdb.duckdb", "DuckDBPyRelation"): ("duckdb.duckdb.DuckDBPyRelation", "duckdb"),
     }
     __ow_pyspark_module = __ow_sys.modules.get("pyspark")
     __ow_pyspark_namespace = None if __ow_pyspark_module is None else __ow_pyspark_module.__dict__
-    __ow_pyspark_version = (
+    __ow_pyspark_version_candidate = (
         None
         if not isinstance(__ow_pyspark_namespace, dict)
         else __ow_pyspark_namespace.get("__version__")
     )
-    __ow_pyspark_match = (
-        None
-        if (
-            not isinstance(__ow_pyspark_version, str)
-            or not 0 < len(__ow_pyspark_version) <= ${MAX_PYSPARK_VERSION_CHARACTERS}
-        )
-        else __ow_re.fullmatch(${JSON.stringify(PYSPARK_FINAL_VERSION_PATTERN)}, __ow_pyspark_version)
+    __ow_pyspark_supported = (
+        __ow_classify_pyspark_version_v1(__ow_pyspark_version_candidate) == "supported-final"
     )
-    __ow_pyspark_supported = bool(
-        __ow_pyspark_match is not None
-        and (__ow_pyspark_match.group(1).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MAJOR)}
-        and (__ow_pyspark_match.group(2).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MINOR)}
-    )
+    if __ow_pyspark_supported:
+        __ow_specs.update({
+            ("pyspark.sql.dataframe", "DataFrame"): ("pyspark.sql.dataframe.DataFrame", "pyspark"),
+            ("pyspark.sql.classic.dataframe", "DataFrame"): ("pyspark.sql.classic.dataframe.DataFrame", "pyspark"),
+            ("pyspark.sql.connect.dataframe", "DataFrame"): ("pyspark.sql.connect.dataframe.DataFrame", "pyspark"),
+        })
     __ow_variables = []
     __ow_truncated = False
     __ow_scanned = 0
@@ -377,8 +370,6 @@ def __ow_discover_variables_v1():
             or not isinstance(__ow_module_namespace, dict)
             or __ow_module_namespace.get(__ow_type_name) is not __ow_actual_type
         ):
-            continue
-        if __ow_spec[1] == "pyspark" and not __ow_pyspark_supported:
             continue
         if len(__ow_variables) >= ${MAX_DISCOVERY_VARIABLES}:
             __ow_truncated = True
@@ -418,32 +409,20 @@ export function buildPySparkNotebookPreflightCode(
     throw new Error("PySpark preflight variable name must be a Python identifier.");
   }
   const isolatedSource = `
+${PYSPARK_VERSION_POLICY_PYTHON_SOURCE}
 __ow_json = __ow_builtins.__import__("json")
-__ow_re = __ow_builtins.__import__("re")
 __ow_sys = __ow_builtins.__import__("sys")
 __ow_missing = __ow_builtins.object()
-__ow_version = None
 __ow_module = __ow_sys.modules.get("pyspark")
 __ow_module_dict = None if __ow_module is None else __ow_module.__dict__
-if __ow_builtins.isinstance(__ow_module_dict, dict):
-    __ow_candidate_version = __ow_module_dict.get("__version__")
-    if (
-        __ow_builtins.isinstance(__ow_candidate_version, str)
-        and 0 < __ow_builtins.len(__ow_candidate_version) <= ${MAX_PYSPARK_VERSION_CHARACTERS}
-        and __ow_candidate_version.isascii()
-        and __ow_candidate_version.isprintable()
-    ):
-        __ow_version = __ow_candidate_version
-__ow_version_match = (
+__ow_candidate_version = (
     None
-    if __ow_version is None
-    else __ow_re.fullmatch(${JSON.stringify(PYSPARK_FINAL_VERSION_PATTERN)}, __ow_version)
+    if not __ow_builtins.isinstance(__ow_module_dict, dict)
+    else __ow_module_dict.get("__version__")
 )
-__ow_version_supported = bool(
-    __ow_version_match is not None
-    and (__ow_version_match.group(1).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MAJOR)}
-    and (__ow_version_match.group(2).lstrip("0") or "0") == ${JSON.stringify(PYSPARK_SUPPORTED_MINOR)}
-)
+__ow_version_classification = __ow_classify_pyspark_version_v1(__ow_candidate_version)
+__ow_version = __ow_safe_pyspark_version_diagnostic_v1(__ow_candidate_version)
+__ow_version_supported = __ow_version_classification == "supported-final"
 if ${expectedBackend === "pyspark" ? "True" : "False"} and not __ow_version_supported:
     __ow_is_pyspark = True
 else:
@@ -484,7 +463,7 @@ print(__ow_json.dumps(
     {
         "isPySpark": __ow_is_pyspark,
         "protocolVersion": ${PYSPARK_VERSION_PROTOCOL_VERSION},
-        "version": __ow_version,
+        "version": __ow_version if __ow_is_pyspark else None,
     },
     ensure_ascii=True,
     allow_nan=False,
@@ -495,6 +474,15 @@ print("__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__")
 `;
   const sourceLiteral = JSON.stringify(isolatedSource);
   return `(lambda __ow_builtin_module, __ow_user_namespace: (lambda __ow_scope: __ow_builtin_module.exec(__ow_builtin_module.compile(${sourceLiteral}, "<open-wrangler-pyspark-preflight>", "exec"), __ow_scope, __ow_scope))({"__builtins__": __ow_builtin_module, "__ow_builtins": __ow_builtin_module, "__ow_user_ns": __ow_user_namespace}))((__builtins__["__import__"] if __builtins__.__class__.__name__ == "dict" else __builtins__.__import__)("builtins"), (__builtins__["globals"] if __builtins__.__class__.__name__ == "dict" else __builtins__.globals)())\n`;
+}
+
+function indentPythonSource(source: string, spaces: number): string {
+  const indentation = " ".repeat(spaces);
+  return source
+    .trimEnd()
+    .split("\n")
+    .map((line) => `${indentation}${line}`)
+    .join("\n");
 }
 
 export function assertSupportedPySparkNotebookPreflight(

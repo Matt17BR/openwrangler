@@ -1,11 +1,19 @@
 {
   "policy": {
+    "schemaVersion": 1,
     "maxCharacters": 64,
-    "supportedRelease": { "major": 4, "minor": 2 },
-    "versionGrammar": {
-      "releaseCharacters": "0123456789",
-      "localCharacters": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-      "localSeparators": "._-"
+    "release": {
+      "separator": ".",
+      "components": [
+        { "kind": "normalizedInteger", "equals": 4 },
+        { "kind": "normalizedInteger", "equals": 2 },
+        { "kind": "integer" }
+      ]
+    },
+    "localVersion": {
+      "prefix": "+",
+      "segmentCharacters": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+      "segmentSeparators": "._-"
     }
   },
   "acceptedFinal": [
