@@ -7,12 +7,14 @@ import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { openedResponse, openRequest } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
-  it("shows one warning per degraded epoch while recording every failed save", async () => {
+  it("shows and records one bounded receipt per degraded epoch", async () => {
     let stored: Record<string, unknown> = {};
     const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
       const attempt = update.mock.calls.length;
       if (attempt === 1 || attempt === 2 || attempt === 4) {
-        throw new Error(`workspace write ${attempt} failed`);
+        throw Object.assign(new Error(`workspace write ${attempt} failed at /private/workspace/state.json`), {
+          code: "EIO"
+        });
       }
       stored = value;
     });
@@ -23,6 +25,7 @@ describe("SessionCoordinator persistence diagnostics", () => {
     } as unknown as Memento;
     const diagnosticSink = vi.fn();
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+    warning.mockClear();
     const runtimeOpened = openedResponse();
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") return runtimeOpened;
@@ -43,10 +46,10 @@ describe("SessionCoordinator persistence diagnostics", () => {
 
     expect(update).toHaveBeenCalledTimes(4);
     expect(diagnosticSink.mock.calls.map(([message]) => message)).toEqual([
-      "Open Wrangler workspace persistence ordinary save failed: Error: workspace write 1 failed",
-      "Open Wrangler workspace persistence ordinary save failed: Error: workspace write 2 failed",
-      "Open Wrangler workspace persistence ordinary save failed: Error: workspace write 4 failed"
+      "Open Wrangler workspace persistence ordinary save failed: Error (EIO)",
+      "Open Wrangler workspace persistence ordinary save failed: Error (EIO)"
     ]);
+    expect(JSON.stringify(diagnosticSink.mock.calls)).not.toContain("/private/workspace");
     expect(warning).toHaveBeenCalledTimes(2);
     expect(warning).toHaveBeenNthCalledWith(
       1,
@@ -93,10 +96,45 @@ describe("SessionCoordinator persistence diagnostics", () => {
     await update;
     await shutdown;
 
-    expect(diagnosticSink).toHaveBeenCalledWith(
-      "Open Wrangler workspace persistence ordinary save failed: Error: workspace unavailable during shutdown"
-    );
+    expect(diagnosticSink).toHaveBeenCalledWith("Open Wrangler workspace persistence ordinary save failed: Error");
     expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh bounded epoch after the exact failed session closes", async () => {
+    const workspaceState = {
+      get: vi.fn((_key: string, fallback?: unknown) => fallback),
+      update: vi.fn(async () => {
+        throw new Error("storage unavailable");
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+    warning.mockClear();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected lifecycle persistence request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    for (const scrollLeft of [10, 20]) {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+      await bridge.updateViewState?.(opened.metadata.sessionId, {
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 0, scrollLeft }
+      });
+      await bridge.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      });
+    }
+
+    expect(workspaceState.update).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalledTimes(2);
+    await coordinator.shutdown();
   });
 });
 

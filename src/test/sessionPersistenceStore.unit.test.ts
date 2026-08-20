@@ -47,7 +47,9 @@ describe("SessionPersistenceStore", () => {
     await persistence.save(snapshotSource, state("polars", 1));
     await persistence.save(source, state("r", 2));
     await persistence.save(source, state("pyspark", 3));
-    await expect(persistence.commitCurrent(source, state("r", 4), () => true, commit)).resolves.toBe(true);
+    await expect(persistence.commitCurrent(source, state("r", 4), () => true, commit)).resolves.toEqual({
+      kind: "committed"
+    });
 
     expect(memory.update).not.toHaveBeenCalled();
     expect(commit).toHaveBeenCalledOnce();
@@ -84,7 +86,9 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(memory.value);
     const commit = vi.fn();
 
-    await expect(persistence.commitCurrent(source, state("polars", 1), () => false, commit)).resolves.toBe(false);
+    await expect(persistence.commitCurrent(source, state("polars", 1), () => false, commit)).resolves.toEqual({
+      kind: "stale"
+    });
 
     expect(memory.update).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
@@ -106,7 +110,7 @@ describe("SessionPersistenceStore", () => {
     expect(stored[persistenceKey(source, "polars")]).toHaveProperty("pendingCurrentCommit");
 
     staged.resolve();
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toEqual({ kind: "committed" });
 
     expect(commit).toHaveBeenCalledOnce();
     expect(update).toHaveBeenCalledTimes(2);
@@ -133,7 +137,7 @@ describe("SessionPersistenceStore", () => {
     current = false;
     firstUpdate.resolve();
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toEqual({ kind: "stale" });
     expect(update).toHaveBeenCalledTimes(2);
     expect(stored).toEqual({ [key]: previous, unrelated: "keep" });
     expect(commit).not.toHaveBeenCalled();
@@ -154,7 +158,7 @@ describe("SessionPersistenceStore", () => {
     current = false;
     firstUpdate.resolve();
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toEqual({ kind: "stale" });
     expect(stored).toEqual({ unrelated: "keep" });
   });
 
@@ -181,7 +185,11 @@ describe("SessionPersistenceStore", () => {
     current = false;
     staged.resolve();
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "rollback" },
+      liveState: "unchanged"
+    });
     expect(update).toHaveBeenCalledTimes(3);
     expect(stored[key]).toHaveProperty("pendingCurrentCommit");
     expect(stored.unrelated).toBe("keep");
@@ -192,8 +200,40 @@ describe("SessionPersistenceStore", () => {
       failureKind: "rollback"
     });
     expect(failureReceipts(failures)).toEqual([
-      { kind: "save", message: "ordinary storage unavailable", epoch: 1, firstInEpoch: true },
-      { kind: "rollback", message: "rollback storage unavailable", epoch: 1, firstInEpoch: false }
+      { kind: "save", cause: { name: "Error" }, epoch: 1, firstInEpoch: true },
+      { kind: "rollback", cause: { name: "Error" }, epoch: 1, firstInEpoch: false }
+    ]);
+  });
+
+  it("does not recover failed snapshot A when stale candidate B rolls back successfully", async () => {
+    const key = persistenceKey(source, "polars");
+    const previous = serializedState("polars", 0);
+    let stored: Record<string, unknown> = { [key]: previous };
+    const staged = deferred<void>();
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 1) throw new Error("snapshot A save failed");
+      stored = value;
+      if (update.mock.calls.length === 2) await staged.promise;
+    });
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(() => stored, update),
+      failures
+    );
+    let current = true;
+
+    await persistence.save(source, state("polars", 1));
+    const candidateB = persistence.commitCurrent(source, state("polars", 2), () => current, vi.fn());
+    await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+    current = false;
+    staged.resolve();
+
+    await expect(candidateB).resolves.toEqual({ kind: "stale" });
+    expect(update).toHaveBeenCalledTimes(3);
+    expect(stored[key]).toEqual(previous);
+    expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
+    expect(failureReceipts(failures)).toEqual([
+      { kind: "save", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
     ]);
   });
 
@@ -220,7 +260,11 @@ describe("SessionPersistenceStore", () => {
     current = false;
     staged.resolve();
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "rollback" },
+      liveState: "unchanged"
+    });
     expect(update).toHaveBeenCalledTimes(2);
     expect(commit).not.toHaveBeenCalled();
     expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
@@ -228,7 +272,7 @@ describe("SessionPersistenceStore", () => {
     expect(stored.unrelated).toBe("keep");
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "rollback" });
     expect(failureReceipts(failures)).toEqual([
-      { kind: "rollback", message: "rollback storage unavailable", epoch: 1, firstInEpoch: true }
+      { kind: "rollback", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
     ]);
   });
 
@@ -248,9 +292,13 @@ describe("SessionPersistenceStore", () => {
     const rollback = vi.fn();
     const commit = vi.fn(() => rollback);
 
-    await expect(persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)).resolves.toBe(
-      false
-    );
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)
+    ).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "runtime-replacement" },
+      liveState: "unchanged"
+    });
 
     expect(commit).toHaveBeenCalledOnce();
     expect(rollback).toHaveBeenCalledOnce();
@@ -263,7 +311,7 @@ describe("SessionPersistenceStore", () => {
       failureKind: "runtime-replacement"
     });
     expect(failureReceipts(failures)).toEqual([
-      { kind: "runtime-replacement", message: "final storage unavailable", epoch: 1, firstInEpoch: true }
+      { kind: "runtime-replacement", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
     ]);
   });
 
@@ -285,9 +333,13 @@ describe("SessionPersistenceStore", () => {
     const rollback = vi.fn();
     const commit = vi.fn(() => rollback);
 
-    await expect(persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)).resolves.toBe(
-      false
-    );
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)
+    ).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "read" },
+      liveState: "unchanged"
+    });
 
     expect(commit).toHaveBeenCalledOnce();
     expect(rollback).toHaveBeenCalledOnce();
@@ -296,7 +348,7 @@ describe("SessionPersistenceStore", () => {
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 1));
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "read" });
     expect(failureReceipts(failures)).toEqual([
-      { kind: "read", message: "workspace read unavailable", epoch: 1, firstInEpoch: true }
+      { kind: "read", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
     ]);
   });
 
@@ -321,11 +373,46 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "read" });
 
     await persistence.save(source, state("polars", 2));
-    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 1 });
+    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 2));
     expect(failureReceipts(failures)).toEqual([
-      { kind: "read", message: "workspace read unavailable", epoch: 1, firstInEpoch: true }
+      { kind: "read", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
     ]);
+  });
+
+  it("returns typed read failures while preserving current-page and replacement ownership", async () => {
+    const workspaceState = mementoFrom(() => {
+      throw codedError("EACCES", "cannot read /private/workspace/state.json");
+    }, vi.fn());
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(workspaceState, failures);
+    const pageCommit = vi.fn();
+    const replacementCommit = vi.fn(() => vi.fn());
+
+    await expect(persistence.commitCurrent(source, state("polars", 1), () => true, pageCommit)).resolves.toEqual({
+      kind: "unavailable",
+      failure: {
+        kind: "read",
+        cause: { name: "Error", code: "EACCES" },
+        epoch: 1,
+        firstInEpoch: true
+      },
+      liveState: "committed"
+    });
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, replacementCommit)
+    ).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "read", cause: { name: "Error", code: "EACCES" }, firstInEpoch: false },
+      liveState: "unchanged"
+    });
+
+    expect(pageCommit).toHaveBeenCalledOnce();
+    expect(replacementCommit).not.toHaveBeenCalled();
+    expect(failureReceipts(failures)).toEqual([
+      { kind: "read", cause: { name: "Error", code: "EACCES" }, epoch: 1, firstInEpoch: true }
+    ]);
+    expect(JSON.stringify(failureReceipts(failures))).not.toContain("/private/workspace");
   });
 
   it("does not clear one persistence owner when another owner writes successfully", async () => {
@@ -349,10 +436,83 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.status(otherSource, "polars")).toEqual({ degraded: false, epoch: 0 });
 
     await persistence.save(source, state("polars", 3));
-    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 1 });
+    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
     expect(new SessionPersistenceStore(mementoFrom(() => stored, update)).load(otherSource, "polars")).toEqual(
       state("polars", 2)
     );
+  });
+
+  it("bounds retained and degraded owner state across recovery and exact release", async () => {
+    const otherSource: SessionSource = { ...source, path: "/workspace/other.csv" };
+    let stored: Record<string, unknown> = {};
+    let writesFail = true;
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      if (writesFail) throw new Error("storage unavailable");
+      stored = value;
+    });
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(() => stored, update),
+      failures
+    );
+    persistence.retainOwner("session-a", source, "polars");
+    persistence.retainOwner("session-b", otherSource, "polars");
+
+    await persistence.save(source, state("polars", 1));
+    await persistence.save(otherSource, state("polars", 2));
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 2, retainedKeys: 2, degradedKeys: 2 });
+    expect(failures).toHaveBeenCalledTimes(2);
+
+    persistence.releaseOwner("session-a");
+    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
+    expect(persistence.status(otherSource, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 1, retainedKeys: 1, degradedKeys: 1 });
+
+    writesFail = false;
+    await persistence.save(otherSource, state("polars", 3));
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 1, retainedKeys: 1, degradedKeys: 0 });
+
+    persistence.releaseOwner("session-b");
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
+  });
+
+  it("does not accumulate lifecycle state across many failed, closed owners", async () => {
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(
+        () => ({}),
+        vi.fn(async () => {
+          throw new Error("storage unavailable");
+        })
+      )
+    );
+
+    for (let index = 0; index < 128; index += 1) {
+      const ownerSource: SessionSource = { ...source, path: `/workspace/session-${index}.csv` };
+      const ownerId = `session-${index}`;
+      persistence.retainOwner(ownerId, ownerSource, "polars");
+      await persistence.save(ownerSource, state("polars", index));
+      persistence.releaseOwner(ownerId);
+    }
+
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
+  });
+
+  it("releases degradation after an in-flight owner write settles", async () => {
+    const write = rejectingDeferred<void>();
+    const update = vi.fn(() => write.promise);
+    const persistence = new SessionPersistenceStore(mementoFrom(() => ({}), update));
+    persistence.retainOwner("closing-session", source, "polars");
+
+    const save = persistence.save(source, state("polars", 1));
+    await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+    persistence.releaseOwner("closing-session");
+    write.reject(new Error("storage unavailable during close"));
+    await save;
+
+    await vi.waitFor(() =>
+      expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 })
+    );
+    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
   });
 
   it("reports one degraded epoch until a confirmed save recovers restart state", async () => {
@@ -368,13 +528,17 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(workspaceState, failures);
     const commit = vi.fn();
 
-    await expect(persistence.commitCurrent(source, state("polars", 1), () => true, commit)).resolves.toBe(true);
+    await expect(persistence.commitCurrent(source, state("polars", 1), () => true, commit)).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "save" },
+      liveState: "committed"
+    });
     await expect(persistence.save(source, state("polars", 2))).resolves.toBeUndefined();
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toBeUndefined();
 
     await expect(persistence.save(source, state("polars", 3))).resolves.toBeUndefined();
-    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 1 });
+    expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 3));
 
     await expect(persistence.save(source, state("polars", 4))).resolves.toBeUndefined();
@@ -382,11 +546,10 @@ describe("SessionPersistenceStore", () => {
     expect(commit).toHaveBeenCalledOnce();
     expect(update).toHaveBeenCalledTimes(4);
     expect(stored[persistenceKey(source, "polars")]).toEqual(serializedState("polars", 3));
-    expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 2, failureKind: "save" });
+    expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
     expect(failureReceipts(failures)).toEqual([
-      { kind: "save", message: "first storage unavailable", epoch: 1, firstInEpoch: true },
-      { kind: "save", message: "second storage unavailable", epoch: 1, firstInEpoch: false },
-      { kind: "save", message: "later storage unavailable", epoch: 2, firstInEpoch: true }
+      { kind: "save", cause: { name: "Error" }, epoch: 1, firstInEpoch: true },
+      { kind: "save", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
     ]);
   });
 });
@@ -436,15 +599,33 @@ function deferred<T>(): { readonly promise: Promise<T>; resolve(value: T): void 
   return { promise, resolve };
 }
 
+function rejectingDeferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function codedError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
 function failureReceipts(failures: ReturnType<typeof vi.fn<(failure: SessionPersistenceFailure) => void>>): Array<{
   kind: SessionPersistenceFailure["kind"];
-  message: string;
+  cause: SessionPersistenceFailure["cause"];
   epoch: number;
   firstInEpoch: boolean;
 }> {
   return failures.mock.calls.map(([failure]) => ({
     kind: failure.kind,
-    message: failure.error instanceof Error ? failure.error.message : String(failure.error),
+    cause: failure.cause,
     epoch: failure.epoch,
     firstInEpoch: failure.firstInEpoch
   }));

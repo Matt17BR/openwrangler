@@ -78,6 +78,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
   private disposed = false;
+  private persistenceOwnerOrdinal = 0;
   private shutdownPromise: Promise<void> | undefined;
   private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
   private readonly runtimeCleanup: SessionRuntimeCleanup;
@@ -166,8 +167,7 @@ export class SessionCoordinator implements vscode.Disposable {
           : failure.kind === "rollback"
             ? "rollback"
             : "runtime replacement";
-    const detail =
-      failure.error instanceof Error ? `${failure.error.name}: ${failure.error.message}` : String(failure.error);
+    const detail = failure.cause.code ? `${failure.cause.name} (${failure.cause.code})` : failure.cause.name;
     try {
       this.diagnosticSink?.(`Open Wrangler workspace persistence ${operation} failed: ${detail}`);
     } catch {
@@ -511,15 +511,25 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin
   ): Promise<OpenWranglerResponse> {
-    const result = await this.runtimeEstablisher.establish(delegate, request, options, origin, {
-      isCoordinatorAvailable: () => !this.disposed,
-      executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
-        this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
-    });
-    if (!result.established) return result.response;
-    this.sessions.set(result.session.publicId, result.session);
-    this.setActive(result.session.publicId);
-    return result.response;
+    const requestedBackend = request.backend;
+    const provisionalOwner = requestedBackend ? `opening:${++this.persistenceOwnerOrdinal}` : undefined;
+    if (provisionalOwner && requestedBackend) {
+      this.persistence.retainOwner(provisionalOwner, request.source, requestedBackend);
+    }
+    try {
+      const result = await this.runtimeEstablisher.establish(delegate, request, options, origin, {
+        isCoordinatorAvailable: () => !this.disposed,
+        executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
+          this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
+      });
+      if (!result.established) return result.response;
+      this.responseCommitter.retainSession(result.session);
+      this.sessions.set(result.session.publicId, result.session);
+      this.setActive(result.session.publicId);
+      return result.response;
+    } finally {
+      if (provisionalOwner) this.persistence.releaseOwner(provisionalOwner);
+    }
   }
 
   private async reconfigureFileSession(
@@ -995,6 +1005,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private releaseSession(session: CoordinatedSession): void {
     if (this.sessions.get(session.publicId) !== session) return;
     this.sessions.delete(session.publicId);
+    this.responseCommitter.releaseSession(session.publicId);
     if (this.activeSessionId === session.publicId) this.setActive(undefined);
     this.runtimeCleanup.releaseIfIdle(session.delegate);
   }
