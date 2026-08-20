@@ -261,7 +261,7 @@ export function buildGridClipboardPayload({
   };
 }
 
-export async function writeGridClipboardText(text: string, ownsAttempt: () => boolean = () => true): Promise<void> {
+export async function writeGridClipboardText(text: string, ownsAttempt: () => boolean): Promise<void> {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);

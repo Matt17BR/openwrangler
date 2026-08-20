@@ -1467,12 +1467,11 @@ export function DataGrid({
                     if (!operation || operation.owner.row !== row.rowNumber || operation.owner.columnId !== column.id) {
                       return;
                     }
-                    if (operation.owner.clipboardSelection === "column") {
-                      await gridClipboard.copyColumn(operation.ownsResult);
-                    } else {
-                      await gridClipboard.copy("range", operation.ownsResult);
-                    }
-                    if (operation.ownsResult()) cellActionMenu.close(operation.owner, true);
+                    const completed =
+                      operation.owner.clipboardSelection === "column"
+                        ? await gridClipboard.copyColumn(operation.ownsResult)
+                        : await gridClipboard.copy("range", operation.ownsResult);
+                    if (completed) cellActionMenu.completeOperation(operation, true);
                   };
                   const filterAction = (action: "include" | "exclude") => {
                     if (cellFilterUnavailableReason || !cell || !onApplyCellFilter) return;

@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import type { Frame } from "playwright-core";
 
 export interface PackagedGridRangeCopyHostClipboard {
@@ -15,6 +16,7 @@ export interface PackagedGridRangeCopyJourneyOptions {
 
 const expectedRangeText = "2400001\tBenelux\n2400002\tNordics";
 const clipboardWaitMs = 10_000;
+const maximumPriorClipboardBytes = 4 * 1024 * 1024;
 
 export function packagedGridCopyShortcut(platform: NodeJS.Platform): "Meta+c" | "Control+c" {
   return platform === "darwin" ? "Meta+c" : "Control+c";
@@ -60,10 +62,21 @@ export async function runWithPackagedGridClipboardRestoration(
   hostClipboard: PackagedGridRangeCopyHostClipboard,
   exercise: () => Promise<void>
 ): Promise<void> {
-  const priorClipboard = await hostClipboard.readText();
+  const priorClipboard = validatePriorPackagedClipboard(await hostClipboard.readText());
   await runPackagedGridRangeCopyLifecycle(exercise, async () => {
     await hostClipboard.writeText(priorClipboard);
   });
+}
+
+export function validatePriorPackagedClipboard(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > maximumPriorClipboardBytes ||
+    Buffer.byteLength(value, "utf8") > maximumPriorClipboardBytes
+  ) {
+    throw new Error("The prior host clipboard value is invalid or exceeds the 4 MiB restoration limit.");
+  }
+  return value;
 }
 
 function normalizeClipboardText(value: string): string {

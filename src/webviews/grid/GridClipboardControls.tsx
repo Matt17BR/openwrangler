@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ColumnSchema, LiveGridPage, SessionMetadata } from "../../shared/protocol";
 import {
   buildGridClipboardPayload,
@@ -15,8 +15,8 @@ import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
 
 export interface GridClipboardController {
   announcement: string;
-  copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<void>;
-  copyColumn(ownsResult?: () => boolean): Promise<void>;
+  copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<boolean>;
+  copyColumn(ownsResult?: () => boolean): Promise<boolean>;
   focusCell(coordinate: GridCellCoordinate): void;
   isColumnSelected(columnId: string): boolean;
   isRangeSelected(coordinate: GridCellCoordinate): boolean;
@@ -51,9 +51,13 @@ export function useGridClipboard({
   const [selection, setSelection] = useState(() => collapsedGridClipboardSelection(contextId, initialCoordinate));
   const [announcement, setAnnouncement] = useState("");
   const contextIdRef = useRef(contextId);
+  const copyActionGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
   const wholeColumn = useWholeColumnClipboard({ metadata, pageSize, viewContextId });
   const resetWholeColumn = wholeColumn.reset;
+  const selectWholeColumn = wholeColumn.selectColumn;
   useLayoutEffect(() => {
+    if (contextIdRef.current !== contextId) copyActionGenerationRef.current += 1;
     contextIdRef.current = contextId;
   }, [contextId]);
   const rectangleResults = useMemo(
@@ -72,8 +76,14 @@ export function useGridClipboard({
       range: { ok: false, reason: wholeColumnOwnsCopyReason }
     };
   }, [rectangleResults, wholeColumn.selectedColumnId]);
+  const resultsRef = useRef(results);
+  useLayoutEffect(() => {
+    if (resultsRef.current !== results) copyActionGenerationRef.current += 1;
+    resultsRef.current = results;
+  }, [results]);
   const resetSelection = useCallback(
     (coordinate: GridCellCoordinate): void => {
+      copyActionGenerationRef.current += 1;
       resetWholeColumn();
       setSelection(collapsedGridClipboardSelection(contextIdRef.current, coordinate));
       setAnnouncement("");
@@ -82,6 +92,7 @@ export function useGridClipboard({
   );
   const selectCell = useCallback(
     (coordinate: GridCellCoordinate, extend: boolean): void => {
+      copyActionGenerationRef.current += 1;
       resetWholeColumn();
       setSelection((current) =>
         extend
@@ -94,6 +105,7 @@ export function useGridClipboard({
   );
   const focusCell = useCallback(
     (coordinate: GridCellCoordinate): void => {
+      copyActionGenerationRef.current += 1;
       resetWholeColumn();
       setSelection((current) =>
         current.contextId === contextId &&
@@ -107,15 +119,26 @@ export function useGridClipboard({
     [contextId, resetWholeColumn]
   );
   const copy = useCallback(
-    async (mode: GridClipboardMode, ownsResult: () => boolean = () => true): Promise<void> => {
+    async (mode: GridClipboardMode, additionalOwnership?: () => boolean): Promise<boolean> => {
       const result = results[mode];
+      const actionGeneration = ++copyActionGenerationRef.current;
+      const actionContextId = contextIdRef.current;
+      const ownsAction = (): boolean =>
+        mountedRef.current &&
+        copyActionGenerationRef.current === actionGeneration &&
+        contextIdRef.current === actionContextId &&
+        resultsRef.current[mode] === result;
+      const ownsResult = (): boolean => {
+        if (!ownsAction() || !(additionalOwnership?.() ?? true)) return false;
+        return ownsAction();
+      };
       if (!result.ok) {
         if (ownsResult()) setAnnouncement(result.reason);
-        return;
+        return ownsResult();
       }
       try {
         await writeGridClipboardText(result.payload.text, ownsResult);
-        if (!ownsResult()) return;
+        if (!ownsResult()) return false;
         setAnnouncement(
           mode === "cell"
             ? "Copied cell."
@@ -123,14 +146,33 @@ export function useGridClipboard({
               ? `Copied ${result.payload.completeRow ? "row" : "loaded row columns"}${result.payload.includesRowLabel ? " with its row label" : ""}.`
               : `Copied ${result.payload.rowCount.toLocaleString()} by ${result.payload.columnCount.toLocaleString()} cell range.`
         );
+        return true;
       } catch {
         if (ownsResult()) {
           setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+          return true;
         }
+        return false;
       }
     },
     [results]
   );
+  const selectColumn = useCallback(
+    (column: ColumnSchema): void => {
+      copyActionGenerationRef.current += 1;
+      setAnnouncement("");
+      selectWholeColumn(column);
+    },
+    [selectWholeColumn]
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      copyActionGenerationRef.current += 1;
+    };
+  }, []);
 
   return {
     announcement: wholeColumn.selectedColumnId ? wholeColumn.announcement : announcement,
@@ -149,7 +191,7 @@ export function useGridClipboard({
     resetSelection,
     results,
     selectCell,
-    selectColumn: wholeColumn.selectColumn,
+    selectColumn,
     selectionDescription:
       wholeColumn.selectionDescription ||
       (schema.length === 0 || page.rows.length === 0
