@@ -75,6 +75,9 @@ test("native R contracts fail unexpected warnings without treating messages as w
   const warningProbe = source.indexOf('warning("warning contract probe", call. = FALSE)');
   const contractSource = source.indexOf("source(target, local = FALSE)");
   const warningSettlement = source.indexOf("length(warning_state$diagnostics) > 0L");
+  for (const seam of [targetValidation, handlerInstallation, warningProbe, contractSource, warningSettlement]) {
+    assert.notEqual(seam, -1);
+  }
   assert.ok(targetValidation < handlerInstallation);
   assert.ok(handlerInstallation < warningProbe);
   assert.ok(warningProbe < contractSource);

@@ -550,9 +550,17 @@ group_by_precision_apply <- dispatch(
   )
 )
 assign("group_by_precision", source_environment$group_by_precision, envir = .GlobalEnv)
-eval(parse(text = group_by_precision_apply$code), envir = .GlobalEnv)
+assert_no_warning(
+  eval(parse(text = group_by_precision_apply$code), envir = .GlobalEnv),
+  "generated integer64 Group By"
+)
 group_by_precision_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
-same_sign_midpoint <- suppressWarnings(as.double(bit64::as.integer64("9223372036854775804")))
+same_sign_midpoint <- assert_exact_warning(
+  as.double(bit64::as.integer64("9223372036854775804")),
+  c("simpleWarning", "warning", "condition"),
+  "integer precision lost while converting to double",
+  "the generated integer64 Group By midpoint expectation"
+)
 assert_identical(
   group_by_precision_generated$value_mean,
   c(0.5, 1, same_sign_midpoint),
