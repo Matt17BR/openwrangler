@@ -1,3 +1,4 @@
+import { DATA_WRANGLER_COMPARISON_AUTHORITY } from "./data-wrangler-comparison-contract.mjs";
 import {
   DATA_WRANGLER_STUDY_TOOL_NAMES,
   buildDataWranglerComparisonStudyReport,
@@ -61,7 +62,9 @@ function comparisonSession(entry, manifest, pssSampleCount) {
     format: entry.format,
     kind: "warm",
     order: entry.order,
-    samples: Array.from({ length: 5 }, (_unused, index) => successfulSample(index + 1, entry.columns, pssSampleCount)),
+    samples: Array.from({ length: DATA_WRANGLER_COMPARISON_AUTHORITY.release.samplesPerSession }, (_unused, index) =>
+      successfulSample(index + 1, entry.columns, pssSampleCount)
+    ),
     provenance: {
       candidate: {
         version: manifest.provenance.openWrangler.version,
