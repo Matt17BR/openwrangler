@@ -5,7 +5,12 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } fro
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import test from "node:test";
-import { ASSIGNMENT_PROTOCOL, RECEIPT_PROTOCOL } from "./qualification-isolation.mjs";
+import {
+  ASSIGNMENT_PROTOCOL,
+  QUALIFICATION_ENVIRONMENT_CONTRACT,
+  RECEIPT_PROTOCOL,
+  runQualification
+} from "./qualification-isolation.mjs";
 
 const script = join(import.meta.dirname, "qualification-isolation.mjs");
 const child = join(import.meta.dirname, "fixtures", "qualification-isolation-child.mjs");
@@ -17,6 +22,29 @@ const gitOverrideKeys = [
   "GIT_OBJECT_DIRECTORY",
   "GIT_WORK_TREE"
 ];
+let resolvedBootstrapPython;
+
+function bootstrapPython() {
+  if (resolvedBootstrapPython) return resolvedBootstrapPython;
+  for (const value of [process.env.OPEN_WRANGLER_PYTHON, process.env.OPEN_WRANGLER_TEST_PYTHON]) {
+    if (value && isAbsolute(value) && existsSync(value)) {
+      resolvedBootstrapPython = realpathSync.native(value);
+      return resolvedBootstrapPython;
+    }
+  }
+  const result = spawnSync(
+    process.platform === "win32" ? "python.exe" : "python3",
+    ["-c", "import sys; print(sys.executable)"],
+    {
+      encoding: "utf8",
+      env: cleanGitEnvironment(),
+      windowsHide: true
+    }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  resolvedBootstrapPython = realpathSync.native(result.stdout.trim());
+  return resolvedBootstrapPython;
+}
 
 function cleanGitEnvironment() {
   const environment = { ...process.env };
@@ -91,7 +119,11 @@ function startRunner(task, mode, additionalArguments = [], environmentOverrides 
     process.execPath,
     [script, "run", "--assignment", task.assignmentPath, "--", process.execPath, child, mode, ...additionalArguments],
     {
-      env: { ...cleanGitEnvironment(), ...environmentOverrides },
+      env: {
+        ...cleanGitEnvironment(),
+        ...environmentOverrides,
+        OPEN_WRANGLER_PYTHON: bootstrapPython()
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     }
@@ -110,6 +142,14 @@ function startRunner(task, mode, additionalArguments = [], environmentOverrides 
     running.once("error", reject);
     running.once("exit", (status, signal) => resolveResult({ signal, status, stderr, stdout }));
   });
+}
+
+function runnerEnvironment(overrides = {}) {
+  return {
+    ...cleanGitEnvironment(),
+    ...overrides,
+    OPEN_WRANGLER_PYTHON: bootstrapPython()
+  };
 }
 
 async function waitFor(paths) {
@@ -142,16 +182,26 @@ test("isolates two concurrent worktree qualifications and seals their exact iden
   const hostileSharedEnvironment = {
     HOME: shared,
     NPM_CONFIG_CACHE: shared,
+    NODE_PATH: shared,
     OPEN_WRANGLER_ARTIFACTS_DIR: shared,
     OPEN_WRANGLER_BROWSER_PROFILE_ROOT: shared,
+    OPEN_WRANGLER_TEST_PROGRESS: join(shared, "test-progress.json"),
+    OPEN_WRANGLER_TEST_RESULT: join(shared, "test-result.json"),
     PIP_CACHE_DIR: shared,
+    PIP_CONFIG_FILE: join(shared, "pip.conf"),
+    PIP_PREFIX: shared,
+    PIP_TARGET: shared,
     PLAYWRIGHT_BROWSERS_PATH: shared,
     PYTEST_ADDOPTS: `--cache-dir=${shared}`,
     PYTHONPYCACHEPREFIX: shared,
+    PYTHONUSERBASE: shared,
+    QUALIFICATION_SHARED_SENTINEL: shared,
+    RUNNER_TEMP: shared,
     TEMP: shared,
     TMP: shared,
     TMPDIR: shared,
     VIRTUAL_ENV: shared,
+    UV_CACHE_DIR: shared,
     XDG_CACHE_HOME: shared,
     npm_config_cache: shared
   };
@@ -185,28 +235,13 @@ test("isolates two concurrent worktree qualifications and seals their exact iden
   assert.notEqual(firstReceipt.identity.gitDirectory.path, secondReceipt.identity.gitDirectory.path);
 
   const mutableKeys = [
-    "artifacts",
-    "browserProfile",
-    "corepackHome",
-    "home",
-    "npmCache",
-    "npmPrefix",
-    "pipCache",
-    "playwrightBrowsers",
-    "pytestCache",
-    "pytestTemp",
-    "pythonBytecode",
-    "rCache",
-    "rLibrary",
-    "run",
-    "ruffCache",
-    "temp",
-    "venv",
-    "xdgCache",
-    "xdgConfig",
-    "xdgData",
-    "xdgRuntime",
-    "xdgState"
+    ...new Set([
+      ...Object.values(QUALIFICATION_ENVIRONMENT_CONTRACT.privateDirectories),
+      ...Object.values(QUALIFICATION_ENVIRONMENT_CONTRACT.privateFiles),
+      "pytestCache",
+      "pytestTemp",
+      "run"
+    ])
   ];
   for (const key of mutableKeys) {
     const firstSuffix = relative(first.assignment.stateRoot, firstReceipt.environment[key]);
@@ -224,6 +259,10 @@ test("isolates two concurrent worktree qualifications and seals their exact iden
   assert.equal(git(second.worktree, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
   await access(join(firstReceipt.environment.npmCache, "child-task-a.txt"));
   await access(join(secondReceipt.environment.npmCache, "child-task-b.txt"));
+  await access(firstReceipt.environment.testProgress);
+  await access(firstReceipt.environment.testResult);
+  await access(secondReceipt.environment.testProgress);
+  await access(secondReceipt.environment.testResult);
   assert.equal(existsSync(join(firstReceipt.environment.npmCache, "child-task-b.txt")), false);
   assert.equal(existsSync(join(secondReceipt.environment.npmCache, "child-task-a.txt")), false);
   assert.deepEqual(await readdir(shared), []);
@@ -254,7 +293,7 @@ test("rejects aliased worktrees, symlinked roots, and reused state", async (cont
     "record"
   );
   assert.equal(linkedResult.status, 1);
-  assert.match(linkedResult.stderr, /aliased parent|symbolic link/u);
+  assert.match(linkedResult.stderr, /aliased parent|symbolic[- ]link/u);
 
   const stateLinked = await addTask(value, "state-linked");
   const stateTarget = join(value.root, "state-target");
@@ -288,7 +327,7 @@ test("rejects aliased worktrees, symlinked roots, and reused state", async (cont
       "record"
     );
     assert.equal(assignmentLinkedResult.status, 1);
-    assert.match(assignmentLinkedResult.stderr, /symbolic link/u);
+    assert.match(assignmentLinkedResult.stderr, /symbolic link|singly linked regular file/u);
   }
 });
 
@@ -297,7 +336,7 @@ test("marks receipts ineligible when source or assignment identity changes", asy
   for (const [taskId, mode, expected] of [
     ["dirty-source", "mutate-worktree", /worktree must be clean/u],
     ["advanced-head", "advance-head", /HEAD, tree, or branch does not match/u],
-    ["changed-assignment", "mutate-assignment", /assignment identity or bytes changed/u]
+    ["changed-assignment", "mutate-assignment", /assignment identity(?: or bytes)? changed/u]
   ]) {
     const task = await addTask(value, taskId);
     const result = await startRunner(task, mode);
@@ -324,3 +363,90 @@ test("rejects assignments that do not bind the exact base, head, tree, and branc
     assert.equal(existsSync(task.assignment.stateRoot), false);
   }
 });
+
+test("publishes an ineligible pinned receipt when the qualification command cannot spawn", async (context) => {
+  const value = await fixture(context, "spawn-failure");
+  const task = await addTask(value, "missing-command");
+  const missing = join(value.root, "does-not-exist");
+  const result = await spawnRunnerCommand(task, [missing]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /could not start/u);
+  const valueReceipt = await receipt(task);
+  assert.equal(valueReceipt.eligible, false);
+  assert.equal(valueReceipt.result.treeEmpty, true);
+  assert.ok(valueReceipt.result.spawnError);
+  assert.equal(valueReceipt.postIdentity.head, value.base);
+  assert.equal(valueReceipt.postIdentity.tree, value.tree);
+});
+
+test("terminates an escaping descendant, blocks post-exit mutation, and bounds hung commands", async (context) => {
+  const value = await fixture(context, "process-tree");
+  const descendantTask = await addTask(value, "descendant");
+  const tracked = join(descendantTask.worktree, "tracked.txt");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: descendantTask.assignmentPath,
+      command: [process.execPath, child, "escape-parent", "--path", tracked],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 250,
+      timeoutMs: 500,
+      writeOutput: false
+    }),
+    /descendants|hard timeout/u
+  );
+  const descendantReceipt = await receipt(descendantTask);
+  assert.equal(descendantReceipt.eligible, false);
+  assert.equal(descendantReceipt.result.treeEmpty, true);
+  assert.ok(descendantReceipt.result.lingeringDescendants || descendantReceipt.result.timedOut);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 2200));
+  assert.equal(await readFile(tracked, "utf8"), "source\n");
+
+  const hungTask = await addTask(value, "hung");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: hungTask.assignmentPath,
+      command: [process.execPath, child, "hang"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 250,
+      timeoutMs: 250,
+      writeOutput: false
+    }),
+    /hard timeout/u
+  );
+  const hungReceipt = await receipt(hungTask);
+  assert.equal(hungReceipt.eligible, false);
+  assert.equal(hungReceipt.result.timedOut, true);
+  assert.equal(hungReceipt.result.treeEmpty, true);
+});
+
+test("a swapped artifact pathname cannot redirect the pinned receipt", async (context) => {
+  const value = await fixture(context, "artifact-swap");
+  const task = await addTask(value, "artifact-swap");
+  const external = join(value.root, "external-artifacts");
+  await mkdir(external);
+  const result = await startRunner(task, "swap-artifacts", ["--target", external]);
+  assert.equal(result.status, 1);
+  assert.equal(existsSync(join(external, "qualification-receipt.json")), false);
+});
+
+function spawnRunnerCommand(task, command) {
+  const running = spawn(process.execPath, [script, "run", "--assignment", task.assignmentPath, "--", ...command], {
+    env: runnerEnvironment(),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true
+  });
+  let stdout = "";
+  let stderr = "";
+  running.stdout.setEncoding("utf8");
+  running.stderr.setEncoding("utf8");
+  running.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  running.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  return new Promise((resolveResult, reject) => {
+    running.once("error", reject);
+    running.once("exit", (status, signal) => resolveResult({ signal, status, stderr, stdout }));
+  });
+}

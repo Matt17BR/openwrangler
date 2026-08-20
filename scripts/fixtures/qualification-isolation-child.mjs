@@ -1,23 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { access, appendFile, mkdir, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative } from "node:path";
-
-const requiredEnvironment = [
-  "HOME",
-  "NPM_CONFIG_CACHE",
-  "OPEN_WRANGLER_ARTIFACTS_DIR",
-  "OPEN_WRANGLER_BROWSER_PROFILE_ROOT",
-  "OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT",
-  "OPEN_WRANGLER_QUALIFICATION_ROOT",
-  "OPEN_WRANGLER_QUALIFICATION_TASK_ID",
-  "PIP_CACHE_DIR",
-  "PLAYWRIGHT_BROWSERS_PATH",
-  "PYTHONPYCACHEPREFIX",
-  "TEMP",
-  "VIRTUAL_ENV",
-  "XDG_CACHE_HOME"
-];
+import { execFileSync, spawn } from "node:child_process";
+import { access, appendFile, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(name);
@@ -42,21 +27,90 @@ async function waitFor(path) {
 async function recordEnvironment() {
   const stateRoot = process.env.OPEN_WRANGLER_QUALIFICATION_ROOT;
   const taskId = process.env.OPEN_WRANGLER_QUALIFICATION_TASK_ID;
+  const runId = process.env.OPEN_WRANGLER_QUALIFICATION_RUN_ID;
   assert.ok(stateRoot && isAbsolute(stateRoot));
   assert.ok(taskId);
-  for (const key of requiredEnvironment) {
-    const value = process.env[key];
-    assert.ok(value, `${key} must be set`);
-    if (key === "OPEN_WRANGLER_QUALIFICATION_TASK_ID") {
-      assert.equal(value, taskId);
-      continue;
-    }
-    assert.ok(isAbsolute(value), `${key} must be absolute`);
-    if (key !== "OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT") {
+  assert.ok(runId);
+  const privatePaths = new Map();
+  for (const mapping of [
+    QUALIFICATION_ENVIRONMENT_CONTRACT.privateDirectories,
+    QUALIFICATION_ENVIRONMENT_CONTRACT.privateFiles
+  ]) {
+    for (const [key, layoutKey] of Object.entries(mapping)) {
+      const value = process.env[key];
+      assert.ok(value && isAbsolute(value), `${key} must be an absolute private path`);
       const suffix = relative(stateRoot, value);
       assert.ok(suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix)), `${key} escaped the state root`);
+      const prior = privatePaths.get(layoutKey);
+      if (prior) assert.equal(value, prior, `${key} disagrees with the ${layoutKey} mapping`);
+      else privatePaths.set(layoutKey, value);
     }
   }
+  const expectedWorktreePaths = {
+    nodeModules: join(process.cwd(), "node_modules"),
+    vitestCache: join(process.cwd(), "node_modules", ".vite"),
+    worktree: process.cwd()
+  };
+  for (const [key, layoutKey] of Object.entries(QUALIFICATION_ENVIRONMENT_CONTRACT.worktreePaths)) {
+    assert.equal(process.env[key], expectedWorktreePaths[layoutKey], `${key} has the wrong worktree mapping`);
+  }
+  for (const [key, expected] of Object.entries(QUALIFICATION_ENVIRONMENT_CONTRACT.exactValues)) {
+    assert.equal(process.env[key], expected, `${key} has the wrong runner-owned value`);
+  }
+  for (const key of QUALIFICATION_ENVIRONMENT_CONTRACT.forbiddenInheritedKeys) {
+    assert.equal(process.env[key], undefined, `${key} must not reach the qualification command`);
+  }
+  assert.ok(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT?.endsWith(".json"));
+  assert.ok(process.env.GIT_DIR && isAbsolute(process.env.GIT_DIR));
+  assert.equal(process.env.GIT_WORK_TREE, process.cwd());
+  assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_TASK_ID, taskId);
+  assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_RUN_ID, runId);
+  assert.equal(
+    process.env.PATH?.split(process.platform === "win32" ? ";" : ":")[0],
+    dirname(process.env.OPEN_WRANGLER_TEST_PYTHON)
+  );
+  assert.match(process.env.PYTEST_ADDOPTS ?? "", new RegExp(stateRoot.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+  const allowedKeys = new Set([
+    ...QUALIFICATION_ENVIRONMENT_CONTRACT.passThroughKeys,
+    ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateDirectories),
+    ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateFiles),
+    ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.worktreePaths),
+    ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.exactValues),
+    "GIT_DIR",
+    "OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT",
+    "OPEN_WRANGLER_QUALIFICATION_ROOT",
+    "OPEN_WRANGLER_QUALIFICATION_RUN_ID",
+    "OPEN_WRANGLER_QUALIFICATION_TASK_ID",
+    "PYTEST_ADDOPTS",
+    "npm_config_userconfig"
+  ]);
+  for (const key of Object.keys(process.env)) {
+    assert.ok(allowedKeys.has(key), `${key} is outside the exported qualification environment contract`);
+  }
+
+  const prefixProbe = [
+    "import json, os, pathlib, sys",
+    "target = pathlib.Path(os.environ['PYTHONUSERBASE']) / ('python-' + os.environ['OPEN_WRANGLER_QUALIFICATION_TASK_ID'] + '.txt')",
+    "target.parent.mkdir(parents=True, exist_ok=True)",
+    "target.write_text(sys.prefix + '\\n', encoding='utf-8')",
+    "print(json.dumps({'prefix': os.path.realpath(sys.prefix)}))"
+  ].join("; ");
+  const explicitPython = JSON.parse(
+    execFileSync(process.env.OPEN_WRANGLER_TEST_PYTHON, ["-I", "-c", prefixProbe], {
+      encoding: "utf8",
+      env: process.env,
+      windowsHide: true
+    })
+  );
+  const pathPython = JSON.parse(
+    execFileSync(process.platform === "win32" ? "python.exe" : "python", ["-I", "-c", prefixProbe], {
+      encoding: "utf8",
+      env: process.env,
+      windowsHide: true
+    })
+  );
+  assert.equal(explicitPython.prefix, resolve(process.env.VIRTUAL_ENV));
+  assert.equal(pathPython.prefix, explicitPython.prefix);
   const writableRoots = [
     process.env.HOME,
     process.env.NPM_CONFIG_CACHE,
@@ -65,17 +119,27 @@ async function recordEnvironment() {
     process.env.PIP_CACHE_DIR,
     process.env.PLAYWRIGHT_BROWSERS_PATH,
     process.env.PYTHONPYCACHEPREFIX,
+    process.env.PYTHONUSERBASE,
+    process.env.RUNNER_TEMP,
     process.env.TEMP,
+    process.env.UV_CACHE_DIR,
     process.env.VIRTUAL_ENV,
     process.env.XDG_CACHE_HOME
   ];
-  for (const root of writableRoots) {
+  for (const root of new Set(writableRoots)) {
     await mkdir(root, { mode: 0o700, recursive: true });
     await writeFile(join(root, `child-${taskId}.txt`), `${taskId}\n`, { flag: "wx", mode: 0o600 });
   }
+  await writeFile(process.env.OPEN_WRANGLER_TEST_PROGRESS, `${taskId}:progress\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(process.env.OPEN_WRANGLER_TEST_RESULT, `${taskId}:result\n`, { flag: "wx", mode: 0o600 });
 }
 
 const mode = process.argv[2];
+if (mode === "delayed-write") {
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, Number(argument("--delay"))));
+  await appendFile(argument("--path"), "late mutation\n", "utf8");
+  process.exit(0);
+}
 await recordEnvironment();
 
 if (mode === "hold") {
@@ -98,6 +162,22 @@ if (mode === "hold") {
   });
 } else if (mode === "mutate-assignment") {
   await appendFile(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT, "\n", "utf8");
+} else if (mode === "escape-parent") {
+  const descendant = spawn(
+    process.execPath,
+    [import.meta.filename, "delayed-write", "--delay", "2000", "--path", argument("--path")],
+    { env: process.env, stdio: "ignore", windowsHide: true }
+  );
+  descendant.unref();
+} else if (mode === "hang") {
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+} else if (mode === "swap-artifacts") {
+  const artifacts = process.env.OPEN_WRANGLER_ARTIFACTS_DIR;
+  const retained = `${artifacts}-retained`;
+  await rename(artifacts, retained);
+  await symlink(argument("--target"), artifacts, process.platform === "win32" ? "junction" : "dir");
 } else if (mode !== "record") {
   throw new Error(`unknown fixture mode ${String(mode)}`);
 }
