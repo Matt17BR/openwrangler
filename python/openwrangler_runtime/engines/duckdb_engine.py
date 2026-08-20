@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..custom_code_scope import CUSTOM_CODE_FUNCTION_NAME, custom_code_function_lines, execute_custom_code
 from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -1345,14 +1346,10 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {_by_example_expression(params['program'])!r})"
             ]
         if kind == "customCode":
-            function_name = f"_custom_step_{index}"
-            code_lines = str(params["code"]).splitlines()
             return [
                 f"{prefix}df = _ow_visible_relation(df)",
-                f"{prefix}def {function_name}(df):",
-                *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
-                f"{prefix}    return result",
-                f"{prefix}df = {function_name}(df)",
+                *custom_code_function_lines(str(params["code"]), prefix=prefix),
+                f"{prefix}df = {CUSTOM_CODE_FUNCTION_NAME}(df)",
                 f"{prefix}if not isinstance(df, duckdb.DuckDBPyRelation):",
                 f"{prefix}    raise ValueError('Custom DuckDB code must assign a DuckDBPyRelation to result.')",
             ]
@@ -2386,15 +2383,11 @@ def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
 
     import duckdb
 
-    namespace: dict[str, Any] = {
-        "df": connection.sql(source_sql),
-        "duckdb": duckdb,
-    }
+    namespace: dict[str, Any] = {"duckdb": duckdb}
     result: Any | None = None
     with capture_custom_code_output() as output:
         try:
-            exec(code, namespace, namespace)
-            result = namespace.get("result")
+            result = execute_custom_code(code, connection.sql(source_sql), namespace)
             if not isinstance(result, duckdb.DuckDBPyRelation):
                 raise EngineError(
                     append_custom_code_output("Custom DuckDB code must assign a DuckDBPyRelation to result.", output)

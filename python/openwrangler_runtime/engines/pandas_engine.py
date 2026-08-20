@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..custom_code_scope import CUSTOM_CODE_FUNCTION_NAME, custom_code_function_lines, execute_custom_code
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -811,13 +812,12 @@ class PandasEngine(DataFrameEngine):
             # object-dtype cells. Give arbitrary custom code a recursively
             # isolated visible frame so in-place list/dict mutations cannot alter
             # the immutable source, committed plan, or rollback snapshot.
-            namespace = {"df": _isolated_object_frame(self._visible_frame(self.normalize(frame))), "pd": pd}
+            custom_frame = _isolated_object_frame(self._visible_frame(self.normalize(frame)))
             with capture_custom_code_output() as output:
                 try:
-                    exec(params["code"], namespace, namespace)
+                    result = execute_custom_code(str(params["code"]), custom_frame, {"pd": pd})
                 except Exception as error:
                     raise EngineError(custom_code_error_message("Pandas", error, output)) from error
-                result = namespace.get("result")
                 if not self.detect(result):
                     raise EngineError(
                         append_custom_code_output(
@@ -1997,14 +1997,10 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = pd.concat([df, {result}.rename({params['newColumn']!r})], axis=1)",
             ]
         if kind == "customCode":
-            function_name = f"_custom_step_{index}"
-            code_lines = str(params["code"]).splitlines()
             return [
                 f"{prefix}df = _open_wrangler_isolate_objects(df)",
-                f"{prefix}def {function_name}(df):",
-                *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
-                f"{prefix}    return result",
-                f"{prefix}df = {function_name}(df)",
+                *custom_code_function_lines(str(params["code"]), prefix=prefix),
+                f"{prefix}df = {CUSTOM_CODE_FUNCTION_NAME}(df)",
             ]
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
 
