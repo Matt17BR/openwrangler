@@ -1,11 +1,13 @@
 import { win32 } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { DependencyProbe, PythonEnvironment } from "../extension/pythonEnvironment";
+import { DependencyGuardCommandError } from "../extension/dependencyGuardProtocol";
 import {
   DetachedDependencyProbeError,
   PythonDependencyProbeRegistry,
   dependencyProbeKey,
   pythonEnvironmentIdentityKey,
+  dependencyGuardRecoveryGuidance,
   pythonPackageEnvironmentKey
 } from "../extension/pythonDependencyState";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
@@ -200,6 +202,29 @@ describe("PythonDependencyProbeRegistry", () => {
       "absolute executable path"
     );
     expect(launch).not.toHaveBeenCalled();
+  });
+});
+
+describe("dependency guard integrity recovery guidance", () => {
+  it.each([
+    [
+      "environment_inconsistent",
+      "The selected environment already has incompatible installed requirements. Repair it before installing Open Wrangler dependencies."
+    ],
+    [
+      "post_install_inconsistent",
+      "The dependency change left incompatible installed requirements. Open Wrangler retained its recovery marker; repair and revalidate the environment before reuse."
+    ],
+    [
+      "integrity_check_failed",
+      "Open Wrangler could not verify every installed requirement. The environment was not accepted for use."
+    ]
+  ] as const)("maps %s to bounded actionable guidance", (code, expected) => {
+    const executable = "/private/selected/environment/bin/python";
+    const guidance = dependencyGuardRecoveryGuidance(new DependencyGuardCommandError("install", code, executable));
+
+    expect(guidance).toBe(expected);
+    expect(guidance).not.toContain(executable);
   });
 });
 

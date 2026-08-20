@@ -92,6 +92,9 @@ export function dependencyGuardFakePipSource(started: string, release: string, c
     `started_path = ${JSON.stringify(started)}`,
     `release_path = ${JSON.stringify(release)}`,
     `completed_path = ${JSON.stringify(completed)}`,
+    "if sys.argv[1:] == ['check', '--disable-pip-version-check']:",
+    "    from pip._internal.cli.main import main as pip_main",
+    "    raise SystemExit(pip_main(sys.argv[1:]))",
     "def publish_json(path, value):",
     "    temporary_path = f'{path}.{os.getpid()}.tmp'",
     "    with open(temporary_path, 'x', encoding='utf-8') as stream:",
@@ -260,6 +263,7 @@ export function createDependencyGuardRecoveryFixture(
         "-c",
         [
           "import json",
+          "import importlib.metadata",
           "import pip",
           "import pip._vendor.packaging.specifiers",
           "import pip._vendor.packaging.version",
@@ -267,6 +271,7 @@ export function createDependencyGuardRecoveryFixture(
           "print(json.dumps({",
           "    'purelib': sysconfig.get_path('purelib'),",
           "    'pip': pip.__file__,",
+          "    'pipDistributionVersion': importlib.metadata.version('pip'),",
           "    'pipSpecifiers': pip._vendor.packaging.specifiers.__file__,",
           "    'pipVersion': pip._vendor.packaging.version.__file__,",
           "}, sort_keys=True))"
@@ -299,6 +304,10 @@ export function createDependencyGuardRecoveryFixture(
     true
   );
   assert.equal(typeof dependencyParent.pipVersion === "string" && path.isAbsolute(dependencyParent.pipVersion), true);
+  assert.equal(
+    typeof dependencyParent.pipDistributionVersion === "string" && dependencyParent.pipDistributionVersion.length > 0,
+    true
+  );
   const dependencyPipPackage = path.dirname(String(dependencyParent.pip));
   const dependencyPipRelative = path.relative(dependencySitePackages, dependencyPipPackage);
   assert.equal(
@@ -349,10 +358,15 @@ export function createDependencyGuardRecoveryFixture(
   const pipCompleted = path.join(directory, "guarded-pip-completed");
   const pipPackage = path.join(environmentSitePackages, "pip");
   mkdirSync(pipPackage);
-  writeFileSync(path.join(pipPackage, "__init__.py"), `__path__.append(${JSON.stringify(dependencyPipPackage)})\n`, {
-    encoding: "utf8",
-    flag: "wx"
-  });
+  writeFileSync(
+    path.join(pipPackage, "__init__.py"),
+    [
+      `__version__ = ${JSON.stringify(String(dependencyParent.pipDistributionVersion))}`,
+      `__path__.append(${JSON.stringify(dependencyPipPackage)})`,
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
   writeFileSync(
     path.join(pipPackage, "__main__.py"),
     dependencyGuardFakePipSource(pipStarted, pipRelease, pipCompleted),
@@ -416,6 +430,12 @@ export function createDependencyGuardRecoveryFixture(
     true,
     "The dependency-recovery fixture must resolve only its local no-network pip implementation."
   );
+  execFileSync(executable, ["-I", "-m", "pip", "check", "--disable-pip-version-check"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30_000,
+    windowsHide: true
+  });
 
   const environment = JSON.parse(
     execFileSync(

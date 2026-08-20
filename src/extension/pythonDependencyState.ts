@@ -273,6 +273,12 @@ export function dependencyGuardRecoveryGuidance(reason: unknown): string {
         return "The executable or package environment changed since the dependency operation began. Select the intended runtime again.";
       case "stale_or_missing_marker":
         return "The dependency recovery marker changed before validation. Retry so Open Wrangler can inspect the exact environment again.";
+      case "environment_inconsistent":
+        return "The selected environment already has incompatible installed requirements. Repair it before installing Open Wrangler dependencies.";
+      case "post_install_inconsistent":
+        return "The dependency change left incompatible installed requirements. Open Wrangler retained its recovery marker; repair and revalidate the environment before reuse.";
+      case "integrity_check_failed":
+        return "Open Wrangler could not verify every installed requirement. The environment was not accepted for use.";
     }
   }
   if (reason instanceof DependencyGuardProtocolError || reason instanceof DependencyGuardCommandTimeoutError) {

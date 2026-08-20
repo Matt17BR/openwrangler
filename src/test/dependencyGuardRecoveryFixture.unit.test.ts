@@ -54,6 +54,10 @@ describe("dependency-guard recovery fixture", () => {
     expect(source).toContain("stream.flush()\n        os.fsync(stream.fileno())");
     expect(source).toContain("os.replace(temporary_path, path)");
     expect(source).toContain("publish_json(started_path, {'args': sys.argv[1:]})");
+    expect(source).toContain("from pip._internal.cli.main import main as pip_main");
+    expect(source.indexOf("if sys.argv[1:] == ['check', '--disable-pip-version-check']:")).toBeLessThan(
+      source.indexOf("publish_json(started_path, {'args': sys.argv[1:]})")
+    );
     expect(source).toContain("deadline = time.monotonic() + 60");
     expect(source).toContain("raise SystemExit(91)");
     expect(source).toContain("time.sleep(0.025)");

@@ -17,6 +17,7 @@ import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
+import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
 import { automaticBackends } from "./pythonEnvironmentModel";
 import {
   RendererSynchronizationCoordinator,
@@ -854,7 +855,7 @@ export class OpenWranglerPanel {
           await this.post({
             kind: "error",
             code: "dependency_install_failed",
-            message: error instanceof Error ? error.message : String(error),
+            message: dependencyGuardRecoveryGuidance(error),
             recoverable: true
           });
         }

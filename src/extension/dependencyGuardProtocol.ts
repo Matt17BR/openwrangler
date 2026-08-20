@@ -17,6 +17,9 @@ export type DependencyGuardErrorCode =
   | "pip_failed"
   | "stale_or_missing_marker"
   | "environment_changed"
+  | "environment_inconsistent"
+  | "post_install_inconsistent"
+  | "integrity_check_failed"
   | "internal_error";
 
 export const DEPENDENCY_GUARD_EXIT_CODES: Readonly<Record<DependencyGuardErrorCode, number>> = {
@@ -27,7 +30,10 @@ export const DEPENDENCY_GUARD_EXIT_CODES: Readonly<Record<DependencyGuardErrorCo
   pip_failed: 14,
   stale_or_missing_marker: 15,
   environment_changed: 16,
-  internal_error: 17
+  internal_error: 17,
+  environment_inconsistent: 18,
+  post_install_inconsistent: 19,
+  integrity_check_failed: 20
 };
 
 const DEPENDENCY_GUARD_CODES_BY_EXIT = new Map<number, DependencyGuardErrorCode>(

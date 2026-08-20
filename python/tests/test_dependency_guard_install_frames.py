@@ -219,6 +219,9 @@ def _write_fake_pip(site_packages: Path) -> None:
             [
                 "import os",
                 "import pathlib",
+                "import sys",
+                "if sys.argv[1:] == ['check', '--disable-pip-version-check']:",
+                "    raise SystemExit(int(os.environ.get('OW_GUARD_TEST_PIP_CHECK_EXIT', '0')))",
                 "sentinel = pathlib.Path(os.environ['OW_GUARD_TEST_PIP_SENTINEL'])",
                 "sentinel.write_bytes(b'started')",
                 "raise SystemExit(int(os.environ.get('OW_GUARD_TEST_PIP_EXIT', '0')))",

@@ -3,6 +3,7 @@ import type * as vscode from "vscode";
 import { commands, Uri, window, workspace } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
+import { DependencyGuardCommandError } from "../extension/dependencyGuardProtocol";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extension/webviewPanel";
 import type {
   ColumnSummary,
@@ -3325,6 +3326,42 @@ describe("OpenWranglerPanel retained view state", () => {
       { kind: "runtimeDependencyInstallState", busy: true },
       { kind: "runtimeDependencyInstallState", busy: false }
     ]);
+  });
+
+  it("publishes actionable bounded guidance when the confirmed environment is already inconsistent", async () => {
+    const missing: OpenWranglerResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Pandas is missing openpyxl>=3.1.5.",
+      recoverable: true
+    };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
+    const executable = "/private/selected/environment/bin/python";
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
+      if (command === "openWrangler.installRuntimeDependencies") {
+        throw new DependencyGuardCommandError("install", "environment_inconsistent", executable);
+      }
+      return undefined;
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    await harness.open();
+    harness.posted.length = 0;
+    executeCommand.mockClear();
+
+    await harness.receive({ kind: "installRuntimeDependencies" });
+
+    expect(harness.posted).toEqual([
+      { kind: "runtimeDependencyInstallState", busy: true },
+      {
+        kind: "error",
+        code: "dependency_install_failed",
+        message:
+          "The selected environment already has incompatible installed requirements. Repair it before installing Open Wrangler dependencies.",
+        recoverable: true
+      },
+      { kind: "runtimeDependencyInstallState", busy: false }
+    ]);
+    expect(JSON.stringify(harness.posted)).not.toContain(executable);
   });
 
   it("atomically publishes a successful live import reconfiguration and retains its source and revision", async () => {
