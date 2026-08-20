@@ -2375,9 +2375,14 @@ export function App() {
       const currentRule = sort[index];
       const adjacentRule = sort[nextIndex];
       if (!currentRule || !adjacentRule) return;
-      sort[index] = adjacentRule;
-      sort[nextIndex] = currentRule;
-      applyFilters({ ...current, sort });
+      applyFilters({
+        ...current,
+        sort: sort.map((rule, ruleIndex) => {
+          if (ruleIndex === index) return adjacentRule;
+          if (ruleIndex === nextIndex) return currentRule;
+          return rule;
+        })
+      });
     };
   });
 
