@@ -98,6 +98,8 @@ interface CellFilterMenuTarget {
   row: number;
   column: number;
   columnId: string;
+  preserveClipboardSelection: boolean;
+  returnFocus: { row: number; column: number };
 }
 
 interface GridPointerSelection {
@@ -1472,20 +1474,37 @@ export function DataGrid({
                     viewport.firstVisibleRow + Math.max(2, Math.floor(viewport.height / gridRowHeight) - 4);
                   const cellMenuId = `cell-filter-menu-${row.rowNumber}-${column.position}`;
                   const closeCellMenu = (restoreFocus = false) => {
+                    const returnFocus = cellFilterMenuTarget?.returnFocus ?? {
+                      row: row.rowNumber,
+                      column: column.position
+                    };
                     setCellFilterMenuTarget(undefined);
                     if (restoreFocus) {
+                      pointerSelectionFocusRequest.current = returnFocus;
                       scrollerRef.current
                         ?.querySelector<HTMLElement>(
-                          `[data-grid-row="${row.rowNumber}"][data-grid-column="${column.position}"]`
+                          `[data-grid-row="${returnFocus.row}"][data-grid-column="${returnFocus.column}"]`
                         )
                         ?.focus({ preventScroll: true });
                     }
                   };
-                  const openCellMenu = () => {
+                  const openCellMenu = (preserveClipboardSelection = false) => {
                     reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
-                    setFocusedCell({ row: row.rowNumber, column: column.position });
-                    gridClipboard.resetSelection({ row: row.rowNumber, column: column.position });
-                    setCellFilterMenuTarget({ row: row.rowNumber, column: column.position, columnId: column.id });
+                    const target = { row: row.rowNumber, column: column.position };
+                    if (!preserveClipboardSelection) {
+                      setFocusedCell(target);
+                      gridClipboard.resetSelection(target);
+                    }
+                    setCellFilterMenuTarget({
+                      ...target,
+                      columnId: column.id,
+                      preserveClipboardSelection,
+                      returnFocus: preserveClipboardSelection ? focusedCell : target
+                    });
+                  };
+                  const copySelection = async () => {
+                    await gridClipboard.copy("range");
+                    closeCellMenu(true);
                   };
                   const filterAction = (action: "include" | "exclude") => {
                     if (cellFilterUnavailableReason || !cell || !onApplyCellFilter) return;
@@ -1515,7 +1534,8 @@ export function DataGrid({
                         .filter(Boolean)
                         .join(" ")}
                       title={accessibleLabel ?? displayCell.title ?? renderedCell}
-                      onFocus={() => {
+                      onFocus={(event) => {
+                        if (event.target !== event.currentTarget) return;
                         const pointerFocusRequest = pointerSelectionFocusRequest.current;
                         const preserveClipboardSelection =
                           pointerSelection.current !== undefined ||
@@ -1530,6 +1550,10 @@ export function DataGrid({
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
                       onPointerDown={(event) => {
+                        if (event.button === 2 && clipboardSelected) {
+                          event.preventDefault();
+                          return;
+                        }
                         if (event.button !== 0 || gridCellControlTarget(event.target, event.currentTarget)) return;
                         finishPointerSelection(undefined, false);
                         pointerSelectionFocusRequest.current = undefined;
@@ -1606,7 +1630,7 @@ export function DataGrid({
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
-                        openCellMenu();
+                        openCellMenu(clipboardSelected);
                       }}
                       onKeyDown={(event) => {
                         if (
@@ -1623,7 +1647,7 @@ export function DataGrid({
                           (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
                         ) {
                           event.preventDefault();
-                          openCellMenu();
+                          openCellMenu(clipboardSelected);
                           return;
                         }
                         if (event.target !== event.currentTarget) return;
@@ -1702,6 +1726,21 @@ export function DataGrid({
                           >
                             {cellFilterActionLabel(cell, "exclude")}
                           </button>
+                          {cellFilterMenuTarget?.preserveClipboardSelection && (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              disabled={!gridClipboard.results.range.ok}
+                              title={
+                                gridClipboard.results.range.ok
+                                  ? "Copy selected cells"
+                                  : gridClipboard.results.range.reason
+                              }
+                              onClick={() => void copySelection()}
+                            >
+                              Copy selection
+                            </button>
+                          )}
                         </div>
                       )}
                     </td>

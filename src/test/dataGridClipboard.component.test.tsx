@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -56,6 +56,8 @@ const page: GridPage = {
 
 let clipboardDescriptor: PropertyDescriptor | undefined;
 let execCommandDescriptor: PropertyDescriptor | undefined;
+let releasePointerCaptureDescriptor: PropertyDescriptor | undefined;
+let setPointerCaptureDescriptor: PropertyDescriptor | undefined;
 let writeText: ReturnType<typeof vi.fn>;
 
 describe("DataGrid clipboard interactions", () => {
@@ -63,8 +65,19 @@ describe("DataGrid clipboard interactions", () => {
     vscodePostMessage.mockClear();
     clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    releasePointerCaptureDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "releasePointerCapture");
+    setPointerCaptureDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "setPointerCapture");
     writeText = vi.fn(async () => undefined);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      value: vi.fn()
+    });
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      value: vi.fn()
+    });
   });
 
   afterEach(() => {
@@ -73,6 +86,8 @@ describe("DataGrid clipboard interactions", () => {
     else Reflect.deleteProperty(navigator, "clipboard");
     if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
     else Reflect.deleteProperty(document, "execCommand");
+    restorePrototypeProperty("releasePointerCapture", releasePointerCaptureDescriptor);
+    restorePrototypeProperty("setPointerCapture", setPointerCaptureDescriptor);
   });
 
   it("copies the focused cell and complete loaded row from explicit controls", async () => {
@@ -110,19 +125,57 @@ describe("DataGrid clipboard interactions", () => {
     expect(await screen.findByText("Copied row with its row label.")).toBeTruthy();
   });
 
-  it("extends a rectangular pointer selection and copies its exact displayed values", async () => {
+  it.each([
+    ["Ctrl+C", { ctrlKey: true }],
+    ["Cmd+C", { metaKey: true }]
+  ])("copies a real pointer-selected rectangle once from its focus owner with %s", async (_label, modifier) => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
     const emptySales = screen.getByRole("cell", { name: "" });
-    focusCell(city);
-    fireEvent.pointerDown(emptySales, { button: 0, shiftKey: true });
-    act(() => emptySales.focus());
+    pointerDrag(city, emptySales, 17);
 
     expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
-    fireEvent.click(screen.getByRole("button", { name: "Copy range" }));
+    expect(document.activeElement).toBe(emptySales);
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "c", ...modifier });
 
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5\nParis\t"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5\nParis\t");
+    expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("preserves a pointer-selected rectangle in its context menu and restores the drag endpoint", async () => {
+    const contextPage: GridPage = {
+      ...page,
+      rows: [
+        { ...page.rows[0], values: [cell("=2+2"), numberCell(-10.5)] },
+        {
+          ...page.rows[1],
+          values: [cell('contains\t"quote"'), { kind: "null", raw: null, display: "", isNull: true, isNaN: false }]
+        }
+      ]
+    };
+    renderGrid("view-a", contextPage);
+    const city = screen.getByRole("cell", { name: "=2+2" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(city, emptySales, 19);
+
+    expect(fireEvent.pointerDown(city, { button: 2, buttons: 2, pointerId: 20, pointerType: "mouse" })).toBe(false);
+    fireEvent.contextMenu(city, { button: 2 });
+
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
+    expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
+    const menu = screen.getByRole("menu", { name: "Filter city by this cell" });
+    expect(within(menu).getByRole("menuitem", { name: "Keep only this value" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "Exclude this value" })).toBeInTheDocument();
+    const copySelection = within(menu).getByRole("menuitem", { name: "Copy selection" });
+    expect(document.activeElement).toBe(copySelection);
+    fireEvent.click(copySelection);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText).toHaveBeenLastCalledWith(`'=2+2\t-10.5\n"contains\t""quote"""\t`);
+    await waitFor(() => expect(document.activeElement).toBe(emptySales));
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
@@ -374,6 +427,21 @@ function grid(viewContextId: string, activePage = page, activeMetadata = metadat
 function focusCell(target: HTMLElement): void {
   fireEvent.pointerDown(target, { button: 0 });
   act(() => target.focus());
+}
+
+function pointerDrag(start: HTMLElement, end: HTMLElement, pointerId: number): void {
+  fireEvent.pointerDown(start, pointerEvent(pointerId));
+  fireEvent.pointerMove(end, pointerEvent(pointerId));
+  fireEvent.pointerUp(end, pointerEvent(pointerId, { buttons: 0 }));
+}
+
+function pointerEvent(pointerId: number, overrides: { buttons?: number } = {}) {
+  return { button: 0, buttons: 1, pointerId, pointerType: "mouse", ...overrides };
+}
+
+function restorePrototypeProperty(property: string, descriptor: PropertyDescriptor | undefined): void {
+  if (descriptor) Object.defineProperty(HTMLElement.prototype, property, descriptor);
+  else Reflect.deleteProperty(HTMLElement.prototype, property);
 }
 
 function cell(display: string) {
