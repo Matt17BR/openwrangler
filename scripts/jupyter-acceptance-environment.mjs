@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
   closeSync,
@@ -11,6 +11,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
   writeSync
 } from "node:fs";
@@ -57,14 +58,17 @@ const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   protobuf: "7.35.1",
   zstandard: "0.25.0"
 });
-const PYSPARK_SOURCE_REQUIREMENT =
-  "pyspark @ https://files.pythonhosted.org/packages/c3/33/c987434f5d50aa802779a004ca0fd45ee4350caab50554ad7283d5a22b50/pyspark-4.2.0.tar.gz#sha256=5ad689d53570ee1674193fd4f9bda065f0db3be9363a27d2a3406cc457b70b61";
-const RELEASED_PYSPARK_STABLE_DISTRIBUTION = Object.freeze({
+const RELEASED_PYSPARK_STABLE_DISTRIBUTION = validatePySparkArtifactReceipt({
+  filename: "pyspark-4.2.0.tar.gz",
   mode: "stable-qualification",
-  requirement: PYSPARK_SOURCE_REQUIREMENT,
+  package: "pyspark",
+  schemaVersion: 1,
+  sha256: "5ad689d53570ee1674193fd4f9bda065f0db3be9363a27d2a3406cc457b70b61",
+  size: 450129423,
+  url: "https://files.pythonhosted.org/packages/c3/33/c987434f5d50aa802779a004ca0fd45ee4350caab50554ad7283d5a22b50/pyspark-4.2.0.tar.gz",
   version: RELEASED_JUPYTER_COMPATIBILITY_VERSIONS.pyspark
 });
-export const RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION = validateReleasedPySparkPrereleaseReceipt(
+export const RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION = validatePySparkArtifactReceipt(
   JSON.parse(readFileSync(new URL("../fixtures/pyspark-prerelease-distribution.json", import.meta.url), "utf8"))
 );
 export const RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION = RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.version;
@@ -452,10 +456,11 @@ export async function createJupyterAcceptanceKernelPython(
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
     pysparkDistribution = RELEASED_PYSPARK_STABLE_DISTRIBUTION,
+    acquirePySparkArtifact = acquireVerifiedPySparkArtifact,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
-  validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand);
+  validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand, acquirePySparkArtifact);
   const exactPySparkDistribution = validateReleasedPySparkDistribution(pysparkDistribution);
   const java = await probeJupyterAcceptanceJava({
     environment,
@@ -466,6 +471,7 @@ export async function createJupyterAcceptanceKernelPython(
     containedBy,
     environment,
     platform,
+    acquirePySparkArtifact,
     pysparkDistribution: exactPySparkDistribution,
     runCommand,
     includePySpark: true,
@@ -507,7 +513,13 @@ export async function createJupyterAcceptanceCoreKernelPython(
   });
 }
 
-function validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand) {
+function validateJupyterAcceptanceKernelPythonInput(
+  directory,
+  basePython,
+  containedBy,
+  runCommand,
+  acquirePySparkArtifact
+) {
   if (
     typeof directory !== "string" ||
     !isAbsolute(directory) ||
@@ -520,7 +532,8 @@ function validateJupyterAcceptanceKernelPythonInput(directory, basePython, conta
     !isAbsolute(basePython) ||
     /[\0\r\n]/u.test(basePython) ||
     !existsSync(basePython) ||
-    typeof runCommand !== "function"
+    typeof runCommand !== "function" ||
+    (acquirePySparkArtifact !== undefined && typeof acquirePySparkArtifact !== "function")
   ) {
     throw new Error(
       "Released-Jupyter acceptance requires a new contained private environment and an existing absolute base interpreter."
@@ -531,7 +544,16 @@ function validateJupyterAcceptanceKernelPythonInput(directory, basePython, conta
 async function createJupyterAcceptanceKernelPythonEnvironment(
   directory,
   basePython,
-  { containedBy, environment, platform, runCommand, includePySpark, labels, pysparkDistribution }
+  {
+    containedBy,
+    environment,
+    platform,
+    runCommand,
+    includePySpark,
+    labels,
+    pysparkDistribution,
+    acquirePySparkArtifact
+  }
 ) {
   await probeJupyterAcceptancePython(basePython, {
     environment,
@@ -584,27 +606,50 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
   );
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
   if (includePySpark) {
-    await runCommand(
-      {
-        executable: kernelPython,
-        args: [
-          "-I",
-          "-m",
-          "pip",
-          "--isolated",
-          "install",
-          "--disable-pip-version-check",
-          "--no-input",
-          "--no-warn-script-location",
-          "--no-cache-dir",
-          "--no-deps",
-          pysparkDistribution.requirement
-        ],
-        environment,
-        label: labels.pysparkInstall
-      },
-      { timeoutMs: 240_000 }
+    const artifact = validateAcquiredPySparkArtifact(
+      directory,
+      await acquirePySparkArtifact(directory, pysparkDistribution),
+      pysparkDistribution
     );
+    assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+    let installFailure;
+    try {
+      await runCommand(
+        {
+          executable: kernelPython,
+          args: [
+            "-I",
+            "-m",
+            "pip",
+            "--isolated",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "--no-warn-script-location",
+            "--no-cache-dir",
+            "--no-deps",
+            artifact.path
+          ],
+          environment,
+          label: labels.pysparkInstall
+        },
+        { timeoutMs: 240_000 }
+      );
+    } catch (error) {
+      installFailure = error;
+    }
+    try {
+      await artifact.dispose();
+    } catch (cleanupError) {
+      if (installFailure !== undefined) {
+        throw new AggregateError(
+          [installFailure, cleanupError],
+          "Released-Jupyter PySpark installation and artifact cleanup both failed."
+        );
+      }
+      throw cleanupError;
+    }
+    if (installFailure !== undefined) throw installFailure;
     assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
   }
   const installedVersions = await probeJupyterAcceptancePython(kernelPython, {
@@ -636,67 +681,30 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
 }
 
 function validateReleasedPySparkDistribution(value) {
-  if (value?.mode === "prerelease-denial") {
-    const receipt = validateReleasedPySparkPrereleaseReceipt(value);
-    return Object.freeze({
-      mode: receipt.mode,
-      requirement: `${receipt.package} @ ${receipt.url}#sha256=${receipt.sha256}`,
-      version: receipt.version
-    });
-  }
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.keys(value).sort().join("\0") !== "mode\0requirement\0version" ||
-    value.mode !== "stable-qualification" ||
-    typeof value.version !== "string" ||
-    typeof value.requirement !== "string" ||
-    value.requirement.length > 2_048 ||
-    /[\0\r\n]/u.test(value.requirement)
-  ) {
+  const receipt = validatePySparkArtifactReceipt(value);
+  const expected =
+    receipt.mode === "stable-qualification"
+      ? RELEASED_PYSPARK_STABLE_DISTRIBUTION
+      : receipt.mode === "prerelease-denial"
+        ? RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION
+        : undefined;
+  if (expected === undefined || Object.keys(expected).some((key) => receipt[key] !== expected[key])) {
     throw new Error("Released-Jupyter PySpark provisioning requires one exact bounded distribution receipt.");
   }
-  if (value.version !== RELEASED_JUPYTER_COMPATIBILITY_VERSIONS.pyspark) {
-    throw new Error("Released-Jupyter PySpark provisioning mode does not match its exact expected version.");
-  }
-  const prefix = "pyspark @ ";
-  if (!value.requirement.startsWith(prefix)) {
-    throw new Error("Released-Jupyter PySpark provisioning requires one hash-pinned PyPI source distribution.");
-  }
-  let distributionUrl;
-  try {
-    distributionUrl = new URL(value.requirement.slice(prefix.length));
-  } catch {
-    throw new Error("Released-Jupyter PySpark provisioning requires one valid source-distribution URL.");
-  }
-  if (
-    distributionUrl.protocol !== "https:" ||
-    distributionUrl.hostname !== "files.pythonhosted.org" ||
-    distributionUrl.port !== "" ||
-    distributionUrl.username !== "" ||
-    distributionUrl.password !== "" ||
-    distributionUrl.search !== "" ||
-    !/^#sha256=[a-f0-9]{64}$/u.test(distributionUrl.hash) ||
-    !distributionUrl.pathname.startsWith("/packages/") ||
-    !distributionUrl.pathname.endsWith(`/pyspark-${value.version}.tar.gz`)
-  ) {
-    throw new Error("Released-Jupyter PySpark provisioning requires one hash-pinned PyPI source distribution.");
-  }
-  return Object.freeze({ mode: value.mode, requirement: value.requirement, version: value.version });
+  return receipt;
 }
 
-function validateReleasedPySparkPrereleaseReceipt(value) {
+function validatePySparkArtifactReceipt(value) {
   if (
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
     Object.keys(value).sort().join("\0") !== "filename\0mode\0package\0schemaVersion\0sha256\0size\0url\0version" ||
     value.schemaVersion !== 1 ||
-    value.mode !== "prerelease-denial" ||
+    !["stable-qualification", "prerelease-denial"].includes(value.mode) ||
     value.package !== "pyspark" ||
     typeof value.version !== "string" ||
-    value.version !== "4.2.0.dev5" ||
+    !/^[0-9A-Za-z.+-]{1,64}$/u.test(value.version) ||
     value.filename !== `pyspark-${value.version}.tar.gz` ||
     typeof value.url !== "string" ||
     value.url.length > 2_048 ||
@@ -706,13 +714,13 @@ function validateReleasedPySparkPrereleaseReceipt(value) {
     value.size <= 0 ||
     value.size > 512 * 1024 * 1024
   ) {
-    throw new Error("Released-Jupyter PySpark prerelease denial requires one exact bounded distribution receipt.");
+    throw new Error("Released-Jupyter PySpark provisioning requires one exact bounded distribution receipt.");
   }
   let distributionUrl;
   try {
     distributionUrl = new URL(value.url);
   } catch {
-    throw new Error("Released-Jupyter PySpark prerelease denial requires one valid source-distribution URL.");
+    throw new Error("Released-Jupyter PySpark provisioning requires one valid source-distribution URL.");
   }
   if (
     distributionUrl.protocol !== "https:" ||
@@ -725,7 +733,7 @@ function validateReleasedPySparkPrereleaseReceipt(value) {
     !distributionUrl.pathname.startsWith("/packages/") ||
     !distributionUrl.pathname.endsWith(`/${value.filename}`)
   ) {
-    throw new Error("Released-Jupyter PySpark prerelease denial requires one exact PyPI source distribution.");
+    throw new Error("Released-Jupyter PySpark provisioning requires one exact PyPI source distribution.");
   }
   return Object.freeze({
     filename: value.filename,
@@ -737,6 +745,226 @@ function validateReleasedPySparkPrereleaseReceipt(value) {
     url: value.url,
     version: value.version
   });
+}
+
+export async function acquireVerifiedPySparkArtifact(
+  directory,
+  distribution,
+  { fetchImpl = globalThis.fetch, randomBytesImpl = randomBytes, timeoutMs = 300_000 } = {}
+) {
+  const receipt = validatePySparkArtifactReceipt(distribution);
+  const resolvedDirectory = resolve(directory);
+  let directoryMetadata;
+  try {
+    directoryMetadata = lstatSync(resolvedDirectory, { bigint: true });
+  } catch {
+    throw new Error("Released-Jupyter PySpark download requires one existing private directory.");
+  }
+  if (
+    !isAbsolute(directory) ||
+    realpathSync(resolvedDirectory) !== resolvedDirectory ||
+    !directoryMetadata.isDirectory() ||
+    directoryMetadata.isSymbolicLink() ||
+    typeof fetchImpl !== "function" ||
+    typeof randomBytesImpl !== "function" ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 300_000
+  ) {
+    throw new Error("Released-Jupyter PySpark download requires one bounded private acquisition context.");
+  }
+  const entropy = randomBytesImpl(16);
+  if (!Buffer.isBuffer(entropy) || entropy.length !== 16) {
+    throw new Error("Released-Jupyter PySpark download requires exact private-path entropy.");
+  }
+  const artifactPath = resolve(resolvedDirectory, `${entropy.toString("hex")}-${receipt.filename}`);
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+  timeout.unref?.();
+  let descriptor;
+  let identity;
+  let reader;
+  try {
+    descriptor = openSync(
+      artifactPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    const opened = fstatSync(descriptor, { bigint: true });
+    identity = downloadedArtifactIdentity(opened);
+    if (!opened.isFile() || opened.isSymbolicLink() || opened.nlink !== 1n || opened.size !== 0n) {
+      throw new Error("Released-Jupyter PySpark download temporary is not one new regular file.");
+    }
+    const response = await fetchImpl(receipt.url, {
+      method: "GET",
+      redirect: "error",
+      headers: Object.freeze({ Accept: "application/octet-stream", "Accept-Encoding": "identity" }),
+      signal: abortController.signal
+    });
+    const declaredLength = response?.headers?.get?.("content-length");
+    const contentEncoding = response?.headers?.get?.("content-encoding");
+    if (
+      response?.status !== 200 ||
+      declaredLength !== String(receipt.size) ||
+      (contentEncoding !== null && contentEncoding !== "identity") ||
+      typeof response?.body?.getReader !== "function"
+    ) {
+      throw new Error("Released-Jupyter PySpark download response did not match the exact artifact receipt.");
+    }
+    reader = response.body.getReader();
+    const digest = createHash("sha256");
+    let downloaded = 0;
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (!(chunk.value instanceof Uint8Array) || chunk.value.byteLength === 0) {
+        throw new Error("Released-Jupyter PySpark download returned an invalid stream chunk.");
+      }
+      downloaded += chunk.value.byteLength;
+      if (downloaded > receipt.size) {
+        throw new Error("Released-Jupyter PySpark download exceeded its exact byte allowance.");
+      }
+      digest.update(chunk.value);
+      let offset = 0;
+      while (offset < chunk.value.byteLength) {
+        const written = writeSync(descriptor, chunk.value, offset, chunk.value.byteLength - offset);
+        if (written <= 0) throw new Error("Released-Jupyter PySpark download could not persist its next stream chunk.");
+        offset += written;
+      }
+    }
+    if (downloaded !== receipt.size || digest.digest("hex") !== receipt.sha256) {
+      throw new Error("Released-Jupyter PySpark download did not match its exact size and SHA-256 receipt.");
+    }
+    fsyncSync(descriptor);
+    const completed = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameDownloadedArtifactIdentity(identity, downloadedArtifactIdentity(completed)) ||
+      completed.size !== BigInt(receipt.size)
+    ) {
+      throw new Error("Released-Jupyter PySpark download temporary changed while it was written.");
+    }
+    closeSync(descriptor);
+    descriptor = undefined;
+    const named = lstatSync(artifactPath, { bigint: true });
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== 1n ||
+      named.size !== BigInt(receipt.size) ||
+      !sameDownloadedArtifactIdentity(identity, downloadedArtifactIdentity(named))
+    ) {
+      throw new Error("Released-Jupyter PySpark download path changed after verification.");
+    }
+    let disposed = false;
+    return Object.freeze({
+      path: artifactPath,
+      sha256: receipt.sha256,
+      size: receipt.size,
+      async dispose() {
+        if (disposed) throw new Error("Released-Jupyter PySpark artifact was already disposed.");
+        removeIdentifiedPySparkArtifact(artifactPath, identity);
+        disposed = true;
+      }
+    });
+  } catch (error) {
+    abortController.abort();
+    const cleanupFailures = [];
+    try {
+      await reader?.cancel();
+    } catch (cancelError) {
+      cleanupFailures.push(cancelError);
+    }
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch (closeError) {
+        cleanupFailures.push(closeError);
+      }
+    }
+    if (identity !== undefined) {
+      try {
+        removeIdentifiedPySparkArtifact(artifactPath, identity);
+      } catch (cleanupError) {
+        cleanupFailures.push(cleanupError);
+      }
+    }
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupFailures],
+        "Released-Jupyter PySpark download failed and its identified temporary could not be cleaned."
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function validateAcquiredPySparkArtifact(directory, value, distribution) {
+  const relativePath = typeof value?.path === "string" ? relative(resolve(directory), value.path) : undefined;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== "dispose\0path\0sha256\0size" ||
+    typeof value.path !== "string" ||
+    !isAbsolute(value.path) ||
+    /[\0\r\n]/u.test(value.path) ||
+    relativePath === undefined ||
+    relativePath === "" ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${sep}`) ||
+    typeof value.dispose !== "function" ||
+    typeof value.sha256 !== "string" ||
+    value.sha256 !== distribution.sha256 ||
+    !Number.isSafeInteger(value.size) ||
+    value.size !== distribution.size ||
+    !value.path.endsWith(`-${distribution.filename}`)
+  ) {
+    throw new Error("Released-Jupyter PySpark acquisition did not return one bounded local artifact.");
+  }
+  return value;
+}
+
+function downloadedArtifactIdentity(metadata) {
+  return Object.freeze({
+    dev: metadata.dev,
+    gid: metadata.gid,
+    ino: metadata.ino,
+    mode: metadata.mode,
+    nlink: metadata.nlink,
+    uid: metadata.uid
+  });
+}
+
+function sameDownloadedArtifactIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.gid === right.gid &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.uid === right.uid
+  );
+}
+
+function removeIdentifiedPySparkArtifact(path, identity) {
+  let current;
+  try {
+    current = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (
+    !current.isFile() ||
+    current.isSymbolicLink() ||
+    current.nlink !== 1n ||
+    !sameDownloadedArtifactIdentity(identity, downloadedArtifactIdentity(current))
+  ) {
+    throw new Error("Released-Jupyter PySpark artifact identity changed before cleanup.");
+  }
+  unlinkSync(path);
 }
 
 export async function probeJupyterAcceptanceJava({

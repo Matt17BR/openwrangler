@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -10,9 +11,10 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
-import { chmod, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,6 +25,7 @@ import {
   RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
   RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION,
   acceptancePythonForPhase,
+  acquireVerifiedPySparkArtifact,
   addJupyterAcceptancePythonKernel,
   appendJupyterAcceptanceRKernelBootstrapStage,
   createJupyterAcceptanceCoreKernelPython,
@@ -67,6 +70,51 @@ const coreDependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   openwranglerRuntimePresent,
   ...overrides
 });
+
+function testPySparkArtifactAcquirer(records = []) {
+  return async (directory, distribution) => {
+    const path = join(directory, `test-${distribution.filename}`);
+    writeFileSync(path, "verified test artifact\n", { flag: "wx", mode: 0o600 });
+    const record = { distribution, path, disposed: false };
+    records.push(record);
+    return {
+      path,
+      sha256: distribution.sha256,
+      size: distribution.size,
+      async dispose() {
+        unlinkSync(path);
+        record.disposed = true;
+      }
+    };
+  };
+}
+
+function testPySparkDistribution(payload, overrides = {}) {
+  return {
+    filename: "pyspark-4.2.0.tar.gz",
+    mode: "stable-qualification",
+    package: "pyspark",
+    schemaVersion: 1,
+    sha256: createHash("sha256").update(payload).digest("hex"),
+    size: payload.length,
+    url: "https://files.pythonhosted.org/packages/test/pyspark-4.2.0.tar.gz",
+    version: "4.2.0",
+    ...overrides
+  };
+}
+
+function streamedResponse(chunks, { contentLength = chunks.reduce((total, chunk) => total + chunk.length, 0) } = {}) {
+  let index = 0;
+  return new Response(
+    new ReadableStream({
+      pull(controller) {
+        if (index >= chunks.length) controller.close();
+        else controller.enqueue(chunks[index++]);
+      }
+    }),
+    { status: 200, headers: { "content-encoding": "identity", "content-length": String(contentLength) } }
+  );
+}
 
 async function createTestQuartoCoreKernel(
   directory,
@@ -1643,17 +1691,112 @@ test("Quarto core provisioning rejects a compatibility-version mismatch", async 
   }
 });
 
+test("PySpark acquisition streams one exact receipt to a private local artifact and disposes it by identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-download-"));
+  const payload = Buffer.from("bounded-pyspark-artifact", "utf8");
+  const distribution = testPySparkDistribution(payload);
+  let request;
+  try {
+    const artifact = await acquireVerifiedPySparkArtifact(directory, distribution, {
+      fetchImpl: async (url, options) => {
+        request = { url, options };
+        return streamedResponse([payload.subarray(0, 7), payload.subarray(7)]);
+      },
+      randomBytesImpl: () => Buffer.alloc(16, 0x41),
+      timeoutMs: 1_000
+    });
+    assert.equal(request.url, distribution.url);
+    assert.equal(request.options.redirect, "error");
+    assert.deepEqual(request.options.headers, { Accept: "application/octet-stream", "Accept-Encoding": "identity" });
+    assert.equal(artifact.path, join(directory, `${"41".repeat(16)}-${distribution.filename}`));
+    assert.equal(artifact.size, payload.length);
+    assert.equal(artifact.sha256, distribution.sha256);
+    assert.deepEqual(await readFile(artifact.path), payload);
+    await artifact.dispose();
+    assert.deepEqual(await readdir(directory), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PySpark acquisition rejects length, streamed-cap, and digest mismatches without retaining partial bytes", async () => {
+  const cases = [
+    {
+      name: "header",
+      distribution: testPySparkDistribution(Buffer.from("abc")),
+      response: () => streamedResponse([Buffer.from("abc")], { contentLength: 4 }),
+      error: /response did not match the exact artifact receipt/u
+    },
+    {
+      name: "short",
+      distribution: testPySparkDistribution(Buffer.from("abc")),
+      response: () => streamedResponse([Buffer.from("ab")], { contentLength: 3 }),
+      error: /exact size and SHA-256 receipt/u
+    },
+    {
+      name: "oversized",
+      distribution: testPySparkDistribution(Buffer.from("abc")),
+      response: () => streamedResponse([Buffer.from("abc"), Buffer.from("d")], { contentLength: 3 }),
+      error: /exceeded its exact byte allowance/u
+    },
+    {
+      name: "digest",
+      distribution: testPySparkDistribution(Buffer.from("abc"), { sha256: "0".repeat(64) }),
+      response: () => streamedResponse([Buffer.from("abc")]),
+      error: /exact size and SHA-256 receipt/u
+    }
+  ];
+  for (const entry of cases) {
+    const directory = await mkdtemp(join(tmpdir(), `openwrangler-jupyter-pyspark-${entry.name}-`));
+    try {
+      await assert.rejects(
+        acquireVerifiedPySparkArtifact(directory, entry.distribution, {
+          fetchImpl: async () => entry.response(),
+          randomBytesImpl: () => Buffer.alloc(16, 0x42),
+          timeoutMs: 1_000
+        }),
+        entry.error
+      );
+      assert.deepEqual(await readdir(directory), []);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("PySpark artifact cleanup refuses a substituted pathname and preserves the replacement", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-identity-"));
+  const payload = Buffer.from("abc");
+  const displaced = join(directory, "displaced.tar.gz");
+  try {
+    const artifact = await acquireVerifiedPySparkArtifact(directory, testPySparkDistribution(payload), {
+      fetchImpl: async () => streamedResponse([payload]),
+      randomBytesImpl: () => Buffer.alloc(16, 0x43),
+      timeoutMs: 1_000
+    });
+    renameSync(artifact.path, displaced);
+    writeFileSync(artifact.path, "replacement", { flag: "wx", mode: 0o600 });
+    await assert.rejects(artifact.dispose(), /artifact identity changed before cleanup/u);
+    assert.equal(await readFile(artifact.path, "utf8"), "replacement");
+    assert.deepEqual(await readFile(displaced), payload);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("released-Jupyter installs its released compatibility versions into a clean run-owned kernel environment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-kernel-"));
   const basePython = join(directory, "base-python");
   const environmentDirectory = join(directory, "private-kernel");
   const commandEnvironment = Object.freeze({ PATH: "/bounded-test-path" });
   const commands = [];
+  const artifacts = [];
   const previousTestPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
   try {
     await writeFile(basePython, "test interpreter placeholder\n");
     const kernelPython = await createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
       containedBy: directory,
+      acquirePySparkArtifact: testPySparkArtifactAcquirer(artifacts),
       environment: commandEnvironment,
       platform: "linux",
       async runCommand(input, options) {
@@ -1720,7 +1863,22 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.equal(commands[4].input.executable, kernelPython);
     assert.equal(commands[4].input.args.filter((value) => value === "--no-cache-dir").length, 1);
     assert.ok(commands[4].input.args.includes("--no-deps"));
-    assert.match(commands[4].input.args.at(-1), /^pyspark @ https:\/\/files\.pythonhosted\.org\/.+#sha256=/u);
+    assert.equal(commands[4].input.args.at(-1), artifacts[0].path);
+    assert.equal(
+      commands[4].input.args.some((value) => /^https?:/u.test(value)),
+      false
+    );
+    assert.deepEqual(artifacts[0].distribution, {
+      filename: "pyspark-4.2.0.tar.gz",
+      mode: "stable-qualification",
+      package: "pyspark",
+      schemaVersion: 1,
+      sha256: "5ad689d53570ee1674193fd4f9bda065f0db3be9363a27d2a3406cc457b70b61",
+      size: 450129423,
+      url: "https://files.pythonhosted.org/packages/c3/33/c987434f5d50aa802779a004ca0fd45ee4350caab50554ad7283d5a22b50/pyspark-4.2.0.tar.gz",
+      version: "4.2.0"
+    });
+    assert.equal(artifacts[0].disposed, true);
     assert.equal(commands[5].input.executable, kernelPython);
     assert.match(commands[5].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
     assert.match(commands[5].input.args.at(-1), /import pyspark/u);
@@ -1745,10 +1903,7 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
   const basePython = join(directory, "base-python");
   const environmentDirectory = join(directory, "private-kernel");
   const commands = [];
-  const requirement =
-    `${RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.package} @ ` +
-    `${RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.url}` +
-    `#sha256=${RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION.sha256}`;
+  const artifacts = [];
   try {
     assert.equal(Object.isFrozen(RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION), true);
     assert.deepEqual(RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION, {
@@ -1764,6 +1919,7 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
     await writeFile(basePython, "test interpreter placeholder\n");
     const kernelPython = await createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
       containedBy: directory,
+      acquirePySparkArtifact: testPySparkArtifactAcquirer(artifacts),
       environment: Object.freeze({ PATH: "/bounded-test-path" }),
       platform: "linux",
       pysparkDistribution: RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
@@ -1790,8 +1946,54 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
 
     assert.equal(kernelPython, join(environmentDirectory, "v", "bin", "python"));
     assert.equal(commands[4].input.label, "Released-Jupyter private kernel PySpark installation");
-    assert.equal(commands[4].input.args.at(-1), requirement);
+    assert.equal(commands[4].input.args.at(-1), artifacts[0].path);
+    assert.equal(
+      commands[4].input.args.some((value) => /^https?:/u.test(value)),
+      false
+    );
+    assert.deepEqual(artifacts[0].distribution, RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION);
+    assert.equal(artifacts[0].disposed, true);
     assert.equal(commands[5].input.label, "Released-Jupyter private kernel dependency probe");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter cleans its verified local PySpark artifact when pip installation fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-install-failure-"));
+  const basePython = join(directory, "base-python");
+  const environmentDirectory = join(directory, "private-kernel");
+  const artifacts = [];
+  try {
+    await writeFile(basePython, "test interpreter placeholder\n");
+    await assert.rejects(
+      createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
+        containedBy: directory,
+        acquirePySparkArtifact: testPySparkArtifactAcquirer(artifacts),
+        environment: Object.freeze({}),
+        platform: "linux",
+        async runCommand(input) {
+          if (input.label === "Released-Jupyter PySpark Java compatibility probe") return javaReport();
+          if (input.label === "Released-Jupyter base dependency version probe") {
+            return { stdout: JSON.stringify(dependencyReport(true)) };
+          }
+          if (input.label === "Released-Jupyter private kernel environment creation") {
+            const venvDirectory = input.args.at(-1);
+            mkdirSync(join(venvDirectory, "bin"), { recursive: true });
+            writeFileSync(join(venvDirectory, "bin", "python"), "private interpreter placeholder\n");
+            return { stdout: "" };
+          }
+          if (input.label === "Released-Jupyter private kernel PySpark installation") {
+            throw new Error("synthetic local pip failure");
+          }
+          return { stdout: "" };
+        }
+      }),
+      /synthetic local pip failure/u
+    );
+    assert.equal(artifacts.length, 1);
+    assert.equal(artifacts[0].disposed, true);
+    assert.equal(existsSync(artifacts[0].path), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1816,7 +2018,7 @@ test("released-Jupyter rejects mismatched prerelease-denial distribution receipt
           return { stdout: "" };
         }
       }),
-      /exact bounded distribution receipt/u
+      /exact (?:bounded distribution receipt|PyPI source distribution)/u
     );
     assert.equal(commands, 0);
   } finally {
@@ -1833,6 +2035,7 @@ test("released-Jupyter rejects a private environment that does not retain its co
     await assert.rejects(
       createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
         containedBy: directory,
+        acquirePySparkArtifact: testPySparkArtifactAcquirer(),
         environment: Object.freeze({}),
         platform: "linux",
         async runCommand(input) {

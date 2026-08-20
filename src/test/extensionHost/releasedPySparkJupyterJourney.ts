@@ -6,10 +6,7 @@ import type { Jupyter } from "@vscode/jupyter-extension";
 import type { Locator, Page } from "playwright-core";
 import * as vscode from "vscode";
 import type { LiveGridPage, OpenWranglerResponse } from "../../shared/protocol";
-import {
-  isSupportedPySparkVersion,
-  MAX_PYSPARK_VERSION_CHARACTERS
-} from "../../extension/notebooks/pysparkVersionPolicy.generated";
+import { classifyPySparkVersion } from "../../extension/notebooks/pysparkVersionPolicy.generated";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import type { ExtensionApi, TestApi } from "./extensionHostTestApi";
 import { failedAcceptanceProgressCheckpoint } from "./progress";
@@ -41,22 +38,25 @@ interface ReleasedPySparkVariableExpectation {
 }
 
 export type ReleasedPySparkInstalledAcceptanceMode = "stable-qualification" | "prerelease-denial";
-export const RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION = "4.2.0.dev5";
 
 export function releasedPySparkInstalledAcceptanceMode(version: unknown): ReleasedPySparkInstalledAcceptanceMode {
-  if (
-    typeof version !== "string" ||
-    version.length === 0 ||
-    version.length > MAX_PYSPARK_VERSION_CHARACTERS ||
-    /[\0\r\n]/u.test(version)
-  ) {
+  if (typeof version !== "string") {
     throw new Error("Released PySpark acceptance received an unsafe installed version.");
   }
-  if (isSupportedPySparkVersion(version)) return "stable-qualification";
-  if (version === RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION) return "prerelease-denial";
-  throw new Error(
-    "Released PySpark acceptance received neither a supported final release nor its pinned denial build."
-  );
+  const classification = classifyPySparkVersion(version);
+  switch (classification) {
+    case "supported-final":
+      return "stable-qualification";
+    case "acceptance-denial":
+      return "prerelease-denial";
+    case "unsupported":
+      throw new Error(
+        "Released PySpark acceptance received neither a supported final release nor its pinned denial build."
+      );
+    default:
+      classification satisfies never;
+      throw new Error("Released PySpark acceptance received an unknown generated version classification.");
+  }
 }
 
 export function assertReleasedPySparkInstalledAcceptanceMode(

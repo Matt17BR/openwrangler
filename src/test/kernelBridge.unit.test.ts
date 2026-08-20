@@ -41,12 +41,16 @@ afterEach(resetKernelBridgeTestState);
 const PYSPARK_VERSION_CONTRACT = JSON.parse(
   readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
 ) as {
+  readonly acceptancePrereleaseDenial: string[];
   readonly acceptedFinal: string[];
   readonly rejected: Readonly<Record<string, string[]>>;
 };
-const PREVIEW_PYSPARK_VERSIONS = ["alpha", "beta", "releaseCandidate", "development"].flatMap(
-  (category) => PYSPARK_VERSION_CONTRACT.rejected[category] ?? []
-);
+const PREVIEW_PYSPARK_VERSIONS = [
+  ...PYSPARK_VERSION_CONTRACT.acceptancePrereleaseDenial,
+  ...["alpha", "beta", "releaseCandidate", "development"].flatMap(
+    (category) => PYSPARK_VERSION_CONTRACT.rejected[category] ?? []
+  )
+];
 
 describe("kernel retry classification", () => {
   it("reports Spark preparation for pinned and auto-detected PySpark opens", async () => {

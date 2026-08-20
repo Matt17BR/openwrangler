@@ -20,6 +20,7 @@ interface PandasFacts {
 }
 
 interface PySparkVersionContract {
+  readonly acceptancePrereleaseDenial: string[];
   readonly acceptedFinal: string[];
   readonly rejected: Readonly<Record<string, string[]>>;
 }
@@ -232,7 +233,7 @@ ${probeCode}
     const contract = JSON.parse(
       readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
     ) as PySparkVersionContract;
-    const rejected = Object.values(contract.rejected).flat();
+    const rejected = [...contract.acceptancePrereleaseDenial, ...Object.values(contract.rejected).flat()];
 
     expect(contract.acceptedFinal.every(isSupportedPySparkVersion)).toBe(true);
     expect(rejected.some(isSupportedPySparkVersion)).toBe(false);

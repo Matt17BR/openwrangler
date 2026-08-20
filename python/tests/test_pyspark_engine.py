@@ -54,6 +54,8 @@ _PYSPARK_VERSION_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
 )
 _REJECTED_PYSPARK_VERSIONS = [
+    ("acceptancePrereleaseDenial", version) for version in _PYSPARK_VERSION_CONTRACT["acceptancePrereleaseDenial"]
+] + [
     (category, version) for category, versions in _PYSPARK_VERSION_CONTRACT["rejected"].items() for version in versions
 ]
 

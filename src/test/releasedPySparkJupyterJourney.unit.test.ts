@@ -1,25 +1,52 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { classifyPySparkVersion } from "../extension/notebooks/pysparkVersionPolicy.generated";
 import {
   assertReleasedPySparkInstalledAcceptanceMode,
-  releasedPySparkInstalledAcceptanceMode,
-  RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION
+  releasedPySparkInstalledAcceptanceMode
 } from "./extensionHost/releasedPySparkJupyterJourney";
 
 const PRERELEASE_DISTRIBUTION = JSON.parse(
   readFileSync(resolve(process.cwd(), "fixtures", "pyspark-prerelease-distribution.json"), "utf8")
 ) as { readonly version: string };
+const VERSION_CONTRACT = JSON.parse(
+  readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
+) as {
+  readonly acceptancePrereleaseDenial: readonly string[];
+  readonly acceptedFinal: readonly string[];
+  readonly rejected: Readonly<Record<string, readonly string[]>>;
+};
 
 describe("released PySpark installed acceptance mode", () => {
-  it("delegates stable qualification to the generated policy without a second version grammar", () => {
-    const source = readFileSync(
-      resolve(process.cwd(), "src", "test", "extensionHost", "releasedPySparkJupyterJourney.ts"),
-      "utf8"
-    );
-    expect(source).toContain('if (isSupportedPySparkVersion(version)) return "stable-qualification";');
-    expect(source).toContain("version === RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION");
-    expect(source).not.toContain("/^0*4\\.0*2\\.");
+  it("uses the generated complete policy as its only executable version classification", () => {
+    expect(VERSION_CONTRACT.acceptancePrereleaseDenial).toEqual([PRERELEASE_DISTRIBUTION.version]);
+    expect(
+      VERSION_CONTRACT.acceptedFinal.every((version) => classifyPySparkVersion(version) === "supported-final")
+    ).toBe(true);
+    expect(
+      VERSION_CONTRACT.acceptedFinal.every(
+        (version) => releasedPySparkInstalledAcceptanceMode(version) === "stable-qualification"
+      )
+    ).toBe(true);
+    expect(
+      VERSION_CONTRACT.acceptancePrereleaseDenial.every(
+        (version) => classifyPySparkVersion(version) === "acceptance-denial"
+      )
+    ).toBe(true);
+    expect(
+      VERSION_CONTRACT.acceptancePrereleaseDenial.every(
+        (version) => releasedPySparkInstalledAcceptanceMode(version) === "prerelease-denial"
+      )
+    ).toBe(true);
+    expect(
+      Object.values(VERSION_CONTRACT.rejected)
+        .flat()
+        .every((version) => classifyPySparkVersion(version) === "unsupported")
+    ).toBe(true);
+    for (const version of Object.values(VERSION_CONTRACT.rejected).flat()) {
+      expect(() => releasedPySparkInstalledAcceptanceMode(version)).toThrow(/Released PySpark acceptance/u);
+    }
   });
 
   it.each(["4.2.0", "4.2.17", "04.02.000", "4.2.0+vendor.1"])(
@@ -30,7 +57,6 @@ describe("released PySpark installed acceptance mode", () => {
   );
 
   it("classifies only the repository receipt's exact product version as denial evidence", () => {
-    expect(PRERELEASE_DISTRIBUTION.version).toBe(RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION);
     expect(releasedPySparkInstalledAcceptanceMode(PRERELEASE_DISTRIBUTION.version)).toBe("prerelease-denial");
   });
 
@@ -51,10 +77,7 @@ describe("released PySpark installed acceptance mode", () => {
 
   it("prevents the default stable journey and explicit denial journey from substituting for each other", () => {
     expect(() =>
-      assertReleasedPySparkInstalledAcceptanceMode(
-        RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION,
-        "stable-qualification"
-      )
+      assertReleasedPySparkInstalledAcceptanceMode(PRERELEASE_DISTRIBUTION.version, "stable-qualification")
     ).toThrow(/expected stable-qualification but received prerelease-denial/u);
     expect(() => assertReleasedPySparkInstalledAcceptanceMode("4.2.0", "prerelease-denial")).toThrow(
       /expected prerelease-denial but received stable-qualification/u
