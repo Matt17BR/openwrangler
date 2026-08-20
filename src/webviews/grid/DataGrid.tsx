@@ -98,7 +98,7 @@ interface CellFilterMenuTarget {
   row: number;
   column: number;
   columnId: string;
-  preserveClipboardSelection: boolean;
+  clipboardSelection?: "column" | "range";
   returnFocus: { row: number; column: number };
 }
 
@@ -1439,12 +1439,14 @@ export function DataGrid({
                     row: row.rowNumber,
                     column: column.position
                   });
-                  const rangeClipboardSelected =
-                    clipboardSelected &&
-                    !gridClipboard.isColumnSelected(column.id) &&
-                    gridClipboard.results.range.ok &&
-                    (gridClipboard.results.range.payload.rowCount > 1 ||
-                      gridClipboard.results.range.payload.columnCount > 1);
+                  const clipboardMenuSelection = gridClipboard.isColumnSelected(column.id)
+                    ? "column"
+                    : gridClipboard.isRangeSelected({
+                          row: row.rowNumber,
+                          column: column.position
+                        })
+                      ? "range"
+                      : undefined;
                   const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
                   const displayCell = gridCellPresentation(cell);
@@ -1494,22 +1496,26 @@ export function DataGrid({
                         ?.focus({ preventScroll: true });
                     }
                   };
-                  const openCellMenu = (preserveClipboardSelection = false) => {
+                  const openCellMenu = (clipboardSelection?: "column" | "range") => {
                     reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                     const target = { row: row.rowNumber, column: column.position };
-                    if (!preserveClipboardSelection) {
+                    if (!clipboardSelection) {
                       setFocusedCell(target);
                       gridClipboard.resetSelection(target);
                     }
                     setCellFilterMenuTarget({
                       ...target,
                       columnId: column.id,
-                      preserveClipboardSelection,
-                      returnFocus: preserveClipboardSelection ? focusedCell : target
+                      clipboardSelection,
+                      returnFocus: clipboardSelection === "range" ? focusedCell : target
                     });
                   };
                   const copySelection = async () => {
-                    await gridClipboard.copy("range");
+                    if (cellFilterMenuTarget?.clipboardSelection === "column") {
+                      await gridClipboard.copyColumn();
+                    } else {
+                      await gridClipboard.copy("range");
+                    }
                     closeCellMenu(true);
                   };
                   const filterAction = (action: "include" | "exclude") => {
@@ -1556,7 +1562,7 @@ export function DataGrid({
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
                       onPointerDown={(event) => {
-                        if (event.button === 2 && rangeClipboardSelected) {
+                        if (event.button === 2 && clipboardMenuSelection) {
                           event.preventDefault();
                           return;
                         }
@@ -1636,7 +1642,7 @@ export function DataGrid({
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
-                        openCellMenu(rangeClipboardSelected);
+                        openCellMenu(clipboardMenuSelection);
                       }}
                       onKeyDown={(event) => {
                         if (
@@ -1645,7 +1651,8 @@ export function DataGrid({
                           event.key.toLowerCase() === "c"
                         ) {
                           event.preventDefault();
-                          void gridClipboard.copy("range");
+                          if (gridClipboard.isColumnSelected(column.id)) void gridClipboard.copyColumn();
+                          else void gridClipboard.copy("range");
                           return;
                         }
                         if (
@@ -1653,7 +1660,7 @@ export function DataGrid({
                           (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
                         ) {
                           event.preventDefault();
-                          openCellMenu(rangeClipboardSelected);
+                          openCellMenu(clipboardMenuSelection);
                           return;
                         }
                         if (event.target !== event.currentTarget) return;
@@ -1685,9 +1692,11 @@ export function DataGrid({
                           role="menu"
                           tabIndex={-1}
                           aria-label={
-                            cellFilterMenuTarget?.preserveClipboardSelection
-                              ? `Cell and selection actions for ${column.name}`
-                              : `Filter ${column.name} by this cell`
+                            cellFilterMenuTarget?.clipboardSelection === "range"
+                              ? `Cell and range actions for ${column.name}`
+                              : cellFilterMenuTarget?.clipboardSelection === "column"
+                                ? `Cell and column actions for ${column.name}`
+                                : `Filter ${column.name} by this cell`
                           }
                           onKeyDown={(event) => {
                             if (event.key === "Escape") {
@@ -1736,19 +1745,27 @@ export function DataGrid({
                           >
                             {cellFilterActionLabel(cell, "exclude")}
                           </button>
-                          {cellFilterMenuTarget?.preserveClipboardSelection && (
+                          {cellFilterMenuTarget?.clipboardSelection && (
                             <button
                               type="button"
                               role="menuitem"
-                              disabled={!gridClipboard.results.range.ok}
+                              disabled={
+                                cellFilterMenuTarget.clipboardSelection === "column"
+                                  ? !gridClipboard.wholeColumnResult.ok
+                                  : !gridClipboard.results.range.ok
+                              }
                               title={
-                                gridClipboard.results.range.ok
-                                  ? "Copy selected cells"
-                                  : gridClipboard.results.range.reason
+                                cellFilterMenuTarget.clipboardSelection === "column"
+                                  ? gridClipboard.wholeColumnResult.ok
+                                    ? "Copy whole filtered and sorted column"
+                                    : gridClipboard.wholeColumnResult.reason
+                                  : gridClipboard.results.range.ok
+                                    ? "Copy selected cells"
+                                    : gridClipboard.results.range.reason
                               }
                               onClick={() => void copySelection()}
                             >
-                              Copy selection
+                              {cellFilterMenuTarget.clipboardSelection === "column" ? "Copy column" : "Copy selection"}
                             </button>
                           )}
                         </div>

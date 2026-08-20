@@ -19,6 +19,7 @@ export interface GridClipboardController {
   copyColumn(): Promise<void>;
   focusCell(coordinate: GridCellCoordinate): void;
   isColumnSelected(columnId: string): boolean;
+  isRangeSelected(coordinate: GridCellCoordinate): boolean;
   isSelected(coordinate: GridCellCoordinate): boolean;
   resetSelection(coordinate: GridCellCoordinate): void;
   results: Record<GridClipboardMode, GridClipboardResult>;
@@ -27,6 +28,8 @@ export interface GridClipboardController {
   selectionDescription: string;
   wholeColumnResult: GridClipboardResult;
 }
+
+const wholeColumnOwnsCopyReason = "A whole column is selected. Use Copy column.";
 
 export function useGridClipboard({
   contextId,
@@ -53,7 +56,7 @@ export function useGridClipboard({
   useLayoutEffect(() => {
     contextIdRef.current = contextId;
   }, [contextId]);
-  const results = useMemo(
+  const rectangleResults = useMemo(
     () => ({
       cell: buildGridClipboardPayload({ mode: "cell", selection, contextId, schema, page }),
       row: buildGridClipboardPayload({ mode: "row", selection, contextId, schema, page }),
@@ -61,6 +64,14 @@ export function useGridClipboard({
     }),
     [contextId, page, schema, selection]
   );
+  const results = useMemo<Record<GridClipboardMode, GridClipboardResult>>(() => {
+    if (!wholeColumn.selectedColumnId) return rectangleResults;
+    return {
+      cell: { ok: false, reason: wholeColumnOwnsCopyReason },
+      row: { ok: false, reason: wholeColumnOwnsCopyReason },
+      range: { ok: false, reason: wholeColumnOwnsCopyReason }
+    };
+  }, [rectangleResults, wholeColumn.selectedColumnId]);
   const resetSelection = useCallback(
     (coordinate: GridCellCoordinate): void => {
       resetWholeColumn();
@@ -124,6 +135,10 @@ export function useGridClipboard({
     copyColumn: wholeColumn.copy,
     focusCell,
     isColumnSelected: wholeColumn.isColumnSelected,
+    isRangeSelected: (coordinate) =>
+      !wholeColumn.selectedColumnId &&
+      (selection.anchor.row !== selection.focus.row || selection.anchor.column !== selection.focus.column) &&
+      gridClipboardSelectionContains(selection, contextId, coordinate),
     isSelected: (coordinate) =>
       wholeColumn.selectedColumnId
         ? wholeColumn.isColumnSelected(schema[coordinate.column]?.id ?? "")

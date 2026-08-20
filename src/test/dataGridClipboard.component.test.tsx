@@ -165,7 +165,7 @@ describe("DataGrid clipboard interactions", () => {
 
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
     expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
-    const menu = screen.getByRole("menu", { name: "Cell and selection actions for city" });
+    const menu = screen.getByRole("menu", { name: "Cell and range actions for city" });
     expect(within(menu).getByRole("menuitem", { name: "Keep only this value" })).toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: "Exclude this value" })).toBeInTheDocument();
     const copySelection = within(menu).getByRole("menuitem", { name: "Copy selection" });
@@ -179,27 +179,43 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
-  it("does not expose a stale Milan range action from a whole-city-column selection", async () => {
+  it("routes every copy action to the visible whole column instead of a stale prior rectangle", async () => {
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
     const paris = screen.getByRole("cell", { name: "Paris" });
-    pointerDrag(milan, milan, 21);
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 21);
 
     fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
     const request = latestColumnRequest();
     dispatchPage(request, metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
     await waitFor(() => expect(screen.getByRole("button", { name: "Copy column" })).toBeEnabled());
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(3);
+    for (const name of ["Copy cell", "Copy row", "Copy range"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+      expect(screen.getByRole("button", { name })).toHaveAttribute(
+        "title",
+        "A whole column is selected. Use Copy column."
+      );
+    }
 
-    expect(fireEvent.pointerDown(paris, { button: 2, buttons: 2, pointerId: 22, pointerType: "mouse" })).toBe(true);
-    act(() => paris.focus());
+    expect(fireEvent.pointerDown(paris, { button: 2, buttons: 2, pointerId: 22, pointerType: "mouse" })).toBe(false);
     fireEvent.contextMenu(paris, { button: 2 });
 
-    const menu = screen.getByRole("menu", { name: "Filter city by this cell" });
+    const menu = screen.getByRole("menu", { name: "Cell and column actions for city" });
     expect(within(menu).queryByRole("menuitem", { name: "Copy selection" })).toBeNull();
-    expect(screen.getByText("1 cell selected, row 2, column 1")).toBeTruthy();
-    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
-    expect(writeText).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy column" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Milan\nParis"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(document.activeElement).toBe(paris));
+    expect(screen.getByText("Whole filtered and sorted column city selected, 2 rows.")).toBeTruthy();
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(3);
+
+    fireEvent.keyDown(paris, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText).toHaveBeenLastCalledWith("Milan\nParis");
+    expect(writeText).not.toHaveBeenCalledWith("Milan\t10.5\nParis\t");
   });
 
   it("clears an in-flight whole-column copy when a pointer range replaces it", async () => {
@@ -218,12 +234,75 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
     expect(fireEvent.pointerDown(milan, { button: 2, buttons: 2, pointerId: 24, pointerType: "mouse" })).toBe(false);
     fireEvent.contextMenu(milan, { button: 2 });
-    const menu = screen.getByRole("menu", { name: "Cell and selection actions for city" });
+    const menu = screen.getByRole("menu", { name: "Cell and range actions for city" });
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy selection" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5\nParis\t");
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
+  });
+
+  it("keeps an unloaded projected rectangle selected and exposes its disabled context diagnostic", async () => {
+    const projectedPage: GridPage = {
+      ...page,
+      columnIds: ["c:0"],
+      rows: page.rows.map((row) => ({ ...row, values: [row.values[0]] }))
+    };
+    renderGrid("view-a", projectedPage);
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const unloadedSales = screen.getByRole("cell", { name: "Loading sales, row 2" });
+    pointerDrag(milan, unloadedSales, 25);
+
+    expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
+    expect(fireEvent.pointerDown(milan, { button: 2, buttons: 2, pointerId: 26, pointerType: "mouse" })).toBe(false);
+    fireEvent.contextMenu(milan, { button: 2 });
+
+    const menu = screen.getByRole("menu", { name: "Cell and range actions for city" });
+    const copySelection = within(menu).getByRole("menuitem", { name: "Copy selection" });
+    expect(copySelection).toBeDisabled();
+    expect(copySelection).toHaveAttribute("title", "Wait for every selected column to load before copying.");
+    expect(screen.getByRole("button", { name: "Copy range" })).toHaveAttribute(
+      "title",
+      "Wait for every selected column to load before copying."
+    );
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(document.activeElement).toBe(unloadedSales));
+    fireEvent.keyDown(unloadedSales, { key: "c", ctrlKey: true });
+
+    expect(await screen.findByText("Wait for every selected column to load before copying.")).toBeTruthy();
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("keeps an oversized rectangle selected and exposes a payload-free context diagnostic", async () => {
+    const oversizedPage: GridPage = {
+      ...page,
+      rows: [{ ...page.rows[0], values: [cell("x".repeat(4 * 1024 * 1024)), numberCell(10.5)] }, page.rows[1]]
+    };
+    renderGrid("view-a", oversizedPage);
+    const start = document.querySelector<HTMLElement>('td[data-grid-row="0"][data-grid-column="0"]');
+    const endpoint = screen.getByRole("cell", { name: "" });
+    expect(start).not.toBeNull();
+    pointerDrag(start!, endpoint, 27);
+
+    const reason = "Copy is limited to 4 MiB of displayed text. Select a smaller range.";
+    expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
+    expect(fireEvent.pointerDown(start!, { button: 2, buttons: 2, pointerId: 28, pointerType: "mouse" })).toBe(false);
+    fireEvent.contextMenu(start!, { button: 2 });
+
+    const menu = screen.getByRole("menu", { name: "Cell and range actions for city" });
+    const copySelection = within(menu).getByRole("menuitem", { name: "Copy selection" });
+    expect(copySelection).toBeDisabled();
+    expect(copySelection).toHaveAttribute("title", reason);
+    expect(screen.getByRole("button", { name: "Copy range" })).toHaveAttribute("title", reason);
+    fireEvent.keyDown(menu, { key: "Escape" });
+    fireEvent.keyDown(endpoint, { key: "c", ctrlKey: true });
+
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
+    expect(writeText).not.toHaveBeenCalled();
   });
 
   it("presents named MultiIndex labels as an accessible row axis without adding data columns", () => {
