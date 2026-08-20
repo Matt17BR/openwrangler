@@ -545,6 +545,90 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   assert.equal(assignedGit(task, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
 });
 
+test(
+  "runs nested Git through the verified private snapshot and detects an original executable swap",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const value = await fixture(context, "git-executable-snapshot");
+    const task = await addTask(value, "git-executable-snapshot");
+    const delegatedGit = join(value.root, "delegated-git");
+    await writeFile(delegatedGit, `#!/bin/sh\nexec ${JSON.stringify(gitExecutable())} "$@"\n`, {
+      flag: "wx",
+      mode: 0o700
+    });
+    await replaceTaskAssignment(task, { gitExecutable: delegatedGit });
+    const attackerMarker = join(value.root, "attacker-git-ran.txt");
+    const nestedResultPath = join(task.assignment.stateRoot, "temp", "nested-git-result.json");
+    await assert.rejects(
+      runQualification({
+        afterGitWrapperPreparedForTest: async ({ executableSnapshotPath, executableSourcePath }) => {
+          assert.notEqual(executableSnapshotPath, executableSourcePath);
+          await rename(executableSourcePath, `${executableSourcePath}.retained`);
+          await writeFile(
+            executableSourcePath,
+            `#!/bin/sh\nprintf invoked > ${JSON.stringify(attackerMarker)}\nexit 77\n`,
+            { flag: "wx", mode: 0o700 }
+          );
+        },
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "nested-git", "--path", nestedResultPath],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /qualification command identity changed/u
+    );
+    assert.equal(existsSync(attackerMarker), false);
+    const nestedResult = JSON.parse(await readFile(nestedResultPath, "utf8"));
+    assert.equal(nestedResult.topLevelHead, task.assignment.head);
+    assert.equal(nestedResult.topLevelHeadFromPrivateRoot, task.assignment.head);
+    assert.equal((await receipt(task)).eligible, false);
+  }
+);
+
+test(
+  "rejects a same-size Git snapshot replacement before descriptor-bound execution",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const value = await fixture(context, "git-snapshot-replacement");
+    const task = await addTask(value, "git-snapshot-replacement");
+    const attackerMarker = join(value.root, "snapshot-attacker-ran.txt");
+    const resultPath = join(task.assignment.stateRoot, "temp", "git-probe.txt");
+    await assert.rejects(
+      runQualification({
+        afterGitWrapperPreparedForTest: async ({ executableSnapshotPath }) => {
+          const original = await readFile(executableSnapshotPath);
+          const attack = Buffer.from(
+            `#!/bin/sh\nprintf invoked > ${JSON.stringify(attackerMarker)}\nexit 77\n`,
+            "utf8"
+          );
+          assert.ok(attack.length < original.length);
+          await rename(executableSnapshotPath, `${executableSnapshotPath}.retained`);
+          await writeFile(
+            executableSnapshotPath,
+            Buffer.concat([attack, Buffer.alloc(original.length - attack.length, 0x20)]),
+            {
+              flag: "wx",
+              mode: 0o700
+            }
+          );
+        },
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "git-probe", "--result", resultPath],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /qualification command exited with status|qualification command identity changed/u
+    );
+    assert.equal(existsSync(attackerMarker), false);
+    assert.equal(existsSync(resultPath), false);
+    assert.equal((await receipt(task)).eligible, false);
+  }
+);
+
 test("rejects Git owner overrides and unbound repositories outside the private task root", async (context) => {
   const value = await fixture(context, "git-owner-escape");
   const unrelated = join(value.root, "unrelated.git");
@@ -863,28 +947,57 @@ test(
   }
 );
 
-test("makes an authoritative Git config mutation terminal and ineligible", async (context) => {
-  const value = await fixture(context, "git-config-mutation");
-  const task = await addTask(value, "git-config-mutation");
-  await assert.rejects(
-    runQualification({
-      assignmentPath: task.assignmentPath,
-      command: [process.execPath, child, "mutate-git-config"],
-      environment: runnerEnvironment(),
-      terminationGraceMs: 5_000,
-      timeoutMs: 120_000,
-      writeOutput: false
-    }),
-    /Git config source .* (?:bytes are invalid|identity changed)/u
-  );
-  const valueReceipt = await receipt(task);
-  assert.equal(valueReceipt.eligible, false);
-  assert.equal(valueReceipt.postIdentity, null);
-  assert.ok(
-    valueReceipt.failures.some((failure) =>
-      /Git config source .* (?:bytes are invalid|identity changed)/u.test(failure)
-    )
-  );
+test("rejects config, index, object, -c, and --config-env writes against authoritative Git", async (context) => {
+  const value = await fixture(context, "git-authoritative-mutations");
+  for (const kind of ["config", "configEnv", "configParameter", "index", "object"]) {
+    const task = await addTask(value, `git-authoritative-${kind}`);
+    const resultPath = join(task.assignment.stateRoot, "temp", `${kind}.txt`);
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "mutate-authoritative-git", "--kind", kind, "--result", resultPath],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /qualification command exited with status/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.equal(valueReceipt.result.treeEmpty, true);
+    assert.equal(existsSync(resultPath), false);
+    assert.deepEqual(valueReceipt.identity.gitConfig, valueReceipt.postIdentity.gitConfig);
+    assert.deepEqual(valueReceipt.identity.gitMetadata, valueReceipt.postIdentity.gitMetadata);
+    assert.equal(assignedGit(task, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+  }
+});
+
+test("receipts direct authoritative Git index and object writes as terminal mutations", async (context) => {
+  const value = await fixture(context, "git-authoritative-direct-mutations");
+  for (const kind of ["index", "object"]) {
+    const task = await addTask(value, `git-authoritative-direct-${kind}`);
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "mutate-authoritative-git-direct", "--kind", kind],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /Git (?:index owner bytes are invalid|object-directory owner changed|index or object inventory changed)/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.ok(
+      valueReceipt.failures.some((failure) =>
+        /Git (?:index owner bytes are invalid|object-directory owner changed|index or object inventory changed)/u.test(
+          failure
+        )
+      )
+    );
+  }
 });
 
 test("receipts and rejects mutation of an included effective Git config source", async (context) => {
@@ -916,6 +1029,18 @@ test("receipts and rejects mutation of an included effective Git config source",
   assert.equal(valueReceipt.eligible, false);
   assert.equal(valueReceipt.postIdentity, null);
   assert.ok(valueReceipt.identity.gitConfig.sources.some((source) => source.path === includedConfig));
+});
+
+test("rejects invalid UTF-8 Git config origin bytes without lossy pathname substitution", () => {
+  const bytes = Buffer.concat([
+    Buffer.from("global\0file:/tmp/origin-", "utf8"),
+    Buffer.from([0xff]),
+    Buffer.from("\0user.name\nOwner\0", "utf8")
+  ]);
+  assert.throws(
+    () => QUALIFICATION_ISOLATION_TEST_BOUNDARY.parseGitConfigManifestBytes(bytes),
+    /Git config manifest is not strict UTF-8/u
+  );
 });
 
 test("opens directory, regular-file, and executable owners before trusting their pathnames", async (context) => {
@@ -1550,7 +1675,7 @@ test("marks receipts ineligible when source or assignment identity changes", asy
   const value = await fixture(context, "mutation");
   for (const [taskId, mode, expected] of [
     ["dirty-source", "mutate-worktree", /worktree must be clean/u],
-    ["advanced-head", "advance-head", /HEAD, tree, or branch does not match/u],
+    ["advanced-head", "advance-head", /Git index owner bytes are invalid|HEAD, tree, or branch does not match/u],
     ["changed-assignment", "mutate-assignment", /assignment identity(?: or bytes)? changed/u]
   ]) {
     const task = await addTask(value, taskId);
@@ -1653,6 +1778,89 @@ test("terminates an escaping descendant, blocks post-exit mutation, and bounds h
   assert.equal(hungReceipt.result.timedOut, true);
   assert.equal(hungReceipt.result.treeEmpty, true);
 });
+
+test(
+  "kills and awaits a POSIX supervisor when its control pipe is missing or its outer settlement stalls",
+  { skip: process.platform !== "linux" },
+  async (context) => {
+    const value = await fixture(context, "posix-supervisor-settlement");
+    const missingTask = await addTask(value, "posix-missing-control");
+    const tracked = join(missingTask.worktree, "tracked.txt");
+    let missingPid;
+    await assert.rejects(
+      runQualification({
+        afterCommandSpawnForTest: async ({ child: spawned }) => {
+          missingPid = spawned.pid;
+        },
+        assignmentPath: missingTask.assignmentPath,
+        command: [process.execPath, child, "delayed-write", "--delay", "500", "--path", tracked],
+        environment: runnerEnvironment(),
+        posixMissingControlPipeForTest: true,
+        terminationGraceMs: 250,
+        timeoutMs: 1_000,
+        writeOutput: false
+      }),
+      /process tree could not be attested empty/u
+    );
+    assert.throws(() => process.kill(missingPid, 0), /ESRCH/u);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
+    assert.equal(await readFile(tracked, "utf8"), "source\n");
+
+    const stalledTask = await addTask(value, "posix-stalled-supervisor");
+    let stalledPid;
+    await assert.rejects(
+      runQualification({
+        afterCommandSpawnForTest: async ({ child: spawned }) => {
+          stalledPid = spawned.pid;
+        },
+        assignmentPath: stalledTask.assignmentPath,
+        command: [process.execPath, child, "record"],
+        environment: runnerEnvironment(),
+        posixOuterSettlementMsForTest: 50,
+        posixSupervisorSourceForTest:
+          "import signal,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True: time.sleep(1)\n",
+        terminationGraceMs: 100,
+        timeoutMs: 1_000,
+        writeOutput: false
+      }),
+      /process tree could not be attested empty/u
+    );
+    assert.throws(() => process.kill(stalledPid, 0), /ESRCH/u);
+  }
+);
+
+test(
+  "kills and awaits Windows supervisors on missing control and loader timeout paths",
+  { skip: process.platform !== "win32" },
+  async (context) => {
+    const value = await fixture(context, "windows-supervisor-settlement");
+    for (const kind of ["missing-control", "stalled-loader"]) {
+      const task = await addTask(value, `windows-${kind}`);
+      let supervisorPid;
+      const jobScript = join(value.root, `windows-${kind}.ps1`);
+      if (kind === "stalled-loader") {
+        await writeFile(jobScript, "while($true){Start-Sleep -Milliseconds 100}\n", { flag: "wx", mode: 0o600 });
+      }
+      await assert.rejects(
+        runQualification({
+          afterCommandSpawnForTest: async ({ child: spawned }) => {
+            supervisorPid = spawned.pid;
+          },
+          assignmentPath: task.assignmentPath,
+          command: [process.execPath, child, "record"],
+          environment: runnerEnvironment(),
+          terminationGraceMs: 250,
+          timeoutMs: 250,
+          windowsJobSupervisorScriptForTest: kind === "stalled-loader" ? jobScript : undefined,
+          windowsMissingControlPipeForTest: kind === "missing-control",
+          writeOutput: false
+        }),
+        /process tree could not be attested empty/u
+      );
+      assert.throws(() => process.kill(supervisorPid, 0), /ESRCH/u);
+    }
+  }
+);
 
 test("a swapped artifact pathname cannot redirect the pinned receipt", async (context) => {
   const value = await fixture(context, "artifact-swap");

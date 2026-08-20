@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { access, appendFile, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
@@ -169,12 +169,15 @@ if (mode === "hold") {
   await appendFile(join(process.cwd(), "tracked.txt"), "mutated\n", "utf8");
 } else if (mode === "advance-head") {
   await appendFile(join(process.cwd(), "tracked.txt"), "advanced\n", "utf8");
-  execFileSync("git", ["add", "tracked.txt"], { cwd: process.cwd(), env: process.env, windowsHide: true });
-  execFileSync("git", ["commit", "--quiet", "-m", "test mutation"], {
-    cwd: process.cwd(),
-    env: process.env,
-    windowsHide: true
-  });
+  const assignment = JSON.parse(await readFile(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT, "utf8"));
+  const runAuthoritativeGit = (arguments_) =>
+    execFileSync(
+      assignment.gitExecutable,
+      ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, ...arguments_],
+      { cwd: process.cwd(), env: process.env, windowsHide: true }
+    );
+  runAuthoritativeGit(["add", "tracked.txt"]);
+  runAuthoritativeGit(["commit", "--quiet", "-m", "test mutation"]);
 } else if (mode === "nested-git") {
   const runTopLevelGit = (arguments_) =>
     execFileSync("git", arguments_, {
@@ -259,8 +262,63 @@ if (mode === "hold") {
     process.exit(1);
   }
   await writeFile(argument("--result"), "escaped\n", { flag: "wx", mode: 0o600 });
+} else if (mode === "git-probe") {
+  try {
+    execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: "ignore",
+      windowsHide: true
+    });
+  } catch {
+    process.exit(1);
+  }
+  await writeFile(argument("--result"), "executed\n", { flag: "wx", mode: 0o600 });
 } else if (mode === "mutate-git-config") {
   execFileSync("git", ["config", "user.name", "Mutated qualification fixture"], {
+    cwd: process.cwd(),
+    env: process.env,
+    windowsHide: true
+  });
+} else if (mode === "mutate-authoritative-git") {
+  const kind = argument("--kind");
+  const commands = {
+    config: ["config", "user.name", "Mutated qualification fixture"],
+    configEnv: ["--config-env=user.name=QUALIFICATION_ATTACK_VALUE", "rev-parse", "HEAD"],
+    configParameter: ["-c", "user.name=Mutated qualification fixture", "rev-parse", "HEAD"],
+    index: ["update-index", "--chmod=+x", "tracked.txt"],
+    object: ["hash-object", "-w", "tracked.txt"]
+  };
+  assert.ok(Object.hasOwn(commands, kind), `unknown authoritative Git mutation ${kind}`);
+  try {
+    execFileSync("git", commands[kind], {
+      cwd: process.cwd(),
+      env: { ...process.env, QUALIFICATION_ATTACK_VALUE: "Mutated qualification fixture" },
+      stdio: "ignore",
+      windowsHide: true
+    });
+  } catch {
+    process.exit(1);
+  }
+  await writeFile(argument("--result"), "escaped\n", { flag: "wx", mode: 0o600 });
+} else if (mode === "mutate-authoritative-git-direct") {
+  const kind = argument("--kind");
+  const assignment = JSON.parse(await readFile(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT, "utf8"));
+  const prefix = ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree];
+  let command;
+  if (kind === "index") {
+    command = ["update-index", "--chmod=+x", "tracked.txt"];
+  } else if (kind === "object") {
+    const source = join(process.env.RUNNER_TEMP, "unreceipted-object.txt");
+    await writeFile(source, `unreceipted-${process.env.OPEN_WRANGLER_QUALIFICATION_RUN_ID}\n`, {
+      flag: "wx",
+      mode: 0o600
+    });
+    command = ["hash-object", "-w", source];
+  } else {
+    throw new Error(`unknown direct authoritative Git mutation ${kind}`);
+  }
+  execFileSync(assignment.gitExecutable, [...prefix, ...command], {
     cwd: process.cwd(),
     env: process.env,
     windowsHide: true

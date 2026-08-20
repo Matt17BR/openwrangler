@@ -22,6 +22,7 @@ const RECEIPT_PROTOCOL = "openwrangler-qualification-receipt-v1";
 const MAX_ASSIGNMENT_BYTES = 32 * 1024;
 const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 const MAX_GIT_CONFIG_MANIFEST_BYTES = 4 * 1024 * 1024;
+const MAX_GIT_INDEX_BYTES = 256 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
@@ -177,7 +178,16 @@ CONTROL_FD = 5
 TARGET_FD = 4
 
 def publish(value):
-    os.write(CONTROL_FD, (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8"))
+    try:
+        os.write(CONTROL_FD, (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8"))
+    except OSError:
+        pass
+
+class ParentTermination(Exception):
+    pass
+
+def request_parent_termination(_signal, _frame):
+    raise ParentTermination()
 
 def children():
     path = "/proc/self/task/%d/children" % os.getpid()
@@ -228,6 +238,10 @@ def main():
     timeout = int(sys.argv[3]) / 1000.0
     grace = int(sys.argv[4]) / 1000.0
     target_path = "/dev/fd/%d" % TARGET_FD
+    target = None
+    parent_terminated = False
+    signal.signal(signal.SIGTERM, request_parent_termination)
+    signal.signal(signal.SIGINT, request_parent_termination)
     try:
         target = subprocess.Popen(
             [argv0, *arguments],
@@ -236,6 +250,8 @@ def main():
             pass_fds=(TARGET_FD,),
             start_new_session=True,
         )
+    except ParentTermination:
+        parent_terminated = True
     except BaseException as error:
         publish({"spawnError":str(error),"treeEmpty":True})
         return
@@ -243,24 +259,31 @@ def main():
     status = None
     signal_name = None
     try:
-        status = target.wait(timeout=timeout)
+        if not parent_terminated:
+            status = target.wait(timeout=timeout)
+    except ParentTermination:
+        parent_terminated = True
     except subprocess.TimeoutExpired:
         timed_out = True
-        try:
-            os.killpg(target.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            status = target.wait(timeout=grace)
-        except subprocess.TimeoutExpired:
+    if timed_out or parent_terminated:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if target is not None:
             try:
-                os.killpg(target.pid, signal.SIGKILL)
+                os.killpg(target.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             try:
                 status = target.wait(timeout=grace)
             except subprocess.TimeoutExpired:
-                status = None
+                try:
+                    os.killpg(target.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    status = target.wait(timeout=grace)
+                except subprocess.TimeoutExpired:
+                    status = None
     reap_exited()
     lingering = bool(children())
     tree_empty = terminate_children(signal.SIGTERM, time.monotonic() + grace) if lingering else True
@@ -275,7 +298,7 @@ def main():
     publish({
         "lingeringDescendants": lingering,
         "signal": signal_name,
-        "spawnError": None,
+        "spawnError": "POSIX containment supervisor was terminated by its owner" if parent_terminated else None,
         "status": status,
         "timedOut": timed_out,
         "treeEmpty": tree_empty,
@@ -355,6 +378,7 @@ function cleanGitEnvironment(environment = process.env) {
 
 function gitInspectionEnvironment(assignment, hostEnvironment = process.env) {
   const environment = cleanGitEnvironment(hostEnvironment);
+  environment.GIT_OPTIONAL_LOCKS = "0";
   const directories = [dirname(assignment.gitExecutable), dirname(process.execPath)];
   if (process.platform === "win32") {
     const systemRoot = windowsSystemRootCandidate(process.execPath);
@@ -426,6 +450,47 @@ function gitConfigSelectionEnvironment(hostEnvironment) {
   return selection;
 }
 
+function decodeStrictUtf8(bytes, label) {
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    fail(`${label} is not strict UTF-8`);
+  }
+  if (!Buffer.from(text, "utf8").equals(bytes)) {
+    fail(`${label} does not round-trip as strict UTF-8`);
+  }
+  return text;
+}
+
+function parseGitConfigManifestBytes(bytes) {
+  if (bytes.length === 0 || bytes.length > MAX_GIT_CONFIG_MANIFEST_BYTES || bytes.at(-1) !== 0) {
+    fail("Git config manifest bytes are invalid");
+  }
+  const fields = decodeStrictUtf8(bytes, "Git config manifest").split("\0");
+  fields.pop();
+  if (fields.length % 3 !== 0) fail("Git config manifest shape is invalid");
+  const sourceScopes = new Map();
+  for (let index = 0; index < fields.length; index += 3) {
+    const scope = fields[index];
+    const origin = fields[index + 1];
+    if (!origin.startsWith("file:")) {
+      fail(`Git config source ${origin} is not a receiptable file`);
+    }
+    const path = origin.slice("file:".length);
+    assertCanonicalAbsolutePath(path, "Git config source");
+    const scopes = sourceScopes.get(path) ?? new Set();
+    scopes.add(scope);
+    sourceScopes.set(path, scopes);
+  }
+  return {
+    entryCount: fields.length / 3,
+    sources: [...sourceScopes.entries()]
+      .map(([path, scopes]) => ({ path, scopes: [...scopes].sort() }))
+      .sort((left, right) => left.path.localeCompare(right.path))
+  };
+}
+
 function captureGitConfigManifest(assignment, hostEnvironment) {
   const result = spawnSync(
     assignment.gitExecutable,
@@ -450,40 +515,16 @@ function captureGitConfigManifest(assignment, hostEnvironment) {
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    fail(
-      `Git config manifest failed: ${Buffer.concat([result.stderr ?? Buffer.alloc(0), result.stdout ?? Buffer.alloc(0)])
-        .toString("utf8")
-        .trim()}`
-    );
+    fail("Git config manifest command failed");
   }
   const bytes = Buffer.from(result.stdout ?? Buffer.alloc(0));
-  if (bytes.length === 0 || bytes.length > MAX_GIT_CONFIG_MANIFEST_BYTES || bytes.at(-1) !== 0) {
-    fail("Git config manifest bytes are invalid");
-  }
-  const fields = bytes.toString("utf8").split("\0");
-  fields.pop();
-  if (fields.length % 3 !== 0) fail("Git config manifest shape is invalid");
-  const sourceScopes = new Map();
-  for (let index = 0; index < fields.length; index += 3) {
-    const scope = fields[index];
-    const origin = fields[index + 1];
-    if (!origin.startsWith("file:")) {
-      fail(`Git config source ${origin} is not a receiptable file`);
-    }
-    const path = origin.slice("file:".length);
-    assertCanonicalAbsolutePath(path, "Git config source");
-    const scopes = sourceScopes.get(path) ?? new Set();
-    scopes.add(scope);
-    sourceScopes.set(path, scopes);
-  }
+  const parsed = parseGitConfigManifestBytes(bytes);
   return {
     bytes,
-    entryCount: fields.length / 3,
+    entryCount: parsed.entryCount,
     selectionEnvironment: gitConfigSelectionEnvironment(hostEnvironment),
     sha256: sha256(bytes),
-    sources: [...sourceScopes.entries()]
-      .map(([path, scopes]) => ({ path, scopes: [...scopes].sort() }))
-      .sort((left, right) => left.path.localeCompare(right.path))
+    sources: parsed.sources
   };
 }
 
@@ -714,6 +755,8 @@ async function captureGitIdentity(assignment, hostEnvironment = process.env) {
   }
   const gitDirectory = inspect(["rev-parse", "--path-format=absolute", "--git-dir"]);
   const commonDirectory = inspect(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const gitIndex = inspect(["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+  const objectDirectory = inspect(["rev-parse", "--path-format=absolute", "--git-path", "objects"]);
   const head = inspect(["rev-parse", "HEAD"]);
   const tree = inspect(["rev-parse", "HEAD^{tree}"]);
   const branch = inspect(["branch", "--show-current"]);
@@ -741,9 +784,11 @@ async function captureGitIdentity(assignment, hostEnvironment = process.env) {
     commonDirectory: await fileIdentity(commonDirectory, "directory"),
     gitDirectory: await fileIdentity(gitDirectory, "directory"),
     gitExecutable: await fileIdentity(assignment.gitExecutable, "file"),
+    gitIndex: await fileIdentity(gitIndex, "file"),
     head,
     mergeBase,
     nodeModules: nodeModulesIdentity,
+    objectDirectory: await fileIdentity(objectDirectory, "directory"),
     tree,
     worktree: worktreeIdentity
   };
@@ -754,6 +799,8 @@ async function openGitOwnerPins(assignment, gitIdentity, worktreePin, hostEnviro
   try {
     pins.commonDirectory = await openPinnedDirectory(gitIdentity.commonDirectory.path, "Git common-directory owner");
     pins.gitDirectory = await openPinnedDirectory(gitIdentity.gitDirectory.path, "Git-directory owner");
+    pins.gitIndex = await openPinnedRegularFile(gitIdentity.gitIndex.path, MAX_GIT_INDEX_BYTES, "Git index owner");
+    pins.objectDirectory = await openPinnedDirectory(gitIdentity.objectDirectory.path, "Git object-directory owner");
     const manifestBefore = captureGitConfigManifest(assignment, hostEnvironment);
     for (const source of manifestBefore.sources) {
       pins.configSources.push({
@@ -786,6 +833,15 @@ async function openGitOwnerPins(assignment, gitIdentity, worktreePin, hostEnviro
         }
         continue;
       }
+      if (key === "gitIndex") {
+        if (
+          pin.snapshot.dev.toString() !== gitIdentity.gitIndex.device ||
+          pin.snapshot.ino.toString() !== gitIdentity.gitIndex.inode
+        ) {
+          fail("Git index changed before its owner could be pinned");
+        }
+        continue;
+      }
       const identity = key === "worktree" ? gitIdentity.worktree : gitIdentity[key];
       if (pin.snapshot.dev.toString() !== identity.device || pin.snapshot.ino.toString() !== identity.inode) {
         fail(`${key} changed before its owner could be pinned`);
@@ -808,6 +864,8 @@ async function verifyGitOwnerPins(pins) {
       }
     } else if (key === "gitExecutable") {
       await verifyPinnedExecutable(pin);
+    } else if (key === "gitIndex") {
+      await verifyPinnedRegularFile(pin, MAX_GIT_INDEX_BYTES, "Git index owner");
     } else {
       await verifyPinnedDirectory(pin, `${key} owner`);
     }
@@ -859,19 +917,36 @@ async function captureGitConfigIdentity(assignment, pins, hostEnvironment) {
   };
 }
 
+async function captureGitMetadataIdentity(pins) {
+  const indexBytes = await verifyPinnedRegularFile(pins.gitIndex, MAX_GIT_INDEX_BYTES, "Git index owner");
+  return {
+    index: {
+      device: pins.gitIndex.snapshot.dev.toString(),
+      inode: pins.gitIndex.snapshot.ino.toString(),
+      mode: Number(pins.gitIndex.snapshot.mode & 0o777n),
+      sha256: sha256(indexBytes),
+      size: indexBytes.length
+    },
+    objects: await inspectPrivateTree(pins.objectDirectory, "Git object-directory owner")
+  };
+}
+
 function assertSameGitIdentity(before, after) {
   for (const key of ["base", "branch", "head", "mergeBase", "tree"]) {
     if (before[key] !== after[key]) {
       fail(`worktree ${key} changed during qualification`);
     }
   }
-  for (const key of ["commonDirectory", "gitDirectory", "gitExecutable", "worktree"]) {
+  for (const key of ["commonDirectory", "gitDirectory", "gitExecutable", "gitIndex", "objectDirectory", "worktree"]) {
     if (!sameIdentity(before[key], after[key])) {
       fail(`worktree ${key} identity changed during qualification`);
     }
   }
   if (JSON.stringify(before.gitConfig) !== JSON.stringify(after.gitConfig)) {
     fail("worktree Git config or effective identity changed during qualification");
+  }
+  if (JSON.stringify(before.gitMetadata) !== JSON.stringify(after.gitMetadata)) {
+    fail("worktree Git index or object inventory changed during qualification");
   }
   if (before.nodeModules === null && after.nodeModules !== null) {
     return;
@@ -1346,21 +1421,34 @@ function quotePytestPath(path) {
   return `'${path.replaceAll("'", `'"'"'`)}'`;
 }
 
-function gitWrapperProgramSource(assignment, configSelectionEnvironment) {
+function gitWrapperProgramSource(assignment, configSelectionEnvironment, gitExecutableLaunch, windowsPowerShell) {
   return `import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 const binding = ${JSON.stringify({
     configSelectionEnvironment,
     gitDirectory: assignment.gitDirectory,
-    gitExecutable: assignment.gitExecutable,
+    gitExecutable: executableLeaf(gitExecutableLaunch.snapshot).path,
+    gitExecutableSha256: gitExecutableLaunch.record.sha256,
+    gitExecutableSize: gitExecutableLaunch.record.snapshot.size,
+    platform: process.platform,
     stateRoot: assignment.stateRoot,
+    windowsPowerShell,
     worktree: assignment.worktree
   })};
 function isInside(root, candidate) {
   const suffix = relative(root, candidate);
   return suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix));
+}
+function rejectConfigurationInjection(argument) {
+  return (
+    argument === "-c" ||
+    (argument.startsWith("-c") && argument.length > 2) ||
+    argument === "--config-env" ||
+    argument.startsWith("--config-env=")
+  );
 }
 function rejectOwnerOverrides(arguments_) {
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -1378,7 +1466,10 @@ function rejectOwnerOverrides(arguments_) {
     ) {
       throw new Error("qualification Git metadata ownership cannot be overridden");
     }
-    if (argument === "-C" || argument === "-c" || argument === "--config-env") index += 1;
+    if (rejectConfigurationInjection(argument)) {
+      throw new Error("qualification Git configuration cannot be overridden");
+    }
+    if (argument === "-C") index += 1;
   }
 }
 function effectiveWorkingDirectory(initial, arguments_) {
@@ -1392,8 +1483,6 @@ function effectiveWorkingDirectory(initial, arguments_) {
       index += 1;
     } else if (argument.startsWith("-C") && argument.length > 2) {
       requested = argument.slice(2);
-    } else if (argument === "-c" || argument === "--config-env") {
-      index += 1;
     }
     if (requested === undefined) continue;
     if (requested.length === 0) continue;
@@ -1401,12 +1490,73 @@ function effectiveWorkingDirectory(initial, arguments_) {
   }
   return directory;
 }
+function commandAfterGlobalOptions(arguments_) {
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument === "-C") {
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("-C") && argument.length > 2) continue;
+    if (argument === "--") return { command: arguments_[index + 1], rest: arguments_.slice(index + 2) };
+    if (!argument.startsWith("-")) return { command: argument, rest: arguments_.slice(index + 1) };
+  }
+  return { command: undefined, rest: [] };
+}
+function requireReadOnlyAssignedCommand(arguments_) {
+  const { command, rest } = commandAfterGlobalOptions(arguments_);
+  const ordinary = new Set([
+    "branch",
+    "cat-file",
+    "check-ignore",
+    "describe",
+    "diff",
+    "diff-index",
+    "diff-tree",
+    "for-each-ref",
+    "log",
+    "ls-files",
+    "ls-tree",
+    "merge-base",
+    "name-rev",
+    "rev-list",
+    "rev-parse",
+    "show",
+    "show-ref",
+    "status"
+  ]);
+  if (command === "branch") {
+    if (rest.length !== 1 || rest[0] !== "--show-current") {
+      throw new Error("qualification Git branch access is read-only");
+    }
+    return;
+  }
+  if (command === "config") {
+    const readFlags = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--null", "--show-origin", "--show-scope"]);
+    if (rest.length === 0 || rest.some((argument) => argument.startsWith("--file") || argument.startsWith("--blob"))) {
+      throw new Error("qualification Git config access is read-only");
+    }
+    const mode = rest.find((argument) => ["--get", "--get-all", "--get-regexp", "--list", "-l"].includes(argument));
+    if (!mode || rest.some((argument) => argument.startsWith("-") && !readFlags.has(argument))) {
+      throw new Error("qualification Git config access is read-only");
+    }
+    const positional = rest.filter((argument) => !argument.startsWith("-"));
+    if ((mode === "--list" || mode === "-l") ? positional.length !== 0 : positional.length < 1 || positional.length > 2) {
+      throw new Error("qualification Git config access is read-only");
+    }
+    return;
+  }
+  if (!ordinary.has(command)) {
+    throw new Error("qualification Git command is not read-only for the authoritative worktree");
+  }
+}
 const environment = { ...process.env };
 for (const key of Object.keys(environment)) {
   const upper = key.toUpperCase();
   if (upper === "EMAIL" || upper.startsWith("GIT_")) delete environment[key];
 }
 Object.assign(environment, binding.configSelectionEnvironment);
+environment.GIT_OPTIONAL_LOCKS = "0";
 const cwd = realpathSync.native(process.cwd());
 const arguments_ = process.argv.slice(2);
 rejectOwnerOverrides(arguments_);
@@ -1415,22 +1565,101 @@ const usesAssignedWorktree = isInside(binding.worktree, effectiveCwd);
 if (!usesAssignedWorktree && !isInside(binding.stateRoot, effectiveCwd)) {
   throw new Error("unbound qualification Git is permitted only inside the private task root");
 }
+if (usesAssignedWorktree) requireReadOnlyAssignedCommand(arguments_);
 const commandArguments = usesAssignedWorktree
   ? ["--git-dir", binding.gitDirectory, "--work-tree", binding.worktree, ...arguments_]
   : arguments_;
-const result = spawnSync(binding.gitExecutable, commandArguments, {
-  cwd,
-  env: environment,
-  stdio: "inherit",
-  windowsHide: true
-});
+function verifyOpenedExecutable(handle) {
+  const value = fstatSync(handle, { bigint: true });
+  if (!value.isFile() || value.nlink !== 1n || value.size !== BigInt(binding.gitExecutableSize)) {
+    throw new Error("qualification Git executable snapshot identity is invalid");
+  }
+  const digest = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  while (offset < binding.gitExecutableSize) {
+    const bytesRead = readSync(handle, buffer, 0, Math.min(buffer.length, binding.gitExecutableSize - offset), offset);
+    if (bytesRead <= 0) throw new Error("qualification Git executable snapshot ended during verification");
+    digest.update(buffer.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
+  if (digest.digest("hex") !== binding.gitExecutableSha256) {
+    throw new Error("qualification Git executable snapshot bytes changed");
+  }
+}
+let result;
+if (binding.platform === "win32") {
+  const pathBase64 = Buffer.from(binding.gitExecutable, "utf8").toString("base64");
+  const argumentsBase64 = Buffer.from(JSON.stringify(commandArguments), "utf8").toString("base64");
+  const source = [
+    '$ErrorActionPreference="Stop"',
+    '$ProgressPreference="SilentlyContinue"',
+    '$path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + pathBase64 + '"))',
+    '$arguments=@(ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + argumentsBase64 + '"))))',
+    '$stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)',
+    'try{',
+    'if($stream.Length -ne ' + String(binding.gitExecutableSize) + '){throw "git-size"}',
+    '$hasher=[Security.Cryptography.SHA256]::Create()',
+    'try{$actual=[BitConverter]::ToString($hasher.ComputeHash($stream)).Replace("-","").ToLowerInvariant()}finally{$hasher.Dispose()}',
+    'if(-not [String]::Equals($actual,"' + binding.gitExecutableSha256 + '",[StringComparison]::Ordinal)){throw "git-digest"}',
+    '& $path @arguments',
+    '$status=$LASTEXITCODE',
+    '}finally{$stream.Dispose()}',
+    'exit $status'
+  ].join("\\n");
+  const encoded = Buffer.from(source, "utf16le").toString("base64");
+  result = spawnSync(binding.windowsPowerShell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+    cwd,
+    env: environment,
+    stdio: "inherit",
+    windowsHide: true
+  });
+} else {
+  const handle = openSync(binding.gitExecutable, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    verifyOpenedExecutable(handle);
+    result = spawnSync("/proc/self/fd/3", commandArguments, {
+      argv0: binding.gitExecutable,
+      cwd,
+      env: environment,
+      stdio: ["inherit", "inherit", "inherit", handle],
+      windowsHide: true
+    });
+  } finally {
+    closeSync(handle);
+  }
+}
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;
 `;
 }
 
-async function prepareGitWrapper(layoutState, assignment, configSelectionEnvironment) {
-  const programBytes = gitWrapperProgramSource(assignment, configSelectionEnvironment);
+async function prepareGitWrapper(layoutState, assignment, configSelectionEnvironment, options = {}) {
+  const executable = await openPinnedExecutable(assignment.gitExecutable);
+  try {
+    layoutState.gitExecutableLaunch = await createExecutableSnapshot(
+      executable,
+      layoutState.layout.executableSnapshots,
+      {
+        afterWriteForTest: options.afterGitExecutableSnapshotWriteForTest
+      }
+    );
+  } catch (error) {
+    await closePinnedExecutable(executable);
+    throw error;
+  }
+  const windowsPowerShell =
+    process.platform === "win32"
+      ? await realpath(
+          join(windowsSystemRootCandidate(process.execPath), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        )
+      : null;
+  const programBytes = gitWrapperProgramSource(
+    assignment,
+    configSelectionEnvironment,
+    layoutState.gitExecutableLaunch,
+    windowsPowerShell
+  );
   await writeFile(layoutState.layout.gitWrapperProgram, programBytes, { flag: "wx", mode: 0o500 });
   if (process.platform === "win32") {
     await writeFile(
@@ -1776,6 +2005,15 @@ function waitForSpawnedProcess(child) {
   });
 }
 
+async function terminateAndAwaitProcess(child, completion, graceMilliseconds) {
+  child.stdin?.destroy();
+  child.kill("SIGTERM");
+  const graceful = await Promise.race([completion, delay(graceMilliseconds).then(() => null)]);
+  if (graceful !== null) return graceful;
+  child.kill("SIGKILL");
+  return completion;
+}
+
 function readPosixSupervisorControl(stream) {
   return new Promise((resolveControl) => {
     const chunks = [];
@@ -1835,7 +2073,7 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       [
         "-I",
         "-c",
-        POSIX_SUBREAPER_SOURCE,
+        options.posixSupervisorSourceForTest ?? POSIX_SUBREAPER_SOURCE,
         JSON.stringify(arguments_),
         options.launchArgv0,
         String(options.timeoutMs),
@@ -1851,29 +2089,55 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       }
     );
   } catch (error) {
+    let callbackError;
+    try {
+      await options.afterSpawnForTest?.({
+        child: undefined,
+        executedPath: command,
+        sourcePath: options.sourceCommand,
+        strategy: options.executionStrategy
+      });
+    } catch (afterError) {
+      callbackError = afterError;
+    }
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: error instanceof Error ? error.message : String(error),
+      spawnError:
+        callbackError instanceof Error
+          ? callbackError.message
+          : callbackError
+            ? String(callbackError)
+            : error instanceof Error
+              ? error.message
+              : String(error),
       status: null,
       timedOut: false,
       treeEmpty: true
     };
-  } finally {
+  }
+  const completion = waitForSpawnedProcess(child);
+  try {
     await options.afterSpawnForTest?.({
       child,
       executedPath: command,
       sourcePath: options.sourceCommand,
       strategy: options.executionStrategy
     });
+  } catch (error) {
+    await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
   }
-  const controlStream = child.stdio[5];
+  const controlStream = options.posixMissingControlPipeForTest ? null : child.stdio[5];
   if (!controlStream) {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The supervisor may already have exited while its missing control pipe was classified.
-    }
+    await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
@@ -1884,31 +2148,27 @@ async function runPosixOwnedCommand(command, arguments_, options) {
     };
   }
   const control = readPosixSupervisorControl(controlStream);
-  const completion = waitForSpawnedProcess(child);
   let timer;
   const outcome = await Promise.race([
     completion,
     new Promise((resolveTimeout) => {
       timer = setTimeout(
         () => resolveTimeout({ timedOut: true }),
-        options.timeoutMs + 2 * options.terminationGraceMs + 5_000
+        options.posixOuterSettlementMsForTest ?? options.timeoutMs + 5 * options.terminationGraceMs + 5_000
       );
     })
   ]);
   clearTimeout(timer);
   if (outcome.timedOut === true) {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The supervisor may have exited at the same instant as its outer settlement deadline.
-    }
+    const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
+    const reported = await control;
     return {
-      lingeringDescendants: false,
-      signal: null,
+      lingeringDescendants: reported?.lingeringDescendants === true,
+      signal: settlement.signal ?? null,
       spawnError: "POSIX containment supervisor exceeded its bounded settlement",
       status: null,
       timedOut: true,
-      treeEmpty: false
+      treeEmpty: reported?.treeEmpty === true
     };
   }
   const reported = await control;
@@ -2113,8 +2373,31 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       treeEmpty: true
     };
   }
-  if (!supervisor.stdin || !supervisor.stderr) {
-    supervisor.kill("SIGKILL");
+  const completion = waitForSpawnedProcess(supervisor);
+  try {
+    await options.afterSpawnForTest?.({
+      child: supervisor,
+      executedPath: command,
+      sourcePath: options.sourceCommand,
+      supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
+      supervisorScriptSourcePath: options.supervisorScriptSourcePath,
+      strategy: options.executionStrategy
+    });
+  } catch (error) {
+    await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
+  }
+  const controlPipesAvailable =
+    !options.windowsMissingControlPipeForTest && supervisor.stdin !== null && supervisor.stderr !== null;
+  if (!controlPipesAvailable) {
+    await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
@@ -2125,17 +2408,9 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
     };
   }
   const signals = windowsSupervisorSignals(supervisor.stderr, loadedToken, attestationToken);
-  const completion = waitForSpawnedProcess(supervisor);
   let controlError;
   supervisor.stdin.on("error", (error) => {
     controlError ??= error;
-  });
-  await options.afterSpawnForTest?.({
-    executedPath: command,
-    sourcePath: options.sourceCommand,
-    supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
-    supervisorScriptSourcePath: options.supervisorScriptSourcePath,
-    strategy: options.executionStrategy
   });
   try {
     await options.verifyExecutableForSpawn();
@@ -2182,9 +2457,7 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
     delay(Math.min(options.timeoutMs, 30_000)).then(() => false)
   ]);
   if (!loaded) {
-    supervisor.stdin.destroy();
-    supervisor.kill("SIGKILL");
-    await Promise.race([completion, delay(options.terminationGraceMs)]);
+    await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     return {
       lingeringDescendants: false,
       signal: null,
@@ -2238,19 +2511,7 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
     });
     let graceOutcome = await Promise.race([completion, delay(options.terminationGraceMs).then(() => null)]);
     if (graceOutcome === null) {
-      supervisor.kill("SIGKILL");
-      graceOutcome = await Promise.race([completion, delay(options.terminationGraceMs).then(() => null)]);
-    }
-    if (graceOutcome === null) {
-      supervisor.stdin.destroy();
-      return {
-        lingeringDescendants: false,
-        signal: null,
-        spawnError: "Windows Job Object supervisor did not terminate within its bounded grace",
-        status: null,
-        timedOut: true,
-        treeEmpty: false
-      };
+      graceOutcome = await terminateAndAwaitProcess(supervisor, completion, options.terminationGraceMs);
     }
   }
   const finalOutcome = outcome.timedOut === true ? await completion : outcome;
@@ -2511,6 +2772,8 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
 }
 
 async function verifyLayout(layoutState) {
+  if (!layoutState.gitExecutableLaunch) fail("private Git executable snapshot was not bound");
+  await verifyExecutableLaunch(layoutState.gitExecutableLaunch);
   for (const [key, pin] of Object.entries(layoutState.ownerPins)) {
     await verifyPinnedDirectory(pin, `${key} owner`);
   }
@@ -2602,6 +2865,8 @@ async function runQualification({
   afterCommandSpawnForTest,
   afterCommandSettlementForTest,
   afterExecutableSnapshotWriteForTest,
+  afterGitExecutableSnapshotWriteForTest,
+  afterGitWrapperPreparedForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
   beforeWindowsLoaderReleaseForTest,
@@ -2612,9 +2877,13 @@ async function runQualification({
   pytestTempAfterOpenForTest,
   pytestTempLimitsForTest,
   pytestTempMountIdentityForTest,
+  posixMissingControlPipeForTest,
+  posixOuterSettlementMsForTest,
+  posixSupervisorSourceForTest,
   terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   windowsJobSupervisorScriptForTest,
+  windowsMissingControlPipeForTest,
   windowsSupervisorCommandForTest,
   writeOutput = true
 }) {
@@ -2637,14 +2906,21 @@ async function runQualification({
     await verifyGitOwnerPins(gitOwnerPins);
     initialGit = {
       ...initialGit,
-      gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment)
+      gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment),
+      gitMetadata: await captureGitMetadataIdentity(gitOwnerPins)
     };
     layoutState = await createStateLayout(assignment, initialAssignment.digest);
     layoutState.pytestTreeOptions = {
       limits: pytestTreeLimits(pytestTempLimitsForTest),
       mountIdentityForTest: pytestTempMountIdentityForTest
     };
-    await prepareGitWrapper(layoutState, assignment, gitOwnerPins.configManifest.selectionEnvironment);
+    await prepareGitWrapper(layoutState, assignment, gitOwnerPins.configManifest.selectionEnvironment, {
+      afterGitExecutableSnapshotWriteForTest
+    });
+    await afterGitWrapperPreparedForTest?.({
+      executableSnapshotPath: executableLeaf(layoutState.gitExecutableLaunch.snapshot).path,
+      executableSourcePath: executableLeaf(layoutState.gitExecutableLaunch.source).path
+    });
     const startedAt = new Date().toISOString();
     const failures = [];
     let bootstrap;
@@ -2692,8 +2968,12 @@ async function runQualification({
         executableSnapshotAfterWriteForTest: afterExecutableSnapshotWriteForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
+        posixMissingControlPipeForTest,
+        posixOuterSettlementMsForTest,
+        posixSupervisorSourceForTest,
         posixSupervisorCommand: bootstrap.bootstrapPython,
         windowsJobSupervisorScript: windowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
+        windowsMissingControlPipeForTest,
         windowsSupervisorCommand: windowsSupervisorCommandForTest ?? layoutState.layout.windowsSupervisorCommand,
         terminationGraceMs,
         timeoutMs
@@ -2734,7 +3014,8 @@ async function runQualification({
       finalGit = await captureGitIdentity(assignment, environment);
       finalGit = {
         ...finalGit,
-        gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment)
+        gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment),
+        gitMetadata: await captureGitMetadataIdentity(gitOwnerPins)
       };
       assertSameGitIdentity(initialGit, finalGit);
     } catch (error) {
@@ -2766,6 +3047,7 @@ async function runQualification({
       environment: layoutState.layout,
       failures,
       finishedAt: new Date().toISOString(),
+      gitExecutableSnapshot: layoutState.gitExecutableLaunch.record,
       identity: initialGit,
       postIdentity: finalGit,
       protocol: RECEIPT_PROTOCOL,
@@ -2782,6 +3064,7 @@ async function runQualification({
     }
     return receipt;
   } finally {
+    await closeExecutableLaunch(layoutState?.gitExecutableLaunch);
     await Promise.all((layoutState?.runnerFilePins ?? []).map(({ pin }) => pin.handle.close()));
     await closeDirectoryPins(layoutState?.ownerPins);
     await closeDirectoryPins(gitOwnerPins);
@@ -2804,6 +3087,7 @@ function parseCommandLine(arguments_) {
 }
 
 const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
+  parseGitConfigManifestBytes,
   openDirectory(path, afterOpenForTest) {
     return openPinnedDirectory(path, "test directory", { afterOpenForTest });
   },
