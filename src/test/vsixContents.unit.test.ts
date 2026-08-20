@@ -224,6 +224,16 @@ describe("VSIX production entry allowlist", () => {
     expect(inspectVsixEntries(entries).missing).toEqual(["extension/python/openwrangler_runtime/dependency_guard.py"]);
   });
 
+  it("requires the dependency integrity helper", () => {
+    const entries = requiredVsixEntries.filter(
+      (entry) => entry !== "extension/python/openwrangler_runtime/dependency_integrity.py"
+    );
+
+    expect(inspectVsixEntries(entries).missing).toEqual([
+      "extension/python/openwrangler_runtime/dependency_integrity.py"
+    ]);
+  });
+
   it("packages only the production R runtime files", () => {
     const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
       .split(/\r?\n/u)
