@@ -1439,6 +1439,12 @@ export function DataGrid({
                     row: row.rowNumber,
                     column: column.position
                   });
+                  const rangeClipboardSelected =
+                    clipboardSelected &&
+                    !gridClipboard.isColumnSelected(column.id) &&
+                    gridClipboard.results.range.ok &&
+                    (gridClipboard.results.range.payload.rowCount > 1 ||
+                      gridClipboard.results.range.payload.columnCount > 1);
                   const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
                   const displayCell = gridCellPresentation(cell);
@@ -1550,7 +1556,7 @@ export function DataGrid({
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
                       onPointerDown={(event) => {
-                        if (event.button === 2 && clipboardSelected) {
+                        if (event.button === 2 && rangeClipboardSelected) {
                           event.preventDefault();
                           return;
                         }
@@ -1630,7 +1636,7 @@ export function DataGrid({
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
-                        openCellMenu(clipboardSelected);
+                        openCellMenu(rangeClipboardSelected);
                       }}
                       onKeyDown={(event) => {
                         if (
@@ -1647,7 +1653,7 @@ export function DataGrid({
                           (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
                         ) {
                           event.preventDefault();
-                          openCellMenu(clipboardSelected);
+                          openCellMenu(rangeClipboardSelected);
                           return;
                         }
                         if (event.target !== event.currentTarget) return;
@@ -1678,7 +1684,11 @@ export function DataGrid({
                           className={`cellFilterMenuPopup${cellMenuOpensAbove ? " openAbove" : ""}`}
                           role="menu"
                           tabIndex={-1}
-                          aria-label={`Filter ${column.name} by this cell`}
+                          aria-label={
+                            cellFilterMenuTarget?.preserveClipboardSelection
+                              ? `Cell and selection actions for ${column.name}`
+                              : `Filter ${column.name} by this cell`
+                          }
                           onKeyDown={(event) => {
                             if (event.key === "Escape") {
                               event.preventDefault();
