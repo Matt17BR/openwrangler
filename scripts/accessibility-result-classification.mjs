@@ -1,3 +1,5 @@
+import { types as utilTypes } from "node:util";
+
 export const AXE_MACHINE_RESULT_PREFIX = "OPEN_WRANGLER_AXE_RESULT ";
 export const AXE_SCAN_RESULT_PROTOCOL = "openwrangler-axe-scan-result-v1";
 export const AXE_RUN_RESULT_PROTOCOL = "openwrangler-axe-run-result-v1";
@@ -24,6 +26,20 @@ export const AXE_RESULT_LIMITS = Object.freeze({
 
 const IMPACT_ORDER = Object.freeze(["critical", "serious", "moderate", "minor", "unknown"]);
 const KNOWN_IMPACTS = new Set(IMPACT_ORDER.slice(0, -1));
+const CLASSIFICATION_ERROR_CODES = new Set([
+  "duplicate_harness",
+  "invalid_findings",
+  "invalid_harness",
+  "invalid_machine_result",
+  "machine_result_too_large",
+  "too_many_finding_nodes",
+  "too_many_run_findings",
+  "too_many_run_nodes",
+  "too_many_scan_findings",
+  "too_many_scan_nodes",
+  "too_many_scans"
+]);
+const { isProxy } = utilTypes;
 
 export class AxeResultClassificationError extends Error {
   constructor(code, message, details = {}) {
@@ -81,11 +97,24 @@ export function createAxeResultCollector() {
   });
 }
 
-export function classifyAxeScanResult({ harness, violations }) {
-  return classifyPreparedAxeScan(prepareAxeScanInput({ harness, violations }, 0));
+export function classifyAxeScanResult(input) {
+  return classifyPreparedAxeScan(prepareAxeScanInput(input, 0));
 }
 
-function prepareAxeScanInput({ harness, violations }, existingRunNodeCount) {
+function prepareAxeScanInput(input, existingRunNodeCount) {
+  const envelope = requirePlainRecord(input, "invalid_findings", "Axe scan results must be plain objects.");
+  const harness = readOwnDataProperty(
+    envelope,
+    "harness",
+    "invalid_findings",
+    "Axe scan result fields must be own data properties."
+  );
+  const violations = readOwnDataProperty(
+    envelope,
+    "violations",
+    "invalid_findings",
+    "Axe scan result fields must be own data properties."
+  );
   const normalizedHarness = boundedText(harness, "", AXE_RESULT_LIMITS.harnessCodePoints);
   if (normalizedHarness.value.length === 0 || normalizedHarness.truncated) {
     throw new AxeResultClassificationError(
@@ -93,61 +122,83 @@ function prepareAxeScanInput({ harness, violations }, existingRunNodeCount) {
       `Axe harness must contain at most ${AXE_RESULT_LIMITS.harnessCodePoints} non-empty code points.`
     );
   }
-  if (!Array.isArray(violations)) {
-    throw new AxeResultClassificationError("invalid_findings", "Axe violations must be an array.");
-  }
-  if (violations.length > AXE_RESULT_LIMITS.findingsPerScan) {
+  const violationCount = readPlainArrayLength(violations, "invalid_findings", "Axe violations must be a plain array.");
+  if (violationCount > AXE_RESULT_LIMITS.findingsPerScan) {
     throw classificationLimitError(
       "too_many_scan_findings",
       `Axe findings for ${normalizedHarness.value}`,
-      violations.length,
+      violationCount,
       AXE_RESULT_LIMITS.findingsPerScan
     );
   }
 
-  const sourceFindings = [];
-  const sourceNodes = [];
+  const preflightFindings = [];
   let nodeCount = 0;
-  for (let index = 0; index < violations.length; index += 1) {
-    const sourceFinding = violations[index];
-    const finding = sourceFinding !== null && typeof sourceFinding === "object" ? sourceFinding : {};
-    const nodesDescriptor = findPropertyDescriptor(finding, "nodes");
-    if (nodesDescriptor !== undefined && !("value" in nodesDescriptor)) {
-      throw new AxeResultClassificationError("invalid_findings", "Axe finding node accessors are forbidden.");
-    }
-    const findingNodes = Array.isArray(nodesDescriptor?.value) ? nodesDescriptor.value : [];
-    if (findingNodes.length > AXE_RESULT_LIMITS.nodesPerFinding) {
-      throw classificationLimitError(
-        "too_many_finding_nodes",
-        "Axe affected-node count",
-        findingNodes.length,
-        AXE_RESULT_LIMITS.nodesPerFinding
-      );
-    }
-    nodeCount += findingNodes.length;
-    if (nodeCount > AXE_RESULT_LIMITS.nodesPerScan) {
-      throw classificationLimitError(
-        "too_many_scan_nodes",
-        `Axe affected-node count for ${normalizedHarness.value}`,
-        nodeCount,
-        AXE_RESULT_LIMITS.nodesPerScan
-      );
-    }
-    if (existingRunNodeCount + nodeCount > AXE_RESULT_LIMITS.nodesPerRun) {
+  for (let index = 0; index < violationCount; index += 1) {
+    const findingEntry = readOwnArrayEntry(
+      violations,
+      index,
+      "invalid_findings",
+      "Axe violation entries must be own data properties."
+    );
+    const sourceFinding = requireOptionalPlainRecord(
+      findingEntry.present ? findingEntry.value : undefined,
+      "invalid_findings",
+      "Axe violations must contain plain objects."
+    );
+    const findingNodes = readOwnDataProperty(
+      sourceFinding,
+      "nodes",
+      "invalid_findings",
+      "Axe finding fields must be own data properties."
+    );
+    const findingNodeCount =
+      findingNodes === undefined
+        ? 0
+        : readPlainArrayLength(findingNodes, "invalid_findings", "Axe finding nodes must be plain arrays.");
+    const remainingNodeLimit = Math.min(
+      AXE_RESULT_LIMITS.nodesPerFinding,
+      AXE_RESULT_LIMITS.nodesPerScan - nodeCount,
+      AXE_RESULT_LIMITS.nodesPerRun - existingRunNodeCount - nodeCount
+    );
+    if (findingNodeCount > remainingNodeLimit) {
+      if (findingNodeCount > AXE_RESULT_LIMITS.nodesPerFinding) {
+        throw classificationLimitError(
+          "too_many_finding_nodes",
+          "Axe affected-node count",
+          findingNodeCount,
+          AXE_RESULT_LIMITS.nodesPerFinding
+        );
+      }
+      if (nodeCount + findingNodeCount > AXE_RESULT_LIMITS.nodesPerScan) {
+        throw classificationLimitError(
+          "too_many_scan_nodes",
+          `Axe affected-node count for ${normalizedHarness.value}`,
+          nodeCount + findingNodeCount,
+          AXE_RESULT_LIMITS.nodesPerScan
+        );
+      }
       throw classificationLimitError(
         "too_many_run_nodes",
         "Axe run affected-node count",
-        existingRunNodeCount + nodeCount,
+        existingRunNodeCount + nodeCount + findingNodeCount,
         AXE_RESULT_LIMITS.nodesPerRun
       );
     }
-    sourceFindings.push(finding);
-    sourceNodes.push(Object.freeze({ values: findingNodes, count: findingNodes.length }));
+    nodeCount += findingNodeCount;
+    preflightFindings.push(Object.freeze({ sourceFinding, findingNodes, findingNodeCount }));
+  }
+
+  const sourceFindings = [];
+  const sourceNodes = [];
+  for (const preflight of preflightFindings) {
+    sourceFindings.push(snapshotFinding(preflight.sourceFinding));
+    sourceNodes.push(snapshotFindingNodes(preflight.findingNodes, preflight.findingNodeCount));
   }
 
   return Object.freeze({
     harness: normalizedHarness.value,
-    findingCount: violations.length,
+    findingCount: violationCount,
     nodeCount,
     sourceFindings: Object.freeze(sourceFindings),
     sourceNodes: Object.freeze(sourceNodes)
@@ -176,14 +227,7 @@ export function serializeAxeMachineResult(result) {
 }
 
 export function serializeAxeClassificationError(error) {
-  const classified = error instanceof AxeResultClassificationError;
-  return `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify({
-    protocol: AXE_RUN_RESULT_PROTOCOL,
-    status: "invalid",
-    code: classified ? error.code : "classification_failed",
-    ...(classified && Number.isSafeInteger(error.actual) ? { actual: error.actual } : {}),
-    ...(classified && Number.isSafeInteger(error.limit) ? { limit: error.limit } : {})
-  })}\n`;
+  return serializeAxeMachineResult(classificationErrorResult(error));
 }
 
 export function formatAxeFailureDetail(report) {
@@ -204,7 +248,7 @@ export function formatAxeFailureDetail(report) {
 }
 
 function normalizeFinding(violation, preparedNodes) {
-  const finding = violation !== null && typeof violation === "object" ? violation : {};
+  const finding = violation;
   const impact = KNOWN_IMPACTS.has(finding.impact) ? finding.impact : "unknown";
   const rawImpact =
     impact === "unknown" && typeof finding.impact === "string"
@@ -232,7 +276,7 @@ function normalizeFinding(violation, preparedNodes) {
 }
 
 function normalizeNode(node) {
-  const findingNode = node !== null && typeof node === "object" ? node : {};
+  const findingNode = node;
   const target = boundedTarget(findingNode.target);
   const failureSummary = boundedText(
     findingNode.failureSummary,
@@ -269,6 +313,9 @@ function boundedTarget(target) {
 
   const visit = (value, depth) => {
     if (stopped) return;
+    if (value !== null && typeof value === "object" && isProxy(value)) {
+      throw new AxeResultClassificationError("invalid_findings", "Axe target proxies are forbidden.");
+    }
     if (typeof value === "string") {
       if (partCount >= AXE_RESULT_LIMITS.targetParts) {
         truncated = true;
@@ -289,8 +336,9 @@ function boundedTarget(target) {
       return;
     }
 
-    const entryCount = Math.min(value.length, AXE_RESULT_LIMITS.targetArrayEntries);
-    if (value.length > entryCount) truncated = true;
+    const targetLength = readPlainArrayLength(value, "invalid_findings", "Axe targets must use plain arrays.");
+    const entryCount = Math.min(targetLength, AXE_RESULT_LIMITS.targetArrayEntries);
+    if (targetLength > entryCount) truncated = true;
     for (let index = 0; index < entryCount && !stopped; index += 1) {
       if (codePointCount >= AXE_RESULT_LIMITS.targetCodePoints) {
         truncated = true;
@@ -303,11 +351,17 @@ function boundedTarget(target) {
         stopped = true;
         break;
       }
-      if (!Object.hasOwn(value, index)) {
+      const entry = readOwnArrayEntry(
+        value,
+        index,
+        "invalid_findings",
+        "Axe target entries must be own data properties."
+      );
+      if (!entry.present) {
         truncated = true;
         continue;
       }
-      visit(value[index], depth + 1);
+      visit(entry.value, depth + 1);
     }
   };
 
@@ -374,6 +428,17 @@ function createMachineResultBudget() {
         );
       }
       size = nextSize;
+    },
+    rejectMinimumAscii(bytes) {
+      throw classificationLimitError(
+        "machine_result_too_large",
+        "Axe machine result UTF-8 size",
+        size + bytes,
+        AXE_RESULT_LIMITS.machineResultUtf8Bytes
+      );
+    },
+    remainingAscii() {
+      return AXE_RESULT_LIMITS.machineResultUtf8Bytes - size;
     }
   });
 }
@@ -402,12 +467,15 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
   if (typeof value !== "object") {
     throw new AxeResultClassificationError("invalid_machine_result", "Axe machine result values must be JSON-safe.");
   }
+  if (isProxy(value)) {
+    throw new AxeResultClassificationError("invalid_machine_result", "Axe machine result proxies are forbidden.");
+  }
 
   const prototype = Object.getPrototypeOf(value);
   if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
     throw new AxeResultClassificationError("invalid_machine_result", "Axe machine result objects must be plain.");
   }
-  if (findPropertyDescriptor(value, "toJSON") !== undefined) {
+  if (Object.getOwnPropertyDescriptor(value, "toJSON") !== undefined) {
     throw new AxeResultClassificationError("invalid_machine_result", "Axe machine result toJSON hooks are forbidden.");
   }
   if (ancestors.has(value)) {
@@ -416,30 +484,34 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      const snapshot = new Array(value.length);
+      const length = readPlainArrayLength(value, "invalid_machine_result", "Axe machine result arrays must be plain.");
       budget.chargeAscii(2);
-      for (let index = 0; index < value.length; index += 1) {
-        if (index > 0) budget.chargeAscii(1);
-        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-        if (descriptor === undefined) {
+      const minimumEntryBytes = length === 0 ? 0 : length * 2 - 1;
+      if (minimumEntryBytes > budget.remainingAscii()) budget.rejectMinimumAscii(minimumEntryBytes);
+      const snapshot = [];
+      for (let index = 0; index < length; index += 1) {
+        const entry = readOwnArrayEntry(
+          value,
+          index,
+          "invalid_machine_result",
+          "Axe machine result array entries must be own data properties."
+        );
+        if (!entry.present) {
           if (String(index) in value) {
             throw new AxeResultClassificationError(
               "invalid_machine_result",
               "Axe machine result arrays may not inherit indexed values."
             );
           }
-          budget.chargeAscii(4);
-          snapshot[index] = null;
+          budget.chargeAscii(index > 0 ? 5 : 4);
+          snapshot.push(null);
         } else {
-          if (!("value" in descriptor)) {
-            throw new AxeResultClassificationError(
-              "invalid_machine_result",
-              "Axe machine result accessors are forbidden."
-            );
-          }
-          snapshot[index] = snapshotJsonValue(descriptor.value, budget, ancestors, depth + 1);
+          if (index > 0) budget.chargeAscii(1);
+          const snapshotEntry = snapshotJsonValue(entry.value, budget, ancestors, depth + 1);
+          snapshot.push(snapshotEntry);
         }
       }
+      Object.setPrototypeOf(snapshot, null);
       return snapshot;
     }
 
@@ -447,7 +519,6 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
     let propertyCount = 0;
     budget.chargeAscii(2);
     for (const key in value) {
-      if (!Object.hasOwn(value, key)) continue;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor === undefined || !descriptor.enumerable) continue;
       if (!("value" in descriptor)) {
@@ -498,14 +569,124 @@ function isShortJsonEscape(codeUnit) {
   return codeUnit === 0x08 || codeUnit === 0x09 || codeUnit === 0x0a || codeUnit === 0x0c || codeUnit === 0x0d;
 }
 
-function findPropertyDescriptor(value, property) {
-  let current = value;
-  while (current !== null) {
-    const descriptor = Object.getOwnPropertyDescriptor(current, property);
-    if (descriptor !== undefined) return descriptor;
-    current = Object.getPrototypeOf(current);
+function classificationErrorResult(error) {
+  const result = { protocol: AXE_RUN_RESULT_PROTOCOL, status: "invalid", code: "classification_failed" };
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    isProxy(error) ||
+    !(error instanceof AxeResultClassificationError)
+  ) {
+    return result;
   }
-  return undefined;
+  try {
+    const code = readOwnDataProperty(
+      error,
+      "code",
+      "invalid_machine_result",
+      "Axe classification errors must use own data properties."
+    );
+    if (!CLASSIFICATION_ERROR_CODES.has(code)) return result;
+    result.code = code;
+    const actual = readOwnDataProperty(
+      error,
+      "actual",
+      "invalid_machine_result",
+      "Axe classification errors must use own data properties."
+    );
+    const limit = readOwnDataProperty(
+      error,
+      "limit",
+      "invalid_machine_result",
+      "Axe classification errors must use own data properties."
+    );
+    if (Number.isSafeInteger(actual)) result.actual = actual;
+    if (Number.isSafeInteger(limit)) result.limit = limit;
+    return result;
+  } catch {
+    return { protocol: AXE_RUN_RESULT_PROTOCOL, status: "invalid", code: "classification_failed" };
+  }
+}
+
+function snapshotFinding(finding) {
+  return Object.freeze({
+    impact: readOwnDataProperty(
+      finding,
+      "impact",
+      "invalid_findings",
+      "Axe finding fields must be own data properties."
+    ),
+    id: readOwnDataProperty(finding, "id", "invalid_findings", "Axe finding fields must be own data properties."),
+    help: readOwnDataProperty(finding, "help", "invalid_findings", "Axe finding fields must be own data properties.")
+  });
+}
+
+function snapshotFindingNodes(nodes, count) {
+  const values = [];
+  for (let index = 0; index < count; index += 1) {
+    const entry = readOwnArrayEntry(nodes, index, "invalid_findings", "Axe node entries must be own data properties.");
+    const node = requireOptionalPlainRecord(
+      entry.present ? entry.value : undefined,
+      "invalid_findings",
+      "Axe nodes must contain plain objects."
+    );
+    values.push(
+      Object.freeze({
+        target: readOwnDataProperty(node, "target", "invalid_findings", "Axe node fields must be own data properties."),
+        failureSummary: readOwnDataProperty(
+          node,
+          "failureSummary",
+          "invalid_findings",
+          "Axe node fields must be own data properties."
+        )
+      })
+    );
+  }
+  return Object.freeze({ values: Object.freeze(values), count });
+}
+
+function requireOptionalPlainRecord(value, code, message) {
+  if (value === undefined || value === null || typeof value !== "object") return Object.freeze({});
+  return requirePlainRecord(value, code, message);
+}
+
+function requirePlainRecord(value, code, message) {
+  if (value === null || typeof value !== "object" || isProxy(value)) {
+    throw new AxeResultClassificationError(code, message);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new AxeResultClassificationError(code, message);
+  }
+  return value;
+}
+
+function readPlainArrayLength(value, code, message) {
+  if (value === null || typeof value !== "object" || isProxy(value) || !Array.isArray(value)) {
+    throw new AxeResultClassificationError(code, message);
+  }
+  if (Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new AxeResultClassificationError(code, message);
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, "length");
+  if (descriptor === undefined || !("value" in descriptor) || !Number.isSafeInteger(descriptor.value)) {
+    throw new AxeResultClassificationError(code, message);
+  }
+  return descriptor.value;
+}
+
+function readOwnArrayEntry(value, index, code, message) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+  if (descriptor === undefined) return { present: false, value: undefined };
+  if (!("value" in descriptor)) throw new AxeResultClassificationError(code, message);
+  return { present: true, value: descriptor.value };
+}
+
+function readOwnDataProperty(value, property, code, message) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, property);
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor)) throw new AxeResultClassificationError(code, message);
+  return descriptor.value;
 }
 
 function classificationLimitError(code, label, actual, limit) {

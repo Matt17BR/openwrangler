@@ -292,6 +292,111 @@ test("Axe aggregate node budgets preflight 512 maximum-node findings and rejecte
   }
 });
 
+test("Axe input snapshots reject proxies and array accessors before invoking hostile code", () => {
+  let proxyTrapCalls = 0;
+  const hostileHandler = {
+    get() {
+      proxyTrapCalls += 1;
+      throw new Error("Axe classification invoked a proxy get trap.");
+    },
+    getOwnPropertyDescriptor() {
+      proxyTrapCalls += 1;
+      throw new Error("Axe classification invoked a proxy descriptor trap.");
+    },
+    getPrototypeOf() {
+      proxyTrapCalls += 1;
+      throw new Error("Axe classification invoked a proxy prototype trap.");
+    },
+    ownKeys() {
+      proxyTrapCalls += 1;
+      throw new Error("Axe classification invoked a proxy key trap.");
+    }
+  };
+  for (const input of [
+    new Proxy({ harness: "proxy-envelope.html", violations: [] }, hostileHandler),
+    { harness: "proxy-violations.html", violations: new Proxy([], hostileHandler) },
+    {
+      harness: "proxy-finding.html",
+      violations: [new Proxy({ id: "proxy", impact: "minor", nodes: [] }, hostileHandler)]
+    },
+    {
+      harness: "proxy-nodes.html",
+      violations: [axeViolation({ id: "proxy", impact: "minor", nodes: new Proxy([], hostileHandler) })]
+    },
+    {
+      harness: "proxy-target.html",
+      violations: [
+        axeViolation({
+          id: "proxy",
+          impact: "minor",
+          nodes: [{ target: new Proxy([".unsafe"], hostileHandler), failureSummary: "failed" }]
+        })
+      ]
+    }
+  ]) {
+    assert.throws(
+      () => classifyAxeScanResult(input),
+      (error) => error instanceof AxeResultClassificationError && error.code === "invalid_findings"
+    );
+  }
+  assert.equal(proxyTrapCalls, 0);
+
+  let elementAccessorCalls = 0;
+  const driftingNodes = Array(1);
+  Object.defineProperty(driftingNodes, 0, {
+    get() {
+      elementAccessorCalls += 1;
+      driftingNodes.length = 0;
+      return { target: [".unsafe"], failureSummary: "failed" };
+    }
+  });
+  assert.throws(
+    () =>
+      classifyAxeScanResult({
+        harness: "length-drift.html",
+        violations: [axeViolation({ id: "length-drift", impact: "minor", nodes: driftingNodes })]
+      }),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_findings"
+  );
+  assert.equal(elementAccessorCalls, 0);
+  assert.equal(driftingNodes.length, 1);
+});
+
+test("Axe reports retain only bounded normalized diagnostics after recording", () => {
+  const sourceTarget = [".before"];
+  const sourceNode = { target: sourceTarget, failureSummary: "before failure" };
+  const sourceNodes = Array(AXE_RESULT_LIMITS.nodesPerFinding).fill(sourceNode);
+  const collector = createAxeResultCollector();
+  collector.record({
+    harness: "retained-memory.html",
+    violations: [axeViolation({ id: "retained-memory", impact: "minor", nodes: sourceNodes })]
+  });
+  const report = collector.report();
+
+  sourceTarget[0] = ".after";
+  sourceNode.failureSummary = "after failure";
+  sourceNodes.fill({ target: [".replacement"], failureSummary: "replacement" });
+
+  const finding = report.scans[0].findings[0];
+  assert.equal(finding.nodeCount, AXE_RESULT_LIMITS.nodesPerFinding);
+  assert.equal(finding.nodes.length, AXE_RESULT_LIMITS.diagnosticNodesPerFinding);
+  assert.equal(finding.nodes[0].target, ".before");
+  assert.equal(finding.nodes[0].failureSummary, "before failure");
+  const retained = new Set();
+  const visit = (value) => {
+    if (value === null || typeof value !== "object" || retained.has(value)) return;
+    retained.add(value);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && "value" in descriptor) visit(descriptor.value);
+    }
+  };
+  visit(report);
+  assert.equal(retained.has(sourceNodes), false);
+  assert.equal(retained.has(sourceNode), false);
+  assert.equal(retained.has(sourceTarget), false);
+});
+
 test("Axe machine-result size includes the prefix and exactly one newline", () => {
   const emptyRecord = `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify({ padding: "" })}\n`;
   const paddingBytes = AXE_RESULT_LIMITS.machineResultUtf8Bytes - Buffer.byteLength(emptyRecord, "utf8");
@@ -339,6 +444,31 @@ test("Axe machine-result size includes the prefix and exactly one newline", () =
   );
 });
 
+test("Axe machine-result sparse arrays pass at the exact byte boundary and fail at plus one entry", () => {
+  const emptyRecord = `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify({ padding: "", values: [] })}\n`;
+  const availableBytes = AXE_RESULT_LIMITS.machineResultUtf8Bytes - Buffer.byteLength(emptyRecord, "utf8");
+  const sparseLength = Math.floor((availableBytes + 1) / 5);
+  const sparseArrayBytes = sparseLength * 5 - 1;
+  const padding = "x".repeat(availableBytes - sparseArrayBytes);
+  const exactSparse = [];
+  exactSparse.length = sparseLength;
+
+  const exactRecord = serializeAxeMachineResult({ padding, values: exactSparse });
+  assert.equal(Buffer.byteLength(exactRecord, "utf8"), AXE_RESULT_LIMITS.machineResultUtf8Bytes);
+  assert.deepEqual(JSON.parse(exactRecord.slice(AXE_MACHINE_RESULT_PREFIX.length)).values.length, sparseLength);
+
+  const oversizedSparse = [];
+  oversizedSparse.length = sparseLength + 1;
+  assert.throws(
+    () => serializeAxeMachineResult({ padding, values: oversizedSparse }),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "machine_result_too_large" &&
+      error.actual === AXE_RESULT_LIMITS.machineResultUtf8Bytes + 5 &&
+      error.limit === AXE_RESULT_LIMITS.machineResultUtf8Bytes
+  );
+});
+
 test("Axe machine-result charging rejects toJSON and accessors without invoking them", () => {
   let toJSONCalls = 0;
   const hooked = {
@@ -368,6 +498,78 @@ test("Axe machine-result charging rejects toJSON and accessors without invoking 
     (error) => error instanceof AxeResultClassificationError && error.code === "invalid_machine_result"
   );
   assert.equal(accessorCalls, 0);
+
+  let proxyTrapCalls = 0;
+  const proxyResult = new Proxy(
+    { padding: "unsafe" },
+    {
+      get() {
+        proxyTrapCalls += 1;
+        throw new Error("Axe serialization invoked a proxy get trap.");
+      },
+      getOwnPropertyDescriptor() {
+        proxyTrapCalls += 1;
+        throw new Error("Axe serialization invoked a proxy descriptor trap.");
+      },
+      getPrototypeOf() {
+        proxyTrapCalls += 1;
+        throw new Error("Axe serialization invoked a proxy prototype trap.");
+      }
+    }
+  );
+  assert.throws(
+    () => serializeAxeMachineResult(proxyResult),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_machine_result"
+  );
+  assert.equal(proxyTrapCalls, 0);
+
+  let arrayAccessorCalls = 0;
+  const driftingArray = Array(1);
+  Object.defineProperty(driftingArray, 0, {
+    get() {
+      arrayAccessorCalls += 1;
+      driftingArray.length = 0;
+      return "unsafe";
+    }
+  });
+  assert.throws(
+    () => serializeAxeMachineResult(driftingArray),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_machine_result"
+  );
+  assert.equal(arrayAccessorCalls, 0);
+  assert.equal(driftingArray.length, 1);
+});
+
+test("Axe classification errors emit only allowlisted bounded codes through the machine serializer", () => {
+  const oversizedCode = `private-${"x".repeat(AXE_RESULT_LIMITS.machineResultUtf8Bytes)}`;
+  const serialized = serializeAxeClassificationError(
+    new AxeResultClassificationError(oversizedCode, "private failure", {
+      actual: Number.MAX_SAFE_INTEGER,
+      limit: Number.MAX_SAFE_INTEGER
+    })
+  );
+  assert.deepEqual(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "classification_failed"
+  });
+  assert.ok(Buffer.byteLength(serialized, "utf8") < 256);
+  assert.doesNotMatch(serialized, /private-/u);
+
+  let codeAccessorCalls = 0;
+  const accessorError = new AxeResultClassificationError("invalid_findings", "private failure");
+  Object.defineProperty(accessorError, "code", {
+    get() {
+      codeAccessorCalls += 1;
+      return "invalid_findings";
+    }
+  });
+  assert.deepEqual(JSON.parse(serializeAxeClassificationError(accessorError).slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "classification_failed"
+  });
+  assert.equal(codeAccessorCalls, 0);
 });
 
 function readinessScope({
