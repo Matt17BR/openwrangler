@@ -152,17 +152,6 @@ function runnerEnvironment(overrides = {}) {
   };
 }
 
-async function waitFor(paths) {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (paths.every((path) => existsSync(path))) {
-      return;
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-  }
-  throw new Error("timed out waiting for concurrent qualification children");
-}
-
 async function receipt(task) {
   return JSON.parse(await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"), "utf8"));
 }
@@ -175,7 +164,6 @@ test("isolates two concurrent worktree qualifications and seals their exact iden
   const shared = join(value.root, "shared-state-that-must-stay-empty");
   await mkdir(barrier);
   await mkdir(shared);
-  const release = join(barrier, "release");
   const firstReady = join(barrier, "first-ready");
   const secondReady = join(barrier, "second-ready");
 
@@ -205,24 +193,24 @@ test("isolates two concurrent worktree qualifications and seals their exact iden
     XDG_CACHE_HOME: shared,
     npm_config_cache: shared
   };
-  const firstRun = startRunner(first, "hold", ["--ready", firstReady, "--release", release], hostileSharedEnvironment);
-  const secondRun = startRunner(
-    second,
-    "hold",
-    ["--ready", secondReady, "--release", release],
-    hostileSharedEnvironment
-  );
-  await waitFor([firstReady, secondReady]);
-  await writeFile(release, "release\n", { flag: "wx", mode: 0o600 });
-  const [firstResult, secondResult] = await Promise.all([firstRun, secondRun]);
-  assert.deepEqual(
-    [firstResult.status, firstResult.signal, secondResult.status, secondResult.signal],
-    [0, null, 0, null],
-    `${firstResult.stderr}\n${secondResult.stderr}`
-  );
-
-  const firstReceipt = await receipt(first);
-  const secondReceipt = await receipt(second);
+  const commonRunOptions = {
+    environment: runnerEnvironment(hostileSharedEnvironment),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  };
+  const [firstReceipt, secondReceipt] = await Promise.all([
+    runQualification({
+      ...commonRunOptions,
+      assignmentPath: first.assignmentPath,
+      command: [process.execPath, child, "hold", "--ready", firstReady, "--peer", secondReady]
+    }),
+    runQualification({
+      ...commonRunOptions,
+      assignmentPath: second.assignmentPath,
+      command: [process.execPath, child, "hold", "--ready", secondReady, "--peer", firstReady]
+    })
+  ]);
   assert.equal(firstReceipt.protocol, RECEIPT_PROTOCOL);
   assert.equal(secondReceipt.protocol, RECEIPT_PROTOCOL);
   assert.equal(firstReceipt.eligible, true);
