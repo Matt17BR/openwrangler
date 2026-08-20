@@ -119,9 +119,9 @@ The notebook launch command uses the same **Open in Open Wrangler** primary and 
 
 ## Runtime and engines
 
-PySpark 4.2 supports viewing local Classic and Connect batch DataFrames from live notebooks. It does not support
-files, editing, streaming DataFrames, remote or authenticated clusters, Spark setup, saved-output formatting,
-cleaning, exports, or persistence.
+Only stable, final PySpark 4.2.x releases support viewing local Classic and Connect batch DataFrames from live notebooks.
+Alpha, beta, release-candidate, and `.dev` builds are rejected before runtime session creation. PySpark does not support
+files, editing, streaming DataFrames, remote or authenticated clusters, Spark setup, saved-output formatting, cleaning, exports, or persistence.
 
 Every request that can run work against an open PySpark session carries its protocol request ID into the adapter. The runtime checks the notebook variable binding and Spark-session liveness before it touches the prior request state. This lets a replaced variable recover even when its old Classic Spark context has already stopped. Classic Spark then uses the request ID for a unique job group and restores the caller's prior job description, group, and interrupt-on-cancel properties afterward, including after an error. It does not change job tags, scheduler pools, or signal handlers. Terminal close skips this scope because it schedules no Spark action and must work after a Spark context stops. Spark Connect already gives each action its own operation ID and handles `KeyboardInterrupt` against that operation. Its public action API does not accept a caller-supplied operation ID, so Open Wrangler keeps the protocol ID in local request state and does not patch the Connect client or add tags.
 

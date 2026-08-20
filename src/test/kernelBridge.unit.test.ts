@@ -116,6 +116,96 @@ describe("kernel retry classification", () => {
     expect(requests[0]).toMatchObject({ kind: "openSession", backend: "pyspark" });
   });
 
+  it("does not carry automatic PySpark qualification from kernel A into a non-PySpark retry on kernel B", async () => {
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const stages: string[] = [];
+    let currentKernel: Kernel;
+    const kernelB = controlledNonPySparkKernel("pandas", requestsB);
+    const kernelA = controlledPySparkKernel("4.2.0", requestsA, () => {
+      currentKernel = kernelB.kernel;
+    });
+    currentKernel = kernelA.kernel;
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+
+    await expect(
+      createKernelBridge().request(unpinnedOpenRequest("automatic-a-to-b"), {
+        onOpenProgress: (stage) => stages.push(stage)
+      })
+    ).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { backend: "pandas", sessionId: "automatic-a-to-b" }
+    });
+
+    expect(kernelA.preflightExecutionCount()).toBe(1);
+    expect(kernelB.preflightExecutionCount()).toBe(1);
+    expect(requestsA).toEqual([]);
+    expect(requestsB).toHaveLength(1);
+    expect(requestsB[0]).toMatchObject({ kind: "openSession", requestedSessionId: "automatic-a-to-b" });
+    expect(requestsB[0]).not.toHaveProperty("backend");
+    expect(stages.at(-1)).toBe("openingNotebookVariable");
+  });
+
+  it("rebuilds automatic framing across repeated retry cycles without publishing stale sessions", async () => {
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const requestsC: OpenWranglerRequest[] = [];
+    const requestsD: OpenWranglerRequest[] = [];
+    const stages: string[] = [];
+    let currentKernel: Kernel;
+    const kernelD = controlledNonPySparkKernel("polars", requestsD);
+    const kernelC = controlledPySparkKernel("4.2.1", requestsC, () => {
+      currentKernel = kernelD.kernel;
+    });
+    const kernelB = controlledNonPySparkKernel("pandas", requestsB);
+    const kernelA = controlledPySparkKernel("4.2.0", requestsA, () => {
+      currentKernel = kernelB.kernel;
+    });
+    currentKernel = kernelA.kernel;
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+
+    const bridge = createKernelBridge();
+
+    await expect(
+      bridge.request(unpinnedOpenRequest("automatic-a-to-b-first"), {
+        onOpenProgress: (stage) => stages.push(stage)
+      })
+    ).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { backend: "pandas", sessionId: "automatic-a-to-b-first" }
+    });
+
+    currentKernel = kernelC.kernel;
+    kernelB.setStatus("restarting");
+    await expect(
+      bridge.request(unpinnedOpenRequest("automatic-c-to-d-second"), {
+        onOpenProgress: (stage) => stages.push(stage)
+      })
+    ).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { backend: "polars", sessionId: "automatic-c-to-d-second" }
+    });
+
+    expect(kernelA.preflightExecutionCount()).toBe(1);
+    expect(kernelB.preflightExecutionCount()).toBe(1);
+    expect(kernelC.preflightExecutionCount()).toBe(1);
+    expect(kernelD.preflightExecutionCount()).toBe(1);
+    expect(requestsA).toEqual([]);
+    expect(requestsB).toHaveLength(1);
+    expect(requestsB[0]).toMatchObject({ kind: "openSession", requestedSessionId: "automatic-a-to-b-first" });
+    expect(requestsB[0]).not.toHaveProperty("backend");
+    expect(requestsC).toEqual([]);
+    expect(requestsD).toHaveLength(1);
+    expect(requestsD[0]).toMatchObject({ kind: "openSession", requestedSessionId: "automatic-c-to-d-second" });
+    expect(requestsD[0]).not.toHaveProperty("backend");
+    expect(stages.filter((stage) => stage === "preparingSparkView")).toEqual([]);
+    expect(stages.at(-1)).toBe("openingNotebookVariable");
+  });
+
   it("rejects a pinned PySpark open when the variable is no longer a PySpark DataFrame", async () => {
     const requests: OpenWranglerRequest[] = [];
     const controller = controlledNonPySparkKernel("pandas", requests);

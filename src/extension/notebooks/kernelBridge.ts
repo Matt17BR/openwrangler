@@ -488,6 +488,11 @@ export class KernelBridge implements OpenWranglerBridge {
             });
           },
           beforeDispatch: async (acquired) => {
+            // Qualification belongs only to this exact observed kernel. A
+            // superseded attempt may have narrowed an automatic open to
+            // PySpark, so always restore the caller's original framing before
+            // inspecting the replacement generation.
+            framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
             assertRequiredKernel(acquired);
             const observation = this.requireKernelObservation(acquired);
             requestObservation = observation;

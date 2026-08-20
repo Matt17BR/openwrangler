@@ -20,6 +20,7 @@ import ts from "typescript";
 import { editorProcessTreeMayBeLive, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 import {
   R_ACCEPTANCE_PACKAGE_VERSIONS,
+  RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION,
   acceptancePythonForPhase,
   addJupyterAcceptancePythonKernel,
   appendJupyterAcceptanceRKernelBootstrapStage,
@@ -1722,6 +1723,84 @@ test("released-Jupyter installs its released compatibility versions into a clean
     );
     assert.equal(kernelSpec.argv[0], kernelPython);
     assert.notEqual(kernelSpec.argv[0], basePython);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter provisions the separately named PySpark prerelease-denial distribution without stable qualification", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-prerelease-denial-"));
+  const basePython = join(directory, "base-python");
+  const environmentDirectory = join(directory, "private-kernel");
+  const commands = [];
+  const requirement =
+    `pyspark @ https://files.pythonhosted.org/packages/aa/bb/` +
+    `pyspark-${RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION}.tar.gz#sha256=${"a".repeat(64)}`;
+  try {
+    await writeFile(basePython, "test interpreter placeholder\n");
+    const kernelPython = await createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
+      containedBy: directory,
+      environment: Object.freeze({ PATH: "/bounded-test-path" }),
+      platform: "linux",
+      pysparkDistribution: {
+        mode: "prerelease-denial",
+        requirement,
+        version: RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION
+      },
+      async runCommand(input, options) {
+        commands.push({ input, options });
+        if (input.label === "Released-Jupyter PySpark Java compatibility probe") return javaReport();
+        if (input.label === "Released-Jupyter base dependency version probe") {
+          return { stdout: JSON.stringify(dependencyReport(true)) };
+        }
+        if (input.label === "Released-Jupyter private kernel environment creation") {
+          const venvDirectory = input.args.at(-1);
+          mkdirSync(join(venvDirectory, "bin"), { recursive: true });
+          writeFileSync(join(venvDirectory, "bin", "python"), "private interpreter placeholder\n");
+          return { stdout: "" };
+        }
+        if (input.label === "Released-Jupyter private kernel dependency probe") {
+          return {
+            stdout: JSON.stringify(dependencyReport(false, { pyspark: RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION }))
+          };
+        }
+        return { stdout: "" };
+      }
+    });
+
+    assert.equal(kernelPython, join(environmentDirectory, "v", "bin", "python"));
+    assert.equal(commands[4].input.label, "Released-Jupyter private kernel PySpark installation");
+    assert.equal(commands[4].input.args.at(-1), requirement);
+    assert.equal(commands[5].input.label, "Released-Jupyter private kernel dependency probe");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter rejects mismatched prerelease-denial distribution receipts before probing or provisioning", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-prerelease-invalid-"));
+  const basePython = join(directory, "base-python");
+  let commands = 0;
+  try {
+    await writeFile(basePython, "test interpreter placeholder\n");
+    await assert.rejects(
+      createJupyterAcceptanceKernelPython(join(directory, "private-kernel"), basePython, {
+        containedBy: directory,
+        pysparkDistribution: {
+          mode: "prerelease-denial",
+          requirement:
+            `pyspark @ https://files.pythonhosted.org/packages/aa/bb/` +
+            `pyspark-4.2.0.tar.gz#sha256=${"a".repeat(64)}`,
+          version: "4.2.0"
+        },
+        async runCommand() {
+          commands += 1;
+          return { stdout: "" };
+        }
+      }),
+      /mode does not match its exact expected version/u
+    );
+    assert.equal(commands, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

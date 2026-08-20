@@ -4,8 +4,8 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
-The parity table covers Pandas and Polars. DuckDB file support is experimental. Local PySpark 4.2 Classic/Connect
-notebook viewing has its own acceptance table below; neither changes what counts as Done for Pandas or Polars.
+The parity table covers Pandas and Polars. DuckDB file support is experimental. Local stable/final PySpark 4.2.x
+Classic/Connect notebook viewing has its own acceptance table below; neither changes what counts as Done for Pandas or Polars.
 
 VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open Wrangler 1.2.0 passed one bounded Antigravity Linux x64 install, activation, file-open, source-immutability, and cleanup smoke through Open VSX; the exact non-release-blocking record and its limitations are in [testing](testing.md#experimental-antigravity-smoke). Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
@@ -462,10 +462,10 @@ The real packaged-Jupyter allow path records the following behavior:
 
 ## PySpark live-notebook viewer
 
-Open Wrangler supports viewing local PySpark 4.2.x Classic and Connect batch DataFrames from live Jupyter notebooks
-in VS Code and Cursor. PySpark support is notebook-only and view-only. Open Wrangler uses the notebook's existing
-Spark session and does not install or configure Spark. Streaming DataFrames, files, cleaning, exports, saved output,
-remote or authenticated clusters, and Spark provisioning are not supported.
+Open Wrangler supports viewing local stable/final PySpark 4.2.x Classic and Connect batch DataFrames from live Jupyter
+notebooks in VS Code and Cursor. Alpha, beta, RC, and `.dev` builds are rejected before runtime session creation.
+PySpark is notebook-only and view-only. It uses the notebook's existing Spark session and does not install or configure
+Spark. Streaming DataFrames, files, cleaning, exports, saved output, remote or authenticated clusters, and Spark provisioning are not supported.
 
 Every open checks the value and PySpark version in the exact selected kernel before creating a session. The first
 grid block loads without counting, globally indexing, or caching the whole dataframe. Pages advance sequentially,
@@ -496,7 +496,7 @@ run-to-run variation. These measurements are used to spot regressions; they are 
 
 | Surface                                        | v1.2 support       | Status       | Recorded evidence                                      | Boundary                                      |
 | ---------------------------------------------- | ------------------ | ------------ | ------------------------------------------------------ | --------------------------------------------- |
-| Local Classic DataFrame viewing                | Live notebook only | Done         | Version probe plus comprehensive VS Code package phase | PySpark 4.2.x                                 |
+| Local Classic DataFrame viewing                | Live notebook only | Done         | Version probe plus comprehensive VS Code package phase | Stable/final 4.2.x; previews rejected         |
 | Local Spark Connect DataFrame viewing          | Live notebook only | Done         | Comprehensive VS Code package launch and page queries  | Local Connect only                            |
 | Progressive projected grid pages               | Viewing only       | Done         | Bounded blocks, lookahead, boundary checks, exact end  | Sequential traversal                          |
 | Basic/advanced filters and multi-column sorts  | Viewing only       | Done         | Native expressions and packaged filtered/sorted pages  | Unique final key needed for repeatable ties   |

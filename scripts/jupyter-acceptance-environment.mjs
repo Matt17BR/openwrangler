@@ -58,6 +58,12 @@ const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
 });
 const PYSPARK_SOURCE_REQUIREMENT =
   "pyspark @ https://files.pythonhosted.org/packages/c3/33/c987434f5d50aa802779a004ca0fd45ee4350caab50554ad7283d5a22b50/pyspark-4.2.0.tar.gz#sha256=5ad689d53570ee1674193fd4f9bda065f0db3be9363a27d2a3406cc457b70b61";
+export const RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION = "4.2.0.dev5";
+const RELEASED_PYSPARK_STABLE_DISTRIBUTION = Object.freeze({
+  mode: "stable-qualification",
+  requirement: PYSPARK_SOURCE_REQUIREMENT,
+  version: RELEASED_JUPYTER_COMPATIBILITY_VERSIONS.pyspark
+});
 const BOUNDED_PYTHON_VERSION =
   /^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:(?:\.post|\.dev)[0-9]+)*(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/iu;
 const BOUNDED_JAVA_VERSION = /^[0-9][0-9A-Za-z._+-]{0,127}$/u;
@@ -441,10 +447,12 @@ export async function createJupyterAcceptanceKernelPython(
     containedBy,
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
+    pysparkDistribution = RELEASED_PYSPARK_STABLE_DISTRIBUTION,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
   validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand);
+  const exactPySparkDistribution = validateReleasedPySparkDistribution(pysparkDistribution);
   const java = await probeJupyterAcceptanceJava({
     environment,
     runCommand
@@ -454,6 +462,7 @@ export async function createJupyterAcceptanceKernelPython(
     containedBy,
     environment,
     platform,
+    pysparkDistribution: exactPySparkDistribution,
     runCommand,
     includePySpark: true,
     labels: Object.freeze({
@@ -518,7 +527,7 @@ function validateJupyterAcceptanceKernelPythonInput(directory, basePython, conta
 async function createJupyterAcceptanceKernelPythonEnvironment(
   directory,
   basePython,
-  { containedBy, environment, platform, runCommand, includePySpark, labels }
+  { containedBy, environment, platform, runCommand, includePySpark, labels, pysparkDistribution }
 ) {
   await probeJupyterAcceptancePython(basePython, {
     environment,
@@ -585,7 +594,7 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
           "--no-warn-script-location",
           "--no-cache-dir",
           "--no-deps",
-          PYSPARK_SOURCE_REQUIREMENT
+          pysparkDistribution.requirement
         ],
         environment,
         label: labels.pysparkInstall
@@ -603,7 +612,9 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
     runCommand
   });
   for (const dependency of includePySpark ? DEPENDENCIES : CORE_DEPENDENCIES) {
-    if (installedVersions[dependency] !== RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]) {
+    const expectedVersion =
+      dependency === "pyspark" ? pysparkDistribution.version : RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency];
+    if (installedVersions[dependency] !== expectedVersion) {
       throw new Error(`${labels.compatibility} did not retain the ${dependency} compatibility version.`);
     }
   }
@@ -618,6 +629,53 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
     );
   }
   return kernelPython;
+}
+
+function validateReleasedPySparkDistribution(value) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== "mode\0requirement\0version" ||
+    !["stable-qualification", "prerelease-denial"].includes(value.mode) ||
+    typeof value.version !== "string" ||
+    typeof value.requirement !== "string" ||
+    value.requirement.length > 2_048 ||
+    /[\0\r\n]/u.test(value.requirement)
+  ) {
+    throw new Error("Released-Jupyter PySpark provisioning requires one exact bounded distribution receipt.");
+  }
+  const expectedVersion =
+    value.mode === "stable-qualification"
+      ? RELEASED_JUPYTER_COMPATIBILITY_VERSIONS.pyspark
+      : RELEASED_PYSPARK_PRERELEASE_DENIAL_VERSION;
+  if (value.version !== expectedVersion) {
+    throw new Error("Released-Jupyter PySpark provisioning mode does not match its exact expected version.");
+  }
+  const prefix = "pyspark @ ";
+  if (!value.requirement.startsWith(prefix)) {
+    throw new Error("Released-Jupyter PySpark provisioning requires one hash-pinned PyPI source distribution.");
+  }
+  let distributionUrl;
+  try {
+    distributionUrl = new URL(value.requirement.slice(prefix.length));
+  } catch {
+    throw new Error("Released-Jupyter PySpark provisioning requires one valid source-distribution URL.");
+  }
+  if (
+    distributionUrl.protocol !== "https:" ||
+    distributionUrl.hostname !== "files.pythonhosted.org" ||
+    distributionUrl.port !== "" ||
+    distributionUrl.username !== "" ||
+    distributionUrl.password !== "" ||
+    distributionUrl.search !== "" ||
+    !/^#sha256=[a-f0-9]{64}$/u.test(distributionUrl.hash) ||
+    !distributionUrl.pathname.startsWith("/packages/") ||
+    !distributionUrl.pathname.endsWith(`/pyspark-${value.version}.tar.gz`)
+  ) {
+    throw new Error("Released-Jupyter PySpark provisioning requires one hash-pinned PyPI source distribution.");
+  }
+  return Object.freeze({ mode: value.mode, requirement: value.requirement, version: value.version });
 }
 
 export async function probeJupyterAcceptanceJava({
