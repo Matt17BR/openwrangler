@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   activationEventClassifications,
@@ -12,6 +14,8 @@ import {
   measureActivationTriggers,
   measureTransitiveRuntimeSources
 } from "./activation-trigger-budget.mjs";
+
+const execFileAsync = promisify(execFile);
 
 test("production activation trigger classes stay within their dependency-free cold-load budgets", async () => {
   const report = await measureActivationTriggers();
@@ -51,6 +55,14 @@ test("production activation trigger classes stay within their dependency-free co
   assert.equal(report.activationEvents.discovered.length, Object.keys(activationEventClassifications).length);
   assert.equal(report.activationEvents.explicit.length, 51);
   assert.equal(report.activationEvents.contributedCommands.length, 43);
+  assert.deepEqual(report.activationEvents.contributedViews, [
+    "openWrangler.cleaningSteps",
+    "openWrangler.codePreview",
+    "openWrangler.filters",
+    "openWrangler.operations",
+    "openWrangler.summary"
+  ]);
+  assert.deepEqual(report.activationEvents.contributedCustomEditors, ["openWrangler.viewer"]);
   assert.deepEqual(
     report.activationEvents.contributionDerived.filter((event) => !report.activationEvents.explicit.includes(event)),
     ["onCommand:openWrangler.openCachedNotebookVariable"]
@@ -58,6 +70,8 @@ test("production activation trigger classes stay within their dependency-free co
   assert.deepEqual(report.activationEvents.unclassified, []);
   assert.deepEqual(report.activationEvents.staleClassifications, []);
   assert.deepEqual(report.activationEvents.occurrenceMismatches, []);
+  assert.deepEqual(report.activationEvents.contributedViewOccurrenceMismatches, []);
+  assert.deepEqual(report.activationEvents.contributedCustomEditorOccurrenceMismatches, []);
 });
 
 test("the gate rejects byte, module, and owner-isolation regressions", () => {
@@ -124,6 +138,31 @@ test("the audit discovers aliased loaders and contribution-derived activation th
   );
 });
 
+test("the audit derives implicit activation from mutated command, view, and custom-editor contributions", async () => {
+  await withInventoryFixture(
+    "export {};\n",
+    {
+      activationEvents: ["onCommand:fixture.explicit"],
+      contributes: {
+        commands: [{ command: "fixture.explicit" }, { command: "fixture.command" }],
+        views: { fixture: [{ id: "fixture.view" }] },
+        customEditors: [{ viewType: "fixture.editor" }]
+      }
+    },
+    async (report) => {
+      assert.deepEqual(report.activationEvents.contributionDerived, [
+        "onCommand:fixture.command",
+        "onCommand:fixture.explicit",
+        "onCustomEditor:fixture.editor",
+        "onView:fixture.view"
+      ]);
+      assert.deepEqual(report.activationEvents.discovered, report.activationEvents.contributionDerived);
+      assert.deepEqual(report.activationEvents.contributedViews, ["fixture.view"]);
+      assert.deepEqual(report.activationEvents.contributedCustomEditors, ["fixture.editor"]);
+    }
+  );
+});
+
 test("the syntax authority accepts parenthesized loaders and rejects regex, template, and string text", async () => {
   const source = [
     "const loadModule = (specifier) => import(specifier);",
@@ -142,6 +181,46 @@ test("the syntax authority accepts parenthesized loaders and rejects regex, temp
         "src/extension/fixture.ts|require|./parenthesized-require.js"
       ]
     );
+  });
+});
+
+test("the syntax authority recognizes namespace and CommonJS createRequire loaders", async () => {
+  await withInventoryFixture(
+    `
+      import * as moduleApi from "node:module";
+      const namespaceRequire = moduleApi.createRequire(import.meta.url);
+      const commonJsModule = require("node:module");
+      const commonJsRequire = commonJsModule.createRequire(__filename);
+      namespaceRequire("./namespace-owner.js");
+      commonJsRequire("./commonjs-owner.js");
+    `,
+    { activationEvents: [], contributes: { commands: [] } },
+    async (report) => {
+      assert.deepEqual(report.dynamicEdges.discovered, [
+        { key: "src/extension/fixture.ts|require|./commonjs-owner.js", occurrences: 1 },
+        { key: "src/extension/fixture.ts|require|./namespace-owner.js", occurrences: 1 },
+        { key: "src/extension/fixture.ts|require|node:module", occurrences: 1 }
+      ]);
+    }
+  );
+});
+
+test("transitive source discovery resolves .mjs and .cjs imports to .mts and .cts sources", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    await writeFile(path.join(sourceRoot, "entry.mts"), 'import "./module.mjs";\n', "utf8");
+    await writeFile(path.join(sourceRoot, "module.mts"), "export const moduleValue = 1;\n", "utf8");
+    await writeFile(path.join(sourceRoot, "entry.cts"), 'import "./common.cjs";\n', "utf8");
+    await writeFile(path.join(sourceRoot, "common.cts"), "export const commonValue = 1;\n", "utf8");
+
+    const report = await measureTransitiveRuntimeSources(root, ["src/extension/entry.mts", "src/extension/entry.cts"]);
+
+    assert.deepEqual(report.files, [
+      "src/extension/common.cts",
+      "src/extension/entry.cts",
+      "src/extension/entry.mts",
+      "src/extension/module.mts"
+    ]);
   });
 });
 
@@ -181,6 +260,82 @@ test("transitive source discovery rejects a path replacement between identity ch
   });
 });
 
+test(
+  "descriptor reads reject FIFO replacement and device sources without reading them",
+  { skip: process.platform === "win32" },
+  async () => {
+    await assert.rejects(measureTransitiveRuntimeSources("/", ["dev/null"]), /bounded regular file/u);
+    await withSourceFixture(async (root) => {
+      const sourceRoot = path.join(root, "src/extension");
+      const dependency = path.join(sourceRoot, "dependency.ts");
+      await writeFile(path.join(sourceRoot, "entry.ts"), 'import "./dependency.js";\n', "utf8");
+      await writeFile(dependency, "export const value = 1;\n", "utf8");
+      let replaced = false;
+
+      await assert.rejects(
+        measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
+          beforeDescriptorOpen: async (file) => {
+            if (file !== dependency || replaced) return;
+            replaced = true;
+            await rename(dependency, `${dependency}.previous`);
+            await execFileAsync("mkfifo", [dependency]);
+          }
+        }),
+        /changed identity before read/u
+      );
+    });
+    await withSourceFixture(async (root) => {
+      const sourceRoot = path.join(root, "src/extension");
+      const dependency = path.join(sourceRoot, "dependency.ts");
+      await writeFile(path.join(sourceRoot, "entry.ts"), 'import "./dependency.js";\n', "utf8");
+      await writeFile(dependency, "export const value = 1;\n", "utf8");
+
+      await assert.rejects(
+        measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
+          beforeDescriptorOpen: async (file) => {
+            if (file !== dependency) return;
+            await rename(dependency, `${dependency}.previous`);
+            await symlink("/dev/null", dependency);
+          }
+        }),
+        /escaped repository root|symlinked path/u
+      );
+    });
+  }
+);
+
+test("descriptor reads reject hard-linked source files", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    const entry = path.join(sourceRoot, "entry.ts");
+    await writeFile(entry, "export const value = 1;\n", "utf8");
+    await link(entry, path.join(sourceRoot, "entry-alias.ts"));
+
+    await assert.rejects(measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"]), /bounded regular file/u);
+  });
+});
+
+test("descriptor reads reject an in-place same-length mutation", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    const dependency = path.join(sourceRoot, "dependency.ts");
+    await writeFile(path.join(sourceRoot, "entry.ts"), 'import "./dependency.js";\n', "utf8");
+    await writeFile(dependency, "export const value = 1;\n", "utf8");
+    let mutated = false;
+
+    await assert.rejects(
+      measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
+        afterDescriptorRead: async (file) => {
+          if (file !== dependency || mutated) return;
+          mutated = true;
+          await writeFile(dependency, "export const value = 2;\n", "utf8");
+        }
+      }),
+      /changed identity during read/u
+    );
+  });
+});
+
 test("transitive source discovery rejects aggregate overflow before the next read", async () => {
   await withSourceFixture(async (root) => {
     const sourceRoot = path.join(root, "src/extension");
@@ -196,6 +351,44 @@ test("transitive source discovery rejects aggregate overflow before the next rea
       /aggregate source bound/u
     );
   });
+});
+
+test("production source discovery rejects deep and wide directory trees", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    await mkdir(path.join(sourceRoot, "one/two"), { recursive: true });
+    await writeFile(path.join(sourceRoot, "one/two/deep.ts"), "export {};\n", "utf8");
+
+    await assert.rejects(measureActivationInventory(root, { maximumDirectoryDepth: 1 }), /exceeds directory depth 1/u);
+  });
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    await Promise.all(
+      ["one.ts", "two.ts", "three.ts"].map((file) => writeFile(path.join(sourceRoot, file), "export {};\n", "utf8"))
+    );
+
+    await assert.rejects(
+      measureActivationInventory(root, { maximumDirectoryEntries: 2 }),
+      /exceeds 2 directory entries/u
+    );
+  });
+});
+
+test("the syntax preflight rejects token and nesting overflow before AST inventory", async () => {
+  await withInventoryFixture(
+    "const first = 1; const second = 2;\n",
+    { activationEvents: [], contributes: { commands: [] } },
+    async () => assert.fail("token overflow should reject before producing an inventory"),
+    { maximumSyntaxTokens: 4 },
+    /exceeds 4 syntax tokens/u
+  );
+  await withInventoryFixture(
+    "export const nested = [[[1]]];\n",
+    { activationEvents: [], contributes: { commands: [] } },
+    async () => assert.fail("nesting overflow should reject before producing an inventory"),
+    { maximumSyntaxNesting: 2 },
+    /exceeds syntax nesting 2/u
+  );
 });
 
 function completeInventoryReport(report) {
@@ -216,18 +409,24 @@ function completeInventoryReport(report) {
       staleClassifications: [],
       occurrenceMismatches: [],
       contributedCommandOccurrenceMismatches: [],
+      contributedViewOccurrenceMismatches: [],
+      contributedCustomEditorOccurrenceMismatches: [],
       unknownTriggerClasses: []
     }
   };
 }
 
-async function withInventoryFixture(source, manifest, inspect) {
+async function withInventoryFixture(source, manifest, inspect, options = {}, expectedFailure) {
   const root = await mkdtemp(path.join(tmpdir(), "ow-activation-audit-"));
   try {
     await mkdir(path.join(root, "src/extension"), { recursive: true });
     await writeFile(path.join(root, "src/extension/fixture.ts"), source, "utf8");
     await writeFile(path.join(root, "package.json"), JSON.stringify(manifest), "utf8");
-    await inspect(await measureActivationInventory(root));
+    if (expectedFailure) {
+      await assert.rejects(measureActivationInventory(root, options), expectedFailure);
+    } else {
+      await inspect(await measureActivationInventory(root, options));
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

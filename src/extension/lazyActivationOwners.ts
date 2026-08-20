@@ -656,21 +656,6 @@ export class LazyActivationOwners implements vscode.Disposable {
     if (providerDisposalFailures.length > 0) {
       throw cleanupAggregate("Could not replace the lazy native view providers.", providerDisposalFailures);
     }
-    const notebookVariables = (this.nativeNotebookVariables ??= new LazyLiveVariables<
-      NotebookLiveVariableProvider,
-      NotebookLiveVariableSnapshot | undefined,
-      void
-    >(
-      () => this.ensureNotebookOwner().then(({ variables }) => variables),
-      undefined,
-      (error) => this.reportLazyFailure("notebook", error),
-      {
-        state: "loading",
-        notebookLabel: "Notebook",
-        message: "Loading the notebook integration…",
-        variables: []
-      }
-    ));
     const rVariables = (this.nativeRVariables ??= new LazyLiveVariables<
       RLiveVariableProvider,
       RLiveVariableSnapshot,
@@ -684,6 +669,27 @@ export class LazyActivationOwners implements vscode.Disposable {
         variables: []
       },
       (error) => this.reportLazyFailure("R", error)
+    ));
+    const notebookVariables = (this.nativeNotebookVariables ??= new LazyLiveVariables<
+      NotebookLiveVariableProvider,
+      NotebookLiveVariableSnapshot | undefined,
+      void
+    >(
+      () => this.ensureNotebookOwner().then(({ variables }) => variables),
+      {
+        state: "loading",
+        notebookLabel: "Notebook",
+        message: "Loading the notebook integration…",
+        variables: []
+      },
+      (error) => this.reportLazyFailure("notebook", error),
+      async (owner) => {
+        if (owner.snapshot()) {
+          await owner.refreshFromCommand();
+          return;
+        }
+        await rVariables.refreshFromCommand();
+      }
     ));
     const controller = this.captureOwnerRegistration("native", () =>
       native.registerNativeViews(this.context, session.coordinator, notebookVariables, rVariables)
@@ -874,18 +880,16 @@ class LazyLiveVariables<T extends LiveVariables<S, R>, S, R> implements LiveVari
     private readonly load: () => Promise<T>,
     private readonly pendingSnapshot: S,
     private readonly reportFailure: (error: unknown) => void,
-    private readonly startedSnapshot: S = pendingSnapshot
+    private readonly refresh: (owner: T) => Promise<R> = (owner) => owner.refreshFromCommand()
   ) {}
 
   snapshot(): S {
-    if (this.owner) return this.owner.snapshot();
-    const wasAlreadyLoading = this.loading !== undefined;
-    this.start();
-    return wasAlreadyLoading ? this.startedSnapshot : this.pendingSnapshot;
+    if (!this.owner) this.start();
+    return this.owner?.snapshot() ?? this.pendingSnapshot;
   }
 
   async refreshFromCommand(): Promise<R> {
-    return (await this.ensure()).refreshFromCommand();
+    return this.refresh(await this.ensure());
   }
 
   startAutomaticDiscovery(): void {

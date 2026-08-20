@@ -132,6 +132,7 @@ const owners = vi.hoisted(() => ({
   customEditorResolved: vi.fn(),
   nativeRegistered: vi.fn(),
   notebookVariablesDisposed: vi.fn(),
+  notebookSnapshot: vi.fn(),
   notebookRefresh: vi.fn(),
   notebookCellResultsStarted: vi.fn(),
   notebookCellResultsDisposed: vi.fn(),
@@ -228,7 +229,7 @@ vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
     owners.notebookRegistered();
     const variables = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
-      snapshot: vi.fn(),
+      snapshot: owners.notebookSnapshot,
       refreshFromCommand: owners.notebookRefresh,
       dispose: owners.notebookVariablesDisposed,
       diagnosticsForTesting: vi.fn()
@@ -336,6 +337,7 @@ describe("lazy activation owners", () => {
     owners.bridgeShutdown.mockResolvedValue(undefined);
     owners.coordinatorShutdown.mockResolvedValue(undefined);
     owners.rShutdown.mockResolvedValue(undefined);
+    owners.notebookSnapshot.mockReturnValue(undefined);
     owners.notebookRefresh.mockResolvedValue(undefined);
     rVariables.snapshot.mockReset().mockReturnValue({
       state: "empty",
@@ -468,7 +470,7 @@ describe("lazy activation owners", () => {
     active.startBeforeFirstYield();
     await (host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> }).getChildren();
 
-    expect(nativeVariables.notebook?.snapshot()).toBeUndefined();
+    expect(nativeVariables.notebook?.snapshot()).toMatchObject({ state: "loading" });
     expect(nativeVariables.r?.snapshot()).toMatchObject({ state: "loading" });
     await vi.waitFor(() => {
       expect(owners.notebookRegistered).toHaveBeenCalledOnce();
@@ -481,8 +483,14 @@ describe("lazy activation owners", () => {
     active = createOwners();
     active.startBeforeFirstYield();
     await (host.treeProviders.get("openWrangler.summary") as { getChildren(): Promise<unknown[]> }).getChildren();
+    owners.notebookSnapshot.mockReturnValue({
+      state: "empty",
+      notebookLabel: "analysis.ipynb",
+      message: "No dataframes",
+      variables: []
+    });
 
-    expect(nativeVariables.notebook?.snapshot()).toBeUndefined();
+    expect(nativeVariables.notebook?.snapshot()).toMatchObject({ state: "loading" });
     await host.executeCommand("openWrangler.refreshLiveDataframes");
 
     expect(owners.notebookRegistered).toHaveBeenCalledOnce();
@@ -490,6 +498,24 @@ describe("lazy activation owners", () => {
     expect(owners.rRegistered).not.toHaveBeenCalled();
     expect(owners.rDiscovery).not.toHaveBeenCalled();
     expect(rVariables.refreshFromCommand).not.toHaveBeenCalled();
+  });
+
+  it("awaits an unprimed notebook owner and its real snapshot before refreshing R", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await (host.treeProviders.get("openWrangler.summary") as { getChildren(): Promise<unknown[]> }).getChildren();
+
+    await host.executeCommand("openWrangler.refreshLiveDataframes");
+
+    expect(owners.notebookRegistered).toHaveBeenCalledOnce();
+    expect(owners.notebookSnapshot).toHaveBeenCalledOnce();
+    expect(owners.notebookRefresh).not.toHaveBeenCalled();
+    expect(owners.rRegistered).toHaveBeenCalledOnce();
+    expect(owners.rDiscovery).toHaveBeenCalledOnce();
+    expect(rVariables.refreshFromCommand).toHaveBeenCalledOnce();
+    expect(owners.notebookSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+      owners.rRegistered.mock.invocationCallOrder[0]
+    );
   });
 
   it("constructs notebook formatter preparation synchronously for an initially visible notebook", async () => {
