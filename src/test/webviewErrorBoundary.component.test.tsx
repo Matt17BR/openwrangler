@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionMetadata } from "../shared/protocol";
 import { App } from "../webviews/App";
-import { WebviewErrorBoundary } from "../webviews/WebviewErrorBoundary";
+import { reportWebviewFailure, WebviewErrorBoundary } from "../webviews/WebviewErrorBoundary";
 import { useWholeColumnClipboard } from "../webviews/grid/useWholeColumnClipboard";
 import { vscode } from "../webviews/vscodeApi";
 
@@ -38,6 +38,38 @@ describe("WebviewErrorBoundary", () => {
 
     expect(screen.getByRole("button", { name: "Count 1" })).toHaveFocus();
     expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("focuses a hidden failure when its document becomes visible without reloading", async () => {
+    const reload = vi.fn();
+    const hasFocus = vi.mocked(document.hasFocus);
+    const originalVisibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    hasFocus.mockReturnValue(false);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+
+    try {
+      render(
+        <WebviewErrorBoundary reload={reload}>
+          <span>Workbench ready</span>
+        </WebviewErrorBoundary>
+      );
+      act(() => reportWebviewFailure("message"));
+      const action = await screen.findByRole("button", { name: "Reload Open Wrangler" });
+      expect(action).not.toHaveFocus();
+
+      hasFocus.mockReturnValue(true);
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+      expect(action).toHaveFocus();
+      expect(action).toBeEnabled();
+      expect(reload).not.toHaveBeenCalled();
+      expect(postMessage).toHaveBeenCalledOnce();
+      expect(postMessage).toHaveBeenCalledWith({ kind: "webviewFailure", phase: "message" });
+    } finally {
+      if (originalVisibility) Object.defineProperty(document, "visibilityState", originalVisibility);
+      else Reflect.deleteProperty(document, "visibilityState");
+    }
   });
 
   it("replaces a render failure with one focused, data-free recovery surface", () => {

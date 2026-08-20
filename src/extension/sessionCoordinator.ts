@@ -88,8 +88,10 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly runtimeRequestExecutor: SessionRuntimeRequestExecutor;
   private readonly runtimeReconfigurer: SessionRuntimeReconfigurer;
   private readonly runtimeRecovery: SessionRuntimeRecovery;
+  private readonly diagnosticSink: ((message: string) => void) | undefined;
 
   constructor(workspaceState?: vscode.Memento, diagnosticSink?: (message: string) => void) {
+    this.diagnosticSink = diagnosticSink;
     this.persistence = new SessionPersistenceStore(workspaceState);
     this.responseCommitter = new SessionResponseCommitter(this.persistence);
     this.runtimeRequestExecutor = new SessionRuntimeRequestExecutor(this.responseCommitter);
@@ -135,8 +137,24 @@ export class SessionCoordinator implements vscode.Disposable {
       updateViewState: (sessionId, state) => this.updateGridViewState(sessionId, state),
       clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
       setActiveSession: (sessionId) => this.setActive(sessionId),
-      reportDiagnostic: (message) => delegate.reportDiagnostic?.(message)
+      reportDiagnostic: (message) => this.reportDiagnostic(delegate, message)
     };
+  }
+
+  private reportDiagnostic(delegate: OpenWranglerBridge, message: string): void {
+    try {
+      if (delegate.reportDiagnostic) {
+        delegate.reportDiagnostic(message);
+        return;
+      }
+    } catch {
+      // Fall back to the coordinator's fixed host diagnostic surface.
+    }
+    try {
+      this.diagnosticSink?.(message);
+    } catch {
+      // Diagnostics must never destabilize the active renderer or session.
+    }
   }
 
   private async listExcelSheets(
