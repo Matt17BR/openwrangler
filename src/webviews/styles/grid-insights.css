@@ -1,0 +1,301 @@
+.columnInsight {
+  container-type: inline-size;
+  color: var(--vscode-descriptionForeground);
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  line-height: 1.25;
+  min-width: 0;
+  overflow: clip;
+  width: 100%;
+}
+
+.exactSummaryStats {
+  display: grid;
+  font-size: 10px;
+  gap: 2px 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.exactSummaryStats > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exactNumericExtremum {
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryDistribution {
+  border-top: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow: clip;
+  padding-top: 4px;
+}
+
+.columnInsight.compact > .summaryDistribution {
+  display: none;
+}
+
+.sampledLabel {
+  color: var(--vscode-charts-yellow, #cca700);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+
+.miniChart {
+  display: block;
+  height: 36px;
+  margin-top: 4px;
+  min-width: 0;
+  width: 100%;
+}
+
+.miniChart .numericHistogramBar {
+  fill: var(--vscode-charts-blue, #3794ff);
+  pointer-events: none;
+}
+
+.numericHistogramBin.active .numericHistogramBar {
+  fill: var(--vscode-charts-orange, var(--vscode-editorWarning-foreground, #cca700));
+}
+
+.numericHistogramChart {
+  display: block;
+  min-width: 0;
+  position: relative;
+}
+
+.numericHistogramHitTarget {
+  background: transparent;
+  border: 1px solid transparent;
+  bottom: 0;
+  cursor: pointer;
+  left: 0;
+  padding: 0;
+  position: absolute;
+  right: 0;
+  top: 4px;
+}
+
+.numericHistogramHitTarget:not(:disabled):hover {
+  background: transparent;
+}
+
+.numericHistogramHitTarget:focus-visible {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
+}
+
+.numericHistogram,
+.booleanMiniChart {
+  display: grid;
+  min-width: 0;
+  width: 100%;
+}
+
+.numericHistogram:not(.compact) .miniChart {
+  height: 92px;
+}
+
+.miniChartCaption,
+.miniChartLegend {
+  color: var(--vscode-descriptionForeground);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.miniChartCaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.miniChartCaption.active {
+  color: var(--vscode-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.miniChartLegend {
+  display: flex;
+  gap: 7px;
+}
+
+.booleanMiniChart.interactive .miniChartLegend {
+  gap: 4px;
+}
+
+.booleanMiniValue {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: inherit;
+  flex: 1 1 0;
+  font: inherit;
+  min-width: 0;
+  padding: 2px 3px;
+  text-align: left;
+}
+
+.booleanMiniValue:hover,
+.booleanMiniValue:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+}
+
+.stackedMiniChart {
+  background: var(--vscode-editorWidget-background);
+  border-radius: 999px;
+  display: flex;
+  height: 7px;
+  margin-top: 6px;
+  overflow: hidden;
+  min-width: 0;
+  width: 100%;
+}
+
+.stackedMiniChart i {
+  background: var(--vscode-charts-green, #89d185);
+}
+
+.stackedMiniChart b {
+  background: var(--vscode-charts-red, #f14c4c);
+}
+
+.categoryMiniChart {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  min-width: 0;
+  width: 100%;
+}
+
+.categoryMiniChart.interactive {
+  gap: 7px;
+}
+
+.categoryMiniRow {
+  align-items: center;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(48px, 0.9fr) minmax(24px, 1.1fr) auto;
+  min-width: 0;
+}
+
+button.categoryMiniRow.interactive {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: inherit;
+  min-height: 24px;
+  padding: 1px 2px;
+  text-align: left;
+  width: 100%;
+}
+
+button.categoryMiniRow.interactive:hover,
+button.categoryMiniRow.interactive:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+}
+
+.categoryMiniLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.categoryMiniRow i {
+  background: var(--vscode-charts-blue, #3794ff);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  min-width: 2px;
+}
+
+.datetimeMiniChart {
+  color: var(--vscode-descriptionForeground);
+  display: grid;
+  font-size: 10px;
+  gap: 2px;
+  margin-top: 4px;
+  min-width: 0;
+  width: 100%;
+}
+
+.datetimeMiniChart span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.datetimeMiniChart b {
+  color: var(--vscode-foreground);
+  font-weight: 600;
+}
+
+@container (max-width: 150px) {
+  .exactSummaryStats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .categoryMiniRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .categoryMiniRow i {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+.emptyInsight {
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+
+.rowHeader {
+  width: 58px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background-color: var(--vscode-editor-background);
+  color: var(--vscode-descriptionForeground);
+}
+
+.rowHeader.labeledRowHeader {
+  text-align: left;
+}
+
+.rowHeaderText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.virtualSpacer {
+  border-left: 0;
+  border-right: 0;
+  padding: 0;
+}
+
+.virtualRowSpacer td {
+  border: 0;
+  padding: 0;
+}
+
+th.rowHeader {
+  --grid-header-surface: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+  z-index: 4;
+}
+
+.missingCell {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
