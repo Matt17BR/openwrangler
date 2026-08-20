@@ -10,6 +10,7 @@ const host = vi.hoisted(() => {
   const visibleNotebookEditors: Array<{ notebook: { notebookType: string } }> = [];
   const customEditorProviders: unknown[] = [];
   const treeProviders = new Map<string, unknown>();
+  const webviewProviders = new Map<string, unknown>();
   const registrationAttempts = new Map<string, number>();
   let registrationFailure: Readonly<{ id: string; attempt: number }> | undefined;
   const listeners = {
@@ -40,6 +41,7 @@ const host = vi.hoisted(() => {
     executeCommand: vi.fn(async (id: string, ...args: unknown[]) => commands.get(id)?.(...args)),
     customEditorProviders,
     treeProviders,
+    webviewProviders,
     setRegistrationFailure(failure: Readonly<{ id: string; attempt: number }> | undefined): void {
       registrationFailure = failure;
     },
@@ -56,13 +58,19 @@ const host = vi.hoisted(() => {
         if (treeProviders.get(id) === provider) treeProviders.delete(id);
       });
     }),
-    registerWebviewViewProvider: vi.fn(() => disposable()),
+    registerWebviewViewProvider: vi.fn((id: string, provider: unknown) => {
+      webviewProviders.set(id, provider);
+      return disposable(() => {
+        if (webviewProviders.get(id) === provider) webviewProviders.delete(id);
+      });
+    }),
     showErrorMessage: vi.fn(),
     reset(): void {
       commands.clear();
       visibleNotebookEditors.splice(0);
       customEditorProviders.splice(0);
       treeProviders.clear();
+      webviewProviders.clear();
       registrationAttempts.clear();
       registrationFailure = undefined;
       for (const set of Object.values(listeners)) set.clear();
@@ -77,6 +85,19 @@ const host = vi.hoisted(() => {
 });
 
 vi.mock("vscode", () => ({
+  EventEmitter: class<T> {
+    private readonly listeners = new Set<(value: T) => void>();
+    readonly event = (listener: (value: T) => void) => {
+      this.listeners.add(listener);
+      return host.disposable(() => this.listeners.delete(listener));
+    };
+    fire(value: T): void {
+      for (const listener of this.listeners) listener(value);
+    }
+    dispose(): void {
+      this.listeners.clear();
+    }
+  },
   commands: {
     registerCommand: host.registerCommand,
     executeCommand: host.executeCommand
@@ -114,6 +135,21 @@ const owners = vi.hoisted(() => ({
   notebookCellResultsStarted: vi.fn(),
   notebookCellResultsDisposed: vi.fn(),
   previewDisposed: vi.fn()
+}));
+
+const nativeVariables = vi.hoisted(() => ({
+  notebook: undefined as
+    | {
+        snapshot(): unknown;
+        refreshFromCommand(): Promise<void>;
+      }
+    | undefined,
+  r: undefined as
+    | {
+        snapshot(): unknown;
+        refreshFromCommand(): Promise<boolean>;
+      }
+    | undefined
 }));
 
 vi.mock("../extension/pythonBridge", () => ({
@@ -164,6 +200,7 @@ vi.mock("../extension/files/fileOpen", () => ({
 }));
 
 const rVariables = vi.hoisted(() => ({
+  onDidChangeVariables: () => ({ dispose: () => undefined }),
   startAutomaticDiscovery: owners.rDiscovery,
   shutdown: owners.rShutdown,
   dispose: vi.fn(),
@@ -188,7 +225,13 @@ vi.mock("../extension/r/rInteractiveCommands", () => ({
 vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
   registerPythonInteractiveCommands: vi.fn((context: MockExtensionContext) => {
     owners.notebookRegistered();
-    const variables = { dispose: owners.notebookVariablesDisposed, diagnosticsForTesting: vi.fn() };
+    const variables = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: vi.fn(),
+      refreshFromCommand: vi.fn(async () => undefined),
+      dispose: owners.notebookVariablesDisposed,
+      diagnosticsForTesting: vi.fn()
+    };
     context.subscriptions.push(variables);
     registerMockCommands(context, [
       "openWrangler.runPythonCellAndOpenVariable",
@@ -226,41 +269,50 @@ vi.mock("../extension/notebooks/notebookCellResult", () => ({
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
 
 vi.mock("../extension/nativeViews", () => ({
-  registerNativeViews: vi.fn((context: MockExtensionContext) => {
-    owners.nativeRegistered();
-    registerMockCommands(context, [
-      "openWrangler.refreshLiveDataframes",
-      "openWrangler.clearViewFilterColumn",
-      "openWrangler.openViewSort",
-      "openWrangler.moveViewSortUp",
-      "openWrangler.moveViewSortDown",
-      "openWrangler.removeViewSort",
-      "openWrangler.startOperation",
-      "openWrangler.applyStep",
-      "openWrangler.discardStep",
-      "openWrangler.editLatestStep",
-      "openWrangler.editSelectedStep",
-      "openWrangler.deleteSelectedStep",
-      "openWrangler.selectStep",
-      "openWrangler.undoStep",
-      "openWrangler.copyCode",
-      "openWrangler.exportCode",
-      "openWrangler.insertRDocumentCode",
-      "openWrangler.insertNotebookCode",
-      "openWrangler.exportData",
-      "openWrangler.internal.exportSessionData",
-      "openWrangler.openSourceFile",
-      "openWrangler.openWalkthrough",
-      "openWrangler.openSettings",
-      "openWrangler.reportIssue"
-    ]);
-    return {
-      setCodeForExport: vi.fn(),
-      exportCodeTo: vi.fn(),
-      notebookInsertionStatus: vi.fn(),
-      viewSortDispatchStatus: vi.fn()
-    };
-  })
+  registerNativeViews: vi.fn(
+    (
+      context: MockExtensionContext,
+      _coordinator: unknown,
+      notebook: typeof nativeVariables.notebook,
+      r: typeof nativeVariables.r
+    ) => {
+      nativeVariables.notebook = notebook;
+      nativeVariables.r = r;
+      owners.nativeRegistered();
+      registerMockCommands(context, [
+        "openWrangler.refreshLiveDataframes",
+        "openWrangler.clearViewFilterColumn",
+        "openWrangler.openViewSort",
+        "openWrangler.moveViewSortUp",
+        "openWrangler.moveViewSortDown",
+        "openWrangler.removeViewSort",
+        "openWrangler.startOperation",
+        "openWrangler.applyStep",
+        "openWrangler.discardStep",
+        "openWrangler.editLatestStep",
+        "openWrangler.editSelectedStep",
+        "openWrangler.deleteSelectedStep",
+        "openWrangler.selectStep",
+        "openWrangler.undoStep",
+        "openWrangler.copyCode",
+        "openWrangler.exportCode",
+        "openWrangler.insertRDocumentCode",
+        "openWrangler.insertNotebookCode",
+        "openWrangler.exportData",
+        "openWrangler.internal.exportSessionData",
+        "openWrangler.openSourceFile",
+        "openWrangler.openWalkthrough",
+        "openWrangler.openSettings",
+        "openWrangler.reportIssue"
+      ]);
+      return {
+        setCodeForExport: vi.fn(),
+        exportCodeTo: vi.fn(),
+        notebookInsertionStatus: vi.fn(),
+        viewSortDispatchStatus: vi.fn()
+      };
+    }
+  )
 }));
 
 import type * as vscode from "vscode";
@@ -275,6 +327,15 @@ describe("lazy activation owners", () => {
     owners.bridgeShutdown.mockResolvedValue(undefined);
     owners.coordinatorShutdown.mockResolvedValue(undefined);
     owners.rShutdown.mockResolvedValue(undefined);
+    rVariables.snapshot.mockReset().mockReturnValue({
+      state: "empty",
+      terminalLabel: "R session",
+      message: "No dataframes",
+      variables: []
+    });
+    rVariables.refreshFromCommand.mockReset().mockResolvedValue(false);
+    nativeVariables.notebook = undefined;
+    nativeVariables.r = undefined;
   });
 
   afterEach(async () => {
@@ -358,16 +419,51 @@ describe("lazy activation owners", () => {
     expect(owners.rDiscovery).not.toHaveBeenCalled();
   });
 
-  it("constructs native views on first view demand without constructing Python", async () => {
+  it("constructs native views on first non-live view demand without constructing notebook, R, or Python", async () => {
     active = createOwners();
     active.startBeforeFirstYield();
-    const provider = host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> };
+    const provider = host.treeProviders.get("openWrangler.summary") as { getChildren(): Promise<unknown[]> };
 
     await provider.getChildren();
 
     expect(owners.nativeRegistered).toHaveBeenCalledOnce();
-    expect(owners.notebookRegistered).toHaveBeenCalledOnce();
-    expect(owners.rDiscovery).toHaveBeenCalledOnce();
+    expect(owners.notebookRegistered).not.toHaveBeenCalled();
+    expect(owners.rDiscovery).not.toHaveBeenCalled();
+    expect(owners.pythonConstructed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["tree", "openWrangler.summary"],
+    ["tree", "openWrangler.filters"],
+    ["tree", "openWrangler.cleaningSteps"],
+    ["webview", "openWrangler.codePreview"]
+  ])("keeps the non-live %s surface %s independent from notebook and R owners", async (kind, id) => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+
+    if (kind === "tree") {
+      await (host.treeProviders.get(id) as { getChildren(): Promise<unknown[]> }).getChildren();
+    } else {
+      await (host.webviewProviders.get(id) as { resolveWebviewView(): Promise<void> }).resolveWebviewView();
+    }
+    await host.executeCommand("openWrangler.startOperation", { kind: "dropColumns" });
+
+    expect(owners.nativeRegistered).toHaveBeenCalledOnce();
+    expect(owners.notebookRegistered).not.toHaveBeenCalled();
+    expect(owners.rDiscovery).not.toHaveBeenCalled();
+  });
+
+  it("routes live-variable snapshots to their exact lazy notebook and R owners", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await (host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> }).getChildren();
+
+    expect(nativeVariables.notebook?.snapshot()).toBeUndefined();
+    expect(nativeVariables.r?.snapshot()).toMatchObject({ state: "loading" });
+    await vi.waitFor(() => {
+      expect(owners.notebookRegistered).toHaveBeenCalledOnce();
+      expect(owners.rDiscovery).toHaveBeenCalledOnce();
+    });
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
   });
 
@@ -495,6 +591,12 @@ describe("lazy activation owners", () => {
     await customEditor.resolveCustomEditor(document, {});
     await host.executeCommand("openWrangler.changeRuntime");
     await (host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> }).getChildren();
+    nativeVariables.notebook?.snapshot();
+    nativeVariables.r?.snapshot();
+    await vi.waitFor(() => {
+      expect(owners.notebookRegistered).toHaveBeenCalledOnce();
+      expect(owners.rDiscovery).toHaveBeenCalledOnce();
+    });
     await active.shutdown();
 
     expect(owners.notebookVariablesDisposed).toHaveBeenCalledOnce();

@@ -7,10 +7,12 @@ import type { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import type { NotebookCellResultTracker, NotebookCellResultTrackerDiagnostics } from "./notebooks/notebookCellResult";
 import type { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
 import type {
+  NotebookLiveVariableProvider,
+  NotebookLiveVariableSnapshot,
   PythonInteractiveCommandProvider,
   PythonInteractiveDiagnostics
 } from "./notebooks/pythonInteractiveCommands";
-import type { LiterateRVariableProvider, RLiveVariableProvider } from "./r/rInteractiveCommands";
+import type { LiterateRVariableProvider, RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
 import type {
   NativeViewsTestController,
   NotebookInsertionDiagnosticStatus,
@@ -194,6 +196,9 @@ export class LazyActivationOwners implements vscode.Disposable {
   private notebookVariables: PythonInteractiveCommandProvider | undefined;
   private notebookCellResults: NotebookCellResultTracker | undefined;
   private rVariables: (RLiveVariableProvider & LiterateRVariableProvider) | undefined;
+  private nativeNotebookVariables:
+    LazyLiveVariables<NotebookLiveVariableProvider, NotebookLiveVariableSnapshot | undefined, void> | undefined;
+  private nativeRVariables: LazyLiveVariables<RLiveVariableProvider, RLiveVariableSnapshot, boolean> | undefined;
   private sessionDiagnosticOutput: vscode.OutputChannel | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private bootstrapDisposed = false;
@@ -279,6 +284,8 @@ export class LazyActivationOwners implements vscode.Disposable {
     };
     startAsyncCleanup(() => this.pickleWorkers?.shutdown());
     startAsyncCleanup(() => this.rVariables?.shutdown());
+    runSynchronousCleanup(() => this.nativeNotebookVariables?.dispose());
+    runSynchronousCleanup(() => this.nativeRVariables?.dispose());
     runSynchronousCleanup(() => this.notebookVariables?.dispose());
     runSynchronousCleanup(() => this.notebookCellResults?.dispose());
     startAsyncCleanup(() => this.sessionCoordinator?.shutdown());
@@ -291,6 +298,8 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.explicitlyOwnedDisposables.clear();
     this.pickleWorkers = undefined;
     this.rVariables = undefined;
+    this.nativeNotebookVariables = undefined;
+    this.nativeRVariables = undefined;
     this.notebookCellResults = undefined;
     this.notebookVariables = undefined;
     this.sessionCoordinator = undefined;
@@ -639,12 +648,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   private async loadNativeOwner(): Promise<NativeOwner> {
-    const [native, notebook, r, session] = await Promise.all([
-      import("./nativeViews.js"),
-      this.ensureNotebookOwner(),
-      this.ensureROwner(),
-      this.ensureSessionOwner()
-    ]);
+    const [native, session] = await Promise.all([import("./nativeViews.js"), this.ensureSessionOwner()]);
     this.assertActive();
     this.replaceCommandGroup("native");
     this.replaceCommandGroup("utility");
@@ -652,8 +656,31 @@ export class LazyActivationOwners implements vscode.Disposable {
     if (providerDisposalFailures.length > 0) {
       throw cleanupAggregate("Could not replace the lazy native view providers.", providerDisposalFailures);
     }
+    const notebookVariables = (this.nativeNotebookVariables ??= new LazyLiveVariables<
+      NotebookLiveVariableProvider,
+      NotebookLiveVariableSnapshot | undefined,
+      void
+    >(
+      () => this.ensureNotebookOwner().then(({ variables }) => variables),
+      undefined,
+      (error) => this.reportLazyFailure("notebook", error)
+    ));
+    const rVariables = (this.nativeRVariables ??= new LazyLiveVariables<
+      RLiveVariableProvider,
+      RLiveVariableSnapshot,
+      boolean
+    >(
+      () => this.ensureROwner().then(({ variables }) => variables),
+      {
+        state: "loading",
+        terminalLabel: "R session",
+        message: "Loading the R integration…",
+        variables: []
+      },
+      (error) => this.reportLazyFailure("R", error)
+    ));
     const controller = this.captureOwnerRegistration("native", () =>
-      native.registerNativeViews(this.context, session.coordinator, notebook.variables, r.variables)
+      native.registerNativeViews(this.context, session.coordinator, notebookVariables, rVariables)
     );
     this.constructedOwners.push("native-views");
     return { controller };
@@ -739,6 +766,8 @@ export class LazyActivationOwners implements vscode.Disposable {
       this.rDocumentOwner,
       this.runtimeOwner,
       this.nativeOwner,
+      this.nativeNotebookVariables?.startedPromise(),
+      this.nativeRVariables?.startedPromise(),
       this.initialNotebookOwner,
       this.testingApiOwner,
       ...this.additionalOwnerPromises
@@ -817,6 +846,81 @@ export class LazyActivationOwners implements vscode.Disposable {
   private assertActive(): void {
     if (this.disposed)
       throw new Error("Open Wrangler activation was disposed before the requested integration loaded.");
+  }
+}
+
+interface LiveVariables<S, R> extends vscode.Disposable {
+  readonly onDidChangeVariables: vscode.Event<void>;
+  snapshot(): S;
+  refreshFromCommand(): Promise<R>;
+}
+
+class LazyLiveVariables<T extends LiveVariables<S, R>, S, R> implements LiveVariables<S, R> {
+  private readonly changed = new vscode.EventEmitter<void>();
+  private owner: T | undefined;
+  private loading: Promise<T> | undefined;
+  private ownerSubscription: vscode.Disposable | undefined;
+  private disposed = false;
+
+  readonly onDidChangeVariables = this.changed.event;
+
+  constructor(
+    private readonly load: () => Promise<T>,
+    private readonly pendingSnapshot: S,
+    private readonly reportFailure: (error: unknown) => void
+  ) {}
+
+  snapshot(): S {
+    if (!this.owner) this.start();
+    return this.owner?.snapshot() ?? this.pendingSnapshot;
+  }
+
+  async refreshFromCommand(): Promise<R> {
+    return (await this.ensure()).refreshFromCommand();
+  }
+
+  startAutomaticDiscovery(): void {
+    this.start();
+  }
+
+  async shutdown(): Promise<void> {
+    this.dispose();
+  }
+
+  startedPromise(): Promise<T> | undefined {
+    return this.loading;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.ownerSubscription?.dispose();
+    this.ownerSubscription = undefined;
+    this.changed.dispose();
+  }
+
+  private start(): void {
+    void this.ensure().catch(() => undefined);
+  }
+
+  private ensure(): Promise<T> {
+    if (this.disposed) return Promise.reject(new Error("Open Wrangler live-variable routing was disposed."));
+    return (this.loading ??= this.load().then(
+      (owner) => {
+        if (this.disposed) return owner;
+        this.owner = owner;
+        this.ownerSubscription = owner.onDidChangeVariables(() => this.changed.fire());
+        this.changed.fire();
+        return owner;
+      },
+      (error: unknown) => {
+        if (!this.disposed) {
+          this.reportFailure(error);
+          this.changed.fire();
+        }
+        throw error;
+      }
+    ));
   }
 }
 

@@ -7,6 +7,8 @@ type CommandHandler = (resource?: unknown) => Promise<unknown>;
 
 const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
+  registrationAttempt: 0,
+  failRegistrationAttempt: undefined as number | undefined,
   textDocuments: [] as TextDocument[],
   trusted: true,
   activeEditor: undefined as TextEditor | undefined,
@@ -55,6 +57,10 @@ vi.mock("vscode", () => {
     ViewColumn: { Active: -1, One: 1 },
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
+        mocks.registrationAttempt += 1;
+        if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+          throw new Error(`R document registration failed at ${id}`);
+        }
         mocks.commands.set(id, handler);
         return { dispose: () => mocks.commands.delete(id) };
       },
@@ -129,6 +135,8 @@ import {
 describe("R document command", () => {
   beforeEach(() => {
     mocks.commands.clear();
+    mocks.registrationAttempt = 0;
+    mocks.failRegistrationAttempt = undefined;
     mocks.textDocuments.length = 0;
     mocks.trusted = true;
     mocks.activeEditor = undefined;
@@ -156,6 +164,18 @@ describe("R document command", () => {
     mocks.getCommands.mockReset();
     mocks.getCommands.mockResolvedValue([]);
     mocks.reticulateCells = true;
+  });
+
+  it("disposes the first real R-document command when the grouped second registration throws", () => {
+    mocks.failRegistrationAttempt = 2;
+    const context = { extensionPath: "/extension", subscriptions: [] } as unknown as ExtensionContext;
+
+    expect(() => registerRDocumentCommands(context, coordinatorMock() as never)).toThrow(
+      "R document registration failed"
+    );
+
+    expect(context.subscriptions).toEqual([]);
+    expect(mocks.commands.size).toBe(0);
   });
 
   it("runs the exact in-memory R file, selects a frame, and binds its document origin", async () => {

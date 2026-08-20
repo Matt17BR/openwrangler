@@ -128,18 +128,24 @@ export function registerPythonInteractiveCommands(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator
 ): PythonInteractiveCommandProvider {
-  const provider = new NotebookInteractiveCoordinator(context, coordinator);
-  context.subscriptions.push(
-    provider,
-    vscode.commands.registerCommand("openWrangler.runPythonCellAndOpenVariable", () =>
-      provider.runCellAndOpenVariable()
-    ),
-    vscode.commands.registerCommand("openWrangler.refreshNotebookVariables", () => provider.refreshFromCommand()),
-    vscode.commands.registerCommand("openWrangler.openCachedNotebookVariable", (handle: unknown) =>
-      provider.openCachedVariable(handle)
-    )
-  );
-  return provider;
+  return registerAtomically(context.subscriptions, () => {
+    const provider = new NotebookInteractiveCoordinator(context, coordinator);
+    context.subscriptions.push(provider);
+    context.subscriptions.push(
+      vscode.commands.registerCommand("openWrangler.runPythonCellAndOpenVariable", () =>
+        provider.runCellAndOpenVariable()
+      )
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand("openWrangler.refreshNotebookVariables", () => provider.refreshFromCommand())
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand("openWrangler.openCachedNotebookVariable", (handle: unknown) =>
+        provider.openCachedVariable(handle)
+      )
+    );
+    return provider;
+  });
 }
 
 class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, LiteratePythonVariableProvider {
@@ -164,14 +170,32 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     private readonly context: vscode.ExtensionContext,
     private readonly coordinator: SessionCoordinator
   ) {
-    this.subscriptions.push(
-      vscode.window.onDidChangeActiveNotebookEditor((editor) => this.onActiveNotebookChanged(editor)),
-      vscode.window.onDidChangeActiveTextEditor((editor) => this.onActiveTextEditorChanged(editor)),
-      vscode.workspace.onDidOpenNotebookDocument(() => this.onNotebookSetChanged()),
-      vscode.workspace.onDidCloseNotebookDocument((notebook) => this.onNotebookClosed(notebook)),
-      vscode.workspace.onDidChangeNotebookDocument((event) => this.onNotebookChanged(event))
-    );
-    this.synchronizeInitialFocus();
+    try {
+      registerAtomically(this.subscriptions, () => {
+        this.subscriptions.push(
+          vscode.window.onDidChangeActiveNotebookEditor((editor) => this.onActiveNotebookChanged(editor))
+        );
+        this.subscriptions.push(
+          vscode.window.onDidChangeActiveTextEditor((editor) => this.onActiveTextEditorChanged(editor))
+        );
+        this.subscriptions.push(vscode.workspace.onDidOpenNotebookDocument(() => this.onNotebookSetChanged()));
+        this.subscriptions.push(
+          vscode.workspace.onDidCloseNotebookDocument((notebook) => this.onNotebookClosed(notebook))
+        );
+        this.subscriptions.push(vscode.workspace.onDidChangeNotebookDocument((event) => this.onNotebookChanged(event)));
+        this.synchronizeInitialFocus();
+      });
+    } catch (error) {
+      try {
+        this.changeEmitter.dispose();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Open Wrangler Python variable owner construction failed during rollback."
+        );
+      }
+      throw error;
+    }
   }
 
   snapshot(): NotebookLiveVariableSnapshot | undefined {
@@ -757,6 +781,24 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     this.diagnosticStages = Object.freeze(
       [...this.diagnosticStages, stage].slice(-PYTHON_INTERACTIVE_DIAGNOSTIC_HISTORY_LIMIT)
     );
+  }
+}
+
+function registerAtomically<T>(subscriptions: vscode.Disposable[], register: () => T): T {
+  const start = subscriptions.length;
+  try {
+    return register();
+  } catch (error) {
+    const failures: unknown[] = [error];
+    for (const disposable of subscriptions.splice(start).reverse()) {
+      try {
+        disposable.dispose();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    if (failures.length === 1) throw error;
+    throw new AggregateError(failures, "Open Wrangler Python variable registration failed during rollback.");
   }
 }
 

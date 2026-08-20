@@ -3,7 +3,13 @@ import { LazyActivationOwners, type OpenWranglerExtensionApi, type OpenWranglerT
 
 export type { OpenWranglerExtensionApi, OpenWranglerTestApi };
 
-let activeOwners: LazyActivationOwners | undefined;
+interface ActivationState {
+  readonly owners: LazyActivationOwners;
+  phase: "activating" | "active";
+  shutdown?: Promise<void>;
+}
+
+let activationState: ActivationState | undefined;
 let activeDeactivation: Promise<void> | undefined;
 
 const NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT = "openWrangler.forceNotebookEditorTitleAction";
@@ -14,20 +20,26 @@ export function isCursorAppName(appName: string): boolean {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<OpenWranglerExtensionApi | undefined> {
+  while (activeDeactivation) await activeDeactivation;
+  if (activationState) throw new Error("Open Wrangler is already active or activating.");
   const owners = new LazyActivationOwners(context);
-  activeOwners = owners;
-  activeDeactivation = undefined;
+  const state: ActivationState = { owners, phase: "activating" };
+  activationState = state;
   try {
     // This installs the lightweight activation gates and, when a relevant
     // notebook is already visible, its formatter preparation hooks before the
     // first yield. Runtime and UI owners remain unloaded until their trigger.
     owners.startBeforeFirstYield();
     await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
-    return await owners.extensionApiForCurrentEnvironment();
+    assertCurrentActivation(state);
+    const api = await owners.extensionApiForCurrentEnvironment();
+    assertCurrentActivation(state);
+    state.phase = "active";
+    return api;
   } catch (error) {
-    if (activeOwners === owners) activeOwners = undefined;
+    if (activationState === state) activationState = undefined;
     try {
-      await beginDeactivation(owners);
+      await (state.shutdown ??= beginDeactivation(owners));
     } catch (shutdownError) {
       throw new AggregateError(
         [...activationFailures(error), ...activationFailures(shutdownError)],
@@ -43,12 +55,18 @@ async function setNotebookEditorTitleActionContext(value: boolean): Promise<void
 }
 
 export function deactivate(): Promise<void> {
-  const owners = activeOwners;
-  if (owners) {
-    activeOwners = undefined;
-    return beginDeactivation(owners);
+  const state = activationState;
+  if (state) {
+    activationState = undefined;
+    return (state.shutdown ??= beginDeactivation(state.owners));
   }
   return activeDeactivation ?? Promise.resolve();
+}
+
+function assertCurrentActivation(state: ActivationState): void {
+  if (activationState !== state || state.phase !== "activating") {
+    throw new Error("Open Wrangler activation was cancelled before it completed.");
+  }
 }
 
 function beginDeactivation(owners: LazyActivationOwners): Promise<void> {

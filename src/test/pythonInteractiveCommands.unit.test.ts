@@ -30,6 +30,32 @@ describe("Python Interactive Window coordinator and discovery", () => {
     ({ context, provider, coordinator } = setupPythonInteractiveTest());
   });
 
+  it("rolls back the real provider and every retained command when grouped registration fails", () => {
+    for (const subscription of context.subscriptions) subscription.dispose();
+
+    expect(() => setupPythonInteractiveTest(2)).toThrow("Python registration failed");
+
+    expect(pythonMocks.commands.size).toBe(0);
+    expect(pythonMocks.lastContext?.subscriptions).toEqual([]);
+    expect(pythonMocks.activeTextListeners.size).toBe(0);
+    expect(pythonMocks.activeNotebookListeners.size).toBe(0);
+    expect(pythonMocks.visibleNotebookListeners.size).toBe(0);
+    expect(pythonMocks.openNotebookListeners.size).toBe(0);
+    expect(pythonMocks.closeNotebookListeners.size).toBe(0);
+    expect(pythonMocks.changeNotebookListeners.size).toBe(0);
+  });
+
+  it("rolls back real constructor listeners when a later listener registration throws", () => {
+    for (const subscription of context.subscriptions) subscription.dispose();
+
+    expect(() => setupPythonInteractiveTest(undefined, 3)).toThrow("Python listener registration failed");
+
+    expect(pythonMocks.lastContext?.subscriptions).toEqual([]);
+    expect(pythonMocks.activeNotebookListeners.size).toBe(0);
+    expect(pythonMocks.activeTextListeners.size).toBe(0);
+    expect(pythonMocks.openNotebookListeners.size).toBe(0);
+  });
+
   it("runs only the current # %% cell and binds the exact resulting Interactive Window", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
     pythonMocks.textDocuments.push(source);
