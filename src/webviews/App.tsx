@@ -59,6 +59,7 @@ import { draftDiffLabels, fillMissingResultLabel } from "./draftResultPresentati
 import { StepInspectionPanel } from "./StepInspectionPanel";
 import { SessionModeControl } from "./SessionModeControl";
 import { vscode } from "./vscodeApi";
+import { reportWebviewFailure } from "./WebviewErrorBoundary";
 import {
   alignedColumnWindow,
   backgroundDiagnosticKey,
@@ -1157,7 +1158,7 @@ export function App() {
 
   useEffect(() => {
     const timers = retryTimers.current;
-    const listener = (
+    const handleMessage = (
       event: MessageEvent<
         | OpenWranglerResponse
         | EditorActionMessage
@@ -1859,6 +1860,13 @@ export function App() {
         const current = metadataRef.current;
         if (current) storeMetadata({ ...current, stats: response.stats });
         clearBackgroundDiagnostic(pending);
+      }
+    };
+    const listener: typeof handleMessage = (event) => {
+      try {
+        handleMessage(event);
+      } catch {
+        reportWebviewFailure("message");
       }
     };
     window.addEventListener("message", listener);

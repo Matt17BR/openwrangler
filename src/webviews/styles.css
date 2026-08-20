@@ -105,6 +105,39 @@ textarea {
   background: var(--vscode-editor-background);
 }
 
+.webviewErrorSurface {
+  box-sizing: border-box;
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 12px;
+  min-height: 100vh;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.webviewErrorSurface h1,
+.webviewErrorSurface p {
+  margin: 0;
+}
+
+.webviewErrorSurface p {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+
+.webviewErrorIcon {
+  color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-editorWarning-foreground));
+  font-size: 28px;
+}
+
+.webviewErrorReloadButton {
+  min-height: 30px;
+}
+
 .appWorkspace {
   display: contents;
 }

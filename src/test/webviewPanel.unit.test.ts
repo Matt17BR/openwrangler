@@ -129,6 +129,29 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(executeCommand).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
   });
+
+  it.each([
+    ["react", "Open Wrangler webview rendering stopped. A renderer reload was offered."],
+    ["message", "Open Wrangler webview message handling stopped. A renderer reload was offered."]
+  ] as const)("records a fixed %s failure without changing the session or renderer", async (phase, expected) => {
+    const request = vi.fn(async () => openedResponse);
+    const reportDiagnostic = vi.fn();
+    const harness = createPanelHarness({ request, reportDiagnostic });
+    await harness.open();
+    harness.posted.length = 0;
+    const originalHtml = harness.html;
+    const originalAssignments = harness.htmlAssignmentCount;
+    const originalRequests = request.mock.calls.length;
+
+    await harness.receive({ kind: "webviewFailure", phase });
+
+    expect(reportDiagnostic).toHaveBeenCalledOnce();
+    expect(reportDiagnostic).toHaveBeenCalledWith(expected);
+    expect(request).toHaveBeenCalledTimes(originalRequests);
+    expect(harness.html).toBe(originalHtml);
+    expect(harness.htmlAssignmentCount).toBe(originalAssignments);
+    expect(harness.posted).toEqual([]);
+  });
   afterEach(() => {
     while (liveHarnesses.length) liveHarnesses.pop()?.dispose();
     delete (window as unknown as { showQuickPick?: unknown }).showQuickPick;
