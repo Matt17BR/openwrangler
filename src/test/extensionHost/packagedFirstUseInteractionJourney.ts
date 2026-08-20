@@ -252,13 +252,44 @@ export function createPackagedFirstUseInteractionJourney(
       "complete exact revenue insights",
       profileWaitDiagnostics(["Min", "Max", "Mean", "Median", "Distribution"])
     );
-    const histogramBars = drawer.locator(".numericHistogramHitTarget");
-    assert.ok(await histogramBars.count(), "Numeric insights must expose keyboard-focusable histogram bins.");
+    const histogramControl = drawer.locator(".numericHistogramHitTarget");
+    const histogramStatus = drawer.locator(".summaryDistributionChart .miniChartCaption");
+    assert.equal(await histogramControl.count(), 1, "Numeric insights must expose one full-chart histogram control.");
+    await histogramControl.focus();
+    await histogramControl.press("Home");
+    const countLabel = await histogramControl.getAttribute("aria-label");
+    const countStatus = (await histogramStatus.innerText()).trim();
     assert.match(
-      (await histogramBars.first().getAttribute("aria-label")) ?? "",
+      countLabel ?? "",
       /: [\d,.]+ rows? \([\d.,]+%\)/u,
       "Every histogram bin must expose its row count and percentage."
     );
+    assert.match(countStatus, /: [\d,.]+ rows?$/u);
+    assert.ok(countLabel?.startsWith(`${countStatus} (`));
+    assert.equal(await histogramStatus.getAttribute("title"), countLabel);
+
+    const counts = drawer.getByRole("button", { name: "Counts", exact: true });
+    const percent = drawer.getByRole("button", { name: "%", exact: true });
+    assert.equal(await counts.getAttribute("aria-pressed"), "true");
+    assert.equal(await percent.getAttribute("aria-pressed"), "false");
+    await percent.click();
+    assert.equal(await counts.getAttribute("aria-pressed"), "false");
+    assert.equal(await percent.getAttribute("aria-pressed"), "true");
+    await histogramControl.focus();
+    await histogramControl.press("Home");
+    const percentLabel = await histogramControl.getAttribute("aria-label");
+    const percentStatus = (await histogramStatus.innerText()).trim();
+    assert.match(percentStatus, /: [\d.,]+%$/u);
+    assert.doesNotMatch(percentStatus, /rows?/u);
+    assert.match(
+      percentLabel ?? "",
+      /: [\d.,]+% \([\d,.]+ rows?\);/u,
+      "Percentage mode must lead with the percentage while retaining the row count."
+    );
+    assert.ok(percentLabel?.startsWith(`${percentStatus} (`));
+    assert.equal(await histogramStatus.getAttribute("title"), percentLabel);
+    await counts.click();
+    assert.equal(await counts.getAttribute("aria-pressed"), "true");
     assert.equal(
       await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
       true,
