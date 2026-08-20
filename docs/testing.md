@@ -35,7 +35,7 @@ Run concurrent agent checks through a sealed assignment:
 ```bash
 npm run qualification:isolate -- \
   --assignment /absolute/path/to/qualification-assignment.json -- \
-  npm run check:pr
+  /absolute/path/to/task-qualification-command
 ```
 
 The assignment is a regular, singly linked JSON file with this exact shape:
@@ -79,7 +79,8 @@ The state root contains all mutable qualification state:
 `node_modules` and Vite/Vitest transform caches remain inside the unique worktree. The runner rejects a linked
 `node_modules`, assigns npm and Corepack caches to the state root, and sets Python, pytest, Ruff, Playwright, browser,
 home, XDG, R, temporary, and artifact variables to the listed task-owned paths. A command that needs Python creates
-and installs its interpreter in the assigned `python/venv`; it must not fall back to another task's environment.
+and installs its interpreter in the assigned `python/venv` before invoking commands such as `npm run check:pr`; it
+must not fall back to another task's environment.
 
 The receipt records the assignment digest, command, worktree and Git-directory filesystem identities, exact
 base/head/tree/branch, environment layout, result, and post-command identity. It is eligible only when the assignment,
