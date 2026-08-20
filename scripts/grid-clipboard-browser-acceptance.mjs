@@ -51,6 +51,8 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
       await exerciseAdapterCase(page, copyRow, scenario);
     }
 
+    await exercisePointerRangeClipboard(page, firstCell);
+
     await publishClipboardFixture(page, { oversized: true });
     const lastCell = page.locator('td[data-grid-row="15"][data-grid-column="3"]');
     try {
@@ -115,8 +117,80 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
   }
 
   console.log(
-    "Grid clipboard formula neutralization, whole filtered-column paging, exact caps, adapter fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
+    "Grid clipboard pointer range shortcuts and context action, formula neutralization, whole filtered-column paging, exact caps, adapter fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
   );
+}
+
+async function exercisePointerRangeClipboard(page, firstCell) {
+  const endpoint = page.locator('td[data-grid-row="1"][data-grid-column="1"]');
+  await endpoint.waitFor();
+  const startBounds = await firstCell.boundingBox();
+  const endBounds = await endpoint.boundingBox();
+  if (!startBounds || !endBounds) throw new Error("The range clipboard cells are not visible for pointer input.");
+
+  await page.mouse.move(startBounds.x + startBounds.width / 2, startBounds.y + startBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(endBounds.x + endBounds.width / 2, endBounds.y + endBounds.height / 2, { steps: 4 });
+  await page.mouse.up();
+  try {
+    await page.getByText("2 rows by 2 columns selected", { exact: true }).waitFor();
+  } catch (cause) {
+    const diagnostic = await page.evaluate(() => ({
+      activeColumn: document.activeElement?.getAttribute("data-grid-column"),
+      activeRow: document.activeElement?.getAttribute("data-grid-row"),
+      selected: [...document.querySelectorAll('[data-clipboard-selected="true"]')].map((cell) => ({
+        column: cell.getAttribute("data-grid-column"),
+        row: cell.getAttribute("data-grid-row")
+      })),
+      status: document.querySelector('[aria-label="Grid selection"]')?.textContent ?? ""
+    }));
+    throw new Error(`The real pointer drag did not select its rectangle: ${JSON.stringify(diagnostic)}.`, { cause });
+  }
+
+  const expectedRange = `'${hostileCell}\t-2024\n\t-7`;
+  await configureClipboardBoundary(page, { navigatorMode: "success", fallbackMode: "throw" });
+  await page.keyboard.press("Control+C");
+  await page.waitForFunction(
+    (expected) =>
+      globalThis.openWranglerClipboardBoundary.navigatorWrites[0] === expected &&
+      document.activeElement?.getAttribute("data-grid-row") === "1" &&
+      document.activeElement?.getAttribute("data-grid-column") === "1",
+    expectedRange
+  );
+  const shortcut = await readClipboardBoundary(page);
+  if (
+    !arraysEqual(shortcut.navigatorAttempts, [expectedRange]) ||
+    !arraysEqual(shortcut.navigatorWrites, [expectedRange]) ||
+    shortcut.fallbackAttempts.length !== 0 ||
+    shortcut.announcement !== "Copied 2 by 2 cell range."
+  ) {
+    throw new Error("Pointer-selected range shortcut did not write the exact TSV once.");
+  }
+
+  await configureClipboardBoundary(page, { navigatorMode: "unavailable", fallbackMode: "success" });
+  await firstCell.click({ button: "right" });
+  await page.getByText("2 rows by 2 columns selected", { exact: true }).waitFor();
+  const copySelection = page.getByRole("menuitem", { name: "Copy selection" });
+  await copySelection.waitFor();
+  await copySelection.click();
+  await page.waitForFunction(
+    (expected) =>
+      globalThis.openWranglerClipboardBoundary.fallbackWrites[0] === expected &&
+      document.activeElement?.getAttribute("data-grid-row") === "1" &&
+      document.activeElement?.getAttribute("data-grid-column") === "1" &&
+      document.querySelectorAll('[data-clipboard-selected="true"]').length === 4,
+    expectedRange
+  );
+  const contextAction = await readClipboardBoundary(page);
+  if (
+    contextAction.navigatorAttempts.length !== 0 ||
+    !arraysEqual(contextAction.fallbackAttempts, [expectedRange]) ||
+    !arraysEqual(contextAction.fallbackWrites, [expectedRange]) ||
+    contextAction.announcement !== "Copied 2 by 2 cell range." ||
+    contextAction.fallbackTextareaCount !== 0
+  ) {
+    throw new Error("The range context-menu action duplicated or changed the selected TSV payload.");
+  }
 }
 
 async function exerciseWholeColumnClipboard(page, harnessDirectory) {
@@ -406,10 +480,10 @@ async function publishClipboardFixture(page, { oversized }) {
         { kind: "number", raw: -10.5, display: "-10.5", isNull: false, isNaN: false },
         { kind: "boolean", raw: false, display: "false", isNull: false, isNaN: false }
       ];
-      const rows = Array.from({ length: oversizedFixture ? 16 : 1 }, (_, rowNumber) => ({
+      const rows = Array.from({ length: oversizedFixture ? 16 : 2 }, (_, rowNumber) => ({
         id: `r:clipboard:${rowNumber}`,
         rowNumber,
-        rowLabel: oversizedFixture ? `row-${rowNumber + 1}` : rowLabel,
+        rowLabel: oversizedFixture ? `row-${rowNumber + 1}` : rowNumber === 0 ? rowLabel : "plain-row",
         values: oversizedFixture
           ? current.metadata.schema.map(() => ({
               kind: "string",
@@ -417,7 +491,14 @@ async function publishClipboardFixture(page, { oversized }) {
               isNull: false,
               isNaN: false
             }))
-          : ordinaryValues
+          : rowNumber === 0
+            ? ordinaryValues
+            : [
+                { kind: "string", raw: "", display: "", isNull: false, isNaN: false },
+                { kind: "integer", raw: "-7", display: "-7", isNull: false, isNaN: false },
+                { kind: "number", raw: 0, display: "0", isNull: false, isNaN: false },
+                { kind: "boolean", raw: true, display: "true", isNull: false, isNaN: false }
+              ]
       }));
       const response = {
         ...current,
