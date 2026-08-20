@@ -378,19 +378,20 @@ at 960 CSS pixels; rendered images must stay inside that cap, their container, a
 retain at least two natural pixels per CSS pixel. Four representative images are rechecked near 760px and 1400px
 viewport widths. Before publication, `npm run verify:readme-responsive-render` applies the same layout checks to the
 actual local README and gallery at both widths and rejects document-level horizontal overflow. A mutable
-default-branch GitHub page is never accepted. This versioned contract starts at `1.2.1`;
-an older exact release recovery skips both browser installation and this check so a new media inventory cannot
-invalidate historical publication.
+default-branch GitHub page is never accepted. The `public-media-render-verification` cutover in
+`fixtures/release-cutovers.v1.json` owns when this contract begins. Earlier exact-tag recovery skips both browser
+installation and this check so a new media inventory cannot invalidate historical publication.
 
 The deterministic inventory, exact-source, ancestry, and immutable-byte portion runs with `--prepublish` in the
 release-candidate package job before any tag, release, or registry mutation. It requires the README media commit to be a
-reachable ancestor of the exact release source in the selected full-history checkout. Recovery promotion runs it
-for `1.99.4` and later from the exact checked-out release's script and restored lockfile before registry authentication
-or publication; older releases predate that browser-free capability and retain their existing recovery behavior. This mode never launches
-Chromium or reads a registry page. Public rendering is necessarily a separate post-publication observation gate: GitHub and registry writes have
-already occurred before those pages can be inspected. A failure marks the promotion workflow failed and requires remediation or a
-new release, but it cannot undo or roll back already-public immutable release or registry bytes. It never makes a
-deterministic pull-request lane depend on registry pages.
+reachable ancestor of the exact release source in the selected full-history checkout. Recovery promotion follows the
+`public-media-prepublication` manifest cutover and runs from the exact checked-out release's script and restored
+lockfile before registry authentication or publication. Earlier releases retain their existing recovery behavior.
+This mode never launches Chromium or reads a registry page. Public rendering is necessarily a separate
+post-publication observation gate: GitHub and registry writes have already occurred before those pages can be
+inspected. A failure marks the promotion workflow failed and requires remediation or a new release, but it cannot
+undo or roll back already-public immutable release or registry bytes. It never makes a deterministic pull-request
+lane depend on registry pages.
 
 GitHub exact-source rendering owns one context and one non-retryable observation. Each image is scrolled and measured
 inside one bounded same-page `page.evaluate` stability wait. If the page replaces candidate A with B, the same
@@ -600,9 +601,9 @@ downloads that GitHub Release's VSIX, checksum, and provenance. This separate ro
 with the repository `GITHUB_TOKEN` do not start another release workflow run. Preview packages must also carry the
 matching preview provenance and VSIX pre-release marker.
 
-For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the publishing path installs Chromium
-from the reviewed lockfile and runs the media verifier against the exact release source. This keeps a historical
-release tied to its own screenshot inventory when `main` has moved on. All declared
+For releases governed by the `public-media-render-verification` cutover, after Open VSX and the immutable tag pass,
+the publishing path installs Chromium from the reviewed lockfile and runs the media verifier against the exact
+release source. This keeps a historical release tied to its own screenshot inventory when `main` has moved on. All declared
 PNGs must retain their reviewed natural dimensions, standard sRGB declaration, file and aggregate budgets, valid
 chunk/decode structure, and immutable remote bytes. Every one of the 20 README images must then render from its exact
 reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio
@@ -620,10 +621,11 @@ to three minutes, per-page and per-image operations to their configured Playwrig
 ten seconds. The media step receives only the source commit and version, never `OVSX_PAT`.
 
 Before any new preview or stable tag/release write, the package path runs the browser-free `--prepublish` verifier
-against its exact protected source. For `1.99.4` and later, Open VSX recovery restores the exact release checkout's
-lockfile and runs that checkout's immutable-byte verifier before its PAT step. The later Chromium pass remains
-required because only it can observe the rendered public pages; qualifying recovery installs Chromium through that
-same release-local Playwright, while older exact releases retain their historical current-automation pairing.
+against its exact protected source. Under the `public-media-prepublication` cutover, Open VSX recovery restores the
+exact release checkout's lockfile and runs that checkout's immutable-byte verifier before its PAT step. The later
+Chromium pass remains required because only it can observe the rendered public pages; qualifying recovery installs
+Chromium through that same release-local Playwright, while older exact releases retain their historical
+current-automation pairing.
 
 A post-public check can fail workflow success, but it cannot retract a GitHub, Open VSX, or Marketplace write that
 already completed.
@@ -638,11 +640,26 @@ The vendored js-yaml capability is derived independently from the exact tag's tr
 `scripts/copy-extension-vendor-assets.mjs` marker and is forwarded unchanged to Marketplace and Open VSX verification.
 The historical 1.99.0 through 1.99.2 tags may omit that marker and vendor asset. A 1.99 release from 1.99.3 onward, or
 any 2.x-or-newer release, fails closed without the marker and exact asset. Verification of current packages requires
-both capabilities. Rendered public-media verification is skipped below `1.2.1`; newer releases use the verifier and
-inventory in their exact tag. Browser-free recovery prepublication begins at `1.99.4`, the first release carrying
-that mode; older exact-tag recovery does not apply a future inventory to historical media. Repeating the dispatch is safe only when
-the registry already serves identical bytes; a conflict fails without replacement. Do not dispatch from an old
-release tag, because historical releases intentionally do not contain the reviewed automation.
+both capabilities.
+
+<!-- release-cutovers:start -->
+
+The versioned `fixtures/release-cutovers.v1.json` manifest is authoritative for these historical public-media
+boundaries. Current automation reads the manifest; recovery reads the exact tag's own automation and must not
+substitute current package requirements.
+
+- `public-media-render-verification` starts at `1.2.1` and affects rendered public-media verification for immutable release README assets.
+  Executable owner: `scripts/public-media-surface-contract.mjs`. Rationale: This was the first release whose exact source carried the reviewed public-media inventory and remote rendering contract.
+  Recovery: Earlier exact tags skip browser installation and rendered public-media verification; recovery uses each tag's own files and never imports the current inventory or package requirements.
+- `public-media-prepublication` starts at `1.99.4` and affects browser-free public-media verification before registry authentication.
+  Executable owner: `scripts/public-media-surface-contract.mjs`. Rationale: This was the first release whose exact source and lockfile carried the browser-free prepublication verifier used by recovery promotion.
+  Recovery: Earlier exact tags retain their historical recovery behavior; this version and later run the verifier from the exact release checkout without applying current package requirements retroactively.
+
+<!-- release-cutovers:end -->
+
+Repeating the dispatch is safe only when the registry already serves identical bytes; a conflict fails without
+replacement. Do not dispatch from an old release tag, because historical releases intentionally do not contain the
+reviewed automation.
 
 ### Automatic Microsoft Marketplace promotion
 
@@ -657,10 +674,11 @@ match the event commit. Automatic recovery continues only for a single-parent co
 The canonical allowlist is `MARKETPLACE_RECOVERY_PATHS` in `scripts/marketplace-release-intake.mjs`; its unit test
 checks the complete list so this guide does not maintain a second copy. A promotable intake exports the exact tag
 commit, semantic version, and channel. The deployment's full-history clean checkout then creates a contained detached
-`release-source` worktree at that commit and proves its `HEAD`, root, and empty status. For `1.99.4` and later it
-restores that exact source's lockfile and runs its deterministic `--prepublish` media verifier after canonical artifact
-verification but before AzureCLI obtains the federated Marketplace identity. This independent gate applies to tag
-events and protected-main recovery alike; earlier exact releases retain their historical recovery behavior.
+`release-source` worktree at that commit and proves its `HEAD`, root, and empty status. Under the
+`public-media-prepublication` cutover it restores that exact source's lockfile and runs its deterministic
+`--prepublish` media verifier after canonical artifact verification but before AzureCLI obtains the federated
+Marketplace identity. This independent gate applies to tag events and protected-main recovery alike; earlier exact
+releases retain their historical recovery behavior.
 
 The next anonymous step performs one complete exact-byte Marketplace probe. If the requested version is already
 public with matching channel metadata, checksum, archive semantics, and gallery icons, the deployment marks that

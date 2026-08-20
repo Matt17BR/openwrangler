@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "cutovers": [
+    {
+      "id": "public-media-render-verification",
+      "affectedCapability": "rendered public-media verification for immutable release README assets",
+      "firstApplicableVersion": "1.2.1",
+      "rationale": "This was the first release whose exact source carried the reviewed public-media inventory and remote rendering contract.",
+      "recoveryBehavior": "Earlier exact tags skip browser installation and rendered public-media verification; recovery uses each tag's own files and never imports the current inventory or package requirements.",
+      "executableOwner": "scripts/public-media-surface-contract.mjs"
+    },
+    {
+      "id": "public-media-prepublication",
+      "affectedCapability": "browser-free public-media verification before registry authentication",
+      "firstApplicableVersion": "1.99.4",
+      "rationale": "This was the first release whose exact source and lockfile carried the browser-free prepublication verifier used by recovery promotion.",
+      "recoveryBehavior": "Earlier exact tags retain their historical recovery behavior; this version and later run the verifier from the exact release checkout without applying current package requirements retroactively.",
+      "executableOwner": "scripts/public-media-surface-contract.mjs"
+    }
+  ]
+}

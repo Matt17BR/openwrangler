@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { PUBLIC_MEDIA_MAX_FILE_BYTES } from "./public-media-contract.mjs";
+import { checkReleaseCutoverRepository } from "./release-cutovers.mjs";
 import {
   PUBLIC_MEDIA_ASSETS,
   PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH,
@@ -187,6 +188,10 @@ test("public media inventory declares one exact bounded series", () => {
     assert.ok(Number.isSafeInteger(asset.logicalHeight) && asset.logicalHeight > 0);
     assert.ok(Object.isFrozen(asset));
   }
+});
+
+test("public media release cutovers match their manifest and generated recovery documentation", () => {
+  assert.deepEqual(checkReleaseCutoverRepository(), { cutovers: 2, checkedPaths: 4 });
 });
 
 test("the complete checked-in public media inventory satisfies the release-surface contract", () => {

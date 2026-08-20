@@ -6,6 +6,7 @@ import {
   PUBLIC_README_FULL_SIZE_LINKS,
   PUBLIC_README_IMAGE_COUNT
 } from "./public-media-inventory.mjs";
+import { releaseCutoverApplies, releaseCutoverVersion } from "./release-cutovers.mjs";
 
 const FULL_SOURCE_SHA = /^[0-9a-f]{40}$/u;
 const SEMANTIC_VERSION =
@@ -20,8 +21,8 @@ export const PUBLIC_MEDIA_PROPAGATION_TIMEOUT_MS = 30 * 60_000;
 export const PUBLIC_MEDIA_RENDER_ATTEMPT_TIMEOUT_MS = 3 * 60_000;
 export const PUBLIC_MEDIA_FETCH_TIMEOUT_MS = 60_000;
 export const PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS = 10_000;
-export const PUBLIC_MEDIA_FIRST_REQUIRED_VERSION = "1.2.1";
-export const PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION = "1.99.4";
+export const PUBLIC_MEDIA_FIRST_REQUIRED_VERSION = releaseCutoverVersion("public-media-render-verification");
+export const PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION = releaseCutoverVersion("public-media-prepublication");
 export const PUBLIC_MEDIA_MAX_DISPLAY_WIDTH = 960;
 export const PUBLIC_MEDIA_RESPONSIVE_WIDTHS = Object.freeze([760, 1_400]);
 
@@ -92,21 +93,11 @@ export function parsePublicMediaVerifierArguments(arguments_) {
 }
 
 export function publicMediaVerificationRequired(version) {
-  return versionAtLeast(version, PUBLIC_MEDIA_FIRST_REQUIRED_VERSION);
+  return releaseCutoverApplies("public-media-render-verification", version);
 }
 
 export function publicMediaPrepublicationRequired(version) {
-  return versionAtLeast(version, PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION);
-}
-
-function versionAtLeast(version, minimum) {
-  if (!SEMANTIC_VERSION.test(version)) throw new TypeError("A public-media release version must be semantic.");
-  const actual = version.split(/[+-]/u, 1)[0].split(".").map(Number);
-  const required = minimum.split(".").map(Number);
-  for (let index = 0; index < required.length; index += 1) {
-    if (actual[index] !== required[index]) return actual[index] > required[index];
-  }
-  return true;
+  return releaseCutoverApplies("public-media-prepublication", version);
 }
 
 export function publicSurfaceDefinitions(sourceSha) {
