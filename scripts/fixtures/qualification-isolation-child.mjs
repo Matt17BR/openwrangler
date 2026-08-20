@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { access, appendFile, mkdir, rename, symlink, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
 function argument(name) {
@@ -12,8 +12,7 @@ function argument(name) {
 }
 
 async function waitFor(path) {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  while (true) {
     try {
       await access(path);
       return;
@@ -21,7 +20,6 @@ async function waitFor(path) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 10));
     }
   }
-  throw new Error(`timed out waiting for ${basename(path)}`);
 }
 
 async function recordEnvironment() {
@@ -144,12 +142,13 @@ await recordEnvironment();
 
 if (mode === "hold") {
   const ready = argument("--ready");
-  const release = argument("--release");
+  const peer = argument("--peer");
+  assert.notEqual(ready, peer, "barrier participants must own distinct ready markers");
   await writeFile(ready, `${process.env.OPEN_WRANGLER_QUALIFICATION_TASK_ID}\n`, {
     flag: "wx",
     mode: 0o600
   });
-  await waitFor(release);
+  await waitFor(peer);
 } else if (mode === "mutate-worktree") {
   await appendFile(join(process.cwd(), "tracked.txt"), "mutated\n", "utf8");
 } else if (mode === "advance-head") {
