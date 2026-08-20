@@ -12,6 +12,16 @@ const PRERELEASE_DISTRIBUTION = JSON.parse(
 ) as { readonly version: string };
 
 describe("released PySpark installed acceptance mode", () => {
+  it("delegates stable qualification to the generated policy without a second version grammar", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src", "test", "extensionHost", "releasedPySparkJupyterJourney.ts"),
+      "utf8"
+    );
+    expect(source).toContain('if (isSupportedPySparkVersion(version)) return "stable-qualification";');
+    expect(source).toContain("version === RELEASED_PYSPARK_PRERELEASE_DENIAL_PRODUCT_VERSION");
+    expect(source).not.toContain("/^0*4\\.0*2\\.");
+  });
+
   it.each(["4.2.0", "4.2.17", "04.02.000", "4.2.0+vendor.1"])(
     "classifies final release %s only as stable qualification",
     (version) => {
