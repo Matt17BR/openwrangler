@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
-from ..custom_code_scope import CUSTOM_CODE_FUNCTION_NAME, custom_code_function_lines, execute_custom_code
+from ..custom_code_scope import (
+    custom_code_definition_lines,
+    custom_code_execution_lines,
+    execute_custom_code,
+)
 from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -1752,6 +1756,9 @@ class PolarsEngine(DataFrameEngine):
                     "    )",
                 ]
             )
+        for index, step in enumerate(plan):
+            if step["kind"] == "customCode":
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
         lines.extend(["", "", "def clean_data(df):"])
         for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
@@ -2402,9 +2409,15 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
             ]
         if kind == "customCode":
+            custom_lines, result = custom_code_execution_lines(prefix=prefix, module_name="pl", index=index)
             return [
-                *custom_code_function_lines(str(params["code"]), prefix=prefix),
-                f"{prefix}df = {CUSTOM_CODE_FUNCTION_NAME}(df)",
+                *custom_lines,
+                f"{prefix}if not isinstance({result}, (pl.DataFrame, pl.LazyFrame, pl.Series)):",
+                (
+                    f"{prefix}    raise ValueError("
+                    "'Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.')"
+                ),
+                f"{prefix}df = {result}.to_frame() if isinstance({result}, pl.Series) else {result}",
             ]
         raise EngineError(f"Polars cannot compile transformation: {kind}")
 

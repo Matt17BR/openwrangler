@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
-from ..custom_code_scope import CUSTOM_CODE_FUNCTION_NAME, custom_code_function_lines, execute_custom_code
+from ..custom_code_scope import (
+    custom_code_definition_lines,
+    custom_code_execution_lines,
+    execute_custom_code,
+)
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -1368,6 +1372,9 @@ class PandasEngine(DataFrameEngine):
                     "",
                 ]
             )
+        for index, step in enumerate(plan):
+            if step["kind"] == "customCode":
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
         lines.extend(["def clean_data(df):", "    df = df.copy()"])
         for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
@@ -1997,10 +2004,16 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = pd.concat([df, {result}.rename({params['newColumn']!r})], axis=1)",
             ]
         if kind == "customCode":
+            custom_lines, result = custom_code_execution_lines(prefix=prefix, module_name="pd", index=index)
             return [
                 f"{prefix}df = _open_wrangler_isolate_objects(df)",
-                *custom_code_function_lines(str(params["code"]), prefix=prefix),
-                f"{prefix}df = {CUSTOM_CODE_FUNCTION_NAME}(df)",
+                *custom_lines,
+                f"{prefix}if not isinstance({result}, (pd.DataFrame, pd.Series)):",
+                (
+                    f"{prefix}    raise ValueError("
+                    "'Custom Pandas code must assign a Pandas DataFrame or Series to result.')"
+                ),
+                f"{prefix}df = {result}.to_frame() if isinstance({result}, pd.Series) else {result}",
             ]
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
 

@@ -514,10 +514,15 @@ Pandas, Polars, and DuckDB adapters implement the same engine contract for schem
 Pandas, Polars, and DuckDB Custom Code uses one function-body scope in live execution and generated scripts. The
 function receives `df`, can use the matching `pd`, `pl`, or `duckdb` module, and must assign its dataframe result to
 `result`. Ordinary imports, explicit `from` imports, control flow, multiline statements, and nested functions or
-closures are supported. A nested function may use its own `return` or `yield`. Future imports, wildcard imports,
-`global`, `nonlocal`, and `return` or `yield` in the outer Custom Code scope are rejected. The same validator also
-rejects syntax that cannot compile as that function body. Validation runs before a new or replacement draft can
-compile or execute, and each engine uses the same function renderer for live and generated execution.
+closures are supported. A nested function may use its own `return` or `yield`, but decorator, default, keyword-default,
+and annotation expressions execute in the outer scope and cannot yield. Future imports, wildcard imports, `global`,
+`nonlocal`, and `return` or `yield` in the outer Custom Code scope are rejected. The same validator also rejects syntax
+that cannot compile as that function body. Every live and generated invocation receives a fresh globals dictionary
+containing builtins and only its matching engine module; generated-plan helpers and another Custom Code step's globals
+are not visible. Generated Pandas and Polars code applies the same result-type checks and Series-to-DataFrame
+normalization as live execution, while DuckDB retains its relation check. Validation runs before a new or replacement
+draft can compile or execute. Every engine uses the same splitlines-based function renderer, matching the streaming
+generated-size preflight without allocating newline-expanded source.
 
 Polars normalization converts a `Series` to a one-column `DataFrame` but retains a notebook `LazyFrame` unchanged.
 Session-owned row identity is added as another lazy expression. Open evaluates an exact row-count aggregate, reads the
