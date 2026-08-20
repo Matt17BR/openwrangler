@@ -320,12 +320,12 @@ test("cleaning-history claim surfaces ignore fenced examples but reject equivale
 test("cleaning-history structural claims reject synonym and word-order contradictions", () => {
   const model = cleaningHistoryModel();
   const examples = [
-    "Modification of the final operation is the sole form supported.",
+    "Modification of the final applied operation is the sole form supported.",
     "The prior transformation is read-only and cannot be revised.",
     "Amending a preceding plan entry is impossible.",
-    "Rollback is available for a specifically chosen plan entry.",
-    "Every operation can be restored independently.",
-    "A selected older operation is reversible through Undo.",
+    "Rollback is available for a specifically chosen committed plan entry.",
+    "Every committed operation can be restored independently.",
+    "A selected older applied operation is reversible through Undo.",
     "Plan entries have a mutable sequence.",
     "You may rearrange the applied workflow.",
     "Shuffling the cleaning plan is offered."
@@ -355,7 +355,11 @@ test("cleaning-history claims use rendered inline Markdown and decoded entity te
     "Only the `latest` committed step can be **edited**.",
     "Earlier *applied steps* cannot be mod&#x69;fied or removed.",
     "Undo can remove any&nbsp;committed step.",
-    "Committed steps may be re&#x2d;arranged."
+    "Committed steps may be re&#x2d;arranged.",
+    "Only the lat\u200best committed step can be edited.",
+    "Only the lat&#x200b;est committed step can be edited.",
+    "Earlier applied steps cannot be mod&shy;ified.",
+    "Only the [lat**est** committed step](#cleaning-history) can be *ed**it**ed*."
   ];
   for (const example of examples) {
     const documents = cleaningHistoryDocuments(model);
@@ -387,6 +391,7 @@ test("cleaning-history claims accept truthful prose about unrelated editable and
       "Undo keyboard shortcuts are unavailable while an input is focused.",
       "The renderer can reorder table rows in an example.",
       "The previous workflow can be inspected in logs.",
+      "Only the latest browser-history entry can be edited.",
       "Use `Committed steps may be reordered` only as a rejected-input example."
     ].join("\n")
   );
@@ -406,8 +411,7 @@ test("a code example cannot hide a separate rendered inline contradiction", () =
     "<!-- cleaning-history-capabilities:readme-transformations:end -->",
     [
       "<!-- cleaning-history-capabilities:readme-transformations:end -->",
-      "Use `Committed steps may be reordered` only as a rejected-input example.",
-      "Only the `latest` committed step can be edited."
+      "Use `Committed steps may be reordered` as a rejected-input example, but only the `latest` committed step can be edited."
     ].join("\n")
   );
   assert.throws(
@@ -419,6 +423,29 @@ test("a code example cannot hide a separate rendered inline contradiction", () =
       }),
     /contradictory cleaning-history capability claim/u
   );
+});
+
+test("cleaning-history claims fail closed on unresolved visible named entities", () => {
+  const model = cleaningHistoryModel();
+  for (const text of [
+    "Earlier applied steps cannot be mod&amp;shy;ified.",
+    "Earlier applied steps cannot be mod&notARealEntity;ified."
+  ]) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${text}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /unresolved visible named Markdown entity/u
+    );
+  }
 });
 
 test("cleaning-history structural claims preserve valid code examples but reject malformed fences", () => {
@@ -451,7 +478,7 @@ test("cleaning-history structural claims preserve valid code examples but reject
     [
       "<!-- cleaning-history-capabilities:readme-transformations:end -->",
       "```bad`info",
-      "Editing operations is restricted to the newest one.",
+      "Editing committed operations is restricted to the newest one.",
       "```"
     ].join("\n")
   );
@@ -494,6 +521,18 @@ test("cleaning-history section ownership recognizes Setext and entity-encoded he
       })
     );
   }
+
+  const linked = cleaningHistoryDocuments(model);
+  linked["README.md"] = linked["README.md"]
+    .replace("## Transformations", "[Trans**for**mations][transformations]\n-----------------")
+    .concat("\n[transformations]: #transformations\n");
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents: linked
+    })
+  );
 
   for (const duplicate of ["Transformations\n---------------", "## Trans&#102;ormations"]) {
     const documents = cleaningHistoryDocuments(model);
