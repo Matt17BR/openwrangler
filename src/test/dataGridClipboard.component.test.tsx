@@ -145,6 +145,43 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
+  it("announces a successful keyboard fallback without invalidating its same-cell owner", async () => {
+    writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 18);
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy"));
+    expect(document.activeElement).toBe(emptySales);
+    expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("does not steal re-entrant focus or publish the superseded fallback action", async () => {
+    writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 21);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => {
+        milan.focus();
+        return true;
+      })
+    });
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+
+    await waitFor(() => expect(document.activeElement).toBe(milan));
+    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+    expect(screen.getByText("1 cell selected, row 1, column 1")).toBeTruthy();
+  });
+
   it("preserves a pointer-selected rectangle in its context menu and restores the drag endpoint", async () => {
     const contextPage: GridPage = {
       ...page,

@@ -62,7 +62,7 @@ export function createGridClipboardColumnAccumulator(): GridClipboardColumnAccum
       const separatorBytes = fields.length === 0 ? 0 : 1;
       const plan = planClipboardField(
         cell.display,
-        cell.kind === "string",
+        spreadsheetFormulaCanExecute(cell),
         maximumClipboardBytes - outputBytes - separatorBytes
       );
       if (!plan) {
@@ -242,7 +242,7 @@ export function buildGridClipboardPayload({
     for (const column of columnPositions) {
       const cell = row.values[column];
       if (!cell) return { ok: false, reason: "Wait for every selected cell to load before copying." };
-      if (!appendField(cell.display, cell.kind === "string")) return clipboardByteLimitError();
+      if (!appendField(cell.display, spreadsheetFormulaCanExecute(cell))) return clipboardByteLimitError();
     }
     const outputRow = fields.join("\t");
     outputRows.push(outputRow);
@@ -272,11 +272,10 @@ export async function writeGridClipboardText(text: string, ownsAttempt: () => bo
     // user-gesture-scoped DOM copy path as a compatibility fallback.
   }
 
-  if (!ownsAttempt()) throw new Error("Clipboard ownership changed before the fallback attempt.");
-
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
     throw new Error("Clipboard access is unavailable in this editor.");
   }
+  if (!ownsAttempt()) throw new Error("Clipboard ownership changed before the fallback attempt.");
   const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const input = document.createElement("textarea");
   input.value = text;
@@ -289,9 +288,14 @@ export async function writeGridClipboardText(text: string, ownsAttempt: () => bo
     input.select();
     if (!document.execCommand("copy")) throw new Error("Clipboard access is unavailable in this editor.");
   } finally {
+    const inputRetainsFocus = document.activeElement === input;
     input.remove();
-    activeElement?.focus({ preventScroll: true });
+    if (inputRetainsFocus) activeElement?.focus({ preventScroll: true });
   }
+}
+
+function spreadsheetFormulaCanExecute(cell: CellValue): boolean {
+  return cell.kind === "string" || cell.kind === "unknown";
 }
 
 function planClipboardField(

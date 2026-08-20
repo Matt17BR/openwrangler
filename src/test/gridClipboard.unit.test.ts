@@ -166,6 +166,38 @@ describe("grid clipboard contract", () => {
     ).toMatchObject({ ok: true, payload: { text: "'-42\t-42\t-42\t-42.5" } });
   });
 
+  it("neutralizes hostile unknown displays in rectangular and whole-column copies", () => {
+    const unknown = {
+      kind: "unknown" as const,
+      raw: { source: "opaque" },
+      display: "=CMD()",
+      isNull: false,
+      isNaN: false
+    };
+    const selection = collapsedGridClipboardSelection("view-a", { row: 0, column: 0 });
+    const unknownPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: ["c:0"],
+      rows: [{ id: "r:0", rowNumber: 0, values: [unknown] }]
+    };
+
+    expect(
+      buildGridClipboardPayload({
+        mode: "range",
+        selection,
+        contextId: "view-a",
+        schema: [schema[0]],
+        page: unknownPage
+      })
+    ).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
+
+    const accumulator = createGridClipboardColumnAccumulator();
+    expect(accumulator.append(unknown)).toBeUndefined();
+    expect(accumulator.finish()).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
+  });
+
   it("copies the focused cell independently of the selection anchor", () => {
     const selection = {
       contextId: "view-a",
