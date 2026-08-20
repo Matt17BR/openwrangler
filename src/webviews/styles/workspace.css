@@ -1,0 +1,80 @@
+.layout {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+}
+
+.layout.sidePanelOpen {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 440px);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-left: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+}
+
+.drawerHeader {
+  align-items: center;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 8px 0 12px;
+}
+
+.iconButton,
+.secondaryButton {
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+.iconButton {
+  padding: 5px;
+}
+
+.panel {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.panelHeader,
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panelHeader {
+  justify-content: space-between;
+}
+
+.panelNote {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0 0 10px;
+}
+
+.panel label,
+.predicateBuilder {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.filterSortPanel {
+  flex: 1 1 auto;
+  min-height: 260px;
+}

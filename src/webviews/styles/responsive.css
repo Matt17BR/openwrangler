@@ -1,0 +1,305 @@
+@media (max-width: 1100px) {
+  .layout.sidePanelOpen {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    bottom: 0;
+    box-shadow: -8px 0 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+    max-width: min(88vw, 360px);
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 100%;
+    z-index: 20;
+  }
+
+  .toolbar {
+    align-items: flex-start;
+  }
+
+  .toolbarActions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .operationDialogBody {
+    grid-template-columns: minmax(220px, 0.7fr) minmax(340px, 1.3fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .toolbarWithSessionModeAction {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .toolbarWithSessionModeAction .toolbarActions {
+    justify-content: flex-start;
+  }
+
+  .sessionModeHelp[open] {
+    align-items: flex-start;
+    flex-basis: 100%;
+    flex-direction: column;
+    gap: 6px;
+    white-space: normal;
+  }
+
+  .sessionModeHelp[open] .sessionModeHelpText {
+    box-sizing: border-box;
+    max-width: none;
+    position: static;
+    width: 100%;
+  }
+}
+
+@media (max-width: 620px) {
+  .toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbarActions {
+    justify-content: flex-start;
+  }
+
+  .goToColumn {
+    flex: 1;
+  }
+
+  .columnSearchControl input {
+    width: 100%;
+  }
+
+  .columnSearchPopup {
+    left: 0;
+    max-width: min(92vw, 360px);
+    right: auto;
+  }
+
+  .draftReview {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbarPlan {
+    border-left: 0;
+    border-top: 1px solid var(--vscode-panel-border);
+    flex-basis: 100%;
+    padding-left: 0;
+    padding-top: 6px;
+  }
+
+  .draftReview {
+    flex-wrap: nowrap;
+  }
+
+  .draftReviewDiff {
+    flex-basis: auto;
+  }
+
+  .draftReviewWarnings {
+    flex: 0 1 auto;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .draftReviewWarnings > span {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    width: 100%;
+  }
+
+  .viewFilterBarHeader,
+  .viewFilterRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .viewFilterBarActions {
+    justify-content: flex-start;
+  }
+
+  .viewFilterColumn {
+    flex-basis: auto;
+  }
+
+  .draftReview > .cleaningActions {
+    margin-left: 0;
+  }
+
+  .operationDialogBackdrop {
+    padding: 0;
+  }
+
+  .operationDialog {
+    border-radius: 0;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  .operationDialogBody {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .operationCatalog {
+    border-bottom: 1px solid var(--vscode-panel-border);
+    border-right: 0;
+    flex: 0 0 38%;
+  }
+
+  .operationForm {
+    flex: 1;
+  }
+
+  .compoundRow,
+  .aggregationRow {
+    grid-template-columns: 1fr;
+  }
+
+  .operationRowActions {
+    justify-content: flex-end;
+  }
+}
+
+@container (max-width: 480px) {
+  .gridStatusBar {
+    display: grid;
+    grid-template-columns: auto auto auto minmax(0, 1fr);
+  }
+
+  .visibleRowsStatus {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .gridClipboardControls {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .gridClipboardSelectionStatus {
+    border: 0;
+    clip-path: inset(50%);
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .gridClipboardButton {
+    min-width: 24px;
+    padding: 2px;
+  }
+
+  .gridClipboardButtonLabel {
+    display: none;
+  }
+
+  .gridProfileControls {
+    justify-self: end;
+    grid-column: 4;
+    grid-row: 1;
+  }
+}
+
+@media (forced-colors: active) {
+  button,
+  input,
+  select,
+  textarea,
+  th,
+  td,
+  .toolbar,
+  .toolbarPlan,
+  .sidebar,
+  .viewFilterBar,
+  .gridStatusBar {
+    border-color: CanvasText;
+  }
+
+  .toolbarPlan {
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .toolbarPlanStatus {
+    color: CanvasText;
+  }
+
+  .toolbarPlan button {
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+    color: ButtonText;
+  }
+
+  .toolbarPlan button:disabled {
+    border-color: GrayText;
+    color: GrayText;
+    opacity: 1;
+  }
+
+  .toolbarPlan button:focus-visible {
+    outline-color: Highlight;
+  }
+
+  .gridNavigationButton,
+  .headerProfilesButton {
+    border: 1px solid ButtonText;
+    color: ButtonText;
+    forced-color-adjust: none;
+  }
+
+  .gridNavigationButton:disabled,
+  .headerProfilesButton:disabled {
+    border-color: GrayText;
+    color: GrayText;
+    opacity: 1;
+  }
+
+  .headerProfilesButton[aria-pressed="true"] {
+    background: Highlight;
+    box-shadow: none;
+    color: HighlightText;
+  }
+
+  .gridNavigationButton:focus-visible,
+  .headerProfilesButton:focus-visible {
+    outline-color: Highlight;
+  }
+
+  .gridColumnChange,
+  th.diffAddedColumn,
+  td.diffAddedColumn {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+
+  td.diffChangedCell {
+    outline: 2px dashed CanvasText;
+    outline-offset: -3px;
+  }
+
+  .miniChart .numericHistogramBar {
+    fill: CanvasText;
+  }
+
+  .numericHistogramBin.active .numericHistogramBar {
+    fill: Highlight;
+  }
+
+  .numericHistogramHitTarget:focus-visible {
+    border-color: Highlight;
+  }
+}

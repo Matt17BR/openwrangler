@@ -1,0 +1,232 @@
+.filterSortPanel .row {
+  flex-wrap: wrap;
+}
+
+.filterSortPanel .row > select {
+  flex: 1 1 130px;
+  min-width: 0;
+}
+
+.filterSortPanel .row > input {
+  flex: 1 1 150px;
+}
+
+.searchValuesButton {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.filterSection {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: 8px 0;
+}
+
+.filterSection summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.activeFilterOverview {
+  border-top: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 7px;
+  padding: 9px 0;
+}
+
+.activeFilterOverview > header,
+.activeFilterGroup > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.activeFilterOverview > header {
+  font-size: 12px;
+}
+
+.activeFilterOverview p {
+  margin: 0;
+}
+
+.activeFilterList {
+  display: grid;
+  gap: 6px;
+}
+
+.activeFilterGroup {
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.activeFilterGroup > header > span {
+  display: grid;
+  min-width: 0;
+}
+
+.activeFilterGroup > header strong,
+.activeFilterGroup > header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activeFilterGroup > header small {
+  color: var(--vscode-descriptionForeground);
+}
+
+.compactTextButton {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  padding: 2px 4px;
+}
+
+.valueList {
+  max-height: 132px;
+  overflow: auto;
+  margin: 8px 0;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+}
+
+.activeRules,
+.activeValueGroup {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.activeRules {
+  margin-top: 8px;
+}
+
+.activeValueLogic {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.rulePill {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
+.sortRulesHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.sortApplyActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sortRuleList {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.sortRule {
+  align-items: center;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  padding: 4px;
+}
+
+.sortRulePriority {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  font-size: 10px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.sortRuleColumn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sortDirectionButton {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.sortRuleControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  grid-column: 2 / -1;
+  justify-content: flex-start;
+}
+
+.rulePillButton {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.rulePillButton > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rulePillButton .codicon {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.checkboxRow {
+  align-items: center;
+  border-radius: 3px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 4px 6px;
+}
+
+.checkboxRow:has(input:not(:disabled)) {
+  cursor: pointer;
+}
+
+.checkboxRow:has(input:not(:disabled)):hover,
+.checkboxRow:focus-within {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.checkboxRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
