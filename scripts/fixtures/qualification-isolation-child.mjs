@@ -65,6 +65,7 @@ async function recordEnvironment() {
   assert.ok(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT?.endsWith(".json"));
   assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_TASK_ID, taskId);
   assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_RUN_ID, runId);
+  assert.equal(process.env.PWD, process.cwd());
   assert.equal(
     process.env.PATH?.split(process.platform === "win32" ? ";" : ":")[0],
     dirname(process.env.OPEN_WRANGLER_TEST_PYTHON)
@@ -72,6 +73,7 @@ async function recordEnvironment() {
   assert.match(process.env.PYTEST_ADDOPTS ?? "", new RegExp(stateRoot.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const allowedKeys = new Set([
     ...QUALIFICATION_ENVIRONMENT_CONTRACT.passThroughKeys,
+    ...QUALIFICATION_ENVIRONMENT_CONTRACT.runnerOwnedKeys,
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateDirectories),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateFiles),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.worktreePaths),
@@ -199,7 +201,7 @@ if (mode === "hold") {
   const descendant = spawn(
     process.execPath,
     [import.meta.filename, "delayed-write", "--delay", "2000", "--path", argument("--path")],
-    { env: process.env, stdio: "ignore", windowsHide: true }
+    { detached: true, env: process.env, stdio: "ignore", windowsHide: true }
   );
   descendant.unref();
 } else if (mode === "hang") {

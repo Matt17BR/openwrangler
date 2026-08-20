@@ -46,6 +46,8 @@ The assignment is a regular, singly linked JSON file with this exact shape:
   "taskId": "opaque-task-id",
   "issue": 728,
   "worktree": "/absolute/canonical/task-worktree",
+  "gitDirectory": "/absolute/canonical/task-git-metadata",
+  "gitExecutable": "/absolute/canonical/git-executable",
   "base": "0000000000000000000000000000000000000000",
   "head": "1111111111111111111111111111111111111111",
   "tree": "2222222222222222222222222222222222222222",
@@ -55,10 +57,12 @@ The assignment is a regular, singly linked JSON file with this exact shape:
 }
 ```
 
-The coordinator supplies the task, issue, branch, base, worktree, and state-root ownership. The owner seals `head` and
-`tree` immediately before the run. Worktree and state-root paths must be absolute, canonical, disjoint, and free of
-symbolic-link aliases. The source must start clean at the exact branch, head, tree, and base ancestry. A state root is
-single use: the runner creates it exclusively and rejects a pre-existing path.
+The coordinator supplies the task, issue, branch, base, worktree, authoritative Git metadata directory, canonical Git
+executable, and state-root ownership. The owner seals `head` and `tree` immediately before the run. This explicit Git
+owner supports task metadata overlays without falling back to a stale linked `.git` entry. Worktree, Git, and
+state-root paths must be absolute, canonical, and free of symbolic-link aliases; worktree and state root are
+disjoint. The source must start clean at the exact branch, head, tree, and base ancestry through that sealed Git
+owner. A state root is single use: the runner creates it exclusively and rejects a pre-existing path.
 
 The state root contains all mutable qualification state:
 
@@ -80,13 +84,19 @@ The state root contains all mutable qualification state:
 `node_modules`, assigns npm and Corepack caches to the state root, and sets Python, pytest, Ruff, Playwright, browser,
 home, XDG, R, temporary, and artifact variables to the listed task-owned paths. A command that needs Python creates
 and installs its interpreter in the assigned `python/venv` before invoking commands such as `npm run check:pr`; it
-must not fall back to another task's environment.
+must not fall back to another task's environment. `PATH` is runner-owned and contains only the task venv plus
+canonical directories that own the sealed Git, Node, and operating-system tools; the caller's
+mutable `PATH` is never inherited.
 
-The receipt records the assignment digest, command, worktree and Git-directory filesystem identities, exact
+The receipt records the assignment digest, command, worktree, authoritative Git-directory/config/executable
+filesystem identities, exact
 base/head/tree/branch, environment layout, result, and post-command identity. It is eligible only when the assignment,
 source, Git metadata, and state-root directories retain their identities and the command succeeds. Source or
 assignment mutation produces a nonzero result and an explicitly ineligible receipt. Invalid aliases fail before a
-state root or receipt is created.
+state root or receipt is created. POSIX execution uses an inherited descriptor for the verified executable snapshot;
+Linux qualification additionally uses a subreaper so a new session or process group cannot escape terminal
+tree-empty attestation. Windows uses the existing kill-on-close Job Object supervisor and revalidates the private
+snapshot immediately before launch.
 
 The runner performs no cleanup and never reuses a root. After the receipt is handed off and all owned processes have
 ended, the assigned task may remove only its exact worktree and state root under the portfolio cleanup policy. An

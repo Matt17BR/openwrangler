@@ -14,7 +14,6 @@ const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TERMINATION_GRACE_MS = 10_000;
-const PROCESS_POLL_MS = 25;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
 const WINDOWS_JOB_SUPERVISOR_PATH = join(import.meta.dirname, "windows-job-supervisor.ps1");
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
@@ -23,6 +22,8 @@ const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 const ASSIGNMENT_KEYS = [
   "base",
   "branch",
+  "gitDirectory",
+  "gitExecutable",
   "head",
   "issue",
   "protocol",
@@ -73,8 +74,6 @@ const SAFE_PASSTHROUGH_ENVIRONMENT_KEYS = Object.freeze([
   "LC_CTYPE",
   "NUMBER_OF_PROCESSORS",
   "OS",
-  "PATH",
-  "PATHEXT",
   "PROCESSOR_ARCHITECTURE",
   "RUNNER_ARCH",
   "RUNNER_OS",
@@ -154,8 +153,125 @@ const QUALIFICATION_ENVIRONMENT_CONTRACT = Object.freeze({
   passThroughKeys: SAFE_PASSTHROUGH_ENVIRONMENT_KEYS,
   privateDirectories: PRIVATE_DIRECTORY_ENVIRONMENT,
   privateFiles: PRIVATE_FILE_ENVIRONMENT,
+  runnerOwnedKeys: Object.freeze(["PATH", "PWD"]),
   worktreePaths: WORKTREE_PATH_ENVIRONMENT
 });
+
+const POSIX_SUBREAPER_SOURCE = String.raw`
+import ctypes, json, os, signal, subprocess, sys, time
+
+CONTROL_FD = 5
+TARGET_FD = 4
+
+def publish(value):
+    os.write(CONTROL_FD, (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8"))
+
+def children():
+    path = "/proc/self/task/%d/children" % os.getpid()
+    try:
+        text = open(path, "r", encoding="ascii").read().strip()
+    except OSError:
+        return []
+    return [int(value) for value in text.split()] if text else []
+
+def signal_children(sig):
+    for pid in children():
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+def reap_exited():
+    while True:
+        try:
+            waited, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if waited <= 0:
+            return
+
+def wait_empty(deadline):
+    while time.monotonic() < deadline:
+        reap_exited()
+        if not children():
+            return True
+        time.sleep(0.01)
+    return not children()
+
+def main():
+    if sys.platform != "linux" or not os.path.isdir("/proc/self/task"):
+        publish({"spawnError":"POSIX detached-process containment requires Linux procfs","treeEmpty":False})
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        publish({"spawnError":"POSIX detached-process containment could not enable its subreaper","treeEmpty":False})
+        return
+    arguments = json.loads(sys.argv[1])
+    argv0 = sys.argv[2]
+    timeout = int(sys.argv[3]) / 1000.0
+    grace = int(sys.argv[4]) / 1000.0
+    target_path = "/dev/fd/%d" % TARGET_FD
+    try:
+        target = subprocess.Popen(
+            [argv0, *arguments],
+            executable=target_path,
+            close_fds=True,
+            pass_fds=(TARGET_FD,),
+            start_new_session=True,
+        )
+    except BaseException as error:
+        publish({"spawnError":str(error),"treeEmpty":True})
+        return
+    timed_out = False
+    status = None
+    signal_name = None
+    try:
+        status = target.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(target.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            status = target.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(target.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                status = target.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                status = None
+    reap_exited()
+    lingering = bool(children())
+    if lingering:
+        signal_children(signal.SIGTERM)
+    tree_empty = wait_empty(time.monotonic() + grace)
+    if not tree_empty:
+        signal_children(signal.SIGKILL)
+        tree_empty = wait_empty(time.monotonic() + grace)
+    if isinstance(status, int) and status < 0:
+        try:
+            signal_name = signal.Signals(-status).name
+        except ValueError:
+            signal_name = "SIG%d" % (-status)
+        status = None
+    publish({
+        "lingeringDescendants": lingering,
+        "signal": signal_name,
+        "spawnError": None,
+        "status": status,
+        "timedOut": timed_out,
+        "treeEmpty": tree_empty,
+    })
+
+try:
+    main()
+except BaseException as error:
+    publish({"spawnError":"POSIX containment supervisor failed: %s" % error,"treeEmpty":False})
+`;
 
 function fail(message) {
   throw new Error(`Qualification isolation: ${message}`);
@@ -223,13 +339,31 @@ function cleanGitEnvironment(environment = process.env) {
   return result;
 }
 
-function git(worktree, arguments_) {
-  const result = spawnSync("git", ["-C", worktree, ...arguments_], {
-    encoding: "utf8",
-    env: cleanGitEnvironment(),
-    maxBuffer: 4 * 1024 * 1024,
-    windowsHide: true
-  });
+function gitInspectionEnvironment(assignment) {
+  const environment = cleanGitEnvironment();
+  const directories = [dirname(assignment.gitExecutable), dirname(process.execPath)];
+  if (process.platform === "win32") {
+    const systemRoot = environment.SYSTEMROOT ?? environment.WINDIR;
+    if (systemRoot && isAbsolute(systemRoot)) directories.push(join(systemRoot, "System32"));
+  } else {
+    directories.push("/usr/bin", "/bin");
+  }
+  environment.PATH = [...new Set(directories)].join(delimiter);
+  return environment;
+}
+
+function git(assignment, arguments_) {
+  const result = spawnSync(
+    assignment.gitExecutable,
+    ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, ...arguments_],
+    {
+      cwd: assignment.worktree,
+      encoding: "utf8",
+      env: gitInspectionEnvironment(assignment),
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true
+    }
+  );
   if (result.error) {
     throw result.error;
   }
@@ -239,13 +373,18 @@ function git(worktree, arguments_) {
   return result.stdout.trim();
 }
 
-function optionalGitConfig(worktree, key) {
-  const result = spawnSync("git", ["-C", worktree, "config", "--get", key], {
-    encoding: "utf8",
-    env: cleanGitEnvironment(),
-    maxBuffer: 1024 * 1024,
-    windowsHide: true
-  });
+function optionalGitConfig(assignment, key) {
+  const result = spawnSync(
+    assignment.gitExecutable,
+    ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, "config", "--get", key],
+    {
+      cwd: assignment.worktree,
+      encoding: "utf8",
+      env: gitInspectionEnvironment(assignment),
+      maxBuffer: 1024 * 1024,
+      windowsHide: true
+    }
+  );
   if (result.error) {
     throw result.error;
   }
@@ -458,6 +597,8 @@ async function readAssignment(path) {
     }
     assertCanonicalAbsolutePath(value.worktree, "worktree");
     assertCanonicalAbsolutePath(value.stateRoot, "stateRoot");
+    assertCanonicalAbsolutePath(value.gitDirectory, "gitDirectory");
+    assertCanonicalAbsolutePath(value.gitExecutable, "gitExecutable");
   } catch (error) {
     await pinned.handle.close();
     throw error;
@@ -478,27 +619,26 @@ async function optionalDirectoryIdentity(path) {
 
 async function captureGitIdentity(assignment) {
   const worktreeIdentity = await fileIdentity(assignment.worktree, "directory");
-  const dotGit = await lstat(join(assignment.worktree, ".git"));
-  if (dotGit.isSymbolicLink() || (!dotGit.isFile() && !dotGit.isDirectory())) {
-    fail("worktree .git entry is invalid");
-  }
-  if (git(assignment.worktree, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
+  if (git(assignment, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
     fail("assignment worktree is not a Git worktree");
   }
-  const gitDirectory = git(assignment.worktree, ["rev-parse", "--path-format=absolute", "--git-dir"]);
-  const commonDirectory = git(assignment.worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  const head = git(assignment.worktree, ["rev-parse", "HEAD"]);
-  const tree = git(assignment.worktree, ["rev-parse", "HEAD^{tree}"]);
-  const branch = git(assignment.worktree, ["branch", "--show-current"]);
-  const base = git(assignment.worktree, ["rev-parse", `${assignment.base}^{commit}`]);
-  const mergeBase = git(assignment.worktree, ["merge-base", assignment.base, "HEAD"]);
-  const status = git(assignment.worktree, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  const diffCheck = git(assignment.worktree, ["diff", "--check"]);
+  const gitDirectory = git(assignment, ["rev-parse", "--path-format=absolute", "--git-dir"]);
+  const commonDirectory = git(assignment, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const head = git(assignment, ["rev-parse", "HEAD"]);
+  const tree = git(assignment, ["rev-parse", "HEAD^{tree}"]);
+  const branch = git(assignment, ["branch", "--show-current"]);
+  const base = git(assignment, ["rev-parse", `${assignment.base}^{commit}`]);
+  const mergeBase = git(assignment, ["merge-base", assignment.base, "HEAD"]);
+  const status = git(assignment, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const diffCheck = git(assignment, ["diff", "--check"]);
   if (base !== assignment.base || mergeBase !== assignment.base) {
     fail("assignment base is not the exact ancestor of HEAD");
   }
   if (head !== assignment.head || tree !== assignment.tree || branch !== assignment.branch) {
     fail("worktree HEAD, tree, or branch does not match the assignment");
+  }
+  if (gitDirectory !== assignment.gitDirectory) {
+    fail("worktree Git directory does not match the sealed assignment owner");
   }
   if (status !== "" || diffCheck !== "") {
     fail("worktree must be clean before qualification");
@@ -510,6 +650,7 @@ async function captureGitIdentity(assignment) {
     branch,
     commonDirectory: await fileIdentity(commonDirectory, "directory"),
     gitDirectory: await fileIdentity(gitDirectory, "directory"),
+    gitExecutable: await fileIdentity(assignment.gitExecutable, "file"),
     head,
     mergeBase,
     nodeModules: nodeModulesIdentity,
@@ -528,11 +669,22 @@ async function openGitOwnerPins(gitIdentity, worktreePin) {
       MAX_GIT_CONFIG_BYTES,
       "Git config owner"
     );
+    pins.gitExecutable = await openPinnedExecutable(gitIdentity.gitExecutable.path);
     if (gitIdentity.nodeModules) {
       pins.nodeModules = await openPinnedDirectory(gitIdentity.nodeModules.path, "node_modules owner");
     }
     for (const [key, pin] of Object.entries(pins)) {
       if (key === "gitConfig") continue;
+      if (key === "gitExecutable") {
+        const leaf = executableLeaf(pin);
+        if (
+          leaf.before.dev.toString() !== gitIdentity.gitExecutable.device ||
+          leaf.before.ino.toString() !== gitIdentity.gitExecutable.inode
+        ) {
+          fail("Git executable changed before its owner could be pinned");
+        }
+        continue;
+      }
       const identity = key === "worktree" ? gitIdentity.worktree : gitIdentity[key];
       if (pin.snapshot.dev.toString() !== identity.device || pin.snapshot.ino.toString() !== identity.inode) {
         fail(`${key} changed before its owner could be pinned`);
@@ -549,6 +701,8 @@ async function verifyGitOwnerPins(pins) {
   for (const [key, pin] of Object.entries(pins)) {
     if (key === "gitConfig") {
       await verifyPinnedRegularFile(pin, MAX_GIT_CONFIG_BYTES, "Git config owner");
+    } else if (key === "gitExecutable") {
+      await verifyPinnedExecutable(pin);
     } else {
       await verifyPinnedDirectory(pin, `${key} owner`);
     }
@@ -563,8 +717,8 @@ async function captureGitConfigIdentity(assignment, pin) {
   const bytes = await verifyPinnedRegularFile(pin, MAX_GIT_CONFIG_BYTES, "Git config owner");
   return {
     device: pin.snapshot.dev.toString(),
-    effectiveEmail: optionalGitConfig(assignment.worktree, "user.email"),
-    effectiveName: optionalGitConfig(assignment.worktree, "user.name"),
+    effectiveEmail: optionalGitConfig(assignment, "user.email"),
+    effectiveName: optionalGitConfig(assignment, "user.name"),
     inode: pin.snapshot.ino.toString(),
     links: pin.snapshot.nlink.toString(),
     mode: Number(pin.snapshot.mode & 0o777n),
@@ -580,7 +734,7 @@ function assertSameGitIdentity(before, after) {
       fail(`worktree ${key} changed during qualification`);
     }
   }
-  for (const key of ["commonDirectory", "gitDirectory", "worktree"]) {
+  for (const key of ["commonDirectory", "gitDirectory", "gitExecutable", "worktree"]) {
     if (!sameIdentity(before[key], after[key])) {
       fail(`worktree ${key} identity changed during qualification`);
     }
@@ -760,6 +914,33 @@ function quotePytestPath(path) {
   return `'${path.replaceAll("'", `'"'"'`)}'`;
 }
 
+async function trustedToolDirectories(assignment, hostEnvironment) {
+  const candidates = [dirname(assignment.gitExecutable), dirname(process.execPath)];
+  if (process.platform === "win32") {
+    const systemRoot = hostEnvironment.SYSTEMROOT ?? hostEnvironment.WINDIR;
+    if (!systemRoot || !isAbsolute(systemRoot)) {
+      fail("a canonical Windows system root is required for the trusted tool path");
+    }
+    candidates.push(join(systemRoot, "System32"), join(systemRoot, "System32", "WindowsPowerShell", "v1.0"));
+  } else {
+    candidates.push("/usr/bin", "/bin");
+  }
+  const directories = [];
+  const pins = [];
+  try {
+    for (const candidate of candidates) {
+      const canonical = await realpath(candidate);
+      if (directories.includes(canonical)) continue;
+      pins.push(await openPinnedDirectory(canonical, `trusted tool directory ${String(pins.length)}`));
+      directories.push(canonical);
+    }
+  } catch (error) {
+    await Promise.all(pins.map((pin) => pin.handle.close()));
+    throw error;
+  }
+  return { directories, pins };
+}
+
 function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment) {
   const environment = {};
   for (const key of SAFE_PASSTHROUGH_ENVIRONMENT_KEYS) {
@@ -782,7 +963,8 @@ function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment
     OPEN_WRANGLER_QUALIFICATION_ROOT: assignment.stateRoot,
     OPEN_WRANGLER_QUALIFICATION_RUN_ID: assignment.runId,
     OPEN_WRANGLER_QUALIFICATION_TASK_ID: assignment.taskId,
-    PATH: `${dirname(layout.pythonExecutable)}${delimiter}${hostEnvironment.PATH ?? ""}`,
+    PATH: `${dirname(layout.pythonExecutable)}${delimiter}${layout.toolPath}`,
+    PWD: assignment.worktree,
     PYTEST_ADDOPTS: `--cache-dir=${quotePytestPath(layout.pytestCache)} --basetemp=${quotePytestPath(layout.pytestTemp)}`,
     npm_config_userconfig: layout.npmUserConfig
   });
@@ -989,43 +1171,9 @@ async function verifyExecutableLaunch(value) {
 }
 
 async function closeExecutableLaunch(value) {
+  if (!value) return;
   await closePinnedExecutable(value.snapshot);
   await closePinnedExecutable(value.source);
-}
-
-function posixProcessGroupRunning(processGroup) {
-  try {
-    process.kill(-processGroup, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    if (error?.code === "EPERM") return true;
-    throw error;
-  }
-}
-
-async function waitForPosixProcessGroupEmpty(processGroup, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (!posixProcessGroupRunning(processGroup)) return true;
-    await delay(PROCESS_POLL_MS);
-  } while (Date.now() < deadline);
-  return !posixProcessGroupRunning(processGroup);
-}
-
-function signalPosixProcessGroup(processGroup, signal) {
-  try {
-    process.kill(-processGroup, signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-}
-
-async function terminatePosixProcessGroup(processGroup, graceMs) {
-  signalPosixProcessGroup(processGroup, "SIGTERM");
-  if (await waitForPosixProcessGroupEmpty(processGroup, graceMs)) return true;
-  signalPosixProcessGroup(processGroup, "SIGKILL");
-  return waitForPosixProcessGroupEmpty(processGroup, graceMs);
 }
 
 function waitForSpawnedProcess(child) {
@@ -1041,7 +1189,52 @@ function waitForSpawnedProcess(child) {
   });
 }
 
+function readPosixSupervisorControl(stream) {
+  return new Promise((resolveControl) => {
+    const chunks = [];
+    let length = 0;
+    let failed = false;
+    stream.on("data", (chunk) => {
+      length += chunk.length;
+      if (length > 64 * 1024) {
+        failed = true;
+        stream.destroy();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    stream.once("error", () => resolveControl(null));
+    stream.once("end", () => {
+      if (failed) {
+        resolveControl(null);
+        return;
+      }
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
+          resolveControl(null);
+          return;
+        }
+        const value = JSON.parse(text);
+        resolveControl(value && typeof value === "object" && !Array.isArray(value) ? value : null);
+      } catch {
+        resolveControl(null);
+      }
+    });
+  });
+}
+
 async function runPosixOwnedCommand(command, arguments_, options) {
+  if ((options.platformForTest ?? process.platform) !== "linux") {
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: "POSIX detached-process containment requires Linux subreaper support",
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
+  }
   let child;
   await options.beforeSpawnForTest?.({
     executedPath: command,
@@ -1049,15 +1242,27 @@ async function runPosixOwnedCommand(command, arguments_, options) {
     strategy: options.executionStrategy
   });
   try {
-    child = spawn(command, arguments_, {
-      argv0: options.launchArgv0,
-      cwd: options.cwd,
-      detached: true,
-      env: options.environment,
-      shell: false,
-      stdio: "inherit",
-      windowsHide: true
-    });
+    await options.verifyExecutableForSpawn();
+    child = spawn(
+      options.supervisorExecutedPath,
+      [
+        "-I",
+        "-c",
+        POSIX_SUBREAPER_SOURCE,
+        JSON.stringify(arguments_),
+        options.launchArgv0,
+        String(options.timeoutMs),
+        String(options.terminationGraceMs)
+      ],
+      {
+        cwd: options.cwd,
+        detached: true,
+        env: options.environment,
+        shell: false,
+        stdio: ["inherit", "inherit", "inherit", options.supervisorExecutableFd, options.targetExecutableFd, "pipe"],
+        windowsHide: true
+      }
+    );
   } catch (error) {
     return {
       lingeringDescendants: false,
@@ -1075,57 +1280,72 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       strategy: options.executionStrategy
     });
   }
+  const controlStream = child.stdio[5];
+  if (!controlStream) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // The supervisor may already have exited while its missing control pipe was classified.
+    }
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: "POSIX containment supervisor control pipe is unavailable",
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
+  }
+  const control = readPosixSupervisorControl(controlStream);
   const completion = waitForSpawnedProcess(child);
   let timer;
   const outcome = await Promise.race([
     completion,
     new Promise((resolveTimeout) => {
-      timer = setTimeout(() => resolveTimeout({ timedOut: true }), options.timeoutMs);
+      timer = setTimeout(
+        () => resolveTimeout({ timedOut: true }),
+        options.timeoutMs + 2 * options.terminationGraceMs + 5_000
+      );
     })
   ]);
   clearTimeout(timer);
-  if (outcome.error) {
+  if (outcome.timedOut === true) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // The supervisor may have exited at the same instant as its outer settlement deadline.
+    }
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+      spawnError: "POSIX containment supervisor exceeded its bounded settlement",
       status: null,
-      timedOut: false,
-      treeEmpty: child.pid === undefined
-    };
-  }
-  const processGroup = child.pid;
-  if (processGroup === undefined) {
-    return {
-      lingeringDescendants: false,
-      signal: outcome.signal ?? null,
-      spawnError: "qualification command has no owned process-group identity",
-      status: outcome.status ?? null,
-      timedOut: outcome.timedOut === true,
+      timedOut: true,
       treeEmpty: false
     };
   }
-  const lingeringDescendants = outcome.timedOut !== true && posixProcessGroupRunning(processGroup);
-  let treeEmpty = !posixProcessGroupRunning(processGroup);
-  if (!treeEmpty) {
-    treeEmpty = await terminatePosixProcessGroup(processGroup, options.terminationGraceMs);
+  const reported = await control;
+  if (outcome.error || outcome.status !== 0 || outcome.signal !== null || !reported) {
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: outcome.error
+        ? outcome.error instanceof Error
+          ? outcome.error.message
+          : String(outcome.error)
+        : "POSIX containment supervisor did not publish one valid terminal result",
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
   }
-  const completedAfterTermination =
-    outcome.timedOut === true
-      ? await Promise.race([completion, delay(options.terminationGraceMs).then(() => null)])
-      : outcome;
-  const finalOutcome = completedAfterTermination ?? { signal: null, status: null };
   return {
-    lingeringDescendants,
-    signal: finalOutcome.signal ?? null,
-    spawnError: finalOutcome.error
-      ? finalOutcome.error instanceof Error
-        ? finalOutcome.error.message
-        : String(finalOutcome.error)
-      : null,
-    status: finalOutcome.status ?? null,
-    timedOut: outcome.timedOut === true,
-    treeEmpty: treeEmpty && completedAfterTermination !== null
+    lingeringDescendants: reported.lingeringDescendants === true,
+    signal: typeof reported.signal === "string" ? reported.signal : null,
+    spawnError: typeof reported.spawnError === "string" ? reported.spawnError : null,
+    status: Number.isInteger(reported.status) ? reported.status : null,
+    timedOut: reported.timedOut === true,
+    treeEmpty: reported.treeEmpty === true
   };
 }
 
@@ -1156,6 +1376,23 @@ function windowsAttestation(stream, token) {
 }
 
 async function runWindowsOwnedCommand(command, arguments_, options) {
+  await options.beforeSpawnForTest?.({
+    executedPath: command,
+    sourcePath: options.sourceCommand,
+    strategy: options.executionStrategy
+  });
+  try {
+    await options.verifyExecutableForSpawn();
+  } catch (error) {
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+      status: null,
+      timedOut: false,
+      treeEmpty: true
+    };
+  }
   const systemRoot = options.environment.SYSTEMROOT ?? options.environment.WINDIR;
   if (!systemRoot || !isAbsolute(systemRoot)) {
     return {
@@ -1210,34 +1447,41 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   supervisor.stdin.on("error", (error) => {
     controlError ??= error;
   });
-  await options.beforeSpawnForTest?.({
+  await options.afterSpawnForTest?.({
     executedPath: command,
     sourcePath: options.sourceCommand,
     strategy: options.executionStrategy
   });
   try {
-    supervisor.stdin.write(
-      `${JSON.stringify({
-        args: arguments_,
-        attestationToken: token,
-        command: "launch",
-        cwd: options.cwd,
-        environment: options.environment,
-        executable: command,
-        protocol: 1
-      })}\n`,
-      "utf8",
-      (error) => {
-        controlError ??= error;
-      }
-    );
-  } finally {
-    await options.afterSpawnForTest?.({
-      executedPath: command,
-      sourcePath: options.sourceCommand,
-      strategy: options.executionStrategy
-    });
+    await options.verifyExecutableForSpawn();
+  } catch (error) {
+    supervisor.stdin.destroy();
+    supervisor.kill("SIGKILL");
+    await completion;
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+      status: null,
+      timedOut: false,
+      treeEmpty: true
+    };
   }
+  supervisor.stdin.write(
+    `${JSON.stringify({
+      args: arguments_,
+      attestationToken: token,
+      command: "launch",
+      cwd: options.cwd,
+      environment: options.environment,
+      executable: command,
+      protocol: 1
+    })}\n`,
+    "utf8",
+    (error) => {
+      controlError ??= error;
+    }
+  );
   let timer;
   const outcome = await Promise.race([
     completion,
@@ -1291,6 +1535,8 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
 async function runOwnedCommand(command, arguments_, options) {
   let executable;
   let launch;
+  let supervisorExecutable;
+  let supervisorLaunch;
   try {
     executable = await openPinnedExecutable(
       command,
@@ -1298,8 +1544,15 @@ async function runOwnedCommand(command, arguments_, options) {
       options.executableAfterOpenForTest ? { afterOpenForTest: options.executableAfterOpenForTest } : undefined
     );
     launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot);
+    if ((options.platformForTest ?? process.platform) !== "win32") {
+      supervisorExecutable = await openPinnedExecutable(options.posixSupervisorCommand);
+      supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
+    }
   } catch (error) {
-    await closePinnedExecutable(executable);
+    if (launch) await closeExecutableLaunch(launch);
+    else await closePinnedExecutable(executable);
+    if (supervisorLaunch) await closeExecutableLaunch(supervisorLaunch);
+    else await closePinnedExecutable(supervisorExecutable);
     return {
       executable: null,
       lingeringDescendants: false,
@@ -1312,19 +1565,28 @@ async function runOwnedCommand(command, arguments_, options) {
   }
   try {
     const platform = options.platformForTest ?? process.platform;
-    const executionStrategy = platform === "win32" ? "private-snapshot" : "pinned-descriptor";
-    const executedPath =
-      platform === "win32"
-        ? executableLeaf(launch.snapshot).path
-        : `/proc/self/fd/${String(executableLeaf(launch.snapshot).handle.fd)}`;
+    const executionStrategy = platform === "win32" ? "private-snapshot" : "inherited-descriptor";
+    const executedPath = platform === "win32" ? executableLeaf(launch.snapshot).path : "/dev/fd/4";
     const runner = options.ownedRunnerForTest ?? (platform === "win32" ? runWindowsOwnedCommand : runPosixOwnedCommand);
     const result = await runner(executedPath, arguments_, {
       ...options,
       executionStrategy,
       launchArgv0: executableLeaf(launch.snapshot).path,
-      sourceCommand: command
+      platformForTest: platform,
+      sourceCommand: command,
+      supervisorExecutedPath: platform === "win32" ? null : "/dev/fd/3",
+      supervisorExecutableFd: platform === "win32" ? null : executableLeaf(supervisorLaunch.snapshot).handle.fd,
+      targetExecutableFd: platform === "win32" ? null : executableLeaf(launch.snapshot).handle.fd,
+      verifyExecutableForSpawn: async () => {
+        await verifyExecutableLaunch(launch);
+        if (supervisorLaunch) await verifyExecutableLaunch(supervisorLaunch);
+      }
     });
-    result.executable = { ...launch.record, strategy: executionStrategy };
+    result.executable = {
+      ...launch.record,
+      strategy: executionStrategy,
+      supervisor: supervisorLaunch?.record ?? null
+    };
     if (result.treeEmpty) {
       try {
         await verifyExecutableLaunch(launch);
@@ -1335,6 +1597,7 @@ async function runOwnedCommand(command, arguments_, options) {
     return result;
   } finally {
     await closeExecutableLaunch(launch);
+    await closeExecutableLaunch(supervisorLaunch);
   }
 }
 
@@ -1408,14 +1671,20 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
   });
   const bootstrapPython = await realpath(selected);
   assertCanonicalAbsolutePath(bootstrapPython, "bootstrap Python");
+  const trustedTools = await trustedToolDirectories(assignment, hostEnvironment);
+  layoutState.layout.toolDirectories = trustedTools.directories;
+  layoutState.layout.toolPath = trustedTools.directories.join(delimiter);
+  for (const [index, pin] of trustedTools.pins.entries()) {
+    layoutState.ownerPins[`toolDirectory${String(index)}`] = pin;
+  }
   const environment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   environment.OPEN_WRANGLER_PYTHON = bootstrapPython;
   environment.OPEN_WRANGLER_TEST_PYTHON = bootstrapPython;
-  environment.PATH = `${dirname(bootstrapPython)}${delimiter}${hostEnvironment.PATH ?? ""}`;
   const creation = await runOwnedCommand(bootstrapPython, ["-I", "-m", "venv", layoutState.layout.venv], {
     cwd: assignment.worktree,
     environment,
     executableSnapshotRoot: layoutState.layout.executableSnapshots,
+    posixSupervisorCommand: bootstrapPython,
     terminationGraceMs: options.terminationGraceMs,
     timeoutMs: 120_000
   });
@@ -1441,6 +1710,7 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
       cwd: assignment.worktree,
       environment: verificationEnvironment,
       executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      posixSupervisorCommand: bootstrapPython,
       terminationGraceMs: options.terminationGraceMs,
       timeoutMs: 30_000
     }
@@ -1455,9 +1725,9 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
 }
 
 async function verifyLayout(layoutState) {
-  await verifyPinnedDirectory(layoutState.ownerPins.stateRoot, "stateRoot owner");
-  await verifyPinnedDirectory(layoutState.ownerPins.artifacts, "artifact owner");
-  await verifyPinnedDirectory(layoutState.ownerPins.executableSnapshots, "executable-snapshot owner");
+  for (const [key, pin] of Object.entries(layoutState.ownerPins)) {
+    await verifyPinnedDirectory(pin, `${key} owner`);
+  }
   for (const [key, before] of Object.entries(layoutState.identities)) {
     const path = key === "marker" ? join(dirname(layoutState.layout.home), "assignment.json") : layoutState.layout[key];
     const expectedKind = key === "marker" || key === "npmUserConfig" || key === "pipConfig" ? "file" : "directory";
@@ -1578,6 +1848,7 @@ async function runQualification({
         beforeSpawnForTest: beforeCommandSpawnForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
+        posixSupervisorCommand: bootstrap.bootstrapPython,
         terminationGraceMs,
         timeoutMs
       });
@@ -1625,6 +1896,8 @@ async function runQualification({
       assignment: {
         base: assignment.base,
         branch: assignment.branch,
+        gitDirectory: assignment.gitDirectory,
+        gitExecutable: assignment.gitExecutable,
         head: assignment.head,
         issue: assignment.issue,
         path: assignmentPath,
