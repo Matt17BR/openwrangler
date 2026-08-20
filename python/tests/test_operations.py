@@ -94,6 +94,9 @@ def test_custom_code_uses_the_canonical_utf8_byte_limit() -> None:
     for code in (exact_ascii + "x", exact_multibyte + "x"):
         with pytest.raises(OperationError, match=r"65,536 UTF-8 bytes"):
             step("custom-too-large", "customCode", code=code)
+    for code in ("result = df\ud800", "result = df\udfff"):
+        with pytest.raises(OperationError, match=r"valid Unicode text"):
+            step("custom-invalid-unicode", "customCode", code=code)
 
 
 def test_generated_code_imports_counter_only_for_categorical_encoding(engine_and_frame):

@@ -30,7 +30,7 @@ describe("protocol-v2 operation request validation", () => {
       expect(validateTransportSchema(envelope(code))).toBe(true);
       expect(isRuntimeRequestEnvelope(envelope(code))).toBe(true);
     }
-    for (const code of [`${exactAscii}x`, oneByteOverMultibyte]) {
+    for (const code of [`${exactAscii}x`, oneByteOverMultibyte, "result = df\uD800", "result = df\uDFFF"]) {
       expect(validateTransportSchema(envelope(code))).toBe(false);
       expect(isRuntimeRequestEnvelope(envelope(code))).toBe(false);
     }

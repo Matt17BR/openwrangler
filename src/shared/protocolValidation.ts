@@ -1371,12 +1371,36 @@ export function isTransformStep(value: unknown): value is TransformStep {
       return (
         decoded !== undefined &&
         isNonEmptyTrimmedString(decoded.code) &&
-        new TextEncoder().encode(decoded.code).byteLength <= MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
+        hasAtMostStrictUtf8Bytes(decoded.code, MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES)
       );
     }
     default:
       return false;
   }
+}
+
+export function hasAtMostStrictUtf8Bytes(value: string, maximumBytes: number): boolean {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
+      const trailing = value.charCodeAt(index + 1);
+      if (trailing < 0xdc00 || trailing > 0xdfff) return false;
+      bytes += 4;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    } else if (codeUnit <= 0x7f) {
+      bytes += 1;
+    } else if (codeUnit <= 0x7ff) {
+      bytes += 2;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > maximumBytes) return false;
+  }
+  return true;
 }
 
 /**
