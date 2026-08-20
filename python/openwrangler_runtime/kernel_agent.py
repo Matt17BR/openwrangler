@@ -8,14 +8,14 @@ from concurrent.futures import CancelledError
 from threading import Lock
 
 from .engines import AmbiguousViewColumnError, EngineError
-from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
+from .protocol import MAX_TRANSPORT_ID_BYTES, ProtocolError, decode_envelope, error_response, response_envelope
 from .response_framing import (
     MAX_RESPONSE_FRAME_BYTES,
     ResponseEncodingError,
     ResponseFrameTooLargeError,
     encode_response_frame,
 )
-from .server import MAX_TRANSPORT_ID_BYTES, dispatch
+from .server import dispatch
 from .session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,

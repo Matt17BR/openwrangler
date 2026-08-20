@@ -1002,6 +1002,74 @@ def test_cancel_request_rejects_an_unknown_target() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "target_request_id",
+    [[], {}, 7, "", "a" * 257, ("\u00e9" * 128) + "a", "\ud800"],
+    ids=["array", "object", "number", "empty", "257-ascii-bytes", "257-multibyte-bytes", "lone-surrogate"],
+)
+def test_cancel_request_rejects_malformed_targets_without_registry_access(
+    monkeypatch: pytest.MonkeyPatch,
+    target_request_id: object,
+) -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+    registry.queue("preserved-queued-request")
+
+    def reject_registry_access(_request_id: str) -> str:
+        raise AssertionError("Malformed cancellation inspected the request registry.")
+
+    monkeypatch.setattr(registry, "cancel", reject_registry_access)
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {"kind": "cancelRequest", "targetRequestId": target_request_id},
+                request_id="cancel-malformed",
+            )
+        )
+    )
+
+    assert result == {
+        "protocolVersion": 2,
+        "requestId": "cancel-malformed",
+        "response": {
+            "kind": "error",
+            "code": "invalid_request",
+            "message": "targetRequestId must be a non-empty string of at most 256 UTF-8 bytes.",
+            "recoverable": False,
+        },
+    }
+    assert registry.state("preserved-queued-request") == "queued"
+
+
+@pytest.mark.parametrize("target_request_id", ["a" * 256, "\u00e9" * 128], ids=["ascii", "multibyte"])
+def test_cancel_request_accepts_exactly_256_utf8_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    target_request_id: str,
+) -> None:
+    observed: list[str] = []
+    registry = kernel_agent._NotebookRequestRegistry()
+
+    def observe_registry_access(request_id: str) -> str:
+        observed.append(request_id)
+        return "unknown"
+
+    monkeypatch.setattr(registry, "cancel", observe_registry_access)
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {"kind": "cancelRequest", "targetRequestId": target_request_id},
+                request_id="cancel-boundary",
+            )
+        )
+    )
+
+    assert result["response"]["code"] == "cancellation_unavailable"
+    assert observed == [target_request_id]
+
+
 def test_cancel_request_prevents_queued_work_and_original_response_confirms_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
