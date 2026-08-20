@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import packageMetadata from "../../package.json";
 
 type CommandHandler = (...args: unknown[]) => unknown;
+type MockDisposable = { dispose(): void };
+type MockExtensionContext = { subscriptions: MockDisposable[] };
 
 const host = vi.hoisted(() => {
   const commands = new Map<string, CommandHandler>();
   const visibleNotebookEditors: Array<{ notebook: { notebookType: string } }> = [];
   const customEditorProviders: unknown[] = [];
   const treeProviders = new Map<string, unknown>();
+  const registrationAttempts = new Map<string, number>();
+  let registrationFailure: Readonly<{ id: string; attempt: number }> | undefined;
   const listeners = {
     visible: new Set<() => void>(),
     active: new Set<() => void>(),
@@ -16,6 +20,11 @@ const host = vi.hoisted(() => {
   };
   const disposable = (dispose: () => void = () => undefined) => ({ dispose: vi.fn(dispose) });
   const registerCommand = vi.fn((id: string, handler: CommandHandler) => {
+    const attempt = (registrationAttempts.get(id) ?? 0) + 1;
+    registrationAttempts.set(id, attempt);
+    if (registrationFailure?.id === id && registrationFailure.attempt === attempt) {
+      throw new Error(`registration failed: ${id} at ${attempt}`);
+    }
     if (commands.has(id)) throw new Error(`duplicate command: ${id}`);
     commands.set(id, handler);
     return disposable(() => {
@@ -31,13 +40,21 @@ const host = vi.hoisted(() => {
     executeCommand: vi.fn(async (id: string, ...args: unknown[]) => commands.get(id)?.(...args)),
     customEditorProviders,
     treeProviders,
+    setRegistrationFailure(failure: Readonly<{ id: string; attempt: number }> | undefined): void {
+      registrationFailure = failure;
+    },
     registerCustomEditorProvider: vi.fn((_id: string, provider: unknown) => {
       customEditorProviders.push(provider);
-      return disposable();
+      return disposable(() => {
+        const index = customEditorProviders.indexOf(provider);
+        if (index >= 0) customEditorProviders.splice(index, 1);
+      });
     }),
     registerTreeDataProvider: vi.fn((id: string, provider: unknown) => {
       treeProviders.set(id, provider);
-      return disposable();
+      return disposable(() => {
+        if (treeProviders.get(id) === provider) treeProviders.delete(id);
+      });
     }),
     registerWebviewViewProvider: vi.fn(() => disposable()),
     showErrorMessage: vi.fn(),
@@ -46,6 +63,8 @@ const host = vi.hoisted(() => {
       visibleNotebookEditors.splice(0);
       customEditorProviders.splice(0);
       treeProviders.clear();
+      registrationAttempts.clear();
+      registrationFailure = undefined;
       for (const set of Object.values(listeners)) set.clear();
       registerCommand.mockClear();
       this.executeCommand.mockClear();
@@ -90,7 +109,11 @@ const owners = vi.hoisted(() => ({
   bridgeShutdown: vi.fn(),
   coordinatorShutdown: vi.fn(),
   customEditorResolved: vi.fn(),
-  nativeRegistered: vi.fn()
+  nativeRegistered: vi.fn(),
+  notebookVariablesDisposed: vi.fn(),
+  notebookCellResultsStarted: vi.fn(),
+  notebookCellResultsDisposed: vi.fn(),
+  previewDisposed: vi.fn()
 }));
 
 vi.mock("../extension/pythonBridge", () => ({
@@ -114,16 +137,14 @@ vi.mock("../extension/sessionCoordinator", () => ({
 }));
 
 vi.mock("../extension/runtimeCommands", () => ({
-  registerRuntimeCommands: vi.fn(() => {
+  registerRuntimeCommands: vi.fn((context: MockExtensionContext) => {
     owners.runtimeRegistered();
-    for (const id of [
+    registerMockCommands(context, [
       "openWrangler.changeRuntime",
       "openWrangler.clearRuntime",
       "openWrangler.installRuntimeDependencies",
       "openWrangler.revalidateRuntimeDependencies"
-    ]) {
-      host.registerCommand(id, (...args: unknown[]) => ({ id, args }));
-    }
+    ]);
   })
 }));
 
@@ -133,10 +154,12 @@ vi.mock("../extension/files/fileOpen", () => ({
       owners.customEditorResolved();
     }
   },
-  registerFileCommands: vi.fn(() => {
-    for (const id of ["openWrangler.changeImportOptions", "openWrangler.openFile", "openWrangler.openPath"]) {
-      host.registerCommand(id, () => id);
-    }
+  registerFileCommands: vi.fn((context: MockExtensionContext) => {
+    registerMockCommands(context, [
+      "openWrangler.changeImportOptions",
+      "openWrangler.openFile",
+      "openWrangler.openPath"
+    ]);
   })
 }));
 
@@ -149,61 +172,63 @@ const rVariables = vi.hoisted(() => ({
 }));
 
 vi.mock("../extension/r/rInteractiveCommands", () => ({
-  registerRInteractiveCommands: vi.fn(() => {
+  registerRInteractiveCommands: vi.fn((context: MockExtensionContext) => {
     owners.rRegistered();
-    for (const id of [
+    context.subscriptions.push(rVariables);
+    registerMockCommands(context, [
       "openWrangler.openRDataframe",
       "openWrangler.openRInteractiveVariable",
       "openWrangler.refreshRInteractiveVariables",
       "openWrangler.openCachedRInteractiveVariable"
-    ]) {
-      host.registerCommand(id, (...args: unknown[]) => ({ id, args }));
-    }
+    ]);
     return rVariables;
   })
 }));
 
 vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
-  registerPythonInteractiveCommands: vi.fn(() => {
+  registerPythonInteractiveCommands: vi.fn((context: MockExtensionContext) => {
     owners.notebookRegistered();
-    for (const id of [
+    const variables = { dispose: owners.notebookVariablesDisposed, diagnosticsForTesting: vi.fn() };
+    context.subscriptions.push(variables);
+    registerMockCommands(context, [
       "openWrangler.runPythonCellAndOpenVariable",
       "openWrangler.refreshNotebookVariables",
       "openWrangler.openCachedNotebookVariable"
-    ]) {
-      host.registerCommand(id, () => id);
-    }
-    return { dispose: vi.fn(), diagnosticsForTesting: vi.fn() };
+    ]);
+    return variables;
   })
 }));
 
 vi.mock("../extension/notebooks/jupyterBridge", () => ({
-  registerNotebookCommands: vi.fn(() => {
-    for (const id of [
+  registerNotebookCommands: vi.fn((context: MockExtensionContext) => {
+    registerMockCommands(context, [
       "openWrangler.launchDataViewer",
       "openWrangler.openNotebookVariable",
       "openWrangler.checkJupyterIntegration"
-    ]) {
-      host.registerCommand(id, () => id);
-    }
+    ]);
   })
 }));
 
 vi.mock("../extension/notebooks/notebookCellResult", () => ({
   NotebookCellResultTracker: vi.fn(function MockNotebookCellResultTracker() {
-    return { start: vi.fn(), dispose: vi.fn(), diagnosticsForTesting: vi.fn() };
+    return {
+      start: owners.notebookCellResultsStarted,
+      dispose: owners.notebookCellResultsDisposed,
+      diagnosticsForTesting: vi.fn()
+    };
   }),
-  registerNotebookCellResultAction: vi.fn(() => {
-    host.registerCommand("openWrangler.openNotebookCellResult", () => true);
+  registerNotebookCellResultAction: vi.fn((context: MockExtensionContext, _coordinator: unknown, tracker: unknown) => {
+    context.subscriptions.push(tracker as { dispose(): void });
+    registerMockCommands(context, ["openWrangler.openNotebookCellResult"]);
   })
 }));
 
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
 
 vi.mock("../extension/nativeViews", () => ({
-  registerNativeViews: vi.fn(() => {
+  registerNativeViews: vi.fn((context: MockExtensionContext) => {
     owners.nativeRegistered();
-    for (const id of [
+    registerMockCommands(context, [
       "openWrangler.refreshLiveDataframes",
       "openWrangler.clearViewFilterColumn",
       "openWrangler.openViewSort",
@@ -228,9 +253,7 @@ vi.mock("../extension/nativeViews", () => ({
       "openWrangler.openWalkthrough",
       "openWrangler.openSettings",
       "openWrangler.reportIssue"
-    ]) {
-      host.registerCommand(id, () => id);
-    }
+    ]);
     return {
       setCodeForExport: vi.fn(),
       exportCodeTo: vi.fn(),
@@ -363,6 +386,140 @@ describe("lazy activation owners", () => {
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
   });
 
+  it("rolls back every registration when a lazy command group fails partway", async () => {
+    active = createOwners();
+    host.setRegistrationFailure({ id: "openWrangler.openPath", attempt: 1 });
+
+    expect(() => active?.startBeforeFirstYield()).toThrow(/registration failed/u);
+    expect(host.commands.has("openWrangler.changeImportOptions")).toBe(false);
+    expect(host.commands.has("openWrangler.openFile")).toBe(false);
+    expect(host.commands.has("openWrangler.openPath")).toBe(false);
+
+    await active.shutdown();
+    active = undefined;
+  });
+
+  it("rolls back a partially initialized notebook owner and disposes retained handles once", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    owners.notebookCellResultsStarted.mockImplementationOnce(() => {
+      throw new Error("cell result listener failed");
+    });
+
+    await expect(host.executeCommand("openWrangler.openNotebookVariable")).rejects.toThrow(
+      "cell result listener failed"
+    );
+    for (const command of [
+      "openWrangler.runPythonCellAndOpenVariable",
+      "openWrangler.refreshNotebookVariables",
+      "openWrangler.openCachedNotebookVariable"
+    ]) {
+      expect(host.commands.has(command)).toBe(false);
+    }
+    expect(owners.notebookVariablesDisposed).toHaveBeenCalledOnce();
+    expect(owners.notebookCellResultsDisposed).toHaveBeenCalledOnce();
+
+    await active.shutdown();
+    expect(owners.notebookVariablesDisposed).toHaveBeenCalledOnce();
+    expect(owners.notebookCellResultsDisposed).toHaveBeenCalledOnce();
+    active = undefined;
+  });
+
+  it("retains the R owner before discovery and rolls back registrations when discovery fails", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    owners.rDiscovery.mockImplementationOnce(() => {
+      throw new Error("R discovery failed");
+    });
+
+    await expect(host.executeCommand("openWrangler.openRInteractiveVariable")).rejects.toThrow("R discovery failed");
+    for (const command of [
+      "openWrangler.openRDataframe",
+      "openWrangler.openRInteractiveVariable",
+      "openWrangler.refreshRInteractiveVariables",
+      "openWrangler.openCachedRInteractiveVariable"
+    ]) {
+      expect(host.commands.has(command)).toBe(false);
+    }
+    expect(owners.rShutdown).toHaveBeenCalledOnce();
+
+    await active.shutdown();
+    expect(owners.rShutdown).toHaveBeenCalledOnce();
+    active = undefined;
+  });
+
+  it("disposes visible-notebook owners after a later activation boundary fails", async () => {
+    host.visibleNotebookEditors.push({ notebook: { notebookType: "jupyter-notebook" } });
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await active.extensionApiForCurrentEnvironment();
+
+    await active.shutdown();
+
+    expect(owners.previewDisposed).toHaveBeenCalledOnce();
+    expect(owners.notebookVariablesDisposed).toHaveBeenCalledOnce();
+    expect(owners.notebookCellResultsDisposed).toHaveBeenCalledOnce();
+    expect(owners.coordinatorShutdown).toHaveBeenCalledOnce();
+    expect(host.commands.size).toBe(0);
+    active = undefined;
+  });
+
+  it("makes concurrent shutdown single-flight and disposes completed owners once", async () => {
+    const coordinator = deferred<void>();
+    owners.coordinatorShutdown.mockReturnValueOnce(coordinator.promise);
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await host.executeCommand("openWrangler.openRInteractiveVariable");
+
+    const first = active.shutdown();
+    const second = active.shutdown();
+
+    expect(second).toBe(first);
+    coordinator.resolve();
+    await Promise.all([first, second]);
+    expect(owners.rShutdown).toHaveBeenCalledOnce();
+    expect(owners.coordinatorShutdown).toHaveBeenCalledOnce();
+    expect(owners.previewDisposed).not.toHaveBeenCalled();
+    active = undefined;
+  });
+
+  it("releases every completed file, runtime, notebook, R, and native owner exactly once", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    const customEditor = host.customEditorProviders[0] as {
+      openCustomDocument(uri: unknown): unknown;
+      resolveCustomEditor(document: unknown, panel: unknown): Promise<void>;
+    };
+    const document = customEditor.openCustomDocument({ scheme: "file", path: "/data.csv" });
+
+    await customEditor.resolveCustomEditor(document, {});
+    await host.executeCommand("openWrangler.changeRuntime");
+    await (host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> }).getChildren();
+    await active.shutdown();
+
+    expect(owners.notebookVariablesDisposed).toHaveBeenCalledOnce();
+    expect(owners.notebookCellResultsDisposed).toHaveBeenCalledOnce();
+    expect(owners.rShutdown).toHaveBeenCalledOnce();
+    expect(owners.coordinatorShutdown).toHaveBeenCalledOnce();
+    expect(owners.bridgeShutdown).toHaveBeenCalledOnce();
+    expect(host.commands.size).toBe(0);
+    expect(host.customEditorProviders).toHaveLength(0);
+    expect(host.treeProviders.size).toBe(0);
+    active = undefined;
+  });
+
+  it("observes never-settling and late owner promises without extending the shutdown deadline", async () => {
+    const late = deferred<void>();
+    const never = new Promise<void>(() => undefined);
+    active = createOwners(vi.fn(), 10, [never, late.promise]);
+    active.startBeforeFirstYield();
+
+    await expect(active.shutdown()).resolves.toBeUndefined();
+    late.reject(new Error("late owner failed"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    active = undefined;
+  });
+
   it("shuts down only constructed owners and preserves terminal failure order", async () => {
     active = createOwners();
     active.startBeforeFirstYield();
@@ -380,28 +537,59 @@ describe("lazy activation owners", () => {
 
     expect(error).toBeInstanceOf(AggregateError);
     expect((error as AggregateError).errors).toEqual([rFailure, coordinatorFailure, pythonFailure]);
+    expect(owners.rShutdown).toHaveBeenCalledOnce();
+    expect(owners.coordinatorShutdown).toHaveBeenCalledOnce();
+    expect(owners.bridgeShutdown).toHaveBeenCalledOnce();
+    expect(host.commands.size).toBe(0);
   });
 });
 
-function createOwners(previewConstructed = vi.fn()): LazyActivationOwners {
+function createOwners(
+  previewConstructed = vi.fn(),
+  ownerSettlementTimeoutMs?: number,
+  additionalOwnerPromises: readonly Promise<unknown>[] = []
+): LazyActivationOwners {
   const context = { subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext;
   return new LazyActivationOwners(
     context,
     () =>
       ({
         NotebookPreviewCoordinator: class {
+          private readonly registration: MockDisposable;
+
           constructor() {
             previewConstructed();
-            host.registerCommand("openWrangler.chooseNotebookPreviewProvider", () => undefined);
+            this.registration = host.registerCommand("openWrangler.chooseNotebookPreviewProvider", () => undefined);
           }
 
-          dispose(): void {}
+          dispose(): void {
+            this.registration.dispose();
+            owners.previewDisposed();
+          }
         }
-      }) as never
+      }) as never,
+    ownerSettlementTimeoutMs,
+    additionalOwnerPromises
   );
 }
 
 function eventDisposable(set: Set<() => void>, listener: () => void): { dispose(): void } {
   set.add(listener);
   return host.disposable(() => set.delete(listener));
+}
+
+function registerMockCommands(context: MockExtensionContext, commandIds: readonly string[]): void {
+  for (const id of commandIds) {
+    context.subscriptions.push(host.registerCommand(id, (...args: unknown[]) => ({ id, args })));
+  }
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void; reject(error: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
 }
