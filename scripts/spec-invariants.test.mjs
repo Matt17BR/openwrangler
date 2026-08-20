@@ -348,6 +348,8 @@ test("cleaning-history structural claims reject synonym and word-order contradic
     "Rollback is available for a specifically chosen committed plan entry.",
     "Every committed operation can be restored independently.",
     "A selected older applied operation is reversible through Undo.",
+    "Undo can restore the committed step of your choice.",
+    "Pick which committed step to undo.",
     "Plan entries have a mutable sequence.",
     "You may rearrange the applied workflow.",
     "Shuffling the cleaning plan is offered."
@@ -381,7 +383,9 @@ test("cleaning-history claims use rendered inline Markdown and decoded entity te
     "Only the lat\u200best committed step can be edited.",
     "Only the lat&#x200b;est committed step can be edited.",
     "Earlier applied steps cannot be mod&shy;ified.",
-    "Only the [lat**est** committed step](#cleaning-history) can be *ed**it**ed*."
+    "Earlier applied steps can’t be modified.",
+    "Only the [lat**est** committed step](#cleaning-history) can be *ed**it**ed*.",
+    "![Only the lat&shy;est **committed** step can be edited](#cleaning-history)"
   ];
   for (const example of examples) {
     const documents = cleaningHistoryDocuments(model);
@@ -447,11 +451,34 @@ test("a code example cannot hide a separate rendered inline contradiction", () =
   );
 });
 
+test("an example exemption belongs only to its exact inline code span", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  documents["README.md"] = documents["README.md"].replace(
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    [
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      "Use `Only the latest committed step can be edited` as a rejected-input example and `Undo any committed step` in one clause."
+    ].join("\n")
+  );
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents
+      }),
+    /contradictory cleaning-history capability claim/u
+  );
+});
+
 test("cleaning-history claims fail closed on unresolved visible named entities", () => {
   const model = cleaningHistoryModel();
   for (const text of [
     "Earlier applied steps cannot be mod&amp;shy;ified.",
-    "Earlier applied steps cannot be mod&notARealEntity;ified."
+    "Earlier applied steps cannot be mod&notARealEntity;ified.",
+    "Earlier applied steps cannot be mod&a;ified.",
+    "![Earlier applied steps cannot be mod&a;ified](#cleaning-history)"
   ]) {
     const documents = cleaningHistoryDocuments(model);
     documents["README.md"] = documents["README.md"].replace(
@@ -468,6 +495,24 @@ test("cleaning-history claims fail closed on unresolved visible named entities",
       /unresolved visible named Markdown entity/u
     );
   }
+});
+
+test("cleaning-history inline classification fails closed before an unbounded token rescan", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  documents["README.md"] = documents["README.md"].replace(
+    "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+    `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${"`sample` ".repeat(4097)}`
+  );
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents
+      }),
+    /more than 4096 visible inline Markdown tokens/u
+  );
 });
 
 test("cleaning-history structural claims preserve valid code examples but reject malformed fences", () => {
@@ -687,6 +732,53 @@ test("bounded cleaning-history reads reject a symlinked ancestor", async () => {
     await rm(directory, { recursive: true });
   }
 });
+
+test("bounded cleaning-history reads fail closed without a handle-relative platform boundary", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-platform-boundary-"));
+  const path = join(directory, "model.json");
+  try {
+    await writeFile(path, "{}", { encoding: "utf8", mode: 0o600 });
+    for (const platform of ["darwin", "win32"]) {
+      await assert.rejects(
+        readBoundedUtf8File(path, 8 * 1024, `${platform} model`, { platform }),
+        /requires a supported handle-relative file boundary/u
+      );
+    }
+    assert.equal(await readBoundedUtf8File(path, 8 * 1024, "supported-platform model"), "{}");
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test(
+  "bounded cleaning-history reads reject an ancestor replace-read and remain usable after restore",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-ancestor-swap-"));
+    const active = join(directory, "active");
+    const retired = join(directory, "retired");
+    const path = join(active, "model.json");
+    try {
+      await mkdir(active, { mode: 0o700 });
+      await writeFile(path, '{"source":"original"}', { encoding: "utf8", mode: 0o600 });
+      await assert.rejects(
+        readBoundedUtf8File(path, 8 * 1024, "ancestor-swap model", {
+          afterInitialLeafIdentity: async () => {
+            await rename(active, retired);
+            await mkdir(active, { mode: 0o700 });
+            await writeFile(path, '{"source":"replacement"}', { encoding: "utf8", mode: 0o600 });
+          }
+        }),
+        /ancestor changed identity|changed identity or contents/u
+      );
+      await rm(active, { recursive: true });
+      await rename(retired, active);
+      assert.equal(await readBoundedUtf8File(path, 8 * 1024, "restored ancestor model"), '{"source":"original"}');
+    } finally {
+      await rm(directory, { recursive: true });
+    }
+  }
+);
 
 test(
   "bounded cleaning-history reads reject a regular-to-FIFO swap without blocking or leaking the descriptor",
