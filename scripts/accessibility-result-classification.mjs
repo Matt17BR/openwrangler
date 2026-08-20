@@ -13,6 +13,10 @@ export const AXE_RESULT_LIMITS = Object.freeze({
   idCodePoints: 128,
   helpCodePoints: 512,
   targetCodePoints: 512,
+  targetParts: 16,
+  targetArrayEntries: 16,
+  targetTraversalEntries: 64,
+  targetDepth: 4,
   failureSummaryCodePoints: 512,
   rawImpactCodePoints: 32,
   machineResultUtf8Bytes: 2 * 1024 * 1024
@@ -106,8 +110,8 @@ export function classifyAxeScanResult({ harness, violations }) {
 }
 
 export function serializeAxeMachineResult(result) {
-  const serialized = JSON.stringify(result);
-  const size = Buffer.byteLength(serialized, "utf8");
+  const record = `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify(result)}\n`;
+  const size = Buffer.byteLength(record, "utf8");
   if (size > AXE_RESULT_LIMITS.machineResultUtf8Bytes) {
     throw classificationLimitError(
       "machine_result_too_large",
@@ -116,7 +120,7 @@ export function serializeAxeMachineResult(result) {
       AXE_RESULT_LIMITS.machineResultUtf8Bytes
     );
   }
-  return `${AXE_MACHINE_RESULT_PREFIX}${serialized}`;
+  return record;
 }
 
 export function serializeAxeClassificationError(error) {
@@ -127,7 +131,7 @@ export function serializeAxeClassificationError(error) {
     code: classified ? error.code : "classification_failed",
     ...(classified && Number.isSafeInteger(error.actual) ? { actual: error.actual } : {}),
     ...(classified && Number.isSafeInteger(error.limit) ? { limit: error.limit } : {})
-  })}`;
+  })}\n`;
 }
 
 export function formatAxeFailureDetail(report) {
@@ -187,11 +191,7 @@ function normalizeFinding(violation) {
 
 function normalizeNode(node) {
   const findingNode = node !== null && typeof node === "object" ? node : {};
-  const target = boundedText(
-    flattenTarget(findingNode.target),
-    "<unavailable target>",
-    AXE_RESULT_LIMITS.targetCodePoints
-  );
+  const target = boundedTarget(findingNode.target);
   const failureSummary = boundedText(
     findingNode.failureSummary,
     "Axe check failed",
@@ -205,18 +205,74 @@ function normalizeNode(node) {
   });
 }
 
-function flattenTarget(target) {
-  const parts = [];
-  const visit = (value, depth) => {
-    if (parts.length >= 16 || depth > 4) return;
-    if (typeof value === "string") {
-      parts.push(value);
-    } else if (Array.isArray(value)) {
-      for (const entry of value) visit(entry, depth + 1);
+function boundedTarget(target) {
+  let text = "";
+  let codePointCount = 0;
+  let partCount = 0;
+  let traversalEntryCount = 0;
+  let truncated = false;
+  let stopped = false;
+
+  const append = (value) => {
+    for (const codePoint of value) {
+      if (codePointCount >= AXE_RESULT_LIMITS.targetCodePoints) {
+        truncated = true;
+        stopped = true;
+        return;
+      }
+      text += codePoint;
+      codePointCount += 1;
     }
   };
+
+  const visit = (value, depth) => {
+    if (stopped) return;
+    if (typeof value === "string") {
+      if (partCount >= AXE_RESULT_LIMITS.targetParts) {
+        truncated = true;
+        stopped = true;
+        return;
+      }
+      if (partCount > 0) append(" > ");
+      if (!stopped) append(value);
+      partCount += 1;
+      return;
+    }
+    if (!Array.isArray(value)) {
+      if (value !== null && value !== undefined) truncated = true;
+      return;
+    }
+    if (depth >= AXE_RESULT_LIMITS.targetDepth) {
+      truncated = true;
+      return;
+    }
+
+    const entryCount = Math.min(value.length, AXE_RESULT_LIMITS.targetArrayEntries);
+    if (value.length > entryCount) truncated = true;
+    for (let index = 0; index < entryCount && !stopped; index += 1) {
+      if (codePointCount >= AXE_RESULT_LIMITS.targetCodePoints) {
+        truncated = true;
+        stopped = true;
+        break;
+      }
+      traversalEntryCount += 1;
+      if (traversalEntryCount > AXE_RESULT_LIMITS.targetTraversalEntries) {
+        truncated = true;
+        stopped = true;
+        break;
+      }
+      if (!Object.hasOwn(value, index)) {
+        truncated = true;
+        continue;
+      }
+      visit(value[index], depth + 1);
+    }
+  };
+
   visit(target, 0);
-  return parts.length > 0 ? parts.join(" > ") : "<unavailable target>";
+  text = text.replace(/\s+/gu, " ").trim();
+  if (text.length === 0) text = "<unavailable target>";
+  return { value: `${text}${truncated ? "…" : ""}`, truncated };
 }
 
 function insertDiagnosticNode(nodes, node) {

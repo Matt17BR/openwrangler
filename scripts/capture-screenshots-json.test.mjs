@@ -136,10 +136,6 @@ test("Axe machine results bound strings, node diagnostics, and finding counts", 
     /7 additional affected nodes omitted/u
   );
   assert.ok(Buffer.byteLength(serializeAxeMachineResult(scan), "utf8") <= AXE_RESULT_LIMITS.machineResultUtf8Bytes);
-  assert.throws(
-    () => serializeAxeMachineResult({ padding: "x".repeat(AXE_RESULT_LIMITS.machineResultUtf8Bytes) }),
-    (error) => error instanceof AxeResultClassificationError && error.code === "machine_result_too_large"
-  );
 
   assert.throws(
     () =>
@@ -165,6 +161,82 @@ test("Axe machine results bound strings, node diagnostics, and finding counts", 
     actual: AXE_RESULT_LIMITS.findingsPerScan + 1,
     limit: AXE_RESULT_LIMITS.findingsPerScan
   });
+});
+
+test("Axe target diagnostics cap sparse and multibyte work before later values", () => {
+  let lateTargetRead = false;
+  const multibyteTarget = new Array(16);
+  multibyteTarget[0] = "😀".repeat(20_000);
+  Object.defineProperty(multibyteTarget, 1, {
+    get() {
+      lateTargetRead = true;
+      throw new Error("Target normalization read beyond its code-point bound.");
+    }
+  });
+  const multibyteScan = classifyAxeScanResult({
+    harness: "multibyte-target.html",
+    violations: [
+      axeViolation({
+        id: "multibyte-target",
+        impact: "minor",
+        nodes: [{ target: multibyteTarget, failureSummary: "failed" }]
+      })
+    ]
+  });
+  const multibyteNode = multibyteScan.findings[0].nodes[0];
+  assert.equal(lateTargetRead, false);
+  assert.equal(multibyteNode.targetTruncated, true);
+  assert.equal(Array.from(multibyteNode.target).length, AXE_RESULT_LIMITS.targetCodePoints + 1);
+  assert.equal(multibyteNode.target.endsWith("…"), true);
+
+  const sparseTarget = [];
+  sparseTarget.length = 0xffff_ffff;
+  sparseTarget[0] = ".bounded";
+  const sparseScan = classifyAxeScanResult({
+    harness: "sparse-target.html",
+    violations: [
+      axeViolation({
+        id: "sparse-target",
+        impact: null,
+        nodes: [{ target: sparseTarget, failureSummary: "failed" }]
+      })
+    ]
+  });
+  assert.deepEqual(sparseScan.findings[0].nodes[0], {
+    target: ".bounded…",
+    targetTruncated: true,
+    failureSummary: "failed",
+    failureSummaryTruncated: false
+  });
+});
+
+test("Axe machine-result size includes the prefix and exactly one newline", () => {
+  const emptyRecord = `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify({ padding: "" })}\n`;
+  const paddingBytes = AXE_RESULT_LIMITS.machineResultUtf8Bytes - Buffer.byteLength(emptyRecord, "utf8");
+  assert.ok(paddingBytes > 0);
+
+  const exactAsciiRecord = serializeAxeMachineResult({ padding: "x".repeat(paddingBytes) });
+  assert.equal(Buffer.byteLength(exactAsciiRecord, "utf8"), AXE_RESULT_LIMITS.machineResultUtf8Bytes);
+  assert.equal(exactAsciiRecord.endsWith("\n"), true);
+  assert.equal(exactAsciiRecord.endsWith("\n\n"), false);
+  assert.throws(
+    () => serializeAxeMachineResult({ padding: "x".repeat(paddingBytes + 1) }),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "machine_result_too_large" &&
+      error.actual === AXE_RESULT_LIMITS.machineResultUtf8Bytes + 1
+  );
+
+  const multibytePadding = `${paddingBytes % 2 === 0 ? "" : "x"}${"é".repeat(Math.floor(paddingBytes / 2))}`;
+  const exactMultibyteRecord = serializeAxeMachineResult({ padding: multibytePadding });
+  assert.equal(Buffer.byteLength(exactMultibyteRecord, "utf8"), AXE_RESULT_LIMITS.machineResultUtf8Bytes);
+  assert.throws(
+    () => serializeAxeMachineResult({ padding: `${multibytePadding}é` }),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "machine_result_too_large" &&
+      error.actual === AXE_RESULT_LIMITS.machineResultUtf8Bytes + 2
+  );
 });
 
 function readinessScope({
@@ -823,6 +895,11 @@ test("screenshot and accessibility consumers preserve browser isolation ordering
   assert.match(accessibility, /finally \{[\s\S]*browserIsolation\.cleanup\(\)/u);
   assert.doesNotMatch(accessibility, /process\.env\.(?:HOME|XDG_[A-Z_]+|TMPDIR?)\s*=/u);
   assert.equal((accessibility.match(/recordAxeScanResult\(harness, result\.violations\);/gu) ?? []).length, 2);
+  assert.equal(
+    (accessibility.match(/process\.stdout\.write\(serializeAxeMachineResult\(result\)\);/gu) ?? []).length,
+    2
+  );
+  assert.doesNotMatch(accessibility, /console\.log\(serializeAxeMachineResult/u);
   assert.doesNotMatch(accessibility, /violations\.filter|impact\s*!==\s*["']minor["']/u);
   assert.match(
     accessibility,
