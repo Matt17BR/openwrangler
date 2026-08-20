@@ -38,6 +38,116 @@ require_package("bit64")
 require_package("collapse")
 require_package("nanoparquet")
 
+contract_environment <- environment(openwrangler_r_frame_contract$materialize_summaries)
+compare_signed_decimal_text <- get("compare_integer_text", contract_environment, inherits = FALSE)
+
+oracle_decimal_parts <- function(value) {
+  characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+  negative <- identical(characters[[1L]], "-")
+  if (negative || identical(characters[[1L]], "+")) characters <- characters[-1L]
+  digits <- as.integer(characters)
+  if (anyNA(digits) || any(digits < 0L | digits > 9L)) {
+    stop("invalid decimal text in the independent test oracle", call. = FALSE)
+  }
+  nonzero_positions <- which(digits != 0L)
+  if (length(nonzero_positions) == 0L) return(list(sign = 0L, digits = 0L))
+  first_nonzero <- nonzero_positions[[1L]]
+  list(
+    sign = if (negative) -1L else 1L,
+    digits = rev(digits[first_nonzero:length(digits)])
+  )
+}
+
+oracle_compare_signed_decimal_text <- function(left, right) {
+  left_parts <- oracle_decimal_parts(left)
+  right_parts <- oracle_decimal_parts(right)
+  width <- max(length(left_parts$digits), length(right_parts$digits)) + 1L
+  coefficients <- integer(width)
+  left_positions <- seq_along(left_parts$digits)
+  right_positions <- seq_along(right_parts$digits)
+  coefficients[left_positions] <- coefficients[left_positions] + left_parts$sign * left_parts$digits
+  coefficients[right_positions] <- coefficients[right_positions] - right_parts$sign * right_parts$digits
+
+  residual <- integer(width)
+  carry <- 0L
+  for (position in seq_len(width)) {
+    total <- coefficients[[position]] + carry
+    residual[[position]] <- total %% 10L
+    carry <- (total - residual[[position]]) %/% 10L
+  }
+  if (carry < 0L) -1L else if (carry > 0L || any(residual != 0L)) 1L else 0L
+}
+
+signed_decimal_cases <- list(
+  list(left = "-1", right = "0", expected = -1L, label = "negative versus zero"),
+  list(left = "0", right = "+1", expected = -1L, label = "zero versus positive"),
+  list(left = "-0", right = "+000", expected = 0L, label = "normalized signed zero"),
+  list(left = "+00123", right = "123", expected = 0L, label = "normalized positive equality"),
+  list(left = "-00123", right = "-123", expected = 0L, label = "normalized negative equality"),
+  list(left = "99", right = "100", expected = -1L, label = "positive digit length"),
+  list(left = "-100", right = "-99", expected = -1L, label = "negative digit length"),
+  list(left = "123456789012345678", right = "123456789012345679", expected = -1L, label = "equal length digits"),
+  list(left = strrep("9", 37L), right = strrep("9", 38L), expected = -1L, label = "38 digit lower bound"),
+  list(left = strrep("9", 38L), right = paste0("1", strrep("0", 38L)), expected = -1L, label = "38 digit upper bound"),
+  list(left = paste0("-", strrep("9", 38L)), right = paste0("-", strrep("9", 37L)), expected = -1L, label = "negative 38 digit bound"),
+  list(left = "-9223372036854775809", right = "-9223372036854775808", expected = -1L, label = "below signed 64 bit minimum"),
+  list(left = "-9223372036854775808", right = "-9223372036854775807", expected = -1L, label = "signed 64 bit minimum"),
+  list(left = "9223372036854775806", right = "9223372036854775807", expected = -1L, label = "signed 64 bit maximum"),
+  list(left = "9223372036854775807", right = "9223372036854775808", expected = -1L, label = "above signed 64 bit maximum"),
+  list(left = "-9223372036854775808", right = "9223372036854775807", expected = -1L, label = "signed 64 bit extremes")
+)
+
+for (case in signed_decimal_cases) {
+  oracle_result <- oracle_compare_signed_decimal_text(case$left, case$right)
+  assert_identical(oracle_result, case$expected, sprintf("independent oracle failed for %s", case$label))
+  assert_identical(
+    compare_signed_decimal_text(case$left, case$right),
+    case$expected,
+    sprintf("canonical signed decimal comparison failed for %s", case$label)
+  )
+  assert_identical(
+    compare_signed_decimal_text(case$right, case$left),
+    -case$expected,
+    sprintf("canonical signed decimal comparison was not antisymmetric for %s", case$label)
+  )
+}
+
+property_widths <- c(1L, 2L, 3L, 18L, 19L, 37L, 38L, 39L, 64L, 127L)
+property_decimal_text <- function(seed) {
+  width <- property_widths[[(seed %% length(property_widths)) + 1L]]
+  digits <- vapply(
+    seq_len(width),
+    function(position) as.character((seed * 17L + position * 31L + seed * position) %% 10L),
+    character(1L),
+    USE.NAMES = FALSE
+  )
+  sign <- c("", "-", "+")[[((seed * 5L) %% 3L) + 1L]]
+  paste0(sign, strrep("0", (seed * 7L) %% 4L), paste0(digits, collapse = ""))
+}
+
+property_values <- vapply(seq_len(160L), property_decimal_text, character(1L), USE.NAMES = FALSE)
+for (index in seq_along(property_values)) {
+  partner_index <- ((index * 53L) %% length(property_values)) + 1L
+  left <- property_values[[index]]
+  right <- property_values[[partner_index]]
+  expected <- oracle_compare_signed_decimal_text(left, right)
+  assert_identical(
+    compare_signed_decimal_text(left, right),
+    expected,
+    sprintf("canonical signed decimal comparison disagreed with the oracle for property case %d", index)
+  )
+  assert_identical(
+    compare_signed_decimal_text(right, left),
+    -expected,
+    sprintf("canonical signed decimal comparison was not antisymmetric for property case %d", index)
+  )
+  assert_identical(
+    compare_signed_decimal_text(left, left),
+    0L,
+    sprintf("canonical signed decimal comparison was not reflexive for property case %d", index)
+  )
+}
+
 base_frame <- data.frame(
   duplicate = c(TRUE, NA, FALSE),
   duplicate = c(1L, NA_integer_, -2L),
