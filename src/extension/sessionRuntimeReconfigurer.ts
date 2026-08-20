@@ -17,6 +17,7 @@ import type { BridgeRequestOptions } from "./dataBridge";
 import { persistedSessionState } from "./sessionPersistence";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
+  persistenceUnavailableError,
   protocolError,
   publicMetadata,
   SessionResponseCommitter,
@@ -384,7 +385,7 @@ export class SessionRuntimeReconfigurer {
     const previousActiveViewContextId = session.activeViewContextId;
     const previousLatestRequestedViewContextId = session.latestRequestedViewContextId;
     const previousLatestRequestedPageRequestId = session.latestRequestedPageRequestId;
-    const committed = await this.responseCommitter.commitRuntimeReplacement(
+    const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
       publishableCandidate,
       candidateRequest.source,
       () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
@@ -415,7 +416,11 @@ export class SessionRuntimeReconfigurer {
         };
       }
     );
-    if (!committed) {
+    if (persistenceResult.kind === "unavailable") {
+      await cleanupCandidate();
+      return persistenceUnavailableError(session.publicId);
+    }
+    if (persistenceResult.kind === "stale") {
       await cleanupCandidate();
       return protocolError(
         hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",

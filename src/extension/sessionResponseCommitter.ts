@@ -11,7 +11,7 @@ import type {
 } from "../shared/protocol";
 import type { BridgeRequestOptions, SessionPresentation } from "./dataBridge";
 import { persistedSessionState } from "./sessionPersistence";
-import { SessionPersistenceStore } from "./sessionPersistenceStore";
+import { SessionPersistenceStore, type SessionPersistenceCommitResult } from "./sessionPersistenceStore";
 import { gridState, reconcileViewingState, type RuntimeSessionState } from "./sessionRuntimeStateRestorer";
 import { requestViewId } from "./sessionRequestScheduler";
 
@@ -35,7 +35,16 @@ export interface SessionResponseCallbacks {
 export class SessionResponseCommitter {
   constructor(private readonly persistence: SessionPersistenceStore) {}
 
+  retainSession(session: SessionResponseState): void {
+    this.persistence.retainOwner(session.publicId, session.openRequest.source, session.metadata.backend);
+  }
+
+  releaseSession(sessionId: string): void {
+    this.persistence.releaseOwner(sessionId);
+  }
+
   async persistSession(session: SessionResponseState): Promise<void> {
+    this.retainSession(session);
     const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
     await this.persistence.save(session.openRequest.source, state);
   }
@@ -45,9 +54,11 @@ export class SessionResponseCommitter {
     source: SessionSource,
     isCurrent: () => boolean,
     commit: () => () => void
-  ): Promise<boolean> {
+  ): Promise<SessionPersistenceCommitResult> {
     const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
-    return this.persistence.commitRuntimeReplacement(source, state, isCurrent, commit);
+    const result = await this.persistence.commitRuntimeReplacement(source, state, isCurrent, commit);
+    if (result.kind === "committed") this.persistence.retainOwner(session.publicId, source, state.backend);
+    return result;
   }
 
   async commit(
@@ -280,7 +291,7 @@ export class SessionResponseCommitter {
     };
     if (pageRequest && stateChanged) {
       const state = persistedSessionState(response.metadata, gridState(nextViewState), session.draftBaseFilterModel);
-      const committed = await this.persistence.commitCurrent(
+      const persistenceResult = await this.persistence.commitCurrent(
         session.openRequest.source,
         state,
         () => isCurrentPageRequest(session, pageRequest, options),
@@ -289,7 +300,10 @@ export class SessionResponseCommitter {
           callbacks.activate();
         }
       );
-      if (!committed) {
+      if (persistenceResult.kind === "unavailable") {
+        return persistenceUnavailableError(session.publicId, pageRequest.viewRequestId, persistenceResult.liveState);
+      }
+      if (persistenceResult.kind === "stale") {
         return protocolError(
           "stale_response",
           "Ignored a page superseded while its viewing state was being saved.",
@@ -363,6 +377,18 @@ export function protocolError(
     ...(sessionId ? { sessionId } : {}),
     ...(viewRequestId ? { viewRequestId } : {})
   };
+}
+
+export function persistenceUnavailableError(
+  sessionId: string,
+  viewRequestId?: string,
+  liveState: "committed" | "unchanged" = "unchanged"
+): ErrorResponse {
+  const message =
+    liveState === "committed"
+      ? "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available."
+      : "Open Wrangler could not save workspace recovery state, so the active session was left unchanged. Retry after workspace storage is available.";
+  return protocolError("persistence_unavailable", message, true, sessionId, viewRequestId);
 }
 
 function sameFilterModel(left: FilterModel, right: FilterModel): boolean {

@@ -70,7 +70,9 @@ describe("SessionResponseCommitter", () => {
 
   it("atomically persists and publishes only the latest changed page", async () => {
     let stored: Record<string, unknown> = {};
+    const writes: Record<string, unknown>[] = [];
     const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      writes.push(value);
       stored = value;
     });
     const persistence = new SessionPersistenceStore(memento(() => stored, update));
@@ -133,6 +135,13 @@ describe("SessionResponseCommitter", () => {
       }
     });
     expect(callbacks.activate).toHaveBeenCalledOnce();
+    const key = persistenceKey(session.openRequest.source, "polars");
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.[key]).toHaveProperty("pendingCurrentCommit");
+    expect(
+      new SessionPersistenceStore(memento(() => writes[0] ?? {}, vi.fn())).load(session.openRequest.source, "polars")
+    ).toBeUndefined();
+    expect(writes[1]?.[key]).toEqual(stored[key]);
 
     const stale = responseState({ latestRequestedPageRequestId: "newer-page" });
     await expect(
@@ -146,7 +155,50 @@ describe("SessionResponseCommitter", () => {
         callbackSpies()
       )
     ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "current-page" });
-    expect(update).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an actionable availability error while retaining a current page's confirmed live state", async () => {
+    const persistence = new SessionPersistenceStore(
+      memento(() => {
+        throw Object.assign(new Error("cannot read /private/workspace/state.json"), { code: "EACCES" });
+      }, vi.fn())
+    );
+    const committer = new SessionResponseCommitter(persistence);
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const session = responseState({
+      latestRequestedViewContextId: "current-view",
+      latestRequestedPageRequestId: "current-page"
+    });
+    const request = pageRequest(session, "current-page", filterModel, 100);
+    const callbacks = callbackSpies();
+
+    const response = await committer.commit(
+      session,
+      request,
+      pageResponse(request, metadata({ filterModel }), 240),
+      0,
+      emptyFilter,
+      { viewContextId: "current-view" },
+      callbacks
+    );
+
+    expect(response).toEqual({
+      kind: "error",
+      code: "persistence_unavailable",
+      message:
+        "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available.",
+      recoverable: true,
+      sessionId: session.publicId,
+      viewRequestId: "current-page"
+    });
+    expect(JSON.stringify(response)).not.toContain("/private/workspace");
+    expect(session.metadata.filterModel).toEqual(filterModel);
+    expect(session.activeViewContextId).toBe("current-view");
+    expect(callbacks.activate).toHaveBeenCalledOnce();
   });
 
   it("returns a current ephemeral clipboard page without committing visible view state", async () => {

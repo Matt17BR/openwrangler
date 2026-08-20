@@ -205,6 +205,47 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(coordinator.activeSession()?.metadata.steps).toEqual([replacement, second, third]);
   });
 
+  it("keeps the prior runtime when replacement persistence becomes unavailable", async () => {
+    const harness = rewriteHarness({ draft: replacement });
+    let reads = 0;
+    const workspaceState = {
+      keys: () => [],
+      get: <T>(_key: string, defaultValue?: T): T | undefined => {
+        reads += 1;
+        if (reads === 2) {
+          throw Object.assign(new Error("cannot read /private/workspace/state.json"), { code: "EACCES" });
+        }
+        return defaultValue;
+      },
+      update: vi.fn()
+    } as unknown as Memento;
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: harness.request });
+    const opened = await open(bridge, initialSource);
+
+    const response = await bridge.rewriteCleaningPlan?.(
+      opened.metadata.sessionId,
+      opened.metadata.revision,
+      first.id,
+      "applyDraft",
+      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+    );
+
+    expect(response).toEqual({
+      kind: "error",
+      code: "persistence_unavailable",
+      message:
+        "Open Wrangler could not save workspace recovery state, so the active session was left unchanged. Retry after workspace storage is available.",
+      recoverable: true,
+      sessionId: opened.metadata.sessionId
+    });
+    expect(JSON.stringify(response)).not.toContain("/private/workspace");
+    expect(coordinator.activeSession()?.metadata.steps).toEqual([first, second, third]);
+    expect(harness.closedRuntimeIds()).toEqual([harness.candidateOpenRequests()[0]?.requestedSessionId]);
+
+    await coordinator.shutdown();
+  });
+
   it("settles a failed final save before terminal close resolves its runtime target", async () => {
     const harness = rewriteHarness({ draft: replacement });
     let stored: Record<string, unknown> = {};
@@ -250,7 +291,7 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(harness.closedRuntimeIds()).toEqual([]);
 
     releaseFinalWrite.resolve();
-    await expect(rewrite).resolves.toMatchObject({ kind: "error", code: "session_closing" });
+    await expect(rewrite).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable" });
     await expect(close).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
     expect(harness.closedRuntimeIds()).toEqual([candidateId, "runtime-old"]);
     expect(coordinator.activeSession()).toBeUndefined();
