@@ -201,6 +201,58 @@ describe("SessionResponseCommitter", () => {
     expect(callbacks.activate).toHaveBeenCalledOnce();
   });
 
+  it("restores the confirmed page state when its publication callback rejects", async () => {
+    let stored: Record<string, unknown> = {};
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      stored = value;
+    });
+    const persistence = new SessionPersistenceStore(memento(() => stored, update));
+    const committer = new SessionResponseCommitter(persistence);
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const session = responseState({
+      publicRevision: 4,
+      activeViewContextId: "old-view",
+      latestRequestedViewContextId: "next-view",
+      latestRequestedPageRequestId: "current-page"
+    });
+    const previousMetadata = session.metadata;
+    const previousViewState = session.viewState;
+    const previousViewChangeEpoch = session.viewChangeEpoch;
+    const request = pageRequest(session, "current-page", filterModel, 100);
+    const callbackFailure = new Error("unexpected activation callback failure");
+    const callbacks = callbackSpies();
+    vi.mocked(callbacks.activate).mockImplementation(() => {
+      throw callbackFailure;
+    });
+
+    await expect(
+      committer.commit(
+        session,
+        request,
+        pageResponse(request, metadata({ filterModel }), 240),
+        0,
+        emptyFilter,
+        { viewContextId: "next-view" },
+        callbacks
+      )
+    ).rejects.toBe(callbackFailure);
+
+    expect(session).toMatchObject({
+      publicRevision: 4,
+      runtimeRevision: 0,
+      activeViewContextId: "old-view"
+    });
+    expect(session.viewChangeEpoch).toBe(previousViewChangeEpoch);
+    expect(session.metadata).toBe(previousMetadata);
+    expect(session.viewState).toBe(previousViewState);
+    const key = persistenceKey(session.openRequest.source, "polars");
+    expect(stored[key]).toHaveProperty("pendingCurrentCommit");
+    expect(persistence.load(session.openRequest.source, "polars")).toBeUndefined();
+  });
+
   it("returns a current ephemeral clipboard page without committing visible view state", async () => {
     const session = responseState({
       publicRevision: 4,

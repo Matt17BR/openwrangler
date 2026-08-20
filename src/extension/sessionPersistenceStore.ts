@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Memento } from "vscode";
 import type { DataBackend, SessionSource } from "../shared/protocol";
 import {
@@ -39,6 +40,11 @@ export interface SessionPersistenceStatus {
   readonly failureKind?: SessionPersistenceFailureKind;
 }
 
+export interface SessionPersistenceOpeningResult<T> {
+  readonly value: T;
+  readonly readFailure?: SessionPersistenceFailure;
+}
+
 export class SessionPersistenceStore {
   private tail: Promise<void> = Promise.resolve();
   private queuedTasks = 0;
@@ -47,6 +53,7 @@ export class SessionPersistenceStore {
   private readonly ownerStatuses = new Map<string, OwnerPersistenceStatus>();
   private readonly retainedOwnerKeys = new Map<string, string>();
   private readonly ownerRetentionCounts = new Map<string, number>();
+  private readonly openingOwner = new AsyncLocalStorage<OpeningPersistenceOwner>();
 
   constructor(
     private readonly workspaceState?: Memento,
@@ -57,7 +64,7 @@ export class SessionPersistenceStore {
     const previousKey = this.retainedOwnerKeys.get(ownerId);
     const key = isPersistentSession(source, backend) ? persistenceKey(source, backend) : undefined;
     if (previousKey === key) return;
-    if (previousKey) this.scheduleOwnerKeyRelease(previousKey);
+    if (previousKey) void this.scheduleOwnerKeyRelease(previousKey);
     if (!key) {
       this.retainedOwnerKeys.delete(ownerId);
       return;
@@ -66,19 +73,37 @@ export class SessionPersistenceStore {
     this.ownerRetentionCounts.set(key, (this.ownerRetentionCounts.get(key) ?? 0) + 1);
   }
 
-  releaseOwner(ownerId: string): void {
+  releaseOwner(ownerId: string): Promise<void> {
     const key = this.retainedOwnerKeys.get(ownerId);
-    if (!key) return;
+    if (!key) return Promise.resolve();
     this.retainedOwnerKeys.delete(ownerId);
-    this.scheduleOwnerKeyRelease(key);
+    return this.scheduleOwnerKeyRelease(key);
   }
 
-  private scheduleOwnerKeyRelease(key: string): void {
+  private scheduleOwnerKeyRelease(key: string): Promise<void> {
     if (this.queuedTasks === 0) {
       this.releaseOwnerKey(key);
-      return;
+      return Promise.resolve();
     }
-    void this.tail.finally(() => this.releaseOwnerKey(key));
+    return this.tail.finally(() => this.releaseOwnerKey(key));
+  }
+
+  async withOpeningOwner<T>(
+    ownerId: string,
+    source: SessionSource,
+    backend: DataBackend | undefined,
+    operation: () => Promise<T>
+  ): Promise<SessionPersistenceOpeningResult<T>> {
+    const owner: OpeningPersistenceOwner = { ownerId, source, active: true };
+    if (backend) this.retainOwner(ownerId, source, backend);
+    return this.openingOwner.run(owner, async () => {
+      try {
+        const value = await operation();
+        return { value, ...(owner.readFailure ? { readFailure: owner.readFailure } : {}) };
+      } finally {
+        owner.active = false;
+      }
+    });
   }
 
   ownershipCardinality(): {
@@ -104,9 +129,13 @@ export class SessionPersistenceStore {
 
   load(source: SessionSource, backend: DataBackend): DecodedPersistedSessionState | undefined {
     if (!this.workspaceState || !isPersistentSession(source, backend)) return undefined;
+    const openingOwner = this.bindOpeningOwner(source, backend);
     const key = persistenceKey(source, backend);
     const stored = this.readStored(key);
-    if (!stored.ok) return undefined;
+    if (!stored.ok) {
+      if (openingOwner && !openingOwner.readFailure) openingOwner.readFailure = stored.failure;
+      return undefined;
+    }
     const state = decodePersistedSession(loadableSessionValue(stored.value[key]));
     return state?.backend === backend ? state : undefined;
   }
@@ -372,6 +401,13 @@ export class SessionPersistenceStore {
     this.ownerStatuses.delete(ownerKey);
   }
 
+  private bindOpeningOwner(source: SessionSource, backend: DataBackend): OpeningPersistenceOwner | undefined {
+    const owner = this.openingOwner.getStore();
+    if (!owner?.active || owner.source !== source) return undefined;
+    this.retainOwner(owner.ownerId, source, backend);
+    return owner;
+  }
+
   private async enqueue(task: () => Promise<void>): Promise<void> {
     this.queuedTasks += 1;
     const pending = this.tail
@@ -381,8 +417,15 @@ export class SessionPersistenceStore {
         this.queuedTasks -= 1;
       });
     this.tail = pending.catch(() => undefined);
-    await this.tail;
+    await pending;
   }
+}
+
+interface OpeningPersistenceOwner {
+  readonly ownerId: string;
+  readonly source: SessionSource;
+  active: boolean;
+  readFailure?: SessionPersistenceFailure;
 }
 
 interface OwnerPersistenceStatus extends SessionPersistenceStatus {

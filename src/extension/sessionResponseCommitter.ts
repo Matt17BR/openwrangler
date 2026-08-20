@@ -40,7 +40,7 @@ export class SessionResponseCommitter {
   }
 
   releaseSession(sessionId: string): void {
-    this.persistence.releaseOwner(sessionId);
+    void this.persistence.releaseOwner(sessionId);
   }
 
   async persistSession(session: SessionResponseState): Promise<void> {
@@ -291,13 +291,31 @@ export class SessionResponseCommitter {
     };
     if (pageRequest && stateChanged) {
       const state = persistedSessionState(response.metadata, gridState(nextViewState), session.draftBaseFilterModel);
+      const previous = {
+        activeViewContextId: session.activeViewContextId,
+        publicRevision: session.publicRevision,
+        runtimeRevision: session.runtimeRevision,
+        metadata: session.metadata,
+        viewState: session.viewState,
+        viewChangeEpoch: session.viewChangeEpoch
+      };
       const persistenceResult = await this.persistence.commitCurrent(
         session.openRequest.source,
         state,
         () => isCurrentPageRequest(session, pageRequest, options),
         () => {
-          commitState();
-          callbacks.activate();
+          try {
+            commitState();
+            callbacks.activate();
+          } catch (error) {
+            session.activeViewContextId = previous.activeViewContextId;
+            session.publicRevision = previous.publicRevision;
+            session.runtimeRevision = previous.runtimeRevision;
+            session.metadata = previous.metadata;
+            session.viewState = previous.viewState;
+            session.viewChangeEpoch = previous.viewChangeEpoch;
+            throw error;
+          }
         }
       );
       if (persistenceResult.kind === "unavailable") {
@@ -389,6 +407,14 @@ export function persistenceUnavailableError(
       ? "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available."
       : "Open Wrangler could not save workspace recovery state, so the active session was left unchanged. Retry after workspace storage is available.";
   return protocolError("persistence_unavailable", message, true, sessionId, viewRequestId);
+}
+
+export function persistenceReadUnavailableError(): ErrorResponse {
+  return protocolError(
+    "persistence_unavailable",
+    "Open Wrangler could not read workspace recovery state, so the dataframe was not opened. Retry after workspace storage is available.",
+    true
+  );
 }
 
 function sameFilterModel(left: FilterModel, right: FilterModel): boolean {
