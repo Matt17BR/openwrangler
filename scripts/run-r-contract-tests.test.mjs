@@ -67,8 +67,18 @@ test("native R contracts fail unexpected warnings without treating messages as w
   assert.match(source, /globalCallingHandlers\(\s*warning\s*=/u);
   assert.match(source, /Unexpected R warning \[%s\]: %s/u);
   assert.match(source, /warning contract probe/u);
+  assert.match(source, /warning_state\$diagnostics/u);
   assert.doesNotMatch(source, /globalCallingHandlers\([^)]*message\s*=/su);
   assert.match(source, /OPEN_WRANGLER_R_CONTRACT_TEST/u);
+  const targetValidation = source.indexOf("target %in% strict_targets");
+  const handlerInstallation = source.indexOf("globalCallingHandlers(warning = unexpected_warning)");
+  const warningProbe = source.indexOf('warning("warning contract probe", call. = FALSE)');
+  const contractSource = source.indexOf("source(target, local = FALSE)");
+  const warningSettlement = source.indexOf("length(warning_state$diagnostics) > 0L");
+  assert.ok(targetValidation < handlerInstallation);
+  assert.ok(handlerInstallation < warningProbe);
+  assert.ok(warningProbe < contractSource);
+  assert.ok(contractSource < warningSettlement);
 });
 
 test("named R contract shards are an exhaustive disjoint phase partition with the kernel agent isolated", () => {
