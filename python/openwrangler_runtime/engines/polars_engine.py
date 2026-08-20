@@ -13,7 +13,7 @@ from typing import Any, Literal
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
-    custom_code_execution_lines,
+    custom_code_step_lines,
     execute_custom_code,
 )
 from ..export_target import ExportWriterPath
@@ -2409,16 +2409,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
             ]
         if kind == "customCode":
-            custom_lines, result = custom_code_execution_lines(prefix=prefix, module_name="pl", index=index)
-            return [
-                *custom_lines,
-                f"{prefix}if not isinstance({result}, (pl.DataFrame, pl.LazyFrame, pl.Series)):",
-                (
-                    f"{prefix}    raise ValueError("
-                    "'Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.')"
-                ),
-                f"{prefix}df = {result}.to_frame() if isinstance({result}, pl.Series) else {result}",
-            ]
+            return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
         raise EngineError(f"Polars cannot compile transformation: {kind}")
 
 

@@ -14,7 +14,7 @@ from typing import Any, Literal, cast
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
-    custom_code_execution_lines,
+    custom_code_step_lines,
     execute_custom_code,
 )
 from ..pivot_longer import (
@@ -2004,17 +2004,7 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = pd.concat([df, {result}.rename({params['newColumn']!r})], axis=1)",
             ]
         if kind == "customCode":
-            custom_lines, result = custom_code_execution_lines(prefix=prefix, module_name="pd", index=index)
-            return [
-                f"{prefix}df = _open_wrangler_isolate_objects(df)",
-                *custom_lines,
-                f"{prefix}if not isinstance({result}, (pd.DataFrame, pd.Series)):",
-                (
-                    f"{prefix}    raise ValueError("
-                    "'Custom Pandas code must assign a Pandas DataFrame or Series to result.')"
-                ),
-                f"{prefix}df = {result}.to_frame() if isinstance({result}, pd.Series) else {result}",
-            ]
+            return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
 
 
