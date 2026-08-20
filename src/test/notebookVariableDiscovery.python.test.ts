@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+// @ts-expect-error The native generator exposes focused test helpers without a separate declaration surface.
+import { parsePySparkVersionContract, readPySparkPolicyText } from "../../scripts/generate-pyspark-version-policy.mjs";
 import {
   buildNotebookVariableDiscoveryCode,
   buildPySparkNotebookPreflightCode,
@@ -51,6 +55,34 @@ describe("notebook variable discovery Python contract", () => {
     expect(result.signal).toBeNull();
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe("Generated PySpark version policies are current.\n");
+  });
+
+  it("reads policy authority and generated outputs through bounded no-follow identities", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openwrangler-pyspark-policy-read-"));
+    const policy = join(root, "policy.json");
+    const alias = join(root, "policy-alias.json");
+    try {
+      await writeFile(policy, '{"policy":true}\n', { mode: 0o600 });
+      expect(readPySparkPolicyText(policy, 64, "test PySpark policy", { containedBy: root })).toBe('{"policy":true}\n');
+      await symlink(policy, alias);
+      expect(() => readPySparkPolicyText(alias, 64, "test PySpark policy", { containedBy: root })).toThrow(
+        /no-follow regular file/u
+      );
+      expect(() =>
+        readPySparkPolicyText(policy, 64, "test PySpark policy", {
+          containedBy: root,
+          afterOpenForTest() {
+            writeFileSync(policy, '{"policy":false}');
+          }
+        })
+      ).toThrow(/changed during its descriptor-bound read/u);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate JSON keys in the single generated PySpark policy authority", () => {
+    expect(() => parsePySparkVersionContract('{"policy":{},"policy":{}}')).toThrow(/duplicate keys/u);
   });
 
   it("executes the emitted code against the installed Pandas DataFrame and Series types", () => {
@@ -280,6 +312,42 @@ ${probeCode}
       isPySpark: true,
       version: "4.2.0rc1"
     });
+  });
+
+  it("rejects an automatic unsupported PySpark open before live-handle or frame inspection", () => {
+    const probeCode = buildPySparkNotebookPreflightCode(DISCOVERY_MARKER, "missing_spark_frame");
+    const result = spawnSync(
+      testPythonExecutable(),
+      [
+        "-I",
+        "-c",
+        `
+import json
+import sys
+import types
+accesses = []
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__version__"] = "4.2.0rc1"
+notebook_module = types.ModuleType("openwrangler_runtime.notebook")
+notebook_module.__dict__["is_live_result_handle"] = lambda name: accesses.append("live:" + name) or False
+notebook_module.__dict__["resolve_live_result"] = lambda name: accesses.append("resolve:" + name)
+sys.modules["pyspark"] = pyspark_module
+sys.modules["openwrangler_runtime.notebook"] = notebook_module
+${probeCode}
+print("__OPEN_WRANGLER_AUTO_PREFLIGHT_FACTS__" + json.dumps(accesses))
+`
+      ],
+      { encoding: "utf8", maxBuffer: 128 * 1024, timeout: 30_000, windowsHide: true }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
+    expect(parsePySparkNotebookPreflightOutput(result.stdout, DISCOVERY_MARKER)).toEqual({
+      isPySpark: true,
+      version: "4.2.0rc1"
+    });
+    expect(result.stdout).toContain("__OPEN_WRANGLER_AUTO_PREFLIGHT_FACTS__[]");
   });
 
   it.each(["x".repeat(65), "4.2.0\n", "4.2.0\t", "4.2.0\u0000"])(

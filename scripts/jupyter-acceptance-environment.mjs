@@ -615,27 +615,27 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
       acquiredArtifact = await acquirePySparkArtifact(directory, pysparkDistribution);
       artifact = validateAcquiredPySparkArtifact(directory, acquiredArtifact, pysparkDistribution);
       assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+      const pipArguments = [
+        "-I",
+        "-m",
+        "pip",
+        "--isolated",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-warn-script-location",
+        "--no-cache-dir",
+        "--no-deps"
+      ];
       await runCommand(
         {
           executable: kernelPython,
-          args: [
-            "-I",
-            "-m",
-            "pip",
-            "--isolated",
-            "install",
-            "--disable-pip-version-check",
-            "--no-input",
-            "--no-warn-script-location",
-            "--no-cache-dir",
-            "--no-deps",
-            artifact.path
-          ],
+          args: pipArguments,
           environment,
           label: labels.pysparkInstall,
-          beforeSpawnCheck() {
+          beforeSpawn() {
             assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
-            artifact.assertReadyForSpawn();
+            return artifact.preparePipLaunch(pipArguments, platform);
           }
         },
         { timeoutMs: 240_000 }
@@ -886,11 +886,55 @@ export async function acquireVerifiedPySparkArtifact(
     }
     let disposed = false;
     return Object.freeze({
-      assertReadyForSpawn() {
+      preparePipLaunch(args, platform) {
         if (disposed || descriptor === undefined) {
           throw new Error("Released-Jupyter PySpark artifact is not available for a new pip launch.");
         }
-        assertVerifiedPySparkArtifact(descriptor, artifactPath, identity, receipt);
+        if (
+          !Array.isArray(args) ||
+          args.length === 0 ||
+          args.length > 64 ||
+          !args.every((argument) => typeof argument === "string" && !/[\0\r\n]/u.test(argument)) ||
+          (platform !== "linux" && platform !== "darwin")
+        ) {
+          throw new Error("Released-Jupyter PySpark pip launch requires one bounded POSIX invocation.");
+        }
+        const descriptorPath = platform === "linux" ? "/proc/self/fd/3" : "/dev/fd/3";
+        let launchDescriptor;
+        try {
+          launchDescriptor = openSync(
+            artifactPath,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) | (constants.O_CLOEXEC ?? 0)
+          );
+          assertVerifiedPySparkArtifact(launchDescriptor, artifactPath, identity, receipt);
+        } catch (error) {
+          if (launchDescriptor !== undefined) {
+            try {
+              closeSync(launchDescriptor);
+            } catch (closeError) {
+              throw new AggregateError(
+                [
+                  new Error("Released-Jupyter PySpark artifact identity changed before pip launch.", {
+                    cause: error
+                  }),
+                  closeError
+                ],
+                "Released-Jupyter PySpark launch verification and descriptor release both failed."
+              );
+            }
+          }
+          throw new Error("Released-Jupyter PySpark artifact identity changed before pip launch.", { cause: error });
+        }
+        let released = false;
+        return Object.freeze({
+          args: Object.freeze([...args, `${receipt.package} @ file://${descriptorPath}`]),
+          inheritedFileDescriptors: Object.freeze([launchDescriptor]),
+          release() {
+            if (released) throw new Error("Released-Jupyter PySpark launch descriptor was already released.");
+            released = true;
+            closeSync(launchDescriptor);
+          }
+        });
       },
       path: artifactPath,
       sha256: receipt.sha256,
@@ -898,17 +942,34 @@ export async function acquireVerifiedPySparkArtifact(
       async dispose() {
         if (disposed) throw new Error("Released-Jupyter PySpark artifact was already disposed.");
         disposed = true;
-        scrubIdentifiedPySparkArtifact({
-          artifactPath,
-          beforeCleanupLink,
-          cleanupDirectory,
-          cleanupDirectoryIdentity,
-          cleanupTarget,
-          descriptor,
-          identity
-        });
-        closeSync(descriptor);
+        const cleanupFailures = [];
+        try {
+          scrubIdentifiedPySparkArtifact({
+            artifactPath,
+            beforeCleanupLink,
+            cleanupDirectory,
+            cleanupDirectoryIdentity,
+            cleanupTarget,
+            descriptor,
+            identity
+          });
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+        const descriptorToClose = descriptor;
         descriptor = undefined;
+        try {
+          closeSync(descriptorToClose);
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+        if (cleanupFailures.length === 1) throw cleanupFailures[0];
+        if (cleanupFailures.length > 1) {
+          throw new AggregateError(
+            cleanupFailures,
+            "Released-Jupyter PySpark artifact cleanup and descriptor release both failed."
+          );
+        }
       }
     });
   } catch (error) {
@@ -932,10 +993,16 @@ export async function acquireVerifiedPySparkArtifact(
           descriptor,
           identity
         });
-        closeSync(descriptor);
+      } catch (cleanupError) {
+        cleanupFailures.push(cleanupError);
+      } finally {
+        const descriptorToClose = descriptor;
         descriptor = undefined;
-      } catch (closeError) {
-        cleanupFailures.push(closeError);
+        try {
+          closeSync(descriptorToClose);
+        } catch (closeError) {
+          cleanupFailures.push(closeError);
+        }
       }
     } else if (descriptor !== undefined) {
       try {
@@ -993,7 +1060,7 @@ function validateAcquiredPySparkArtifact(directory, value, distribution) {
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join("\0") !== "assertReadyForSpawn\0dispose\0path\0sha256\0size" ||
+    Object.keys(value).sort().join("\0") !== "dispose\0path\0preparePipLaunch\0sha256\0size" ||
     typeof value.path !== "string" ||
     !isAbsolute(value.path) ||
     /[\0\r\n]/u.test(value.path) ||
@@ -1001,7 +1068,7 @@ function validateAcquiredPySparkArtifact(directory, value, distribution) {
     relativePath === "" ||
     relativePath === ".." ||
     relativePath.startsWith(`..${sep}`) ||
-    typeof value.assertReadyForSpawn !== "function" ||
+    typeof value.preparePipLaunch !== "function" ||
     typeof value.dispose !== "function" ||
     typeof value.sha256 !== "string" ||
     value.sha256 !== distribution.sha256 ||
@@ -1114,7 +1181,7 @@ function scrubIdentifiedPySparkArtifact({
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  if (beforeCleanupLink?.() !== undefined) {
+  if (beforeCleanupLink?.(Object.freeze({ descriptor })) !== undefined) {
     throw new Error("Released-Jupyter PySpark cleanup hook must complete synchronously without a result.");
   }
   linkSync(artifactPath, cleanupTarget);

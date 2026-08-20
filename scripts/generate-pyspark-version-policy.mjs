@@ -1,6 +1,11 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { format as formatWithPrettier, resolveConfig as resolvePrettierConfig } from "prettier";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
+
+const { parseStrictJson } = createRequire(import.meta.url)("../src/shared/strictJson.cjs");
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 const contractPath = resolve(repositoryRoot, "fixtures", "pyspark-version-contract.json");
@@ -17,42 +22,71 @@ const pythonOutputPath = resolve(
   "openwrangler_runtime",
   "pyspark_version_policy_generated.py"
 );
-const mode = process.argv[2];
+const MAX_CONTRACT_BYTES = 128 * 1024;
+const MAX_GENERATED_OUTPUT_BYTES = 512 * 1024;
 
-if (!["--check", "--write"].includes(mode) || process.argv.length !== 3) {
-  throw new Error("Usage: node scripts/generate-pyspark-version-policy.mjs --check|--write");
+export function readPySparkPolicyText(
+  path,
+  maximumBytes,
+  label,
+  { afterOpenForTest, containedBy = repositoryRoot } = {}
+) {
+  return new TextDecoder("utf-8", { fatal: true }).decode(
+    readBoundedRegularFile(path, maximumBytes, {
+      afterOpenForTest,
+      containedBy,
+      label
+    })
+  );
 }
 
-const contract = JSON.parse(await readFile(contractPath, "utf8"));
-const policy = validateContract(contract);
-validateExamples(contract, policy);
-const prettierConfig = (await resolvePrettierConfig(typeScriptOutputPath)) ?? {};
-const outputs = [
-  [
-    typeScriptOutputPath,
-    await formatWithPrettier(renderTypeScript(contract, policy), {
-      ...prettierConfig,
-      filepath: typeScriptOutputPath,
-      parser: "typescript"
-    }),
-    "TypeScript PySpark version policy"
-  ],
-  [pythonOutputPath, renderPython(contract, policy), "Python PySpark version policy"]
-];
+export function parsePySparkVersionContract(contents) {
+  return parseStrictJson(contents, { maxBytes: MAX_CONTRACT_BYTES, maxDepth: 32 });
+}
 
-if (mode === "--check") {
-  const stale = [];
-  for (const [outputPath, expected, label] of outputs) {
-    const actual = await readFile(outputPath, "utf8").catch(() => "");
-    if (actual !== expected) stale.push(label);
+async function main(args) {
+  const [mode] = args;
+  if (!["--check", "--write"].includes(mode) || args.length !== 1) {
+    throw new Error("Usage: node scripts/generate-pyspark-version-policy.mjs --check|--write");
   }
-  if (stale.length > 0) {
-    throw new Error(`${stale.join(" and ")} generated output is stale; run this script with --write.`);
+
+  const contract = parsePySparkVersionContract(
+    readPySparkPolicyText(contractPath, MAX_CONTRACT_BYTES, "PySpark version policy contract")
+  );
+  const policy = validateContract(contract);
+  validateExamples(contract, policy);
+  const prettierConfig = (await resolvePrettierConfig(typeScriptOutputPath)) ?? {};
+  const outputs = [
+    [
+      typeScriptOutputPath,
+      await formatWithPrettier(renderTypeScript(contract, policy), {
+        ...prettierConfig,
+        filepath: typeScriptOutputPath,
+        parser: "typescript"
+      }),
+      "TypeScript PySpark version policy"
+    ],
+    [pythonOutputPath, renderPython(contract, policy), "Python PySpark version policy"]
+  ];
+
+  if (mode === "--check") {
+    const stale = [];
+    for (const [outputPath, expected, label] of outputs) {
+      const actual = readPySparkPolicyText(outputPath, MAX_GENERATED_OUTPUT_BYTES, label);
+      if (actual !== expected) stale.push(label);
+    }
+    if (stale.length > 0) {
+      throw new Error(`${stale.join(" and ")} generated output is stale; run this script with --write.`);
+    }
+    process.stdout.write("Generated PySpark version policies are current.\n");
+  } else {
+    await Promise.all(outputs.map(([outputPath, output]) => writeFile(outputPath, output, "utf8")));
+    process.stdout.write("Generated PySpark version policies.\n");
   }
-  process.stdout.write("Generated PySpark version policies are current.\n");
-} else {
-  await Promise.all(outputs.map(([outputPath, output]) => writeFile(outputPath, output, "utf8")));
-  process.stdout.write("Generated PySpark version policies.\n");
+}
+
+if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  await main(process.argv.slice(2));
 }
 
 function validateContract(contractValue) {

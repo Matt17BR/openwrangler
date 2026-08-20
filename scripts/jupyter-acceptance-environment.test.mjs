@@ -9,6 +9,8 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
+  readlinkSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -75,17 +77,26 @@ function testPySparkArtifactAcquirer(records = []) {
   return async (directory, distribution) => {
     const path = join(directory, `test-${distribution.filename}`);
     writeFileSync(path, "verified test artifact\n", { flag: "wx", mode: 0o600 });
-    const record = { distribution, path, disposed: false, readyChecks: 0 };
+    const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const record = { distribution, path, disposed: false, readyChecks: 0, launchArguments: undefined };
     records.push(record);
     return {
-      assertReadyForSpawn() {
+      preparePipLaunch(args, platform) {
         assert.equal(existsSync(path), true);
+        assert.equal(platform, "linux");
         record.readyChecks += 1;
+        record.launchArguments = [...args, `${distribution.package} @ file:///proc/self/fd/3`];
+        return {
+          args: record.launchArguments,
+          inheritedFileDescriptors: [descriptor],
+          release() {}
+        };
       },
       path,
       sha256: distribution.sha256,
       size: distribution.size,
       async dispose() {
+        closeSync(descriptor);
         unlinkSync(path);
         record.disposed = true;
       }
@@ -112,7 +123,7 @@ function verifiedSmallPySparkArtifactAcquirer(payload, records = [], options = {
     const record = { acquired, disposed: false, distribution };
     records.push(record);
     return {
-      assertReadyForSpawn: acquired.assertReadyForSpawn,
+      preparePipLaunch: acquired.preparePipLaunch,
       path: acquired.path,
       sha256: distribution.sha256,
       size: distribution.size,
@@ -125,6 +136,27 @@ function verifiedSmallPySparkArtifactAcquirer(payload, records = [], options = {
       }
     };
   };
+}
+
+function runTestCommandPreparation(input) {
+  input.beforeSpawnCheck?.();
+  const preparation = input.beforeSpawn?.();
+  try {
+    return preparation;
+  } finally {
+    preparation?.release();
+  }
+}
+
+function descriptorForExactPath(path) {
+  for (const entry of readdirSync("/proc/self/fd")) {
+    try {
+      if (readlinkSync(`/proc/self/fd/${entry}`) === path) return Number(entry);
+    } catch {
+      // A concurrently released descriptor is not the target.
+    }
+  }
+  throw new Error(`No open descriptor retained ${path}.`);
 }
 
 function testPySparkDistribution(payload, overrides = {}) {
@@ -1778,7 +1810,12 @@ test("PySpark acquisition streams one exact receipt to a private local artifact 
     assert.equal(artifact.size, payload.length);
     assert.equal(artifact.sha256, distribution.sha256);
     assert.deepEqual(await readFile(artifact.path), payload);
-    artifact.assertReadyForSpawn();
+    const launch = artifact.preparePipLaunch(["-I", "-m", "pip", "install"], "linux");
+    assert.deepEqual(launch.args, ["-I", "-m", "pip", "install", "pyspark @ file:///proc/self/fd/3"]);
+    assert.equal(launch.inheritedFileDescriptors.length, 1);
+    assert.deepEqual(readFileSync(launch.inheritedFileDescriptors[0]), payload);
+    launch.release();
+    assert.throws(() => fstatSync(launch.inheritedFileDescriptors[0]), /EBADF/u);
     await artifact.dispose();
     await assertScrubbedPySparkArtifact(directory, artifact.path);
   } finally {
@@ -1946,11 +1983,61 @@ test("PySpark artifact cleanup refuses a substituted pathname and preserves the 
       randomBytesImpl: () => Buffer.alloc(16, 0x43),
       timeoutMs: 1_000
     });
+    const verifiedDescriptor = process.platform === "linux" ? descriptorForExactPath(artifact.path) : undefined;
     renameSync(artifact.path, displaced);
     writeFileSync(artifact.path, "replacement", { flag: "wx", mode: 0o600 });
     await assert.rejects(artifact.dispose(), /artifact identity changed before cleanup/u);
+    if (verifiedDescriptor !== undefined) assert.throws(() => fstatSync(verifiedDescriptor), /EBADF/u);
     assert.equal(await readFile(artifact.path, "utf8"), "replacement");
     assert.deepEqual(await readFile(displaced), payload);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PySpark cleanup closes its verified descriptor when exact scrub disposal fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-scrub-close-"));
+  const payload = Buffer.from("exact artifact");
+  let cleanupDescriptor;
+  try {
+    const artifact = await acquireVerifiedPySparkArtifact(directory, testPySparkDistribution(payload), {
+      beforeCleanupLink({ descriptor }) {
+        cleanupDescriptor = descriptor;
+        throw new Error("injected exact scrub failure");
+      },
+      fetchImpl: async () => streamedResponse([payload]),
+      randomBytesImpl: () => Buffer.alloc(16, 0x47),
+      timeoutMs: 1_000
+    });
+    await assert.rejects(artifact.dispose(), /injected exact scrub failure/u);
+    assert.equal(Number.isSafeInteger(cleanupDescriptor), true);
+    assert.throws(() => fstatSync(cleanupDescriptor), /EBADF/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PySpark acquisition closes its verified descriptor when failure cleanup cannot scrub", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-acquisition-close-"));
+  const payload = Buffer.from("exact artifact");
+  let cleanupDescriptor;
+  try {
+    await assert.rejects(
+      acquireVerifiedPySparkArtifact(directory, testPySparkDistribution(payload, { sha256: "0".repeat(64) }), {
+        beforeCleanupLink({ descriptor }) {
+          cleanupDescriptor = descriptor;
+          throw new Error("injected acquisition scrub failure");
+        },
+        fetchImpl: async () => streamedResponse([payload]),
+        randomBytesImpl: () => Buffer.alloc(16, 0x48),
+        timeoutMs: 1_000
+      }),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.some((candidate) => /injected acquisition scrub failure/u.test(String(candidate)))
+    );
+    assert.equal(Number.isSafeInteger(cleanupDescriptor), true);
+    assert.throws(() => fstatSync(cleanupDescriptor), /EBADF/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2012,7 +2099,7 @@ test("released-Jupyter refuses replaced, symlinked, and changed-byte artifacts a
               return { stdout: "" };
             }
             if (input.label === "Released-Jupyter private kernel PySpark installation") {
-              const artifactPath = input.args.at(-1);
+              const artifactPath = records[0].acquired.path;
               assert.equal(/^https?:/u.test(artifactPath), false);
               if (mutation === "replacement") {
                 renameSync(artifactPath, retained);
@@ -2023,7 +2110,7 @@ test("released-Jupyter refuses replaced, symlinked, and changed-byte artifacts a
               } else {
                 writeFileSync(artifactPath, Buffer.alloc(payload.length, 0x78));
               }
-              input.beforeSpawnCheck();
+              runTestCommandPreparation(input);
               pipSpawned = true;
             }
             return { stdout: "" };
@@ -2162,7 +2249,7 @@ test("released-Jupyter installs its released compatibility versions into a clean
       platform: "linux",
       async runCommand(input, options) {
         commands.push({ input, options });
-        input.beforeSpawnCheck?.();
+        runTestCommandPreparation(input);
         if (input.label === "Released-Jupyter PySpark Java compatibility probe") {
           return javaReport();
         }
@@ -2225,7 +2312,9 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.equal(commands[4].input.executable, kernelPython);
     assert.equal(commands[4].input.args.filter((value) => value === "--no-cache-dir").length, 1);
     assert.ok(commands[4].input.args.includes("--no-deps"));
-    assert.equal(commands[4].input.args.at(-1), artifacts[0].path);
+    assert.deepEqual(commands[4].input.args.slice(-2), ["--no-cache-dir", "--no-deps"]);
+    assert.equal(commands[4].input.args.includes(artifacts[0].path), false);
+    assert.equal(artifacts[0].launchArguments.at(-1), "pyspark @ file:///proc/self/fd/3");
     assert.equal(
       commands[4].input.args.some((value) => /^https?:/u.test(value)),
       false
@@ -2288,7 +2377,7 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
       pysparkDistribution: RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
       async runCommand(input, options) {
         commands.push({ input, options });
-        input.beforeSpawnCheck?.();
+        runTestCommandPreparation(input);
         if (input.label === "Released-Jupyter PySpark Java compatibility probe") return javaReport();
         if (input.label === "Released-Jupyter base dependency version probe") {
           return { stdout: JSON.stringify(dependencyReport(true)) };
@@ -2310,7 +2399,8 @@ test("released-Jupyter provisions the separately named PySpark prerelease-denial
 
     assert.equal(kernelPython, join(environmentDirectory, "v", "bin", "python"));
     assert.equal(commands[4].input.label, "Released-Jupyter private kernel PySpark installation");
-    assert.equal(commands[4].input.args.at(-1), artifacts[0].path);
+    assert.equal(commands[4].input.args.includes(artifacts[0].path), false);
+    assert.equal(artifacts[0].launchArguments.at(-1), "pyspark @ file:///proc/self/fd/3");
     assert.equal(
       commands[4].input.args.some((value) => /^https?:/u.test(value)),
       false
@@ -2338,7 +2428,7 @@ test("released-Jupyter cleans its verified local PySpark artifact when pip insta
         environment: Object.freeze({}),
         platform: "linux",
         async runCommand(input) {
-          input.beforeSpawnCheck?.();
+          runTestCommandPreparation(input);
           if (input.label === "Released-Jupyter PySpark Java compatibility probe") return javaReport();
           if (input.label === "Released-Jupyter base dependency version probe") {
             return { stdout: JSON.stringify(dependencyReport(true)) };
@@ -2405,7 +2495,7 @@ test("released-Jupyter rejects a private environment that does not retain its co
         environment: Object.freeze({}),
         platform: "linux",
         async runCommand(input) {
-          input.beforeSpawnCheck?.();
+          runTestCommandPreparation(input);
           if (input.label === "Released-Jupyter PySpark Java compatibility probe") {
             return javaReport();
           }

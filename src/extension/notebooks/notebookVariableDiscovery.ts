@@ -423,7 +423,7 @@ __ow_candidate_version = (
 __ow_version_classification = __ow_classify_pyspark_version_v1(__ow_candidate_version)
 __ow_version = __ow_safe_pyspark_version_diagnostic_v1(__ow_candidate_version)
 __ow_version_supported = __ow_version_classification == "supported-final"
-if ${expectedBackend === "pyspark" ? "True" : "False"} and not __ow_version_supported:
+if not __ow_version_supported and (${expectedBackend === "pyspark" ? "True" : "False"} or __ow_module is not None):
     __ow_is_pyspark = True
 else:
     __ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
