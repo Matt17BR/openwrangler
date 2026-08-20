@@ -6240,7 +6240,10 @@ formula_integer64_mixed_apply <- dispatch(
 )
 assert_identical(formula_integer64_mixed_apply$action, "apply", "named mixed-double Formula did not apply")
 assign("formula_integer64_frame", source_environment$formula_integer64_frame, envir = .GlobalEnv)
-eval(parse(text = formula_integer64_mixed_apply$code), envir = .GlobalEnv)
+assert_no_warning(
+  eval(parse(text = formula_integer64_mixed_apply$code), envir = .GlobalEnv),
+  "generated named mixed integer64 Formula"
+)
 formula_integer64_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
 assert_identical(class(formula_integer64_generated$`exact sum`), "integer64", "generated integer64 R Formula changed type")
 assert_identical(
@@ -10798,9 +10801,15 @@ division <- by_example_evaluator(
   by_example_bound_arithmetic("divide", integer64_column, integer64_one, "double"),
   list(integer64_boundary)
 )
+integer64_division_expectation <- assert_exact_warning(
+  integer64_double(integer64_boundary),
+  c("simpleWarning", "warning", "condition"),
+  "integer precision lost while converting to double",
+  "the integer64 by-example division expectation"
+)
 assert_identical(
   division,
-  integer64_double(integer64_boundary),
+  integer64_division_expectation,
   "integer64 by-example division incorrectly required an exact double round trip"
 )
 overflow_error <- tryCatch(

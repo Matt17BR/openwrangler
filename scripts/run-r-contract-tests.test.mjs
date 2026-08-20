@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   createRContractPhases,
@@ -35,11 +36,11 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
 
   const direct = configured.slice(0, 3);
   assert.deepEqual(
-    direct.map(({ command, args }) => [command, ...args]),
+    direct.map(({ command, args, environment }) => [command, ...args, environment.OPEN_WRANGLER_R_CONTRACT_TEST]),
     [
-      ["/reviewed/Rscript", "--vanilla", "r/tests/frame_contract.R"],
-      ["/reviewed/Rscript", "--vanilla", "r/tests/kernel_agent.R"],
-      ["/reviewed/Rscript", "--vanilla", "r/tests/complete_catalog_contract.R"]
+      ["/reviewed/Rscript", "--vanilla", "r/tests/run_warning_strict.R", "r/tests/frame_contract.R"],
+      ["/reviewed/Rscript", "--vanilla", "r/tests/run_warning_strict.R", "r/tests/kernel_agent.R"],
+      ["/reviewed/Rscript", "--vanilla", "r/tests/run_warning_strict.R", "r/tests/complete_catalog_contract.R"]
     ]
   );
 
@@ -59,6 +60,15 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
     assert.deepEqual(phase.args.slice(-1), ["--maxWorkers=1"]);
     assert.equal(phase.environment.OPEN_WRANGLER_R_CONTRACT_TESTS, "1");
   }
+});
+
+test("native R contracts fail unexpected warnings without treating messages as warnings", () => {
+  const source = readFileSync(new URL("../r/tests/run_warning_strict.R", import.meta.url), "utf8");
+  assert.match(source, /globalCallingHandlers\(\s*warning\s*=/u);
+  assert.match(source, /Unexpected R warning \[%s\]: %s/u);
+  assert.match(source, /warning contract probe/u);
+  assert.doesNotMatch(source, /globalCallingHandlers\([^)]*message\s*=/su);
+  assert.match(source, /OPEN_WRANGLER_R_CONTRACT_TEST/u);
 });
 
 test("named R contract shards are an exhaustive disjoint phase partition with the kernel agent isolated", () => {

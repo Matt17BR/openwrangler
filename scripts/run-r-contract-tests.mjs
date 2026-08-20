@@ -9,6 +9,7 @@ const KERNEL_AGENT_TIMEOUT_MS = 360_000;
 const CATALOG_CONTRACT_TIMEOUT_MS = 120_000;
 const SHORT_VITEST_PHASE_TIMEOUT_MS = 60_000;
 const TRANSPORT_VITEST_PHASE_TIMEOUT_MS = 90_000;
+const R_WARNING_CONTRACT_RUNNER = "r/tests/run_warning_strict.R";
 
 export const R_CONTRACT_SHARDS = Object.freeze([
   Object.freeze({ id: "kernel-agent", phaseIds: Object.freeze(["kernel-agent"]) }),
@@ -57,6 +58,17 @@ function vitestPhase(id, label, files, timeoutMs, { environment, node, vitest })
   });
 }
 
+function nativeRPhase(id, label, testFile, timeoutMs, { environment, rscript }) {
+  return Object.freeze({
+    id,
+    label,
+    command: rscript,
+    args: Object.freeze(["--vanilla", R_WARNING_CONTRACT_RUNNER]),
+    environment: Object.freeze({ ...environment, OPEN_WRANGLER_R_CONTRACT_TEST: testFile }),
+    timeoutMs
+  });
+}
+
 export function createRContractPhases({
   environment,
   node = process.execPath,
@@ -67,30 +79,21 @@ export function createRContractPhases({
   const rEnvironment = Object.freeze({ ...environment, R: r, RSCRIPT: rscript });
   const vitestEnvironment = Object.freeze({ ...rEnvironment, OPEN_WRANGLER_R_CONTRACT_TESTS: "1" });
   return Object.freeze([
-    Object.freeze({
-      id: "frame",
-      label: "native frame contract",
-      command: rscript,
-      args: Object.freeze(["--vanilla", "r/tests/frame_contract.R"]),
+    nativeRPhase("frame", "native frame contract", "r/tests/frame_contract.R", FRAME_CONTRACT_TIMEOUT_MS, {
       environment: rEnvironment,
-      timeoutMs: FRAME_CONTRACT_TIMEOUT_MS
+      rscript
     }),
-    Object.freeze({
-      id: "kernel-agent",
-      label: "native kernel-agent contract",
-      command: rscript,
-      args: Object.freeze(["--vanilla", "r/tests/kernel_agent.R"]),
+    nativeRPhase("kernel-agent", "native kernel-agent contract", "r/tests/kernel_agent.R", KERNEL_AGENT_TIMEOUT_MS, {
       environment: rEnvironment,
-      timeoutMs: KERNEL_AGENT_TIMEOUT_MS
+      rscript
     }),
-    Object.freeze({
-      id: "catalog",
-      label: "complete native catalog contract",
-      command: rscript,
-      args: Object.freeze(["--vanilla", "r/tests/complete_catalog_contract.R"]),
-      environment: rEnvironment,
-      timeoutMs: CATALOG_CONTRACT_TIMEOUT_MS
-    }),
+    nativeRPhase(
+      "catalog",
+      "complete native catalog contract",
+      "r/tests/complete_catalog_contract.R",
+      CATALOG_CONTRACT_TIMEOUT_MS,
+      { environment: rEnvironment, rscript }
+    ),
     vitestPhase(
       "typescript-frame",
       "TypeScript R frame and unit contracts",
