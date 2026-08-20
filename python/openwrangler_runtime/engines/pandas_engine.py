@@ -14,6 +14,7 @@ from typing import Any, Literal, cast
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
+    custom_code_prelude_lines,
     custom_code_step_lines,
     execute_custom_code,
 )
@@ -1033,7 +1034,9 @@ class PandasEngine(DataFrameEngine):
             )
             for step in plan
         )
-        lines = ["from collections import Counter"] if needs_counter else []
+        lines = custom_code_prelude_lines() if needs_object_isolation else []
+        if needs_counter:
+            lines.append("from collections import Counter")
         if needs_object_isolation:
             lines.append("from copy import deepcopy")
         if needs_missing_helpers:

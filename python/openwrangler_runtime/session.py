@@ -1622,6 +1622,7 @@ class SessionManager:
         """Reject complete Custom Code expansion before an adapter allocates it."""
 
         generated_bytes = 0
+        prelude_pending = True
         for index, step in enumerate(bound_plan):
             if step.get("kind") != "customCode":
                 continue
@@ -1638,9 +1639,11 @@ class SessionManager:
                     line_count=line_count,
                     engine_name=engine.name,
                     index=index,
+                    include_prelude=prelude_pending,
                 )
             except ValueError as error:
                 raise EngineError("The dataframe engine cannot generate Custom Code.") from error
+            prelude_pending = False
             if generated_bytes > MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:
                 raise EngineError(
                     f"Generated Python code may contain at most {MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:,} UTF-8 bytes."

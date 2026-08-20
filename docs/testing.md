@@ -567,8 +567,10 @@ Custom Code scope fixtures run against Pandas, Polars, and DuckDB. They reject f
 both engine seams. Hidden yields in decorators, defaults, keyword defaults, annotations, and lambda defaults are outer
 yields; nested generator bodies remain accepted. Accepted fixtures cover ordinary and explicit imports, multiline
 control flow, closures, and nested `return` and `yield`; each generated script executes and must match live output.
-Generated fixtures prove exact ordered fresh globals, module-scope private-name and `__class__` behavior, canonical
-function metadata, no ambient NumPy, DuckDB helper, or plan-dependent Polars helper leakage, cross-step namespace
+Generated fixtures compile with inherited future flags disabled and a module-valued ambient `__builtins__`. They prove
+explicitly postponed annotations, normalization to the builtins dictionary, exact ordered fresh globals, module-scope
+private-name and `__class__` behavior, canonical function name and qualified name, no ambient NumPy, DuckDB helper,
+or plan-dependent Polars helper leakage, cross-step namespace
 isolation, Pandas/Polars Series normalization, and scalar-result rejection. Complexity fixtures require deep unary
 source and parser-memory pressure within the public byte limit to return the stable Custom Code error. Terminal and
 interior LF, CR, CRLF, vertical-tab, form-feed, file/group/record, next-line, and Unicode line/paragraph separators must
