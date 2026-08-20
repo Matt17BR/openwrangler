@@ -161,8 +161,8 @@ a partial rectangle.
 
 Choose from 32 operations, including filling missing values, multi-output literal splitting, portable
 regular-expression extraction, deterministic Pivot longer and Pivot wider, engine-native custom Python or R code, and
-transformations inferred from examples. A draft stays separate until you apply it. You can inspect any applied step.
-Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step.
+transformations inferred from examples. A draft stays separate until you apply it. Any applied step can be inspected,
+edited, or deleted. Cleaning Undo removes the most recent committed step. Reordering committed steps is not supported.
 
 Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
 sort key, or fallback column appear only when the dataframe has a compatible column.
