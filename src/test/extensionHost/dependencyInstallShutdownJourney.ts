@@ -73,7 +73,7 @@ export function createDependencyInstallShutdownJourney({
       assert.equal(rejected.kind, "error");
       if (rejected.kind === "error") {
         assert.equal(rejected.code, "missing_dependencies");
-        assert.match(rejected.message, /Missing: pandas, xlrd>=2\.0\.1/);
+        assert.match(rejected.message, /Missing: pandas>=2\.2,<3, xlrd>=2\.0\.1,<3\.$/u);
         assert.doesNotMatch(rejected.message, /openpyxl/);
       }
       assert.equal(testing.runtimeRunning(), false, "The fake pip target must fail before runtime startup.");
@@ -91,12 +91,12 @@ export function createDependencyInstallShutdownJourney({
       });
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         page,
-        "Install pandas, xlrd>=2.0.1"
+        "Install pandas>=2.2,<3, xlrd>=2.0.1,<3"
       );
       await confirmationPage.bringToFront();
       assert.equal(
         await confirmation.locator(".dialog-message-text").innerText(),
-        `Install pandas, xlrd>=2.0.1 into ${lifecycle.executable}?`
+        `Install pandas>=2.2,<3, xlrd>=2.0.1,<3 into ${lifecycle.executable}?`
       );
       const installButton = confirmation.getByRole("button", { name: "Install", exact: true });
       assert.equal(
@@ -121,7 +121,7 @@ export function createDependencyInstallShutdownJourney({
       recordAcceptanceProgress("verify:dependency-install-child-started");
 
       const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
-      assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "--", "pandas", "xlrd>=2.0.1"]);
+      assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "--", "pandas>=2.2,<3", "xlrd>=2.0.1,<3"]);
       assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
       assert.equal(started.pipUser, "0", "The owned pip process must explicitly prohibit user-site installation.");
       assert.equal(

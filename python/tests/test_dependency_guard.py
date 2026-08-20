@@ -1545,7 +1545,12 @@ def test_failed_pip_retains_marker_and_does_not_expose_output(guard_fixture: Gua
 
 def test_failed_dependency_validation_retains_exact_marker(guard_fixture: GuardFixture) -> None:
     token = str(uuid.uuid4())
-    incompatible = {**guard_fixture.dependency, "minimumVersion": "2.0"}
+    incompatible = {
+        **guard_fixture.dependency,
+        "installSpec": "ow-guard-fixture>=2.0,<3.0",
+        "minimumVersion": "2.0",
+        "maximumVersionExclusive": "3.0",
+    }
     process = _arm(guard_fixture, token, dependency=incompatible)
     _write_frame(process, _go_frame(token))
     assert _finish(process)[0] == 0

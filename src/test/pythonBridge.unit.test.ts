@@ -1064,7 +1064,7 @@ describe("PythonBridge trusted pickle preflight", () => {
     Object.assign(bridge as object, { spawnProcess });
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas", "pyarrow"],
+      missing: ["pandas>=2.2,<3", "pyarrow>=25,<26"],
       available: []
     });
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
@@ -1076,11 +1076,23 @@ describe("PythonBridge trusted pickle preflight", () => {
         executable: environment.executable,
         version: environment.version,
         source: environment.source,
-        missing: ["pandas", "pyarrow"]
+        missing: ["pandas>=2.2,<3", "pyarrow>=25,<26"]
       });
       expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(environment.executable, [
-        { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
-        { importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" }
+        {
+          importModule: "pandas",
+          distribution: "pandas",
+          installSpec: "pandas>=2.2,<3",
+          minimumVersion: "2.2",
+          maximumVersionExclusive: "3"
+        },
+        {
+          importModule: "pyarrow",
+          distribution: "pyarrow",
+          installSpec: "pyarrow>=25,<26",
+          minimumVersion: "25",
+          maximumVersionExclusive: "26"
+        }
       ]);
       expect(raw.lastMissingDependencies).toBe(unrelatedTarget);
 
@@ -1093,7 +1105,7 @@ describe("PythonBridge trusted pickle preflight", () => {
 
       await expect(bridge.installTrustedPickleDependencies(preflight)).resolves.toBe(false);
       expect(warning).toHaveBeenCalledWith(
-        `Install pandas, pyarrow into ${environment.executable}?`,
+        `Install pandas>=2.2,<3, pyarrow>=25,<26 into ${environment.executable}?`,
         { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
         "Install"
       );
@@ -2107,7 +2119,7 @@ describe("PythonBridge dependency installation", () => {
     const firstPreparation = internals.prepareRequest(request);
     const overlappingPreparation = internals.prepareRequest(request);
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    sharedProbe.resolve({ missing: ["polars"], available: [] });
+    sharedProbe.resolve({ missing: ["polars>=1.35.2,<2"], available: [] });
     await expect(firstPreparation).resolves.toMatchObject({ kind: "error", code: "missing_dependencies" });
     await expect(overlappingPreparation).resolves.toMatchObject({
       kind: "error",
@@ -2228,7 +2240,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas", "xlrd>=2.0.1"],
+      missing: ["pandas>=2.2,<3", "xlrd>=2.0.1,<3"],
       available: []
     });
 
@@ -2240,12 +2252,19 @@ describe("PythonBridge dependency guard recovery", () => {
     ).resolves.toMatchObject({ kind: "error", code: "missing_dependencies" });
 
     expect(internals.lastMissingDependencies?.dependencies).toEqual([
-      { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
+      {
+        importModule: "pandas",
+        distribution: "pandas",
+        installSpec: "pandas>=2.2,<3",
+        minimumVersion: "2.2",
+        maximumVersionExclusive: "3"
+      },
       {
         importModule: "xlrd",
         distribution: "xlrd",
-        installSpec: "xlrd>=2.0.1",
-        minimumVersion: "2.0.1"
+        installSpec: "xlrd>=2.0.1,<3",
+        minimumVersion: "2.0.1",
+        maximumVersionExclusive: "3"
       }
     ]);
   });
@@ -3162,19 +3181,20 @@ describe("PythonBridge environment resource selection", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["fastexcel>=0.9"], available: ["polars"] })
-      .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5"], available: ["pandas"] });
+      .mockResolvedValueOnce({ missing: ["fastexcel>=0.9,<1"], available: ["polars"] })
+      .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5,<4"], available: ["pandas"] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toEqual({
       kind: "error",
       code: "missing_dependencies",
-      message: "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.9.",
+      message:
+        "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.9,<1.",
       detail:
         "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
       recoverable: true
     });
     expect(internals.lastMissingDependencies).toMatchObject({
-      requirements: ["fastexcel>=0.9"]
+      requirements: ["fastexcel>=0.9,<1"]
     });
   });
 

@@ -67,11 +67,6 @@ _MARKER_PATTERN = re.compile(r"^mutation-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 _TEMP_PATTERN = re.compile(r"^\.pending-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.tmp$")
 _MODULE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _DISTRIBUTION_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
-_INSTALL_SPEC_PATTERN = re.compile(
-    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127}))"
-    r"(?P<constraints>(?:(?:==|!=|<=|>=|<|>|~=)[0-9]+(?:\.[0-9]+){0,7}"
-    r"(?:,(?:==|!=|<=|>=|<|>|~=)[0-9]+(?:\.[0-9]+){0,7})*)?)$"
-)
 _BOUND_VERSION_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+){0,7}$")
 
 _ENVIRONMENT_KEYS = {
@@ -329,32 +324,51 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
     install_spec = _bounded_string(value["installSpec"], maximum=2048, code=code)
     if not _MODULE_PATTERN.fullmatch(import_module) or not _DISTRIBUTION_PATTERN.fullmatch(distribution):
         _fail(code)
-    install_match = _INSTALL_SPEC_PATTERN.fullmatch(install_spec)
-    if install_match is None:
-        _fail(code)
-    install_distribution = _normalized_distribution_name(install_match.group("name"))
-    if install_distribution != _normalized_distribution_name(distribution):
-        _fail(code)
     exact = value["exactVersion"]
     minimum = value["minimumVersion"]
     maximum = value["maximumVersionExclusive"]
+    exact_version = None
+    minimum_version = None
+    maximum_version = None
     if exact is not None:
         exact = _bounded_string(exact, maximum=64, code=code)
-        if not _BOUND_VERSION_PATTERN.fullmatch(exact):
+        try:
+            exact_version = _pep440_version(exact)
+        except BaseException:
             _fail(code)
     if minimum is not None:
         minimum = _bounded_string(minimum, maximum=64, code=code)
-        if not _BOUND_VERSION_PATTERN.fullmatch(minimum):
+        try:
+            minimum_version = _pep440_version(minimum)
+        except BaseException:
             _fail(code)
     if maximum is not None:
         maximum = _bounded_string(maximum, maximum=64, code=code)
-        if not _BOUND_VERSION_PATTERN.fullmatch(maximum):
+        try:
+            maximum_version = _pep440_version(maximum)
+        except BaseException:
             _fail(code)
-    constraints = install_match.group("constraints")
-    if exact is None:
-        if any(constraint.startswith("==") for constraint in constraints.split(",")):
+    if exact_version is not None:
+        if minimum_version is not None or maximum_version is not None:
             _fail(code)
-    elif constraints != f"=={exact}" or minimum is not None or maximum is not None:
+        constraints = f"=={exact}"
+    else:
+        if minimum_version is None or maximum_version is None or minimum_version >= maximum_version:
+            _fail(code)
+        assert minimum is not None and maximum is not None
+        constraints = f">={minimum},<{maximum}"
+    try:
+        requirement = _pep440_requirement(install_spec)
+        expected_specifier = _pep440_specifier(constraints)
+    except BaseException:
+        _fail(code)
+    if (
+        requirement.extras
+        or requirement.marker is not None
+        or requirement.url is not None
+        or _canonical_distribution_name(requirement.name) != _canonical_distribution_name(distribution)
+        or requirement.specifier != expected_specifier
+    ):
         _fail(code)
     return {
         "importModule": import_module,
@@ -364,10 +378,6 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
         "minimumVersion": minimum,
         "maximumVersionExclusive": maximum,
     }
-
-
-def _normalized_distribution_name(value: str) -> str:
-    return re.sub(r"[-_.]+", "-", value).lower()
 
 
 def _normalize_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
@@ -2321,10 +2331,26 @@ def _pep440_specifier(value: str) -> Any:
     return SpecifierSet(value)
 
 
+def _pep440_requirement(value: str) -> Any:
+    from pip._vendor.packaging.requirements import Requirement
+
+    return Requirement(value)
+
+
+def _canonical_distribution_name(value: str) -> str:
+    from pip._vendor.packaging.utils import canonicalize_name
+
+    return canonicalize_name(value)
+
+
+def _pep440_version(value: str) -> Any:
+    from pip._vendor.packaging.version import Version
+
+    return Version(value)
+
+
 def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> bool:
     try:
-        from pip._vendor.packaging.version import Version
-
         if dependency["exactVersion"] is not None:
             specifier = f"=={dependency['exactVersion']}"
         else:
@@ -2334,7 +2360,7 @@ def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> 
             if dependency["maximumVersionExclusive"] is not None:
                 constraints.append(f"<{dependency['maximumVersionExclusive']}")
             specifier = ",".join(constraints)
-        return bool(_pep440_specifier(specifier).contains(Version(observed), prereleases=True))
+        return bool(_pep440_specifier(specifier).contains(_pep440_version(observed), prereleases=True))
     except BaseException:
         return False
 

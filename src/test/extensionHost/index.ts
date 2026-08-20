@@ -18916,7 +18916,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejected.kind, "error");
     if (rejected.kind === "error") {
       assert.equal(rejected.code, "missing_dependencies");
-      assert.match(rejected.message, /Missing: polars/);
+      assert.match(rejected.message, /Missing: polars>=1\.35\.2,<2\.$/u);
       assert.match(rejected.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedDuckDB = await testing.request({
@@ -18930,7 +18930,10 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedDuckDB.kind, "error");
     if (rejectedDuckDB.kind === "error") {
       assert.equal(rejectedDuckDB.code, "missing_dependencies");
-      assert.match(rejectedDuckDB.message, /Missing: duckdb>=1\.5\.4,<1\.6, fsspec==2026\.7\.0, pytz\.$/u);
+      assert.match(
+        rejectedDuckDB.message,
+        /Missing: duckdb>=1\.5\.4,<1\.6, fsspec==2026\.7\.0, pytz>=2026\.3\.post1,<2027\.$/u
+      );
       assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLossyUtf8 = await testing.request({
@@ -18951,7 +18954,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLossyUtf8.kind, "error");
     if (rejectedLossyUtf8.kind === "error") {
       assert.equal(rejectedLossyUtf8.code, "missing_dependencies");
-      assert.match(rejectedLossyUtf8.message, /Missing: pandas/);
+      assert.match(rejectedLossyUtf8.message, /Missing: pandas>=2\.2,<3\.$/u);
       assert.doesNotMatch(rejectedLossyUtf8.message, /polars|duckdb/iu);
       assert.match(rejectedLossyUtf8.detail ?? "", /Install Runtime Dependencies/);
     }
@@ -18971,7 +18974,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLegacyExcel.kind, "error");
     if (rejectedLegacyExcel.kind === "error") {
       assert.equal(rejectedLegacyExcel.code, "missing_dependencies");
-      assert.match(rejectedLegacyExcel.message, /Missing: pandas, xlrd>=2\.0\.1/);
+      assert.match(rejectedLegacyExcel.message, /Missing: pandas>=2\.2,<3, xlrd>=2\.0\.1,<3/);
       assert.doesNotMatch(rejectedLegacyExcel.message, /openpyxl/);
       assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }
@@ -18997,7 +19000,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       );
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         page,
-        "Install pandas, xlrd>=2.0.1"
+        "Install pandas>=2.2,<3, xlrd>=2.0.1,<3"
       );
       try {
         await confirmationPage.bringToFront();
@@ -19005,7 +19008,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
         const confirmationDetail = await confirmation.locator(".dialog-message-detail").innerText();
         assert.equal(
           confirmationMessage,
-          `Install pandas, xlrd>=2.0.1 into ${isolatedPython}?`,
+          `Install pandas>=2.2,<3, xlrd>=2.0.1,<3 into ${isolatedPython}?`,
           "The real dependency confirmation must identify the exact requirements and interpreter."
         );
         assert.equal(confirmationDetail, "Open Wrangler never installs packages without this confirmation.");

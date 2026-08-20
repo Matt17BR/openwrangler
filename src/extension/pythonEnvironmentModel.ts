@@ -12,6 +12,84 @@ export interface PythonDependency {
   maximumVersionExclusive?: string;
 }
 
+// BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES
+type PythonRuntimeDependencyId =
+  "polars" | "duckdb" | "fsspec" | "pytz" | "pandas" | "pyarrow" | "openpyxl" | "xlrd" | "ipython" | "fastexcel";
+
+const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Readonly<PythonDependency>>> =
+  Object.freeze({
+    polars: Object.freeze({
+      importModule: "polars",
+      distribution: "polars",
+      installSpec: "polars>=1.35.2,<2",
+      minimumVersion: "1.35.2",
+      maximumVersionExclusive: "2"
+    }),
+    duckdb: Object.freeze({
+      importModule: "duckdb",
+      distribution: "duckdb",
+      installSpec: "duckdb>=1.5.4,<1.6",
+      minimumVersion: "1.5.4",
+      maximumVersionExclusive: "1.6"
+    }),
+    fsspec: Object.freeze({
+      importModule: "fsspec",
+      distribution: "fsspec",
+      installSpec: "fsspec==2026.7.0",
+      exactVersion: "2026.7.0"
+    }),
+    pytz: Object.freeze({
+      importModule: "pytz",
+      distribution: "pytz",
+      installSpec: "pytz>=2026.3.post1,<2027",
+      minimumVersion: "2026.3.post1",
+      maximumVersionExclusive: "2027"
+    }),
+    pandas: Object.freeze({
+      importModule: "pandas",
+      distribution: "pandas",
+      installSpec: "pandas>=2.2,<3",
+      minimumVersion: "2.2",
+      maximumVersionExclusive: "3"
+    }),
+    pyarrow: Object.freeze({
+      importModule: "pyarrow",
+      distribution: "pyarrow",
+      installSpec: "pyarrow>=25,<26",
+      minimumVersion: "25",
+      maximumVersionExclusive: "26"
+    }),
+    openpyxl: Object.freeze({
+      importModule: "openpyxl",
+      distribution: "openpyxl",
+      installSpec: "openpyxl>=3.1.5,<4",
+      minimumVersion: "3.1.5",
+      maximumVersionExclusive: "4"
+    }),
+    xlrd: Object.freeze({
+      importModule: "xlrd",
+      distribution: "xlrd",
+      installSpec: "xlrd>=2.0.1,<3",
+      minimumVersion: "2.0.1",
+      maximumVersionExclusive: "3"
+    }),
+    ipython: Object.freeze({
+      importModule: "IPython",
+      distribution: "ipython",
+      installSpec: "ipython>=8.31,<10",
+      minimumVersion: "8.31",
+      maximumVersionExclusive: "10"
+    }),
+    fastexcel: Object.freeze({
+      importModule: "fastexcel",
+      distribution: "fastexcel",
+      installSpec: "fastexcel>=0.9,<1",
+      minimumVersion: "0.9",
+      maximumVersionExclusive: "1"
+    })
+  });
+// END GENERATED PYTHON RUNTIME DEPENDENCIES
+
 export interface BackendImportCapabilityFailure {
   option: "delimiter" | "encoding" | "quoteChar";
   message: string;
@@ -74,62 +152,29 @@ export function requiredDependencies(backend: FileDataBackend, source: SessionSo
     dependencies.set(dependency.importModule, dependency);
   };
   if (backend === "duckdb") {
-    add({
-      importModule: "duckdb",
-      distribution: "duckdb",
-      installSpec: "duckdb>=1.5.4,<1.6",
-      minimumVersion: "1.5.4",
-      maximumVersionExclusive: "1.6"
-    });
-    add({
-      importModule: "fsspec",
-      distribution: "fsspec",
-      installSpec: "fsspec==2026.7.0",
-      exactVersion: "2026.7.0"
-    });
-    add({
-      importModule: "pytz",
-      distribution: "pytz",
-      installSpec: "pytz"
-    });
+    add(runtimeDependency("duckdb"));
+    add(runtimeDependency("fsspec"));
+    add(runtimeDependency("pytz"));
   } else {
-    add({ importModule: backend, distribution: backend, installSpec: backend });
+    add(runtimeDependency(backend));
   }
   if (extension === "parquet" && backend === "pandas") {
-    add({ importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" });
+    add(runtimeDependency("pyarrow"));
   }
   if (extension === "xlsx" && backend === "pandas") {
-    add({
-      importModule: "openpyxl",
-      distribution: "openpyxl",
-      installSpec: "openpyxl>=3.1.5",
-      minimumVersion: "3.1.5"
-    });
+    add(runtimeDependency("openpyxl"));
   }
   if (extension === "xls" && backend === "pandas") {
-    add({
-      importModule: "xlrd",
-      distribution: "xlrd",
-      installSpec: "xlrd>=2.0.1",
-      minimumVersion: "2.0.1"
-    });
+    add(runtimeDependency("xlrd"));
   }
   if ((extension === "xlsx" || extension === "xls") && backend === "polars") {
-    add({
-      importModule: "fastexcel",
-      distribution: "fastexcel",
-      installSpec: "fastexcel>=0.9",
-      minimumVersion: "0.9"
-    });
+    add(runtimeDependency("fastexcel"));
   }
   return [...dependencies.values()];
 }
 
 export function trustedPickleConversionDependencies(): PythonDependency[] {
-  return [
-    { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
-    { importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" }
-  ];
+  return [runtimeDependency("pandas"), runtimeDependency("pyarrow")];
 }
 
 export function isSupportedPythonVersion(major: number, minor: number): boolean {
@@ -140,6 +185,10 @@ function isDelimitedFile(source: SessionSource): boolean {
   if (source.kind !== "file") return false;
   const extension = source.path?.split(".").pop()?.toLowerCase();
   return extension === "csv" || extension === "tsv";
+}
+
+function runtimeDependency(identifier: PythonRuntimeDependencyId): PythonDependency {
+  return { ...PYTHON_RUNTIME_DEPENDENCIES[identifier] };
 }
 
 function isMultibyteCodePoint(value: string): boolean {

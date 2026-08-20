@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "id": "polars",
+      "importModule": "polars",
+      "distribution": "polars",
+      "exactVersion": null,
+      "minimumVersion": "1.35.2",
+      "maximumVersionExclusive": "2",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "1.35.2",
+      "testedMaximumVersion": "1.35.2",
+      "evidence": ["python/tests/test_polars_engine.py"]
+    },
+    {
+      "id": "duckdb",
+      "importModule": "duckdb",
+      "distribution": "duckdb",
+      "exactVersion": null,
+      "minimumVersion": "1.5.4",
+      "maximumVersionExclusive": "1.6",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "1.5.4",
+      "testedMaximumVersion": "1.5.4",
+      "evidence": ["python/tests/test_duckdb_engine.py"]
+    },
+    {
+      "id": "fsspec",
+      "importModule": "fsspec",
+      "distribution": "fsspec",
+      "exactVersion": "2026.7.0",
+      "minimumVersion": null,
+      "maximumVersionExclusive": null,
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "2026.7.0",
+      "testedMaximumVersion": "2026.7.0",
+      "evidence": ["python/tests/test_dependency_guard_integrity.py"]
+    },
+    {
+      "id": "pytz",
+      "importModule": "pytz",
+      "distribution": "pytz",
+      "exactVersion": null,
+      "minimumVersion": "2026.3.post1",
+      "maximumVersionExclusive": "2027",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "2026.3.post1",
+      "testedMaximumVersion": "2026.3.post1",
+      "evidence": ["python/tests/test_duckdb_engine.py"]
+    },
+    {
+      "id": "pandas",
+      "importModule": "pandas",
+      "distribution": "pandas",
+      "exactVersion": null,
+      "minimumVersion": "2.2",
+      "maximumVersionExclusive": "3",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "2.2",
+      "testedMaximumVersion": "2.3.3",
+      "evidence": ["python/tests/test_pandas_engine.py", "scripts/candidate-acceptance-workflow.mjs"]
+    },
+    {
+      "id": "pyarrow",
+      "importModule": "pyarrow",
+      "distribution": "pyarrow",
+      "exactVersion": null,
+      "minimumVersion": "25",
+      "maximumVersionExclusive": "26",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "25.0.0",
+      "testedMaximumVersion": "25.0.0",
+      "evidence": ["python/tests/test_trusted_pickle_to_parquet.py"]
+    },
+    {
+      "id": "openpyxl",
+      "importModule": "openpyxl",
+      "distribution": "openpyxl",
+      "exactVersion": null,
+      "minimumVersion": "3.1.5",
+      "maximumVersionExclusive": "4",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "3.1.5",
+      "testedMaximumVersion": "3.1.5",
+      "evidence": ["src/test/extensionHost/packagedExcelDependencyInstallJourney.ts"]
+    },
+    {
+      "id": "xlrd",
+      "importModule": "xlrd",
+      "distribution": "xlrd",
+      "exactVersion": null,
+      "minimumVersion": "2.0.1",
+      "maximumVersionExclusive": "3",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "2.0.1",
+      "testedMaximumVersion": "2.0.1",
+      "evidence": ["src/test/pythonEnvironment.unit.test.ts"]
+    },
+    {
+      "id": "ipython",
+      "importModule": "IPython",
+      "distribution": "ipython",
+      "exactVersion": null,
+      "minimumVersion": "8.31",
+      "maximumVersionExclusive": "10",
+      "pyprojectGroup": "runtime",
+      "testedMinimumVersion": "8.31",
+      "testedMaximumVersion": "9.15.0",
+      "evidence": ["python/tests/test_notebook.py", "scripts/jupyter-acceptance-environment.test.mjs"]
+    },
+    {
+      "id": "fastexcel",
+      "importModule": "fastexcel",
+      "distribution": "fastexcel",
+      "exactVersion": null,
+      "minimumVersion": "0.9",
+      "maximumVersionExclusive": "1",
+      "pyprojectGroup": "dev",
+      "testedMinimumVersion": "0.9",
+      "testedMaximumVersion": "0.9",
+      "evidence": ["src/test/pythonEnvironment.unit.test.ts"]
+    }
+  ]
+}
