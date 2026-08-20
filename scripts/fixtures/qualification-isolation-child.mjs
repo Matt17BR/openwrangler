@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { access, appendFile, mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
@@ -117,7 +117,8 @@ async function recordEnvironment() {
       windowsHide: true
     })
   );
-  assert.equal(explicitPython.executable, resolve(process.env.OPEN_WRANGLER_TEST_PYTHON));
+  assert.equal(explicitPython.executable, await realpath(process.env.OPEN_WRANGLER_TEST_PYTHON));
+  assert.equal(explicitPython.prefix, resolve(process.env.VIRTUAL_ENV));
   assert.equal(pathPython.prefix, resolve(process.env.VIRTUAL_ENV));
   const writableRoots = [
     process.env.HOME,
@@ -243,6 +244,64 @@ if (mode === "hold") {
     })}\n`,
     { flag: "wx", mode: 0o600 }
   );
+} else if (mode === "nested-git-admin-escape") {
+  const repository = join(process.env.RUNNER_TEMP, "nested-git-admin-escape");
+  const outsideObjects = argument("--outside-objects");
+  await mkdir(repository, { mode: 0o700 });
+  await mkdir(outsideObjects, { mode: 0o700 });
+  const runGit = (arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: process.env,
+      stdio: "pipe",
+      windowsHide: true
+    }).trim();
+  runGit(["init", "--quiet", "--initial-branch=main"]);
+  runGit(["config", "--local", "user.name", "Open Wrangler nested fixture"]);
+  runGit(["config", "--local", "user.email", "nested-fixture@openwrangler.invalid"]);
+  await writeFile(join(repository, "fixture.txt"), "fixture\n", { flag: "wx", mode: 0o600 });
+  const pointer = (await readFile(join(repository, ".git"), "utf8")).trim();
+  assert.match(pointer, /^gitdir: /u);
+  const metadata = pointer.slice("gitdir: ".length);
+  const objects = join(metadata, "objects");
+  const retained = `${objects}-retained`;
+  await rename(objects, retained);
+  await symlink(outsideObjects, objects, process.platform === "win32" ? "junction" : "dir");
+  try {
+    assert.throws(() => runGit(["add", "fixture.txt"]));
+  } finally {
+    await rm(objects);
+    await rename(retained, objects);
+  }
+  await writeFile(argument("--result"), `${metadata}\n`, { flag: "wx", mode: 0o600 });
+} else if (mode === "nested-git-hostile-helpers") {
+  const repository = join(process.env.RUNNER_TEMP, "nested-git-hostile-helpers");
+  await mkdir(repository, { mode: 0o700 });
+  const runGit = (arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: process.env,
+      windowsHide: true
+    }).trim();
+  runGit(["init", "--quiet", "--initial-branch=main"]);
+  runGit(["config", "--local", "user.name", "Open Wrangler nested fixture"]);
+  runGit(["config", "--local", "user.email", "nested-fixture@openwrangler.invalid"]);
+  await writeFile(join(repository, ".gitattributes"), "fixture.txt diff=qualification-attack\n", {
+    flag: "wx",
+    mode: 0o600
+  });
+  await writeFile(join(repository, "fixture.txt"), "fixture\n", { flag: "wx", mode: 0o600 });
+  runGit(["add", ".gitattributes", "fixture.txt"]);
+  runGit(["commit", "--quiet", "-m", "nested fixture"]);
+  const commit = runGit(["cat-file", "commit", "HEAD"]);
+  await writeFile(join(repository, "fixture.txt"), "fixture\nchanged\n", { mode: 0o600 });
+  const diff = runGit(["diff", "HEAD", "--", "fixture.txt"]);
+  await writeFile(argument("--result"), `${JSON.stringify({ commit, diff })}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
 } else if (mode === "git-owner-override") {
   try {
     execFileSync("git", ["--git-dir", argument("--path"), "rev-parse", "HEAD"], {
@@ -325,7 +384,31 @@ if (mode === "hold") {
     stdio: "ignore",
     windowsHide: true
   });
-  await writeFile(argument("--result"), `${process.env.OPEN_WRANGLER_PYTHON}\n`, {
+  await writeFile(
+    argument("--result"),
+    `${JSON.stringify({
+      executable: process.env.OPEN_WRANGLER_PYTHON,
+      prefix: process.env.VIRTUAL_ENV,
+      pytest: execFileSync(process.env.OPEN_WRANGLER_PYTHON, ["-I", "-c", "import pytest; print(pytest.__version__)"], {
+        encoding: "utf8",
+        env: process.env,
+        windowsHide: true
+      }).trim()
+    })}\n`,
+    {
+      flag: "wx",
+      mode: 0o600
+    }
+  );
+} else if (mode === "mutate-python-inventory") {
+  const purelib = execFileSync(
+    process.env.OPEN_WRANGLER_PYTHON,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    { encoding: "utf8", env: process.env, windowsHide: true }
+  ).trim();
+  const metadata = join(purelib, "qualification_escape-1.0.dist-info");
+  await mkdir(metadata, { mode: 0o700 });
+  await writeFile(join(metadata, "METADATA"), "Metadata-Version: 2.1\nName: qualification-escape\nVersion: 1.0\n", {
     flag: "wx",
     mode: 0o600
   });

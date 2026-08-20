@@ -709,24 +709,180 @@ test("rejects private-root Git commands whose operands or destinations escape th
   assert.deepEqual(await readFile(outsideConfig), outsideConfigBefore);
 });
 
-test("routes repository Python tools through the sealed bootstrap while retaining the private venv", async (context) => {
-  const value = await fixture(context, "repository-python-tool");
-  const task = await addTask(value, "repository-python-tool");
-  const resultPath = join(task.assignment.stateRoot, "temp", "python-tool.txt");
+test("rejects nested Git-admin aliases before they can redirect object writes", async (context) => {
+  const value = await fixture(context, "git-private-admin-alias");
+  const task = await addTask(value, "git-private-admin-alias");
+  const outsideObjects = join(value.root, "outside-objects");
+  const resultPath = join(task.assignment.stateRoot, "temp", "private-admin.txt");
   const valueReceipt = await runQualification({
     assignmentPath: task.assignmentPath,
-    command: [process.execPath, child, "repository-python-tool", "--result", resultPath],
+    command: [
+      process.execPath,
+      child,
+      "nested-git-admin-escape",
+      "--outside-objects",
+      outsideObjects,
+      "--result",
+      resultPath
+    ],
     environment: runnerEnvironment(),
     terminationGraceMs: 5_000,
     timeoutMs: 120_000,
     writeOutput: false
   });
   assert.equal(valueReceipt.eligible, true);
-  assert.equal(valueReceipt.environment.pythonToolExecutable, valueReceipt.bootstrap.bootstrapPython);
-  assert.notEqual(valueReceipt.environment.pythonToolExecutable, valueReceipt.environment.pythonExecutable);
-  assert.equal((await readFile(resultPath, "utf8")).trim(), valueReceipt.bootstrap.bootstrapPython);
-  const executableSuffix = relative(valueReceipt.environment.venv, valueReceipt.environment.pythonExecutable);
-  assert.ok(executableSuffix !== "" && !executableSuffix.startsWith("..") && !isAbsolute(executableSuffix));
+  assert.deepEqual(await readdir(outsideObjects), []);
+  const metadata = (await readFile(resultPath, "utf8")).trim();
+  assert.match(metadata, new RegExp(`^${task.assignment.stateRoot.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
+  assert.match(metadata, /[/\\]git[/\\]metadata[/\\][0-9a-f]{64}\.git$/u);
+});
+
+test("suppresses inherited signing, format, external-diff, and textconv helpers", async (context) => {
+  const value = await fixture(context, "git-private-helpers");
+  const task = await addTask(value, "git-private-helpers");
+  const configHome = join(value.root, "hostile-config-home");
+  const marker = join(value.root, "hostile-helper-ran.txt");
+  const helper = join(configHome, process.platform === "win32" ? "hostile-helper.cmd" : "hostile-helper");
+  await mkdir(configHome, { mode: 0o700 });
+  await writeFile(
+    helper,
+    process.platform === "win32"
+      ? `@echo off\r\n>"${marker}" echo invoked\r\nexit /b 91\r\n`
+      : `#!/bin/sh\nprintf invoked > ${JSON.stringify(marker)}\nexit 91\n`,
+    { flag: "wx", mode: 0o700 }
+  );
+  if (process.platform !== "win32") await chmod(helper, 0o700);
+  const configPath = join(configHome, ".gitconfig");
+  const helperConfigPath = helper.replaceAll("\\", "/");
+  await writeFile(
+    configPath,
+    [
+      "[commit]",
+      "\tgpgSign = true",
+      "[tag]",
+      "\tgpgSign = true",
+      "[gpg]",
+      `\tprogram = ${helperConfigPath}`,
+      "[format]",
+      "\tsignOff = true",
+      "\tsignature = hostile-format-signature",
+      "[diff]",
+      `\texternal = ${helperConfigPath}`,
+      "\ttrustExitCode = true",
+      '[diff "qualification-attack"]',
+      `\ttextconv = ${helperConfigPath}`,
+      "[interactive]",
+      `\tdiffFilter = ${helperConfigPath}`,
+      ""
+    ].join("\n"),
+    { flag: "wx", mode: 0o600 }
+  );
+  const resultPath = join(task.assignment.stateRoot, "temp", "private-helper-result.json");
+  const valueReceipt = await runQualification({
+    assignmentPath: task.assignmentPath,
+    command: [process.execPath, child, "nested-git-hostile-helpers", "--result", resultPath],
+    environment: runnerEnvironment({ HOME: configHome, XDG_CONFIG_HOME: join(configHome, "xdg") }),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.equal(existsSync(marker), false);
+  const result = JSON.parse(await readFile(resultPath, "utf8"));
+  assert.doesNotMatch(result.commit, /^gpgsig /mu);
+  assert.doesNotMatch(result.commit, /^Signed-off-by:/mu);
+  assert.match(result.diff, /^diff --git /mu);
+});
+
+test("pins repository Python and its package inventory independently for each task", async (context) => {
+  const value = await fixture(context, "repository-python-tool");
+  const tasks = await Promise.all([
+    addTask(value, "repository-python-tool-a"),
+    addTask(value, "repository-python-tool-b")
+  ]);
+  const completed = await Promise.all(
+    tasks.map(async (task) => {
+      const resultPath = join(task.assignment.stateRoot, "temp", "python-tool.json");
+      const valueReceipt = await runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "repository-python-tool", "--result", resultPath],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      });
+      return { result: JSON.parse(await readFile(resultPath, "utf8")), task, valueReceipt };
+    })
+  );
+  for (const { result, task, valueReceipt } of completed) {
+    assert.equal(valueReceipt.eligible, true);
+    assert.equal(valueReceipt.environment.pythonToolExecutable, valueReceipt.environment.pythonExecutable);
+    assert.notEqual(valueReceipt.environment.pythonToolExecutable, valueReceipt.bootstrap.bootstrapPython);
+    assert.equal(result.executable, valueReceipt.environment.pythonExecutable);
+    assert.equal(result.prefix, valueReceipt.environment.venv);
+    assert.match(result.pytest, /^\d+\.\d+/u);
+    assert.deepEqual(valueReceipt.pythonInventory.before, valueReceipt.pythonInventory.after);
+    assert.equal(valueReceipt.pythonInventory.before.executable, valueReceipt.environment.pythonExecutable);
+    assert.equal(valueReceipt.pythonInventory.before.prefix, valueReceipt.environment.venv);
+    assert.ok(valueReceipt.pythonInventory.before.packages.some((package_) => package_.name === "pytest"));
+    const executableSuffix = relative(valueReceipt.environment.venv, valueReceipt.environment.pythonExecutable);
+    assert.ok(executableSuffix !== "" && !executableSuffix.startsWith("..") && !isAbsolute(executableSuffix));
+    assert.match(valueReceipt.environment.pythonExecutable, new RegExp(`^${task.assignment.stateRoot}`, "u"));
+  }
+  assert.notEqual(completed[0].result.executable, completed[1].result.executable);
+  assert.notEqual(
+    completed[0].valueReceipt.pythonInventory.before.prefix,
+    completed[1].valueReceipt.pythonInventory.before.prefix
+  );
+  assert.notEqual(
+    completed[0].valueReceipt.pythonInventory.before.packageInventorySha256,
+    completed[1].valueReceipt.pythonInventory.before.packageInventorySha256
+  );
+  assert.deepEqual(
+    completed[0].valueReceipt.pythonInventory.before.packages.map(({ metadataSha256, name, version }) => ({
+      metadataSha256,
+      name,
+      version
+    })),
+    completed[1].valueReceipt.pythonInventory.before.packages.map(({ metadataSha256, name, version }) => ({
+      metadataSha256,
+      name,
+      version
+    }))
+  );
+  for (const [index, { task, valueReceipt }] of completed.entries()) {
+    const peerRoot = completed[index === 0 ? 1 : 0].task.assignment.stateRoot;
+    assert.ok(
+      valueReceipt.pythonInventory.before.packages.some((package_) =>
+        package_.metadataPath.startsWith(`${valueReceipt.environment.venv}${process.platform === "win32" ? "\\" : "/"}`)
+      )
+    );
+    assert.equal(
+      valueReceipt.pythonInventory.before.packages.some((package_) => package_.metadataPath.startsWith(peerRoot)),
+      false
+    );
+    assert.match(valueReceipt.pythonInventory.before.executable, new RegExp(`^${task.assignment.stateRoot}`, "u"));
+  }
+});
+
+test("rejects a qualification that changes its private Python package inventory", async (context) => {
+  const value = await fixture(context, "python-inventory-mutation");
+  const task = await addTask(value, "python-inventory-mutation");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "mutate-python-inventory"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /task Python interpreter or package inventory changed during qualification/u
+  );
+  const valueReceipt = await receipt(task);
+  assert.equal(valueReceipt.eligible, false);
+  assert.notDeepEqual(valueReceipt.pythonInventory.before, valueReceipt.pythonInventory.after);
+  assert.ok(valueReceipt.pythonInventory.after.packages.some((package_) => package_.name === "qualification-escape"));
 });
 
 test("routes pytest cache and temporary state through the private task root", async (context) => {
@@ -1434,13 +1590,16 @@ test("binds the pinned Windows Job Object supervisor through venv creation and v
     writeOutput: false
   });
   assert.equal(valueReceipt.eligible, true);
-  assert.equal(bootstrapRecords.length, 2);
+  assert.equal(bootstrapRecords.length, 4);
   assert.ok(bootstrapRecords[0].arguments_.includes("venv"));
   assert.ok(
     bootstrapRecords[1].arguments_.includes(
       "import os,sys; expected=os.path.realpath(sys.argv[1]); raise SystemExit(0 if os.path.realpath(sys.prefix)==expected and os.path.realpath(sys.base_prefix)!=expected else 1)"
     )
   );
+  for (const record of bootstrapRecords.slice(2)) {
+    assert.ok(record.arguments_.some((argument) => argument.includes("import importlib.metadata as metadata")));
+  }
   for (const record of bootstrapRecords) {
     assert.equal(record.jobScript.sha256, expectedScriptDigest);
     assert.ok(record.supervisorScriptExecutedPath.startsWith(valueReceipt.environment.executableSnapshots));

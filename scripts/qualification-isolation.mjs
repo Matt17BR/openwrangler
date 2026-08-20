@@ -23,6 +23,7 @@ const MAX_ASSIGNMENT_BYTES = 32 * 1024;
 const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 const MAX_GIT_CONFIG_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_GIT_INDEX_BYTES = 256 * 1024 * 1024;
+const MAX_PYTHON_INVENTORY_BYTES = 4 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
@@ -415,7 +416,17 @@ function safeGitConfigArguments() {
     "-c",
     "diff.external=",
     "-c",
-    "commit.gpgSign=false"
+    "diff.trustExitCode=false",
+    "-c",
+    "interactive.diffFilter=",
+    "-c",
+    "commit.gpgSign=false",
+    "-c",
+    "tag.gpgSign=false",
+    "-c",
+    "format.signOff=false",
+    "-c",
+    "format.signature="
   ];
 }
 
@@ -1039,6 +1050,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     browserProfile: join(assignment.stateRoot, "browser", "profile"),
     corepackHome: join(assignment.stateRoot, "node", "corepack"),
     executableSnapshots: join(assignment.stateRoot, "runs", assignment.runId, "executables"),
+    gitMetadata: join(assignment.stateRoot, "git", "metadata"),
     gitWrapper: join(assignment.stateRoot, "node", "tool-shims", process.platform === "win32" ? "git.cmd" : "git"),
     gitWrapperProgram: join(assignment.stateRoot, "node", "tool-shims", "git-wrapper.mjs"),
     home: join(assignment.stateRoot, "home"),
@@ -1142,6 +1154,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     ownerPins.stateRoot = await openPinnedDirectory(layout.stateRoot, "stateRoot owner");
     ownerPins.artifacts = await openPinnedDirectory(layout.artifacts, "artifact owner");
     ownerPins.executableSnapshots = await openPinnedDirectory(layout.executableSnapshots, "executable-snapshot owner");
+    ownerPins.gitMetadata = await openPinnedDirectory(layout.gitMetadata, "private Git metadata owner");
     ownerPins.pytestTempParent = await openPinnedDirectory(layout.pytestTempParent, "pytest-temp parent owner");
     for (const [key, pin] of Object.entries(ownerPins)) {
       const identity = key === "stateRoot" ? stateRootIdentity : identities[key];
@@ -1466,7 +1479,7 @@ function quotePytestPath(path) {
 function gitWrapperProgramSource(assignment, configSelectionEnvironment, gitExecutableLaunch, windowsPowerShell) {
   return `import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 const binding = ${JSON.stringify({
@@ -1476,6 +1489,7 @@ const binding = ${JSON.stringify({
     gitExecutableSha256: gitExecutableLaunch.record.sha256,
     gitExecutableSize: gitExecutableLaunch.record.snapshot.size,
     platform: process.platform,
+    privateGitRoot: join(assignment.stateRoot, "git", "metadata"),
     safeConfigArguments: safeGitConfigArguments(),
     stateRoot: assignment.stateRoot,
     windowsPowerShell,
@@ -1484,6 +1498,54 @@ const binding = ${JSON.stringify({
 function isInside(root, candidate) {
   const suffix = relative(root, candidate);
   return suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix));
+}
+function privateGitDirectory(effectiveCwd) {
+  const owner = realpathSync.native(binding.privateGitRoot);
+  if (owner !== binding.privateGitRoot) {
+    throw new Error("qualification private Git metadata root is aliased");
+  }
+  const key = createHash("sha256").update(Buffer.from(effectiveCwd, "utf8")).digest("hex");
+  return resolve(owner, key + ".git");
+}
+function validatePrivateGitAdmin(root, pointerPath) {
+  const rootValue = lstatSync(root, { bigint: true });
+  if (!rootValue.isDirectory() || rootValue.isSymbolicLink() || realpathSync.native(root) !== root) {
+    throw new Error("qualification private Git metadata owner is not one canonical directory");
+  }
+  let entries = 0;
+  let pathBytes = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    const children = readdirSync(current, { encoding: "utf8", withFileTypes: true });
+    for (const child of children) {
+      const path = resolve(current, child.name);
+      entries += 1;
+      pathBytes += Buffer.byteLength(path, "utf8");
+      if (entries > 100000 || pathBytes > 16 * 1024 * 1024) {
+        throw new Error("qualification private Git metadata inventory exceeded its bound");
+      }
+      if (!isInside(root, path)) {
+        throw new Error("qualification private Git metadata path escaped its owner");
+      }
+      const value = lstatSync(path, { bigint: true });
+      if (value.isSymbolicLink() || realpathSync.native(path) !== path) {
+        throw new Error("qualification private Git metadata contains a symbolic-link, junction, or alias");
+      }
+      if (value.isDirectory()) pending.push(path);
+      else if (!value.isFile() || value.nlink !== 1n) {
+        throw new Error("qualification private Git metadata contains an unsupported or multiply linked entry");
+      }
+    }
+  }
+  const pointer = lstatSync(pointerPath, { bigint: true });
+  if (!pointer.isFile() || pointer.isSymbolicLink() || pointer.nlink !== 1n || realpathSync.native(pointerPath) !== pointerPath) {
+    throw new Error("qualification private Git pointer is invalid");
+  }
+  const expected = "gitdir: " + root + "\\n";
+  if (readFileSync(pointerPath, "utf8") !== expected) {
+    throw new Error("qualification private Git pointer does not bind its runner-owned metadata");
+  }
 }
 function rejectConfigurationInjection(argument) {
   return (
@@ -1715,6 +1777,18 @@ function requirePrivateTaskCommand(arguments_, effectiveCwd) {
     }
     return;
   }
+  if (command === "cat-file") {
+    if (rest.length !== 2 || rest[0] !== "commit" || rest[1] !== "HEAD") {
+      throw new Error("qualification Git cat-file is restricted to the private HEAD commit");
+    }
+    return;
+  }
+  if (command === "diff") {
+    if (rest.length !== 3 || rest[0] !== "HEAD" || rest[1] !== "--" || rest[2] !== "fixture.txt") {
+      throw new Error("qualification Git diff is restricted to the private fixture file");
+    }
+    return;
+  }
   throw new Error("qualification Git command is not allowed inside the private task root");
 }
 function hardenedAssignedArguments(arguments_) {
@@ -1737,29 +1811,42 @@ function hardenedAssignedArguments(arguments_) {
     ...hardened
   ];
 }
+let privateGitOwner = null;
+let privateGitPointer = null;
 function hardenedPrivateArguments(arguments_, effectiveCwd) {
   const { command, rest } = commandAfterGlobalOptions(arguments_);
+  privateGitOwner = privateGitDirectory(effectiveCwd);
+  privateGitPointer = resolve(effectiveCwd, ".git");
   if (command === "init") {
     try {
-      lstatSync(resolve(effectiveCwd, ".git"));
+      lstatSync(privateGitPointer);
       throw new Error("qualification Git init cannot reuse an existing metadata owner");
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    return [...binding.safeConfigArguments, command, ...rest];
+    try {
+      lstatSync(privateGitOwner);
+      throw new Error("qualification Git init cannot reuse runner-owned metadata");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    return [
+      ...binding.safeConfigArguments,
+      command,
+      "--separate-git-dir=" + privateGitOwner,
+      ...rest
+    ];
   }
-  const gitDirectory = realpathSync.native(resolve(effectiveCwd, ".git"));
-  if (!isInside(binding.stateRoot, gitDirectory)) {
-    throw new Error("qualification Git metadata escaped the private task root");
-  }
+  validatePrivateGitAdmin(privateGitOwner, privateGitPointer);
+  const hardenedRest = command === "diff" ? ["--no-ext-diff", "--no-textconv", ...rest] : rest;
   return [
     ...binding.safeConfigArguments,
     "--git-dir",
-    gitDirectory,
+    privateGitOwner,
     "--work-tree",
     effectiveCwd,
     command,
-    ...rest
+    ...hardenedRest
   ];
 }
 const environment = { ...process.env };
@@ -1847,6 +1934,7 @@ if (binding.platform === "win32") {
   }
 }
 if (result.error) throw result.error;
+if (privateGitOwner !== null) validatePrivateGitAdmin(privateGitOwner, privateGitPointer);
 process.exitCode = result.status ?? 1;
 `;
 }
@@ -3027,6 +3115,143 @@ async function verifyVenvPythonIdentity(before) {
   }
 }
 
+const PYTHON_INVENTORY_SCRIPT = [
+  "import importlib.metadata as metadata",
+  "import hashlib",
+  "import json",
+  "import os",
+  "import site",
+  "import sys",
+  "packages = []",
+  "for distribution in metadata.distributions():",
+  "    name = distribution.metadata.get('Name')",
+  "    version = distribution.version",
+  "    metadata_path = os.path.realpath(str(distribution._path))",
+  "    metadata_file = os.path.join(metadata_path, 'METADATA')",
+  "    metadata_digest = None",
+  "    if os.path.isfile(metadata_file):",
+  "        with open(metadata_file, 'rb') as handle:",
+  "            metadata_digest = hashlib.file_digest(handle, 'sha256').hexdigest()",
+  "    packages.append({'location': os.path.realpath(str(distribution.locate_file(''))), 'metadataPath': metadata_path, 'metadataSha256': metadata_digest, 'name': name or '', 'version': version or ''})",
+  "packages.sort(key=lambda value: (value['name'].casefold(), value['name'], value['version'], value['metadataPath']))",
+  "payload = {",
+  "    'basePrefix': os.path.realpath(sys.base_prefix),",
+  "    'cacheTag': sys.implementation.cache_tag,",
+  "    'executable': os.path.abspath(sys.executable),",
+  "    'executableRealpath': os.path.realpath(sys.executable),",
+  "    'isolated': bool(sys.flags.isolated),",
+  "    'packages': packages,",
+  "    'prefix': os.path.realpath(sys.prefix),",
+  "    'pythonVersion': list(sys.version_info[:3]),",
+  "    'sysPath': [os.path.realpath(value) for value in sys.path],",
+  "    'userSiteEnabled': bool(site.ENABLE_USER_SITE),",
+  "}",
+  "with open(sys.argv[1], 'x', encoding='utf-8', newline='\\n') as handle:",
+  "    json.dump(payload, handle, ensure_ascii=False, separators=(',', ':'), sort_keys=True)",
+  "    handle.write('\\n')"
+].join("\n");
+
+async function capturePythonInventory(assignment, layoutState, hostEnvironment, bootstrapPython, phase, options) {
+  const inventoryPath = join(layoutState.layout.run, `python-inventory-${phase}.json`);
+  await requireAbsentPath(inventoryPath, `Python ${phase} inventory`);
+  const environment = isolatedEnvironment(options.assignmentPath, assignment, layoutState.layout, hostEnvironment);
+  const result = await runOwnedCommand(
+    layoutState.layout.pythonExecutable,
+    ["-I", "-c", PYTHON_INVENTORY_SCRIPT, inventoryPath],
+    {
+      allowedSymbolicLinkTarget:
+        layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined,
+      cwd: assignment.worktree,
+      environment,
+      executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      ownedRunnerForTest: options.ownedRunnerForTest,
+      platformForTest: options.platformForTest,
+      posixSupervisorCommand: bootstrapPython,
+      windowsJobSupervisorScript: options.windowsJobSupervisorScript,
+      windowsSupervisorCommand: options.windowsSupervisorCommand ?? layoutState.layout.windowsSupervisorCommand,
+      terminationGraceMs: options.terminationGraceMs,
+      timeoutMs: 30_000
+    }
+  );
+  const failure = resultFailure(result, `task Python ${phase} inventory`);
+  if (failure) fail(failure);
+  const pin = await openPinnedRegularFile(inventoryPath, MAX_PYTHON_INVENTORY_BYTES, `Python ${phase} inventory`);
+  let inventory;
+  try {
+    inventory = JSON.parse(decodeStrictUtf8(pin.bytes, `Python ${phase} inventory`));
+    assertExactKeys(
+      inventory,
+      [
+        "basePrefix",
+        "cacheTag",
+        "executable",
+        "executableRealpath",
+        "isolated",
+        "packages",
+        "prefix",
+        "pythonVersion",
+        "sysPath",
+        "userSiteEnabled"
+      ],
+      `Python ${phase} inventory`
+    );
+    if (
+      inventory.executable !== result.executable.snapshot.path ||
+      inventory.executableRealpath !== result.executable.snapshot.path ||
+      inventory.prefix !== (await realpath(layoutState.layout.venv)) ||
+      inventory.isolated !== true ||
+      inventory.userSiteEnabled !== false ||
+      !Array.isArray(inventory.pythonVersion) ||
+      inventory.pythonVersion.length !== 3 ||
+      !inventory.pythonVersion.every(Number.isSafeInteger) ||
+      typeof inventory.cacheTag !== "string" ||
+      inventory.cacheTag.length === 0 ||
+      !Array.isArray(inventory.sysPath) ||
+      !inventory.sysPath.every((value) => typeof value === "string" && isAbsolute(value)) ||
+      !Array.isArray(inventory.packages)
+    ) {
+      fail(`Python ${phase} inventory does not bind the private interpreter`);
+    }
+    for (const package_ of inventory.packages) {
+      assertExactKeys(
+        package_,
+        ["location", "metadataPath", "metadataSha256", "name", "version"],
+        `Python ${phase} package`
+      );
+      if (
+        typeof package_.name !== "string" ||
+        typeof package_.version !== "string" ||
+        typeof package_.location !== "string" ||
+        !isAbsolute(package_.location) ||
+        typeof package_.metadataPath !== "string" ||
+        !isAbsolute(package_.metadataPath) ||
+        (package_.metadataSha256 !== null &&
+          (typeof package_.metadataSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(package_.metadataSha256)))
+      ) {
+        fail(`Python ${phase} package inventory is invalid`);
+      }
+    }
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [{ label: `Python ${phase} inventory`, run: () => pin.handle.close() }]);
+  }
+  layoutState.runnerFilePins.push({
+    label: `Python ${phase} inventory`,
+    maximumBytes: MAX_PYTHON_INVENTORY_BYTES,
+    pin
+  });
+  const normalized = {
+    ...inventory,
+    executable: layoutState.layout.pythonExecutable,
+    executableRealpath: layoutState.pythonEntry.target,
+    executableSha256: result.executable.sha256,
+    packageInventorySha256: sha256(Buffer.from(JSON.stringify(inventory.packages), "utf8"))
+  };
+  return {
+    identity: normalized,
+    result
+  };
+}
+
 function resultFailure(result, label) {
   if (result.spawnError) return `${label} could not start: ${result.spawnError}`;
   if (result.timedOut) return `${label} exceeded its hard timeout`;
@@ -3062,18 +3287,22 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
   const environment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   environment.OPEN_WRANGLER_PYTHON = bootstrapPython;
   environment.OPEN_WRANGLER_TEST_PYTHON = bootstrapPython;
-  const creation = await runOwnedCommand(bootstrapPython, ["-I", "-m", "venv", layoutState.layout.venv], {
-    cwd: assignment.worktree,
-    environment,
-    executableSnapshotRoot: layoutState.layout.executableSnapshots,
-    ownedRunnerForTest: options.ownedRunnerForTest,
-    platformForTest: options.platformForTest,
-    posixSupervisorCommand: bootstrapPython,
-    windowsJobSupervisorScript: options.windowsJobSupervisorScript,
-    windowsSupervisorCommand: options.windowsSupervisorCommand ?? layoutState.layout.windowsSupervisorCommand,
-    terminationGraceMs: options.terminationGraceMs,
-    timeoutMs: 120_000
-  });
+  const creation = await runOwnedCommand(
+    bootstrapPython,
+    ["-I", "-m", "venv", "--system-site-packages", layoutState.layout.venv],
+    {
+      cwd: assignment.worktree,
+      environment,
+      executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      ownedRunnerForTest: options.ownedRunnerForTest,
+      platformForTest: options.platformForTest,
+      posixSupervisorCommand: bootstrapPython,
+      windowsJobSupervisorScript: options.windowsJobSupervisorScript,
+      windowsSupervisorCommand: options.windowsSupervisorCommand ?? layoutState.layout.windowsSupervisorCommand,
+      terminationGraceMs: options.terminationGraceMs,
+      timeoutMs: 120_000
+    }
+  );
   const creationFailure = resultFailure(creation, "task Python venv bootstrap");
   if (creationFailure) return { bootstrapPython, failure: creationFailure, result: creation };
   layoutState.identities.venv = await fileIdentity(layoutState.layout.venv, "directory");
@@ -3081,6 +3310,11 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     layoutState.layout.pythonExecutable,
     creation.executable.snapshot.path
   );
+  layoutState.pythonExecutablePin = await openPinnedExecutable(
+    layoutState.layout.pythonExecutable,
+    layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined
+  );
+  layoutState.layout.pythonToolExecutable = layoutState.layout.pythonExecutable;
   const verificationEnvironment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   const verification = await runOwnedCommand(
     layoutState.layout.pythonExecutable,
@@ -3106,9 +3340,18 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     }
   );
   const verificationFailure = resultFailure(verification, "task Python venv verification");
+  if (verificationFailure) {
+    return { bootstrapPython, failure: verificationFailure, result: creation, verification };
+  }
+  const inventory = await capturePythonInventory(assignment, layoutState, hostEnvironment, bootstrapPython, "before", {
+    ...options,
+    assignmentPath
+  });
   return {
     bootstrapPython,
-    failure: verificationFailure,
+    failure: null,
+    inventory: inventory.identity,
+    inventoryResult: inventory.result,
     result: creation,
     verification
   };
@@ -3137,6 +3380,9 @@ async function verifyLayout(layoutState) {
   if (layoutState.pythonEntry) {
     await verifyVenvPythonIdentity(layoutState.pythonEntry);
   }
+  if (layoutState.pythonExecutablePin) {
+    await verifyPinnedExecutable(layoutState.pythonExecutablePin);
+  }
   if (layoutState.pytestTempTree) {
     const afterAccounting = await inspectPrivateTree(
       layoutState.ownerPins.pytestTempParent,
@@ -3160,8 +3406,8 @@ async function verifyLayout(layoutState) {
   } else {
     fail("pytest temporary parent was not bound");
   }
-  for (const { label, pin } of layoutState.runnerFilePins) {
-    await verifyPinnedRegularFile(pin, MAX_ASSIGNMENT_BYTES, label);
+  for (const { label, maximumBytes = MAX_ASSIGNMENT_BYTES, pin } of layoutState.runnerFilePins) {
+    await verifyPinnedRegularFile(pin, maximumBytes, label);
   }
 }
 
@@ -3400,6 +3646,32 @@ async function runQualification({
     if (!processTreesEmpty) {
       fail("a qualification process tree could not be attested empty; source and receipt paths were not reopened");
     }
+    let finalPythonInventory = null;
+    if (bootstrap?.inventory) {
+      try {
+        const captured = await capturePythonInventory(
+          assignment,
+          layoutState,
+          environment,
+          bootstrap.bootstrapPython,
+          "after",
+          {
+            assignmentPath,
+            ownedRunnerForTest: bootstrapCommandRunnerForTest,
+            platformForTest: bootstrapCommandPlatformForTest,
+            terminationGraceMs,
+            windowsJobSupervisorScript: bootstrapWindowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
+            windowsSupervisorCommand: bootstrapWindowsSupervisorCommandForTest
+          }
+        );
+        finalPythonInventory = captured.identity;
+        if (JSON.stringify(bootstrap.inventory) !== JSON.stringify(finalPythonInventory)) {
+          fail("task Python interpreter or package inventory changed during qualification");
+        }
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
     try {
       await bindPytestTempTree(layoutState, {
         afterOpenForTest: pytestTempAfterOpenForTest,
@@ -3465,6 +3737,10 @@ async function runQualification({
       identity: initialGit,
       postIdentity: finalGit,
       protocol: RECEIPT_PROTOCOL,
+      pythonInventory: {
+        after: finalPythonInventory,
+        before: bootstrap?.inventory ?? null
+      },
       pytestTemp: layoutState.pytestTempTree,
       result,
       startedAt
@@ -3482,6 +3758,7 @@ async function runQualification({
   }
   await finishWithOwnedCleanup(primaryError, [
     { label: "private Git executable launch", run: () => closeExecutableLaunch(layoutState?.gitExecutableLaunch) },
+    { label: "private Python executable owner", run: () => closePinnedExecutable(layoutState?.pythonExecutablePin) },
     ...(layoutState?.runnerFilePins ?? []).map(({ label, pin }) => ({
       label,
       run: () => pin.handle.close()
