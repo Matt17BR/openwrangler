@@ -91,27 +91,30 @@ export interface CodePreviewHistoryBudgetReceipt {
   readonly generation: number;
   readonly localEdits: number;
   readonly retainedUtf8Bytes: number;
+  readonly resetPending: boolean;
 }
 
 export class CodePreviewHistoryBudget {
   private generation = 0;
   private localEdits = 0;
   private retainedUtf8Bytes = 0;
+  private resetPending = false;
 
   acceptGeneration(generation: number): void {
     if (!isPositiveSafeInteger(generation) || generation === this.generation) return;
     this.generation = generation;
-    this.reset();
+    this.latchReset();
   }
 
   recordEdit(beforeUtf8Bytes: number, afterUtf8Bytes: number): "retain" | "reset" {
+    if (this.resetPending) return "reset";
     if (
       !isNonNegativeSafeInteger(beforeUtf8Bytes) ||
       !isNonNegativeSafeInteger(afterUtf8Bytes) ||
       beforeUtf8Bytes > CODE_PREVIEW_MAX_UTF8_BYTES ||
       afterUtf8Bytes > CODE_PREVIEW_MAX_UTF8_BYTES
     ) {
-      this.reset();
+      this.latchReset();
       return "reset";
     }
     const charge = beforeUtf8Bytes + afterUtf8Bytes;
@@ -119,7 +122,7 @@ export class CodePreviewHistoryBudget {
       this.localEdits >= CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS ||
       charge > CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES - this.retainedUtf8Bytes
     ) {
-      this.reset();
+      this.latchReset();
       return "reset";
     }
     this.localEdits += 1;
@@ -127,16 +130,26 @@ export class CodePreviewHistoryBudget {
     return "retain";
   }
 
-  reset(): void {
+  latchReset(): void {
+    this.resetPending = true;
+  }
+
+  completeReset(): void {
     this.localEdits = 0;
     this.retainedUtf8Bytes = 0;
+    this.resetPending = false;
+  }
+
+  isResetPending(): boolean {
+    return this.resetPending;
   }
 
   receipt(): CodePreviewHistoryBudgetReceipt {
     return {
       generation: this.generation,
       localEdits: this.localEdits,
-      retainedUtf8Bytes: this.retainedUtf8Bytes
+      retainedUtf8Bytes: this.retainedUtf8Bytes,
+      resetPending: this.resetPending
     };
   }
 }

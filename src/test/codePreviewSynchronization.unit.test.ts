@@ -1,5 +1,5 @@
-import { history, undo, undoDepth } from "@codemirror/commands";
-import { EditorState, StateEffect, type Transaction } from "@codemirror/state";
+import { history, isolateHistory, undo, undoDepth } from "@codemirror/commands";
+import { EditorState, StateEffect, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -429,19 +429,31 @@ describe("Code Preview undo ownership", () => {
   it("bounds retained undo history by both edit count and charged UTF-8 bytes", () => {
     const countBudget = new CodePreviewHistoryBudget();
     countBudget.acceptGeneration(7);
+    countBudget.completeReset();
     for (let index = 0; index < CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS; index += 1) {
       expect(countBudget.recordEdit(1_024, 1_024)).toBe("retain");
     }
     expect(countBudget.receipt()).toEqual({
       generation: 7,
       localEdits: CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS,
-      retainedUtf8Bytes: CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS * 2_048
+      retainedUtf8Bytes: CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS * 2_048,
+      resetPending: false
     });
     expect(countBudget.recordEdit(1_024, 1_024)).toBe("reset");
-    expect(countBudget.receipt()).toEqual({ generation: 7, localEdits: 0, retainedUtf8Bytes: 0 });
+    expect(countBudget.receipt()).toEqual({
+      generation: 7,
+      localEdits: CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS,
+      retainedUtf8Bytes: CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS * 2_048,
+      resetPending: true
+    });
+    expect(countBudget.recordEdit(1, 1)).toBe("reset");
+    expect(countBudget.receipt().localEdits).toBe(CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS);
+    countBudget.completeReset();
+    expect(countBudget.receipt()).toEqual({ generation: 7, localEdits: 0, retainedUtf8Bytes: 0, resetPending: false });
 
     const byteBudget = new CodePreviewHistoryBudget();
     byteBudget.acceptGeneration(9);
+    byteBudget.completeReset();
     for (
       let index = 0;
       index < CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES / CODE_PREVIEW_MAX_UTF8_BYTES / 2;
@@ -451,17 +463,39 @@ describe("Code Preview undo ownership", () => {
     }
     expect(byteBudget.receipt().retainedUtf8Bytes).toBe(CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES);
     expect(byteBudget.recordEdit(1, 1)).toBe("reset");
+    expect(byteBudget.receipt()).toEqual({
+      generation: 9,
+      localEdits: 2,
+      retainedUtf8Bytes: CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES,
+      resetPending: true
+    });
+    expect(byteBudget.recordEdit(64, 64)).toBe("reset");
+    expect(byteBudget.receipt().retainedUtf8Bytes).toBe(CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES);
     expect(CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES + CODE_PREVIEW_MAX_UTF8_BYTES * 2).toBe(
       CODE_PREVIEW_HISTORY_MAX_VALID_EDIT_TRANSIENT_UTF8_BYTES
     );
 
-    byteBudget.recordEdit(64, 64);
+    byteBudget.completeReset();
+    expect(byteBudget.recordEdit(64, 64)).toBe("retain");
     expect(byteBudget.recordEdit(64, CODE_PREVIEW_MAX_UTF8_BYTES + 1)).toBe("reset");
-    expect(byteBudget.receipt()).toEqual({ generation: 9, localEdits: 0, retainedUtf8Bytes: 0 });
+    expect(byteBudget.receipt()).toEqual({
+      generation: 9,
+      localEdits: 1,
+      retainedUtf8Bytes: 128,
+      resetPending: true
+    });
 
+    byteBudget.completeReset();
     byteBudget.recordEdit(64, 64);
     byteBudget.acceptGeneration(10);
-    expect(byteBudget.receipt()).toEqual({ generation: 10, localEdits: 0, retainedUtf8Bytes: 0 });
+    expect(byteBudget.receipt()).toEqual({
+      generation: 10,
+      localEdits: 1,
+      retainedUtf8Bytes: 128,
+      resetPending: true
+    });
+    byteBudget.completeReset();
+    expect(byteBudget.receipt()).toEqual({ generation: 10, localEdits: 0, retainedUtf8Bytes: 0, resetPending: false });
   });
 });
 
@@ -550,10 +584,24 @@ describe("production Code Preview lifecycle wiring", () => {
         runtimeIdentity: TEST_RUNTIME_IDENTITY
       });
       for (let index = 0; index < 5; index += 1) {
-        preview.view.dispatch({ changes: { from: 0, to: 1, insert: index % 2 === 0 ? "y" : "x" } });
+        preview.view.dispatch({
+          changes: { from: 0, to: 1, insert: index % 2 === 0 ? "y" : "x" },
+          annotations: isolateHistory.of("full")
+        });
       }
+      const depthAtOverflow = undoDepth(preview.view.state);
+      expect(depthAtOverflow).toBe(5);
+      for (let index = 5; index < 12; index += 1) {
+        preview.view.dispatch({
+          changes: { from: 0, to: 1, insert: index % 2 === 0 ? "y" : "x" },
+          annotations: isolateHistory.of("full")
+        });
+      }
+      expect(undoDepth(preview.view.state)).toBe(depthAtOverflow);
+      expect(preview.view.state.doc.sliceString(0, 1)).toBe("x");
       await Promise.resolve();
       expect(preview.view.state.doc.length).toBe(CODE_PREVIEW_MAX_UTF8_BYTES / 2);
+      expect(preview.view.state.doc.sliceString(0, 1)).toBe("x");
       expect(undoDepth(preview.view.state)).toBe(0);
     } finally {
       preview.dispose();

@@ -1,7 +1,14 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { Compartment, EditorState, type EditorSelection, type Extension, type Text } from "@codemirror/state";
+import {
+  Compartment,
+  EditorState,
+  Transaction,
+  type EditorSelection,
+  type Extension,
+  type Text
+} from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import {
@@ -129,9 +136,11 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   try {
     if (resetHistory) {
       historyResetOwner += 1;
+      historyResetScheduled = false;
       historyBudget.acceptGeneration(message.generation);
-      historyBudget.reset();
+      historyBudget.latchReset();
       editor.setState(createCodePreviewEditorState(code));
+      historyBudget.completeReset();
     } else {
       editor.dispatch({
         effects: [
@@ -186,6 +195,11 @@ function createCodePreviewEditorState(document: string | Text, selection?: Edito
         const afterBytes = after.valid ? after.utf8Bytes : CODE_PREVIEW_MAX_UTF8_BYTES + 1;
         if (historyBudget.recordEdit(beforeBytes, afterBytes) === "reset") scheduleHistoryReset();
       }),
+      EditorState.transactionFilter.of((transaction) =>
+        transaction.docChanged && historyBudget.isResetPending()
+          ? [transaction, { annotations: Transaction.addToHistory.of(false) }]
+          : transaction
+      ),
       codePreviewTheme
     ]
   });
@@ -196,17 +210,18 @@ function scheduleHistoryReset(): void {
   historyResetScheduled = true;
   const owner = historyResetOwner;
   queueMicrotask(() => {
-    historyResetScheduled = false;
     if (pageDisposed || owner !== historyResetOwner) return;
     const document = editor.state.doc;
     const selection = editor.state.selection;
     historyBudget.acceptGeneration(activeGeneration);
-    historyBudget.reset();
+    historyBudget.latchReset();
     applyingHostUpdate = true;
     try {
       editor.setState(createCodePreviewEditorState(document, selection));
+      historyBudget.completeReset();
     } finally {
       applyingHostUpdate = false;
+      historyResetScheduled = false;
     }
   });
 }
