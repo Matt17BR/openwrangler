@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,7 +9,8 @@ import {
   activationTriggerBudgets,
   dynamicEdgeClassifications,
   measureActivationInventory,
-  measureActivationTriggers
+  measureActivationTriggers,
+  measureTransitiveRuntimeSources
 } from "./activation-trigger-budget.mjs";
 
 test("production activation trigger classes stay within their dependency-free cold-load budgets", async () => {
@@ -123,6 +124,80 @@ test("the audit discovers aliased loaders and contribution-derived activation th
   );
 });
 
+test("the syntax authority accepts parenthesized loaders and rejects regex, template, and string text", async () => {
+  const source = [
+    "const loadModule = (specifier) => import(specifier);",
+    "const directRequire = require;",
+    '(loadModule)("./parenthesized-import.js");',
+    '(directRequire)("./parenthesized-require.js");',
+    "const stringText = 'require(\"./string-text.js\")';",
+    'const templateText = `import("./template-text.js")`;',
+    'const regexText = /require\\("\\.\\/regex-text\\.js"\\)/u;'
+  ].join("\n");
+  await withInventoryFixture(source, { activationEvents: [], contributes: { commands: [] } }, async (report) => {
+    assert.deepEqual(
+      report.dynamicEdges.discovered.map(({ key }) => key),
+      [
+        "src/extension/fixture.ts|import|./parenthesized-import.js",
+        "src/extension/fixture.ts|require|./parenthesized-require.js"
+      ]
+    );
+  });
+});
+
+test("transitive source discovery rejects symlinks before reading them", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    await writeFile(path.join(sourceRoot, "entry.ts"), 'import "./linked.js";\n', "utf8");
+    await writeFile(path.join(sourceRoot, "target.ts"), "export const value = 1;\n", "utf8");
+    await symlink("target.ts", path.join(sourceRoot, "linked.ts"));
+
+    await assert.rejects(
+      measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"]),
+      /resolved through a symlink/u
+    );
+  });
+});
+
+test("transitive source discovery rejects a path replacement between identity check and descriptor open", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    const dependency = path.join(sourceRoot, "dependency.ts");
+    await writeFile(path.join(sourceRoot, "entry.ts"), 'import "./dependency.js";\n', "utf8");
+    await writeFile(dependency, "export const value = 1;\n", "utf8");
+    let replaced = false;
+
+    await assert.rejects(
+      measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
+        beforeDescriptorOpen: async (file) => {
+          if (file !== dependency || replaced) return;
+          replaced = true;
+          await rename(dependency, `${dependency}.previous`);
+          await writeFile(dependency, "export const value = 2;\n", "utf8");
+        }
+      }),
+      /changed identity before read/u
+    );
+  });
+});
+
+test("transitive source discovery rejects aggregate overflow before the next read", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    await writeFile(path.join(sourceRoot, "entry.ts"), 'import "./dependency.js";\nexport const entry = 1;\n', "utf8");
+    await writeFile(
+      path.join(sourceRoot, "dependency.ts"),
+      'export const dependency = "a bounded fixture that crosses the aggregate cap";\n',
+      "utf8"
+    );
+
+    await assert.rejects(
+      measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], { maximumAggregateBytes: 96 }),
+      /aggregate source bound/u
+    );
+  });
+});
+
 function completeInventoryReport(report) {
   return {
     ...report,
@@ -153,6 +228,16 @@ async function withInventoryFixture(source, manifest, inspect) {
     await writeFile(path.join(root, "src/extension/fixture.ts"), source, "utf8");
     await writeFile(path.join(root, "package.json"), JSON.stringify(manifest), "utf8");
     await inspect(await measureActivationInventory(root));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function withSourceFixture(inspect) {
+  const root = await mkdtemp(path.join(tmpdir(), "ow-activation-source-audit-"));
+  try {
+    await mkdir(path.join(root, "src/extension"), { recursive: true });
+    await inspect(root);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

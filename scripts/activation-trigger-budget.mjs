@@ -1,11 +1,15 @@
-import { lstat, readFile, readdir, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepositoryRoot = path.resolve(scriptDirectory, "..");
 const maximumSourceBytes = 2 * 1024 * 1024;
+const maximumAggregateSourceBytes = 16 * 1024 * 1024;
 const maximumProductionSourceFiles = 2_048;
+const maximumSyntaxNodes = 250_000;
 
 export const activationTriggerBudgets = Object.freeze({
   unrelated: {
@@ -244,13 +248,11 @@ export async function measureActivationTriggers(repositoryRoot = defaultReposito
   const root = path.resolve(repositoryRoot);
   const measurements = {};
   for (const [trigger, budget] of Object.entries(activationTriggerBudgets)) {
-    const files = await transitiveRuntimeSources(root, budget.roots);
-    const relativeFiles = [...files].map((file) => toPosix(path.relative(root, file))).sort();
-    let bytes = 0;
-    for (const file of files) bytes += (await stat(file)).size;
+    const discovery = await discoverTransitiveRuntimeSources(root, budget.roots);
+    const relativeFiles = [...discovery.files].map((file) => toPosix(path.relative(root, file))).sort();
     measurements[trigger] = {
-      modules: files.size,
-      bytes,
+      modules: discovery.files.size,
+      bytes: discovery.bytes,
       files: relativeFiles,
       forbiddenMatches: budget.forbidden.flatMap((needle) =>
         relativeFiles.filter((file) => matchesOwnerNeedle(file, needle)).map((file) => ({ needle, file }))
@@ -272,6 +274,15 @@ export async function measureActivationInventory(repositoryRoot = defaultReposit
   return {
     dynamicEdges: await measureDynamicEdges(root),
     activationEvents: await measureActivationEvents(root)
+  };
+}
+
+export async function measureTransitiveRuntimeSources(repositoryRoot, roots, options = {}) {
+  const root = path.resolve(repositoryRoot);
+  const discovery = await discoverTransitiveRuntimeSources(root, roots, options);
+  return {
+    files: [...discovery.files].map((file) => toPosix(path.relative(root, file))).sort(),
+    bytes: discovery.bytes
   };
 }
 
@@ -329,10 +340,11 @@ async function measureDynamicEdges(repositoryRoot) {
   const sourceRoot = path.resolve(repositoryRoot, "src/extension");
   const sourceFiles = await productionTypescriptSources(repositoryRoot, sourceRoot);
   const occurrenceCounts = new Map();
+  const aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes);
   for (const file of sourceFiles) {
-    const source = await readBoundedRegularFile(repositoryRoot, file);
+    const { source } = await readBoundedRegularFile(repositoryRoot, file, aggregateBudget);
     const relativeFile = toPosix(path.relative(repositoryRoot, file));
-    for (const edge of runtimeCallEdges(source)) {
+    for (const edge of syntaxRuntimeInventory(source, file).dynamicEdges) {
       const key = `${relativeFile}|${edge.kind}|${edge.specifier}`;
       occurrenceCounts.set(key, (occurrenceCounts.get(key) ?? 0) + 1);
     }
@@ -373,7 +385,8 @@ async function measureDynamicEdges(repositoryRoot) {
 
 async function measureActivationEvents(repositoryRoot) {
   const packageFile = path.resolve(repositoryRoot, "package.json");
-  const manifest = JSON.parse(await readBoundedRegularFile(repositoryRoot, packageFile));
+  const { source } = await readBoundedRegularFile(repositoryRoot, packageFile);
+  const manifest = JSON.parse(source);
   if (
     !Array.isArray(manifest.activationEvents) ||
     !manifest.activationEvents.every((event) => typeof event === "string" && event.length > 0 && event.length <= 512)
@@ -432,26 +445,28 @@ async function measureActivationEvents(repositoryRoot) {
   };
 }
 
-async function transitiveRuntimeSources(repositoryRoot, roots) {
+async function discoverTransitiveRuntimeSources(
+  repositoryRoot,
+  roots,
+  { maximumAggregateBytes = maximumAggregateSourceBytes, beforeDescriptorOpen } = {}
+) {
   const pending = roots.map((root) => path.resolve(repositoryRoot, root));
   const visited = new Set();
+  const aggregateBudget = boundedAggregateBudget(maximumAggregateBytes);
   while (pending.length > 0) {
     const file = pending.pop();
     if (visited.has(file)) continue;
-    assertContained(repositoryRoot, file);
-    const sourceStat = await stat(file);
-    if (!sourceStat.isFile() || sourceStat.size > maximumSourceBytes) {
-      throw new Error(`Activation budget source is not a bounded regular file: ${file}`);
-    }
-    const source = await readFile(file, "utf8");
+    const { source } = await readBoundedRegularFile(repositoryRoot, file, aggregateBudget, {
+      beforeDescriptorOpen
+    });
     visited.add(file);
-    for (const specifier of staticRuntimeSpecifiers(source)) {
+    for (const specifier of syntaxRuntimeInventory(source, file).staticSpecifiers) {
       if (!specifier.startsWith(".")) continue;
-      const resolved = await resolveTypescriptImport(file, specifier);
+      const resolved = await resolveTypescriptImport(repositoryRoot, file, specifier);
       if (resolved) pending.push(resolved);
     }
   }
-  return visited;
+  return { files: visited, bytes: aggregateBudget.used };
 }
 
 async function productionTypescriptSources(repositoryRoot, sourceRoot) {
@@ -477,143 +492,303 @@ async function productionTypescriptSources(repositoryRoot, sourceRoot) {
   return files.sort();
 }
 
-async function readBoundedRegularFile(repositoryRoot, file) {
+async function readBoundedRegularFile(
+  repositoryRoot,
+  file,
+  aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes),
+  { beforeDescriptorOpen } = {}
+) {
   assertContained(repositoryRoot, file);
-  const sourceStat = await lstat(file);
-  if (!sourceStat.isFile() || sourceStat.size > maximumSourceBytes) {
+  const canonicalBefore = await canonicalContainedPath(repositoryRoot, file);
+  const rootStat = await lstat(canonicalBefore.root, { bigint: true });
+  if (!rootStat.isDirectory())
+    throw new Error(`Activation inventory repository root is not a directory: ${repositoryRoot}`);
+  const sourceStat = await lstat(file, { bigint: true });
+  if (sourceStat.isSymbolicLink() || !sourceStat.isFile() || sourceStat.size > BigInt(maximumSourceBytes)) {
     throw new Error(`Activation inventory source is not a bounded regular file: ${file}`);
   }
-  return readFile(file, "utf8");
+  await beforeDescriptorOpen?.(file);
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  let handle;
+  try {
+    handle = await open(file, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    if (error?.code === "ELOOP") throw new Error(`Activation inventory source became a symlink: ${file}`);
+    throw error;
+  }
+  try {
+    const descriptorStat = await handle.stat({ bigint: true });
+    const canonicalAtOpen = await canonicalContainedPath(repositoryRoot, file);
+    const rootAtOpen = await lstat(canonicalAtOpen.root, { bigint: true });
+    if (
+      !descriptorStat.isFile() ||
+      descriptorStat.size > BigInt(maximumSourceBytes) ||
+      !sameFileIdentity(sourceStat, descriptorStat) ||
+      !sameFileIdentity(rootStat, rootAtOpen) ||
+      canonicalAtOpen.root !== canonicalBefore.root ||
+      canonicalAtOpen.file !== canonicalBefore.file
+    ) {
+      throw new Error(`Activation inventory source changed identity before read: ${file}`);
+    }
+    const size = Number(descriptorStat.size);
+    reserveAggregateBytes(aggregateBudget, size);
+    const content = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const length = Math.min(64 * 1024, size - offset);
+      assertBoundedRead(aggregateBudget, size, offset, length);
+      const { bytesRead } = await handle.read(content, offset, length, offset);
+      if (bytesRead === 0) throw new Error(`Activation inventory source changed size during read: ${file}`);
+      offset += bytesRead;
+    }
+    const [descriptorAfter, pathAfter, canonicalAfter] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(file, { bigint: true }),
+      canonicalContainedPath(repositoryRoot, file)
+    ]);
+    const rootAfter = await lstat(canonicalAfter.root, { bigint: true });
+    if (
+      pathAfter.isSymbolicLink() ||
+      !sameFileIdentity(descriptorStat, descriptorAfter) ||
+      !sameFileIdentity(descriptorAfter, pathAfter) ||
+      !sameFileIdentity(rootStat, rootAfter) ||
+      canonicalAfter.root !== canonicalBefore.root ||
+      canonicalAfter.file !== canonicalBefore.file ||
+      descriptorAfter.size !== descriptorStat.size ||
+      pathAfter.size !== descriptorStat.size
+    ) {
+      throw new Error(`Activation inventory source changed identity during read: ${file}`);
+    }
+    return { source: content.toString("utf8"), bytes: size };
+  } finally {
+    await handle.close();
+  }
 }
 
-function runtimeCallEdges(source) {
-  const normalized = withoutComments(source);
-  const edges = [];
+function syntaxRuntimeInventory(source, file) {
+  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, scriptKind(file));
+  const parseDiagnostic = sourceFile.parseDiagnostics?.[0];
+  if (parseDiagnostic) {
+    throw new Error(`Activation inventory source has invalid TypeScript syntax (TS${parseDiagnostic.code}): ${file}`);
+  }
+  const variableDeclarations = [];
+  const functionDeclarations = [];
+  const callExpressions = [];
+  const staticSpecifiers = [];
+  const createRequireAliases = new Set();
+  let syntaxNodes = 0;
+  const visit = (node) => {
+    syntaxNodes += 1;
+    if (syntaxNodes > maximumSyntaxNodes) {
+      throw new Error(`Activation inventory source exceeds ${maximumSyntaxNodes} syntax nodes: ${file}`);
+    }
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      if (importDeclarationLoadsAtRuntime(node)) staticSpecifiers.push(node.moduleSpecifier.text);
+      collectCreateRequireImport(node, createRequireAliases);
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      exportDeclarationLoadsAtRuntime(node)
+    ) {
+      staticSpecifiers.push(node.moduleSpecifier.text);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const expression = node.moduleReference.expression;
+      if (!node.isTypeOnly && expression && ts.isStringLiteral(expression)) staticSpecifiers.push(expression.text);
+    }
+    if (ts.isVariableDeclaration(node)) variableDeclarations.push(node);
+    if (ts.isFunctionDeclaration(node)) functionDeclarations.push(node);
+    if (ts.isCallExpression(node)) callExpressions.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
   const importAliases = new Set();
   const requireAliases = new Set(["require"]);
-  const createRequireAliases = createRequireBindings(normalized);
   const wrapperCalls = new Set();
-  const wrapperPattern =
-    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*(import|require)\s*\(\s*\2\s*\)/gu;
-  for (const match of normalized.matchAll(wrapperPattern)) {
-    (match[3] === "import" ? importAliases : requireAliases).add(match[1]);
-    wrapperCalls.add(match.index + match[0].lastIndexOf(match[3]));
-  }
-  const functionWrapperPattern =
-    /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{\s*return\s+(import|require)\s*\(\s*\2\s*\)\s*;?\s*\}/gu;
-  for (const match of normalized.matchAll(functionWrapperPattern)) {
-    (match[3] === "import" ? importAliases : requireAliases).add(match[1]);
-    wrapperCalls.add(match.index + match[0].lastIndexOf(match[3]));
-  }
   let changed = true;
   while (changed) {
     changed = false;
-    for (const match of normalized.matchAll(
-      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;?/gu
-    )) {
-      if (importAliases.has(match[2]) && !importAliases.has(match[1])) {
-        importAliases.add(match[1]);
-        changed = true;
+    for (const declaration of variableDeclarations) {
+      changed = collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases) || changed;
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      const localName = declaration.name.text;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (ts.isIdentifier(initializer)) {
+        changed =
+          copyLoaderAlias(localName, initializer.text, importAliases, requireAliases, createRequireAliases) || changed;
       }
-      if (requireAliases.has(match[2]) && !requireAliases.has(match[1])) {
-        requireAliases.add(match[1]);
-        changed = true;
+      const wrapper = wrapperLoaderCall(declaration.initializer, importAliases, requireAliases);
+      if (wrapper) {
+        changed = addLoaderAlias(localName, wrapper.kind, importAliases, requireAliases) || changed;
+        wrapperCalls.add(wrapper.call);
       }
-      if (createRequireAliases.has(match[2]) && !createRequireAliases.has(match[1])) {
-        createRequireAliases.add(match[1]);
-        changed = true;
-      }
-    }
-    for (const match of normalized.matchAll(
-      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\([^;\n]{0,512}\)\s*;?/gu
-    )) {
-      if (createRequireAliases.has(match[2]) && !requireAliases.has(match[1])) {
-        requireAliases.add(match[1]);
-        changed = true;
+      if (ts.isCallExpression(initializer)) {
+        const callee = identifierName(initializer.expression);
+        if (callee && createRequireAliases.has(callee) && !requireAliases.has(localName)) {
+          requireAliases.add(localName);
+          changed = true;
+        }
       }
     }
+    for (const declaration of functionDeclarations) {
+      if (!declaration.name) continue;
+      const wrapper = functionLoaderCall(declaration, importAliases, requireAliases);
+      if (!wrapper) continue;
+      changed = addLoaderAlias(declaration.name.text, wrapper.kind, importAliases, requireAliases) || changed;
+      wrapperCalls.add(wrapper.call);
+    }
   }
-  const loaderNames = ["import", ...importAliases, ...requireAliases].sort(
-    (left, right) => right.length - left.length || left.localeCompare(right)
-  );
-  const callPattern = new RegExp(`\\b(${loaderNames.map(regexpEscape).join("|")})\\s*\\(\\s*([^)]{0,512})\\)`, "gu");
-  for (const match of normalized.matchAll(callPattern)) {
-    if (wrapperCalls.has(match.index)) continue;
-    const kind = match[1] === "import" || importAliases.has(match[1]) ? "import" : "require";
-    if (kind === "require" && !requireAliases.has(match[1])) continue;
-    const prefix = normalized.slice(Math.max(0, match.index - 64), match.index);
-    if (match[1] === "import" && /\btypeof\s*$/u.test(prefix)) continue;
-    const literal = /^(["'])([^"'\\]+)\1\s*$/u.exec(match[2]);
-    edges.push({ kind, specifier: literal?.[2] ?? "<non-literal>" });
+
+  const dynamicEdges = [];
+  for (const call of callExpressions) {
+    if (wrapperCalls.has(call)) continue;
+    const kind = loaderCallKind(call, importAliases, requireAliases);
+    if (!kind) continue;
+    const argument = call.arguments[0];
+    dynamicEdges.push({
+      kind,
+      specifier:
+        call.arguments.length === 1 && argument && ts.isStringLiteral(argument) ? argument.text : "<non-literal>"
+    });
   }
-  return edges;
+  return { dynamicEdges, staticSpecifiers };
 }
 
-function regexpEscape(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+function scriptKind(file) {
+  return /\.tsx$/u.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
 }
 
-function createRequireBindings(source) {
-  const bindings = new Set();
-  const importPattern = /\bimport\s*\{([^}]{0,512})\}\s*from\s*["'](?:node:)?module["']/gu;
-  for (const match of source.matchAll(importPattern)) {
-    for (const binding of match[1].split(",")) {
-      const createRequire = /^\s*createRequire(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/u.exec(binding);
-      if (createRequire) bindings.add(createRequire[1] ?? "createRequire");
-    }
-  }
-  const destructurePattern =
-    /\b(?:const|let|var)\s*\{\s*createRequire(?:\s*:\s*([A-Za-z_$][\w$]*))?\s*\}\s*=\s*require\s*\(\s*["'](?:node:)?module["']\s*\)/gu;
-  for (const match of source.matchAll(destructurePattern)) bindings.add(match[1] ?? "createRequire");
-  return bindings;
+function importDeclarationLoadsAtRuntime(declaration) {
+  const clause = declaration.importClause;
+  if (!clause) return true;
+  if (clause.isTypeOnly) return false;
+  if (clause.name) return true;
+  if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) return true;
+  return clause.namedBindings?.elements.some((element) => !element.isTypeOnly) ?? false;
 }
 
-function withoutComments(source) {
-  let result = "";
-  let index = 0;
-  let state = "code";
-  while (index < source.length) {
-    const current = source[index];
-    const next = source[index + 1];
-    if (state === "code" && current === "/" && next === "/") {
-      result += "  ";
-      index += 2;
-      state = "line-comment";
-      continue;
-    }
-    if (state === "code" && current === "/" && next === "*") {
-      result += "  ";
-      index += 2;
-      state = "block-comment";
-      continue;
-    }
-    if (state === "line-comment") {
-      result += current === "\n" ? "\n" : " ";
-      index += 1;
-      if (current === "\n") state = "code";
-      continue;
-    }
-    if (state === "block-comment") {
-      if (current === "*" && next === "/") {
-        result += "  ";
-        index += 2;
-        state = "code";
-      } else {
-        result += current === "\n" ? "\n" : " ";
-        index += 1;
-      }
-      continue;
-    }
-    if (state === "code" && (current === '"' || current === "'" || current === "`")) state = current;
-    else if (state !== "code" && current === "\\") {
-      result += current + (next ?? "");
-      index += next === undefined ? 1 : 2;
-      continue;
-    } else if (state !== "code" && current === state) state = "code";
-    result += current;
-    index += 1;
+function exportDeclarationLoadsAtRuntime(declaration) {
+  if (declaration.isTypeOnly) return false;
+  if (!declaration.exportClause || ts.isNamespaceExport(declaration.exportClause)) return true;
+  return declaration.exportClause.elements.some((element) => !element.isTypeOnly);
+}
+
+function collectCreateRequireImport(declaration, aliases) {
+  if (
+    !ts.isStringLiteral(declaration.moduleSpecifier) ||
+    !/^(?:node:)?module$/u.test(declaration.moduleSpecifier.text) ||
+    !declaration.importClause?.namedBindings ||
+    !ts.isNamedImports(declaration.importClause.namedBindings)
+  ) {
+    return;
   }
-  return result;
+  for (const element of declaration.importClause.namedBindings.elements) {
+    if ((element.propertyName?.text ?? element.name.text) === "createRequire" && !element.isTypeOnly) {
+      aliases.add(element.name.text);
+    }
+  }
+}
+
+function collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases) {
+  if (!ts.isObjectBindingPattern(declaration.name) || !declaration.initializer) return false;
+  const initializer = unwrapExpression(declaration.initializer);
+  if (!ts.isCallExpression(initializer) || loaderCallKind(initializer, new Set(), requireAliases) !== "require") {
+    return false;
+  }
+  const argument = initializer.arguments[0];
+  if (initializer.arguments.length !== 1 || !argument || !ts.isStringLiteral(argument)) return false;
+  if (!/^(?:node:)?module$/u.test(argument.text)) return false;
+  let changed = false;
+  for (const element of declaration.name.elements) {
+    if (!ts.isIdentifier(element.name)) continue;
+    const importedName =
+      element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : element.name.text;
+    if (importedName === "createRequire" && !createRequireAliases.has(element.name.text)) {
+      createRequireAliases.add(element.name.text);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function copyLoaderAlias(localName, sourceName, importAliases, requireAliases, createRequireAliases) {
+  let changed = false;
+  if (importAliases.has(sourceName) && !importAliases.has(localName)) {
+    importAliases.add(localName);
+    changed = true;
+  }
+  if (requireAliases.has(sourceName) && !requireAliases.has(localName)) {
+    requireAliases.add(localName);
+    changed = true;
+  }
+  if (createRequireAliases.has(sourceName) && !createRequireAliases.has(localName)) {
+    createRequireAliases.add(localName);
+    changed = true;
+  }
+  return changed;
+}
+
+function addLoaderAlias(localName, kind, importAliases, requireAliases) {
+  const aliases = kind === "import" ? importAliases : requireAliases;
+  if (aliases.has(localName)) return false;
+  aliases.add(localName);
+  return true;
+}
+
+function wrapperLoaderCall(initializer, importAliases, requireAliases) {
+  const expression = unwrapExpression(initializer);
+  if (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression)) return undefined;
+  return callableWrapper(expression.parameters, expression.body, importAliases, requireAliases);
+}
+
+function functionLoaderCall(declaration, importAliases, requireAliases) {
+  if (!declaration.body) return undefined;
+  return callableWrapper(declaration.parameters, declaration.body, importAliases, requireAliases);
+}
+
+function callableWrapper(parameters, body, importAliases, requireAliases) {
+  if (parameters.length !== 1 || !ts.isIdentifier(parameters[0].name)) return undefined;
+  let expression;
+  if (ts.isBlock(body)) {
+    if (body.statements.length !== 1 || !ts.isReturnStatement(body.statements[0])) return undefined;
+    expression = body.statements[0].expression;
+  } else {
+    expression = body;
+  }
+  if (!expression) return undefined;
+  expression = unwrapExpression(expression);
+  if (!ts.isCallExpression(expression) || expression.arguments.length !== 1) return undefined;
+  const argument = unwrapExpression(expression.arguments[0]);
+  if (!ts.isIdentifier(argument) || argument.text !== parameters[0].name.text) return undefined;
+  const kind = loaderCallKind(expression, importAliases, requireAliases);
+  return kind ? { kind, call: expression } : undefined;
+}
+
+function loaderCallKind(call, importAliases, requireAliases) {
+  const callee = unwrapExpression(call.expression);
+  if (callee.kind === ts.SyntaxKind.ImportKeyword) return "import";
+  if (!ts.isIdentifier(callee)) return undefined;
+  if (importAliases.has(callee.text)) return "import";
+  return requireAliases.has(callee.text) ? "require" : undefined;
+}
+
+function identifierName(expression) {
+  const unwrapped = unwrapExpression(expression);
+  return ts.isIdentifier(unwrapped) ? unwrapped.text : undefined;
+}
+
+function unwrapExpression(expression) {
+  while (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    expression = expression.expression;
+  }
+  return expression;
 }
 
 function freezeClassifications(classifications) {
@@ -638,31 +813,72 @@ function classifyActivationEvents(groups) {
   return Object.freeze(classifications);
 }
 
-function staticRuntimeSpecifiers(source) {
-  source = withoutComments(source);
-  const specifiers = [];
-  const importPattern = /(^|\n)\s*import\s+(?!type\b)(?:(?!\n\s*import\b)[\s\S])*?\bfrom\s*["']([^"']+)["']\s*;?/gu;
-  const sideEffectPattern = /(^|\n)\s*import\s*["']([^"']+)["']\s*;?/gu;
-  const exportPattern = /(^|\n)\s*export\s+(?!type\b)(?:(?!\n\s*export\b)[\s\S])*?\bfrom\s*["']([^"']+)["']\s*;?/gu;
-  for (const pattern of [importPattern, sideEffectPattern, exportPattern]) {
-    for (const match of source.matchAll(pattern)) specifiers.push(match[2]);
-  }
-  return specifiers;
-}
-
-async function resolveTypescriptImport(importer, specifier) {
+async function resolveTypescriptImport(repositoryRoot, importer, specifier) {
   const raw = path.resolve(path.dirname(importer), specifier);
   const candidates = path.extname(raw)
     ? [raw.replace(/\.js$/u, ".ts"), raw.replace(/\.js$/u, ".tsx"), raw]
     : [`${raw}.ts`, `${raw}.tsx`, path.join(raw, "index.ts")];
   for (const candidate of candidates) {
+    assertContained(repositoryRoot, candidate);
     try {
-      if ((await stat(candidate)).isFile()) return candidate;
+      const candidateStat = await lstat(candidate, { bigint: true });
+      if (candidateStat.isSymbolicLink()) {
+        throw new Error(`Activation inventory import resolved through a symlink: ${candidate}`);
+      }
+      if (candidateStat.isFile()) return candidate;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
   return undefined;
+}
+
+function boundedAggregateBudget(maximum) {
+  if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > maximumAggregateSourceBytes) {
+    throw new Error(`Activation inventory aggregate byte bound is invalid: ${maximum}`);
+  }
+  return { maximum, used: 0 };
+}
+
+function reserveAggregateBytes(budget, bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maximumSourceBytes) {
+    throw new Error(`Activation inventory per-file byte bound is invalid: ${bytes}`);
+  }
+  if (budget.used + bytes > budget.maximum) {
+    throw new Error(`Activation inventory exceeds its ${budget.maximum}-byte aggregate source bound.`);
+  }
+  budget.used += bytes;
+}
+
+function assertBoundedRead(budget, fileBytes, offset, length) {
+  if (
+    !Number.isSafeInteger(offset) ||
+    !Number.isSafeInteger(length) ||
+    offset < 0 ||
+    length <= 0 ||
+    offset + length > fileBytes ||
+    fileBytes > maximumSourceBytes ||
+    budget.used > budget.maximum
+  ) {
+    throw new Error("Activation inventory attempted an unbounded source read.");
+  }
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+}
+
+async function canonicalContainedPath(repositoryRoot, file) {
+  const lexicalRoot = path.resolve(repositoryRoot);
+  const lexicalFile = path.resolve(file);
+  assertContained(lexicalRoot, lexicalFile);
+  const [canonicalRoot, canonicalFile] = await Promise.all([realpath(lexicalRoot), realpath(lexicalFile)]);
+  assertContained(canonicalRoot, canonicalFile);
+  const expectedCanonicalFile = path.resolve(canonicalRoot, path.relative(lexicalRoot, lexicalFile));
+  if (canonicalFile !== expectedCanonicalFile) {
+    throw new Error(`Activation inventory source resolved through a symlinked path: ${file}`);
+  }
+  return { root: canonicalRoot, file: canonicalFile };
 }
 
 function matchesOwnerNeedle(file, needle) {

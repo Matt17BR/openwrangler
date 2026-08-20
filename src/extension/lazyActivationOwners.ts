@@ -663,7 +663,13 @@ export class LazyActivationOwners implements vscode.Disposable {
     >(
       () => this.ensureNotebookOwner().then(({ variables }) => variables),
       undefined,
-      (error) => this.reportLazyFailure("notebook", error)
+      (error) => this.reportLazyFailure("notebook", error),
+      {
+        state: "loading",
+        notebookLabel: "Notebook",
+        message: "Loading the notebook integration…",
+        variables: []
+      }
     ));
     const rVariables = (this.nativeRVariables ??= new LazyLiveVariables<
       RLiveVariableProvider,
@@ -867,12 +873,15 @@ class LazyLiveVariables<T extends LiveVariables<S, R>, S, R> implements LiveVari
   constructor(
     private readonly load: () => Promise<T>,
     private readonly pendingSnapshot: S,
-    private readonly reportFailure: (error: unknown) => void
+    private readonly reportFailure: (error: unknown) => void,
+    private readonly startedSnapshot: S = pendingSnapshot
   ) {}
 
   snapshot(): S {
-    if (!this.owner) this.start();
-    return this.owner?.snapshot() ?? this.pendingSnapshot;
+    if (this.owner) return this.owner.snapshot();
+    const wasAlreadyLoading = this.loading !== undefined;
+    this.start();
+    return wasAlreadyLoading ? this.startedSnapshot : this.pendingSnapshot;
   }
 
   async refreshFromCommand(): Promise<R> {
