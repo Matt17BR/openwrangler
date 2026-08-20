@@ -24,9 +24,73 @@ points.
 Use `npm run check:pr` as the authoritative local gate for an ordinary change. It runs the complete static
 `check` branch and ordinary `test` branch concurrently, caps top-level parallelism at two, labels both branches, and
 waits for both to report even when one fails. Do not run another memory-intensive command alongside it. The
-repository cannot coordinate separate clones or worktrees, so cross-worktree resource isolation remains an operator
-responsibility. Use a narrower focused command while iterating, and reserve the complete editor/platform/release
-matrix for release candidates or changes that cross those boundaries.
+qualification-isolation runner keeps separately assigned worktrees from sharing mutable environments, caches,
+profiles, temporary files, or artifacts. Use a narrower focused command while iterating, and reserve the complete
+editor/platform/release matrix for release candidates or changes that cross those boundaries.
+
+### Concurrent task qualification
+
+Run concurrent agent checks through a sealed assignment:
+
+```bash
+npm run qualification:isolate -- \
+  --assignment /absolute/path/to/qualification-assignment.json -- \
+  npm run check:pr
+```
+
+The assignment is a regular, singly linked JSON file with this exact shape:
+
+```json
+{
+  "protocol": "openwrangler-qualification-assignment-v1",
+  "taskId": "opaque-task-id",
+  "issue": 728,
+  "worktree": "/absolute/canonical/task-worktree",
+  "base": "0000000000000000000000000000000000000000",
+  "head": "1111111111111111111111111111111111111111",
+  "tree": "2222222222222222222222222222222222222222",
+  "branch": "fix/example",
+  "stateRoot": "/absolute/canonical/absent-task-state-root",
+  "runId": "opaque-run-id"
+}
+```
+
+The coordinator supplies the task, issue, branch, base, worktree, and state-root ownership. The owner seals `head` and
+`tree` immediately before the run. Worktree and state-root paths must be absolute, canonical, disjoint, and free of
+symbolic-link aliases. The source must start clean at the exact branch, head, tree, and base ancestry. A state root is
+single use: the runner creates it exclusively and rejects a pre-existing path.
+
+The state root contains all mutable qualification state:
+
+```text
+<stateRoot>/
+  assignment.json
+  artifacts/qualification-receipt.json
+  browser/{playwright,profile}/
+  home/
+  node/{corepack,npm-cache,npm-prefix,npm-userconfig}
+  python/{bytecode,pip-cache,pytest-cache,pytest-temp,ruff-cache,venv}/
+  r/{cache,library,user}/
+  runs/<runId>/
+  temp/
+  xdg/{cache,config,data,runtime,state}/
+```
+
+`node_modules` and Vite/Vitest transform caches remain inside the unique worktree. The runner rejects a linked
+`node_modules`, assigns npm and Corepack caches to the state root, and sets Python, pytest, Ruff, Playwright, browser,
+home, XDG, R, temporary, and artifact variables to the listed task-owned paths. A command that needs Python creates
+and installs its interpreter in the assigned `python/venv`; it must not fall back to another task's environment.
+
+The receipt records the assignment digest, command, worktree and Git-directory filesystem identities, exact
+base/head/tree/branch, environment layout, result, and post-command identity. It is eligible only when the assignment,
+source, Git metadata, and state-root directories retain their identities and the command succeeds. Source or
+assignment mutation produces a nonzero result and an explicitly ineligible receipt. Invalid aliases fail before a
+state root or receipt is created.
+
+The runner performs no cleanup and never reuses a root. After the receipt is handed off and all owned processes have
+ended, the assigned task may remove only its exact worktree and state root under the portfolio cleanup policy. An
+uncertain, missing, aliased, or identity-changed path is left in place for the coordinator; no sibling is inspected or
+removed.
 
 - `npm run check:pr` is the fail-complete default PR command. It preserves every invariant in `npm run check` and
   `npm test`; concurrency changes wall time, not the test inventory. The two-branch ceiling is the local resource
