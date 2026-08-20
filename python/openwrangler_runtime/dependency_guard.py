@@ -2360,7 +2360,8 @@ def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> 
             if dependency["maximumVersionExclusive"] is not None:
                 constraints.append(f"<{dependency['maximumVersionExclusive']}")
             specifier = ",".join(constraints)
-        return bool(_pep440_specifier(specifier).contains(_pep440_version(observed), prereleases=True))
+        parsed = _pep440_specifier(specifier)
+        return bool(parsed.contains(_pep440_version(observed), prereleases=parsed.prereleases is True))
     except BaseException:
         return False
 

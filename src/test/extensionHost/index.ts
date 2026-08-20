@@ -18954,7 +18954,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLossyUtf8.kind, "error");
     if (rejectedLossyUtf8.kind === "error") {
       assert.equal(rejectedLossyUtf8.code, "missing_dependencies");
-      assert.match(rejectedLossyUtf8.message, /Missing: pandas>=2\.2,<3\.$/u);
+      assert.match(rejectedLossyUtf8.message, /Missing: pandas>=2\.2,<4\.$/u);
       assert.doesNotMatch(rejectedLossyUtf8.message, /polars|duckdb/iu);
       assert.match(rejectedLossyUtf8.detail ?? "", /Install Runtime Dependencies/);
     }
@@ -18974,7 +18974,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLegacyExcel.kind, "error");
     if (rejectedLegacyExcel.kind === "error") {
       assert.equal(rejectedLegacyExcel.code, "missing_dependencies");
-      assert.match(rejectedLegacyExcel.message, /Missing: pandas>=2\.2,<3, xlrd>=2\.0\.1,<3/);
+      assert.match(rejectedLegacyExcel.message, /Missing: pandas>=2\.2,<4, xlrd>=2\.0\.1,<3/);
       assert.doesNotMatch(rejectedLegacyExcel.message, /openpyxl/);
       assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }

@@ -5,8 +5,10 @@ import importlib
 import importlib.metadata
 import json
 import os
+import struct
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -67,8 +69,8 @@ def _boundary_cases(dependency: authority.Dependency) -> tuple[tuple[str, bool],
         (dependency.qualified_versions[-1], True),
         (f"{minimum}+openwrangler.1", True),
         (f"{minimum_release}rc1", False),
-        (_inside_prerelease(minimum), True),
-        (_inside_development_release(minimum), True),
+        (_inside_prerelease(minimum), False),
+        (_inside_development_release(minimum), False),
         (f"{maximum_release}rc1", False),
         (maximum, False),
         (f"{maximum}.post1", False),
@@ -109,7 +111,13 @@ def test_every_authority_descriptor_uses_the_guard_pep440_contract() -> None:
         assert dependency_guard._normalize_dependency(guard_descriptor, code="invalid_request") == guard_descriptor
         specifier = SpecifierSet(dependency.specifier)
         for version, supported in _boundary_cases(dependency):
-            assert specifier.contains(Version(version), prereleases=True) is supported
+            assert (
+                specifier.contains(
+                    Version(version),
+                    prereleases=specifier.prereleases is True,
+                )
+                is supported
+            )
             assert dependency_guard._dependency_version_supported(guard_descriptor, version) is supported
 
 
@@ -164,6 +172,14 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
     unsupported_qualification["dependencies"][0]["qualification"]["qualifiedVersions"][-1] = "2"
     malformed.append((unsupported_qualification, "invalid_authority_qualification"))
 
+    prerelease_qualification = copy.deepcopy(baseline)
+    prerelease_qualification["dependencies"][0]["qualification"]["qualifiedVersions"][-1] = "1.43.3rc1"
+    malformed.append((prerelease_qualification, "invalid_authority_qualification"))
+
+    development_qualification = copy.deepcopy(baseline)
+    development_qualification["dependencies"][0]["qualification"]["qualifiedVersions"][-1] = "1.43.3.dev1"
+    malformed.append((development_qualification, "invalid_authority_qualification"))
+
     unordered_qualification = copy.deepcopy(baseline)
     unordered_qualification["dependencies"][0]["qualification"]["qualifiedVersions"].reverse()
     malformed.append((unordered_qualification, "invalid_authority_qualification"))
@@ -213,7 +229,7 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
 
     recursive = tmp_path / "recursive.json"
     recursive.write_text("[" * 20_000 + "0" + "]" * 20_000, encoding="utf-8")
-    with pytest.raises(authority.AuthorityError, match="^invalid_authority_shape$"):
+    with pytest.raises(authority.AuthorityError, match="^invalid_authority_json$"):
         authority.load_authority(recursive)
 
     oversized = tmp_path / "oversized.json"
@@ -263,7 +279,7 @@ def test_epoch_and_supported_pandas_cohorts_have_pep440_boundaries(tmp_path: Pat
         ("1!2.3", True),
         ("1!2.3+local.1", True),
         ("1!2.3rc1", False),
-        ("1!2.4.dev1", True),
+        ("1!2.4.dev1", False),
         ("1!3.9", True),
         ("1!4rc1", False),
         ("1!4", False),
@@ -277,51 +293,151 @@ def test_epoch_and_supported_pandas_cohorts_have_pep440_boundaries(tmp_path: Pat
     assert not dependency_guard._dependency_version_supported(_guard_descriptor(pandas), "4.0.0")
 
 
-def test_every_qualified_dependency_is_imported_and_exercised(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", ["1.0rc1", "1.0.dev1"])
+def test_explicit_exact_prerelease_policy_is_honored(tmp_path: Path, version: str) -> None:
+    value = _authority_json()
+    entry = copy.deepcopy(value["dependencies"][0])
+    entry.update(
+        {
+            "id": "example",
+            "importModule": "example",
+            "distribution": "example",
+            "exactVersion": version,
+            "minimumVersion": None,
+            "maximumVersionExclusive": None,
+            "pyprojectGroup": "runtime",
+            "qualification": {
+                "cohortKind": "exact",
+                "minimumStatus": "qualified",
+                "qualifiedVersions": [version],
+            },
+        }
+    )
+    value["dependencies"] = [entry]
+    dependency = authority.load_authority(_write_authority(tmp_path / "explicit.json", value))[0]
+    descriptor = _guard_descriptor(dependency)
+    assert dependency.specifier == f"=={version}"
+    assert dependency_guard._dependency_version_supported(descriptor, version)
+    assert not dependency_guard._dependency_version_supported(descriptor, "1.0")
+
+
+def _write_probe_workbook(path: Path) -> Path:
+    members = {
+        "[Content_Types].xml": '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',  # noqa: E501
+        "_rels/.rels": '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',  # noqa: E501
+        "xl/workbook.xml": '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>',  # noqa: E501
+        "xl/_rels/workbook.xml.rels": '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',  # noqa: E501
+        "xl/worksheets/sheet1.xml": '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>value</t></is></c></row><row r="2"><c r="A2"><v>7</v></c></row></sheetData></worksheet>',  # noqa: E501
+    }
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, contents in members.items():
+            archive.writestr(name, contents)
+    return path
+
+
+def _exercise_dependency(dependency: authority.Dependency, module: Any, tmp_path: Path) -> None:
+    workbook_path = _write_probe_workbook(tmp_path / "qualified.xlsx")
+    if dependency.identifier == "pandas":
+        assert module.DataFrame({"value": [1, 2]})["value"].sum() == 3
+        return
+    if dependency.identifier == "polars":
+        frame = module.DataFrame({"value": [1, 2]})
+        assert frame.select(module.col("value").sum()).item() == 3
+        return
+    if dependency.identifier == "duckdb":
+        connection = module.connect(":memory:")
+        try:
+            assert connection.execute("SELECT 1 + 2").fetchone() == (3,)
+        finally:
+            connection.close()
+        return
+    if dependency.identifier == "fsspec":
+        filesystem = module.filesystem("memory")
+        memory_path = "/openwrangler-authority-probe"
+        filesystem.pipe(memory_path, b"qualified")
+        assert filesystem.cat(memory_path) == b"qualified"
+        filesystem.rm(memory_path)
+        return
+    if dependency.identifier == "pytz":
+        from datetime import datetime
+
+        localized = module.UTC.localize(datetime(2026, 1, 1))
+        assert localized.utcoffset().total_seconds() == 0
+        return
+    if dependency.identifier == "pyarrow":
+        table = module.table({"value": [1, 2]})
+        assert table.column("value").to_pylist() == [1, 2]
+        return
+    if dependency.identifier == "openpyxl":
+        loaded = module.load_workbook(workbook_path, read_only=True)
+        try:
+            assert loaded.active["A2"].value == 7
+        finally:
+            loaded.close()
+        return
+    if dependency.identifier == "xlrd":
+        bof = struct.pack("<HHHHII", 0x0600, 0x0005, 0x0DBB, 0x07CC, 0x00000041, 0x00000006)
+        workbook_bytes = struct.pack("<HH", 0x0809, len(bof)) + bof
+        workbook_bytes += struct.pack("<HH", 0x000A, 0)
+        assert module.open_workbook(file_contents=workbook_bytes).nsheets == 0
+        return
+    if dependency.identifier == "ipython":
+        transformer = module.core.inputtransformer2.TransformerManager()
+        assert transformer.transform_cell("value = 1") == "value = 1\n"
+        return
+    assert dependency.identifier == "fastexcel"
+    fast_workbook = module.read_excel(workbook_path)
+    fast_sheet = fast_workbook.load_sheet(0)
+    assert (fast_sheet.height, fast_sheet.width) == (1, 1)
+
+
+def test_installed_dependencies_exercise_the_probe_contract(tmp_path: Path) -> None:
+    for dependency in authority.load_authority():
+        module = pytest.importorskip(dependency.import_module)
+        _exercise_dependency(dependency, module, tmp_path)
+
+
+def test_generated_cohort_job_maps_every_exact_qualification_once() -> None:
     dependencies = authority.load_authority()
-    modules = {dependency.identifier: importlib.import_module(dependency.import_module) for dependency in dependencies}
-    for dependency in dependencies:
-        observed = Version(importlib.metadata.version(dependency.distribution))
-        assert any(observed == Version(qualified) for qualified in dependency.qualified_versions), dependency.identifier
+    expected = tuple(
+        (dependency.identifier, version, f"{dependency.distribution}=={version}")
+        for dependency in dependencies
+        for version in dependency.qualified_versions
+    )
+    rendered = authority._render_workflow(dependencies)
+    assert rendered.count("          - id: ") == len(expected)
+    for identifier, version, requirement in expected:
+        row = (
+            f"          - id: {json.dumps(identifier)}\n"
+            f"            version: {json.dumps(version)}\n"
+            f"            requirement: {json.dumps(requirement)}"
+        )
+        assert rendered.count(row) == 1
+    assert {version for identifier, version, _requirement in expected if identifier == "pandas"} == {"2.3.3", "3.0.5"}
+    assert all(
+        not Version(version).is_prerelease and not Version(version).is_devrelease
+        for _identifier, version, _requirement in expected
+    )
+    workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert f"{authority.WORKFLOW_START}\n{rendered}\n{authority.WORKFLOW_END}" in workflow
 
-    assert modules["pandas"].DataFrame({"value": [1, 2]})["value"].sum() == 3
-    polars_frame = modules["polars"].DataFrame({"value": [1, 2]})
-    assert polars_frame.select(modules["polars"].col("value").sum()).item() == 3
-    connection = modules["duckdb"].connect(":memory:")
-    try:
-        assert connection.execute("SELECT 1 + 2").fetchone() == (3,)
-    finally:
-        connection.close()
 
-    filesystem = modules["fsspec"].filesystem("memory")
-    memory_path = "/openwrangler-authority-probe"
-    filesystem.pipe(memory_path, b"qualified")
-    assert filesystem.cat(memory_path) == b"qualified"
-    filesystem.rm(memory_path)
-
-    from datetime import datetime
-
-    localized = modules["pytz"].UTC.localize(datetime(2026, 1, 1))
-    assert localized.utcoffset().total_seconds() == 0
-    arrow_table = modules["pyarrow"].table({"value": [1, 2]})
-    assert arrow_table.column("value").to_pylist() == [1, 2]
-
-    workbook_path = tmp_path / "qualified.xlsx"
-    workbook = modules["openpyxl"].Workbook()
-    workbook.active.append(["value"])
-    workbook.active.append([7])
-    workbook.save(workbook_path)
-    loaded = modules["openpyxl"].load_workbook(workbook_path, read_only=True)
-    try:
-        assert loaded.active["A2"].value == 7
-    finally:
-        loaded.close()
-    assert modules["xlrd"].book.Book().nsheets == 0
-
-    transformer = modules["ipython"].core.inputtransformer2.TransformerManager()
-    assert transformer.transform_cell("value = 1") == "value = 1\n"
-    fast_workbook = modules["fastexcel"].read_excel(workbook_path)
-    assert fast_workbook.load_sheet(0).to_arrow().num_rows == 1
+def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
+    identifier = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_ID")
+    version = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION")
+    if identifier is None and version is None:
+        pytest.skip("workflow-only exact-version qualification probe")
+    assert identifier is not None and version is not None
+    matches = tuple(dependency for dependency in authority.load_authority() if dependency.identifier == identifier)
+    assert len(matches) == 1
+    dependency = matches[0]
+    assert version in dependency.qualified_versions
+    assert not Version(version).is_prerelease
+    assert not Version(version).is_devrelease
+    observed = importlib.metadata.version(dependency.distribution)
+    assert Version(observed) == Version(version)
+    module = importlib.import_module(dependency.import_module)
+    _exercise_dependency(dependency, module, tmp_path)
 
 
 def test_generation_markers_are_exact_ordered_standalone_lines() -> None:
@@ -379,17 +495,17 @@ def test_atomic_rewrite_rolls_back_the_first_consumer_when_the_second_fails(
 ) -> None:
     pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
     originals = {path: path.read_bytes() for path in (pyproject, host)}
-    real_replace = authority.os.replace
+    real_exchange = authority._exchange_paths
     failed = False
 
-    def fail_second(source: os.PathLike[str], destination: os.PathLike[str]) -> None:
+    def fail_second(target: Path, replacement: Path) -> Path:
         nonlocal failed
-        if Path(destination) == host and not failed:
+        if target == host and not failed:
             failed = True
-            raise OSError("secret-path-must-not-escape")
-        real_replace(source, destination)
+            raise authority.AuthorityError("consumer_write_failed")
+        return real_exchange(target, replacement)
 
-    monkeypatch.setattr(authority.os, "replace", fail_second)
+    monkeypatch.setattr(authority, "_exchange_paths", fail_second)
     with pytest.raises(authority.AuthorityError, match="^consumer_write_failed$"):
         authority.synchronize(write=True)
     assert {path: path.read_bytes() for path in (pyproject, host)} == originals
@@ -403,22 +519,54 @@ def test_atomic_rewrite_detects_drift_without_overwriting_the_racing_file(
     original_pyproject = pyproject.read_bytes()
     original_host = host.read_bytes()
     racing_host = original_host + b"// concurrent owner\n"
-    real_replace = authority.os.replace
+    real_exchange = authority._exchange_paths
     drifted = False
 
-    def replace_then_drift(source: os.PathLike[str], destination: os.PathLike[str]) -> None:
+    def exchange_then_drift(target: Path, replacement: Path) -> Path:
         nonlocal drifted
-        real_replace(source, destination)
-        if Path(destination) == pyproject and not drifted:
+        displaced = real_exchange(target, replacement)
+        if target == pyproject and not drifted:
             drifted = True
             host.write_bytes(racing_host)
+        return displaced
 
-    monkeypatch.setattr(authority.os, "replace", replace_then_drift)
+    monkeypatch.setattr(authority, "_exchange_paths", exchange_then_drift)
     with pytest.raises(authority.AuthorityError, match="^consumer_changed$"):
         authority.synchronize(write=True)
     assert pyproject.read_bytes() == original_pyproject
     assert host.read_bytes() == racing_host
     assert not list(tmp_path.glob(".*.openwrangler-*"))
+
+
+def test_exchange_restores_a_foreign_post_check_replacement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    original_host = host.read_bytes()
+    foreign_path = tmp_path / "foreign-owner"
+    foreign_bytes = b"foreign owner exact bytes\n"
+    real_replace = os.replace
+    real_exchange = authority._exchange_paths
+    raced = False
+    foreign_identity: list[tuple[int, int]] = []
+
+    def replace_then_exchange(target: Path, replacement: Path) -> Path:
+        nonlocal raced
+        if target == pyproject and not raced:
+            foreign_path.write_bytes(foreign_bytes)
+            metadata = foreign_path.stat()
+            foreign_identity.append((metadata.st_dev, metadata.st_ino))
+            real_replace(foreign_path, target)
+            raced = True
+        return real_exchange(target, replacement)
+
+    monkeypatch.setattr(authority, "_exchange_paths", replace_then_exchange)
+    with pytest.raises(authority.AuthorityError, match="^consumer_changed$"):
+        authority.synchronize(write=True)
+    assert pyproject.read_bytes() == foreign_bytes
+    assert foreign_identity
+    assert host.read_bytes() == original_host
+    assert not list(tmp_path.glob(".*.openwrangler-*"))
+    metadata = pyproject.stat()
+    assert (metadata.st_dev, metadata.st_ino) == foreign_identity[0]
 
 
 def test_concurrent_generator_writer_fails_closed_with_a_stable_code() -> None:
@@ -439,6 +587,83 @@ def test_concurrent_generator_writer_fails_closed_with_a_stable_code() -> None:
     assert result.stderr == b"consumer_write_busy\n"
 
 
+def test_authority_lock_rejects_symlinks_fifos_and_linked_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.json"
+    source.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    symlink = tmp_path / "authority-symlink.json"
+    symlink.symlink_to(source)
+    linked_source = tmp_path / "linked-source.json"
+    linked_source.write_bytes(source.read_bytes())
+    hardlink = tmp_path / "authority-hardlink.json"
+    os.link(linked_source, hardlink)
+    unsafe = [symlink, hardlink]
+    if hasattr(os, "mkfifo"):
+        fifo = tmp_path / "authority-fifo.json"
+        os.mkfifo(fifo)
+        unsafe.append(fifo)
+
+    for path in unsafe:
+        monkeypatch.setattr(authority, "AUTHORITY_PATH", path)
+        with (
+            pytest.raises(authority.AuthorityError, match="^authority_unsafe$"),
+            authority._authority_write_lock(),
+        ):
+            pytest.fail("unsafe authority path acquired a lock")
+
+
+def test_authority_lock_detects_replacement_and_preserves_its_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(authority_path.read_bytes())
+    replacement_metadata = replacement.stat()
+    replacement_identity = (replacement_metadata.st_dev, replacement_metadata.st_ino)
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+
+    with (
+        pytest.raises(authority.AuthorityError, match="^authority_changed$"),
+        authority._authority_write_lock(),
+    ):
+        os.replace(replacement, authority_path)
+
+    metadata = authority_path.stat()
+    assert (metadata.st_dev, metadata.st_ino) == replacement_identity
+
+
+def test_authority_lock_detects_replacement_between_check_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(authority_path.read_bytes())
+    replacement_metadata = replacement.stat()
+    replacement_identity = (replacement_metadata.st_dev, replacement_metadata.st_ino)
+    real_open = os.open
+    raced = False
+
+    def replace_before_open(path: os.PathLike[str], flags: int) -> int:
+        nonlocal raced
+        if Path(path) == authority_path and not raced:
+            os.replace(replacement, authority_path)
+            raced = True
+        return real_open(path, flags)
+
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+    monkeypatch.setattr(authority.os, "open", replace_before_open)
+    with (
+        pytest.raises(authority.AuthorityError, match="^authority_changed$"),
+        authority._authority_write_lock(),
+    ):
+        pytest.fail("replaced authority path acquired a lock")
+    metadata = authority_path.stat()
+    assert (metadata.st_dev, metadata.st_ino) == replacement_identity
+
+
 def test_atomic_rewrite_checks_staged_temporary_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
     originals = {path: path.read_bytes() for path in (pyproject, host)}
@@ -454,32 +679,124 @@ def test_atomic_rewrite_checks_staged_temporary_identity(tmp_path: Path, monkeyp
         authority.synchronize(write=True)
     assert {path: path.read_bytes() for path in (pyproject, host)} == originals
     retained = list(tmp_path.glob(".*.openwrangler-*"))
-    assert len(retained) == 4
+    assert len(retained) == 0
+
+
+def test_failed_stage_cleanup_preserves_a_foreign_temporary_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    created: list[Path] = []
+    foreign_identity: list[tuple[int, int]] = []
+    real_mkstemp = authority.tempfile.mkstemp
+
+    def tracked_mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        created.append(Path(name))
+        return descriptor, name
+
+    def replace_then_fail(_descriptor: int) -> None:
+        temporary = created[0]
+        temporary.unlink()
+        temporary.write_bytes(b"foreign staged bytes\n")
+        metadata = temporary.stat()
+        foreign_identity.append((metadata.st_dev, metadata.st_ino))
+        raise OSError("secret-path-must-not-escape")
+
+    monkeypatch.setattr(authority.tempfile, "mkstemp", tracked_mkstemp)
+    monkeypatch.setattr(authority.os, "fsync", replace_then_fail)
+    with pytest.raises(authority.AuthorityError, match="^consumer_write_failed$"):
+        authority._stage_sibling(target, b"generated", 0o644)
+    assert created[0].read_bytes() == b"foreign staged bytes\n"
+    metadata = created[0].stat()
+    assert (metadata.st_dev, metadata.st_ino) == foreign_identity[0]
+
+
+def test_staged_cleanup_preserves_a_foreign_path_identity(tmp_path: Path) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"foreign cleanup bytes\n")
+    foreign_metadata = foreign.stat()
+    foreign_identity = (foreign_metadata.st_dev, foreign_metadata.st_ino)
+    os.replace(foreign, staged.path)
+
+    authority._remove_staged(iter((staged,)))
+
+    assert staged.path.read_bytes() == b"foreign cleanup bytes\n"
+    metadata = staged.path.stat()
+    assert (metadata.st_dev, metadata.st_ino) == foreign_identity
 
 
 def test_rollback_does_not_overwrite_a_concurrently_changed_committed_consumer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    original_pyproject = pyproject.read_bytes()
+    original_identity = (pyproject.stat().st_dev, pyproject.stat().st_ino)
     original_host = host.read_bytes()
     concurrent_pyproject = b"concurrent owner bytes\n"
-    real_replace = authority.os.replace
+    real_exchange = authority._exchange_paths
     failed = False
 
-    def race_then_fail(source: os.PathLike[str], destination: os.PathLike[str]) -> None:
+    def race_then_fail(target: Path, replacement: Path) -> Path:
         nonlocal failed
-        if Path(destination) == host and not failed:
+        if target == host and not failed:
             failed = True
             pyproject.write_bytes(concurrent_pyproject)
-            raise OSError("secret-path-must-not-escape")
-        real_replace(source, destination)
+            raise authority.AuthorityError("consumer_write_failed")
+        return real_exchange(target, replacement)
 
-    monkeypatch.setattr(authority.os, "replace", race_then_fail)
+    monkeypatch.setattr(authority, "_exchange_paths", race_then_fail)
     with pytest.raises(authority.AuthorityError, match="^consumer_rollback_failed$"):
         authority.synchronize(write=True)
     assert pyproject.read_bytes() == concurrent_pyproject
     assert host.read_bytes() == original_host
-    assert not list(tmp_path.glob(".*.openwrangler-*"))
+    retained = list(tmp_path.glob(".*.openwrangler-*"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == original_pyproject
+    assert (retained[0].stat().st_dev, retained[0].stat().st_ino) == original_identity
+
+
+def test_rollback_exchange_preserves_a_foreign_post_check_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    original_pyproject = pyproject.read_bytes()
+    original_metadata = pyproject.stat()
+    original_identity = (original_metadata.st_dev, original_metadata.st_ino)
+    original_host = host.read_bytes()
+    foreign_bytes = b"foreign rollback bytes\n"
+    foreign_identity: list[tuple[int, int]] = []
+    foreign_path = tmp_path / "foreign-rollback"
+    real_exchange = authority._exchange_paths
+    calls = 0
+
+    def race_rollback_exchange(target: Path, replacement: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if target == host and calls == 2:
+            raise authority.AuthorityError("consumer_write_failed")
+        if target == pyproject and calls == 3:
+            foreign_path.write_bytes(foreign_bytes)
+            metadata = foreign_path.stat()
+            foreign_identity.append((metadata.st_dev, metadata.st_ino))
+            os.replace(foreign_path, pyproject)
+        return real_exchange(target, replacement)
+
+    monkeypatch.setattr(authority, "_exchange_paths", race_rollback_exchange)
+    with pytest.raises(authority.AuthorityError, match="^consumer_rollback_failed$"):
+        authority.synchronize(write=True)
+    assert pyproject.read_bytes() == original_pyproject
+    metadata = pyproject.stat()
+    assert (metadata.st_dev, metadata.st_ino) == original_identity
+    assert host.read_bytes() == original_host
+    retained = list(tmp_path.glob(".*.openwrangler-*"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == foreign_bytes
+    assert (retained[0].stat().st_dev, retained[0].stat().st_ino) == foreign_identity[0]
 
 
 def test_consumer_reads_reject_links_invalid_utf8_and_oversized_input(tmp_path: Path) -> None:

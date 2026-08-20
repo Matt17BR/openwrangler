@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -25,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY_PATH = ROOT / "python" / "runtime-dependencies.json"
 PYPROJECT_PATH = ROOT / "python" / "pyproject.toml"
 HOST_PATH = ROOT / "src" / "extension" / "pythonEnvironmentModel.ts"
+WORKFLOW_PATH = ROOT / ".github" / "workflows" / "cross-platform.yml"
 
 MAX_AUTHORITY_BYTES = 65_536
 MAX_DEPENDENCIES = 64
@@ -38,6 +40,8 @@ PYPROJECT_DEV_START = "  # BEGIN GENERATED PYTHON OPTIONAL RUNTIME DEPENDENCIES"
 PYPROJECT_DEV_END = "  # END GENERATED PYTHON OPTIONAL RUNTIME DEPENDENCIES"
 HOST_START = "// BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES"
 HOST_END = "// END GENERATED PYTHON RUNTIME DEPENDENCIES"
+WORKFLOW_START = "  # BEGIN GENERATED PYTHON RUNTIME DEPENDENCY COHORTS"
+WORKFLOW_END = "  # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS"
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -159,10 +163,39 @@ def _cohorts_are_contiguous(versions: list[Version], kind: str) -> bool:
 
 
 def load_authority(path: Path = AUTHORITY_PATH) -> tuple[Dependency, ...]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     try:
-        if path.stat().st_size > MAX_AUTHORITY_BYTES:
+        before = path.lstat()
+        if before.st_size > MAX_AUTHORITY_BYTES:
             _fail("authority_too_large")
-        raw = path.read_bytes()
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            _fail("authority_unsafe")
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if _identity(opened) != _identity(before):
+                _fail("authority_changed")
+            chunks: list[bytes] = []
+            remaining = MAX_AUTHORITY_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65_536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        current = path.lstat()
+        if _identity(after) != _identity(before) or _identity(current) != _identity(
+            before
+        ):
+            _fail("authority_changed")
+        raw = b"".join(chunks)
     except AuthorityError:
         raise
     except OSError:
@@ -267,7 +300,10 @@ def load_authority(path: Path = AUTHORITY_PATH) -> tuple[Dependency, ...]:
             qualified_text, qualified_version = _version(item)
             if qualified_versions and qualified_versions[-1] >= qualified_version:
                 _fail("invalid_authority_qualification")
-            if not specifier.contains(qualified_version, prereleases=True):
+            if not specifier.contains(
+                qualified_version,
+                prereleases=specifier.prereleases is True,
+            ):
                 _fail("invalid_authority_qualification")
             qualified_texts.append(qualified_text)
             qualified_versions.append(qualified_version)
@@ -432,9 +468,30 @@ def _replace_blocks(text: str, blocks: tuple[tuple[str, str, str], ...]) -> str:
     return "\n".join(lines)
 
 
+def _path_matches_identity(
+    path: Path, identity: tuple[int, int, int, int, int]
+) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and _identity(metadata) == identity
+
+
+def _unlink_owned(path: Path, identity: tuple[int, int, int, int, int]) -> bool:
+    if not _path_matches_identity(path, identity):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
+
+
 def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
     temporary: Path | None = None
     descriptor = -1
+    owned_identity: tuple[int, int, int, int, int] | None = None
     try:
         descriptor, name = tempfile.mkstemp(
             prefix=f".{path.name}.openwrangler-", dir=path.parent
@@ -452,6 +509,7 @@ def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
                 _fail("consumer_write_failed")
             offset += written
         os.fsync(descriptor)
+        owned_identity = _identity(os.fstat(descriptor))
         os.close(descriptor)
         descriptor = -1
         staged = _consumer_snapshot(temporary)
@@ -461,25 +519,21 @@ def _stage_sibling(path: Path, raw: bytes, mode: int) -> ConsumerSnapshot:
     except (AuthorityError, OSError):
         if descriptor >= 0:
             try:
+                owned_identity = _identity(os.fstat(descriptor))
+            except OSError:
+                owned_identity = None
+            try:
                 os.close(descriptor)
             except OSError:
                 pass
-        if temporary is not None:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+        if temporary is not None and owned_identity is not None:
+            _unlink_owned(temporary, owned_identity)
         _fail("consumer_write_failed")
 
 
 def _remove_staged(snapshots: Iterator[ConsumerSnapshot]) -> None:
     for snapshot in snapshots:
-        if not _same_snapshot(snapshot):
-            continue
-        try:
-            snapshot.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _unlink_owned(snapshot.path, snapshot.identity)
 
 
 def _same_snapshot(snapshot: ConsumerSnapshot) -> bool:
@@ -490,11 +544,68 @@ def _same_snapshot(snapshot: ConsumerSnapshot) -> bool:
     return current.identity == snapshot.identity and current.raw == snapshot.raw
 
 
+def _exchange_paths(first: Path, second: Path) -> Path:
+    try:
+        if sys.platform.startswith("linux"):
+            function = ctypes.CDLL(None, use_errno=True).renameat2
+            function.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            function.restype = ctypes.c_int
+            result = function(
+                -100,
+                os.fsencode(first),
+                -100,
+                os.fsencode(second),
+                2,
+            )
+        elif sys.platform == "darwin":
+            function = ctypes.CDLL(None, use_errno=True).renamex_np
+            function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            function.restype = ctypes.c_int
+            result = function(os.fsencode(first), os.fsencode(second), 2)
+        elif os.name == "nt":
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{first.name}.openwrangler-exchange-", dir=first.parent
+            )
+            backup = Path(name)
+            backup_identity = _identity(os.fstat(descriptor))
+            os.close(descriptor)
+            if not _unlink_owned(backup, backup_identity):
+                _fail("consumer_write_failed")
+            replace_file = ctypes.windll.kernel32.ReplaceFileW
+            replace_file.argtypes = [
+                ctypes.c_wchar_p,
+                ctypes.c_wchar_p,
+                ctypes.c_wchar_p,
+                ctypes.c_uint,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+            ]
+            replace_file.restype = ctypes.c_int
+            if not replace_file(str(first), str(second), str(backup), 1, None, None):
+                _fail("consumer_write_failed")
+            return backup
+        else:
+            _fail("consumer_write_failed")
+    except (AttributeError, OSError, ValueError):
+        _fail("consumer_write_failed")
+    if result != 0:
+        _fail("consumer_write_failed")
+    return second
+
+
 def _write_consumers_atomically(
-    snapshots: tuple[ConsumerSnapshot, ...], expected: dict[Path, str]
+    snapshots: tuple[ConsumerSnapshot, ...],
+    expected: dict[Path, str],
+    *,
+    authority_identity: tuple[int, int, int, int, int] | None = None,
 ) -> None:
     replacements: dict[Path, ConsumerSnapshot] = {}
-    rollbacks: dict[Path, ConsumerSnapshot] = {}
     committed: dict[Path, ConsumerSnapshot] = {}
     replaced: list[Path] = []
     error_code: str | None = None
@@ -503,25 +614,31 @@ def _write_consumers_atomically(
             replacements[snapshot.path] = _stage_sibling(
                 snapshot.path, expected[snapshot.path].encode("utf-8"), snapshot.mode
             )
-            rollbacks[snapshot.path] = _stage_sibling(
-                snapshot.path, snapshot.raw, snapshot.mode
-            )
         for snapshot in snapshots:
             replacement = replacements[snapshot.path]
             if not _same_snapshot(snapshot):
                 _fail("consumer_changed")
             if not _same_snapshot(replacement):
                 _fail("consumer_write_failed")
-            try:
-                os.replace(replacement.path, snapshot.path)
-            except OSError:
-                _fail("consumer_write_failed")
-            replacements.pop(snapshot.path)
+            if authority_identity is not None:
+                _assert_authority_identity(authority_identity)
+            displaced_path = _exchange_paths(snapshot.path, replacement.path)
+            displaced = _consumer_snapshot(displaced_path)
+            replacements[snapshot.path] = displaced
             replaced.append(snapshot.path)
             committed_snapshot = _consumer_snapshot(snapshot.path)
-            if committed_snapshot.raw != replacement.raw:
-                _fail("consumer_write_failed")
             committed[snapshot.path] = committed_snapshot
+            if (
+                committed_snapshot.raw != replacement.raw
+                or committed_snapshot.mode != replacement.mode
+            ):
+                _fail("consumer_write_failed")
+            if (
+                displaced.identity[:2] != snapshot.identity[:2]
+                or displaced.raw != snapshot.raw
+                or displaced.mode != snapshot.mode
+            ):
+                _fail("consumer_changed")
         directories = (
             {snapshot.path.parent for snapshot in snapshots}
             if os.name != "nt"
@@ -536,36 +653,86 @@ def _write_consumers_atomically(
                     os.close(descriptor)
             except OSError:
                 _fail("consumer_write_failed")
+        if authority_identity is not None:
+            _assert_authority_identity(authority_identity)
     except AuthorityError as error:
         error_code = str(error)
         for path in reversed(replaced):
-            rollback = rollbacks[path]
+            rollback = replacements[path]
             committed_snapshot = committed.get(path)
             if (
                 committed_snapshot is None
                 or not _same_snapshot(committed_snapshot)
                 or not _same_snapshot(rollback)
             ):
+                replacements.pop(path, None)
                 error_code = "consumer_rollback_failed"
                 continue
             try:
-                os.replace(rollback.path, path)
-            except OSError:
+                removed_path = _exchange_paths(path, rollback.path)
+            except AuthorityError:
+                replacements.pop(path, None)
                 error_code = "consumer_rollback_failed"
-            else:
-                rollbacks.pop(path)
+                continue
+            restored = _consumer_snapshot(path)
+            removed = _consumer_snapshot(removed_path)
+            if (
+                restored.identity[:2] != rollback.identity[:2]
+                or restored.raw != rollback.raw
+                or restored.mode != rollback.mode
+            ):
+                replacements.pop(path, None)
+                error_code = "consumer_rollback_failed"
+                continue
+            if (
+                removed.identity[:2] != committed_snapshot.identity[:2]
+                or removed.raw != committed_snapshot.raw
+                or removed.mode != committed_snapshot.mode
+            ):
+                replacements.pop(path, None)
+                error_code = "consumer_rollback_failed"
+                continue
+            replacements[path] = removed
         assert error_code is not None
         _fail(error_code)
     finally:
         _remove_staged(iter(replacements.values()))
-        _remove_staged(iter(rollbacks.values()))
+
+
+def _assert_authority_identity(identity: tuple[int, int, int, int, int]) -> None:
+    try:
+        current = AUTHORITY_PATH.lstat()
+    except OSError:
+        _fail("authority_changed")
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_nlink != 1
+        or _identity(current) != identity
+    ):
+        _fail("authority_changed")
 
 
 @contextmanager
-def _authority_write_lock() -> Iterator[None]:
+def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
     descriptor = -1
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     try:
-        descriptor = os.open(AUTHORITY_PATH, os.O_RDONLY)
+        before = AUTHORITY_PATH.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > MAX_AUTHORITY_BYTES
+        ):
+            _fail("authority_unsafe")
+        descriptor = os.open(AUTHORITY_PATH, flags)
+        opened = os.fstat(descriptor)
+        if _identity(opened) != _identity(before):
+            _fail("authority_changed")
+        identity = _identity(opened)
         if os.name == "nt":
             import msvcrt
 
@@ -582,7 +749,9 @@ def _authority_write_lock() -> Iterator[None]:
                 _fail("consumer_write_busy")
             except OSError:
                 _fail("consumer_write_failed")
-        yield
+        _assert_authority_identity(identity)
+        yield identity
+        _assert_authority_identity(identity)
     except AuthorityError:
         raise
     except OSError:
@@ -633,6 +802,49 @@ def _render_host(dependencies: tuple[Dependency, ...]) -> str:
     return "\n".join(lines)
 
 
+def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
+    lines = [
+        "  python-runtime-dependency-cohorts:",
+        "    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }})",
+        "    runs-on: ubuntu-24.04",
+        "    timeout-minutes: 15",
+        "    strategy:",
+        "      fail-fast: false",
+        "      matrix:",
+        "        include:",
+    ]
+    for dependency in dependencies:
+        for version in dependency.qualified_versions:
+            lines.extend(
+                (
+                    f"          - id: {json.dumps(dependency.identifier)}",
+                    f"            version: {json.dumps(version)}",
+                    f"            requirement: {json.dumps(f'{dependency.distribution}=={version}')}",
+                )
+            )
+    lines.extend(
+        (
+            "    steps:",
+            "      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0",
+            "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
+            "        with:",
+            '          python-version: "3.12"',
+            "      - name: Install exact qualified dependency",
+            '        run: python -m pip install pytest "${{ matrix.requirement }}"',
+            "      - name: Exercise exact qualified dependency",
+            "        run: >-",
+            "          python -m pytest",
+            "          python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe",
+            "          -q",
+            "        env:",
+            "          PYTHONPATH: python:.",
+            "          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}",
+            "          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}",
+        )
+    )
+    return "\n".join(lines)
+
+
 def rendered_consumers(
     dependencies: tuple[Dependency, ...],
     snapshots: tuple[ConsumerSnapshot, ...] | None = None,
@@ -641,9 +853,10 @@ def rendered_consumers(
         snapshots = (
             _consumer_snapshot(PYPROJECT_PATH),
             _consumer_snapshot(HOST_PATH),
+            _consumer_snapshot(WORKFLOW_PATH),
         )
     sources = {snapshot.path: snapshot.text for snapshot in snapshots}
-    if set(sources) != {PYPROJECT_PATH, HOST_PATH}:
+    if set(sources) != {PYPROJECT_PATH, HOST_PATH, WORKFLOW_PATH}:
         _fail("consumer_unreadable")
     pyproject = _replace_blocks(
         sources[PYPROJECT_PATH],
@@ -664,14 +877,27 @@ def rendered_consumers(
         sources[HOST_PATH],
         ((HOST_START, HOST_END, _render_host(dependencies)),),
     )
-    return {PYPROJECT_PATH: pyproject, HOST_PATH: host}
+    workflow = _replace_blocks(
+        sources[WORKFLOW_PATH],
+        ((WORKFLOW_START, WORKFLOW_END, _render_workflow(dependencies)),),
+    )
+    return {PYPROJECT_PATH: pyproject, HOST_PATH: host, WORKFLOW_PATH: workflow}
 
 
-def _synchronize_unlocked(*, write: bool) -> tuple[Path, ...]:
+def _synchronize_unlocked(
+    *,
+    write: bool,
+    authority_identity: tuple[int, int, int, int, int] | None = None,
+) -> tuple[Path, ...]:
+    if authority_identity is not None:
+        _assert_authority_identity(authority_identity)
     dependencies = load_authority()
+    if authority_identity is not None:
+        _assert_authority_identity(authority_identity)
     snapshots = (
         _consumer_snapshot(PYPROJECT_PATH),
         _consumer_snapshot(HOST_PATH),
+        _consumer_snapshot(WORKFLOW_PATH),
     )
     expected = rendered_consumers(dependencies, snapshots)
     mismatches = tuple(
@@ -683,15 +909,19 @@ def _synchronize_unlocked(*, write: bool) -> tuple[Path, ...]:
         mismatch_snapshots = tuple(
             snapshot for snapshot in snapshots if snapshot.path in mismatches
         )
-        _write_consumers_atomically(mismatch_snapshots, expected)
+        _write_consumers_atomically(
+            mismatch_snapshots,
+            expected,
+            authority_identity=authority_identity,
+        )
     return mismatches
 
 
 def synchronize(*, write: bool) -> tuple[Path, ...]:
     if not write:
         return _synchronize_unlocked(write=False)
-    with _authority_write_lock():
-        return _synchronize_unlocked(write=True)
+    with _authority_write_lock() as authority_identity:
+        return _synchronize_unlocked(write=True, authority_identity=authority_identity)
 
 
 def main(argv: list[str] | None = None) -> int:
