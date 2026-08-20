@@ -19,6 +19,11 @@ interface PandasFacts {
   readonly seriesModule: string;
 }
 
+interface PySparkVersionContract {
+  readonly acceptedFinal: string[];
+  readonly rejected: Readonly<Record<string, string[]>>;
+}
+
 describe("notebook variable discovery Python contract", () => {
   it("executes the emitted code against the installed Pandas DataFrame and Series types", () => {
     const { discovery, facts } = executeDiscovery(`
@@ -127,10 +132,11 @@ print("__OPEN_WRANGLER_PYSPARK_FACTS__" + json.dumps({
   it("matches the shared strict PySpark 4.2 version contract", () => {
     const contract = JSON.parse(
       readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
-    ) as { accepted: string[]; rejected: string[] };
+    ) as PySparkVersionContract;
+    const rejected = Object.values(contract.rejected).flat();
 
-    expect(contract.accepted.every(isSupportedPySparkVersion)).toBe(true);
-    expect(contract.rejected.some(isSupportedPySparkVersion)).toBe(false);
+    expect(contract.acceptedFinal.every(isSupportedPySparkVersion)).toBe(true);
+    expect(rejected.some(isSupportedPySparkVersion)).toBe(false);
   });
 });
 

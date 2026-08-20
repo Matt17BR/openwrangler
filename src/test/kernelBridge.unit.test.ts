@@ -1,7 +1,8 @@
 import type { Kernel } from "@vscode/jupyter-extension";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -36,6 +37,16 @@ import {
 } from "./kernelBridge.testFixtures";
 
 afterEach(resetKernelBridgeTestState);
+
+const PYSPARK_VERSION_CONTRACT = JSON.parse(
+  readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
+) as {
+  readonly acceptedFinal: string[];
+  readonly rejected: Readonly<Record<string, string[]>>;
+};
+const PREVIEW_PYSPARK_VERSIONS = ["alpha", "beta", "releaseCandidate", "development"].flatMap(
+  (category) => PYSPARK_VERSION_CONTRACT.rejected[category] ?? []
+);
 
 describe("kernel retry classification", () => {
   it("reports Spark preparation for pinned and auto-detected PySpark opens", async () => {
@@ -115,10 +126,40 @@ describe("kernel retry classification", () => {
       mockKernel(controller.kernel);
       const bridge = createKernelBridge();
 
-      await expect(bridge.request(request)).rejects.toThrow("Open Wrangler requires PySpark 4.2.x");
+      await expect(bridge.request(request)).rejects.toThrow("Open Wrangler requires a final PySpark 4.2.x release");
 
       expect(controller.preflightExecutionCount()).toBe(1);
       expect(requests).toEqual([]);
+    }
+  );
+
+  it.each(PREVIEW_PYSPARK_VERSIONS)("rejects preview PySpark %s before runtime open dispatch", async (version) => {
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controlledPySparkKernel(version, requests);
+    mockKernel(controller.kernel);
+
+    await expect(createKernelBridge().request(openRequest(`preview-${version}`, "pyspark"))).rejects.toThrow(
+      "Open Wrangler requires a final PySpark 4.2.x release"
+    );
+
+    expect(controller.preflightExecutionCount()).toBe(1);
+    expect(requests).toEqual([]);
+  });
+
+  it.each(PYSPARK_VERSION_CONTRACT.acceptedFinal)(
+    "dispatches a final PySpark %s release after preflight",
+    async (version) => {
+      const requests: OpenWranglerRequest[] = [];
+      const controller = controlledPySparkKernel(version, requests);
+      mockKernel(controller.kernel);
+
+      await expect(createKernelBridge().request(openRequest(`final-${version}`, "pyspark"))).resolves.toMatchObject({
+        kind: "sessionOpened",
+        metadata: { backend: "pyspark" }
+      });
+
+      expect(controller.preflightExecutionCount()).toBe(1);
+      expect(requests.map((request) => request.kind)).toEqual(["openSession"]);
     }
   );
 

@@ -15,8 +15,7 @@ const MAX_DISCOVERY_OUTPUTS = 128;
 const MAX_DISCOVERY_OUTPUT_ITEMS = 256;
 const PYSPARK_VERSION_PROTOCOL_VERSION = 1;
 const MAX_PYSPARK_VERSION_CHARACTERS = 64;
-const SUPPORTED_PYSPARK_VERSION =
-  /^4\.2\.[0-9]+(?:(?:a|b|rc)[0-9]+|\.dev[0-9]+)?(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$/u;
+const FINAL_PYSPARK_VERSION = /^([0-9]+)\.([0-9]+)\.[0-9]+(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$/u;
 
 const NOTEBOOK_VARIABLE_TYPES = {
   "pandas.DataFrame": { backend: "pandas", family: "Pandas", kind: "DataFrame" },
@@ -465,19 +464,28 @@ export function assertSupportedPySparkNotebookPreflight(
   }
   if (result.version === null) {
     throw new PySparkNotebookPreflightError(
-      "Open Wrangler requires PySpark 4.2.x in the selected notebook kernel. Select or start that kernel, rerun the cell that creates the PySpark DataFrame, and try again."
+      "Open Wrangler requires a final PySpark 4.2.x release in the selected notebook kernel. Select or start that kernel, rerun the cell that creates the PySpark DataFrame, and try again."
     );
   }
   if (!isSupportedPySparkVersion(result.version)) {
     throw new PySparkNotebookPreflightError(
-      `Open Wrangler requires PySpark 4.2.x for live viewing, but the selected notebook kernel has PySpark ${result.version}. Upgrade that kernel, restart it, and rerun the cell that creates the DataFrame.`
+      `Open Wrangler requires a final PySpark 4.2.x release for live viewing, but the selected notebook kernel has PySpark ${result.version}. Upgrade that kernel, restart it, and rerun the cell that creates the DataFrame.`
     );
   }
   return true;
 }
 
 export function isSupportedPySparkVersion(version: string): boolean {
-  return SUPPORTED_PYSPARK_VERSION.test(version);
+  if (version.length === 0 || version.length > MAX_PYSPARK_VERSION_CHARACTERS) return false;
+  const match = FINAL_PYSPARK_VERSION.exec(version);
+  if (!match) return false;
+  // PEP 440 release components compare numerically, while a local version
+  // does not change whether the public release is final.
+  return normalizeReleaseComponent(match[1]!) === "4" && normalizeReleaseComponent(match[2]!) === "2";
+}
+
+function normalizeReleaseComponent(component: string): string {
+  return component.replace(/^0+/u, "") || "0";
 }
 
 async function resolvePythonNotebookKernel(notebook: vscode.NotebookDocument): Promise<Kernel> {

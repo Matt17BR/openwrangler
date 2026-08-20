@@ -53,17 +53,57 @@ spark_session = _shared_spark_session
 _PYSPARK_VERSION_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
 )
+_REJECTED_PYSPARK_VERSIONS = [
+    (category, version)
+    for category, versions in _PYSPARK_VERSION_CONTRACT["rejected"].items()
+    for version in versions
+]
 
 
 def test_strict_pyspark_version_contract() -> None:
     assert all(
         pyspark_engine_module._is_supported_pyspark_version(version)
-        for version in _PYSPARK_VERSION_CONTRACT["accepted"]
+        for version in _PYSPARK_VERSION_CONTRACT["acceptedFinal"]
     )
     assert not any(
         pyspark_engine_module._is_supported_pyspark_version(version)
-        for version in _PYSPARK_VERSION_CONTRACT["rejected"]
+        for _category, version in _REJECTED_PYSPARK_VERSIONS
     )
+
+
+@pytest.mark.parametrize("version", _PYSPARK_VERSION_CONTRACT["acceptedFinal"])
+def test_runtime_gate_accepts_final_pyspark_versions(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    class FinalFrame:
+        isStreaming = False
+        schema = SimpleNamespace(fields=[])
+
+        def withColumn(self, _name: str, _expression: object) -> None:
+            return None
+
+    monkeypatch.setattr(pyspark_engine_module, "import_module", lambda name: SimpleNamespace(__version__=version))
+
+    PySparkEngine._require_supported_frame(FinalFrame())
+
+
+@pytest.mark.parametrize(
+    ("_category", "version"),
+    _REJECTED_PYSPARK_VERSIONS,
+    ids=[f"{category}-{index}" for index, (category, _version) in enumerate(_REJECTED_PYSPARK_VERSIONS)],
+)
+def test_runtime_gate_rejects_nonfinal_pyspark_versions_before_frame_use(
+    monkeypatch: pytest.MonkeyPatch, _category: str, version: str
+) -> None:
+    class UnqualifiedFrame:
+        isStreaming = False
+
+        @property
+        def withColumn(self) -> None:
+            raise AssertionError("An unqualified PySpark build must fail before dataframe operations are inspected.")
+
+    monkeypatch.setattr(pyspark_engine_module, "import_module", lambda name: SimpleNamespace(__version__=version))
+
+    with pytest.raises(EngineError, match="requires a final PySpark 4[.]2[.]x release"):
+        PySparkEngine._require_supported_frame(UnqualifiedFrame())
 
 
 def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:

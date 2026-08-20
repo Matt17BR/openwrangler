@@ -43,8 +43,10 @@ from .base import (
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
-_SUPPORTED_PYSPARK_VERSION = re.compile(
-    r"^4\.2\.[0-9]+(?:(?:a|b|rc)[0-9]+|\.dev[0-9]+)?(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$"
+_MAX_PYSPARK_VERSION_CHARACTERS = 64
+_FINAL_PYSPARK_VERSION = re.compile(
+    r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.[0-9]+"
+    r"(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$"
 )
 _ACTIVE_PYSPARK_REQUEST_ID: ContextVar[str | None] = ContextVar(
     "openwrangler_active_pyspark_request_id",
@@ -67,7 +69,18 @@ _SPARK_CONNECT_LOST_CONDITIONS = frozenset(
 
 
 def _is_supported_pyspark_version(version: str) -> bool:
-    return _SUPPORTED_PYSPARK_VERSION.fullmatch(version) is not None
+    if not 0 < len(version) <= _MAX_PYSPARK_VERSION_CHARACTERS:
+        return False
+    match = _FINAL_PYSPARK_VERSION.fullmatch(version)
+    if match is None:
+        return False
+    # PEP 440 release components compare numerically, while a local version
+    # does not change whether the public release is final.
+    return _normalize_release_component(match["major"]) == "4" and _normalize_release_component(match["minor"]) == "2"
+
+
+def _normalize_release_component(component: str) -> str:
+    return component.lstrip("0") or "0"
 
 
 _UNSUPPORTED_PROFILE_TYPE_ROOTS = frozenset({"variant", "time", "geometry", "geography"})
@@ -1227,7 +1240,10 @@ class PySparkEngine(DataFrameEngine):
         raw_version = pyspark_module.__dict__.get("__version__")
         version = raw_version if isinstance(raw_version, str) else ""
         if not _is_supported_pyspark_version(version):
-            raise EngineError(f"Open Wrangler requires PySpark 4.2.x for notebook viewing, not {version or 'unknown'}.")
+            raise EngineError(
+                f"Open Wrangler requires a final PySpark 4.2.x release for notebook viewing, "
+                f"not {version or 'unknown'}."
+            )
         if not callable(getattr(frame, "withColumn", None)):
             raise EngineError(
                 f"PySpark value type {type(frame).__name__} does not support Spark's withColumn() operation. "
