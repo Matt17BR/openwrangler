@@ -62,6 +62,7 @@ import {
   R_PREVIEW_PARITY_SCOPE,
   R_STABLE_PARITY_SCOPE,
   readBoundedGitBlobSnapshot,
+  readBoundedGitDiscoverySnapshot,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
   readStableVsixPayload,
@@ -1182,7 +1183,15 @@ test("constrains historical and current Performance summaries to exact evidence-
     ),
     ["README must contain exactly one Performance section with one versioned Data Wrangler review."]
   );
-  for (const duplicateHeading of ["## PERFORMANCE", "## **Performance**", "<h2>performance</h2>"]) {
+  for (const duplicateHeading of [
+    "## PERFORMANCE",
+    "## **Performance**",
+    "## `Performance`",
+    "## P&#x65;rformance",
+    "## [Performance][performance-heading]\n\n[performance-heading]: https://example.invalid/performance",
+    "<h2>performance</h2>",
+    "<h2>P&#101;rformance</h2>"
+  ]) {
     assert.deepEqual(
       inspectPerformanceSummary(
         `${historicalReadme}\n${duplicateHeading}\n\n${historicalPerformanceCopy(historicalPath)}\n`
@@ -1238,6 +1247,31 @@ test("constrains historical and current Performance summaries to exact evidence-
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n    ${outsideClaim}`)),
       [],
       `indented code: ${outsideClaim}`
+    );
+  }
+  for (const renderedClaim of [
+    "Open Wrangler is f&#x61;ster than Data Wrangler.",
+    "Open Wrangler uses **less** [memory](https://example.invalid/memory).",
+    "Open Wrangler is **fa**`st`[er](https://example.invalid/result).",
+    "Open Wrangler needs half the t&#x69;me for notebook previews.",
+    "Open Wrangler reduced la<!-- split -->tency."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${renderedClaim}`)),
+      [outOfSectionProblem],
+      renderedClaim
+    );
+  }
+  for (const truthfulProse of [
+    "The performance study records memory, timing, and workload identity for each session.",
+    "See the performance methodology for more details about fixture construction.",
+    "The report compares the products without making a current result claim.",
+    "Time zones remain part of datetime values during profiling."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${truthfulProse}`)),
+      [],
+      truthfulProse
     );
   }
 
@@ -2416,7 +2450,11 @@ test("reads release documentation from the exact immutable Git commit", () => {
     encoding: "utf8"
   }).trim();
   const source = readReleaseSourceSnapshot({ expectedCommit, root });
+  const discovery = readBoundedGitDiscoverySnapshot({ root });
   assert.equal(source.commit, expectedCommit);
+  assert.equal(discovery.commit, expectedCommit);
+  assert.equal(discovery.tree, source.tree);
+  assert.deepEqual(discovery.trackedPaths, source.trackedPaths);
   assert.ok(source.trackedPaths.has("docs/testing.md"));
   assert.match(source.files.get("package.json"), /"name": "openwrangler"/u);
 
@@ -2552,6 +2590,9 @@ test("reads performance evidence only from bounded regular immutable Git blobs",
   try {
     Object.assign(process.env, hostileEnvironment);
     assert.equal(readCommitted(), "committed evidence\n");
+    const discovery = readBoundedGitDiscoverySnapshot({ root: repository });
+    assert.equal(discovery.commit, replacement);
+    assert.ok(discovery.trackedPaths.has(relativePath));
   } finally {
     for (const [name, value] of inheritedEnvironment) {
       if (value === undefined) delete process.env[name];
@@ -2622,6 +2663,32 @@ test("reads performance evidence only from bounded regular immutable Git blobs",
         root: repository
       }),
     /bytes do not hash back to their bound Git object ID/u
+  );
+
+  const docsTree = execFileSync("git", ["rev-parse", `${oversizedCommit}:docs`], {
+    cwd: repository,
+    encoding: "utf8"
+  }).trim();
+  const forgedTreeContents = Buffer.concat([
+    Buffer.from("100644 decoy.md\0", "utf8"),
+    Buffer.alloc(docsTree.length === 40 ? 20 : 32)
+  ]);
+  const forgedTreeObject = Buffer.concat([
+    Buffer.from(`tree ${forgedTreeContents.length}\0`, "utf8"),
+    forgedTreeContents
+  ]);
+  const docsTreeObjectPath = join(repository, ".git", "objects", docsTree.slice(0, 2), docsTree.slice(2));
+  chmodSync(docsTreeObjectPath, 0o600);
+  writeFileSync(docsTreeObjectPath, deflateSync(forgedTreeObject));
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: oversizedCommit,
+        maxBytes: 128,
+        path: relativePath,
+        root: repository
+      }),
+    /Release source tree docs bytes do not hash back to their bound Git object ID/u
   );
 });
 

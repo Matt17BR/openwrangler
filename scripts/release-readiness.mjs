@@ -222,6 +222,8 @@ const RELEASE_SOURCE_BINDINGS = new WeakMap();
 const GIT_READ_TIMEOUT_MS = 5_000;
 const MAX_GIT_COMMIT_BYTES = 2 * 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES = DATA_WRANGLER_STUDY_REPORT_MAX_BYTES + 1;
+const MAX_GIT_TREE_BYTES = DATA_WRANGLER_STUDY_REPORT_MAX_BYTES;
+const MAX_GIT_TREE_ENTRIES = 100_000;
 export const HISTORICAL_PERFORMANCE_DISCLOSURE =
   "The linked comparison is retained historical evidence for an earlier Open Wrangler release. It does not describe current performance. New results will be summarized here only after a release-candidate study produces a complete reviewed report.";
 const PERFORMANCE_OVERVIEW =
@@ -250,13 +252,95 @@ function markdownAtxHeading(line) {
   return { level: match.groups?.marks.length, span: 1, text: body };
 }
 
+const MARKDOWN_NAMED_ENTITIES = new Map([
+  ["amp", "&"],
+  ["apos", "'"],
+  ["colon", ":"],
+  ["gt", ">"],
+  ["lt", "<"],
+  ["nbsp", " "],
+  ["percnt", "%"],
+  ["period", "."],
+  ["quot", '"'],
+  ["sol", "/"],
+  ["times", "×"]
+]);
+
+function decodeRenderedMarkdownEntities(value) {
+  return value.replace(
+    /&(?:#(?<decimal>[0-9]{1,7})|#x(?<hex>[0-9a-f]{1,6})|(?<named>[a-z][a-z0-9]{1,31}));/giu,
+    (entity, _decimal, _hex, _named, _offset, _source, groups) => {
+      const numeric = groups?.decimal ?? groups?.hex;
+      if (numeric !== undefined) {
+        const codePoint = Number.parseInt(numeric, groups?.decimal === undefined ? 16 : 10);
+        return Number.isSafeInteger(codePoint) &&
+          codePoint > 0 &&
+          codePoint <= 0x10ffff &&
+          !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+          ? String.fromCodePoint(codePoint)
+          : "�";
+      }
+      return MARKDOWN_NAMED_ENTITIES.get(String(groups?.named ?? "").toLowerCase()) ?? entity;
+    }
+  );
+}
+
+function renderMarkdownInlineCode(value) {
+  const runs = [];
+  for (let index = 0; index < value.length;) {
+    if (value[index] !== "`") {
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (value[end] === "`") end += 1;
+    runs.push({ end, length: end - index, next: undefined, start: index });
+    index = end;
+  }
+  const nextByLength = new Map();
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index];
+    run.next = nextByLength.get(run.length);
+    nextByLength.set(run.length, index);
+  }
+  let rendered = "";
+  let cursor = 0;
+  for (let index = 0; index < runs.length; index += 1) {
+    const opening = runs[index];
+    if (opening.start < cursor) continue;
+    rendered += value.slice(cursor, opening.start);
+    const closingIndex = opening.next;
+    if (closingIndex === undefined) {
+      rendered += value.slice(opening.start, opening.end);
+      cursor = opening.end;
+      continue;
+    }
+    const closing = runs[closingIndex];
+    let code = value.slice(opening.end, closing.start).replace(/[\t\r\n ]+/gu, " ");
+    if (code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "") code = code.slice(1, -1);
+    rendered += code;
+    cursor = closing.end;
+    index = closingIndex;
+  }
+  return rendered + value.slice(cursor);
+}
+
+function renderedMarkdownInlineText(value) {
+  let rendered = decodeRenderedMarkdownEntities(value);
+  rendered = rendered.replace(/<!--[\s\S]*?-->/gu, "");
+  rendered = renderMarkdownInlineCode(rendered);
+  rendered = rendered
+    .replace(/!?\[(?<label>[^\]\r\n]*)\]\((?:\\.|[^)\r\n])*\)/gu, "$<label>")
+    .replace(/!?\[(?<label>[^\]\r\n]*)\]\[[^\]\r\n]*\]/gu, "$<label>")
+    .replace(/!?\[(?<label>[^\]\r\n]+)\]/gu, "$<label>")
+    .replace(/<[^>\r\n]*>/gu, "")
+    .replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/gu, "$1")
+    .replace(/[*_~]/gu, "");
+  return decodeRenderedMarkdownEntities(rendered);
+}
+
 function normalizedRenderedHeading(text) {
-  return text
-    .replace(/!?\[(?<label>[^\]]+)\]\([^\r\n)]*\)/gu, "$<label>")
-    .replace(/[`*_~]/gu, "")
-    .replace(/<[^>]*>/gu, "")
-    .trim()
-    .toLowerCase();
+  return normalizedPerformanceCopy(renderedMarkdownInlineText(text)).toLowerCase();
 }
 
 function markdownFence(line) {
@@ -274,48 +358,23 @@ function closesMarkdownFence(line, fence) {
   return marks !== undefined && marks[0] === fence.character && marks.length >= fence.length;
 }
 
-function visibleMarkdownLine(line) {
-  let visible = "";
-  let index = 0;
-  while (index < line.length) {
-    if (line[index] !== "`") {
-      visible += line[index];
-      index += 1;
-      continue;
-    }
-    let markerEnd = index;
-    while (line[markerEnd] === "`") markerEnd += 1;
-    const marker = line.slice(index, markerEnd);
-    const closing = line.indexOf(marker, markerEnd);
-    if (closing === -1) {
-      visible += marker;
-      index = markerEnd;
-      continue;
-    }
-    visible += " ";
-    index = closing + marker.length;
-  }
-  return visible.replace(/<!--[\s\S]*?-->/gu, " ").replace(/<[^>]*>/gu, " ");
-}
-
-function outsidePerformanceClaim(paragraph) {
+function outsidePerformanceClaim(paragraph, source) {
   const text = normalizedPerformanceCopy(paragraph).toLowerCase();
   if (text === "") return false;
   const claimText = text.replace(/\btime zones?\b/gu, "");
   const linkedEvidence =
     /github\.com\/matt17br\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-[0-9]+\.[0-9]+\.[0-9]+\/review\.md/u.test(
-      claimText
+      decodeRenderedMarkdownEntities(source).toLowerCase()
     );
   const currentEvidence =
     /\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.\n]{0,80}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
       claimText
-    );
-  const metric =
-    /\b(?:allocation|benchmark|cpu|duration|elapsed|fast|footprint|latency|memory|perform\w*|profiling|ram|resource|response|responsive|speed|startup|throughput|time|timing|wait|work(?:ing)?\s+set|workload)\w*\b/u.test(
+    ) &&
+    !/\b(?:no|not|without)\b[^.\n]{0,48}\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.\n]{0,48}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
       claimText
     );
-  const comparative =
-    /\b(?:ahead|behind|better|cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|more|reduc\w*|shorter|smaller|twice|twofold|worse)\b|\b\d+(?:\.\d+)?\s*(?:%|x)\b/u.test(
+  const comparativeMetric =
+    /\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|reduc\w*|shorter|smaller|twice|twofold|worse|\d+(?:\.\d+)?\s*(?:%|x))\b(?:\s+(?:as|the))?\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|ram|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|ram|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains)\s+(?:greater|higher|less|lower|shorter|smaller|worse)\b/u.test(
       claimText
     );
   const inherentlyComparative =
@@ -332,7 +391,7 @@ function outsidePerformanceClaim(paragraph) {
   return (
     linkedEvidence ||
     currentEvidence ||
-    (metric && comparative) ||
+    comparativeMetric ||
     inherentlyComparative ||
     measuredResult ||
     namedProductClaim
@@ -342,9 +401,11 @@ function outsidePerformanceClaim(paragraph) {
 function hasOutsidePerformanceClaim(rendered, sectionStart, sectionEnd) {
   const paragraphs = [];
   let paragraph = [];
+  let source = [];
   const flush = () => {
-    if (paragraph.length > 0) paragraphs.push(paragraph.join(" "));
+    if (paragraph.length > 0) paragraphs.push({ source: source.join(" "), text: paragraph.join(" ") });
     paragraph = [];
+    source = [];
   };
   for (let index = 0; index < rendered.length; index += 1) {
     if (index >= sectionStart && index < sectionEnd) {
@@ -356,10 +417,11 @@ function hasOutsidePerformanceClaim(rendered, sectionStart, sectionEnd) {
       flush();
       continue;
     }
-    paragraph.push(visibleMarkdownLine(entry.line));
+    paragraph.push(entry.visible);
+    source.push(entry.line);
   }
   flush();
-  return paragraphs.some(outsidePerformanceClaim);
+  return paragraphs.some((paragraph) => outsidePerformanceClaim(paragraph.text, paragraph.source));
 }
 
 function performanceSection(readme) {
@@ -369,20 +431,49 @@ function performanceSection(readme) {
   const lines = readme.replace(/\r\n?/gu, "\n").split("\n");
   const rendered = [];
   let fence;
+  let htmlComment = false;
   for (const line of lines) {
     if (fence !== undefined) {
-      rendered.push({ code: true, heading: undefined, line });
+      rendered.push({ code: true, heading: undefined, line, visible: "" });
       if (closesMarkdownFence(line, fence)) fence = undefined;
       continue;
     }
-    const openingFence = markdownFence(line);
+    let visibleSource = "";
+    let cursor = 0;
+    while (cursor < line.length) {
+      if (htmlComment) {
+        const closing = line.indexOf("-->", cursor);
+        if (closing === -1) {
+          cursor = line.length;
+          continue;
+        }
+        htmlComment = false;
+        cursor = closing + 3;
+        continue;
+      }
+      const opening = line.indexOf("<!--", cursor);
+      if (opening === -1) {
+        visibleSource += line.slice(cursor);
+        break;
+      }
+      visibleSource += line.slice(cursor, opening);
+      htmlComment = true;
+      cursor = opening + 4;
+    }
+    const openingFence = markdownFence(visibleSource);
     if (openingFence !== undefined) {
       fence = openingFence;
-      rendered.push({ code: true, heading: undefined, line });
+      rendered.push({ code: true, heading: undefined, line, visible: "" });
       continue;
     }
-    const code = /^(?: {4}|\t)/u.test(line);
-    rendered.push({ code, heading: code ? undefined : markdownAtxHeading(line), line });
+    const code = /^(?: {4}|\t)/u.test(visibleSource);
+    const referenceDefinition = /^ {0,3}\[[^\]\r\n]+\]:[ \t]+\S/u.test(visibleSource);
+    rendered.push({
+      code,
+      heading: code || referenceDefinition ? undefined : markdownAtxHeading(visibleSource),
+      line,
+      visible: code || referenceDefinition ? "" : renderedMarkdownInlineText(visibleSource)
+    });
   }
   for (let index = 0; index + 1 < rendered.length; index += 1) {
     const entry = rendered[index];
@@ -1189,6 +1280,103 @@ function readExactGitObject(root, object, type, maxBytes, label) {
   return contents;
 }
 
+function parseVerifiedGitTree(contents, objectLength, label) {
+  const objectBytes = objectLength === 40 ? 20 : objectLength === 64 ? 32 : undefined;
+  if (!Buffer.isBuffer(contents) || objectBytes === undefined) {
+    throw new Error(`${label} has an unsupported Git tree representation.`);
+  }
+  const entries = new Map();
+  let offset = 0;
+  while (offset < contents.length) {
+    if (entries.size >= MAX_GIT_TREE_ENTRIES) {
+      throw new Error(`${label} exceeds the bounded Git tree entry limit.`);
+    }
+    const modeEnd = contents.indexOf(0x20, offset);
+    const nameEnd = modeEnd === -1 ? -1 : contents.indexOf(0x00, modeEnd + 1);
+    const objectEnd = nameEnd === -1 ? -1 : nameEnd + 1 + objectBytes;
+    if (modeEnd <= offset || nameEnd <= modeEnd + 1 || objectEnd > contents.length) {
+      throw new Error(`${label} is not one canonical Git tree buffer.`);
+    }
+    const mode = contents.subarray(offset, modeEnd).toString("ascii");
+    const nameBytes = contents.subarray(modeEnd + 1, nameEnd);
+    const name = decodeUtf8(nameBytes, `${label} entry name`);
+    if (
+      !["40000", "100644", "100755", "120000", "160000"].includes(mode) ||
+      name === "" ||
+      name === "." ||
+      name === ".." ||
+      name.includes("/") ||
+      name.includes("\\") ||
+      name.includes("\0") ||
+      entries.has(name)
+    ) {
+      throw new Error(`${label} contains a non-canonical Git tree entry.`);
+    }
+    entries.set(name, Object.freeze({ mode, object: contents.subarray(nameEnd + 1, objectEnd).toString("hex") }));
+    offset = objectEnd;
+  }
+  return entries;
+}
+
+function createVerifiedGitTreeReader(root, binding) {
+  let treeBytes = binding.rootTreeBytes.length;
+  let treeEntries = binding.rootTreeEntries.size;
+  const trees = new Map([[binding.tree, binding.rootTreeEntries]]);
+  const readTree = (object, label) => {
+    const cached = trees.get(object);
+    if (cached !== undefined) return cached;
+    const contents = readExactGitObject(root, object, "tree", MAX_GIT_TREE_BYTES, label);
+    treeBytes += contents.length;
+    if (treeBytes > MAX_GIT_TREE_BYTES) {
+      throw new Error("Release source trees exceed the bounded Git tree byte limit.");
+    }
+    const entries = parseVerifiedGitTree(contents, binding.commit.length, label);
+    treeEntries += entries.size;
+    if (treeEntries > MAX_GIT_TREE_ENTRIES) {
+      throw new Error("Release source trees exceed the bounded Git tree entry limit.");
+    }
+    trees.set(object, entries);
+    return entries;
+  };
+  return Object.freeze({ readTree });
+}
+
+function resolveVerifiedGitTreePath(binding, path, reader) {
+  const parts = path.split("/");
+  let entries = binding.rootTreeEntries;
+  let prefix = "";
+  for (const [index, part] of parts.entries()) {
+    const entry = entries.get(part);
+    if (entry === undefined) return undefined;
+    prefix = prefix === "" ? part : `${prefix}/${part}`;
+    if (index === parts.length - 1) return entry;
+    if (entry.mode !== "40000") {
+      throw new Error(`Release source ${prefix} must be a tracked Git tree.`);
+    }
+    entries = reader.readTree(entry.object, `Release source tree ${prefix}`);
+  }
+  return undefined;
+}
+
+function listVerifiedGitTreePaths(root, binding) {
+  const reader = createVerifiedGitTreeReader(root, binding);
+  const paths = new Set();
+  let pathBytes = 0;
+  const visit = (entries, prefix) => {
+    for (const [name, entry] of entries) {
+      const path = prefix === "" ? name : `${prefix}/${name}`;
+      pathBytes += Buffer.byteLength(path, "utf8") + 1;
+      if (pathBytes > MAX_GIT_OUTPUT_BYTES || paths.size >= MAX_GIT_TREE_ENTRIES) {
+        throw new Error("Release source paths exceed the bounded Git tree output limit.");
+      }
+      if (entry.mode === "40000") visit(reader.readTree(entry.object, `Release source tree ${path}`), path);
+      else paths.add(path);
+    }
+  };
+  visit(binding.rootTreeEntries, "");
+  return paths;
+}
+
 function resolveExactGitCommit(root, commit) {
   const resolvedCommit = runGit(root, ["rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`], {
     encoding: "utf8",
@@ -1204,31 +1392,23 @@ function resolveExactGitCommit(root, commit) {
   if (tree === undefined || tree.length !== resolvedCommit.length) {
     throw new Error("Release commit must bind one canonical root tree object ID.");
   }
-  readExactGitObject(root, tree, "tree", DATA_WRANGLER_STUDY_REPORT_MAX_BYTES, "Release root tree");
-  return Object.freeze({ commit: resolvedCommit, tree });
+  const rootTreeBytes = readExactGitObject(root, tree, "tree", MAX_GIT_TREE_BYTES, "Release root tree");
+  const rootTreeEntries = parseVerifiedGitTree(rootTreeBytes, resolvedCommit.length, "Release root tree");
+  return Object.freeze({ commit: resolvedCommit, rootTreeBytes, rootTreeEntries, tree });
 }
 
-function readBoundedGitBlobFromTree({ maxBytes, path, required, root, tree }) {
-  const entry = runGit(root, ["ls-tree", "-z", tree, "--", path], { maxBuffer: 4096 });
-  if (!Buffer.isBuffer(entry) || entry.length === 0) {
+function readBoundedGitBlobFromTree({ binding, maxBytes, path, required, root }) {
+  const reader = createVerifiedGitTreeReader(root, binding);
+  const entry = resolveVerifiedGitTreePath(binding, path, reader);
+  if (entry === undefined) {
     if (!required) return undefined;
     throw new Error(`Release commit is missing required tracked source ${path}.`);
   }
-  const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) (?<object>[0-9a-f]{40,64})\t(?<path>[^\0]+)\0$/u.exec(
-    entry.toString("utf8")
-  );
-  const groups = match?.groups;
-  if (
-    groups === undefined ||
-    groups.path !== path ||
-    groups.type !== "blob" ||
-    !["100644", "100755"].includes(groups.mode) ||
-    groups.object.length !== tree.length
-  ) {
+  if (!["100644", "100755"].includes(entry.mode) || entry.object.length !== binding.tree.length) {
     throw new Error(`Release source ${path} must be one regular tracked Git blob.`);
   }
-  const contents = readExactGitObject(root, groups.object, "blob", maxBytes, `Release source ${path}`);
-  return Object.freeze({ blob: groups.object, contents: decodeUtf8(contents, path) });
+  const contents = readExactGitObject(root, entry.object, "blob", maxBytes, `Release source ${path}`);
+  return Object.freeze({ blob: entry.object, contents: decodeUtf8(contents, path) });
 }
 
 export function readBoundedGitBlobSnapshot({ commit, maxBytes, path, required = true, root }) {
@@ -1251,7 +1431,24 @@ export function readBoundedGitBlobSnapshot({ commit, maxBytes, path, required = 
 
   const absoluteRoot = resolve(root);
   const binding = resolveExactGitCommit(absoluteRoot, commit);
-  return readBoundedGitBlobFromTree({ maxBytes, path, required, root: absoluteRoot, tree: binding.tree })?.contents;
+  return readBoundedGitBlobFromTree({ binding, maxBytes, path, required, root: absoluteRoot })?.contents;
+}
+
+export function readBoundedGitDiscoverySnapshot({ root }) {
+  const absoluteRoot = resolve(root);
+  const commit = runGit(absoluteRoot, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"], {
+    encoding: "utf8",
+    maxBuffer: 1024
+  }).trim();
+  if (!FULL_COMMIT_ID.test(commit)) {
+    throw new Error("Documentation discovery must resolve one full hexadecimal HEAD commit ID.");
+  }
+  const binding = resolveExactGitCommit(absoluteRoot, commit);
+  return Object.freeze({
+    commit: binding.commit,
+    trackedPaths: listVerifiedGitTreePaths(absoluteRoot, binding),
+    tree: binding.tree
+  });
 }
 
 export function readReleaseSourceSnapshot({ expectedCommit, root }) {
@@ -1268,23 +1465,18 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
     throw new Error("Release readiness must inspect the exact checked-out event commit.");
   }
 
-  const trackedPaths = new Set(
-    runGit(absoluteRoot, ["ls-tree", "-r", "--name-only", "-z", binding.tree, "--"])
-      .toString("utf8")
-      .split("\0")
-      .filter(Boolean)
-  );
+  const trackedPaths = listVerifiedGitTreePaths(absoluteRoot, binding);
   const files = new Map();
   const blobOids = new Map();
   const sourceBinding = { commit: binding.commit, files: new Map() };
   RELEASE_SOURCE_BINDINGS.set(files, sourceBinding);
   const readCommitFile = (path, maxBytes, required) => {
     const snapshot = readBoundedGitBlobFromTree({
+      binding,
       maxBytes,
       path,
       required,
-      root: absoluteRoot,
-      tree: binding.tree
+      root: absoluteRoot
     });
     if (snapshot !== undefined) {
       blobOids.set(path, snapshot.blob);

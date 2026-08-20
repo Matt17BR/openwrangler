@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -11,7 +10,8 @@ import {
   inspectPerformanceSummary,
   inspectReleaseDocumentationSource,
   performanceReportLink,
-  readBoundedGitBlobSnapshot
+  readBoundedGitBlobSnapshot,
+  readBoundedGitDiscoverySnapshot
 } from "./release-readiness.mjs";
 import { inspectReleaseCandidateWorkflow, inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
@@ -67,22 +67,9 @@ const publicWritingProblems = inspectPublicWriting({
 if (publicWritingProblems.length > 0) {
   throw new Error(`Public writing guidance is disconnected:\n- ${publicWritingProblems.join("\n- ")}`);
 }
-const trackedEvidencePaths = new Set(
-  execFileSync("git", ["ls-files", "-z", "--"], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    windowsHide: true
-  })
-    .split("\0")
-    .filter(Boolean)
-);
-const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
-  cwd: root,
-  encoding: "utf8",
-  maxBuffer: 4096,
-  windowsHide: true
-}).trim();
+const sourceDiscovery = readBoundedGitDiscoverySnapshot({ root });
+const trackedEvidencePaths = sourceDiscovery.trackedPaths;
+const sourceCommit = sourceDiscovery.commit;
 const readmeProblems = inspectReleaseDocumentationSource({
   featureParity,
   preview: packageJson.preview,
