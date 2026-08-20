@@ -46,8 +46,7 @@ async function recordEnvironment() {
   }
   const expectedWorktreePaths = {
     nodeModules: join(process.cwd(), "node_modules"),
-    vitestCache: join(process.cwd(), "node_modules", ".vite"),
-    worktree: process.cwd()
+    vitestCache: join(process.cwd(), "node_modules", ".vite")
   };
   for (const [key, layoutKey] of Object.entries(QUALIFICATION_ENVIRONMENT_CONTRACT.worktreePaths)) {
     assert.equal(process.env[key], expectedWorktreePaths[layoutKey], `${key} has the wrong worktree mapping`);
@@ -58,9 +57,12 @@ async function recordEnvironment() {
   for (const key of QUALIFICATION_ENVIRONMENT_CONTRACT.forbiddenInheritedKeys) {
     assert.equal(process.env[key], undefined, `${key} must not reach the qualification command`);
   }
+  for (const prefix of QUALIFICATION_ENVIRONMENT_CONTRACT.forbiddenInheritedPrefixes) {
+    for (const key of Object.keys(process.env)) {
+      assert.equal(key.toUpperCase().startsWith(prefix), false, `${key} must not reach the qualification command`);
+    }
+  }
   assert.ok(process.env.OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT?.endsWith(".json"));
-  assert.ok(process.env.GIT_DIR && isAbsolute(process.env.GIT_DIR));
-  assert.equal(process.env.GIT_WORK_TREE, process.cwd());
   assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_TASK_ID, taskId);
   assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_RUN_ID, runId);
   assert.equal(
@@ -74,7 +76,6 @@ async function recordEnvironment() {
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateFiles),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.worktreePaths),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.exactValues),
-    "GIT_DIR",
     "OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT",
     "OPEN_WRANGLER_QUALIFICATION_ROOT",
     "OPEN_WRANGLER_QUALIFICATION_RUN_ID",
@@ -155,6 +156,39 @@ if (mode === "hold") {
   await appendFile(join(process.cwd(), "tracked.txt"), "advanced\n", "utf8");
   execFileSync("git", ["add", "tracked.txt"], { cwd: process.cwd(), env: process.env, windowsHide: true });
   execFileSync("git", ["commit", "--quiet", "-m", "test mutation"], {
+    cwd: process.cwd(),
+    env: process.env,
+    windowsHide: true
+  });
+} else if (mode === "nested-git") {
+  const repository = join(process.env.RUNNER_TEMP, "nested-git");
+  await mkdir(repository, { mode: 0o700 });
+  const runGit = (arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: process.env,
+      windowsHide: true
+    }).trim();
+  runGit(["init", "--quiet", "--initial-branch=main"]);
+  runGit(["config", "--local", "user.name", "Open Wrangler nested fixture"]);
+  runGit(["config", "--local", "user.email", "nested-fixture@openwrangler.invalid"]);
+  await writeFile(join(repository, "fixture.txt"), "fixture\n", { flag: "wx", mode: 0o600 });
+  runGit(["add", "fixture.txt"]);
+  runGit(["commit", "--quiet", "-m", "nested fixture"]);
+  const [authorName, authorEmail, committerName, committerEmail] = runGit([
+    "show",
+    "-s",
+    "--format=%an%n%ae%n%cn%n%ce",
+    "HEAD"
+  ]).split("\n");
+  await writeFile(
+    argument("--path"),
+    `${JSON.stringify({ authorEmail, authorName, committerEmail, committerName, repository })}\n`,
+    { flag: "wx", mode: 0o600 }
+  );
+} else if (mode === "mutate-git-config") {
+  execFileSync("git", ["config", "user.name", "Mutated qualification fixture"], {
     cwd: process.cwd(),
     env: process.env,
     windowsHide: true
