@@ -28,7 +28,7 @@ export interface SessionResponseState extends RuntimeSessionState {
 }
 
 export interface SessionResponseCallbacks {
-  activate(): void;
+  activate(registerRollback?: (rollback: () => void) => void): void;
   publishInspection(): void;
 }
 
@@ -304,9 +304,12 @@ export class SessionResponseCommitter {
         state,
         () => isCurrentPageRequest(session, pageRequest, options),
         () => {
+          let rollbackActivation: (() => void) | undefined;
           try {
             commitState();
-            callbacks.activate();
+            callbacks.activate((rollback) => {
+              rollbackActivation = rollback;
+            });
           } catch (error) {
             session.activeViewContextId = previous.activeViewContextId;
             session.publicRevision = previous.publicRevision;
@@ -314,6 +317,16 @@ export class SessionResponseCommitter {
             session.metadata = previous.metadata;
             session.viewState = previous.viewState;
             session.viewChangeEpoch = previous.viewChangeEpoch;
+            if (rollbackActivation) {
+              try {
+                rollbackActivation();
+              } catch (rollbackError) {
+                throw new AggregateError(
+                  [error, rollbackError],
+                  "Current-page publication and its coordinator rollback both failed."
+                );
+              }
+            }
             throw error;
           }
         }
