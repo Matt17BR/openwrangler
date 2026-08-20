@@ -61,6 +61,12 @@ def _view_request(kind: str, session_id: str, view_request_id: str) -> dict[str,
     return request
 
 
+def _complete_registry_request(registry: kernel_agent._NotebookRequestRegistry, request_id: str) -> None:
+    registry.admit(request_id)
+    assert registry.start(request_id) is True
+    registry.complete(request_id)
+
+
 def test_standalone_and_kernel_dispatch_share_generated_code_preflight(tmp_path, monkeypatch) -> None:
     path = tmp_path / "shared-preflight.csv"
     path.write_text("value\n1\n", encoding="utf-8")
@@ -1012,7 +1018,7 @@ def test_cancel_request_rejects_malformed_targets_without_registry_access(
     target_request_id: object,
 ) -> None:
     registry = kernel_agent._NotebookRequestRegistry()
-    registry.queue("preserved-queued-request")
+    registry.admit("preserved-queued-request")
 
     def reject_registry_access(_request_id: str) -> str:
         raise AssertionError("Malformed cancellation inspected the request registry.")
@@ -1070,6 +1076,113 @@ def test_cancel_request_accepts_exactly_256_utf8_bytes(
     assert observed == [target_request_id]
 
 
+def test_notebook_registry_retains_exactly_its_completed_history_limit() -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+
+    for index in range(kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT):
+        _complete_registry_request(registry, f"completed-{index}")
+
+    assert all(
+        registry.state(f"completed-{index}") == "completed"
+        for index in range(kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT)
+    )
+
+
+def test_notebook_registry_evicts_only_the_oldest_entry_at_limit_plus_one() -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+
+    for index in range(kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT + 1):
+        _complete_registry_request(registry, f"completed-{index}")
+
+    assert registry.state("completed-0") == "unknown"
+    assert all(
+        registry.state(f"completed-{index}") == "completed"
+        for index in range(1, kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT + 1)
+    )
+
+
+def test_notebook_registry_preserves_a_recently_observed_completed_entry_during_eviction() -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+
+    for index in range(kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT):
+        _complete_registry_request(registry, f"completed-{index}")
+    assert registry.cancel("completed-0") == "completed"
+
+    _complete_registry_request(registry, f"completed-{kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT}")
+
+    assert registry.state("completed-0") == "completed"
+    assert registry.state("completed-1") == "unknown"
+    assert registry.state(f"completed-{kernel_agent._COMPLETED_REQUEST_HISTORY_LIMIT}") == "completed"
+
+
+@pytest.mark.parametrize(
+    "duplicate_request",
+    [
+        pytest.param({"kind": "initialize"}, id="ordinary-envelope"),
+        pytest.param(
+            {"kind": "cancelRequest", "targetRequestId": "active-id"},
+            id="cancellation-envelope",
+        ),
+    ],
+)
+def test_active_request_id_reuse_cannot_publish_or_suppress_the_original_response(
+    monkeypatch: pytest.MonkeyPatch,
+    duplicate_request: dict[str, Any],
+) -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+    started = threading.Event()
+    release = threading.Event()
+    original_result: dict[str, Any] = {}
+    cancellation_targets: list[str] = []
+    original_cancel = registry.cancel
+
+    def running_dispatch(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+    ) -> dict[str, Any]:
+        started.set()
+        assert release.wait(2)
+        return {"kind": "initialized", "runtimeVersion": "authoritative-original"}
+
+    def observe_cancellation(request_id: str) -> str:
+        cancellation_targets.append(request_id)
+        return original_cancel(request_id)
+
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+    monkeypatch.setattr(kernel_agent, "dispatch", running_dispatch)
+    monkeypatch.setattr(registry, "cancel", observe_cancellation)
+
+    def run_original() -> None:
+        original_result.update(
+            json.loads(kernel_agent.dispatch_json(_envelope({"kind": "initialize"}, request_id="active-id")))
+        )
+
+    thread = threading.Thread(target=run_original)
+    thread.start()
+    assert started.wait(1)
+    try:
+        with pytest.raises(
+            kernel_agent._DuplicateActiveRequestIdError,
+            match="requestId is already active in the notebook runtime",
+        ):
+            kernel_agent.dispatch_json(_envelope(duplicate_request, request_id="active-id"))
+        assert registry.state("active-id") == "running"
+        assert cancellation_targets == []
+        assert original_result == {}
+    finally:
+        release.set()
+        thread.join(2)
+
+    assert thread.is_alive() is False
+    assert original_result == {
+        "protocolVersion": 2,
+        "requestId": "active-id",
+        "response": {"kind": "initialized", "runtimeVersion": "authoritative-original"},
+    }
+    assert registry.state("active-id") == "completed"
+
+
 def test_cancel_request_prevents_queued_work_and_original_response_confirms_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1120,6 +1233,7 @@ def test_cancel_request_prevents_queued_work_and_original_response_confirms_canc
                 )
             )
             assert cancellation["response"] == {"kind": "cancelled", "targetRequestId": "queued-request"}
+            assert registry.state(cancellation_id) == "completed"
         assert queued_dispatched.is_set() is False
     finally:
         release_start.set()
@@ -1195,6 +1309,7 @@ def test_cancel_request_does_not_claim_to_interrupt_running_work_or_hide_late_co
             ),
             "recoverable": True,
         }
+        assert registry.state(cancellation_id) == "completed"
 
     release.set()
     thread.join(2)

@@ -38,6 +38,10 @@ _RECOVERABLE_RESPONSE_ENCODING_KINDS = {
 _COMPLETED_REQUEST_HISTORY_LIMIT = 256
 
 
+class _DuplicateActiveRequestIdError(RuntimeError):
+    """Reject a second envelope without publishing under an active correlation ID."""
+
+
 class _NotebookRequestRegistry:
     """Track the bounded lifecycle visible to concurrent notebook dispatches."""
 
@@ -47,10 +51,10 @@ class _NotebookRequestRegistry:
         self._live: dict[str, str] = {}
         self._completed: OrderedDict[str, None] = OrderedDict()
 
-    def queue(self, request_id: str) -> None:
+    def admit(self, request_id: str) -> None:
         with self._lock:
             if request_id in self._live:
-                raise ProtocolError("requestId is already active in the notebook runtime.")
+                raise _DuplicateActiveRequestIdError("requestId is already active in the notebook runtime.")
             self._completed.pop(request_id, None)
             self._live[request_id] = "queued"
 
@@ -102,72 +106,80 @@ def dispatch_json(payload: str) -> str:
     request_id = _safe_request_id(payload)
     request_kind: str | None = None
     view_request_id = _safe_view_request_id(payload)
+    admitted = False
     try:
-        candidate_request_id, _, request = decode_envelope(json.loads(payload))
-        if _bounded_transport_id(candidate_request_id) is None:
-            raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
-        request_id = candidate_request_id
-        request_kind = request["kind"]
-        view_request_id = request.get("viewRequestId")
-        if request_kind == "cancelRequest":
-            response = _cancel_request(request["targetRequestId"])
-        else:
-            response = _dispatch_request(request_id, request)
+        try:
+            decoded = json.loads(payload)
+            candidate_request_id = _bounded_request_id_from_envelope(decoded)
+            if candidate_request_id is not None:
+                request_id = candidate_request_id
+                _request_registry.admit(request_id)
+                admitted = True
+                if not _request_registry.start(request_id):
+                    raise CancelledError
+            candidate_request_id, _, request = decode_envelope(decoded)
+            if _bounded_transport_id(candidate_request_id) is None:
+                raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
+            request_id = candidate_request_id
+            request_kind = request["kind"]
+            view_request_id = request.get("viewRequestId")
+            if request_kind == "cancelRequest":
+                response = _cancel_request(request["targetRequestId"])
+            else:
+                response = dispatch(_manager, request, request_id)
+            return _encode_response(request_id, response)
+        except _DuplicateActiveRequestIdError:
+            # A response carrying the reused ID would be indistinguishable from the
+            # original request's authoritative response. Let the duplicate kernel
+            # execution fail without publishing a second runtime envelope.
+            raise
+        except CancelledError:
+            response = {"kind": "cancelled", "targetRequestId": request_id}
+        except ProtocolError as error:
+            response = error_response(str(error), code="invalid_request", recoverable=False)
+        except UnknownSessionError as error:
+            response = error_response(str(error), code="unknown_session", session_id=error.session_id)
+        except LiveSourceInvalidatedError as error:
+            response = error_response(str(error), code="live_source_invalidated", session_id=error.session_id)
+        except PySparkConnectUnavailableError as error:
+            response = error_response(str(error), code="pyspark_connect_unavailable", session_id=error.session_id)
+        except PySparkConnectStateLostError as error:
+            response = error_response(str(error), code="pyspark_connect_state_lost", session_id=error.session_id)
+        except SessionCleanupError as error:
+            response = error_response(
+                str(error),
+                code="session_cleanup_failed",
+                recoverable=False,
+                session_id=error.session_id,
+            )
+        except ResponsePayloadError as error:
+            response = error_response(str(error), code=error.code)
+        except ResponseFrameTooLargeError:
+            if request_kind not in _RECOVERABLE_RESPONSE_ENCODING_KINDS:
+                raise
+            response = error_response(
+                "The runtime response exceeds the bounded transport frame limit.",
+                code="response_too_large",
+            )
+        except ResponseEncodingError:
+            if request_kind not in _RECOVERABLE_RESPONSE_ENCODING_KINDS:
+                raise
+            response = error_response(
+                "The runtime response could not be encoded as strict JSON.",
+                code="response_encoding_failed",
+            )
+        except AmbiguousViewColumnError as error:
+            response = error_response(str(error), code="ambiguous_view_column")
+        except EngineError as error:
+            response = error_response(str(error), code="engine_error")
+        except Exception as error:
+            response = error_response(str(error), detail=traceback.format_exc())
+        if view_request_id:
+            response["viewRequestId"] = view_request_id
         return _encode_response(request_id, response)
-    except CancelledError:
-        response = {"kind": "cancelled", "targetRequestId": request_id}
-    except ProtocolError as error:
-        response = error_response(str(error), code="invalid_request", recoverable=False)
-    except UnknownSessionError as error:
-        response = error_response(str(error), code="unknown_session", session_id=error.session_id)
-    except LiveSourceInvalidatedError as error:
-        response = error_response(str(error), code="live_source_invalidated", session_id=error.session_id)
-    except PySparkConnectUnavailableError as error:
-        response = error_response(str(error), code="pyspark_connect_unavailable", session_id=error.session_id)
-    except PySparkConnectStateLostError as error:
-        response = error_response(str(error), code="pyspark_connect_state_lost", session_id=error.session_id)
-    except SessionCleanupError as error:
-        response = error_response(
-            str(error),
-            code="session_cleanup_failed",
-            recoverable=False,
-            session_id=error.session_id,
-        )
-    except ResponsePayloadError as error:
-        response = error_response(str(error), code=error.code)
-    except ResponseFrameTooLargeError:
-        if request_kind not in _RECOVERABLE_RESPONSE_ENCODING_KINDS:
-            raise
-        response = error_response(
-            "The runtime response exceeds the bounded transport frame limit.",
-            code="response_too_large",
-        )
-    except ResponseEncodingError:
-        if request_kind not in _RECOVERABLE_RESPONSE_ENCODING_KINDS:
-            raise
-        response = error_response(
-            "The runtime response could not be encoded as strict JSON.",
-            code="response_encoding_failed",
-        )
-    except AmbiguousViewColumnError as error:
-        response = error_response(str(error), code="ambiguous_view_column")
-    except EngineError as error:
-        response = error_response(str(error), code="engine_error")
-    except Exception as error:
-        response = error_response(str(error), detail=traceback.format_exc())
-    if view_request_id:
-        response["viewRequestId"] = view_request_id
-    return _encode_response(request_id, response)
-
-
-def _dispatch_request(request_id: str, request: dict[str, object]) -> dict[str, object]:
-    _request_registry.queue(request_id)
-    try:
-        if not _request_registry.start(request_id):
-            raise CancelledError
-        return dispatch(_manager, request, request_id)
     finally:
-        _request_registry.complete(request_id)
+        if admitted:
+            _request_registry.complete(request_id)
 
 
 def _cancel_request(target_request_id: str) -> dict[str, object]:
@@ -204,6 +216,12 @@ def _safe_request_id(payload: str) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _bounded_request_id_from_envelope(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    return _bounded_transport_id(value.get("requestId"))
 
 
 def _bounded_transport_id(value: object) -> str | None:
