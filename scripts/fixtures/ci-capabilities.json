@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "workflows": {
+    "pull_request": {
+      "file": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "terminalJob": "validate"
+    },
+    "candidate": {
+      "file": ".github/workflows/candidate-acceptance.yml",
+      "event": "workflow_call",
+      "terminalJob": "acceptance"
+    },
+    "release": {
+      "file": ".github/workflows/release-candidate.yml",
+      "event": "workflow_dispatch",
+      "terminalJob": "qualify"
+    }
+  },
+  "capabilities": {
+    "source_coverage": {
+      "entryWorkflow": "pull_request",
+      "providerWorkflow": "pull_request",
+      "providerJob": "validate",
+      "fanInWorkflow": "pull_request",
+      "fanInJob": "validate",
+      "requiredJobs": [
+        "classify",
+        "invariant-core",
+        "r-contract-kernel",
+        "r-contract-protocol",
+        "canonical-editor",
+        "visual-accessibility",
+        "windows-unique",
+        "validate"
+      ],
+      "requiredChecks": ["validate", "CodeQL gate"]
+    },
+    "installed_candidate": {
+      "entryWorkflow": "release",
+      "providerWorkflow": "candidate",
+      "providerJob": "acceptance",
+      "fanInWorkflow": "release",
+      "fanInJob": "qualify",
+      "bridgeJob": "candidate-acceptance",
+      "requiredJobs": ["contract", "platform", "r_platform", "linux", "performance", "jupyter", "r_local", "acceptance"]
+    },
+    "artifact_provenance": {
+      "entryWorkflow": "release",
+      "providerWorkflow": "release",
+      "providerJob": "package",
+      "fanInWorkflow": "release",
+      "fanInJob": "qualify",
+      "requiredJobs": ["package"]
+    },
+    "release_fan_in": {
+      "entryWorkflow": "release",
+      "providerWorkflow": "release",
+      "providerJob": "qualify",
+      "fanInWorkflow": "release",
+      "fanInJob": "qualify",
+      "requiredJobs": ["package", "candidate-acceptance", "remote-ssh", "qualify"],
+      "requires": ["artifact_provenance", "installed_candidate"]
+    }
+  }
+}

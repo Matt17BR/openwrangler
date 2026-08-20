@@ -2,12 +2,15 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
 permissions:
   contents: read
+
+env:
+  OPEN_WRANGLER_CI_CAPABILITY_GRAPH: scripts/fixtures/ci-capabilities.json
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
@@ -36,6 +39,9 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_STACK_BASE_SHA: ${{ github.event.pull_request.stack.base.sha }}
+          CI_STACK_POSITION: ${{ github.event.pull_request.stack.position }}
+          CI_STACK_SIZE: ${{ github.event.pull_request.stack.size }}
 
   invariant-core:
     name: Invariant core
