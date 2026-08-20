@@ -56,6 +56,16 @@ export async function runPackagedGridRangeCopyLifecycle(
   if (cleanupFailed) throw cleanupFailure;
 }
 
+export async function runWithPackagedGridClipboardRestoration(
+  hostClipboard: PackagedGridRangeCopyHostClipboard,
+  exercise: () => Promise<void>
+): Promise<void> {
+  const priorClipboard = await hostClipboard.readText();
+  await runPackagedGridRangeCopyLifecycle(exercise, async () => {
+    await hostClipboard.writeText(priorClipboard);
+  });
+}
+
 function normalizeClipboardText(value: string): string {
   return value.replaceAll("\r\n", "\n");
 }
@@ -105,8 +115,7 @@ export async function exercisePackagedGridRangeCopyJourney({
     .waitFor({ state: "visible", timeout: 5_000 });
   assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
 
-  const priorClipboard = await hostClipboard.readText();
-  try {
+  await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
     recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
     await hostClipboard.writeText("open-wrangler-grid-range-copy-keyboard-pending");
     await endpoint.press(packagedGridCopyShortcut(platform));
@@ -130,7 +139,5 @@ export async function exercisePackagedGridRangeCopyJourney({
       .locator('td[data-grid-row="1"][data-grid-column="1"]:focus')
       .waitFor({ state: "visible", timeout: 5_000 });
     assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
-  } finally {
-    await hostClipboard.writeText(priorClipboard);
-  }
+  });
 }
