@@ -483,13 +483,13 @@
         "command": "openWrangler.editLatestStep",
         "key": "ctrl+shift+e",
         "mac": "cmd+shift+e",
-        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canEditCleaningStep"
       },
       {
         "command": "openWrangler.undoStep",
         "key": "ctrl+alt+z",
         "mac": "cmd+alt+z",
-        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canUndoCleaningStep"
       }
     ],
     "viewsContainers": {
@@ -721,6 +721,26 @@
       ],
       "commandPalette": [
         {
+          "command": "openWrangler.editLatestStep",
+          "when": "openWrangler.canEditCleaningStep"
+        },
+        {
+          "command": "openWrangler.undoStep",
+          "when": "openWrangler.canUndoCleaningStep"
+        },
+        {
+          "command": "openWrangler.editSelectedStep",
+          "when": "false"
+        },
+        {
+          "command": "openWrangler.deleteSelectedStep",
+          "when": "false"
+        },
+        {
+          "command": "openWrangler.selectStep",
+          "when": "false"
+        },
+        {
           "command": "openWrangler.openNotebookCellResult",
           "when": "false"
         },
@@ -817,17 +837,17 @@
       "view/item/context": [
         {
           "command": "openWrangler.editLatestStep",
-          "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
+          "when": "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.latestCleaningStep(?:\\.[a-z]+)*\\.edit(?:\\.[a-z]+)*$/ && openWrangler.canEditCleaningStep",
           "group": "inline@10"
         },
         {
           "command": "openWrangler.editSelectedStep",
-          "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.cleaningStep && openWrangler.canChangePlan",
+          "when": "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.cleaningStep(?:\\.[a-z]+)*\\.edit(?:\\.[a-z]+)*$/ && openWrangler.canEditCleaningStep",
           "group": "inline@10"
         },
         {
           "command": "openWrangler.deleteSelectedStep",
-          "when": "view == openWrangler.cleaningSteps && (viewItem == openWrangler.cleaningStep || viewItem == openWrangler.latestCleaningStep) && openWrangler.canChangePlan",
+          "when": "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.(?:latestCleaningStep|cleaningStep)(?:\\.[a-z]+)*\\.delete(?:\\.[a-z]+)*$/ && openWrangler.canDeleteCleaningStep",
           "group": "inline@11"
         },
         {

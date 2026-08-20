@@ -45,6 +45,12 @@ interface PackageManifest {
     };
     configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
+    keybindings?: Array<{
+      command?: string;
+      key?: string;
+      mac?: string;
+      when?: string;
+    }>;
     jupyterVariableViewers?: Array<{
       command?: string;
       dataTypes?: string[];
@@ -134,22 +140,45 @@ describe("operation command contributions", () => {
     ).toBe(true);
   });
 
-  it("hides step edit and delete actions while plan changes are unavailable", () => {
+  it("binds native cleaning-history menus and keybindings to independent capabilities", () => {
+    expect(manifest.contributes?.keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "openWrangler.editLatestStep",
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canEditCleaningStep"
+      })
+    );
+    expect(manifest.contributes?.keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "openWrangler.undoStep",
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canUndoCleaningStep"
+      })
+    );
     expect(manifest.contributes?.menus?.["view/item/context"]).toContainEqual({
       command: "openWrangler.editLatestStep",
-      when: "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
+      when: "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.latestCleaningStep(?:\\.[a-z]+)*\\.edit(?:\\.[a-z]+)*$/ && openWrangler.canEditCleaningStep",
       group: "inline@10"
     });
     expect(manifest.contributes?.menus?.["view/item/context"]).toContainEqual({
       command: "openWrangler.editSelectedStep",
-      when: "view == openWrangler.cleaningSteps && viewItem == openWrangler.cleaningStep && openWrangler.canChangePlan",
+      when: "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.cleaningStep(?:\\.[a-z]+)*\\.edit(?:\\.[a-z]+)*$/ && openWrangler.canEditCleaningStep",
       group: "inline@10"
     });
     expect(manifest.contributes?.menus?.["view/item/context"]).toContainEqual({
       command: "openWrangler.deleteSelectedStep",
-      when: "view == openWrangler.cleaningSteps && (viewItem == openWrangler.cleaningStep || viewItem == openWrangler.latestCleaningStep) && openWrangler.canChangePlan",
+      when: "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.(?:latestCleaningStep|cleaningStep)(?:\\.[a-z]+)*\\.delete(?:\\.[a-z]+)*$/ && openWrangler.canDeleteCleaningStep",
       group: "inline@11"
     });
+    expect(manifest.contributes?.menus?.commandPalette).toEqual(
+      expect.arrayContaining([
+        { command: "openWrangler.editLatestStep", when: "openWrangler.canEditCleaningStep" },
+        { command: "openWrangler.undoStep", when: "openWrangler.canUndoCleaningStep" },
+        { command: "openWrangler.editSelectedStep", when: "false" },
+        { command: "openWrangler.deleteSelectedStep", when: "false" },
+        { command: "openWrangler.selectStep", when: "false" }
+      ])
+    );
+    expect(JSON.stringify(manifest.contributes)).not.toContain("openWrangler.canChangePlan");
+    expect(manifest.contributes?.commands?.some(({ command }) => /reorder.*step/iu.test(command ?? ""))).toBe(false);
   });
 
   it("keeps sort-priority actions in both inline controls and the row context menu", () => {

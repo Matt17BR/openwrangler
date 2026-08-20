@@ -47,7 +47,10 @@ const nativeMocks = vi.hoisted(() => ({
     | { notebook: { uri: unknown; isClosed: boolean; cellCount: number }; selections: Array<{ end: number }> }
     | undefined,
   insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" })),
-  insertGeneratedRDocumentCode: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
+  insertGeneratedRDocumentCode: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({
+    status: "applied"
+  })),
+  cleaningHistoryCapabilityOverrides: new Map<string, boolean>()
 }));
 
 vi.mock("vscode", () => {
@@ -204,9 +207,28 @@ vi.mock("../extension/notebooks/notebookInsertion", () => ({
 vi.mock("../extension/r/rDocumentInsertion", () => ({
   insertGeneratedRDocumentCode: nativeMocks.insertGeneratedRDocumentCode
 }));
+vi.mock("../extension/r/rInteractiveCommands", () => ({
+  OPEN_R_INTERACTIVE_VARIABLE_COMMAND: "openWrangler.openRInteractiveVariable",
+  REFRESH_R_INTERACTIVE_VARIABLES_COMMAND: "openWrangler.refreshRInteractiveVariables"
+}));
 vi.mock("../extension/configuration", () => ({
   getSetting: <T>(_key: string, fallback: T): T => fallback
 }));
+vi.mock("../shared/cleaningHistoryCapabilities", async () => {
+  const actual = await vi.importActual<typeof import("../shared/cleaningHistoryCapabilities")>(
+    "../shared/cleaningHistoryCapabilities"
+  );
+  return {
+    ...actual,
+    cleaningHistoryActionAvailable: (
+      capabilityId: Parameters<typeof actual.cleaningHistoryActionAvailable>[0],
+      context: Parameters<typeof actual.cleaningHistoryActionAvailable>[1]
+    ) =>
+      nativeMocks.cleaningHistoryCapabilityOverrides.has(capabilityId)
+        ? nativeMocks.cleaningHistoryCapabilityOverrides.get(capabilityId)
+        : actual.cleaningHistoryActionAvailable(capabilityId, context)
+  };
+});
 
 import { registerNativeViews } from "../extension/nativeViews";
 
@@ -247,6 +269,7 @@ function resetNativeViewMocks(): void {
   nativeMocks.insertGeneratedNotebookCell.mockResolvedValue({ status: "applied" });
   nativeMocks.insertGeneratedRDocumentCode.mockReset();
   nativeMocks.insertGeneratedRDocumentCode.mockResolvedValue({ status: "applied" });
+  nativeMocks.cleaningHistoryCapabilityOverrides.clear();
 }
 
 function register(

@@ -553,6 +553,64 @@ describe("native state and presentation commands", () => {
     expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
   });
 
+  it("routes native cleaning-history consumers through each independent capability", async () => {
+    nativeMocks.cleaningHistoryCapabilityOverrides.set("inspect", false);
+    nativeMocks.cleaningHistoryCapabilityOverrides.set("edit", false);
+    nativeMocks.cleaningHistoryCapabilityOverrides.set("delete", false);
+    nativeMocks.cleaningHistoryCapabilityOverrides.set("undo", false);
+    nativeMocks.cleaningHistoryCapabilityOverrides.set("reorder", false);
+    register(noDraftSnapshot());
+
+    const context = (key: string) =>
+      ([...nativeMocks.executeCommand.mock.calls] as unknown[][])
+        .reverse()
+        .find((call) => call[0] === "setContext" && call[1] === key)?.[2];
+    expect(context("openWrangler.canInspectCleaningStep")).toBe(false);
+    expect(context("openWrangler.canEditCleaningStep")).toBe(false);
+    expect(context("openWrangler.canDeleteCleaningStep")).toBe(false);
+    expect(context("openWrangler.canUndoCleaningStep")).toBe(false);
+    expect(context("openWrangler.canReorderCleaningStep")).toBe(false);
+
+    const stepNode = treeChildren("openWrangler.cleaningSteps").find(
+      (node) => (node.cleaningStepHandle as { stepId?: unknown } | undefined)?.stepId === appliedStep.id
+    );
+    expect(stepNode?.command).toBeUndefined();
+    expect(stepNode?.contextValue).toBe("openWrangler.latestCleaningStep");
+
+    await command("openWrangler.selectStep")(appliedStep.id);
+    await command("openWrangler.editLatestStep")();
+    await command("openWrangler.editSelectedStep")(stepNode);
+    await command("openWrangler.deleteSelectedStep")(stepNode);
+    await command("openWrangler.undoStep")();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "That cleaning step is no longer available in the active dataframe."
+    );
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps native edit, delete, and undo capabilities independent", async () => {
+    nativeMocks.cleaningHistoryCapabilityOverrides.set("edit", false);
+    register(noDraftSnapshot());
+    const stepNode = treeChildren("openWrangler.cleaningSteps").find(
+      (node) => (node.cleaningStepHandle as { stepId?: unknown } | undefined)?.stepId === appliedStep.id
+    );
+    expect(stepNode?.contextValue).toBe("openWrangler.latestCleaningStep.delete");
+
+    nativeMocks.showWarningMessage.mockResolvedValueOnce("Delete step");
+    await command("openWrangler.deleteSelectedStep")(stepNode);
+    await command("openWrangler.undoStep")();
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "deleteStep", stepId: appliedStep.id })
+    );
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "undoStep",
+      expectedSessionId: "session",
+      expectedRevision: 0
+    });
+  });
+
   it("makes each effective native filter node remove that column filter", async () => {
     const filtered = noDraftSnapshot();
     filtered.viewState.filterModel = {

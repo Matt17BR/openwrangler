@@ -52,12 +52,12 @@
 
 ## Keyboard shortcuts
 
-| Command                       | Windows / Linux | macOS         | Context                                                                     |
-| ----------------------------- | --------------- | ------------- | --------------------------------------------------------------------------- |
-| `openWrangler.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
-| `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
-| `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
-| `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
+| Command                       | Windows / Linux | macOS         | Context                                                                           |
+| ----------------------------- | --------------- | ------------- | --------------------------------------------------------------------------------- |
+| `openWrangler.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`            |
+| `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`            |
+| `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditorId == openWrangler.viewer && openWrangler.canEditCleaningStep` |
+| `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canUndoCleaningStep` |
 
 ## Settings
 

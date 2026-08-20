@@ -914,13 +914,13 @@ export async function run(): Promise<void> {
         command: "openWrangler.editLatestStep",
         key: "ctrl+shift+e",
         mac: "cmd+shift+e",
-        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canEditCleaningStep"
       },
       {
         command: "openWrangler.undoStep",
         key: "ctrl+alt+z",
         mac: "cmd+alt+z",
-        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canUndoCleaningStep"
       }
     ]
   );
@@ -929,7 +929,7 @@ export async function run(): Promise<void> {
       (item) =>
         item.command === "openWrangler.editLatestStep" &&
         item.when ===
-          "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan" &&
+          "view == openWrangler.cleaningSteps && viewItem =~ /^openWrangler\\.latestCleaningStep(?:\\.[a-z]+)*\\.edit(?:\\.[a-z]+)*$/ && openWrangler.canEditCleaningStep" &&
         item.group === "inline@10"
     ),
     "Edit Latest Step must be unavailable from the Cleaning Steps menu while a draft blocks plan changes."

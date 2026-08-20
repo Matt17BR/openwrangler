@@ -15,6 +15,10 @@ import type { FilterModel, OperationKind, SessionMetadata } from "../shared/prot
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
 import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../shared/runtimeIdentity";
 import { cleaningUnavailableReason } from "../shared/sessionMode";
+import {
+  cleaningHistoryActionAvailable,
+  type CleaningHistoryCapabilityId
+} from "../shared/cleaningHistoryCapabilities";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { createNativeViewsDataExport } from "./nativeViewsDataExport";
@@ -356,11 +360,26 @@ type NativeRegistrationContext = Pick<vscode.ExtensionContext, "extensionPath" |
 const NATIVE_PLAN_CONTEXT_KEYS = [
   "openWrangler.hasDraft",
   "openWrangler.canChangePlan",
+  "openWrangler.canInspectCleaningStep",
+  "openWrangler.canEditCleaningStep",
+  "openWrangler.canDeleteCleaningStep",
+  "openWrangler.canUndoCleaningStep",
+  "openWrangler.canReorderCleaningStep",
   "openWrangler.canInsertNotebookCode",
   "openWrangler.canInsertRDocumentCode"
 ] as const;
-type NativePlanContextValues = readonly [boolean, boolean, boolean, boolean];
-const CLEARED_NATIVE_PLAN_CONTEXTS: NativePlanContextValues = [false, false, false, false];
+type NativePlanContextValues = readonly [boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean];
+const CLEARED_NATIVE_PLAN_CONTEXTS: NativePlanContextValues = [
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  false
+];
 
 class NativePlanContextOwner implements vscode.Disposable {
   private latest: NativePlanContextValues | undefined;
@@ -369,11 +388,28 @@ class NativePlanContextOwner implements vscode.Disposable {
 
   update(snapshot: ActiveSessionSnapshot | undefined): void {
     if (this.disposed) return;
+    const metadata = snapshot?.metadata;
+    const steps = metadata?.steps ?? [];
+    const planMutable = metadata?.mode === "editing" && metadata.draftStep === undefined;
+    const actionExists = (capabilityId: CleaningHistoryCapabilityId) =>
+      steps.some((_step, stepIndex) =>
+        cleaningHistoryActionAvailable(capabilityId, { stepCount: steps.length, stepIndex })
+      );
     this.enqueue([
-      Boolean(snapshot?.metadata.draftStep),
-      canEditLatestStep(snapshot?.metadata),
-      snapshot?.metadata.capabilities?.notebookInsert === true,
-      snapshot?.metadata.capabilities?.documentInsert === true
+      Boolean(metadata?.draftStep),
+      canEditLatestStep(metadata),
+      actionExists("inspect"),
+      planMutable &&
+        steps.some(
+          (step, stepIndex) =>
+            cleaningHistoryActionAvailable("edit", { stepCount: steps.length, stepIndex }) &&
+            canStartOperation(metadata, step.kind)
+        ),
+      planMutable && actionExists("delete"),
+      planMutable && actionExists("undo"),
+      planMutable && actionExists("reorder"),
+      metadata?.capabilities?.notebookInsert === true,
+      metadata?.capabilities?.documentInsert === true
     ]);
   }
 
@@ -651,7 +687,15 @@ function registerNativeViewsTransactional(
     registerCommand("openWrangler.discardStep", () => OpenWranglerPanel.sendEditorAction({ action: "discardDraft" })),
     registerCommand("openWrangler.editLatestStep", async () => {
       const snapshot = coordinator.activeSession();
-      if (!snapshot || !canEditLatestStep(snapshot.metadata)) {
+      const stepIndex = (snapshot?.metadata.steps.length ?? 0) - 1;
+      if (
+        !snapshot ||
+        !canEditLatestStep(snapshot.metadata) ||
+        !cleaningHistoryActionAvailable("edit", {
+          stepCount: snapshot.metadata.steps.length,
+          stepIndex
+        })
+      ) {
         void vscode.window.showInformationMessage(
           snapshot?.metadata.draftStep
             ? "Apply or discard the current draft before editing the latest step."
@@ -678,7 +722,16 @@ function registerNativeViewsTransactional(
         snapshot && handle?.sessionId === snapshot.sessionId && handle.revision === snapshot.metadata.revision
           ? snapshot.metadata.steps.find((candidate) => candidate.id === handle.stepId)
           : undefined;
-      if (!snapshot || !step || !canStartOperation(snapshot.metadata, step.kind)) {
+      const stepIndex = step ? (snapshot?.metadata.steps.indexOf(step) ?? -1) : -1;
+      if (
+        !snapshot ||
+        !step ||
+        !cleaningHistoryActionAvailable("edit", {
+          stepCount: snapshot.metadata.steps.length,
+          stepIndex
+        }) ||
+        !canStartOperation(snapshot.metadata, step.kind)
+      ) {
         void vscode.window.showInformationMessage(
           snapshot?.metadata.draftStep
             ? "Apply or discard the current draft before editing an applied step."
@@ -706,7 +759,17 @@ function registerNativeViewsTransactional(
         snapshot && handle?.sessionId === snapshot.sessionId && handle.revision === snapshot.metadata.revision
           ? snapshot.metadata.steps.find((candidate) => candidate.id === handle.stepId)
           : undefined;
-      if (!snapshot || !step || !canStartOperation(snapshot.metadata, step.kind)) {
+      const stepIndex = step ? (snapshot?.metadata.steps.indexOf(step) ?? -1) : -1;
+      if (
+        !snapshot ||
+        !step ||
+        snapshot.metadata.mode !== "editing" ||
+        snapshot.metadata.draftStep !== undefined ||
+        !cleaningHistoryActionAvailable("delete", {
+          stepCount: snapshot.metadata.steps.length,
+          stepIndex
+        })
+      ) {
         void vscode.window.showInformationMessage(
           snapshot?.metadata.draftStep
             ? "Apply or discard the current draft before deleting an applied step."
@@ -744,7 +807,11 @@ function registerNativeViewsTransactional(
       }
       if (
         stepId !== undefined &&
-        (typeof stepId !== "string" || !snapshot.metadata.steps.some((step) => step.id === stepId))
+        (typeof stepId !== "string" ||
+          !cleaningHistoryActionAvailable("inspect", {
+            stepCount: snapshot.metadata.steps.length,
+            stepIndex: snapshot.metadata.steps.findIndex((step) => step.id === stepId)
+          }))
       ) {
         void vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
         return;
@@ -761,7 +828,31 @@ function registerNativeViewsTransactional(
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
       }
     }),
-    registerCommand("openWrangler.undoStep", () => OpenWranglerPanel.sendEditorAction({ action: "undoStep" })),
+    registerCommand("openWrangler.undoStep", async () => {
+      const snapshot = coordinator.activeSession();
+      const stepIndex = (snapshot?.metadata.steps.length ?? 0) - 1;
+      if (
+        !snapshot ||
+        snapshot.metadata.mode !== "editing" ||
+        snapshot.metadata.draftStep !== undefined ||
+        !cleaningHistoryActionAvailable("undo", {
+          stepCount: snapshot.metadata.steps.length,
+          stepIndex
+        })
+      ) {
+        void vscode.window.showInformationMessage("Undo is not available for the active cleaning plan.");
+        return;
+      }
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "undoStep",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision
+        }))
+      ) {
+        void vscode.window.showInformationMessage("Open the active dataframe editor before undoing a cleaning step.");
+      }
+    }),
     registerCommand("openWrangler.copyCode", async () => {
       const code = codePreview.codeForExport();
       if (!code) {
@@ -1152,6 +1243,22 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       const operation = operationByKind(step.kind);
       const isLatest = index === metadata.steps.length - 1;
       const selected = stepInspection?.stepId === step.id;
+      const inspectAvailable = cleaningHistoryActionAvailable("inspect", {
+        stepCount: metadata.steps.length,
+        stepIndex: index
+      });
+      const planMutable = metadata.mode === "editing" && metadata.draftStep === undefined;
+      const editAvailable =
+        planMutable &&
+        cleaningHistoryActionAvailable("edit", { stepCount: metadata.steps.length, stepIndex: index }) &&
+        canStartOperation(metadata, step.kind);
+      const deleteAvailable =
+        planMutable && cleaningHistoryActionAvailable("delete", { stepCount: metadata.steps.length, stepIndex: index });
+      const contextValue = [
+        isLatest ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep",
+        ...(editAvailable ? ["edit"] : []),
+        ...(deleteAvailable ? ["delete"] : [])
+      ].join(".");
       return new ViewNode(
         `${index + 1}. ${operation.title}`,
         selected
@@ -1160,13 +1267,15 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
             ? "Latest applied step"
             : "Applied",
         operation.icon,
-        {
-          command: "openWrangler.selectStep",
-          title: `Inspect ${operation.title}`,
-          arguments: [step.id]
-        },
-        isLatest && !metadata.draftStep ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep",
-        undefined,
+        inspectAvailable
+          ? {
+              command: "openWrangler.selectStep",
+              title: `Inspect ${operation.title}`,
+              arguments: [step.id]
+            }
+          : undefined,
+        contextValue,
+        inspectAvailable ? undefined : "Inspection is not available for this cleaning step.",
         undefined,
         { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: step.id }
       );
