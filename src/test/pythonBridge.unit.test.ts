@@ -1477,6 +1477,48 @@ describe("PythonBridge dependency installation", () => {
     expect(information).not.toHaveBeenCalled();
   });
 
+  it("does not retain mutation uncertainty when the authorized pre-write integrity check finds a prior conflict", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const failure = new DependencyGuardCommandError(
+      "install",
+      "environment_inconsistent",
+      missingDependencies().environment.executable
+    );
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    controlled.closeWithFailure(failure);
+
+    await expect(installation).rejects.toBe(failure);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
+  });
+
+  it("retains the exact mutation token when the post-write integrity check finds a new conflict", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const failure = new DependencyGuardCommandError(
+      "install",
+      "post_install_inconsistent",
+      missingDependencies().environment.executable
+    );
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    controlled.closeWithFailure(failure);
+
+    await expect(installation).rejects.toBe(failure);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
+      expect.objectContaining({ token: TEST_DEPENDENCY_TOKEN })
+    ]);
+  });
+
   it("treats exact nonzero pip close as sufficient shutdown proof without reporting install success", async () => {
     const controlled = controlledDependencyInstall();
     const { bridge, raw, launchDependencyInstall } = createDependencyHarness();

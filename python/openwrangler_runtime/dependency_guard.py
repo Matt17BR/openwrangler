@@ -18,7 +18,9 @@ import os
 import re
 import runpy
 import stat
+import subprocess
 import sys
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -30,6 +32,9 @@ LOCK_NAME = "mutation.lock"
 MAX_FRAME_BYTES = 65_536
 MAX_MARKER_BYTES = 65_536
 MAX_DEPENDENCIES = 64
+INTEGRITY_PROTOCOL = "openwrangler-dependency-integrity-v1"
+INTEGRITY_CHECK_TIMEOUT_SECONDS = 20
+INTEGRITY_HELPER = Path(__file__).with_name("dependency_integrity.py")
 
 EXIT_SUCCESS = 0
 EXIT_INVALID_REQUEST = 10
@@ -40,6 +45,9 @@ EXIT_PIP_FAILED = 14
 EXIT_STALE_OR_MISSING_MARKER = 15
 EXIT_ENVIRONMENT_CHANGED = 16
 EXIT_INTERNAL_ERROR = 17
+EXIT_ENVIRONMENT_INCONSISTENT = 18
+EXIT_POST_INSTALL_INCONSISTENT = 19
+EXIT_INTEGRITY_CHECK_FAILED = 20
 
 _EXIT_BY_CODE = {
     "invalid_request": EXIT_INVALID_REQUEST,
@@ -50,6 +58,9 @@ _EXIT_BY_CODE = {
     "stale_or_missing_marker": EXIT_STALE_OR_MISSING_MARKER,
     "environment_changed": EXIT_ENVIRONMENT_CHANGED,
     "internal_error": EXIT_INTERNAL_ERROR,
+    "environment_inconsistent": EXIT_ENVIRONMENT_INCONSISTENT,
+    "post_install_inconsistent": EXIT_POST_INSTALL_INCONSISTENT,
+    "integrity_check_failed": EXIT_INTEGRITY_CHECK_FAILED,
 }
 
 _MARKER_PATTERN = re.compile(r"^mutation-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$")
@@ -2212,6 +2223,98 @@ def _run_pip(dependencies: list[dict[str, Any]]) -> int:
     return exit_code
 
 
+def _decode_integrity_frame(raw: bytes) -> str:
+    if (
+        not raw
+        or len(raw) > MAX_FRAME_BYTES
+        or raw.count(b"\n") != 1
+        or not raw.endswith(b"\n")
+        or raw.endswith(b"\r\n")
+        or b"\x00" in raw
+    ):
+        _fail("integrity_check_failed")
+    try:
+        decoded = json.loads(
+            raw[:-1].decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda _value: _fail("integrity_check_failed"),
+        )
+    except GuardError:
+        _fail("integrity_check_failed")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        _fail("integrity_check_failed")
+    if (
+        not isinstance(decoded, dict)
+        or set(decoded) != {"kind", "protocol", "state"}
+        or decoded["kind"] != "integrity"
+        or decoded["protocol"] != INTEGRITY_PROTOCOL
+        or decoded["state"] not in {"clean", "inconsistent", "failed"}
+    ):
+        _fail("integrity_check_failed")
+    return cast(str, decoded["state"])
+
+
+def _bounded_process_output(process: subprocess.Popen[bytes]) -> tuple[bytes, bool]:
+    stream = process.stdout
+    if stream is None:
+        return b"", True
+    output = bytearray()
+    failed = False
+
+    def read() -> None:
+        nonlocal failed
+        try:
+            while len(output) <= MAX_FRAME_BYTES:
+                chunk = stream.read(min(8192, MAX_FRAME_BYTES + 1 - len(output)))
+                if not chunk:
+                    return
+                output.extend(chunk)
+            with contextlib.suppress(OSError):
+                process.kill()
+        except (OSError, ValueError):
+            failed = True
+            with contextlib.suppress(OSError):
+                process.kill()
+
+    reader = threading.Thread(target=read, name="openwrangler-integrity-output", daemon=True)
+    reader.start()
+    timed_out = False
+    try:
+        process.wait(timeout=INTEGRITY_CHECK_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        with contextlib.suppress(OSError):
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+    reader.join(timeout=5)
+    with contextlib.suppress(OSError):
+        stream.close()
+    return bytes(output), timed_out or failed or reader.is_alive()
+
+
+def _check_environment_integrity(*, inconsistent_code: str) -> None:
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", str(INTEGRITY_HELPER)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, ValueError):
+        _fail("integrity_check_failed")
+    raw, failed = _bounded_process_output(process)
+    if failed or process.returncode != 0:
+        _fail("integrity_check_failed")
+    state = _decode_integrity_frame(raw)
+    if state == "inconsistent":
+        _fail(inconsistent_code)
+    if state != "clean":
+        _fail("integrity_check_failed")
+
+
 def _pep440_specifier(value: str) -> Any:
     from pip._vendor.packaging.specifiers import SpecifierSet
 
@@ -2288,8 +2391,16 @@ def _run_install(request: dict[str, Any]) -> int:
                 code="malformed_state",
             )
             _revalidate_actual_environment(environment)
+            _check_environment_integrity(inconsistent_code="environment_inconsistent")
+            _revalidate_actual_environment(environment)
             package_write_may_have_started = True
-            return _run_pip(request["dependencies"])
+            pip_exit = _run_pip(request["dependencies"])
+            if pip_exit != EXIT_SUCCESS:
+                return pip_exit
+            _revalidate_actual_environment(environment)
+            _check_environment_integrity(inconsistent_code="post_install_inconsistent")
+            _revalidate_actual_environment(environment)
+            return EXIT_SUCCESS
         except GuardError as error:
             if not package_write_may_have_started:
                 with contextlib.suppress(GuardError):
@@ -2361,6 +2472,8 @@ def _run_validate(request: dict[str, Any]) -> int:
         if expected_token != marker["token"]:
             _fail("stale_or_missing_marker")
         _validate_dependencies(marker["dependencies"])
+        _revalidate_actual_environment(environment)
+        _check_environment_integrity(inconsistent_code="post_install_inconsistent")
         _revalidate_actual_environment(environment)
         _remove_exact_marker(
             journal,

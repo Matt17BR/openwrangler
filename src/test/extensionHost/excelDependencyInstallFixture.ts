@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { sameAcceptanceExecutable } from "./dependencyInstallLifecycleFixture";
 
@@ -8,6 +8,7 @@ export interface ExcelDependencyInstallFixture {
   readonly executable: string;
   readonly marker: string;
   readonly invocation: string;
+  readonly integrityChecks: string;
 }
 
 export function packagedExcelDependencyWorkbookSource(): string {
@@ -48,7 +49,7 @@ export function excelDependencyGateSource(marker: string): string {
   ].join("\n");
 }
 
-export function excelDependencyPipSource(marker: string, invocation: string): string {
+export function excelDependencyPipSource(marker: string, invocation: string, integrityChecks: string): string {
   return [
     "import json",
     "import os",
@@ -56,6 +57,14 @@ export function excelDependencyPipSource(marker: string, invocation: string): st
     "",
     `marker_path = ${JSON.stringify(marker)}`,
     `invocation_path = ${JSON.stringify(invocation)}`,
+    `integrity_checks_path = ${JSON.stringify(integrityChecks)}`,
+    "if sys.argv[1:] == ['check', '--disable-pip-version-check']:",
+    "    from pip._internal.cli.main import main as pip_main",
+    "    result = pip_main(sys.argv[1:])",
+    "    if result == 0:",
+    "        with open(integrity_checks_path, 'a', encoding='utf-8') as stream:",
+    "            stream.write('clean\\n')",
+    "    raise SystemExit(result)",
     "expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']",
     "if sys.argv[1:] != expected:",
     "    raise SystemExit(91)",
@@ -118,6 +127,7 @@ export function createExcelDependencyInstallPython(directory: string, python: st
           "    'executable': sys.executable,",
           "    'purelib': sysconfig.get_path('purelib'),",
           "    'pip': pip.__file__,",
+          "    'pipDistributionVersion': importlib.metadata.version('pip'),",
           "    'pipSpecifiers': pip._vendor.packaging.specifiers.__file__,",
           "    'pipVersion': pip._vendor.packaging.version.__file__,",
           "    'pandas': importlib.metadata.version('pandas'),",
@@ -148,6 +158,7 @@ export function createExcelDependencyInstallPython(directory: string, python: st
   assert.equal(typeof parent.pip === "string" && path.isAbsolute(parent.pip), true);
   assert.equal(typeof parent.pipSpecifiers === "string" && path.isAbsolute(parent.pipSpecifiers), true);
   assert.equal(typeof parent.pipVersion === "string" && path.isAbsolute(parent.pipVersion), true);
+  assert.equal(typeof parent.pipDistributionVersion === "string" && parent.pipDistributionVersion.length > 0, true);
   assert.equal(
     lstatSync(String(parent.purelib)).isDirectory(),
     true,
@@ -191,6 +202,7 @@ export function createExcelDependencyInstallPython(directory: string, python: st
 
   const marker = path.join(directory, "openpyxl-installed");
   const invocation = path.join(directory, "pip-invocation.json");
+  const integrityChecks = path.join(directory, "pip-integrity-checks.txt");
   writeFileSync(path.join(sitePackages, "00-openwrangler-parent-packages.pth"), `${String(parent.purelib)}\n`, {
     encoding: "utf8",
     flag: "wx"
@@ -207,11 +219,16 @@ export function createExcelDependencyInstallPython(directory: string, python: st
 
   const pipPackage = path.join(sitePackages, "pip");
   mkdirSync(pipPackage);
-  writeFileSync(path.join(pipPackage, "__init__.py"), `__path__.append(${JSON.stringify(parentPipPackage)})\n`, {
-    encoding: "utf8",
-    flag: "wx"
-  });
-  writeFileSync(path.join(pipPackage, "__main__.py"), excelDependencyPipSource(marker, invocation), {
+  writeFileSync(
+    path.join(pipPackage, "__init__.py"),
+    [
+      `__version__ = ${JSON.stringify(String(parent.pipDistributionVersion))}`,
+      `__path__.append(${JSON.stringify(parentPipPackage)})`,
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  writeFileSync(path.join(pipPackage, "__main__.py"), excelDependencyPipSource(marker, invocation, integrityChecks), {
     encoding: "utf8",
     flag: "wx"
   });
@@ -284,7 +301,15 @@ export function createExcelDependencyInstallPython(directory: string, python: st
     true,
     "The XLSX dependency-test environment must import only its owned fake pip package."
   );
+  execFileSync(executable, ["-I", "-m", "pip", "check", "--disable-pip-version-check"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30_000,
+    windowsHide: true
+  });
+  unlinkSync(integrityChecks);
   assert.equal(existsSync(marker), false);
   assert.equal(existsSync(invocation), false);
-  return { executable, marker, invocation };
+  assert.equal(existsSync(integrityChecks), false);
+  return { executable, marker, invocation, integrityChecks };
 }

@@ -33,10 +33,14 @@ describe("Excel dependency-install fixture", () => {
   it("builds an exact isolated pip invocation and publishes evidence before installation", () => {
     const marker = "/fixture/openpyxl-installed";
     const invocation = "/fixture/pip-invocation.json";
-    const source = excelDependencyPipSource(marker, invocation);
+    const integrityChecks = "/fixture/pip-integrity-checks.txt";
+    const source = excelDependencyPipSource(marker, invocation, integrityChecks);
 
     expect(source).toContain(`marker_path = ${JSON.stringify(marker)}`);
     expect(source).toContain(`invocation_path = ${JSON.stringify(invocation)}`);
+    expect(source).toContain(`integrity_checks_path = ${JSON.stringify(integrityChecks)}`);
+    expect(source).toContain("from pip._internal.cli.main import main as pip_main");
+    expect(source).toContain("stream.write('clean\\n')");
     expect(source).toContain("expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']");
     expect(source).toContain("raise SystemExit(91)");
     for (const field of [
@@ -55,6 +59,9 @@ describe("Excel dependency-install fixture", () => {
     expect(source.match(/stream\.flush\(\)\n {4}os\.fsync\(stream\.fileno\(\)\)/gu)).toHaveLength(2);
     expect(source.indexOf("os.replace(invocation_temporary, invocation_path)")).toBeLessThan(
       source.indexOf("with open(marker_temporary, 'xb') as stream:")
+    );
+    expect(source.indexOf("if sys.argv[1:] == ['check', '--disable-pip-version-check']:")).toBeLessThan(
+      source.indexOf("expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']")
     );
     expect(source).toContain("stream.write(b'openpyxl>=3.1.5\\n')");
     expect(source.endsWith("\n")).toBe(true);

@@ -42,6 +42,8 @@ export function dependencyInstallLifecycleSources(
       `started_path = ${JSON.stringify(started)}`,
       `release_path = ${JSON.stringify(release)}`,
       `completed_path = ${JSON.stringify(completed)}`,
+      "if sys.argv[1:] == ['check', '--disable-pip-version-check']:",
+      "    raise SystemExit(0)",
       "environment_keys = {key.upper() for key in os.environ}",
       "def publish_json(path, value):",
       "    temporary_path = f'{path}.{os.getpid()}.tmp'",

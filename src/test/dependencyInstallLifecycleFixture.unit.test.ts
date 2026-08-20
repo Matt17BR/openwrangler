@@ -32,6 +32,7 @@ describe("dependency-install lifecycle fixtures", () => {
     expect(fakePip).toContain(`started_path = ${JSON.stringify(started)}`);
     expect(fakePip).toContain(`release_path = ${JSON.stringify(release)}`);
     expect(fakePip).toContain(`completed_path = ${JSON.stringify(completed)}`);
+    expect(fakePip).toContain("if sys.argv[1:] == ['check', '--disable-pip-version-check']:\n    raise SystemExit(0)");
     expect(fakePip).toContain("with open(temporary_path, 'x', encoding='utf-8') as stream:");
     expect(fakePip).toContain("stream.flush()\n        os.fsync(stream.fileno())");
     expect(fakePip).toContain("os.replace(temporary_path, path)");
@@ -48,6 +49,9 @@ describe("dependency-install lifecycle fixtures", () => {
     }
     expect(fakePip.indexOf("publish_json(started_path, details)")).toBeLessThan(
       fakePip.indexOf("while not os.path.exists(release_path):")
+    );
+    expect(fakePip.indexOf("if sys.argv[1:] == ['check', '--disable-pip-version-check']:")).toBeLessThan(
+      fakePip.indexOf("publish_json(started_path, details)")
     );
     expect(fakePip).toContain("deadline = time.monotonic() + 30");
     expect(fakePip).toContain("raise SystemExit(92)");

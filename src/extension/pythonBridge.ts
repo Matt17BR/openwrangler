@@ -11,6 +11,7 @@ import type {
 import { isSessionBoundRequest } from "../shared/protocol";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
+import { DependencyGuardCommandError } from "./dependencyGuardProtocol";
 import {
   DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS,
   DEPENDENCY_INSTALL_TIMEOUT_MS,
@@ -1300,7 +1301,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         try {
           await process.completion;
         } catch (error) {
-          this.markDependencyEnvironmentUncertain(missing.environment, process.token, error, missing.selection, true);
+          if (!(error instanceof DependencyGuardCommandError && error.code === "environment_inconsistent")) {
+            this.markDependencyEnvironmentUncertain(missing.environment, process.token, error, missing.selection, true);
+          }
           if (this.disposed) return false;
           throw error;
         }

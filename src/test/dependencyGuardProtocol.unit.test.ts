@@ -30,7 +30,10 @@ const EXPECTED_DEPENDENCY_GUARD_EXIT_CODES = {
   pip_failed: 14,
   stale_or_missing_marker: 15,
   environment_changed: 16,
-  internal_error: 17
+  internal_error: 17,
+  environment_inconsistent: 18,
+  post_install_inconsistent: 19,
+  integrity_check_failed: 20
 } as const satisfies Readonly<Record<DependencyGuardErrorCode, number>>;
 const ENVIRONMENT: PythonEnvironment = {
   executable: "/env/bin/python",

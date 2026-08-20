@@ -173,6 +173,11 @@ export function createPackagedExcelDependencyInstallJourney({
       assert.equal(testing.runtimeRunning(), false, "Missing Excel support must fail before runtime startup.");
       assert.equal(existsSync(dependency.marker), false, "The fake installation marker must not exist before consent.");
       assert.equal(existsSync(dependency.invocation), false, "The private fake pip must not run before consent.");
+      assert.equal(
+        existsSync(dependency.integrityChecks),
+        false,
+        "No pip-owned integrity command may run before exact install consent."
+      );
       assertExactBytes(readFileSync(workbookPath), workbookBytes, "The failed XLSX open must not modify the workbook.");
 
       const initialInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
@@ -390,6 +395,11 @@ export function createPackagedExcelDependencyInstallJourney({
       assert.equal(invocation.pythonHomePresent, false);
       assert.match(path.basename(String(invocation.cwd)), /^openwrangler-pip-/u);
       assert.equal(readFileSync(dependency.marker, "utf8"), "openpyxl>=3.1.5\n");
+      assert.equal(
+        readFileSync(dependency.integrityChecks, "utf8"),
+        "clean\nclean\nclean\n",
+        "The confirmed mutation must run one pre-write, one post-write, and one recovery validation check."
+      );
       assertExactBytes(
         readFileSync(workbookPath),
         workbookBytes,
