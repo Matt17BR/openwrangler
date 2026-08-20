@@ -2,14 +2,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, realpath, readlink, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const ASSIGNMENT_PROTOCOL = "openwrangler-qualification-assignment-v1";
 const RECEIPT_PROTOCOL = "openwrangler-qualification-receipt-v1";
 const MAX_ASSIGNMENT_BYTES = 32 * 1024;
+const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 const MAX_RECEIPT_BYTES = 256 * 1024;
+const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TERMINATION_GRACE_MS = 10_000;
 const PROCESS_POLL_MS = 25;
@@ -32,12 +34,35 @@ const ASSIGNMENT_KEYS = [
 ];
 const GIT_OVERRIDE_KEYS = new Set([
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_ATTR_NOSYSTEM",
+  "GIT_AUTHOR_DATE",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_AUTHOR_NAME",
+  "GIT_CEILING_DIRECTORIES",
   "GIT_COMMON_DIR",
+  "GIT_COMMITTER_DATE",
+  "GIT_COMMITTER_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_CONFIG",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_SYSTEM",
   "GIT_DIR",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_EXEC_PATH",
   "GIT_INDEX_FILE",
+  "GIT_NAMESPACE",
+  "GIT_NO_REPLACE_OBJECTS",
   "GIT_OBJECT_DIRECTORY",
-  "GIT_WORK_TREE"
+  "GIT_QUARANTINE_PATH",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_SHALLOW_FILE",
+  "GIT_WORK_TREE",
+  "EMAIL"
 ]);
+const GIT_OVERRIDE_PREFIXES = Object.freeze(["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"]);
 const SAFE_PASSTHROUGH_ENVIRONMENT_KEYS = Object.freeze([
   "CI",
   "COLORTERM",
@@ -103,7 +128,6 @@ const PRIVATE_FILE_ENVIRONMENT = Object.freeze({
   npm_config_userconfig: "npmUserConfig"
 });
 const WORKTREE_PATH_ENVIRONMENT = Object.freeze({
-  GIT_WORK_TREE: "worktree",
   OPEN_WRANGLER_NODE_MODULES: "nodeModules",
   OPEN_WRANGLER_VITEST_CACHE_DIR: "vitestCache",
   VITE_CACHE_DIR: "vitestCache",
@@ -116,6 +140,7 @@ const EXACT_ENVIRONMENT_VALUES = Object.freeze({
   PYTHONNOUSERSITE: "1"
 });
 const FORBIDDEN_INHERITED_ENVIRONMENT_KEYS = Object.freeze([
+  ...GIT_OVERRIDE_KEYS,
   "NODE_PATH",
   "PIP_PREFIX",
   "PIP_TARGET",
@@ -125,6 +150,7 @@ const FORBIDDEN_INHERITED_ENVIRONMENT_KEYS = Object.freeze([
 const QUALIFICATION_ENVIRONMENT_CONTRACT = Object.freeze({
   exactValues: EXACT_ENVIRONMENT_VALUES,
   forbiddenInheritedKeys: FORBIDDEN_INHERITED_ENVIRONMENT_KEYS,
+  forbiddenInheritedPrefixes: GIT_OVERRIDE_PREFIXES,
   passThroughKeys: SAFE_PASSTHROUGH_ENVIRONMENT_KEYS,
   privateDirectories: PRIVATE_DIRECTORY_ENVIRONMENT,
   privateFiles: PRIVATE_FILE_ENVIRONMENT,
@@ -182,10 +208,17 @@ function isInside(path, parent) {
   return suffix !== "" && !suffix.startsWith("..") && !isAbsolute(suffix);
 }
 
+function isGitOverrideEnvironmentKey(key) {
+  const normalized = key.toUpperCase();
+  return GIT_OVERRIDE_KEYS.has(normalized) || GIT_OVERRIDE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
 function cleanGitEnvironment(environment = process.env) {
   const result = { ...environment };
-  for (const key of GIT_OVERRIDE_KEYS) {
-    delete result[key];
+  for (const key of Object.keys(result)) {
+    if (isGitOverrideEnvironmentKey(key)) {
+      delete result[key];
+    }
   }
   return result;
 }
@@ -204,6 +237,26 @@ function git(worktree, arguments_) {
     fail(`Git ${arguments_.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
   }
   return result.stdout.trim();
+}
+
+function optionalGitConfig(worktree, key) {
+  const result = spawnSync("git", ["-C", worktree, "config", "--get", key], {
+    encoding: "utf8",
+    env: cleanGitEnvironment(),
+    maxBuffer: 1024 * 1024,
+    windowsHide: true
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status === 1 && result.stdout === "") {
+    return null;
+  }
+  if (result.status !== 0) {
+    fail(`Git config ${key} failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+  const value = result.stdout.trim();
+  return value === "" ? null : value;
 }
 
 async function fileIdentity(path, expectedKind) {
@@ -246,20 +299,29 @@ function sameDirectorySnapshot(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
 }
 
-async function openPinnedDirectory(path, label) {
-  const before = await lstat(path, { bigint: true });
-  if (before.isSymbolicLink() || !before.isDirectory() || (await realpath(path)) !== path) {
-    fail(`${label} must be one canonical non-symbolic-link directory`);
+async function openPinnedDirectory(path, label, { afterOpenForTest } = {}) {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (error?.code === "ELOOP" || error?.code === "ENOTDIR") {
+      fail(`${label} must be one canonical non-symbolic-link directory`);
+    }
+    throw error;
   }
-  const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = await handle.stat({ bigint: true });
-    const after = await lstat(path, { bigint: true });
+    await afterOpenForTest?.({ handle, path });
+    const namedBefore = await lstat(path, { bigint: true });
+    const canonical = await realpath(path);
+    const namedAfter = await lstat(path, { bigint: true });
     if (
       !opened.isDirectory() ||
-      !sameDirectorySnapshot(before, opened) ||
-      !sameDirectorySnapshot(opened, after) ||
-      (await realpath(path)) !== path
+      namedBefore.isSymbolicLink() ||
+      namedAfter.isSymbolicLink() ||
+      !sameDirectorySnapshot(opened, namedBefore) ||
+      !sameDirectorySnapshot(namedBefore, namedAfter) ||
+      canonical !== path
     ) {
       fail(`${label} changed while it was opened`);
     }
@@ -305,21 +367,38 @@ async function readPinnedBytes(handle, maximumBytes, label) {
   return { bytes, snapshot: opened };
 }
 
-async function openPinnedRegularFile(path, maximumBytes, label) {
-  const before = await lstat(path, { bigint: true });
-  if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1n) {
-    fail(`${label} must be a singly linked regular file`);
-  }
-  if ((await realpath(path)) !== path) {
-    fail(`${label} must not use an aliased parent`);
-  }
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+async function openPinnedRegularFile(path, maximumBytes, label, { afterOpenForTest } = {}) {
+  let handle;
   try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (error?.code === "ELOOP") {
+      fail(`${label} must be a singly linked regular file`);
+    }
+    throw error;
+  }
+  try {
+    const opened = await handle.stat({ bigint: true });
+    await afterOpenForTest?.({ handle, path });
+    const namedBefore = await lstat(path, { bigint: true });
+    const canonical = await realpath(path);
+    const namedAfter = await lstat(path, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      namedBefore.isSymbolicLink() ||
+      namedAfter.isSymbolicLink() ||
+      !sameImmutableSnapshot(opened, namedBefore) ||
+      !sameImmutableSnapshot(namedBefore, namedAfter) ||
+      canonical !== path
+    ) {
+      fail(`${label} changed while it was opened`);
+    }
     const { bytes, snapshot } = await readPinnedBytes(handle, maximumBytes, label);
     const after = await lstat(path, { bigint: true });
     if (
       after.isSymbolicLink() ||
-      !sameImmutableSnapshot(before, snapshot) ||
+      !sameImmutableSnapshot(opened, snapshot) ||
       !sameImmutableSnapshot(snapshot, after) ||
       (await realpath(path)) !== path
     ) {
@@ -444,10 +523,16 @@ async function openGitOwnerPins(gitIdentity, worktreePin) {
   try {
     pins.commonDirectory = await openPinnedDirectory(gitIdentity.commonDirectory.path, "Git common-directory owner");
     pins.gitDirectory = await openPinnedDirectory(gitIdentity.gitDirectory.path, "Git-directory owner");
+    pins.gitConfig = await openPinnedRegularFile(
+      join(gitIdentity.commonDirectory.path, "config"),
+      MAX_GIT_CONFIG_BYTES,
+      "Git config owner"
+    );
     if (gitIdentity.nodeModules) {
       pins.nodeModules = await openPinnedDirectory(gitIdentity.nodeModules.path, "node_modules owner");
     }
     for (const [key, pin] of Object.entries(pins)) {
+      if (key === "gitConfig") continue;
       const identity = key === "worktree" ? gitIdentity.worktree : gitIdentity[key];
       if (pin.snapshot.dev.toString() !== identity.device || pin.snapshot.ino.toString() !== identity.inode) {
         fail(`${key} changed before its owner could be pinned`);
@@ -462,12 +547,31 @@ async function openGitOwnerPins(gitIdentity, worktreePin) {
 
 async function verifyGitOwnerPins(pins) {
   for (const [key, pin] of Object.entries(pins)) {
-    await verifyPinnedDirectory(pin, `${key} owner`);
+    if (key === "gitConfig") {
+      await verifyPinnedRegularFile(pin, MAX_GIT_CONFIG_BYTES, "Git config owner");
+    } else {
+      await verifyPinnedDirectory(pin, `${key} owner`);
+    }
   }
 }
 
 async function closeDirectoryPins(pins) {
   await Promise.all(Object.values(pins ?? {}).map((pin) => pin.handle.close()));
+}
+
+async function captureGitConfigIdentity(assignment, pin) {
+  const bytes = await verifyPinnedRegularFile(pin, MAX_GIT_CONFIG_BYTES, "Git config owner");
+  return {
+    device: pin.snapshot.dev.toString(),
+    effectiveEmail: optionalGitConfig(assignment.worktree, "user.email"),
+    effectiveName: optionalGitConfig(assignment.worktree, "user.name"),
+    inode: pin.snapshot.ino.toString(),
+    links: pin.snapshot.nlink.toString(),
+    mode: Number(pin.snapshot.mode & 0o777n),
+    path: pin.path,
+    sha256: sha256(bytes),
+    size: bytes.length
+  };
 }
 
 function assertSameGitIdentity(before, after) {
@@ -480,6 +584,9 @@ function assertSameGitIdentity(before, after) {
     if (!sameIdentity(before[key], after[key])) {
       fail(`worktree ${key} identity changed during qualification`);
     }
+  }
+  if (JSON.stringify(before.gitConfig) !== JSON.stringify(after.gitConfig)) {
+    fail("worktree Git config or effective identity changed during qualification");
   }
   if (before.nodeModules === null && after.nodeModules !== null) {
     return;
@@ -539,6 +646,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     artifacts: join(assignment.stateRoot, "artifacts"),
     browserProfile: join(assignment.stateRoot, "browser", "profile"),
     corepackHome: join(assignment.stateRoot, "node", "corepack"),
+    executableSnapshots: join(assignment.stateRoot, "runs", assignment.runId, "executables"),
     home: join(assignment.stateRoot, "home"),
     nodeModules: join(assignment.worktree, "node_modules"),
     npmCache: join(assignment.stateRoot, "node", "npm-cache"),
@@ -633,8 +741,9 @@ async function createStateLayout(assignment, assignmentDigest) {
   try {
     ownerPins.stateRoot = await openPinnedDirectory(layout.stateRoot, "stateRoot owner");
     ownerPins.artifacts = await openPinnedDirectory(layout.artifacts, "artifact owner");
+    ownerPins.executableSnapshots = await openPinnedDirectory(layout.executableSnapshots, "executable-snapshot owner");
     for (const [key, pin] of Object.entries(ownerPins)) {
-      const identity = key === "stateRoot" ? stateRootIdentity : identities.artifacts;
+      const identity = key === "stateRoot" ? stateRootIdentity : identities[key];
       if (pin.snapshot.dev.toString() !== identity.device || pin.snapshot.ino.toString() !== identity.inode) {
         fail(`${key} owner changed before it could be pinned`);
       }
@@ -651,7 +760,7 @@ function quotePytestPath(path) {
   return `'${path.replaceAll("'", `'"'"'`)}'`;
 }
 
-function isolatedEnvironment(assignmentFile, assignment, gitIdentity, layout, hostEnvironment) {
+function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment) {
   const environment = {};
   for (const key of SAFE_PASSTHROUGH_ENVIRONMENT_KEYS) {
     const value = hostEnvironment[key];
@@ -666,10 +775,9 @@ function isolatedEnvironment(assignmentFile, assignment, gitIdentity, layout, ho
     environment[key] = layout[layoutKey];
   }
   for (const [key, layoutKey] of Object.entries(WORKTREE_PATH_ENVIRONMENT)) {
-    environment[key] = layoutKey === "worktree" ? assignment.worktree : layout[layoutKey];
+    environment[key] = layout[layoutKey];
   }
   Object.assign(environment, EXACT_ENVIRONMENT_VALUES, {
-    GIT_DIR: gitIdentity.gitDirectory.path,
     OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT: assignmentFile,
     OPEN_WRANGLER_QUALIFICATION_ROOT: assignment.stateRoot,
     OPEN_WRANGLER_QUALIFICATION_RUN_ID: assignment.runId,
@@ -696,33 +804,67 @@ function validateBound(value, maximum, label) {
   }
 }
 
-async function openPinnedExecutable(path, allowedSymbolicLinkTarget) {
-  assertCanonicalAbsolutePath(path, "qualification command");
-  const before = await lstat(path, { bigint: true });
-  if (before.isSymbolicLink()) {
-    if (!allowedSymbolicLinkTarget || (await realpath(path)) !== allowedSymbolicLinkTarget) {
-      fail("qualification command must not be a symbolic link");
-    }
+async function openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget) {
+  if (!allowedSymbolicLinkTarget) {
+    fail("qualification command must not be a symbolic link");
+  }
+  const target = await openPinnedExecutable(allowedSymbolicLinkTarget);
+  try {
+    const before = await lstat(path, { bigint: true });
     const linkText = await readlink(path);
-    const target = await openPinnedExecutable(allowedSymbolicLinkTarget);
+    const canonical = await realpath(path);
+    const after = await lstat(path, { bigint: true });
+    if (
+      !before.isSymbolicLink() ||
+      !after.isSymbolicLink() ||
+      !sameImmutableSnapshot(before, after) ||
+      canonical !== allowedSymbolicLinkTarget
+    ) {
+      fail("qualification command symbolic link changed while it was resolved");
+    }
     return { before, linkText, path, symbolicLinkTarget: allowedSymbolicLinkTarget, target };
+  } catch (error) {
+    await closePinnedExecutable(target);
+    throw error;
   }
-  if (!before.isFile() || before.nlink !== 1n || (process.platform !== "win32" && (before.mode & 0o111n) === 0n)) {
-    fail("qualification command must be one executable singly linked regular file");
+}
+
+async function openPinnedExecutable(path, allowedSymbolicLinkTarget, { afterOpenForTest } = {}) {
+  assertCanonicalAbsolutePath(path, "qualification command");
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (error?.code === "ELOOP") {
+      return openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget);
+    }
+    throw error;
   }
-  if ((await realpath(path)) !== path) {
-    fail("qualification command must not use an aliased parent");
-  }
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = await handle.stat({ bigint: true });
-    const after = await lstat(path, { bigint: true });
-    if (!sameImmutableSnapshot(before, opened) || !sameImmutableSnapshot(opened, after)) {
+    await afterOpenForTest?.({ handle, path });
+    const namedBefore = await lstat(path, { bigint: true });
+    if (namedBefore.isSymbolicLink()) {
+      await handle.close();
+      handle = undefined;
+      return openPinnedSymbolicExecutable(path, allowedSymbolicLinkTarget);
+    }
+    const canonical = await realpath(path);
+    const namedAfter = await lstat(path, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      (process.platform !== "win32" && (opened.mode & 0o111n) === 0n) ||
+      namedAfter.isSymbolicLink() ||
+      !sameImmutableSnapshot(opened, namedBefore) ||
+      !sameImmutableSnapshot(namedBefore, namedAfter) ||
+      canonical !== path
+    ) {
       fail("qualification command changed while it was opened");
     }
     return { before: opened, handle, path };
   } catch (error) {
-    await handle.close();
+    await handle?.close();
     throw error;
   }
 }
@@ -759,6 +901,96 @@ async function closePinnedExecutable(value) {
   } else if (value?.handle) {
     await value.handle.close();
   }
+}
+
+function executableLeaf(value) {
+  return value.target ? executableLeaf(value.target) : value;
+}
+
+function executableIdentity(value) {
+  return {
+    device: value.before.dev.toString(),
+    inode: value.before.ino.toString(),
+    links: value.before.nlink.toString(),
+    mode: Number(value.before.mode & 0o777n),
+    path: value.path,
+    size: Number(value.before.size)
+  };
+}
+
+async function createExecutableSnapshot(executable, snapshotRoot) {
+  await verifyPinnedExecutable(executable);
+  const source = executableLeaf(executable);
+  if (source.before.size <= 0n || source.before.size > BigInt(MAX_EXECUTABLE_BYTES)) {
+    fail("qualification command executable size is invalid");
+  }
+  const extension = extname(source.path);
+  const stateRoot = resolve(snapshotRoot, "../../..");
+  const destinationRoot = isInside(executable.path, stateRoot) ? dirname(executable.path) : snapshotRoot;
+  const snapshotPath = join(destinationRoot, `${randomUUID()}${extension}`);
+  const writer = await open(
+    snapshotPath,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+    Number(source.before.mode & 0o777n)
+  );
+  const digest = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  try {
+    await writer.chmod(Number(source.before.mode & 0o777n));
+    while (offset < Number(source.before.size)) {
+      const length = Math.min(buffer.length, Number(source.before.size) - offset);
+      const { bytesRead } = await source.handle.read(buffer, 0, length, offset);
+      if (bytesRead <= 0) fail("qualification command ended while its immutable snapshot was created");
+      digest.update(buffer.subarray(0, bytesRead));
+      let written = 0;
+      while (written < bytesRead) {
+        const result = await writer.write(buffer, written, bytesRead - written, offset + written);
+        if (result.bytesWritten <= 0) fail("qualification command snapshot write made no progress");
+        written += result.bytesWritten;
+      }
+      offset += bytesRead;
+    }
+    await writer.sync();
+    const completed = await writer.stat({ bigint: true });
+    if (
+      !completed.isFile() ||
+      completed.nlink !== 1n ||
+      completed.size !== source.before.size ||
+      Number(completed.mode & 0o777n) !== Number(source.before.mode & 0o777n)
+    ) {
+      fail("qualification command snapshot identity is invalid");
+    }
+  } finally {
+    await writer.close();
+  }
+  await verifyPinnedExecutable(executable);
+  const snapshot = await openPinnedExecutable(snapshotPath);
+  const snapshotLeaf = executableLeaf(snapshot);
+  if (snapshotLeaf.before.size !== source.before.size) {
+    await closePinnedExecutable(snapshot);
+    fail("qualification command snapshot size changed before launch");
+  }
+  return {
+    record: {
+      sha256: digest.digest("hex"),
+      snapshot: executableIdentity(snapshotLeaf),
+      source: executableIdentity(source),
+      sourcePath: executable.path
+    },
+    snapshot,
+    source: executable
+  };
+}
+
+async function verifyExecutableLaunch(value) {
+  await verifyPinnedExecutable(value.source);
+  await verifyPinnedExecutable(value.snapshot);
+}
+
+async function closeExecutableLaunch(value) {
+  await closePinnedExecutable(value.snapshot);
+  await closePinnedExecutable(value.source);
 }
 
 function posixProcessGroupRunning(processGroup) {
@@ -811,8 +1043,14 @@ function waitForSpawnedProcess(child) {
 
 async function runPosixOwnedCommand(command, arguments_, options) {
   let child;
+  await options.beforeSpawnForTest?.({
+    executedPath: command,
+    sourcePath: options.sourceCommand,
+    strategy: options.executionStrategy
+  });
   try {
     child = spawn(command, arguments_, {
+      argv0: options.launchArgv0,
       cwd: options.cwd,
       detached: true,
       env: options.environment,
@@ -829,6 +1067,13 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       timedOut: false,
       treeEmpty: true
     };
+  } finally {
+    await options.afterSpawnForTest?.({
+      child,
+      executedPath: command,
+      sourcePath: options.sourceCommand,
+      strategy: options.executionStrategy
+    });
   }
   const completion = waitForSpawnedProcess(child);
   let timer;
@@ -965,21 +1210,34 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   supervisor.stdin.on("error", (error) => {
     controlError ??= error;
   });
-  supervisor.stdin.write(
-    `${JSON.stringify({
-      args: arguments_,
-      attestationToken: token,
-      command: "launch",
-      cwd: options.cwd,
-      environment: options.environment,
-      executable: command,
-      protocol: 1
-    })}\n`,
-    "utf8",
-    (error) => {
-      controlError ??= error;
-    }
-  );
+  await options.beforeSpawnForTest?.({
+    executedPath: command,
+    sourcePath: options.sourceCommand,
+    strategy: options.executionStrategy
+  });
+  try {
+    supervisor.stdin.write(
+      `${JSON.stringify({
+        args: arguments_,
+        attestationToken: token,
+        command: "launch",
+        cwd: options.cwd,
+        environment: options.environment,
+        executable: command,
+        protocol: 1
+      })}\n`,
+      "utf8",
+      (error) => {
+        controlError ??= error;
+      }
+    );
+  } finally {
+    await options.afterSpawnForTest?.({
+      executedPath: command,
+      sourcePath: options.sourceCommand,
+      strategy: options.executionStrategy
+    });
+  }
   let timer;
   const outcome = await Promise.race([
     completion,
@@ -1032,10 +1290,18 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
 
 async function runOwnedCommand(command, arguments_, options) {
   let executable;
+  let launch;
   try {
-    executable = await openPinnedExecutable(command, options.allowedSymbolicLinkTarget);
+    executable = await openPinnedExecutable(
+      command,
+      options.allowedSymbolicLinkTarget,
+      options.executableAfterOpenForTest ? { afterOpenForTest: options.executableAfterOpenForTest } : undefined
+    );
+    launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot);
   } catch (error) {
+    await closePinnedExecutable(executable);
     return {
+      executable: null,
       lingeringDescendants: false,
       signal: null,
       spawnError: error instanceof Error ? error.message : String(error),
@@ -1045,20 +1311,30 @@ async function runOwnedCommand(command, arguments_, options) {
     };
   }
   try {
-    const result =
-      process.platform === "win32"
-        ? await runWindowsOwnedCommand(command, arguments_, options)
-        : await runPosixOwnedCommand(command, arguments_, options);
+    const platform = options.platformForTest ?? process.platform;
+    const executionStrategy = platform === "win32" ? "private-snapshot" : "pinned-descriptor";
+    const executedPath =
+      platform === "win32"
+        ? executableLeaf(launch.snapshot).path
+        : `/proc/self/fd/${String(executableLeaf(launch.snapshot).handle.fd)}`;
+    const runner = options.ownedRunnerForTest ?? (platform === "win32" ? runWindowsOwnedCommand : runPosixOwnedCommand);
+    const result = await runner(executedPath, arguments_, {
+      ...options,
+      executionStrategy,
+      launchArgv0: executableLeaf(launch.snapshot).path,
+      sourceCommand: command
+    });
+    result.executable = { ...launch.record, strategy: executionStrategy };
     if (result.treeEmpty) {
       try {
-        await verifyPinnedExecutable(executable);
+        await verifyExecutableLaunch(launch);
       } catch (error) {
         result.spawnError ??= error instanceof Error ? error.message : String(error);
       }
     }
     return result;
   } finally {
-    await closePinnedExecutable(executable);
+    await closeExecutableLaunch(launch);
   }
 }
 
@@ -1123,14 +1399,7 @@ function resultFailure(result, label) {
   return null;
 }
 
-async function bootstrapPythonEnvironment(
-  assignmentPath,
-  assignment,
-  gitIdentity,
-  layoutState,
-  hostEnvironment,
-  options
-) {
+async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, hostEnvironment, options) {
   const selected = resolveAcceptancePython({
     environment: hostEnvironment,
     platform: process.platform,
@@ -1139,27 +1408,25 @@ async function bootstrapPythonEnvironment(
   });
   const bootstrapPython = await realpath(selected);
   assertCanonicalAbsolutePath(bootstrapPython, "bootstrap Python");
-  const environment = isolatedEnvironment(assignmentPath, assignment, gitIdentity, layoutState.layout, hostEnvironment);
+  const environment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   environment.OPEN_WRANGLER_PYTHON = bootstrapPython;
   environment.OPEN_WRANGLER_TEST_PYTHON = bootstrapPython;
   environment.PATH = `${dirname(bootstrapPython)}${delimiter}${hostEnvironment.PATH ?? ""}`;
   const creation = await runOwnedCommand(bootstrapPython, ["-I", "-m", "venv", layoutState.layout.venv], {
     cwd: assignment.worktree,
     environment,
+    executableSnapshotRoot: layoutState.layout.executableSnapshots,
     terminationGraceMs: options.terminationGraceMs,
     timeoutMs: 120_000
   });
   const creationFailure = resultFailure(creation, "task Python venv bootstrap");
   if (creationFailure) return { bootstrapPython, failure: creationFailure, result: creation };
   layoutState.identities.venv = await fileIdentity(layoutState.layout.venv, "directory");
-  layoutState.pythonEntry = await captureVenvPythonIdentity(layoutState.layout.pythonExecutable, bootstrapPython);
-  const verificationEnvironment = isolatedEnvironment(
-    assignmentPath,
-    assignment,
-    gitIdentity,
-    layoutState.layout,
-    hostEnvironment
+  layoutState.pythonEntry = await captureVenvPythonIdentity(
+    layoutState.layout.pythonExecutable,
+    creation.executable.snapshot.path
   );
+  const verificationEnvironment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   const verification = await runOwnedCommand(
     layoutState.layout.pythonExecutable,
     [
@@ -1169,9 +1436,11 @@ async function bootstrapPythonEnvironment(
       layoutState.layout.venv
     ],
     {
-      allowedSymbolicLinkTarget: layoutState.pythonEntry.type === "symbolic-link" ? bootstrapPython : undefined,
+      allowedSymbolicLinkTarget:
+        layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined,
       cwd: assignment.worktree,
       environment: verificationEnvironment,
+      executableSnapshotRoot: layoutState.layout.executableSnapshots,
       terminationGraceMs: options.terminationGraceMs,
       timeoutMs: 30_000
     }
@@ -1188,6 +1457,7 @@ async function bootstrapPythonEnvironment(
 async function verifyLayout(layoutState) {
   await verifyPinnedDirectory(layoutState.ownerPins.stateRoot, "stateRoot owner");
   await verifyPinnedDirectory(layoutState.ownerPins.artifacts, "artifact owner");
+  await verifyPinnedDirectory(layoutState.ownerPins.executableSnapshots, "executable-snapshot owner");
   for (const [key, before] of Object.entries(layoutState.identities)) {
     const path = key === "marker" ? join(dirname(layoutState.layout.home), "assignment.json") : layoutState.layout[key];
     const expectedKind = key === "marker" || key === "npmUserConfig" || key === "pipConfig" ? "file" : "directory";
@@ -1245,8 +1515,12 @@ async function writeReceipt(layoutState, value) {
 }
 
 async function runQualification({
+  afterCommandSpawnForTest,
   assignmentPath,
+  beforeCommandSpawnForTest,
   command,
+  commandPlatformForTest,
+  commandRunnerForTest,
   environment = process.env,
   terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
@@ -1269,12 +1543,16 @@ async function runQualification({
     }
     gitOwnerPins = await openGitOwnerPins(initialGit, worktreePin);
     await verifyGitOwnerPins(gitOwnerPins);
+    initialGit = {
+      ...initialGit,
+      gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins.gitConfig)
+    };
     layoutState = await createStateLayout(assignment, initialAssignment.digest);
     const startedAt = new Date().toISOString();
     const failures = [];
     let bootstrap;
     try {
-      bootstrap = await bootstrapPythonEnvironment(assignmentPath, assignment, initialGit, layoutState, environment, {
+      bootstrap = await bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, environment, {
         terminationGraceMs,
         timeoutMs
       });
@@ -1294,7 +1572,12 @@ async function runQualification({
     if (failures.length === 0) {
       result = await runOwnedCommand(command[0], command.slice(1), {
         cwd: assignment.worktree,
-        environment: isolatedEnvironment(assignmentPath, assignment, initialGit, layoutState.layout, environment),
+        environment: isolatedEnvironment(assignmentPath, assignment, layoutState.layout, environment),
+        executableSnapshotRoot: layoutState.layout.executableSnapshots,
+        afterSpawnForTest: afterCommandSpawnForTest,
+        beforeSpawnForTest: beforeCommandSpawnForTest,
+        ownedRunnerForTest: commandRunnerForTest,
+        platformForTest: commandPlatformForTest,
         terminationGraceMs,
         timeoutMs
       });
@@ -1324,6 +1607,10 @@ async function runQualification({
     try {
       await verifyGitOwnerPins(gitOwnerPins);
       finalGit = await captureGitIdentity(assignment);
+      finalGit = {
+        ...finalGit,
+        gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins.gitConfig)
+      };
       assertSameGitIdentity(initialGit, finalGit);
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error));
@@ -1387,7 +1674,25 @@ function parseCommandLine(arguments_) {
   return { assignmentPath: arguments_[2], command: arguments_.slice(4) };
 }
 
-export { ASSIGNMENT_PROTOCOL, QUALIFICATION_ENVIRONMENT_CONTRACT, RECEIPT_PROTOCOL, runQualification };
+const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
+  openDirectory(path, afterOpenForTest) {
+    return openPinnedDirectory(path, "test directory", { afterOpenForTest });
+  },
+  openExecutable(path, afterOpenForTest) {
+    return openPinnedExecutable(path, undefined, { afterOpenForTest });
+  },
+  openRegularFile(path, afterOpenForTest) {
+    return openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, "test regular file", { afterOpenForTest });
+  }
+});
+
+export {
+  ASSIGNMENT_PROTOCOL,
+  QUALIFICATION_ENVIRONMENT_CONTRACT,
+  QUALIFICATION_ISOLATION_TEST_BOUNDARY,
+  RECEIPT_PROTOCOL,
+  runQualification
+};
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   try {
