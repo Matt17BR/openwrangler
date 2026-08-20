@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, constants as fsConstants, realpathSync } from "node:fs";
+import { accessSync, constants as fsConstants, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { Transform } from "node:stream";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,8 @@ const CATALOG_CONTRACT_TIMEOUT_MS = 120_000;
 const SHORT_VITEST_PHASE_TIMEOUT_MS = 60_000;
 const TRANSPORT_VITEST_PHASE_TIMEOUT_MS = 90_000;
 const R_WARNING_CONTRACT_RUNNER = "r/tests/run_warning_strict.R";
+const DEFAULT_R_CONTRACT_SEED = 20_260_820;
+const POSIX_OWNER_ENVIRONMENT_KEY = "OPEN_WRANGLER_R_CONTRACT_OWNER";
 const PROCESS_TERMINATION_GRACE_MS = 2_000;
 const PROCESS_KILL_GRACE_MS = 5_000;
 const WINDOWS_JOB_SETTLEMENT_MS = 15_000;
@@ -34,6 +36,14 @@ export const R_FRAME_CONTRACT_CASES = Object.freeze([
   "profiling",
   "interactive",
   "validation-and-categorical"
+]);
+
+export const R_KERNEL_AGENT_CASES = Object.freeze([
+  "lifecycle-and-structure",
+  "text-fill-and-cast",
+  "rows-numeric-datetime-and-by-example",
+  "group-pivot-and-export",
+  "custom-code"
 ]);
 
 const framePhaseId = (caseId) => `frame:${caseId}`;
@@ -61,7 +71,10 @@ export const R_CONTRACT_SHARDS = Object.freeze([
     )
   }),
   Object.freeze({ id: "frame-query", phaseIds: Object.freeze(["profiling", "interactive"].map(framePhaseId)) }),
-  Object.freeze({ id: "kernel-agent", phaseIds: Object.freeze(["kernel-agent"]) }),
+  Object.freeze({
+    id: "kernel-agent",
+    phaseIds: Object.freeze(R_KERNEL_AGENT_CASES.map((caseId) => `kernel:${caseId}`))
+  }),
   Object.freeze({
     id: "catalog-and-unit",
     phaseIds: Object.freeze(["catalog", "typescript-frame"])
@@ -155,12 +168,22 @@ export function createRContractPhases({
       }
     )
   );
+  const kernelPhases = R_KERNEL_AGENT_CASES.map((caseId) =>
+    nativeRPhase(
+      `kernel:${caseId}`,
+      `native kernel-agent contract: ${caseId}`,
+      "r/tests/kernel_agent.R",
+      KERNEL_AGENT_TIMEOUT_MS,
+      {
+        environment: rEnvironment,
+        phaseEnvironment: { OPEN_WRANGLER_R_KERNEL_CASE: caseId },
+        rscript
+      }
+    )
+  );
   return Object.freeze([
     ...framePhases,
-    nativeRPhase("kernel-agent", "native kernel-agent contract", "r/tests/kernel_agent.R", KERNEL_AGENT_TIMEOUT_MS, {
-      environment: rEnvironment,
-      rscript
-    }),
+    ...kernelPhases,
     nativeRPhase(
       "catalog",
       "complete native catalog contract",
@@ -232,7 +255,9 @@ export function parseRContractSelection(arguments_) {
     }
     selection = { kind: option === "--phase" ? "phase" : "shard", id: value };
   }
-  return Object.freeze({ ...(selection ?? { kind: "all" }), ...(seed === undefined ? {} : { seed }) });
+  const resolvedSelection = selection ?? { kind: "all" };
+  const resolvedSeed = seed ?? (resolvedSelection.kind === "all" ? DEFAULT_R_CONTRACT_SEED : undefined);
+  return Object.freeze({ ...resolvedSelection, ...(resolvedSeed === undefined ? {} : { seed: resolvedSeed }) });
 }
 
 export function selectRContractPhases(phases, selection) {
@@ -336,6 +361,24 @@ function deadlineResult(promise, timeoutMs) {
   });
 }
 
+function phaseDeadlineResult(promise, timeoutMs, terminationSignal) {
+  return new Promise((resolveDeadline) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      terminationSignal?.removeEventListener("abort", onAbort);
+      resolveDeadline(Object.freeze(value));
+    };
+    const onAbort = () => finish({ kind: "signal", signal: terminationSignal.reason });
+    const timer = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
+    promise.then((value) => finish({ kind: "exit", value }));
+    if (terminationSignal?.aborted) onAbort();
+    else terminationSignal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function processGroupRunning(pid, signalProcess = process.kill) {
   try {
     signalProcess(-pid, 0);
@@ -347,48 +390,121 @@ function processGroupRunning(pid, signalProcess = process.kill) {
   }
 }
 
-async function waitForPosixSettlement(pid, observer, timeoutMs, { isGroupRunning, sleepFor }) {
+function listPosixOwnerProcesses(ownerToken) {
+  const expected = Buffer.from(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`, "utf8");
+  if (process.platform !== "linux") {
+    const output = execFileSync("ps", ["eww", "-axo", "pid=,command="], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    const marker = `${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`;
+    return output
+      .split("\n")
+      .filter((line) => line.includes(marker))
+      .map((line) => Number(/^\s*([1-9][0-9]*)\s/u.exec(line)?.[1]))
+      .filter(Number.isSafeInteger);
+  }
+  const owned = [];
+  for (const entry of readdirSync("/proc", { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[1-9][0-9]*$/u.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    try {
+      const environment = readFileSync(`/proc/${entry.name}/environ`);
+      const values = environment.toString("utf8").split("\0");
+      if (values.some((value) => Buffer.from(value, "utf8").equals(expected))) owned.push(pid);
+    } catch (error) {
+      if (!["EACCES", "ENOENT", "EPERM", "ESRCH"].includes(error?.code)) throw error;
+    }
+  }
+  return owned;
+}
+
+function posixTreeRunning(pid, ownerToken, { isGroupRunning, listOwnedProcesses }) {
+  return isGroupRunning(pid) || listOwnedProcesses(ownerToken).length > 0;
+}
+
+function processRunning(pid, signalProcess) {
+  try {
+    signalProcess(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    throw error;
+  }
+}
+
+async function waitForPosixSettlement(
+  pid,
+  ownerToken,
+  observer,
+  timeoutMs,
+  { isGroupRunning, listOwnedProcesses, signalProcess, sleepFor, knownOwnedProcesses }
+) {
   const deadline = performance.now() + timeoutMs;
+  let quietObservations = 0;
   do {
-    if (!isGroupRunning(pid) && observer.isSettled()) return true;
-    await sleepFor(Math.min(25, Math.max(1, deadline - performance.now())));
+    for (const ownedPid of listOwnedProcesses(ownerToken)) knownOwnedProcesses.add(ownedPid);
+    const knownRunning = [...knownOwnedProcesses].some((ownedPid) => processRunning(ownedPid, signalProcess));
+    if (!isGroupRunning(pid) && !knownRunning && observer.isSettled()) {
+      quietObservations += 1;
+      if (quietObservations >= 2) return true;
+    } else {
+      quietObservations = 0;
+    }
+    await sleepFor(Math.min(10, Math.max(1, deadline - performance.now())));
   } while (performance.now() < deadline);
-  return !isGroupRunning(pid) && observer.isSettled();
+  return false;
 }
 
 async function settlePosixProcessTree(
   child,
+  ownerToken,
   observer,
   {
     signalProcess = process.kill,
     isGroupRunning = (pid) => processGroupRunning(pid, signalProcess),
+    listOwnedProcesses = listPosixOwnerProcesses,
     sleepFor = sleep,
     terminationGraceMs = PROCESS_TERMINATION_GRACE_MS,
-    killGraceMs = PROCESS_KILL_GRACE_MS
+    killGraceMs = PROCESS_KILL_GRACE_MS,
+    firstSignal = "SIGTERM"
   } = {}
 ) {
   if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
     throw new Error("The R contract phase did not expose an owned POSIX process group.");
   }
-  const signalGroup = (signal) => {
+  const knownOwnedProcesses = new Set();
+  const signalOwnedTree = (signal) => {
     try {
       signalProcess(-child.pid, signal);
     } catch (error) {
       if (error?.code !== "ESRCH") throw error;
     }
+    for (const pid of listOwnedProcesses(ownerToken)) knownOwnedProcesses.add(pid);
+    for (const pid of knownOwnedProcesses) {
+      if (pid === child.pid) continue;
+      try {
+        signalProcess(pid, signal);
+      } catch (error) {
+        if (error?.code !== "ESRCH") throw error;
+      }
+    }
   };
-  if (await waitForPosixSettlement(child.pid, observer, 1, { isGroupRunning, sleepFor })) return;
-  signalGroup("SIGTERM");
-  if (
-    await waitForPosixSettlement(child.pid, observer, terminationGraceMs, {
-      isGroupRunning,
-      sleepFor
-    })
-  )
-    return;
-  signalGroup("SIGKILL");
-  if (await waitForPosixSettlement(child.pid, observer, killGraceMs, { isGroupRunning, sleepFor })) return;
-  throw new Error(`The R contract process group ${child.pid} remained live after bounded SIGTERM and SIGKILL.`);
+  const settlementOptions = {
+    isGroupRunning,
+    knownOwnedProcesses,
+    listOwnedProcesses,
+    signalProcess,
+    sleepFor
+  };
+  if (await waitForPosixSettlement(child.pid, ownerToken, observer, 1, settlementOptions)) return;
+  signalOwnedTree(firstSignal);
+  if (await waitForPosixSettlement(child.pid, ownerToken, observer, terminationGraceMs, settlementOptions)) return;
+  signalOwnedTree("SIGKILL");
+  if (await waitForPosixSettlement(child.pid, ownerToken, observer, killGraceMs, settlementOptions)) return;
+  throw new Error(`The R contract process tree ${child.pid} remained live after bounded ${firstSignal} and SIGKILL.`);
 }
 
 function createWindowsJobStderrProtocol(stream, token, writeError) {
@@ -460,35 +576,67 @@ function spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError }) 
       stdio: ["pipe", "inherit", "pipe"]
     }
   );
-  if (!child.stdin || typeof child.stdin.write !== "function" || !child.stderr) {
-    throw new Error("The R contract Windows Job Object supervisor did not expose its control channels.");
-  }
+  let launchError;
+  let attestation = Promise.resolve(false);
   let controlError;
-  child.stdin.on("error", (error) => {
-    controlError ??= error;
-  });
-  const attestation = createWindowsJobStderrProtocol(child.stderr, token, writeError);
-  child.stdin.write(launchFrame, "utf8", (error) => {
-    controlError ??= error;
-  });
+  if (
+    !child.stdin ||
+    typeof child.stdin.on !== "function" ||
+    typeof child.stdin.write !== "function" ||
+    !child.stderr ||
+    typeof child.stderr.pipe !== "function"
+  ) {
+    launchError = new Error("The R contract Windows Job Object supervisor did not expose its control channels.");
+  } else {
+    try {
+      child.stdin.on("error", (error) => {
+        controlError ??= error;
+      });
+      attestation = createWindowsJobStderrProtocol(child.stderr, token, writeError);
+      child.stdin.write(launchFrame, "utf8", (error) => {
+        controlError ??= error;
+      });
+    } catch (error) {
+      launchError = new Error(`The R contract Windows Job Object control setup failed: ${error.message}`, {
+        cause: error
+      });
+    }
+  }
+  const forceSupervisorExit = () => {
+    if (typeof child.kill !== "function" || child.kill("SIGKILL") !== true) {
+      throw new Error("The Windows R contract Job Object supervisor could not be terminated.");
+    }
+  };
   return Object.freeze({
     child,
     attestation,
-    terminate: () =>
-      new Promise((resolveTermination, rejectTermination) => {
-        if (controlError) {
-          rejectTermination(controlError);
-          return;
-        }
-        if (!child.stdin.writable) {
-          rejectTermination(new Error("The Windows R contract Job Object control pipe closed before termination."));
-          return;
-        }
+    controlError: () => controlError,
+    launchError,
+    terminate: () => {
+      if (launchError || controlError || !child.stdin?.writable) {
+        forceSupervisorExit();
+        return Promise.resolve();
+      }
+      return new Promise((resolveTermination, rejectTermination) => {
         child.stdin.write('{"protocol":1,"command":"terminate"}\n', "utf8", (error) => {
-          if (error) rejectTermination(error);
-          else resolveTermination();
+          if (!error) {
+            resolveTermination();
+            return;
+          }
+          try {
+            forceSupervisorExit();
+            resolveTermination();
+          } catch (fallbackError) {
+            rejectTermination(
+              new AggregateError(
+                [error, fallbackError],
+                "The Windows R contract supervisor control and kill paths failed."
+              )
+            );
+          }
         });
-      })
+      });
+    }
   });
 }
 
@@ -522,6 +670,7 @@ async function runRContractPhaseAsync(
     spawnProcess = spawn,
     platform = process.platform,
     randomToken = randomUUID,
+    terminationSignal,
     writeError = (chunk) => process.stderr.write(chunk),
     writeLine = (line) => process.stdout.write(`${line}\n`),
     ...settlementOptions
@@ -529,25 +678,47 @@ async function runRContractPhaseAsync(
 ) {
   const started = now();
   writeLine(`[r-contract] START ${phase.label}; timeout ${formattedSeconds(phase.timeoutMs)}`);
+  const ownerToken = randomToken();
   const launch =
     platform === "win32"
-      ? spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError })
+      ? spawnWindowsJobPhase(phase, { spawnProcess, randomToken: () => ownerToken, writeError })
       : Object.freeze({
           child: spawnProcess(phase.command, phase.args, {
             cwd: root,
             detached: true,
-            env: phase.environment,
+            env: { ...phase.environment, [POSIX_OWNER_ENVIRONMENT_KEY]: ownerToken },
             stdio: "inherit",
             windowsHide: true
           })
         });
   const observer = observeChild(launch.child);
-  const deadline = await deadlineResult(observer.promise, phase.timeoutMs);
+  if (launch.launchError) {
+    const primary = new Error(`[r-contract] ERROR ${phase.label}: ${launch.launchError.message}`, {
+      cause: launch.launchError
+    });
+    try {
+      await launch.terminate();
+      await requireWindowsSettlement(
+        launch,
+        observer,
+        settlementOptions.windowsSettlementMs ?? WINDOWS_JOB_SETTLEMENT_MS
+      );
+    } catch (cleanup) {
+      throw combinePhaseAndCleanupFailure(primary, cleanup);
+    }
+    throw primary;
+  }
+  const deadline = await phaseDeadlineResult(observer.promise, phase.timeoutMs, terminationSignal);
   const elapsed = Math.max(0, now() - started);
-  if (deadline.timedOut) {
-    const primary = new Error(
-      `[r-contract] TIMEOUT ${phase.label} after ${formattedSeconds(elapsed)}; phase limit ${formattedSeconds(phase.timeoutMs)}.`
-    );
+  if (deadline.kind !== "exit") {
+    const interruptedSignal = deadline.kind === "signal" ? deadline.signal : undefined;
+    const primary =
+      deadline.kind === "timeout"
+        ? new Error(
+            `[r-contract] TIMEOUT ${phase.label} after ${formattedSeconds(elapsed)}; phase limit ${formattedSeconds(phase.timeoutMs)}.`
+          )
+        : new Error(`[r-contract] INTERRUPTED ${phase.label} by ${interruptedSignal}.`);
+    if (interruptedSignal !== undefined) primary.stopAfterPhase = true;
     try {
       if (platform === "win32") {
         await launch.terminate();
@@ -557,7 +728,10 @@ async function runRContractPhaseAsync(
           settlementOptions.windowsSettlementMs ?? WINDOWS_JOB_SETTLEMENT_MS
         );
       } else {
-        await settlePosixProcessTree(launch.child, observer, settlementOptions);
+        await settlePosixProcessTree(launch.child, ownerToken, observer, {
+          ...settlementOptions,
+          ...(interruptedSignal === undefined ? {} : { firstSignal: interruptedSignal })
+        });
       }
     } catch (cleanup) {
       throw combinePhaseAndCleanupFailure(primary, cleanup);
@@ -578,6 +752,11 @@ async function runRContractPhaseAsync(
     const outcome = result.code === null ? `signal ${result.signal ?? "unknown"}` : `exit ${result.code}`;
     primary = new Error(`[r-contract] FAIL ${phase.label} after ${formattedSeconds(elapsed)} with ${outcome}.`);
   }
+  if (platform === "win32" && launch.controlError()) {
+    primary ??= new Error(`[r-contract] ERROR ${phase.label}: ${launch.controlError().message}`, {
+      cause: launch.controlError()
+    });
+  }
 
   try {
     if (platform === "win32") {
@@ -588,9 +767,14 @@ async function runRContractPhaseAsync(
         ownership.processTreeUnsettled = true;
         throw ownership;
       }
-    } else if (settlementOptions.isGroupRunning?.(launch.child.pid) ?? processGroupRunning(launch.child.pid)) {
+    } else if (
+      posixTreeRunning(launch.child.pid, ownerToken, {
+        isGroupRunning: settlementOptions.isGroupRunning ?? processGroupRunning,
+        listOwnedProcesses: settlementOptions.listOwnedProcesses ?? listPosixOwnerProcesses
+      })
+    ) {
       primary ??= new Error(`[r-contract] ERROR ${phase.label}: the phase exited with live descendants.`);
-      await settlePosixProcessTree(launch.child, observer, settlementOptions);
+      await settlePosixProcessTree(launch.child, ownerToken, observer, settlementOptions);
     }
   } catch (cleanup) {
     throw combinePhaseAndCleanupFailure(
@@ -608,16 +792,28 @@ export async function runRContractPhases(
 ) {
   const failures = [];
   for (const phase of phases) {
+    if (phaseOptions.terminationSignal?.aborted) {
+      const interrupted = new Error(
+        `[r-contract] INTERRUPTED before ${phase.id} by ${phaseOptions.terminationSignal.reason}.`
+      );
+      failures.push(interrupted);
+      throw new AggregateError(
+        failures,
+        `[r-contract] stopped before ${phase.id} because the runner received an external termination signal.`
+      );
+    }
     try {
       await runPhase(phase, { ...phaseOptions, writeLine });
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
       writeLine(`[r-contract] RECORDED ${phase.id}: ${normalized.message}`);
-      if (normalized.processTreeUnsettled === true) {
+      if (normalized.processTreeUnsettled === true || normalized.stopAfterPhase === true) {
         throw new AggregateError(
           failures,
-          `[r-contract] stopped after ${phase.id} because its process tree was not verified settled.`
+          normalized.processTreeUnsettled === true
+            ? `[r-contract] stopped after ${phase.id} because its process tree was not verified settled.`
+            : `[r-contract] stopped after ${phase.id} because the runner received an external termination signal.`
         );
       }
     }
@@ -630,12 +826,35 @@ export async function runRContractPhases(
   }
 }
 
+export async function runRContractPhasesWithSignalForwarding(phases, options = {}) {
+  const termination = new AbortController();
+  const handlers = new Map(
+    ["SIGINT", "SIGTERM"].map((signal) => [
+      signal,
+      () => {
+        if (!termination.signal.aborted) termination.abort(signal);
+      }
+    ])
+  );
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  try {
+    await runRContractPhases(phases, { ...options, terminationSignal: termination.signal });
+  } finally {
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+  }
+}
+
 async function main() {
   const selection = parseRContractSelection(process.argv.slice(2));
   const rscript = resolveExecutable(process.env.RSCRIPT ?? "Rscript");
   const r = resolveExecutable(process.env.R ?? "R");
   const phases = createRContractPhases({ environment: process.env, r, rscript });
-  await runRContractPhases(orderRContractPhases(selectRContractPhases(phases, selection), selection.seed));
+  const selected = selectRContractPhases(phases, selection);
+  const ordered = orderRContractPhases(selected, selection.seed);
+  if (selection.seed !== undefined) {
+    process.stdout.write(`[r-contract] ORDER seed ${selection.seed}: ${ordered.map(({ id }) => id).join(", ")}\n`);
+  }
+  await runRContractPhasesWithSignalForwarding(ordered);
 }
 
 function invokedDirectly() {

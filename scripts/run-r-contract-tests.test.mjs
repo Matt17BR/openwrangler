@@ -11,6 +11,7 @@ import {
   R_CONTRACT_SHARD_ALIASES,
   R_CONTRACT_SHARDS,
   R_FRAME_CONTRACT_CASES,
+  R_KERNEL_AGENT_CASES,
   runRContractPhase,
   runRContractPhases,
   selectRContractPhases
@@ -32,7 +33,7 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
     configured.map(({ id, label, timeoutMs }) => [id, label, timeoutMs]),
     [
       ...R_FRAME_CONTRACT_CASES.map((caseId) => [`frame:${caseId}`, `native frame contract: ${caseId}`, 120_000]),
-      ["kernel-agent", "native kernel-agent contract", 360_000],
+      ...R_KERNEL_AGENT_CASES.map((caseId) => [`kernel:${caseId}`, `native kernel-agent contract: ${caseId}`, 360_000]),
       ["catalog", "complete native catalog contract", 120_000],
       ["typescript-frame", "TypeScript R frame and unit contracts", 60_000],
       ["kernel-transport", "real-R kernel transport contract", 90_000],
@@ -58,16 +59,36 @@ test("native R contracts use named per-subsystem deadlines without dropping or d
     ])
   );
 
-  const direct = configured.slice(R_FRAME_CONTRACT_CASES.length, R_FRAME_CONTRACT_CASES.length + 2);
+  const direct = configured.slice(
+    R_FRAME_CONTRACT_CASES.length,
+    R_FRAME_CONTRACT_CASES.length + R_KERNEL_AGENT_CASES.length + 1
+  );
   assert.deepEqual(
-    direct.map(({ command, args, environment }) => [command, ...args, environment.OPEN_WRANGLER_R_CONTRACT_TEST]),
+    direct.map(({ command, args, environment }) => [
+      command,
+      ...args,
+      environment.OPEN_WRANGLER_R_CONTRACT_TEST,
+      environment.OPEN_WRANGLER_R_KERNEL_CASE
+    ]),
     [
-      ["/reviewed/Rscript", "--vanilla", "r/tests/run_warning_strict.R", "r/tests/kernel_agent.R"],
-      ["/reviewed/Rscript", "--vanilla", "r/tests/run_warning_strict.R", "r/tests/complete_catalog_contract.R"]
+      ...R_KERNEL_AGENT_CASES.map((caseId) => [
+        "/reviewed/Rscript",
+        "--vanilla",
+        "r/tests/run_warning_strict.R",
+        "r/tests/kernel_agent.R",
+        caseId
+      ]),
+      [
+        "/reviewed/Rscript",
+        "--vanilla",
+        "r/tests/run_warning_strict.R",
+        "r/tests/complete_catalog_contract.R",
+        undefined
+      ]
     ]
   );
 
-  const vitest = configured.slice(R_FRAME_CONTRACT_CASES.length + 2);
+  const vitest = configured.slice(R_FRAME_CONTRACT_CASES.length + R_KERNEL_AGENT_CASES.length + 1);
   const files = vitest.flatMap(({ args }) => args.filter((value) => value.startsWith("src/test/")));
   assert.deepEqual(files.sort(), [
     "src/test/rFrameContract.cross.test.ts",
@@ -97,6 +118,26 @@ test("the frame mega-test exposes every semantic case exactly once in a fresh lo
   const interactiveSource = readFileSync(new URL("../r/tests/interactive_contract.R", import.meta.url), "utf8");
   assert.match(interactiveSource, /identical\(selected_case, "interactive"\)/u);
   assert.match(interactiveSource, /source\("r\/tests\/frame_contract\.R", local = FALSE\)/u);
+});
+
+test("the kernel agent exposes independently selectable named operation owners", () => {
+  const source = readFileSync(new URL("../r/tests/kernel_agent.R", import.meta.url), "utf8");
+  const declared = /kernel_agent_cases <- c\(([\s\S]*?)\)\nselected_kernel_agent_case/u.exec(source)?.[1];
+  assert.ok(declared);
+  assert.deepEqual(
+    [...declared.matchAll(/"([a-z][a-z0-9-]+)"/gu)].map(([, caseId]) => caseId),
+    R_KERNEL_AGENT_CASES
+  );
+  for (const caseId of R_KERNEL_AGENT_CASES) {
+    assert.match(source, new RegExp(`identical\\(selected_kernel_agent_case, "${caseId}"\\)`, "u"));
+  }
+  assert.match(source, /kernel_agent_case_run_count <- kernel_agent_case_run_count \+ 1L/u);
+  assert.equal(
+    [...source.matchAll(/kernel_agent_case_run_count <- kernel_agent_case_run_count \+ 1L/gu)].length,
+    R_KERNEL_AGENT_CASES.length
+  );
+  assert.match(source, /kernel_agent_case_run_count,\s*1L,/su);
+  assert.match(source, /Sys\.unsetenv\("OPEN_WRANGLER_R_KERNEL_CASE"\)/u);
 });
 
 test("native R contracts fail unexpected warnings without treating messages as warnings", () => {
@@ -148,7 +189,7 @@ test("named R contract shards are an exhaustive disjoint phase partition with th
       ]
     },
     { id: "frame-query", phaseIds: ["frame:profiling", "frame:interactive"] },
-    { id: "kernel-agent", phaseIds: ["kernel-agent"] },
+    { id: "kernel-agent", phaseIds: R_KERNEL_AGENT_CASES.map((caseId) => `kernel:${caseId}`) },
     { id: "catalog-and-unit", phaseIds: ["catalog", "typescript-frame"] },
     { id: "runtime-transport", phaseIds: ["kernel-transport", "process-transport", "interactive-transport"] }
   ]);
@@ -160,7 +201,7 @@ test("named R contract shards are an exhaustive disjoint phase partition with th
   assert.deepEqual(selectedIds.toSorted(), configured.map(({ id }) => id).toSorted());
   assert.deepEqual(
     selectRContractPhases(configured, { kind: "shard", id: "kernel-agent" }).map(({ id }) => id),
-    ["kernel-agent"]
+    R_KERNEL_AGENT_CASES.map((caseId) => `kernel:${caseId}`)
   );
   assert.deepEqual(R_CONTRACT_SHARD_ALIASES, [
     {
@@ -194,7 +235,7 @@ test("every package-exposed R contract shard remains an exact compatibility sele
 
 test("R contract phase and shard selectors are exact, mutually exclusive, and fail closed", () => {
   const configured = phases();
-  assert.deepEqual(parseRContractSelection([]), { kind: "all" });
+  assert.deepEqual(parseRContractSelection([]), { kind: "all", seed: 20_260_820 });
   assert.deepEqual(parseRContractSelection(["--phase", "catalog"]), { kind: "phase", id: "catalog" });
   assert.deepEqual(parseRContractSelection(["--shard", "kernel-agent"]), { kind: "shard", id: "kernel-agent" });
   assert.deepEqual(parseRContractSelection(["--seed", "4294967295"]), { kind: "all", seed: 4_294_967_295 });
@@ -237,12 +278,18 @@ test("R contract phase and shard selectors are exact, mutually exclusive, and fa
 
 test("seeded R contract ordering is deterministic, complete, and immutable", () => {
   const configured = phases();
+  const defaultSelection = parseRContractSelection([]);
   const originalIds = configured.map(({ id }) => id);
   const first = orderRContractPhases(configured, 20260820).map(({ id }) => id);
   const repeated = orderRContractPhases(configured, 20260820).map(({ id }) => id);
   const different = orderRContractPhases(configured, 695).map(({ id }) => id);
 
   assert.deepEqual(first, repeated);
+  assert.deepEqual(defaultSelection, { kind: "all", seed: 20_260_820 });
+  assert.deepEqual(
+    orderRContractPhases(configured, defaultSelection.seed).map(({ id }) => id),
+    first
+  );
   assert.deepEqual(first.toSorted(), originalIds.toSorted());
   assert.notDeepEqual(first, originalIds);
   assert.notDeepEqual(first, different);
@@ -256,6 +303,8 @@ test("seeded R contract ordering is deterministic, complete, and immutable", () 
   );
   assert.throws(() => orderRContractPhases(configured, -1), /unsigned 32-bit integer/u);
   assert.throws(() => orderRContractPhases(configured, 0x1_0000_0000), /unsigned 32-bit integer/u);
+  const source = readFileSync(new URL("./run-r-contract-tests.mjs", import.meta.url), "utf8");
+  assert.match(source, /\[r-contract\] ORDER seed \$\{selection\.seed\}: \$\{ordered/u);
 });
 
 test("R contract execution reports every selected phase after unrelated failures", async () => {
@@ -289,6 +338,23 @@ test("R contract execution reports every selected phase after unrelated failures
     `[r-contract] RECORDED ${selected[0].id}: fixture failure ${selected[0].id}`,
     `[r-contract] RECORDED ${selected[2].id}: fixture failure ${selected[2].id}`
   ]);
+});
+
+test("an external termination observed between phases prevents the next phase from starting", async () => {
+  const termination = new AbortController();
+  termination.abort("SIGTERM");
+  let starts = 0;
+  await assert.rejects(
+    runRContractPhases(phases().slice(0, 2), {
+      terminationSignal: termination.signal,
+      runPhase: async () => {
+        starts += 1;
+      },
+      writeLine: () => {}
+    }),
+    /stopped before frame:decimal-ordering because the runner received an external termination signal/u
+  );
+  assert.equal(starts, 0);
 });
 
 function fixtureChild(pid, { code, error, signal = null } = {}) {
@@ -395,6 +461,41 @@ test("Windows R contract phases launch through the existing Job Object superviso
   assert.deepEqual(launches[0].args, phase.args);
 });
 
+test("a Windows post-spawn control failure terminates and latches before a later phase", async () => {
+  const first = { ...phases()[0], environment: { ...phases()[0].environment, SYSTEMROOT: "C:\\Windows" } };
+  const second = { ...phases()[1], environment: { ...phases()[1].environment, SYSTEMROOT: "C:\\Windows" } };
+  let spawnCount = 0;
+  let killCount = 0;
+  let failure;
+  try {
+    await runRContractPhases([first, second], {
+      platform: "win32",
+      spawnProcess: () => {
+        spawnCount += 1;
+        const child = new EventEmitter();
+        child.pid = 51_000 + spawnCount;
+        child.kill = () => {
+          killCount += 1;
+          queueMicrotask(() => child.emit("close", null, "SIGKILL"));
+          return true;
+        };
+        return child;
+      },
+      windowsSettlementMs: 25,
+      writeLine: () => {}
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure instanceof AggregateError);
+  assert.equal(spawnCount, 1);
+  assert.equal(killCount, 1);
+  assert.match(failure.message, /stopped after frame:decimal-ordering/u);
+  assert.ok(failure.errors[0] instanceof AggregateError);
+  assert.match(failure.errors[0].errors[0].message, /did not expose its control channels/u);
+  assert.match(failure.errors[0].errors[1].message, /did not provide one exact empty-tree attestation/u);
+});
+
 test(
   "a timed-out SIGTERM-ignoring phase and descendant settle before the next phase starts",
   { skip: process.platform === "win32" },
@@ -407,7 +508,9 @@ test(
         "-e",
         [
           'const { spawn } = require("node:child_process");',
-          'spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+          'const descendant = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });',
+          "process.stdout.write(`DETACHED:${descendant.pid}\\n`);",
+          "descendant.unref();",
           'process.on("SIGTERM", () => {});',
           "setInterval(() => {}, 1000);"
         ].join("\n")
@@ -424,21 +527,39 @@ test(
       timeoutMs: 2_000
     };
     let firstPid;
+    let detachedPid;
     let spawnCount = 0;
     const lines = [];
     await assert.rejects(
       runRContractPhases([stubborn, next], {
         spawnProcess: (...arguments_) => {
-          const child = spawn(...arguments_);
-          if (spawnCount++ === 0) firstPid = child.pid;
+          const [command, args, options] = arguments_;
+          const child = spawn(
+            command,
+            args,
+            spawnCount === 0 ? { ...options, stdio: ["ignore", "pipe", "ignore"] } : options
+          );
+          if (spawnCount++ === 0) {
+            firstPid = child.pid;
+            child.stdout.setEncoding("utf8");
+            child.stdout.on("data", (chunk) => {
+              const match = /DETACHED:([1-9][0-9]*)/u.exec(chunk);
+              if (match) detachedPid = Number(match[1]);
+            });
+          }
           return child;
         },
         terminationGraceMs: 100,
         killGraceMs: 2_000,
         writeLine: (line) => {
           if (line.startsWith("[r-contract] START next phase")) {
+            assert.ok(Number.isSafeInteger(detachedPid));
             assert.throws(
               () => process.kill(-firstPid, 0),
+              (error) => error?.code === "ESRCH"
+            );
+            assert.throws(
+              () => process.kill(detachedPid, 0),
               (error) => error?.code === "ESRCH"
             );
           }
@@ -452,6 +573,94 @@ test(
       () => process.kill(-firstPid, 0),
       (error) => error?.code === "ESRCH"
     );
+    assert.throws(
+      () => process.kill(detachedPid, 0),
+      (error) => error?.code === "ESRCH"
+    );
+  }
+);
+
+test(
+  "external SIGINT and SIGTERM are forwarded and no detached phase survives runner termination",
+  { skip: process.platform === "win32" },
+  async () => {
+    const runnerUrl = new URL("./run-r-contract-tests.mjs", import.meta.url).href;
+    const waitForAbsent = async (pid) => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(pid, 0);
+        } catch (error) {
+          if (error?.code === "ESRCH") return;
+          throw error;
+        }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+      }
+      assert.fail(`process ${pid} survived external runner termination`);
+    };
+
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      const phaseProgram = [
+        'const { spawn } = require("node:child_process");',
+        `const signal = ${JSON.stringify(signal)};`,
+        "const childProgram = `process.on(${JSON.stringify(signal)}, () => process.stdout.write('DESCENDANT-FORWARDED:${signal}\\\\n')); process.stdout.write('DESCENDANT-READY:' + process.pid + '\\\\n'); setInterval(() => {}, 1000);`;",
+        'const descendant = spawn(process.execPath, ["-e", childProgram], { detached: true, stdio: ["ignore", "inherit", "inherit"] });',
+        "descendant.unref();",
+        "process.stdout.write(`PHASE:${process.pid}\\nDETACHED:${descendant.pid}\\n`);",
+        "process.on(signal, () => process.stdout.write(`PHASE-FORWARDED:${signal}\\n`));",
+        "setInterval(() => {}, 1000);"
+      ].join("\n");
+      const outerProgram = [
+        `import { runRContractPhasesWithSignalForwarding } from ${JSON.stringify(runnerUrl)};`,
+        `const phase = ${JSON.stringify({
+          id: "external-signal",
+          label: "external signal fixture",
+          command: process.execPath,
+          args: ["-e", phaseProgram],
+          environment: process.env,
+          timeoutMs: 30_000
+        })};`,
+        "runRContractPhasesWithSignalForwarding([phase]).catch(() => { process.exitCode = 1; });"
+      ].join("\n");
+      const outer = spawn(process.execPath, ["--input-type=module", "-e", outerProgram], {
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      outer.stdout.setEncoding("utf8");
+      let output = "";
+      let phasePid;
+      let detachedPid;
+      const ready = new Promise((resolveReady, rejectReady) => {
+        outer.once("error", rejectReady);
+        outer.once("close", (code, exitSignal) => {
+          rejectReady(new Error(`external signal fixture exited before readiness: ${code}/${exitSignal}`));
+        });
+        outer.stdout.on("data", (chunk) => {
+          output += chunk;
+          const phaseMatch = /PHASE:([1-9][0-9]*)/u.exec(output);
+          const detachedMatch = /DETACHED:([1-9][0-9]*)/u.exec(output);
+          const descendantReady = /DESCENDANT-READY:([1-9][0-9]*)/u.exec(output);
+          if (phaseMatch) phasePid = Number(phaseMatch[1]);
+          if (detachedMatch) detachedPid = Number(detachedMatch[1]);
+          if (
+            Number.isSafeInteger(phasePid) &&
+            Number.isSafeInteger(detachedPid) &&
+            Number(descendantReady?.[1]) === detachedPid
+          )
+            resolveReady();
+        });
+      });
+      await ready;
+      outer.kill(signal);
+      const exit = await new Promise((resolveExit, rejectExit) => {
+        outer.once("error", rejectExit);
+        outer.once("close", (code, exitSignal) => resolveExit({ code, signal: exitSignal }));
+      });
+      assert.deepEqual(exit, { code: 1, signal: null });
+      assert.match(output, new RegExp(`PHASE-FORWARDED:${signal}`, "u"));
+      assert.match(output, new RegExp(`DESCENDANT-FORWARDED:${signal}`, "u"));
+      await waitForAbsent(phasePid);
+      await waitForAbsent(detachedPid);
+    }
   }
 );
 
