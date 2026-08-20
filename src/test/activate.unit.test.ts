@@ -56,15 +56,30 @@ describe("extension activation boundary", () => {
     expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.forceNotebookEditorTitleAction", true);
   });
 
-  it("disposes the activation owner when the title context fails", async () => {
+  it("shuts down the activation owner when the title context fails", async () => {
     const failure = new Error("setContext unavailable");
     vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(failure);
 
     await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toBe(failure);
 
-    expect(lifecycle.dispose).toHaveBeenCalledOnce();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.dispose).not.toHaveBeenCalled();
     await deactivate();
-    expect(lifecycle.shutdown).not.toHaveBeenCalled();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("preserves activation and shutdown failures together", async () => {
+    const activationFailure = new Error("setContext unavailable");
+    const shutdownFailure = new Error("owner cleanup failed");
+    vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(activationFailure);
+    lifecycle.shutdown.mockRejectedValueOnce(shutdownFailure);
+
+    const error = await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext).catch(
+      (reason: unknown) => reason
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([activationFailure, shutdownFailure]);
   });
 
   it("returns only the owner-provided environment-gated API", async () => {
