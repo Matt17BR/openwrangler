@@ -20,12 +20,14 @@ interface CellActionMenuInput {
 
 interface CellActionMenuOperation {
   owner: CellActionMenuTarget;
+  generation: number;
   ownsResult(): boolean;
 }
 
 export interface CellActionMenuLifecycle {
   beginOperation(expected: CellActionMenuTarget | undefined): CellActionMenuOperation | undefined;
   close(owner: CellActionMenuTarget | undefined, restoreFocus?: boolean): boolean;
+  completeOperation(operation: CellActionMenuOperation | undefined, restoreFocus?: boolean): boolean;
   dismiss(owner?: CellActionMenuTarget): boolean;
   open(input: CellActionMenuInput): void;
   target?: CellActionMenuTarget;
@@ -77,17 +79,28 @@ export function useCellActionMenuLifecycle({
       operationGenerationRef.current += 1;
       const generation = operationGenerationRef.current;
       return {
+        generation,
         owner,
         ownsResult: () => {
           const scroller = scrollerRef.current;
+          const ownsOperation =
+            mountedRef.current &&
+            targetRef.current === owner &&
+            operationGenerationRef.current === generation &&
+            viewContextRef.current === owner.viewContextId;
+          if (
+            !ownsOperation ||
+            !document.hasFocus() ||
+            scroller === null ||
+            !scroller.contains(document.activeElement)
+          ) {
+            return false;
+          }
           return (
             mountedRef.current &&
             targetRef.current === owner &&
             operationGenerationRef.current === generation &&
-            viewContextRef.current === owner.viewContextId &&
-            document.hasFocus() &&
-            scroller !== null &&
-            scroller.contains(document.activeElement)
+            viewContextRef.current === owner.viewContextId
           );
         }
       };
@@ -95,25 +108,61 @@ export function useCellActionMenuLifecycle({
     [scrollerRef]
   );
 
-  const close = useCallback(
-    (owner: CellActionMenuTarget | undefined, restoreFocus = false): boolean => {
+  const closeOwned = useCallback(
+    (owner: CellActionMenuTarget | undefined, restoreFocus: boolean, expectedOperationGeneration?: number): boolean => {
       if (!owner) return false;
       const scroller = scrollerRef.current;
       const gridRetainsFocus =
         restoreFocus && document.hasFocus() && scroller !== null && scroller.contains(document.activeElement);
+      if (
+        expectedOperationGeneration !== undefined &&
+        (operationGenerationRef.current !== expectedOperationGeneration || targetRef.current !== owner)
+      ) {
+        return false;
+      }
       if (!dismiss(owner)) return false;
       if (!gridRetainsFocus || !scroller) return true;
+      const closedGeneration = operationGenerationRef.current;
       const focusTarget = scroller.querySelector<HTMLElement>(
         `[data-grid-row="${owner.returnFocus.row}"][data-grid-column="${owner.returnFocus.column}"]`
       );
-      if (!focusTarget?.isConnected || !document.hasFocus() || !scroller.contains(document.activeElement)) {
+      if (
+        !focusTarget?.isConnected ||
+        !document.hasFocus() ||
+        !scroller.contains(document.activeElement) ||
+        operationGenerationRef.current !== closedGeneration ||
+        targetRef.current !== undefined
+      ) {
         return true;
       }
       prepareFocus(owner.returnFocus);
+      if (
+        !focusTarget.isConnected ||
+        !document.hasFocus() ||
+        !scroller.contains(document.activeElement) ||
+        operationGenerationRef.current !== closedGeneration ||
+        targetRef.current !== undefined
+      ) {
+        return true;
+      }
       focusTarget.focus({ preventScroll: true });
       return true;
     },
     [dismiss, prepareFocus, scrollerRef]
+  );
+  const close = useCallback(
+    (owner: CellActionMenuTarget | undefined, restoreFocus = false): boolean => closeOwned(owner, restoreFocus),
+    [closeOwned]
+  );
+
+  const completeOperation = useCallback(
+    (operation: CellActionMenuOperation | undefined, restoreFocus = false): boolean => {
+      if (!operation || !operation.ownsResult()) {
+        return false;
+      }
+      return closeOwned(operation.owner, restoreFocus, operation.generation);
+    },
+    [closeOwned]
   );
 
   useLayoutEffect(() => {
@@ -160,14 +209,14 @@ export function useCellActionMenuLifecycle({
     };
   }, [dismiss, scrollerRef, target]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       operationGenerationRef.current += 1;
       targetRef.current = undefined;
-    },
-    []
-  );
+    };
+  }, []);
 
-  return { beginOperation, close, dismiss, open, target };
+  return { beginOperation, close, completeOperation, dismiss, open, target };
 }

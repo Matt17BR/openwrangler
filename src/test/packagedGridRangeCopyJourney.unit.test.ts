@@ -97,4 +97,36 @@ describe("packaged grid range-copy journey", () => {
     expect(exercise).toHaveBeenCalledTimes(1);
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
+
+  it("rejects a non-string prior clipboard value before the packaged journey can mutate it", async () => {
+    const exercise = vi.fn(async () => undefined);
+    const hostClipboard = {
+      readText: vi.fn(async () => 42 as unknown as string),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    await expect(runWithPackagedGridClipboardRestoration(hostClipboard, exercise)).rejects.toThrow(
+      "The prior host clipboard value is invalid or exceeds the 4 MiB restoration limit."
+    );
+
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
+    expect(exercise).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized prior clipboard value before the packaged journey can mutate it", async () => {
+    const exercise = vi.fn(async () => undefined);
+    const hostClipboard = {
+      readText: vi.fn(async () => "x".repeat(4 * 1024 * 1024 + 1)),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    await expect(runWithPackagedGridClipboardRestoration(hostClipboard, exercise)).rejects.toThrow(
+      "The prior host clipboard value is invalid or exceeds the 4 MiB restoration limit."
+    );
+
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
+    expect(exercise).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
+  });
 });

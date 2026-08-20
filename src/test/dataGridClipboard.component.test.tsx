@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -327,6 +328,133 @@ describe("DataGrid clipboard interactions", () => {
 
     await act(async () => disposedWrite.resolve());
     expect(writeText).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes a toolbar copy inert when its exact view is replaced before fallback", async () => {
+    const delayedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedWrite.promise);
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const rendered = renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 45);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy range" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    rendered.rerender(grid("view-b"));
+    await act(async () => delayedWrite.reject(new Error("stale toolbar adapter denial")));
+
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Could not write|Copied 2 by 2/u)).toBeNull();
+  });
+
+  it("makes a keyboard copy inert when a later selection owns the grid", async () => {
+    const delayedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedWrite.promise);
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 46);
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    focusCell(milan);
+    await act(async () => delayedWrite.reject(new Error("stale keyboard adapter denial")));
+
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(milan);
+    expect(screen.queryByText(/Could not write|Copied 2 by 2/u)).toBeNull();
+  });
+
+  it.each(["toolbar", "header"] as const)(
+    "makes a whole-column %s copy inert when its exact view is replaced",
+    async (trigger) => {
+      const delayedWrite = deferred<void>();
+      writeText.mockImplementationOnce(() => delayedWrite.promise);
+      const execCommand = vi.fn(() => true);
+      Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+      const rendered = renderGrid();
+      const cityHeader = screen.getByRole("columnheader", { name: "city" });
+      fireEvent.click(cityHeader);
+      const request = latestColumnRequest();
+      dispatchPage(request, metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Copy column" })).toBeEnabled());
+
+      if (trigger === "toolbar") fireEvent.click(screen.getByRole("button", { name: "Copy column" }));
+      else fireEvent.keyDown(cityHeader, { key: "c", ctrlKey: true });
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      rendered.rerender(grid("view-b"));
+      await act(async () => delayedWrite.reject(new Error(`stale ${trigger} adapter denial`)));
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Could not write|Copied 2 cells/u)).toBeNull();
+    }
+  );
+
+  it("keeps a newer menu action when it begins during the older completion check", async () => {
+    const firstWrite = deferred<void>();
+    const secondWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => firstWrite.promise).mockImplementationOnce(() => secondWrite.promise);
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 47);
+    openClipboardMenu(milan, 48);
+    const copySelection = within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole(
+      "menuitem",
+      { name: "Copy selection" }
+    );
+    fireEvent.click(copySelection);
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    let startNewerAction = true;
+    vi.mocked(document.hasFocus).mockImplementation(() => {
+      if (startNewerAction) {
+        startNewerAction = false;
+        fireEvent.click(copySelection);
+      }
+      return true;
+    });
+    await act(async () => firstWrite.resolve());
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
+    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+
+    await act(async () => secondWrite.resolve());
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(document.activeElement).toBe(emptySales);
+    expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("keeps menu and whole-column ownership live through StrictMode effect replay", async () => {
+    render(<StrictMode>{grid("view-a")}</StrictMode>);
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 49);
+    openClipboardMenu(milan, 50);
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(document.activeElement).toBe(emptySales);
+    expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    const request = latestColumnRequest();
+    dispatchPage(request, metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+    const copyColumn = await screen.findByRole("button", { name: "Copy column" });
+    expect(copyColumn).toBeEnabled();
+    fireEvent.click(copyColumn);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Copied 2 cells from column city.")).toBeTruthy();
   });
 
   it("routes every copy action to the visible whole column instead of a stale prior rectangle", async () => {
