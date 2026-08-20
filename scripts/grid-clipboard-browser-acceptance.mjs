@@ -170,7 +170,12 @@ async function exercisePointerRangeClipboard(page, firstCell) {
   await configureClipboardBoundary(page, { navigatorMode: "unavailable", fallbackMode: "success" });
   await firstCell.click({ button: "right" });
   await page.getByText("2 rows by 2 columns selected", { exact: true }).waitFor();
-  const copySelection = page.getByRole("menuitem", { name: "Copy selection" });
+  const mixedMenu = page.getByRole("menu", { name: "Cell and selection actions for city" });
+  await mixedMenu.waitFor();
+  if ((await mixedMenu.getByRole("menuitem").count()) !== 3) {
+    throw new Error("The range context menu did not expose its two filter actions and explicit copy action.");
+  }
+  const copySelection = mixedMenu.getByRole("menuitem", { name: "Copy selection" });
   await copySelection.waitFor();
   await copySelection.click();
   await page.waitForFunction(
