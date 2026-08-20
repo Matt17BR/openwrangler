@@ -66,6 +66,8 @@ async function recordEnvironment() {
   assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_TASK_ID, taskId);
   assert.equal(process.env.OPEN_WRANGLER_QUALIFICATION_RUN_ID, runId);
   assert.equal(process.env.PWD, process.cwd());
+  assert.match(process.env.PYTEST_ADDOPTS ?? "", /(?:^|\s)-o\s+cache_dir=/u);
+  assert.doesNotMatch(process.env.PYTEST_ADDOPTS ?? "", /--cache-dir/u);
   assert.equal(
     process.env.PATH?.split(process.platform === "win32" ? ";" : ":")[0],
     dirname(process.env.OPEN_WRANGLER_TEST_PYTHON)
@@ -198,6 +200,19 @@ if (mode === "hold") {
   await writeFile(join(repository, "fixture.txt"), "fixture\n", { flag: "wx", mode: 0o600 });
   runGit(["add", "fixture.txt"]);
   runGit(["commit", "--quiet", "-m", "nested fixture"]);
+  const nestedHead = runGit(["rev-parse", "HEAD"]);
+  const topLevelHeadFromPrivateRoot = execFileSync("git", ["-C", process.cwd(), "rev-parse", "HEAD"], {
+    cwd: repository,
+    encoding: "utf8",
+    env: process.env,
+    windowsHide: true
+  }).trim();
+  const nestedHeadFromWorktree = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: process.env,
+    windowsHide: true
+  }).trim();
   const [authorName, authorEmail, committerName, committerEmail] = runGit([
     "show",
     "-s",
@@ -211,12 +226,39 @@ if (mode === "hold") {
       authorName,
       committerEmail,
       committerName,
+      nestedHead,
+      nestedHeadFromWorktree,
       repository,
       topLevelHead,
+      topLevelHeadFromPrivateRoot,
       topLevelStatus
     })}\n`,
     { flag: "wx", mode: 0o600 }
   );
+} else if (mode === "git-owner-override") {
+  try {
+    execFileSync("git", ["--git-dir", argument("--path"), "rev-parse", "HEAD"], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: "ignore",
+      windowsHide: true
+    });
+  } catch {
+    process.exit(1);
+  }
+  await writeFile(argument("--result"), "escaped\n", { flag: "wx", mode: 0o600 });
+} else if (mode === "git-outside-owner") {
+  try {
+    execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: argument("--path"),
+      env: process.env,
+      stdio: "ignore",
+      windowsHide: true
+    });
+  } catch {
+    process.exit(1);
+  }
+  await writeFile(argument("--result"), "escaped\n", { flag: "wx", mode: 0o600 });
 } else if (mode === "mutate-git-config") {
   execFileSync("git", ["config", "user.name", "Mutated qualification fixture"], {
     cwd: process.cwd(),

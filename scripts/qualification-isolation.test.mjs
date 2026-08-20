@@ -115,6 +115,41 @@ function assignedGit(task, arguments_, environment = process.env) {
   return result.stdout.trim();
 }
 
+function effectiveGitConfigSourcePaths(task, environment) {
+  const result = spawnSync(
+    task.assignment.gitExecutable,
+    [
+      "--git-dir",
+      task.assignment.gitDirectory,
+      "--work-tree",
+      task.worktree,
+      "config",
+      "--show-origin",
+      "--show-scope",
+      "--null",
+      "--list"
+    ],
+    {
+      cwd: task.worktree,
+      encoding: "utf8",
+      env: cleanGitEnvironment(environment),
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true
+    }
+  );
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const fields = result.stdout.split("\0");
+  assert.equal(fields.pop(), "");
+  assert.equal(fields.length % 3, 0);
+  const sources = new Set();
+  for (let index = 0; index < fields.length; index += 3) {
+    assert.match(fields[index + 1], /^file:/u);
+    sources.add(fields[index + 1].slice("file:".length));
+  }
+  return [...sources].sort((left, right) => left.localeCompare(right));
+}
+
 async function fixture(context, name = "fixture") {
   const root = realpathSync.native(await mkdtemp(join(tmpdir(), `ow-qualification-${name}-`)));
   context.after(() => rm(root, { force: true, recursive: true }));
@@ -416,6 +451,7 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
     email: assignedGit(task, ["config", "--get", "user.email"], configEnvironment),
     name: assignedGit(task, ["config", "--get", "user.name"], configEnvironment)
   };
+  const expectedConfigSources = effectiveGitConfigSourcePaths(task, configEnvironment);
   const nestedResultPath = join(task.assignment.stateRoot, "temp", "nested-git-result.json");
   const hostileToolDirectory = join(value.root, "hostile-tools");
   const hostileToolMarker = join(value.root, "hostile-git-invoked.txt");
@@ -475,7 +511,7 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   assert.equal(valueReceipt.identity.gitConfig.effectiveEmail, effectiveBefore.email);
   assert.deepEqual(
     valueReceipt.identity.gitConfig.sources.map((source) => source.path),
-    [globalConfigPath, includedConfigPath, configPath].sort((left, right) => left.localeCompare(right))
+    expectedConfigSources
   );
   for (const [path, bytes] of [
     [configPath, configBefore],
@@ -492,13 +528,74 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   assert.equal(nestedResult.authorEmail, "nested-fixture@openwrangler.invalid");
   assert.equal(nestedResult.committerName, nestedResult.authorName);
   assert.equal(nestedResult.committerEmail, nestedResult.authorEmail);
+  assert.equal(nestedResult.nestedHeadFromWorktree, nestedResult.nestedHead);
   assert.equal(nestedResult.topLevelHead, task.assignment.head);
+  assert.equal(nestedResult.topLevelHeadFromPrivateRoot, task.assignment.head);
   assert.equal(nestedResult.topLevelStatus, "");
   const nestedSuffix = relative(task.assignment.stateRoot, nestedResult.repository);
   assert.ok(nestedSuffix !== "" && !nestedSuffix.startsWith("..") && !isAbsolute(nestedSuffix));
   assert.equal(git(nestedResult.repository, ["config", "--local", "user.name"]), nestedResult.authorName);
   assert.equal(git(nestedResult.repository, ["config", "--local", "user.email"]), nestedResult.authorEmail);
   assert.equal(assignedGit(task, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+});
+
+test("rejects Git owner overrides and unbound repositories outside the private task root", async (context) => {
+  const value = await fixture(context, "git-owner-escape");
+  const unrelated = join(value.root, "unrelated.git");
+  git(value.root, ["init", "--quiet", "--bare", unrelated]);
+  for (const [taskId, mode, path] of [
+    ["git-owner-override", "git-owner-override", unrelated],
+    ["git-outside-owner", "git-outside-owner", value.repository]
+  ]) {
+    const task = await addTask(value, taskId);
+    const resultPath = join(task.assignment.stateRoot, "temp", `${taskId}.txt`);
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, mode, "--path", path, "--result", resultPath],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /qualification command exited with status/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.equal(valueReceipt.result.treeEmpty, true);
+    assert.equal(valueReceipt.result.status, 1);
+    assert.match(valueReceipt.failures.join("\n"), /qualification command exited with status/u);
+    assert.equal(assignedGit(task, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+    assert.equal(valueReceipt.result.signal, null);
+    assert.equal(existsSync(resultPath), false);
+  }
+});
+
+test("routes pytest cache and temporary state through the private task root", async (context) => {
+  const value = await fixture(context, "pytest-cache");
+  const task = await addTask(value, "pytest-cache");
+  const testFile = join(value.root, "test_private_cache.py");
+  await writeFile(
+    testFile,
+    'def test_private_cache(pytestconfig):\n    pytestconfig.cache.set("issue-728/proof", "private")\n',
+    { flag: "wx", mode: 0o600 }
+  );
+  const valueReceipt = await runQualification({
+    assignmentPath: task.assignmentPath,
+    command: [bootstrapPython(), "-m", "pytest", "-q", testFile],
+    environment: runnerEnvironment(),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.match(valueReceipt.environment.pytestCache, new RegExp(`^${task.assignment.stateRoot}`, "u"));
+  assert.equal(
+    await readFile(join(valueReceipt.environment.pytestCache, "v", "issue-728", "proof"), "utf8"),
+    '"private"'
+  );
+  assert.equal(existsSync(join(value.root, ".pytest_cache")), false);
+  assert.equal(existsSync(join(task.worktree, ".pytest_cache")), false);
 });
 
 test("makes an authoritative Git config mutation terminal and ineligible", async (context) => {
@@ -650,6 +747,38 @@ test("rejects source replacement before POSIX or Windows snapshot launch", async
     );
     assert.equal(sha256(await readFile(executable)), expectedDigest);
   }
+});
+
+test("rejects a same-size executable snapshot replacement before launch", async (context) => {
+  const value = await fixture(context, "snapshot-digest");
+  const task = await addTask(value, "snapshot-digest");
+  const executable = await copiedExecutable(join(value.root, `snapshot-source${extname(process.execPath)}`));
+  let snapshotPath;
+  await assert.rejects(
+    runQualification({
+      afterExecutableSnapshotWriteForTest: async (value) => {
+        snapshotPath = value.snapshotPath;
+        const original = await readFile(snapshotPath);
+        const replacement = Buffer.alloc(original.length, 0x5a);
+        const retained = `${snapshotPath}.retained`;
+        await rename(snapshotPath, retained);
+        await writeFile(snapshotPath, replacement, { flag: "wx", mode: 0o700 });
+      },
+      assignmentPath: task.assignmentPath,
+      command: [executable, child, "record"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /snapshot bytes changed before launch/u
+  );
+  assert.ok(snapshotPath);
+  const valueReceipt = await receipt(task);
+  assert.equal(valueReceipt.eligible, false);
+  assert.equal(valueReceipt.result.status, null);
+  assert.equal(valueReceipt.result.treeEmpty, true);
+  assert.equal(existsSync(valueReceipt.environment.testResult), false);
 });
 
 test(

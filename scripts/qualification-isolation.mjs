@@ -1047,14 +1047,58 @@ function quotePytestPath(path) {
 function gitWrapperProgramSource(assignment, configSelectionEnvironment) {
   return `import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 const binding = ${JSON.stringify({
     configSelectionEnvironment,
     gitDirectory: assignment.gitDirectory,
     gitExecutable: assignment.gitExecutable,
+    stateRoot: assignment.stateRoot,
     worktree: assignment.worktree
   })};
+function isInside(root, candidate) {
+  const suffix = relative(root, candidate);
+  return suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix));
+}
+function rejectOwnerOverrides(arguments_) {
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument === "--") break;
+    if (!argument.startsWith("-")) break;
+    if (
+      argument === "--bare" ||
+      argument === "--git-dir" ||
+      argument.startsWith("--git-dir=") ||
+      argument === "--namespace" ||
+      argument.startsWith("--namespace=") ||
+      argument === "--work-tree" ||
+      argument.startsWith("--work-tree=")
+    ) {
+      throw new Error("qualification Git metadata ownership cannot be overridden");
+    }
+    if (argument === "-C" || argument === "-c" || argument === "--config-env") index += 1;
+  }
+}
+function effectiveWorkingDirectory(initial, arguments_) {
+  let directory = initial;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument === "--" || !argument.startsWith("-")) break;
+    let requested;
+    if (argument === "-C") {
+      requested = arguments_[index + 1];
+      index += 1;
+    } else if (argument.startsWith("-C") && argument.length > 2) {
+      requested = argument.slice(2);
+    } else if (argument === "-c" || argument === "--config-env") {
+      index += 1;
+    }
+    if (requested === undefined) continue;
+    if (requested.length === 0) continue;
+    directory = realpathSync.native(resolve(directory, requested));
+  }
+  return directory;
+}
 const environment = { ...process.env };
 for (const key of Object.keys(environment)) {
   const upper = key.toUpperCase();
@@ -1062,9 +1106,13 @@ for (const key of Object.keys(environment)) {
 }
 Object.assign(environment, binding.configSelectionEnvironment);
 const cwd = realpathSync.native(process.cwd());
-const suffix = relative(binding.worktree, cwd);
-const usesAssignedWorktree = suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix));
 const arguments_ = process.argv.slice(2);
+rejectOwnerOverrides(arguments_);
+const effectiveCwd = effectiveWorkingDirectory(cwd, arguments_);
+const usesAssignedWorktree = isInside(binding.worktree, effectiveCwd);
+if (!usesAssignedWorktree && !isInside(binding.stateRoot, effectiveCwd)) {
+  throw new Error("unbound qualification Git is permitted only inside the private task root");
+}
 const commandArguments = usesAssignedWorktree
   ? ["--git-dir", binding.gitDirectory, "--work-tree", binding.worktree, ...arguments_]
   : arguments_;
@@ -1171,7 +1219,7 @@ function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment
     OPEN_WRANGLER_QUALIFICATION_TASK_ID: assignment.taskId,
     PATH: `${dirname(layout.pythonExecutable)}${delimiter}${layout.toolPath}`,
     PWD: assignment.worktree,
-    PYTEST_ADDOPTS: `--cache-dir=${quotePytestPath(layout.pytestCache)} --basetemp=${quotePytestPath(layout.pytestTemp)}`,
+    PYTEST_ADDOPTS: `-o cache_dir=${quotePytestPath(layout.pytestCache)} --basetemp=${quotePytestPath(layout.pytestTemp)}`,
     npm_config_userconfig: layout.npmUserConfig
   });
   if (process.platform === "win32") {
@@ -1310,7 +1358,24 @@ function executableIdentity(value) {
   };
 }
 
-async function createExecutableSnapshot(executable, snapshotRoot) {
+async function hashPinnedExecutable(executable) {
+  await verifyPinnedExecutable(executable);
+  const leaf = executableLeaf(executable);
+  const digest = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  while (offset < Number(leaf.before.size)) {
+    const length = Math.min(buffer.length, Number(leaf.before.size) - offset);
+    const { bytesRead } = await leaf.handle.read(buffer, 0, length, offset);
+    if (bytesRead <= 0) fail("qualification command snapshot ended while it was rehashed");
+    digest.update(buffer.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
+  await verifyPinnedExecutable(executable);
+  return digest.digest("hex");
+}
+
+async function createExecutableSnapshot(executable, snapshotRoot, { afterWriteForTest } = {}) {
   await verifyPinnedExecutable(executable);
   const source = executableLeaf(executable);
   if (source.before.size <= 0n || source.before.size > BigInt(MAX_EXECUTABLE_BYTES)) {
@@ -1356,16 +1421,18 @@ async function createExecutableSnapshot(executable, snapshotRoot) {
   } finally {
     await writer.close();
   }
+  const sourceDigest = digest.digest("hex");
+  await afterWriteForTest?.({ snapshotPath });
   await verifyPinnedExecutable(executable);
   const snapshot = await openPinnedExecutable(snapshotPath);
   const snapshotLeaf = executableLeaf(snapshot);
-  if (snapshotLeaf.before.size !== source.before.size) {
+  if (snapshotLeaf.before.size !== source.before.size || (await hashPinnedExecutable(snapshot)) !== sourceDigest) {
     await closePinnedExecutable(snapshot);
-    fail("qualification command snapshot size changed before launch");
+    fail("qualification command snapshot bytes changed before launch");
   }
   return {
     record: {
-      sha256: digest.digest("hex"),
+      sha256: sourceDigest,
       snapshot: executableIdentity(snapshotLeaf),
       source: executableIdentity(source),
       sourcePath: executable.path
@@ -1752,7 +1819,9 @@ async function runOwnedCommand(command, arguments_, options) {
       options.allowedSymbolicLinkTarget,
       options.executableAfterOpenForTest ? { afterOpenForTest: options.executableAfterOpenForTest } : undefined
     );
-    launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot);
+    launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot, {
+      afterWriteForTest: options.executableSnapshotAfterWriteForTest
+    });
     if (platform !== "win32") {
       supervisorExecutable = await openPinnedExecutable(options.posixSupervisorCommand);
       supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
@@ -2008,6 +2077,7 @@ async function writeReceipt(layoutState, value) {
 
 async function runQualification({
   afterCommandSpawnForTest,
+  afterExecutableSnapshotWriteForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
   command,
@@ -2069,6 +2139,7 @@ async function runQualification({
         executableSnapshotRoot: layoutState.layout.executableSnapshots,
         afterSpawnForTest: afterCommandSpawnForTest,
         beforeSpawnForTest: beforeCommandSpawnForTest,
+        executableSnapshotAfterWriteForTest: afterExecutableSnapshotWriteForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
         posixSupervisorCommand: bootstrap.bootstrapPython,
