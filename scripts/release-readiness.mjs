@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  accessSync,
   closeSync,
   constants as fsConstants,
   fchmodSync,
@@ -13,7 +14,7 @@ import {
   unlinkSync,
   writeSync
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
@@ -217,6 +218,10 @@ const PERFORMANCE_REPORT_LINK =
   /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
 const MAX_PERFORMANCE_README_BYTES = 2 * 1024 * 1024;
 const MAX_PERFORMANCE_REVIEW_BYTES = 2 * 1024 * 1024;
+const RELEASE_SOURCE_BINDINGS = new WeakMap();
+const GIT_READ_TIMEOUT_MS = 5_000;
+const MAX_GIT_COMMIT_BYTES = 2 * 1024 * 1024;
+const MAX_GIT_OUTPUT_BYTES = DATA_WRANGLER_STUDY_REPORT_MAX_BYTES + 1;
 export const HISTORICAL_PERFORMANCE_DISCLOSURE =
   "The linked comparison is retained historical evidence for an earlier Open Wrangler release. It does not describe current performance. New results will be summarized here only after a release-candidate study produces a complete reviewed report.";
 const PERFORMANCE_OVERVIEW =
@@ -235,10 +240,23 @@ function stableRParityProblems(featureParity, version, trackedEvidencePaths) {
 }
 
 function markdownAtxHeading(line) {
+  const html = /^ {0,3}<h2(?:[ \t]+[^>]*)?>(?<body>.*?)<\/h2>[ \t]*$/iu.exec(line);
+  if (html !== null) {
+    return { level: 2, span: 1, text: html.groups?.body ?? "" };
+  }
   const match = /^ {0,3}(?<marks>#{1,6})(?:(?:[ \t]+(?<body>.*))|[ \t]*)$/u.exec(line);
   if (match === null) return undefined;
   const body = (match.groups?.body ?? "").replace(/[ \t]+#+[ \t]*$/u, "").trim();
   return { level: match.groups?.marks.length, span: 1, text: body };
+}
+
+function normalizedRenderedHeading(text) {
+  return text
+    .replace(/!?\[(?<label>[^\]]+)\]\([^\r\n)]*\)/gu, "$<label>")
+    .replace(/[`*_~]/gu, "")
+    .replace(/<[^>]*>/gu, "")
+    .trim()
+    .toLowerCase();
 }
 
 function markdownFence(line) {
@@ -254,6 +272,94 @@ function closesMarkdownFence(line, fence) {
   const match = /^ {0,3}(?<marks>`{3,}|~{3,})[ \t]*$/u.exec(line);
   const marks = match?.groups?.marks;
   return marks !== undefined && marks[0] === fence.character && marks.length >= fence.length;
+}
+
+function visibleMarkdownLine(line) {
+  let visible = "";
+  let index = 0;
+  while (index < line.length) {
+    if (line[index] !== "`") {
+      visible += line[index];
+      index += 1;
+      continue;
+    }
+    let markerEnd = index;
+    while (line[markerEnd] === "`") markerEnd += 1;
+    const marker = line.slice(index, markerEnd);
+    const closing = line.indexOf(marker, markerEnd);
+    if (closing === -1) {
+      visible += marker;
+      index = markerEnd;
+      continue;
+    }
+    visible += " ";
+    index = closing + marker.length;
+  }
+  return visible.replace(/<!--[\s\S]*?-->/gu, " ").replace(/<[^>]*>/gu, " ");
+}
+
+function outsidePerformanceClaim(paragraph) {
+  const text = normalizedPerformanceCopy(paragraph).toLowerCase();
+  if (text === "") return false;
+  const claimText = text.replace(/\btime zones?\b/gu, "");
+  const linkedEvidence =
+    /github\.com\/matt17br\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-[0-9]+\.[0-9]+\.[0-9]+\/review\.md/u.test(
+      claimText
+    );
+  const currentEvidence =
+    /\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.\n]{0,80}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
+      claimText
+    );
+  const metric =
+    /\b(?:allocation|benchmark|cpu|duration|elapsed|fast|footprint|latency|memory|perform\w*|profiling|ram|resource|response|responsive|speed|startup|throughput|time|timing|wait|work(?:ing)?\s+set|workload)\w*\b/u.test(
+      claimText
+    );
+  const comparative =
+    /\b(?:ahead|behind|better|cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|more|reduc\w*|shorter|smaller|twice|twofold|worse)\b|\b\d+(?:\.\d+)?\s*(?:%|x)\b/u.test(
+      claimText
+    );
+  const inherentlyComparative =
+    /\b(?:accelerat\w*|beat\w*|faster|outperform\w*|quick(?:er|ly)|slower|sooner|speed(?:s|ing)?\s+up)\b/u.test(
+      claimText
+    );
+  const measuredResult =
+    /\b\d[\d,]*(?:\.\d+)?\s*(?:gib|gb|hours?|kib|kb|mb|mib|milliseconds?|minutes?|ms|rows?\s*(?:\/|per\s+)second|seconds?)\b/u.test(
+      claimText
+    );
+  const namedProductClaim =
+    /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) &&
+    /\b(?:efficient|fast|lightweight|low-latency|responsive|slow)\b/u.test(claimText);
+  return (
+    linkedEvidence ||
+    currentEvidence ||
+    (metric && comparative) ||
+    inherentlyComparative ||
+    measuredResult ||
+    namedProductClaim
+  );
+}
+
+function hasOutsidePerformanceClaim(rendered, sectionStart, sectionEnd) {
+  const paragraphs = [];
+  let paragraph = [];
+  const flush = () => {
+    if (paragraph.length > 0) paragraphs.push(paragraph.join(" "));
+    paragraph = [];
+  };
+  for (let index = 0; index < rendered.length; index += 1) {
+    if (index >= sectionStart && index < sectionEnd) {
+      flush();
+      continue;
+    }
+    const entry = rendered[index];
+    if (entry.code || entry.heading !== undefined || entry.line.trim() === "") {
+      flush();
+      continue;
+    }
+    paragraph.push(visibleMarkdownLine(entry.line));
+  }
+  flush();
+  return paragraphs.some(outsidePerformanceClaim);
 }
 
 function performanceSection(readme) {
@@ -294,7 +400,7 @@ function performanceSection(readme) {
 
   const headings = rendered
     .map((entry, index) => ({ ...entry.heading, index }))
-    .filter((entry) => entry.level === 2 && entry.text === "Performance");
+    .filter((entry) => entry.level === 2 && normalizedRenderedHeading(entry.text ?? "") === "performance");
   if (headings.length !== 1) return undefined;
   const sectionStart = headings[0].index + headings[0].span;
   const followingHeading = rendered.findIndex(
@@ -304,6 +410,7 @@ function performanceSection(readme) {
   const entries = rendered.slice(sectionStart, sectionEnd);
   return {
     hasCodeContent: entries.some((entry) => entry.code && entry.line.trim() !== ""),
+    hasOutsideClaim: hasOutsidePerformanceClaim(rendered, headings[0].index, sectionEnd),
     text: entries
       .filter((entry) => !entry.code)
       .map((entry) => entry.line)
@@ -354,6 +461,9 @@ export function inspectPerformanceSummary(readme, { currentReport } = {}) {
   if (section === undefined) {
     return ["README must contain exactly one Performance section with one versioned Data Wrangler review."];
   }
+  if (section.hasOutsideClaim) {
+    return ["README performance comparisons and current-result claims must appear only in its Performance section."];
+  }
   const report = performanceReportLink(readme);
   if (report === undefined) {
     return ["README Performance must link exactly one versioned Data Wrangler review."];
@@ -389,7 +499,6 @@ export function classifyCurrentCompletedPerformanceReport({
   performanceReportSourceCommit,
   report,
   reportVersion,
-  requireCandidateMatch = false,
   sourceCommit,
   sourceVersion
 }) {
@@ -408,13 +517,11 @@ export function classifyCurrentCompletedPerformanceReport({
     typeof candidateSha256 === "string" &&
     SHA256.test(candidateSha256) &&
     report.provenance.openWrangler.sha256 === candidateSha256;
-  const hasExplicitSourceBinding = sourceCommit !== undefined || performanceReportSourceCommit !== undefined;
-  const sourceMatches = hasExplicitSourceBinding
-    ? typeof sourceCommit === "string" &&
-      sourceCommit === sourceCommit.toLowerCase() &&
-      FULL_COMMIT_ID.test(sourceCommit) &&
-      performanceReportSourceCommit === sourceCommit
-    : requireCandidateMatch === true && candidateMatches;
+  const sourceMatches =
+    typeof sourceCommit === "string" &&
+    sourceCommit === sourceCommit.toLowerCase() &&
+    FULL_COMMIT_ID.test(sourceCommit) &&
+    performanceReportSourceCommit === sourceCommit;
   return {
     candidateMatches,
     current:
@@ -479,13 +586,15 @@ function inspectStablePerformanceEvidence(
   if (reportData === undefined) {
     return [...problems, ...inspectLabeledPerformanceSummary(readme, label, undefined)];
   }
+  const immutableSourceBinding = RELEASE_SOURCE_BINDINGS.get(performanceReportFiles);
+  const snapshotSourceCommit =
+    immutableSourceBinding?.files.get(reportJsonPath) === reportSource ? immutableSourceBinding.commit : undefined;
   const classification = classifyCurrentCompletedPerformanceReport({
     candidateSha256,
-    performanceReportSourceCommit,
+    performanceReportSourceCommit: performanceReportSourceCommit ?? snapshotSourceCommit,
     report: reportData,
     reportVersion: report.version,
-    requireCandidateMatch: true,
-    sourceCommit,
+    sourceCommit: sourceCommit ?? snapshotSourceCommit,
     sourceVersion: version
   });
   if (classification.completenessError !== undefined) {
@@ -944,13 +1053,85 @@ function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");
 }
 
+function resolveGitExecutable() {
+  const names = process.platform === "win32" ? ["git.exe"] : ["git"];
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (directory === "") continue;
+    for (const name of names) {
+      try {
+        const executable = realpathSync.native(resolve(directory, name));
+        if (!lstatSync(executable).isFile()) continue;
+        accessSync(executable, fsConstants.X_OK);
+        return executable;
+      } catch {
+        // Continue until one canonical executable is found on the initial trusted PATH.
+      }
+    }
+  }
+  throw new Error("Git must resolve to one executable regular file before release evidence is inspected.");
+}
+
+const GIT_EXECUTABLE = resolveGitExecutable();
+const GIT_READ_ENVIRONMENT = Object.freeze({
+  GIT_ALTERNATE_OBJECT_DIRECTORIES: "",
+  GIT_ATTR_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_SYSTEM: process.platform === "win32" ? "NUL" : "/dev/null",
+  GIT_NO_LAZY_FETCH: "1",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_PAGER: "cat",
+  GIT_TERMINAL_PROMPT: "0",
+  LANG: "C",
+  LC_ALL: "C",
+  PAGER: "cat",
+  PATH: dirname(GIT_EXECUTABLE),
+  ...(process.platform === "win32"
+    ? Object.fromEntries(
+        ["SYSTEMROOT", "WINDIR"]
+          .filter((name) => typeof process.env[name] === "string")
+          .map((name) => [name, process.env[name]])
+      )
+    : {})
+});
+
 function runGit(root, args, options = {}) {
-  return execFileSync("git", args, {
-    cwd: root,
-    encoding: options.encoding,
-    maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
-    windowsHide: true
-  });
+  const maxBuffer = options.maxBuffer ?? 16 * 1024 * 1024;
+  if (
+    !Array.isArray(args) ||
+    args.some((argument) => typeof argument !== "string" || containsAsciiControl(argument)) ||
+    !Number.isSafeInteger(maxBuffer) ||
+    maxBuffer <= 0 ||
+    maxBuffer > MAX_GIT_OUTPUT_BYTES ||
+    (options.encoding !== undefined && options.encoding !== "utf8")
+  ) {
+    throw new Error("A bounded Git read requires safe arguments, encoding, and output limits.");
+  }
+  return execFileSync(
+    GIT_EXECUTABLE,
+    [
+      "--no-replace-objects",
+      "--literal-pathspecs",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.untrackedCache=false",
+      "-c",
+      "core.useReplaceRefs=false",
+      ...args
+    ],
+    {
+      cwd: root,
+      encoding: options.encoding,
+      env: GIT_READ_ENVIRONMENT,
+      killSignal: "SIGKILL",
+      maxBuffer,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: GIT_READ_TIMEOUT_MS,
+      windowsHide: true
+    }
+  );
 }
 
 function decodeUtf8(contents, label) {
@@ -966,6 +1147,88 @@ function containsAsciiControl(value) {
     const codePoint = character.codePointAt(0);
     return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
   });
+}
+
+function gitObjectHash(type, contents, object) {
+  const algorithm = object.length === 40 ? "sha1" : object.length === 64 ? "sha256" : undefined;
+  if (algorithm === undefined) {
+    throw new Error("Git returned an unsupported object ID length.");
+  }
+  return createHash(algorithm)
+    .update(Buffer.from(`${type} ${contents.length}\0`, "utf8"))
+    .update(contents)
+    .digest("hex");
+}
+
+function readExactGitObject(root, object, type, maxBytes, label) {
+  const objectType = runGit(root, ["cat-file", "-t", object], {
+    encoding: "utf8",
+    maxBuffer: 1024
+  }).trim();
+  if (objectType !== type) {
+    throw new Error(`${label} must resolve to one ${type} Git object.`);
+  }
+  const sizeText = runGit(root, ["cat-file", "-s", object], {
+    encoding: "utf8",
+    maxBuffer: 1024
+  }).trim();
+  if (!/^(?:0|[1-9]\d*)$/u.test(sizeText)) {
+    throw new Error(`${label} has an invalid Git object size.`);
+  }
+  const size = Number(sizeText);
+  if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
+    throw new Error(`${label} exceeds its ${maxBytes}-byte commit snapshot limit.`);
+  }
+  const contents = runGit(root, ["cat-file", type, object], { maxBuffer: maxBytes + 1 });
+  if (!Buffer.isBuffer(contents) || contents.length !== size) {
+    throw new Error(`${label} did not match its Git object size.`);
+  }
+  if (gitObjectHash(type, contents, object) !== object) {
+    throw new Error(`${label} bytes do not hash back to their bound Git object ID.`);
+  }
+  return contents;
+}
+
+function resolveExactGitCommit(root, commit) {
+  const resolvedCommit = runGit(root, ["rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`], {
+    encoding: "utf8",
+    maxBuffer: 1024
+  }).trim();
+  if (resolvedCommit !== commit.toLowerCase()) {
+    throw new Error("A bounded Git blob read must resolve the exact requested commit.");
+  }
+  const commitBytes = readExactGitObject(root, resolvedCommit, "commit", MAX_GIT_COMMIT_BYTES, "Release commit");
+  const firstLineEnd = commitBytes.indexOf(0x0a);
+  const firstLine = firstLineEnd === -1 ? "" : commitBytes.subarray(0, firstLineEnd).toString("ascii");
+  const tree = /^tree (?<object>[0-9a-f]{40}|[0-9a-f]{64})$/u.exec(firstLine)?.groups?.object;
+  if (tree === undefined || tree.length !== resolvedCommit.length) {
+    throw new Error("Release commit must bind one canonical root tree object ID.");
+  }
+  readExactGitObject(root, tree, "tree", DATA_WRANGLER_STUDY_REPORT_MAX_BYTES, "Release root tree");
+  return Object.freeze({ commit: resolvedCommit, tree });
+}
+
+function readBoundedGitBlobFromTree({ maxBytes, path, required, root, tree }) {
+  const entry = runGit(root, ["ls-tree", "-z", tree, "--", path], { maxBuffer: 4096 });
+  if (!Buffer.isBuffer(entry) || entry.length === 0) {
+    if (!required) return undefined;
+    throw new Error(`Release commit is missing required tracked source ${path}.`);
+  }
+  const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) (?<object>[0-9a-f]{40,64})\t(?<path>[^\0]+)\0$/u.exec(
+    entry.toString("utf8")
+  );
+  const groups = match?.groups;
+  if (
+    groups === undefined ||
+    groups.path !== path ||
+    groups.type !== "blob" ||
+    !["100644", "100755"].includes(groups.mode) ||
+    groups.object.length !== tree.length
+  ) {
+    throw new Error(`Release source ${path} must be one regular tracked Git blob.`);
+  }
+  const contents = readExactGitObject(root, groups.object, "blob", maxBytes, `Release source ${path}`);
+  return Object.freeze({ blob: groups.object, contents: decodeUtf8(contents, path) });
 }
 
 export function readBoundedGitBlobSnapshot({ commit, maxBytes, path, required = true, root }) {
@@ -987,51 +1250,8 @@ export function readBoundedGitBlobSnapshot({ commit, maxBytes, path, required = 
   }
 
   const absoluteRoot = resolve(root);
-  const resolvedCommit = runGit(absoluteRoot, ["rev-parse", "--verify", `${commit}^{commit}`], {
-    encoding: "utf8",
-    maxBuffer: 1024
-  }).trim();
-  if (resolvedCommit !== commit.toLowerCase()) {
-    throw new Error("A bounded Git blob read must resolve the exact requested commit.");
-  }
-  const entry = runGit(absoluteRoot, ["ls-tree", "-z", resolvedCommit, "--", path], {
-    maxBuffer: 4096
-  });
-  if (!Buffer.isBuffer(entry) || entry.length === 0) {
-    if (!required) return undefined;
-    throw new Error(`Release commit is missing required tracked source ${path}.`);
-  }
-  const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) (?<object>[0-9a-f]{40,64})\t(?<path>[^\0]+)\0$/u.exec(
-    entry.toString("utf8")
-  );
-  const groups = match?.groups;
-  if (
-    groups === undefined ||
-    groups.path !== path ||
-    groups.type !== "blob" ||
-    !["100644", "100755"].includes(groups.mode)
-  ) {
-    throw new Error(`Release source ${path} must be one regular tracked Git blob.`);
-  }
-  const object = groups.object;
-  const sizeText = runGit(absoluteRoot, ["cat-file", "-s", object], {
-    encoding: "utf8",
-    maxBuffer: 1024
-  }).trim();
-  if (!/^(?:0|[1-9]\d*)$/u.test(sizeText)) {
-    throw new Error(`Release source ${path} has an invalid Git object size.`);
-  }
-  const size = Number(sizeText);
-  if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
-    throw new Error(`Release source ${path} exceeds its ${maxBytes}-byte commit snapshot limit.`);
-  }
-  const contents = runGit(absoluteRoot, ["cat-file", "blob", object], {
-    maxBuffer: maxBytes + 1
-  });
-  if (!Buffer.isBuffer(contents) || contents.length !== size) {
-    throw new Error(`Release source ${path} did not match its Git object size.`);
-  }
-  return decodeUtf8(contents, path);
+  const binding = resolveExactGitCommit(absoluteRoot, commit);
+  return readBoundedGitBlobFromTree({ maxBytes, path, required, root: absoluteRoot, tree: binding.tree })?.contents;
 }
 
 export function readReleaseSourceSnapshot({ expectedCommit, root }) {
@@ -1039,26 +1259,38 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
     throw new Error("EXPECTED_SHA must be one full hexadecimal Git commit ID.");
   }
   const absoluteRoot = resolve(root);
-  const commit = runGit(absoluteRoot, ["rev-parse", "--verify", `${expectedCommit}^{commit}`], {
-    encoding: "utf8"
+  const binding = resolveExactGitCommit(absoluteRoot, expectedCommit);
+  const head = runGit(absoluteRoot, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"], {
+    encoding: "utf8",
+    maxBuffer: 1024
   }).trim();
-  const head = runGit(absoluteRoot, ["rev-parse", "--verify", "HEAD^{commit}"], {
-    encoding: "utf8"
-  }).trim();
-  if (commit !== expectedCommit.toLowerCase() || head !== commit) {
+  if (head !== binding.commit) {
     throw new Error("Release readiness must inspect the exact checked-out event commit.");
   }
 
   const trackedPaths = new Set(
-    runGit(absoluteRoot, ["ls-tree", "-r", "--name-only", "-z", commit, "--"])
+    runGit(absoluteRoot, ["ls-tree", "-r", "--name-only", "-z", binding.tree, "--"])
       .toString("utf8")
       .split("\0")
       .filter(Boolean)
   );
   const files = new Map();
+  const blobOids = new Map();
+  const sourceBinding = { commit: binding.commit, files: new Map() };
+  RELEASE_SOURCE_BINDINGS.set(files, sourceBinding);
   const readCommitFile = (path, maxBytes, required) => {
-    const contents = readBoundedGitBlobSnapshot({ commit, maxBytes, path, required, root: absoluteRoot });
-    if (contents !== undefined) files.set(path, contents);
+    const snapshot = readBoundedGitBlobFromTree({
+      maxBytes,
+      path,
+      required,
+      root: absoluteRoot,
+      tree: binding.tree
+    });
+    if (snapshot !== undefined) {
+      blobOids.set(path, snapshot.blob);
+      files.set(path, snapshot.contents);
+      sourceBinding.files.set(path, snapshot.contents);
+    }
   };
   for (const [path, maxBytes] of RELEASE_SOURCE_FILES) {
     readCommitFile(path, maxBytes, true);
@@ -1082,8 +1314,10 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
     }
   }
   return Object.freeze({
-    commit,
+    blobOids,
+    commit: binding.commit,
     files,
+    tree: binding.tree,
     trackedPaths
   });
 }

@@ -195,5 +195,10 @@ summary after binding the exact candidate digest, report, and source commit. Its
 versions, the completion date, Pandas and Polars CSV and Parquet workloads, and completed session and sample counts.
 The detailed timings remain in the report rather than in a README table or free-form claim.
 
+README contains exactly one visible, case-insensitive Performance heading. Comparison evidence and current-result
+claims remain inside that section; moving equivalent prose or links elsewhere does not bypass the gate. Documentation
+checks read the commit, root tree, review, and report as bounded Git objects with replacement and inherited helper
+configuration disabled, and independently verify that each returned object hashes to its bound object ID.
+
 Create a new versioned directory when a release reruns the comparison with the VSIX that will be published, and
 commit its `review.md` and `report.json` together.

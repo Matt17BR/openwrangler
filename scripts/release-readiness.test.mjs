@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { deflateSync } from "node:zlib";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { COMPARISON_TEST_SHA, createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
@@ -1164,6 +1165,7 @@ test("constrains historical and current Performance summaries to exact evidence-
   assert.deepEqual(inspectPerformanceSummary(neutralCurrentReadme, { currentReport }), []);
 
   assert.deepEqual(inspectPerformanceSummary(historicalReadme.replace("## Performance", "## Performance ##")), []);
+  assert.deepEqual(inspectPerformanceSummary(historicalReadme.replace("## Performance", "## performance")), []);
   assert.deepEqual(
     inspectPerformanceSummary(historicalReadme.replace("## Performance", "Performance\n-----------")),
     []
@@ -1180,6 +1182,15 @@ test("constrains historical and current Performance summaries to exact evidence-
     ),
     ["README must contain exactly one Performance section with one versioned Data Wrangler review."]
   );
+  for (const duplicateHeading of ["## PERFORMANCE", "## **Performance**", "<h2>performance</h2>"]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        `${historicalReadme}\n${duplicateHeading}\n\n${historicalPerformanceCopy(historicalPath)}\n`
+      ),
+      ["README must contain exactly one Performance section with one versioned Data Wrangler review."],
+      duplicateHeading
+    );
+  }
   assert.deepEqual(
     inspectPerformanceSummary(
       historicalReadme.replace(HISTORICAL_PERFORMANCE_DISCLOSURE, `    ${HISTORICAL_PERFORMANCE_DISCLOSURE}`)
@@ -1198,6 +1209,37 @@ test("constrains historical and current Performance summaries to exact evidence-
     ),
     ["README Performance must link exactly one versioned Data Wrangler review."]
   );
+
+  const outOfSectionProblem =
+    "README performance comparisons and current-result claims must appear only in its Performance section.";
+  for (const outsideClaim of [
+    "OPEN WRANGLER OUTPERFORMS DATA WRANGLER.",
+    "Open Wrangler needs a smaller memory footprint.",
+    "Notebook previews finish sooner with Open Wrangler.",
+    "Open Wrangler completes the same workload with fewer allocations.",
+    "Open Wrangler processed 10,000 rows per second.",
+    "The workbench is lightweight and responsive.",
+    "The latest timing evidence is favorable.",
+    `[historical benchmark report](${performanceReportUrl(historicalPath)})`
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${outsideClaim}`)),
+      [outOfSectionProblem],
+      outsideClaim
+    );
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n\`\`\`text\n${outsideClaim}\n\`\`\``)
+      ),
+      [],
+      `fenced code: ${outsideClaim}`
+    );
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n    ${outsideClaim}`)),
+      [],
+      `indented code: ${outsideClaim}`
+    );
+  }
 
   const qualificationProblem =
     "README Performance must use the exact linked historical summary, neutral current-report link, or report-derived current summary.";
@@ -1258,11 +1300,18 @@ test("requires candidate, report, and source provenance before classifying curre
     classifyCurrentCompletedPerformanceReport({
       ...input,
       performanceReportSourceCommit: undefined,
-      requireCandidateMatch: true,
       sourceCommit: undefined
     }).current,
-    true,
-    "trusted canonical caller with an exact candidate-bound immutable source snapshot"
+    false,
+    "matching digest alone is not source provenance"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({
+      ...input,
+      sourceCommit: OTHER_SOURCE_COMMIT
+    }).current,
+    false,
+    "the report must be bound to the exact inspected source commit"
   );
 });
 
@@ -1308,12 +1357,16 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     });
 
   assert.deepEqual(inspectStableReleaseReadiness(candidate(version)), []);
-  assert.deepEqual(
-    inspectStableReleaseReadiness(
-      candidate(version, { performanceReportSourceCommit: undefined, sourceCommit: undefined })
-    ),
-    []
+  const digestOnlyProblems = inspectStableReleaseReadiness(
+    candidate(version, { performanceReportSourceCommit: undefined, sourceCommit: undefined })
   );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      digestOnlyProblems.includes(
+        `${label} Performance data ${reportDataPath(version)} is not bound to the exact release source commit.`
+      )
+    );
+  }
   const currentClaim = currentPerformanceCopy(reportPath(version), createReleaseComparisonReport({ version }));
   assert.deepEqual(
     inspectStableReleaseReadiness(
@@ -1387,15 +1440,19 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   }
 
   const historical = `[historical report](${reportUrl("1.2.1")})\n\n`;
-  assert.deepEqual(
-    inspectStableReleaseReadiness(
-      candidate(version, {
-        readme: readmeWithReport(version, historical),
-        packagedReadme: readmeWithReport(version, historical)
-      })
-    ),
-    []
+  const outsideEvidenceProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      readme: readmeWithReport(version, historical),
+      packagedReadme: readmeWithReport(version, historical)
+    })
   );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      outsideEvidenceProblems.includes(
+        `${label} performance comparisons and current-result claims must appear only in its Performance section.`
+      )
+    );
+  }
 
   const sourceProblems = inspectStableReleaseReadiness(
     candidate(version, {
@@ -2458,6 +2515,52 @@ test("reads performance evidence only from bounded regular immutable Git blobs",
     /normalized repository-relative path/u
   );
 
+  writeFileSync(evidence, "replacement evidence\n");
+  const replacement = commit("replacement evidence");
+  execFileSync("git", ["replace", committed, replacement], { cwd: repository });
+  assert.equal(readCommitted(), "committed evidence\n", "replacement refs must not alter the bound commit");
+  execFileSync("git", ["replace", "-d", committed], { cwd: repository });
+
+  const helperDirectory = join(repository, "hostile-git-environment");
+  const helperMarker = join(helperDirectory, "git-ran");
+  mkdirSync(helperDirectory);
+  if (process.platform !== "win32") {
+    const helper = join(helperDirectory, "git");
+    writeFileSync(helper, `#!/bin/sh\n: > '${helperMarker}'\nsleep 30\n`, { mode: 0o700 });
+    chmodSync(helper, 0o700);
+  }
+  const hostileConfig = join(helperDirectory, "config");
+  if (process.platform !== "win32") {
+    execFileSync("mkfifo", [hostileConfig]);
+  } else {
+    writeFileSync(hostileConfig, "[alias]\ncat-file = !exit 99\n");
+  }
+  const hostileEnvironment = {
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: join(helperDirectory, "alternate-objects"),
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_GLOBAL: hostileConfig,
+    GIT_CONFIG_KEY_0: "alias.cat-file",
+    GIT_CONFIG_SYSTEM: hostileConfig,
+    GIT_CONFIG_VALUE_0: "!sleep 30",
+    GIT_EXEC_PATH: helperDirectory,
+    GIT_OBJECT_DIRECTORY: join(helperDirectory, "objects"),
+    GIT_REPLACE_REF_BASE: "refs/hostile-replacements/",
+    PATH: helperDirectory
+  };
+  const inheritedEnvironment = new Map(Object.keys(hostileEnvironment).map((name) => [name, process.env[name]]));
+  const startedAt = Date.now();
+  try {
+    Object.assign(process.env, hostileEnvironment);
+    assert.equal(readCommitted(), "committed evidence\n");
+  } finally {
+    for (const [name, value] of inheritedEnvironment) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  assert.ok(Date.now() - startedAt < 4_000, "inherited Git helper/config hangs must not consume the read bound");
+  assert.equal(existsSync(helperMarker), false, "inherited Git executables and helpers must not run");
+
   if (process.platform !== "win32") {
     unlinkSync(evidence);
     symlinkSync("/dev/null", evidence);
@@ -2499,6 +2602,26 @@ test("reads performance evidence only from bounded regular immutable Git blobs",
         root: repository
       }),
     /exceeds its 64-byte commit snapshot limit/u
+  );
+
+  const oversizedBlob = execFileSync("git", ["rev-parse", `${oversizedCommit}:${relativePath}`], {
+    cwd: repository,
+    encoding: "utf8"
+  }).trim();
+  const forgedContents = Buffer.from("y".repeat(65), "utf8");
+  const forgedObject = Buffer.concat([Buffer.from(`blob ${forgedContents.length}\0`, "utf8"), forgedContents]);
+  const oversizedObjectPath = join(repository, ".git", "objects", oversizedBlob.slice(0, 2), oversizedBlob.slice(2));
+  chmodSync(oversizedObjectPath, 0o600);
+  writeFileSync(oversizedObjectPath, deflateSync(forgedObject));
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: oversizedCommit,
+        maxBytes: 128,
+        path: relativePath,
+        root: repository
+      }),
+    /bytes do not hash back to their bound Git object ID/u
   );
 });
 
@@ -2542,6 +2665,17 @@ test("reads the linked performance report from the immutable release commit", ()
     );
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
     const source = readReleaseSourceSnapshot({ expectedCommit: commit, root: repository });
+    assert.equal(
+      source.tree,
+      execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: repository, encoding: "utf8" }).trim()
+    );
+    assert.equal(
+      source.blobOids.get("docs/performance/data-wrangler-2.0.0/review.md"),
+      execFileSync("git", ["rev-parse", "HEAD:docs/performance/data-wrangler-2.0.0/review.md"], {
+        cwd: repository,
+        encoding: "utf8"
+      }).trim()
+    );
     assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/review.md"), "# Review\n");
     assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/report.json"), reportSource);
   } finally {
