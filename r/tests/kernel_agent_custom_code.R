@@ -162,7 +162,10 @@ custom_code <- paste(
   "base::print(\"discarded output\")",
   "base::cat(\"discarded cat output\\n\")",
   "base::message(\"discarded message\")",
-  "base::warning(\"discarded warning\")",
+  "warning_receipt <- base::new.env(parent = base::emptyenv())",
+  "base::withCallingHandlers(base::warning(\"discarded warning\", call. = FALSE), warning = function(condition) { warning_receipt$class <- base::class(condition); warning_receipt$message <- base::conditionMessage(condition) })",
+  "if (!base::identical(warning_receipt$class, base::c(\"simpleWarning\", \"warning\", \"condition\"))) base::stop(\"Custom Code warning class changed\", call. = FALSE)",
+  "if (!base::identical(warning_receipt$message, \"discarded warning\")) base::stop(\"Custom Code warning message changed\", call. = FALSE)",
   "result <- df",
   "result$row_id <- result$row_id + 10L",
   "result$score <- base::as.character(result$score)",
@@ -226,7 +229,10 @@ custom_assert_true(
 
 custom_generated_environment <- new.env(parent = baseenv())
 custom_generated_environment$orders <- custom_environment$orders
-eval(parse(text = custom_first_preview$code), envir = custom_generated_environment)
+assert_no_warning(
+  eval(parse(text = custom_first_preview$code), envir = custom_generated_environment),
+  "generated Custom Code warning suppression"
+)
 custom_expected <- custom_environment$orders
 custom_expected$row_id <- custom_expected$row_id + 10L
 custom_expected$score <- as.character(custom_expected$score)
