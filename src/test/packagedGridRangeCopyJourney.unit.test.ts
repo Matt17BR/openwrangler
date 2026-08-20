@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   packagedGridCopyShortcut,
-  runPackagedGridRangeCopyLifecycle
+  runPackagedGridRangeCopyLifecycle,
+  runWithPackagedGridClipboardRestoration
 } from "./extensionHost/packagedGridRangeCopyJourney";
 
 describe("packaged grid range-copy journey", () => {
@@ -59,5 +60,41 @@ describe("packaged grid range-copy journey", () => {
         }
       )
     ).rejects.toBe(cleanupFailure);
+  });
+
+  it("preserves both the product failure and clipboard restoration failure", async () => {
+    const productFailure = new Error("context-menu payload assertion failed");
+    const restorationFailure = new Error("host clipboard restoration failed");
+    const hostClipboard = {
+      readText: vi.fn(async () => "prior clipboard"),
+      writeText: vi.fn(async () => {
+        throw restorationFailure;
+      })
+    };
+
+    try {
+      await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
+        throw productFailure;
+      });
+      expect.unreachable("The production clipboard-restoration helper must report both failures.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toEqual([productFailure, restorationFailure]);
+    }
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
+    expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
+  });
+
+  it("restores the prior clipboard after a successful packaged journey", async () => {
+    const exercise = vi.fn(async () => undefined);
+    const hostClipboard = {
+      readText: vi.fn(async () => "prior clipboard"),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
+
+    expect(exercise).toHaveBeenCalledTimes(1);
+    expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
 });
