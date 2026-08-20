@@ -67,6 +67,22 @@ describe("webview message decoding", () => {
     }
   });
 
+  it.each(["react", "message"] as const)("accepts only the fixed %s webview failure receipt", (phase) => {
+    const message = { kind: "webviewFailure", phase } as const;
+    expect(decodeWebviewMessage(message, context())).toEqual(message);
+    expect(decodeWebviewMessage({ ...message, unexpected: true }, context())).toBeUndefined();
+  });
+
+  it.each([
+    { kind: "webviewFailure" },
+    { kind: "webviewFailure", phase: "" },
+    { kind: "webviewFailure", phase: "render" },
+    { kind: "webviewFailure", phase: "message", message: "private value" },
+    { kind: "webviewFailure", phase: "react", stack: "private stack" }
+  ])("rejects malformed or data-bearing webview failure receipt %#", (message) => {
+    expect(decodeWebviewMessage(message, context())).toBeUndefined();
+  });
+
   it("copies only bounded non-empty view request identities", () => {
     const viewRequestIds = ["summary-a", "stats-a"];
     const decoded = decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds }, context());

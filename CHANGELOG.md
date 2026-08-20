@@ -32,6 +32,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Unexpected workbench render, effect, and message-handler failures now show a keyboard-focused **Reload Open
+  Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow,
+  and the extension host records only a fixed failure category.
 - Selecting a grid column header now prepares its complete filtered and sorted data column for **Copy column**.
   Preparation reads one projected page at a time, leaves the visible page unchanged, and retains the existing
   100,000-cell and 4 MiB clipboard limits.
