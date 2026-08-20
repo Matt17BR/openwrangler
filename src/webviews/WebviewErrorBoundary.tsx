@@ -30,6 +30,8 @@ export class WebviewErrorBoundary extends Component<WebviewErrorBoundaryProps, W
 
   componentDidMount(): void {
     failureSubscribers.add(this.handleReportedFailure);
+    document.addEventListener("visibilitychange", this.focusRecoveryWhenAvailable);
+    window.addEventListener("focus", this.focusRecoveryWhenAvailable);
   }
 
   componentDidCatch(_error: unknown, _info: ErrorInfo): void {
@@ -39,6 +41,8 @@ export class WebviewErrorBoundary extends Component<WebviewErrorBoundaryProps, W
 
   componentWillUnmount(): void {
     failureSubscribers.delete(this.handleReportedFailure);
+    document.removeEventListener("visibilitychange", this.focusRecoveryWhenAvailable);
+    window.removeEventListener("focus", this.focusRecoveryWhenAvailable);
   }
 
   render(): ReactNode {
@@ -75,6 +79,10 @@ export class WebviewErrorBoundary extends Component<WebviewErrorBoundaryProps, W
       if (this.props.reload) this.props.reload();
       else window.location.reload();
     });
+  };
+
+  private readonly focusRecoveryWhenAvailable = (): void => {
+    if (this.state.failed && document.visibilityState === "visible") this.focusReloadButton();
   };
 
   private publishDiagnostic(phase: WebviewFailurePhase): void {
