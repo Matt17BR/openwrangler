@@ -7,7 +7,7 @@ import {
   SESSION_STORAGE_KEY,
   type PersistedSessionState
 } from "../extension/sessionPersistence";
-import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
+import { type SessionPersistenceFailure, SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 
 const source: SessionSource = { kind: "file", label: "sample.csv", path: "/workspace/sample.csv" };
 
@@ -143,7 +143,11 @@ describe("SessionPersistenceStore", () => {
       stored = value;
       await staged.promise;
     });
-    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(() => stored, update),
+      failures
+    );
     const commit = vi.fn(() => vi.fn());
     let current = true;
 
@@ -158,6 +162,10 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
     expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
     expect(stored.unrelated).toBe("keep");
+    expect(persistence.status()).toEqual({ degraded: true, epoch: 1, failureKind: "rollback" });
+    expect(failureReceipts(failures)).toEqual([
+      { kind: "rollback", message: "rollback storage unavailable", epoch: 1, firstInEpoch: true }
+    ]);
   });
 
   it("restores live state when final runtime replacement persistence fails", async () => {
@@ -168,7 +176,11 @@ describe("SessionPersistenceStore", () => {
       if (update.mock.calls.length === 2) throw new Error("final storage unavailable");
       stored = value;
     });
-    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(() => stored, update),
+      failures
+    );
     const rollback = vi.fn();
     const commit = vi.fn(() => rollback);
 
@@ -181,23 +193,49 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
     expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
     expect(stored.unrelated).toBe("keep");
+    expect(persistence.status()).toEqual({
+      degraded: true,
+      epoch: 1,
+      failureKind: "runtime-replacement"
+    });
+    expect(failureReceipts(failures)).toEqual([
+      { kind: "runtime-replacement", message: "final storage unavailable", epoch: 1, firstInEpoch: true }
+    ]);
   });
 
-  it("publishes current live state after a best-effort write failure and keeps the queue usable", async () => {
+  it("reports one degraded epoch until a confirmed save recovers restart state", async () => {
     let stored: Record<string, unknown> = {};
     const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
-      if (update.mock.calls.length === 1) throw new Error("storage unavailable");
+      if (update.mock.calls.length === 1) throw new Error("first storage unavailable");
+      if (update.mock.calls.length === 2) throw new Error("second storage unavailable");
+      if (update.mock.calls.length === 4) throw new Error("later storage unavailable");
       stored = value;
     });
-    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const workspaceState = mementoFrom(() => stored, update);
+    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+    const persistence = new SessionPersistenceStore(workspaceState, failures);
     const commit = vi.fn();
 
     await expect(persistence.commitCurrent(source, state("polars", 1), () => true, commit)).resolves.toBe(true);
     await expect(persistence.save(source, state("polars", 2))).resolves.toBeUndefined();
+    expect(persistence.status()).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
+    expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toBeUndefined();
+
+    await expect(persistence.save(source, state("polars", 3))).resolves.toBeUndefined();
+    expect(persistence.status()).toEqual({ degraded: false, epoch: 1 });
+    expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 3));
+
+    await expect(persistence.save(source, state("polars", 4))).resolves.toBeUndefined();
 
     expect(commit).toHaveBeenCalledOnce();
-    expect(update).toHaveBeenCalledTimes(2);
-    expect(stored[persistenceKey(source, "polars")]).toEqual(serializedState("polars", 2));
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(stored[persistenceKey(source, "polars")]).toEqual(serializedState("polars", 3));
+    expect(persistence.status()).toEqual({ degraded: true, epoch: 2, failureKind: "save" });
+    expect(failureReceipts(failures)).toEqual([
+      { kind: "save", message: "first storage unavailable", epoch: 1, firstInEpoch: true },
+      { kind: "save", message: "second storage unavailable", epoch: 1, firstInEpoch: false },
+      { kind: "save", message: "later storage unavailable", epoch: 2, firstInEpoch: true }
+    ]);
   });
 });
 
@@ -244,4 +282,18 @@ function deferred<T>(): { readonly promise: Promise<T>; resolve(value: T): void 
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function failureReceipts(failures: ReturnType<typeof vi.fn<(failure: SessionPersistenceFailure) => void>>): Array<{
+  kind: SessionPersistenceFailure["kind"];
+  message: string;
+  epoch: number;
+  firstInEpoch: boolean;
+}> {
+  return failures.mock.calls.map(([failure]) => ({
+    kind: failure.kind,
+    message: failure.error instanceof Error ? failure.error.message : String(failure.error),
+    epoch: failure.epoch,
+    firstInEpoch: failure.firstInEpoch
+  }));
 }

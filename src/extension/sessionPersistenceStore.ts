@@ -10,11 +10,40 @@ import {
   type SerializedPersistedSessionState
 } from "./sessionPersistence";
 
+export type SessionPersistenceFailureKind = "save" | "rollback" | "runtime-replacement";
+
+export interface SessionPersistenceFailure {
+  readonly kind: SessionPersistenceFailureKind;
+  readonly error: unknown;
+  readonly epoch: number;
+  readonly firstInEpoch: boolean;
+}
+
+export interface SessionPersistenceStatus {
+  readonly degraded: boolean;
+  readonly epoch: number;
+  readonly failureKind?: SessionPersistenceFailureKind;
+}
+
 export class SessionPersistenceStore {
   private tail: Promise<void> = Promise.resolve();
   private replacementOrdinal = 0;
+  private degraded = false;
+  private degradationEpoch = 0;
+  private failureKind: SessionPersistenceFailureKind | undefined;
 
-  constructor(private readonly workspaceState?: Memento) {}
+  constructor(
+    private readonly workspaceState?: Memento,
+    private readonly onPersistenceFailure?: (failure: SessionPersistenceFailure) => void
+  ) {}
+
+  status(): SessionPersistenceStatus {
+    return {
+      degraded: this.degraded,
+      epoch: this.degradationEpoch,
+      ...(this.failureKind ? { failureKind: this.failureKind } : {})
+    };
+  }
 
   load(source: SessionSource, backend: DataBackend): DecodedPersistedSessionState | undefined {
     if (!this.workspaceState || !isPersistentSession(source, backend)) return undefined;
@@ -30,8 +59,9 @@ export class SessionPersistenceStore {
     if (!serialized) return;
     const key = persistenceKey(source, state.backend);
     await this.enqueue(async () => {
-      const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
-      await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: serialized });
+      const stored = this.readStored("save");
+      if (!stored) return;
+      if (await this.writeStored({ ...stored, [key]: serialized }, "save")) this.confirmPersistence();
     });
   }
 
@@ -57,12 +87,11 @@ export class SessionPersistenceStore {
     let committed = false;
     await this.enqueue(async () => {
       if (!isCurrent()) return;
-      const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+      const stored = this.readStored("save");
+      if (!stored) return;
       const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
       const previousState = stored[key];
-      try {
-        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: serialized });
-      } catch {
+      if (!(await this.writeStored({ ...stored, [key]: serialized }, "save"))) {
         if (isCurrent()) {
           commit();
           committed = true;
@@ -70,19 +99,17 @@ export class SessionPersistenceStore {
         return;
       }
       if (!isCurrent()) {
-        const latest = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+        const latest = this.readStored("rollback");
+        if (!latest) return;
         const restored = { ...latest };
         if (hadPreviousState) restored[key] = previousState;
         else delete restored[key];
-        try {
-          await this.workspaceState?.update(SESSION_STORAGE_KEY, restored);
-        } catch {
-          // The stale page remains rejected even if best-effort persistence rollback fails.
-        }
+        if (await this.writeStored(restored, "rollback")) this.confirmPersistence();
         return;
       }
       commit();
       committed = true;
+      this.confirmPersistence();
     });
     return committed;
   }
@@ -106,7 +133,8 @@ export class SessionPersistenceStore {
     let committed = false;
     await this.enqueue(async () => {
       if (!isCurrent()) return;
-      const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+      const stored = this.readStored("runtime-replacement");
+      if (!stored) return;
       const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
       const previousState = stored[key];
       const pending = {
@@ -117,11 +145,7 @@ export class SessionPersistenceStore {
           ...(hadPreviousState ? { previousState } : {})
         }
       };
-      try {
-        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: pending });
-      } catch {
-        return;
-      }
+      if (!(await this.writeStored({ ...stored, [key]: pending }, "runtime-replacement"))) return;
       if (!isCurrent()) {
         await this.restorePendingReplacement(key, token);
         return;
@@ -131,37 +155,70 @@ export class SessionPersistenceStore {
       // durable. No superseding callback can interleave with this state swap.
       const rollback = commit();
       committed = true;
-      const latest = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+      const latest = this.readStored("runtime-replacement");
+      if (!latest) return;
       if (!isPendingReplacement(latest[key], token)) {
         rollback();
         committed = false;
         return;
       }
-      try {
-        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...latest, [key]: serialized });
-      } catch {
+      if (!(await this.writeStored({ ...latest, [key]: serialized }, "runtime-replacement"))) {
         rollback();
         committed = false;
         // A pending record always decodes to the previously confirmed state,
         // matching the synchronously restored live runtime.
+        return;
       }
+      this.confirmPersistence();
     });
     return committed;
   }
 
   private async restorePendingReplacement(key: string, token: string): Promise<void> {
-    const latest = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+    const latest = this.readStored("rollback");
+    if (!latest) return;
     const pending = pendingReplacement(latest[key], token);
     if (!pending) return;
     const restored = { ...latest };
     if (pending.hadPreviousState) restored[key] = pending.previousState;
     else delete restored[key];
+    if (await this.writeStored(restored, "rollback")) this.confirmPersistence();
+  }
+
+  private readStored(kind: SessionPersistenceFailureKind): Record<string, unknown> | undefined {
     try {
-      await this.workspaceState?.update(SESSION_STORAGE_KEY, restored);
-    } catch {
-      // The retained pending record remains ignored and resolves to the prior
-      // confirmed state even when best-effort physical rollback is unavailable.
+      return this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+    } catch (error) {
+      this.recordFailure(kind, error);
+      return undefined;
     }
+  }
+
+  private async writeStored(value: Record<string, unknown>, kind: SessionPersistenceFailureKind): Promise<boolean> {
+    try {
+      await this.workspaceState?.update(SESSION_STORAGE_KEY, value);
+      return true;
+    } catch (error) {
+      this.recordFailure(kind, error);
+      return false;
+    }
+  }
+
+  private recordFailure(kind: SessionPersistenceFailureKind, error: unknown): void {
+    const firstInEpoch = !this.degraded;
+    if (firstInEpoch) this.degradationEpoch += 1;
+    this.degraded = true;
+    this.failureKind = kind;
+    try {
+      this.onPersistenceFailure?.({ kind, error, epoch: this.degradationEpoch, firstInEpoch });
+    } catch {
+      // Diagnostics must not change live-session or persistence queue behavior.
+    }
+  }
+
+  private confirmPersistence(): void {
+    this.degraded = false;
+    this.failureKind = undefined;
   }
 
   private async enqueue(task: () => Promise<void>): Promise<void> {
