@@ -261,7 +261,7 @@ export function buildGridClipboardPayload({
   };
 }
 
-export async function writeGridClipboardText(text: string): Promise<void> {
+export async function writeGridClipboardText(text: string, ownsAttempt: () => boolean = () => true): Promise<void> {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -271,6 +271,8 @@ export async function writeGridClipboardText(text: string): Promise<void> {
     // VS Code-like hosts differ in Clipboard API permission handling. Keep the
     // user-gesture-scoped DOM copy path as a compatibility fallback.
   }
+
+  if (!ownsAttempt()) throw new Error("Clipboard ownership changed before the fallback attempt.");
 
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
     throw new Error("Clipboard access is unavailable in this editor.");

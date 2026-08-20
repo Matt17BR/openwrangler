@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   dispatchExtensionHostPhase,
+  dispatchPlatformSmokeJourney,
   EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR,
   EXTENSION_HOST_TEST_SELECTOR_ERROR,
   GRID_RANGE_COPY_SELECTOR,
@@ -146,6 +147,40 @@ describe("extension-host phase dispatch", () => {
   it.each(["verify", "single", "future-phase"])("leaves the %s flow with the entrypoint", async (phase) => {
     const calls: string[] = [];
     await expect(dispatchExtensionHostPhase(selection(phase), recordingHandlers(calls))).resolves.toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("dispatches the focused grid journey without running the ordinary platform smoke", async () => {
+    const calls: string[] = [];
+    const handlers = {
+      gridRangeCopy: async () => {
+        calls.push("grid-range-copy");
+      },
+      standard: async () => {
+        calls.push("standard");
+      }
+    };
+
+    await dispatchPlatformSmokeJourney(selection("platform-smoke", GRID_RANGE_COPY_SELECTOR, "vscode"), handlers);
+    expect(calls).toEqual(["grid-range-copy"]);
+
+    calls.length = 0;
+    await dispatchPlatformSmokeJourney(selection("platform-smoke", undefined, "vscode"), handlers);
+    expect(calls).toEqual(["standard"]);
+  });
+
+  it("rejects platform-smoke dispatch from an unrelated phase", async () => {
+    const calls: string[] = [];
+    await expect(
+      dispatchPlatformSmokeJourney(selection("verify"), {
+        gridRangeCopy: async () => {
+          calls.push("grid-range-copy");
+        },
+        standard: async () => {
+          calls.push("standard");
+        }
+      })
+    ).rejects.toThrow(/requires the platform-smoke phase/u);
     expect(calls).toEqual([]);
   });
 });

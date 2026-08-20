@@ -42,6 +42,7 @@ import {
 } from "../profileValueMode";
 import { CompactExtremum, HeaderProfileValue } from "./GridHeaderProfileValues";
 import { useColumnResizeLifecycle, type BeginColumnResize } from "./useColumnResizeLifecycle";
+import { useCellActionMenuLifecycle } from "./useCellActionMenuLifecycle";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -92,14 +93,6 @@ interface ProgrammaticViewportTarget {
   firstVisibleRow: number;
   scrollTop: number;
   scrollLeft: number;
-}
-
-interface CellFilterMenuTarget {
-  row: number;
-  column: number;
-  columnId: string;
-  clipboardSelection?: "column" | "range";
-  returnFocus: { row: number; column: number };
 }
 
 interface GridPointerSelection {
@@ -333,41 +326,14 @@ export function DataGrid({
   });
   const resetGridClipboardSelection = gridClipboard.resetSelection;
   const selectGridClipboardCell = gridClipboard.selectCell;
-  const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
-
-  useLayoutEffect(() => {
-    if (!cellFilterMenuTarget) return;
-    const cell = scrollerRef.current?.querySelector<HTMLElement>(
-      `[data-grid-row="${cellFilterMenuTarget.row}"][data-grid-column="${cellFilterMenuTarget.column}"]`
-    );
-    const menu = cell?.querySelector<HTMLElement>(".cellFilterMenuPopup");
-    const action = menu?.querySelector<HTMLButtonElement>("button:not([disabled])");
-    (action ?? menu)?.focus({ preventScroll: true });
-  }, [cellFilterMenuTarget]);
-
-  useEffect(() => {
-    if (!cellFilterMenuTarget) return;
-    const dismissOutside = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      const activeCell = scrollerRef.current?.querySelector<HTMLElement>(
-        `[data-grid-row="${cellFilterMenuTarget.row}"][data-grid-column="${cellFilterMenuTarget.column}"]`
-      );
-      if (!activeCell?.contains(target)) setCellFilterMenuTarget(undefined);
-    };
-    const dismiss = () => setCellFilterMenuTarget(undefined);
-    const scroller = scrollerRef.current;
-    document.addEventListener("pointerdown", dismissOutside, true);
-    scroller?.addEventListener("scroll", dismiss, { passive: true });
-    window.addEventListener("resize", dismiss);
-    window.addEventListener("blur", dismiss);
-    return () => {
-      document.removeEventListener("pointerdown", dismissOutside, true);
-      scroller?.removeEventListener("scroll", dismiss);
-      window.removeEventListener("resize", dismiss);
-      window.removeEventListener("blur", dismiss);
-    };
-  }, [cellFilterMenuTarget]);
+  const cellActionMenu = useCellActionMenuLifecycle({
+    prepareFocus: (coordinate) => {
+      pointerSelectionFocusRequest.current = coordinate;
+    },
+    scrollerRef,
+    viewContextId: logicalViewContext
+  });
+  const cellFilterMenuTarget = cellActionMenu.target;
 
   useLayoutEffect(() => {
     viewStateRef.current = viewState;
@@ -452,7 +418,6 @@ export function DataGrid({
     if (previousViewContext.current === logicalViewContext) return;
     previousViewContext.current = logicalViewContext;
     finishPointerSelection(undefined, false);
-    setCellFilterMenuTarget(undefined);
     requestedOffset.current = page.offset;
     focusRequested.current = false;
     pointerSelectionFocusRequest.current = undefined;
@@ -1481,21 +1446,8 @@ export function DataGrid({
                     row.rowNumber >=
                     viewport.firstVisibleRow + Math.max(2, Math.floor(viewport.height / gridRowHeight) - 4);
                   const cellMenuId = `cell-filter-menu-${row.rowNumber}-${column.position}`;
-                  const closeCellMenu = (restoreFocus = false) => {
-                    const returnFocus = cellFilterMenuTarget?.returnFocus ?? {
-                      row: row.rowNumber,
-                      column: column.position
-                    };
-                    setCellFilterMenuTarget(undefined);
-                    if (restoreFocus) {
-                      pointerSelectionFocusRequest.current = returnFocus;
-                      scrollerRef.current
-                        ?.querySelector<HTMLElement>(
-                          `[data-grid-row="${returnFocus.row}"][data-grid-column="${returnFocus.column}"]`
-                        )
-                        ?.focus({ preventScroll: true });
-                    }
-                  };
+                  const closeCellMenu = (restoreFocus = false) =>
+                    cellActionMenu.close(cellFilterMenuTarget, restoreFocus);
                   const openCellMenu = (clipboardSelection?: "column" | "range") => {
                     reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                     const target = { row: row.rowNumber, column: column.position };
@@ -1503,7 +1455,7 @@ export function DataGrid({
                       setFocusedCell(target);
                       gridClipboard.resetSelection(target);
                     }
-                    setCellFilterMenuTarget({
+                    cellActionMenu.open({
                       ...target,
                       columnId: column.id,
                       clipboardSelection,
@@ -1511,12 +1463,16 @@ export function DataGrid({
                     });
                   };
                   const copySelection = async () => {
-                    if (cellFilterMenuTarget?.clipboardSelection === "column") {
-                      await gridClipboard.copyColumn();
-                    } else {
-                      await gridClipboard.copy("range");
+                    const operation = cellActionMenu.beginOperation(cellFilterMenuTarget);
+                    if (!operation || operation.owner.row !== row.rowNumber || operation.owner.columnId !== column.id) {
+                      return;
                     }
-                    closeCellMenu(true);
+                    if (operation.owner.clipboardSelection === "column") {
+                      await gridClipboard.copyColumn(operation.ownsResult);
+                    } else {
+                      await gridClipboard.copy("range", operation.ownsResult);
+                    }
+                    if (operation.ownsResult()) cellActionMenu.close(operation.owner, true);
                   };
                   const filterAction = (action: "include" | "exclude") => {
                     if (cellFilterUnavailableReason || !cell || !onApplyCellFilter) return;

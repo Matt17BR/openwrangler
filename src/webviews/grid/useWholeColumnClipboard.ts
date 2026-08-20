@@ -37,7 +37,7 @@ interface ActiveColumnPreparation {
 
 export interface WholeColumnClipboardController {
   announcement: string;
-  copy(): Promise<void>;
+  copy(ownsResult?: () => boolean): Promise<void>;
   isColumnSelected(columnId: string): boolean;
   reset(): void;
   result: GridClipboardResult;
@@ -285,19 +285,22 @@ export function useWholeColumnClipboard({
     ]
   );
 
-  const copy = useCallback(async (): Promise<void> => {
+  const copy = useCallback(async (ownsResult: () => boolean = () => true): Promise<void> => {
     const current = stateRef.current;
     if (current.phase !== "ready" || !current.result?.ok || !current.column) {
-      setAnnouncement(current.reason ?? "Wait for the selected column to finish preparing.");
+      if (ownsResult()) setAnnouncement(current.reason ?? "Wait for the selected column to finish preparing.");
       return;
     }
     try {
-      await writeGridClipboardText(current.result.payload.text);
+      await writeGridClipboardText(current.result.payload.text, ownsResult);
+      if (!ownsResult()) return;
       setAnnouncement(
         `Copied ${current.result.payload.rowCount.toLocaleString()} cells from column ${current.column.name}.`
       );
     } catch {
-      setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+      if (ownsResult()) {
+        setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+      }
     }
   }, []);
 
