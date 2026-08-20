@@ -6,7 +6,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
-import { CI_CLASSIFIER_OUTPUTS, classifyCiChange, parseChangedPathBuffer } from "./ci-path-classification.mjs";
+import {
+  CI_CLASSIFIER_OUTPUTS,
+  classifyCiChange,
+  parseChangedPathBuffer,
+  resolvePullRequestClassificationRange
+} from "./ci-path-classification.mjs";
 import {
   ALWAYS_REQUIRED_CI_JOBS,
   CONDITIONAL_CI_JOBS,
@@ -27,6 +32,10 @@ const releasedJupyter = workflow("released-jupyter.yml");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
+const capabilityGraph = JSON.parse(readFileSync("scripts/fixtures/ci-capabilities.json", "utf8"));
+const capabilityDocuments = Object.fromEntries(
+  Object.entries(capabilityGraph.workflows).map(([id, owner]) => [id, parseYaml(readFileSync(owner.file, "utf8"))])
+);
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
@@ -83,6 +92,14 @@ const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
   ["ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
   ["codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ]);
+const CAPABILITY_NAMES = Object.freeze([
+  "source_coverage",
+  "installed_candidate",
+  "artifact_provenance",
+  "release_fan_in"
+]);
+const CAPABILITY_DOCS_START = "<!-- BEGIN GENERATED CI CAPABILITIES -->";
+const CAPABILITY_DOCS_END = "<!-- END GENERATED CI CAPABILITIES -->";
 const APPROVED_EXTERNAL_ACTIONS = new Set([
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809",
@@ -415,6 +432,137 @@ function normalizeWorkflowExpression(value) {
   return typeof value === "string" ? value.replaceAll(/\s+/gu, " ").trim() : value;
 }
 
+function jobNeeds(job) {
+  if (job?.needs === undefined) return [];
+  return Array.isArray(job.needs) ? job.needs : [job.needs];
+}
+
+function dependencyClosure(document, terminalJob) {
+  const visited = new Set();
+  const visit = (jobId) => {
+    if (visited.has(jobId)) return;
+    const job = document?.jobs?.[jobId];
+    assert.ok(job, `missing capability job ${jobId}`);
+    visited.add(jobId);
+    for (const dependency of jobNeeds(job)) visit(dependency);
+  };
+  visit(terminalJob);
+  return visited;
+}
+
+function expectedCapabilityJobCondition(workflowId, jobId) {
+  if (workflowId === "pull_request" && jobId === "validate") return normalizeWorkflowExpression(VALIDATE_CONDITION);
+  if (workflowId === "pull_request" && Object.hasOwn(CHANGED_AREA_OWNER_OUTPUTS, jobId)) {
+    const output = CHANGED_AREA_OWNER_OUTPUTS[jobId];
+    return (
+      "${{ !cancelled() && github.event_name == 'pull_request' && " +
+      `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`
+    );
+  }
+  if ((workflowId === "candidate" && jobId === "acceptance") || (workflowId === "release" && jobId === "qualify")) {
+    return "${{ always() }}";
+  }
+  return undefined;
+}
+
+function assertRequiredCapabilityJob(job, workflowId, jobId) {
+  const owner = `${workflowId}:${jobId}`;
+  assert.ok(job, `missing required capability job ${owner}`);
+  assert.notEqual(job["continue-on-error"], true, `${owner} must remain fatal`);
+  assert.equal(
+    normalizeWorkflowExpression(job.if),
+    normalizeWorkflowExpression(expectedCapabilityJobCondition(workflowId, jobId)),
+    `${owner} changed its qualification condition`
+  );
+}
+
+function assertCapabilityGraph(graph, documents) {
+  assert.equal(graph.version, 1);
+  assert.deepEqual(Object.keys(graph.workflows), ["pull_request", "candidate", "release"]);
+  assert.deepEqual(Object.keys(graph.capabilities), CAPABILITY_NAMES);
+  for (const [workflowId, owner] of Object.entries(graph.workflows)) {
+    const document = documents[workflowId];
+    assert.ok(document, `missing parsed workflow ${workflowId}`);
+    assert.ok(Object.hasOwn(document.on ?? {}, owner.event), `${owner.file} must retain ${owner.event}`);
+    assert.ok(document.jobs?.[owner.terminalJob], `${owner.file} must retain ${owner.terminalJob}`);
+  }
+
+  for (const [capabilityName, capability] of Object.entries(graph.capabilities)) {
+    const entry = graph.workflows[capability.entryWorkflow];
+    const providerOwner = graph.workflows[capability.providerWorkflow];
+    const fanInOwner = graph.workflows[capability.fanInWorkflow];
+    assert.ok(entry, `${capabilityName} has an unknown entry workflow`);
+    assert.ok(providerOwner, `${capabilityName} has an unknown provider workflow`);
+    assert.ok(fanInOwner, `${capabilityName} has an unknown fan-in workflow`);
+
+    const providerDocument = documents[capability.providerWorkflow];
+    const fanInDocument = documents[capability.fanInWorkflow];
+    assert.equal(fanInOwner.terminalJob, capability.fanInJob, `${capabilityName} must reach the final fan-in`);
+    assert.ok(capability.requiredJobs.includes(capability.providerJob));
+    const providerClosure = dependencyClosure(providerDocument, capability.providerJob);
+    for (const jobId of capability.requiredJobs) {
+      assertRequiredCapabilityJob(providerDocument.jobs?.[jobId], capability.providerWorkflow, jobId);
+      assert.equal(providerClosure.has(jobId), true, `${capabilityName} disconnects ${jobId} from its provider`);
+    }
+    assertRequiredCapabilityJob(
+      fanInDocument.jobs?.[capability.fanInJob],
+      capability.fanInWorkflow,
+      capability.fanInJob
+    );
+
+    const fanInClosure = dependencyClosure(fanInDocument, capability.fanInJob);
+    if (capability.providerWorkflow === capability.fanInWorkflow) {
+      assert.equal(
+        fanInClosure.has(capability.providerJob),
+        true,
+        `${capabilityName} provider must feed its final fan-in`
+      );
+    } else {
+      const bridge = fanInDocument.jobs?.[capability.bridgeJob];
+      assertRequiredCapabilityJob(bridge, capability.fanInWorkflow, capability.bridgeJob);
+      assert.equal(bridge.uses, `./${providerOwner.file}`);
+      assert.equal(providerOwner.terminalJob, capability.providerJob);
+      assert.equal(fanInClosure.has(capability.bridgeJob), true, `${capabilityName} bridge must feed its final fan-in`);
+    }
+  }
+
+  const release = graph.capabilities.release_fan_in;
+  assert.deepEqual(graph.capabilities.source_coverage.requiredChecks, ["validate", "CodeQL gate"]);
+  assert.equal(documents.pull_request.jobs.validate.name, "validate");
+  assert.ok(Object.hasOwn(codeql.on ?? {}, "pull_request"));
+  assert.equal(codeql.jobs["codeql-gate"].name, "CodeQL gate");
+  assert.deepEqual(release.requires, ["artifact_provenance", "installed_candidate"]);
+  for (const requiredCapability of release.requires) {
+    const required = graph.capabilities[requiredCapability];
+    assert.equal(required.entryWorkflow, release.entryWorkflow);
+    assert.equal(required.fanInWorkflow, release.fanInWorkflow);
+    assert.equal(required.fanInJob, release.fanInJob);
+  }
+}
+
+function renderCapabilityDocs(graph) {
+  const heading = [
+    CAPABILITY_DOCS_START,
+    "",
+    "### Enforced workflow capabilities",
+    "",
+    "This section is generated from `scripts/fixtures/ci-capabilities.json` and checked against the workflow graph.",
+    "Job display names and YAML ordering are not part of the contract; job IDs, events, fatality, reachability, and final fan-in are.",
+    ""
+  ];
+  const rows = CAPABILITY_NAMES.map((name) => {
+    const capability = graph.capabilities[name];
+    const entry = graph.workflows[capability.entryWorkflow];
+    const provider = graph.workflows[capability.providerWorkflow];
+    const fanIn = graph.workflows[capability.fanInWorkflow];
+    const requiredChecks = capability.requiredChecks
+      ? `; required checks ${capability.requiredChecks.map((check) => `\`${check}\``).join(", ")}`
+      : "";
+    return `- \`${name}\`: trigger \`${entry.event}\`; provider \`${provider.file}:${capability.providerJob}\`; mandatory final fan-in \`${fanIn.file}:${capability.fanInJob}\`${requiredChecks}.`;
+  });
+  return [...heading, ...rows, "", CAPABILITY_DOCS_END].join("\n");
+}
+
 function assertChangedAreaOwnersStartAfterClassification(document) {
   for (const [jobId, output] of Object.entries(CHANGED_AREA_OWNER_OUTPUTS)) {
     const job = document?.jobs?.[jobId];
@@ -653,6 +801,7 @@ test("classifier self-selects and fails open for control-plane, malformed, empty
     [".github/workflows/ci.yml"],
     ["scripts/ci-path-classification.mjs"],
     ["scripts/ci-workflow.test.mjs"],
+    ["scripts/fixtures/ci-capabilities.json"],
     ["package.json"],
     ["r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json"],
     ["unknown/substantive.owner"],
@@ -676,6 +825,109 @@ test("changed path transport remains NUL-safe and fatal UTF-8", () => {
   assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
 });
 
+test("stack classification uses the cumulative stack base and exposes exact prefix metadata", () => {
+  const pullRequestBaseSha = "1".repeat(40);
+  const pullRequestHeadSha = "2".repeat(40);
+  const stackBaseSha = "3".repeat(40);
+  assert.deepEqual(
+    resolvePullRequestClassificationRange({
+      pullRequestBaseSha,
+      pullRequestHeadSha,
+      stackBaseSha,
+      stackPosition: "2",
+      stackSize: "4"
+    }),
+    {
+      baseSha: stackBaseSha,
+      headSha: pullRequestHeadSha,
+      stackedEvent: true,
+      stackPosition: 2,
+      stackSize: 4,
+      partialPrefix: true
+    }
+  );
+  assert.deepEqual(
+    resolvePullRequestClassificationRange({
+      pullRequestBaseSha,
+      pullRequestHeadSha,
+      stackBaseSha,
+      stackPosition: "4",
+      stackSize: "4"
+    }),
+    {
+      baseSha: stackBaseSha,
+      headSha: pullRequestHeadSha,
+      stackedEvent: true,
+      stackPosition: 4,
+      stackSize: 4,
+      partialPrefix: false
+    }
+  );
+});
+
+test("every stack layer classifies its complete cumulative prefix without dropping prior owners", () => {
+  const pullRequestBaseSha = "1".repeat(40);
+  const pullRequestHeadSha = "2".repeat(40);
+  const stackBaseSha = "3".repeat(40);
+  const prefixes = [
+    ["python/openwrangler_runtime/export_target.py"],
+    ["python/openwrangler_runtime/export_target.py", "r/openwrangler_runtime/kernel_agent.R"],
+    ["python/openwrangler_runtime/export_target.py", "r/openwrangler_runtime/kernel_agent.R", "src/webviews/App.tsx"]
+  ];
+  const expected = [
+    {
+      rContractRequired: false,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: true
+    },
+    {
+      rContractRequired: true,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: true
+    },
+    BOOLEAN_OUTPUTS
+  ];
+  for (const [index, changedPaths] of prefixes.entries()) {
+    const position = index + 1;
+    const range = resolvePullRequestClassificationRange({
+      pullRequestBaseSha,
+      pullRequestHeadSha,
+      stackBaseSha,
+      stackPosition: String(position),
+      stackSize: String(prefixes.length)
+    });
+    assert.equal(range.baseSha, stackBaseSha);
+    assert.equal(range.stackPosition, position);
+    assert.equal(range.partialPrefix, position < prefixes.length);
+    assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths }), expected[index]);
+    assert.deepEqual(capabilityGraph.capabilities.source_coverage.requiredChecks, ["validate", "CodeQL gate"]);
+  }
+});
+
+test("ordinary pull requests fall back to their exact base while partial stack metadata fails closed", () => {
+  const pullRequestBaseSha = "1".repeat(40);
+  const pullRequestHeadSha = "2".repeat(40);
+  assert.deepEqual(resolvePullRequestClassificationRange({ pullRequestBaseSha, pullRequestHeadSha }), {
+    baseSha: pullRequestBaseSha,
+    headSha: pullRequestHeadSha,
+    stackedEvent: false,
+    stackPosition: null,
+    stackSize: null,
+    partialPrefix: false
+  });
+  for (const metadata of [
+    { stackBaseSha: "3".repeat(40) },
+    { stackBaseSha: "3".repeat(40), stackPosition: "1" },
+    { stackBaseSha: "3".repeat(40), stackPosition: "0", stackSize: "1" },
+    { stackBaseSha: "3".repeat(40), stackPosition: "2", stackSize: "1" },
+    { stackBaseSha: "invalid", stackPosition: "1", stackSize: "1" }
+  ]) {
+    assert.throws(() => resolvePullRequestClassificationRange({ pullRequestBaseSha, pullRequestHeadSha, ...metadata }));
+  }
+});
+
 test("CI exposes only the current pull-request owners", () => {
   assert.deepEqual(Object.keys(ci.jobs), [
     "classify",
@@ -693,6 +945,58 @@ test("CI exposes only the current pull-request owners", () => {
   assert.equal(ci.jobs["r-contract-protocol"].name, "R 4.5 protocol contracts");
   assert.equal(ci.jobs["canonical-editor"].name, "Canonical package and editor");
   assert.equal(ci.jobs["windows-unique"].name, "Windows unique-risk contracts");
+});
+
+test("machine-readable capabilities bind correct events, fatal providers, and mandatory final fan-in", () => {
+  assert.equal(ci.env.OPEN_WRANGLER_CI_CAPABILITY_GRAPH, "scripts/fixtures/ci-capabilities.json");
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, capabilityDocuments));
+});
+
+test("capability mutations reject remove, skip, nonfatal, and disconnected evidence", () => {
+  const mutations = [
+    (documents) => {
+      delete documents.pull_request.jobs["invariant-core"];
+    },
+    (documents) => {
+      documents.candidate.jobs.acceptance.if = "${{ false }}";
+    },
+    (documents) => {
+      documents.candidate.jobs.platform["continue-on-error"] = true;
+    },
+    (documents) => {
+      documents.release.jobs.qualify.needs = documents.release.jobs.qualify.needs.filter(
+        (jobId) => jobId !== "candidate-acceptance"
+      );
+    }
+  ];
+  for (const mutate of mutations) {
+    const documents = structuredClone(capabilityDocuments);
+    mutate(documents);
+    assert.throws(() => assertCapabilityGraph(capabilityGraph, documents));
+  }
+});
+
+test("capability validation tolerates harmless names and workflow ordering", () => {
+  const documents = structuredClone(capabilityDocuments);
+  for (const [workflowId, document] of Object.entries(documents)) {
+    for (const [jobId, job] of Object.entries(document.jobs)) {
+      if (!(workflowId === "pull_request" && jobId === "validate")) job.name = `Display label for ${jobId}`;
+      if (Array.isArray(job.needs)) job.needs.reverse();
+    }
+    document.jobs = Object.fromEntries(Object.entries(document.jobs).reverse());
+  }
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, documents));
+});
+
+test("CI capability documentation is generated exactly from the machine-readable graph", () => {
+  const source = readFileSync("docs/ci.md", "utf8");
+  const start = source.indexOf(CAPABILITY_DOCS_START);
+  const end = source.indexOf(CAPABILITY_DOCS_END);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  assert.equal(source.indexOf(CAPABILITY_DOCS_START, start + 1), -1);
+  assert.equal(source.indexOf(CAPABILITY_DOCS_END, end + 1), -1);
+  assert.equal(source.slice(start, end + CAPABILITY_DOCS_END.length), renderCapabilityDocs(capabilityGraph));
 });
 
 function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
@@ -1748,6 +2052,21 @@ test("protected branch triggers and obsolete classifier vocabulary are absent fr
   ]) {
     assert.doesNotMatch(owned, new RegExp(legacy, "u"));
   }
+});
+
+test("draft readiness is SHA-idempotent while head, reopen, and base edits still qualify", () => {
+  assert.deepEqual(ci.on.pull_request.types, ["opened", "synchronize", "reopened", "edited"]);
+  assert.equal(ci.on.pull_request.types.includes("ready_for_review"), false);
+  assert.equal(ci.on.pull_request.types.includes("converted_to_draft"), false);
+  const classify = stepRunning(ci.jobs.classify, "node scripts/ci-path-classification.mjs");
+  assert.deepEqual(classify.env, {
+    CI_EVENT_NAME: "${{ github.event_name }}",
+    CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+    CI_STACK_BASE_SHA: "${{ github.event.pull_request.stack.base.sha }}",
+    CI_STACK_POSITION: "${{ github.event.pull_request.stack.position }}",
+    CI_STACK_SIZE: "${{ github.event.pull_request.stack.size }}"
+  });
 });
 
 test("automation retains the exact Node and npm toolchain authority", () => {
