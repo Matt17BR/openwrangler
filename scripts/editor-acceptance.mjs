@@ -1360,6 +1360,7 @@ function createChildCloseObserver(child) {
   const promise = new Promise((resolveClose) => {
     let settled = false;
     let firstError;
+    let firstErrorReason;
     let lateErrorSink;
     let lateClose;
     const removeListeners = () => {
@@ -1376,9 +1377,13 @@ function createChildCloseObserver(child) {
       // Neither a spawn failure nor a late process/stream error proves that
       // every inherited output handle has closed. Preserve the first error for
       // classification, but require the ChildProcess close event itself.
-      firstError ??= error;
+      if (firstError === undefined) {
+        firstError = error;
+        firstErrorReason = child.pid === undefined ? "spawn-error" : "child-error";
+      }
     };
-    const onClose = (code, signal) => settle(firstError ? { error: firstError, code, signal } : { code, signal });
+    const onClose = (code, signal) =>
+      settle(firstError ? { error: firstError, errorReason: firstErrorReason, code, signal } : { code, signal });
     release = () => {
       if (settled) return firstError;
       lateErrorSink = () => undefined;
@@ -1388,7 +1393,7 @@ function createChildCloseObserver(child) {
       };
       child.on("error", lateErrorSink);
       child.once("close", lateClose);
-      settle(firstError ? { released: true, error: firstError } : { released: true });
+      settle(firstError ? { released: true, error: firstError, errorReason: firstErrorReason } : { released: true });
       return firstError;
     };
     child.on("error", onError);
@@ -2155,7 +2160,7 @@ async function compileWindowsEditorProcessSupervisor(
   destroyCapturedCommandStdio(child);
   const { state } = observation;
   if (state.error || state.code !== 0 || output.exceeded()) {
-    const reason = output.exceeded() ? "output-limit" : state.error ? "spawn-error" : "nonzero-exit";
+    const reason = output.exceeded() ? "output-limit" : state.error ? state.errorReason : "nonzero-exit";
     const error = new Error(
       `The Windows editor Job Object supervisor compilation stage failed (${reason}; code ${String(state.code ?? "unknown")}; signal ${String(state.signal ?? "none")}).`,
       state.error ? { cause: state.error } : undefined
@@ -2218,6 +2223,7 @@ async function settleWindowsCompilerProcessTree(
   let deadline;
   const settlementStartedAt = performance.now();
   const settlementController = new AbortController();
+  let observedTermination;
   const termination = Promise.resolve()
     .then(() =>
       terminateBuildProcessTree(child, {
@@ -2231,7 +2237,11 @@ async function settleWindowsCompilerProcessTree(
     .then(
       (result) => ({ kind: "result", result }),
       (error) => ({ kind: "error", error })
-    );
+    )
+    .then((observation) => {
+      observedTermination = observation;
+      return observation;
+    });
   const closure = closeObserver.promise.then(
     (state) => ({ kind: "close", state }),
     (error) => ({ kind: "error", error })
@@ -2248,12 +2258,13 @@ async function settleWindowsCompilerProcessTree(
   const settlementDeadline = new Promise((resolveDeadline) => {
     settlementTimer = setTimeout(() => {
       const reason = Object.freeze({ reason: "deadline", timeoutMs: buildSettlementTimeoutMs });
-      resolveDeadline({
+      const deadlineObservation = {
         kind: "deadline",
         reason,
         elapsedMs: Math.max(0, performance.now() - settlementStartedAt)
-      });
+      };
       settlementController.abort(reason);
+      resolveDeadline(deadlineObservation);
     }, buildSettlementTimeoutMs);
   });
   let observation;
@@ -2263,6 +2274,12 @@ async function settleWindowsCompilerProcessTree(
     clearTimeout(settlementTimer);
   }
   if (observation.kind === "deadline") {
+    // An abort-aware terminator can finish through a short, fixed native
+    // promise chain after the deadline abort fires. Observe only those already
+    // triggered reactions; never await the terminator or another timer.
+    for (let turn = 0; turn < 8 && observedTermination === undefined; turn += 1) {
+      await Promise.resolve();
+    }
     const deadlineError = new Error(
       `Windows editor Job Object supervisor compiler settlement exceeded ${buildSettlementTimeoutMs} ms.`
     );
@@ -2276,6 +2293,14 @@ async function settleWindowsCompilerProcessTree(
     };
     deadline = Object.freeze({ ...deadlineError.details, code: deadlineError.code });
     errors.push(deadlineError);
+    if (observedTermination?.kind === "error") {
+      errors.push(observedTermination.error);
+    } else if (observedTermination?.kind === "result") {
+      compilerTreeTerminated = observedTermination.result?.treeVerifiedStopped === true;
+      if (!compilerTreeTerminated) {
+        errors.push(new Error("The Windows supervisor compiler tree terminator did not attest complete termination."));
+      }
+    }
     const closeError = closeObserver.release();
     if (closeError) errors.push(closeError);
     // The mapped promises never reject, but retain an explicit observer so a
@@ -2290,6 +2315,7 @@ async function settleWindowsCompilerProcessTree(
     const { terminationObservation, closureObservation } = observation;
     compilerClosed = closureObservation.kind === "close";
     if (closureObservation.kind === "error") errors.push(closureObservation.error);
+    else if (closureObservation.state.error) errors.push(closureObservation.state.error);
     if (terminationObservation.kind === "error") {
       errors.push(terminationObservation.error);
     } else {
@@ -2370,14 +2396,15 @@ async function terminateWindowsCompilerProcessTree(
       });
       onAbort = () => {
         settlementExpired = true;
-        resolveAbort({ kind: "aborted" });
+        const taskkillCloseError = taskkillCloseObserver.release();
+        if (taskkillCloseError) errors.push(taskkillCloseError);
         try {
           taskkill?.kill("SIGKILL");
         } catch (error) {
           errors.push(error);
         }
         killCompilerOnce();
-        taskkillCloseObserver.release();
+        resolveAbort({ kind: "aborted" });
       };
       abortSignal.addEventListener("abort", onAbort, { once: true });
       if (abortSignal.aborted) onAbort();
