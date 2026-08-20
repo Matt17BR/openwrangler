@@ -1,15 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  realpath,
-  writeFile
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -242,11 +234,7 @@ async function captureGitIdentity(assignment) {
     fail("assignment worktree is not a Git worktree");
   }
   const gitDirectory = git(assignment.worktree, ["rev-parse", "--path-format=absolute", "--git-dir"]);
-  const commonDirectory = git(assignment.worktree, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-common-dir"
-  ]);
+  const commonDirectory = git(assignment.worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const head = git(assignment.worktree, ["rev-parse", "HEAD"]);
   const tree = git(assignment.worktree, ["rev-parse", "HEAD^{tree}"]);
   const branch = git(assignment.worktree, ["branch", "--show-current"]);

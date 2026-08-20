@@ -124,9 +124,7 @@ async function waitFor(paths) {
 }
 
 async function receipt(task) {
-  return JSON.parse(
-    await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"), "utf8")
-  );
+  return JSON.parse(await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"), "utf8"));
 }
 
 test("isolates two concurrent worktree qualifications and seals their exact identities", async (context) => {
@@ -157,12 +155,7 @@ test("isolates two concurrent worktree qualifications and seals their exact iden
     XDG_CACHE_HOME: shared,
     npm_config_cache: shared
   };
-  const firstRun = startRunner(
-    first,
-    "hold",
-    ["--ready", firstReady, "--release", release],
-    hostileSharedEnvironment
-  );
+  const firstRun = startRunner(first, "hold", ["--ready", firstReady, "--release", release], hostileSharedEnvironment);
   const secondRun = startRunner(
     second,
     "hold",
@@ -254,7 +247,10 @@ test("rejects aliased worktrees, symlinked roots, and reused state", async (cont
     { flag: "wx", mode: 0o600 }
   );
   const linkedResult = await startRunner(
-    { assignment: { ...linked.assignment, stateRoot: join(value.root, "states", "linked-alias") }, assignmentPath: linkedAssignmentPath },
+    {
+      assignment: { ...linked.assignment, stateRoot: join(value.root, "states", "linked-alias") },
+      assignmentPath: linkedAssignmentPath
+    },
     "record"
   );
   assert.equal(linkedResult.status, 1);
@@ -263,11 +259,7 @@ test("rejects aliased worktrees, symlinked roots, and reused state", async (cont
   const stateLinked = await addTask(value, "state-linked");
   const stateTarget = join(value.root, "state-target");
   await mkdir(stateTarget);
-  await symlink(
-    stateTarget,
-    stateLinked.assignment.stateRoot,
-    process.platform === "win32" ? "junction" : "dir"
-  );
+  await symlink(stateTarget, stateLinked.assignment.stateRoot, process.platform === "win32" ? "junction" : "dir");
   const stateLinkedResult = await startRunner(stateLinked, "record");
   assert.equal(stateLinkedResult.status, 1);
   assert.match(stateLinkedResult.stderr, /stateRoot already exists/u);
@@ -276,11 +268,10 @@ test("rejects aliased worktrees, symlinked roots, and reused state", async (cont
   const firstResult = await startRunner(first, "record");
   assert.equal(firstResult.status, 0, firstResult.stderr);
   const reusedAssignmentPath = join(value.root, "assignments", "one-shot-reused.json");
-  await writeFile(
-    reusedAssignmentPath,
-    `${JSON.stringify({ ...first.assignment, runId: "run-one-shot-reused" })}\n`,
-    { flag: "wx", mode: 0o600 }
-  );
+  await writeFile(reusedAssignmentPath, `${JSON.stringify({ ...first.assignment, runId: "run-one-shot-reused" })}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
   const reusedResult = await startRunner(
     { assignment: first.assignment, assignmentPath: reusedAssignmentPath },
     "record"
