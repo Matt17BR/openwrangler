@@ -1359,7 +1359,7 @@ function createChildCloseObserver(child) {
   let release;
   const promise = new Promise((resolveClose) => {
     let settled = false;
-    let spawnError;
+    let firstError;
     let lateErrorSink;
     let lateClose;
     const removeListeners = () => {
@@ -1374,13 +1374,13 @@ function createChildCloseObserver(child) {
     };
     const onError = (error) => {
       // Neither a spawn failure nor a late process/stream error proves that
-      // every inherited output handle has closed. Preserve a spawn failure for
+      // every inherited output handle has closed. Preserve the first error for
       // classification, but require the ChildProcess close event itself.
-      if (child.pid === undefined) spawnError ??= error;
+      firstError ??= error;
     };
-    const onClose = (code, signal) => settle(spawnError ? { error: spawnError, code, signal } : { code, signal });
+    const onClose = (code, signal) => settle(firstError ? { error: firstError, code, signal } : { code, signal });
     release = () => {
-      if (settled) return;
+      if (settled) return firstError;
       lateErrorSink = () => undefined;
       lateClose = () => {
         child.off("error", lateErrorSink);
@@ -1388,7 +1388,8 @@ function createChildCloseObserver(child) {
       };
       child.on("error", lateErrorSink);
       child.once("close", lateClose);
-      settle({ released: true });
+      settle(firstError ? { released: true, error: firstError } : { released: true });
+      return firstError;
     };
     child.on("error", onError);
     child.once("close", onClose);
@@ -2275,7 +2276,8 @@ async function settleWindowsCompilerProcessTree(
     };
     deadline = Object.freeze({ ...deadlineError.details, code: deadlineError.code });
     errors.push(deadlineError);
-    closeObserver.release();
+    const closeError = closeObserver.release();
+    if (closeError) errors.push(closeError);
     // The mapped promises never reject, but retain an explicit observer so a
     // late custom terminator or native close cannot become unhandled work.
     void completeSettlement.then(
@@ -2337,8 +2339,18 @@ async function terminateWindowsCompilerProcessTree(
   const errors = [];
   let taskkillState;
   let taskkill;
+  let compilerKillAttempted = false;
   let settlementExpired = abortSignal.aborted;
   let onAbort;
+  const killCompilerOnce = () => {
+    if (compilerKillAttempted) return;
+    compilerKillAttempted = true;
+    try {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    } catch (error) {
+      errors.push(error);
+    }
+  };
   try {
     if (!settlementExpired) {
       taskkill = spawnTaskkillProcess(
@@ -2364,11 +2376,7 @@ async function terminateWindowsCompilerProcessTree(
         } catch (error) {
           errors.push(error);
         }
-        try {
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        } catch (error) {
-          errors.push(error);
-        }
+        killCompilerOnce();
         taskkillCloseObserver.release();
       };
       abortSignal.addEventListener("abort", onAbort, { once: true });
@@ -2397,11 +2405,7 @@ async function terminateWindowsCompilerProcessTree(
       errors.push(error);
     }
   }
-  try {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  } catch (error) {
-    errors.push(error);
-  }
+  killCompilerOnce();
   if (settlementExpired && errors.length === 0) {
     return { treeVerifiedStopped: false, settlementTimeoutMs: timeoutMs };
   }

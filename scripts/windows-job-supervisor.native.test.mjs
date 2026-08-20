@@ -184,6 +184,13 @@ async function runWindowsNativeCommandStage(stage, stageOptions, command, comman
   });
 }
 
+function aggregateWindowsNativeWorkerErrors(errors) {
+  const retained = errors.filter((error) => error !== undefined);
+  if (retained.length === 0) return undefined;
+  if (retained.length === 1) return retained[0];
+  return new AggregateError(retained, "The native Windows filesystem worker could not be released cleanly.");
+}
+
 async function runWindowsNativeFilesystemStage(
   stage,
   stageOptions,
@@ -264,8 +271,13 @@ async function runWindowsNativeFilesystemStage(
         abortSignal.removeEventListener("abort", onAbort);
         child.off("error", onError);
         child.off("close", onClose);
-        child.unref?.();
-        return workerError;
+        let unrefError;
+        try {
+          child.unref?.();
+        } catch (error) {
+          unrefError = error;
+        }
+        return aggregateWindowsNativeWorkerErrors([workerError, cancellationError, unrefError]);
       }
     };
   });
@@ -500,6 +512,103 @@ test("a PID-bearing filesystem worker error retains close ownership until bounde
   assert.equal(worker.listenerCount("close"), 0);
 });
 
+test("a never-closing filesystem worker preserves its sole kill failure", async () => {
+  const worker = new EventEmitter();
+  worker.pid = 17925;
+  worker.exitCode = null;
+  worker.signalCode = null;
+  const killError = new Error("synthetic filesystem worker kill failure");
+  let killCount = 0;
+  let unrefCount = 0;
+  worker.kill = () => {
+    killCount += 1;
+    throw killError;
+  };
+  worker.unref = () => {
+    unrefCount += 1;
+  };
+
+  await assert.rejects(
+    runWindowsNativeFilesystemStage(
+      "kill-failure filesystem probe",
+      { timeoutMs: 10, settlementTimeoutMs: 20 },
+      "",
+      [],
+      { spawnFilesystemWorker: () => worker }
+    ),
+    (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.details?.stage, "kill-failure filesystem probe");
+      assert.equal(error.details?.reason, "settlement-deadline");
+      assert.equal(error.details?.treeVerifiedStopped, false);
+      assert.equal(error.cause?.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.cause?.cause, killError);
+      return true;
+    }
+  );
+  assert.equal(killCount, 1);
+  assert.equal(unrefCount, 1);
+  assert.equal(worker.listenerCount("error"), 1);
+  assert.equal(worker.listenerCount("close"), 1);
+  worker.emit("close", null, "SIGKILL");
+  assert.equal(worker.listenerCount("error"), 0);
+  assert.equal(worker.listenerCount("close"), 0);
+});
+
+test("filesystem worker release aggregates worker, kill, and unref failures in order", async () => {
+  const worker = new EventEmitter();
+  worker.pid = 17926;
+  worker.exitCode = null;
+  worker.signalCode = null;
+  const workerError = new Error("synthetic filesystem worker failure");
+  const killError = new Error("synthetic filesystem worker cancellation failure");
+  const unrefError = new Error("synthetic filesystem worker unref failure");
+  let killCount = 0;
+  let unrefCount = 0;
+  worker.kill = () => {
+    killCount += 1;
+    throw killError;
+  };
+  worker.unref = () => {
+    unrefCount += 1;
+    throw unrefError;
+  };
+
+  await assert.rejects(
+    runWindowsNativeFilesystemStage(
+      "combined-failure filesystem probe",
+      { timeoutMs: 10, settlementTimeoutMs: 20 },
+      "",
+      [],
+      {
+        spawnFilesystemWorker: () => {
+          queueMicrotask(() => worker.emit("error", workerError));
+          return worker;
+        }
+      }
+    ),
+    (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.details?.treeVerifiedStopped, false);
+      assert.equal(error.cause instanceof AggregateError, true);
+      assert.equal(error.cause.errors.length, 3);
+      assert.equal(error.cause.errors[0], workerError);
+      assert.equal(error.cause.errors[1]?.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.cause.errors[1]?.cause, killError);
+      assert.equal(error.cause.errors[2], unrefError);
+      return true;
+    }
+  );
+  assert.equal(killCount, 1);
+  assert.equal(unrefCount, 1);
+  assert.equal(worker.listenerCount("error"), 1);
+  assert.equal(worker.listenerCount("close"), 1);
+  assert.doesNotThrow(() => worker.emit("error", new Error("synthetic post-release combined failure")));
+  worker.emit("close", null, "SIGKILL");
+  assert.equal(worker.listenerCount("error"), 0);
+  assert.equal(worker.listenerCount("close"), 0);
+});
+
 test("production signal ownership cancels supervisor compilation before target launch", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-production-signal-"));
   const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
@@ -592,6 +701,95 @@ function fakeWindowsCompiler({ closeOnKill, closeDelayMs = 0, pid }) {
     }
   };
 }
+
+test("production compiler close preserves a PID-bearing error as authoritative", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-pid-error-close-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17927 });
+  const compilerError = new Error("synthetic PID-bearing compiler failure before close");
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 1_000,
+        spawnProcess: () => {
+          queueMicrotask(() => {
+            compiler.child.emit("error", compilerError);
+            compiler.child.exitCode = 0;
+            compiler.child.stdout.end();
+            compiler.child.stderr.end();
+            compiler.child.emit("exit", 0, null);
+            compiler.child.emit("close", 0, null);
+          });
+          return compiler.child;
+        }
+      }),
+      (error) => {
+        assert.equal(error.details?.stage, "windows-supervisor-compilation");
+        assert.equal(error.details?.reason, "spawn-error");
+        assert.equal(error.details?.treeVerifiedStopped, true);
+        assert.equal(error.cause, compilerError);
+        return true;
+      }
+    );
+    assert.deepEqual(compiler.state(), { killCount: 0, closeCount: 0, closeTimerActive: false });
+    assert.deepEqual(compiler.lifecycle(), {
+      closeListeners: 0,
+      errorListeners: 0,
+      stderrDataListeners: 0,
+      stdoutDataListeners: 0,
+      unrefCount: 0
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("production compiler bounded release preserves a prior PID-bearing error", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-pid-error-release-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17928 });
+  const compilerError = new Error("synthetic PID-bearing compiler failure before bounded release");
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 10,
+        buildSettlementTimeoutMs: 20,
+        spawnProcess: () => {
+          queueMicrotask(() => compiler.child.emit("error", compilerError));
+          return compiler.child;
+        },
+        terminateBuildProcessTree: () => new Promise(() => {})
+      }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+        assert.equal(error.details?.stage, "windows-supervisor-compilation");
+        assert.equal(error.details?.treeVerifiedStopped, false);
+        assert.equal(error.cause instanceof AggregateError, true);
+        assert.equal(error.cause.errors.length, 2);
+        assert.equal(error.cause.errors[0]?.code, "EDITOR_ACCEPTANCE_DEADLINE");
+        assert.equal(error.cause.errors[1], compilerError);
+        return true;
+      }
+    );
+    assert.deepEqual(compiler.lifecycle(), {
+      closeListeners: 1,
+      errorListeners: 1,
+      stderrDataListeners: 0,
+      stdoutDataListeners: 0,
+      unrefCount: 1
+    });
+    assert.doesNotThrow(() => compiler.child.emit("error", new Error("synthetic late compiler error")));
+    compiler.child.emit("close", 0, null);
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test(
   "the real Windows supervisor owns every native lifecycle stage",
@@ -1268,6 +1466,7 @@ test("never-settling taskkill and compiler handles return bounded uncertainty", 
     assert.equal(performance.now() - startedAt < 1_000, true);
     assert.equal(taskkillKillCount, 1);
     assert.equal(taskkillUnrefCount, 1);
+    assert.equal(compiler.state().killCount, 1);
     assert.equal(taskkill.listenerCount("close"), 1);
     assert.equal(taskkill.listenerCount("error"), 1);
     assert.deepEqual(compiler.lifecycle(), {
