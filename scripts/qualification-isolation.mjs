@@ -2,7 +2,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, realpath, readlink, writeFile } from "node:fs/promises";
-import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  delimiter,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve,
+  win32 as windowsPath
+} from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
@@ -10,6 +20,7 @@ const ASSIGNMENT_PROTOCOL = "openwrangler-qualification-assignment-v1";
 const RECEIPT_PROTOCOL = "openwrangler-qualification-receipt-v1";
 const MAX_ASSIGNMENT_BYTES = 32 * 1024;
 const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
+const MAX_GIT_CONFIG_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
@@ -67,7 +78,6 @@ const GIT_OVERRIDE_PREFIXES = Object.freeze(["GIT_CONFIG_KEY_", "GIT_CONFIG_VALU
 const SAFE_PASSTHROUGH_ENVIRONMENT_KEYS = Object.freeze([
   "CI",
   "COLORTERM",
-  "COMSPEC",
   "GITHUB_ACTIONS",
   "LANG",
   "LC_ALL",
@@ -78,11 +88,8 @@ const SAFE_PASSTHROUGH_ENVIRONMENT_KEYS = Object.freeze([
   "RUNNER_ARCH",
   "RUNNER_OS",
   "SHELL",
-  "SYSTEMDRIVE",
-  "SYSTEMROOT",
   "TERM",
-  "TZ",
-  "WINDIR"
+  "TZ"
 ]);
 const PRIVATE_DIRECTORY_ENVIRONMENT = Object.freeze({
   APPDATA: "xdgConfig",
@@ -153,7 +160,7 @@ const QUALIFICATION_ENVIRONMENT_CONTRACT = Object.freeze({
   passThroughKeys: SAFE_PASSTHROUGH_ENVIRONMENT_KEYS,
   privateDirectories: PRIVATE_DIRECTORY_ENVIRONMENT,
   privateFiles: PRIVATE_FILE_ENVIRONMENT,
-  runnerOwnedKeys: Object.freeze(["PATH", "PWD"]),
+  runnerOwnedKeys: Object.freeze(["COMSPEC", "PATH", "PWD", "SYSTEMDRIVE", "SYSTEMROOT", "WINDIR"]),
   worktreePaths: WORKTREE_PATH_ENVIRONMENT
 });
 
@@ -190,12 +197,16 @@ def reap_exited():
         if waited <= 0:
             return
 
-def wait_empty(deadline):
+def terminate_children(sig, deadline):
     while time.monotonic() < deadline:
         reap_exited()
         if not children():
             return True
+        signal_children(sig)
         time.sleep(0.01)
+    reap_exited()
+    signal_children(sig)
+    reap_exited()
     return not children()
 
 def main():
@@ -246,12 +257,9 @@ def main():
                 status = None
     reap_exited()
     lingering = bool(children())
-    if lingering:
-        signal_children(signal.SIGTERM)
-    tree_empty = wait_empty(time.monotonic() + grace)
+    tree_empty = terminate_children(signal.SIGTERM, time.monotonic() + grace) if lingering else True
     if not tree_empty:
-        signal_children(signal.SIGKILL)
-        tree_empty = wait_empty(time.monotonic() + grace)
+        tree_empty = terminate_children(signal.SIGKILL, time.monotonic() + grace)
     if isinstance(status, int) and status < 0:
         try:
             signal_name = signal.Signals(-status).name
@@ -339,12 +347,16 @@ function cleanGitEnvironment(environment = process.env) {
   return result;
 }
 
-function gitInspectionEnvironment(assignment) {
-  const environment = cleanGitEnvironment();
+function gitInspectionEnvironment(assignment, hostEnvironment = process.env) {
+  const environment = cleanGitEnvironment(hostEnvironment);
   const directories = [dirname(assignment.gitExecutable), dirname(process.execPath)];
   if (process.platform === "win32") {
-    const systemRoot = environment.SYSTEMROOT ?? environment.WINDIR;
-    if (systemRoot && isAbsolute(systemRoot)) directories.push(join(systemRoot, "System32"));
+    const systemRoot = windowsSystemRootCandidate(process.execPath);
+    environment.COMSPEC = join(systemRoot, "System32", "cmd.exe");
+    environment.SYSTEMDRIVE = parse(systemRoot).root.replace(/[\\/]$/u, "");
+    environment.SYSTEMROOT = systemRoot;
+    environment.WINDIR = systemRoot;
+    directories.push(join(systemRoot, "System32"));
   } else {
     directories.push("/usr/bin", "/bin");
   }
@@ -352,14 +364,14 @@ function gitInspectionEnvironment(assignment) {
   return environment;
 }
 
-function git(assignment, arguments_) {
+function gitWithEnvironment(assignment, arguments_, hostEnvironment) {
   const result = spawnSync(
     assignment.gitExecutable,
     ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, ...arguments_],
     {
       cwd: assignment.worktree,
       encoding: "utf8",
-      env: gitInspectionEnvironment(assignment),
+      env: gitInspectionEnvironment(assignment, hostEnvironment),
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true
     }
@@ -373,14 +385,14 @@ function git(assignment, arguments_) {
   return result.stdout.trim();
 }
 
-function optionalGitConfig(assignment, key) {
+function optionalGitConfig(assignment, key, hostEnvironment = process.env) {
   const result = spawnSync(
     assignment.gitExecutable,
     ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, "config", "--get", key],
     {
       cwd: assignment.worktree,
       encoding: "utf8",
-      env: gitInspectionEnvironment(assignment),
+      env: gitInspectionEnvironment(assignment, hostEnvironment),
       maxBuffer: 1024 * 1024,
       windowsHide: true
     }
@@ -396,6 +408,77 @@ function optionalGitConfig(assignment, key) {
   }
   const value = result.stdout.trim();
   return value === "" ? null : value;
+}
+
+function gitConfigSelectionEnvironment(hostEnvironment) {
+  const selection = {};
+  for (const key of ["HOME", "HOMEDRIVE", "HOMEPATH", "PROGRAMDATA", "USERPROFILE", "XDG_CONFIG_HOME"]) {
+    if (typeof hostEnvironment[key] === "string" && hostEnvironment[key].length > 0) {
+      selection[key] = hostEnvironment[key];
+    }
+  }
+  return selection;
+}
+
+function captureGitConfigManifest(assignment, hostEnvironment) {
+  const result = spawnSync(
+    assignment.gitExecutable,
+    [
+      "--git-dir",
+      assignment.gitDirectory,
+      "--work-tree",
+      assignment.worktree,
+      "config",
+      "--show-origin",
+      "--show-scope",
+      "--null",
+      "--list"
+    ],
+    {
+      cwd: assignment.worktree,
+      encoding: null,
+      env: gitInspectionEnvironment(assignment, hostEnvironment),
+      maxBuffer: MAX_GIT_CONFIG_MANIFEST_BYTES,
+      windowsHide: true
+    }
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    fail(
+      `Git config manifest failed: ${Buffer.concat([result.stderr ?? Buffer.alloc(0), result.stdout ?? Buffer.alloc(0)])
+        .toString("utf8")
+        .trim()}`
+    );
+  }
+  const bytes = Buffer.from(result.stdout ?? Buffer.alloc(0));
+  if (bytes.length === 0 || bytes.length > MAX_GIT_CONFIG_MANIFEST_BYTES || bytes.at(-1) !== 0) {
+    fail("Git config manifest bytes are invalid");
+  }
+  const fields = bytes.toString("utf8").split("\0");
+  fields.pop();
+  if (fields.length % 3 !== 0) fail("Git config manifest shape is invalid");
+  const sourceScopes = new Map();
+  for (let index = 0; index < fields.length; index += 3) {
+    const scope = fields[index];
+    const origin = fields[index + 1];
+    if (!origin.startsWith("file:")) {
+      fail(`Git config source ${origin} is not a receiptable file`);
+    }
+    const path = origin.slice("file:".length);
+    assertCanonicalAbsolutePath(path, "Git config source");
+    const scopes = sourceScopes.get(path) ?? new Set();
+    scopes.add(scope);
+    sourceScopes.set(path, scopes);
+  }
+  return {
+    bytes,
+    entryCount: fields.length / 3,
+    selectionEnvironment: gitConfigSelectionEnvironment(hostEnvironment),
+    sha256: sha256(bytes),
+    sources: [...sourceScopes.entries()]
+      .map(([path, scopes]) => ({ path, scopes: [...scopes].sort() }))
+      .sort((left, right) => left.path.localeCompare(right.path))
+  };
 }
 
 async function fileIdentity(path, expectedKind) {
@@ -617,20 +700,21 @@ async function optionalDirectoryIdentity(path) {
   }
 }
 
-async function captureGitIdentity(assignment) {
+async function captureGitIdentity(assignment, hostEnvironment = process.env) {
   const worktreeIdentity = await fileIdentity(assignment.worktree, "directory");
-  if (git(assignment, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
+  const inspect = (arguments_) => gitWithEnvironment(assignment, arguments_, hostEnvironment);
+  if (inspect(["rev-parse", "--is-inside-work-tree"]) !== "true") {
     fail("assignment worktree is not a Git worktree");
   }
-  const gitDirectory = git(assignment, ["rev-parse", "--path-format=absolute", "--git-dir"]);
-  const commonDirectory = git(assignment, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  const head = git(assignment, ["rev-parse", "HEAD"]);
-  const tree = git(assignment, ["rev-parse", "HEAD^{tree}"]);
-  const branch = git(assignment, ["branch", "--show-current"]);
-  const base = git(assignment, ["rev-parse", `${assignment.base}^{commit}`]);
-  const mergeBase = git(assignment, ["merge-base", assignment.base, "HEAD"]);
-  const status = git(assignment, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  const diffCheck = git(assignment, ["diff", "--check"]);
+  const gitDirectory = inspect(["rev-parse", "--path-format=absolute", "--git-dir"]);
+  const commonDirectory = inspect(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const head = inspect(["rev-parse", "HEAD"]);
+  const tree = inspect(["rev-parse", "HEAD^{tree}"]);
+  const branch = inspect(["branch", "--show-current"]);
+  const base = inspect(["rev-parse", `${assignment.base}^{commit}`]);
+  const mergeBase = inspect(["merge-base", assignment.base, "HEAD"]);
+  const status = inspect(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const diffCheck = inspect(["diff", "--check"]);
   if (base !== assignment.base || mergeBase !== assignment.base) {
     fail("assignment base is not the exact ancestor of HEAD");
   }
@@ -659,22 +743,33 @@ async function captureGitIdentity(assignment) {
   };
 }
 
-async function openGitOwnerPins(gitIdentity, worktreePin) {
-  const pins = { worktree: worktreePin };
+async function openGitOwnerPins(assignment, gitIdentity, worktreePin, hostEnvironment) {
+  const pins = { configSources: [], worktree: worktreePin };
   try {
     pins.commonDirectory = await openPinnedDirectory(gitIdentity.commonDirectory.path, "Git common-directory owner");
     pins.gitDirectory = await openPinnedDirectory(gitIdentity.gitDirectory.path, "Git-directory owner");
-    pins.gitConfig = await openPinnedRegularFile(
-      join(gitIdentity.commonDirectory.path, "config"),
-      MAX_GIT_CONFIG_BYTES,
-      "Git config owner"
-    );
+    const manifestBefore = captureGitConfigManifest(assignment, hostEnvironment);
+    for (const source of manifestBefore.sources) {
+      pins.configSources.push({
+        ...source,
+        pin: await openPinnedRegularFile(source.path, MAX_GIT_CONFIG_BYTES, `Git config source ${source.path}`)
+      });
+    }
+    const manifestAfter = captureGitConfigManifest(assignment, hostEnvironment);
+    if (
+      manifestBefore.sha256 !== manifestAfter.sha256 ||
+      manifestBefore.entryCount !== manifestAfter.entryCount ||
+      JSON.stringify(manifestBefore.sources) !== JSON.stringify(manifestAfter.sources)
+    ) {
+      fail("effective Git config changed while its sources were pinned");
+    }
+    pins.configManifest = manifestBefore;
     pins.gitExecutable = await openPinnedExecutable(gitIdentity.gitExecutable.path);
     if (gitIdentity.nodeModules) {
       pins.nodeModules = await openPinnedDirectory(gitIdentity.nodeModules.path, "node_modules owner");
     }
     for (const [key, pin] of Object.entries(pins)) {
-      if (key === "gitConfig") continue;
+      if (key === "configManifest" || key === "configSources") continue;
       if (key === "gitExecutable") {
         const leaf = executableLeaf(pin);
         if (
@@ -699,8 +794,12 @@ async function openGitOwnerPins(gitIdentity, worktreePin) {
 
 async function verifyGitOwnerPins(pins) {
   for (const [key, pin] of Object.entries(pins)) {
-    if (key === "gitConfig") {
-      await verifyPinnedRegularFile(pin, MAX_GIT_CONFIG_BYTES, "Git config owner");
+    if (key === "configManifest") {
+      continue;
+    } else if (key === "configSources") {
+      for (const source of pin) {
+        await verifyPinnedRegularFile(source.pin, MAX_GIT_CONFIG_BYTES, `Git config source ${source.path}`);
+      }
     } else if (key === "gitExecutable") {
       await verifyPinnedExecutable(pin);
     } else {
@@ -710,21 +809,47 @@ async function verifyGitOwnerPins(pins) {
 }
 
 async function closeDirectoryPins(pins) {
-  await Promise.all(Object.values(pins ?? {}).map((pin) => pin.handle.close()));
+  const handles = [];
+  for (const [key, value] of Object.entries(pins ?? {})) {
+    if (key === "configManifest") continue;
+    if (key === "configSources") {
+      handles.push(...value.map((source) => source.pin.handle));
+    } else {
+      handles.push(value.handle);
+    }
+  }
+  await Promise.all(handles.map((handle) => handle.close()));
 }
 
-async function captureGitConfigIdentity(assignment, pin) {
-  const bytes = await verifyPinnedRegularFile(pin, MAX_GIT_CONFIG_BYTES, "Git config owner");
+async function captureGitConfigIdentity(assignment, pins, hostEnvironment) {
+  const sources = [];
+  for (const source of pins.configSources) {
+    const bytes = await verifyPinnedRegularFile(source.pin, MAX_GIT_CONFIG_BYTES, `Git config source ${source.path}`);
+    sources.push({
+      device: source.pin.snapshot.dev.toString(),
+      inode: source.pin.snapshot.ino.toString(),
+      links: source.pin.snapshot.nlink.toString(),
+      mode: Number(source.pin.snapshot.mode & 0o777n),
+      path: source.path,
+      scopes: source.scopes,
+      sha256: sha256(bytes),
+      size: bytes.length
+    });
+  }
+  const manifest = captureGitConfigManifest(assignment, hostEnvironment);
+  if (
+    manifest.sha256 !== pins.configManifest.sha256 ||
+    manifest.entryCount !== pins.configManifest.entryCount ||
+    JSON.stringify(manifest.sources) !== JSON.stringify(pins.configManifest.sources)
+  ) {
+    fail("effective Git config manifest changed during qualification");
+  }
   return {
-    device: pin.snapshot.dev.toString(),
-    effectiveEmail: optionalGitConfig(assignment, "user.email"),
-    effectiveName: optionalGitConfig(assignment, "user.name"),
-    inode: pin.snapshot.ino.toString(),
-    links: pin.snapshot.nlink.toString(),
-    mode: Number(pin.snapshot.mode & 0o777n),
-    path: pin.path,
-    sha256: sha256(bytes),
-    size: bytes.length
+    effectiveEmail: optionalGitConfig(assignment, "user.email", hostEnvironment),
+    effectiveName: optionalGitConfig(assignment, "user.name", hostEnvironment),
+    entryCount: manifest.entryCount,
+    manifestSha256: manifest.sha256,
+    sources
   };
 }
 
@@ -801,6 +926,8 @@ async function createStateLayout(assignment, assignmentDigest) {
     browserProfile: join(assignment.stateRoot, "browser", "profile"),
     corepackHome: join(assignment.stateRoot, "node", "corepack"),
     executableSnapshots: join(assignment.stateRoot, "runs", assignment.runId, "executables"),
+    gitWrapper: join(assignment.stateRoot, "node", "tool-shims", process.platform === "win32" ? "git.cmd" : "git"),
+    gitWrapperProgram: join(assignment.stateRoot, "node", "tool-shims", "git-wrapper.mjs"),
     home: join(assignment.stateRoot, "home"),
     nodeModules: join(assignment.worktree, "node_modules"),
     npmCache: join(assignment.stateRoot, "node", "npm-cache"),
@@ -824,6 +951,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     temp: join(assignment.stateRoot, "temp"),
     testProgress: join(assignment.stateRoot, "runs", assignment.runId, "test-progress.json"),
     testResult: join(assignment.stateRoot, "runs", assignment.runId, "test-result.json"),
+    toolShim: join(assignment.stateRoot, "node", "tool-shims"),
     uvCache: join(assignment.stateRoot, "python", "uv-cache"),
     venv: join(assignment.stateRoot, "python", "venv"),
     vitestCache: join(assignment.worktree, "node_modules", ".vite"),
@@ -837,6 +965,8 @@ async function createStateLayout(assignment, assignmentDigest) {
     (key) =>
       ![
         "nodeModules",
+        "gitWrapper",
+        "gitWrapperProgram",
         "npmUserConfig",
         "pipConfig",
         "pythonExecutable",
@@ -907,21 +1037,97 @@ async function createStateLayout(assignment, assignmentDigest) {
     await receiptHandle.close();
     throw error;
   }
-  return { identities, layout, ownerPins, receiptHandle, receiptSnapshot, stateRootIdentity };
+  return { identities, layout, ownerPins, receiptHandle, receiptSnapshot, runnerFilePins: [], stateRootIdentity };
 }
 
 function quotePytestPath(path) {
   return `'${path.replaceAll("'", `'"'"'`)}'`;
 }
 
-async function trustedToolDirectories(assignment, hostEnvironment) {
-  const candidates = [dirname(assignment.gitExecutable), dirname(process.execPath)];
+function gitWrapperProgramSource(assignment, configSelectionEnvironment) {
+  return `import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative } from "node:path";
+
+const binding = ${JSON.stringify({
+    configSelectionEnvironment,
+    gitDirectory: assignment.gitDirectory,
+    gitExecutable: assignment.gitExecutable,
+    worktree: assignment.worktree
+  })};
+const environment = { ...process.env };
+for (const key of Object.keys(environment)) {
+  const upper = key.toUpperCase();
+  if (upper === "EMAIL" || upper.startsWith("GIT_")) delete environment[key];
+}
+Object.assign(environment, binding.configSelectionEnvironment);
+const cwd = realpathSync.native(process.cwd());
+const suffix = relative(binding.worktree, cwd);
+const usesAssignedWorktree = suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix));
+const arguments_ = process.argv.slice(2);
+const commandArguments = usesAssignedWorktree
+  ? ["--git-dir", binding.gitDirectory, "--work-tree", binding.worktree, ...arguments_]
+  : arguments_;
+const result = spawnSync(binding.gitExecutable, commandArguments, {
+  cwd,
+  env: environment,
+  stdio: "inherit",
+  windowsHide: true
+});
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;
+`;
+}
+
+async function prepareGitWrapper(layoutState, assignment, configSelectionEnvironment) {
+  const programBytes = gitWrapperProgramSource(assignment, configSelectionEnvironment);
+  await writeFile(layoutState.layout.gitWrapperProgram, programBytes, { flag: "wx", mode: 0o500 });
   if (process.platform === "win32") {
-    const systemRoot = hostEnvironment.SYSTEMROOT ?? hostEnvironment.WINDIR;
-    if (!systemRoot || !isAbsolute(systemRoot)) {
-      fail("a canonical Windows system root is required for the trusted tool path");
-    }
-    candidates.push(join(systemRoot, "System32"), join(systemRoot, "System32", "WindowsPowerShell", "v1.0"));
+    await writeFile(
+      layoutState.layout.gitWrapper,
+      `@echo off\r\n"${process.execPath}" "${layoutState.layout.gitWrapperProgram}" %*\r\n`,
+      { flag: "wx", mode: 0o500 }
+    );
+  } else {
+    await writeFile(
+      layoutState.layout.gitWrapper,
+      `#!/bin/sh\nexec ${quotePytestPath(process.execPath)} ${quotePytestPath(layoutState.layout.gitWrapperProgram)} "$@"\n`,
+      { flag: "wx", mode: 0o500 }
+    );
+    await chmod(layoutState.layout.gitWrapper, 0o500);
+    await chmod(layoutState.layout.gitWrapperProgram, 0o500);
+  }
+  for (const [path, label] of [
+    [layoutState.layout.gitWrapper, "private Git launcher"],
+    [layoutState.layout.gitWrapperProgram, "private Git launcher program"]
+  ]) {
+    const pin = await openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, label);
+    layoutState.runnerFilePins.push({ label, pin });
+    layoutState.identities[label === "private Git launcher" ? "gitWrapper" : "gitWrapperProgram"] = await fileIdentity(
+      path,
+      "file"
+    );
+  }
+}
+
+function windowsSystemRootCandidate(nodeExecutable) {
+  const root = windowsPath.parse(nodeExecutable).root;
+  if (!root) fail("the Node executable does not identify a Windows installation drive");
+  return windowsPath.join(root, "Windows");
+}
+
+async function trustedToolDirectories(assignment) {
+  const candidates = [dirname(assignment.gitExecutable), dirname(process.execPath)];
+  let windowsCommandProcessor = null;
+  let windowsSupervisorCommand = null;
+  let windowsSystemRoot = null;
+  if (process.platform === "win32") {
+    windowsSystemRoot = await realpath(windowsSystemRootCandidate(process.execPath));
+    const system32 = await realpath(join(windowsSystemRoot, "System32"));
+    const powerShellDirectory = await realpath(join(system32, "WindowsPowerShell", "v1.0"));
+    windowsCommandProcessor = await realpath(join(system32, "cmd.exe"));
+    windowsSupervisorCommand = await realpath(join(powerShellDirectory, "powershell.exe"));
+    candidates.push(system32, powerShellDirectory);
   } else {
     candidates.push("/usr/bin", "/bin");
   }
@@ -938,7 +1144,7 @@ async function trustedToolDirectories(assignment, hostEnvironment) {
     await Promise.all(pins.map((pin) => pin.handle.close()));
     throw error;
   }
-  return { directories, pins };
+  return { directories, pins, windowsCommandProcessor, windowsSupervisorCommand, windowsSystemRoot };
 }
 
 function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment) {
@@ -969,6 +1175,10 @@ function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment
     npm_config_userconfig: layout.npmUserConfig
   });
   if (process.platform === "win32") {
+    environment.COMSPEC = layout.windowsCommandProcessor;
+    environment.SYSTEMDRIVE = parse(layout.windowsSystemRoot).root.replace(/[\\/]$/u, "");
+    environment.SYSTEMROOT = layout.windowsSystemRoot;
+    environment.WINDIR = layout.windowsSystemRoot;
     delete environment.npm_config_cache;
     delete environment.npm_config_prefix;
     delete environment.npm_config_userconfig;
@@ -1232,7 +1442,7 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       spawnError: "POSIX detached-process containment requires Linux subreaper support",
       status: null,
       timedOut: false,
-      treeEmpty: false
+      treeEmpty: true
     };
   }
   let child;
@@ -1393,22 +1603,20 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       treeEmpty: true
     };
   }
-  const systemRoot = options.environment.SYSTEMROOT ?? options.environment.WINDIR;
-  if (!systemRoot || !isAbsolute(systemRoot)) {
+  if (!options.supervisorExecutedPath || !isAbsolute(options.supervisorExecutedPath)) {
     return {
       lingeringDescendants: false,
       signal: null,
-      spawnError: "Windows process ownership requires an exact system root",
+      spawnError: "Windows process ownership requires a pinned supervisor executable",
       status: null,
       timedOut: false,
       treeEmpty: true
     };
   }
-  const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   let supervisor;
   try {
     supervisor = spawn(
-      powerShell,
+      options.supervisorExecutedPath,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", WINDOWS_JOB_SUPERVISOR_PATH],
       {
         cwd: options.cwd,
@@ -1533,6 +1741,7 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
 }
 
 async function runOwnedCommand(command, arguments_, options) {
+  const platform = options.platformForTest ?? process.platform;
   let executable;
   let launch;
   let supervisorExecutable;
@@ -1544,8 +1753,11 @@ async function runOwnedCommand(command, arguments_, options) {
       options.executableAfterOpenForTest ? { afterOpenForTest: options.executableAfterOpenForTest } : undefined
     );
     launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot);
-    if ((options.platformForTest ?? process.platform) !== "win32") {
+    if (platform !== "win32") {
       supervisorExecutable = await openPinnedExecutable(options.posixSupervisorCommand);
+      supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
+    } else if (!options.ownedRunnerForTest) {
+      supervisorExecutable = await openPinnedExecutable(options.windowsSupervisorCommand);
       supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
     }
   } catch (error) {
@@ -1564,7 +1776,6 @@ async function runOwnedCommand(command, arguments_, options) {
     };
   }
   try {
-    const platform = options.platformForTest ?? process.platform;
     const executionStrategy = platform === "win32" ? "private-snapshot" : "inherited-descriptor";
     const executedPath = platform === "win32" ? executableLeaf(launch.snapshot).path : "/dev/fd/4";
     const runner = options.ownedRunnerForTest ?? (platform === "win32" ? runWindowsOwnedCommand : runPosixOwnedCommand);
@@ -1574,7 +1785,8 @@ async function runOwnedCommand(command, arguments_, options) {
       launchArgv0: executableLeaf(launch.snapshot).path,
       platformForTest: platform,
       sourceCommand: command,
-      supervisorExecutedPath: platform === "win32" ? null : "/dev/fd/3",
+      supervisorExecutedPath:
+        platform === "win32" ? (supervisorLaunch ? executableLeaf(supervisorLaunch.source).path : null) : "/dev/fd/3",
       supervisorExecutableFd: platform === "win32" ? null : executableLeaf(supervisorLaunch.snapshot).handle.fd,
       targetExecutableFd: platform === "win32" ? null : executableLeaf(launch.snapshot).handle.fd,
       verifyExecutableForSpawn: async () => {
@@ -1671,9 +1883,12 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
   });
   const bootstrapPython = await realpath(selected);
   assertCanonicalAbsolutePath(bootstrapPython, "bootstrap Python");
-  const trustedTools = await trustedToolDirectories(assignment, hostEnvironment);
+  const trustedTools = await trustedToolDirectories(assignment);
   layoutState.layout.toolDirectories = trustedTools.directories;
-  layoutState.layout.toolPath = trustedTools.directories.join(delimiter);
+  layoutState.layout.toolPath = [layoutState.layout.toolShim, ...trustedTools.directories].join(delimiter);
+  layoutState.layout.windowsCommandProcessor = trustedTools.windowsCommandProcessor;
+  layoutState.layout.windowsSupervisorCommand = trustedTools.windowsSupervisorCommand;
+  layoutState.layout.windowsSystemRoot = trustedTools.windowsSystemRoot;
   for (const [index, pin] of trustedTools.pins.entries()) {
     layoutState.ownerPins[`toolDirectory${String(index)}`] = pin;
   }
@@ -1685,6 +1900,7 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     environment,
     executableSnapshotRoot: layoutState.layout.executableSnapshots,
     posixSupervisorCommand: bootstrapPython,
+    windowsSupervisorCommand: layoutState.layout.windowsSupervisorCommand,
     terminationGraceMs: options.terminationGraceMs,
     timeoutMs: 120_000
   });
@@ -1711,6 +1927,7 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
       environment: verificationEnvironment,
       executableSnapshotRoot: layoutState.layout.executableSnapshots,
       posixSupervisorCommand: bootstrapPython,
+      windowsSupervisorCommand: layoutState.layout.windowsSupervisorCommand,
       terminationGraceMs: options.terminationGraceMs,
       timeoutMs: 30_000
     }
@@ -1730,7 +1947,9 @@ async function verifyLayout(layoutState) {
   }
   for (const [key, before] of Object.entries(layoutState.identities)) {
     const path = key === "marker" ? join(dirname(layoutState.layout.home), "assignment.json") : layoutState.layout[key];
-    const expectedKind = key === "marker" || key === "npmUserConfig" || key === "pipConfig" ? "file" : "directory";
+    const expectedKind = ["gitWrapper", "gitWrapperProgram", "marker", "npmUserConfig", "pipConfig"].includes(key)
+      ? "file"
+      : "directory";
     const after = await fileIdentity(path, expectedKind);
     if (!sameIdentity(before, after)) {
       fail(`${key} identity changed during qualification`);
@@ -1742,6 +1961,9 @@ async function verifyLayout(layoutState) {
   }
   if (layoutState.pythonEntry) {
     await verifyVenvPythonIdentity(layoutState.pythonEntry);
+  }
+  for (const { label, pin } of layoutState.runnerFilePins) {
+    await verifyPinnedRegularFile(pin, MAX_ASSIGNMENT_BYTES, label);
   }
 }
 
@@ -1806,18 +2028,19 @@ async function runQualification({
     const worktreePin = await openPinnedDirectory(assignment.worktree, "worktree owner");
     let initialGit;
     try {
-      initialGit = await captureGitIdentity(assignment);
+      initialGit = await captureGitIdentity(assignment, environment);
     } catch (error) {
       await worktreePin.handle.close();
       throw error;
     }
-    gitOwnerPins = await openGitOwnerPins(initialGit, worktreePin);
+    gitOwnerPins = await openGitOwnerPins(assignment, initialGit, worktreePin, environment);
     await verifyGitOwnerPins(gitOwnerPins);
     initialGit = {
       ...initialGit,
-      gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins.gitConfig)
+      gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment)
     };
     layoutState = await createStateLayout(assignment, initialAssignment.digest);
+    await prepareGitWrapper(layoutState, assignment, gitOwnerPins.configManifest.selectionEnvironment);
     const startedAt = new Date().toISOString();
     const failures = [];
     let bootstrap;
@@ -1849,6 +2072,7 @@ async function runQualification({
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
         posixSupervisorCommand: bootstrap.bootstrapPython,
+        windowsSupervisorCommand: layoutState.layout.windowsSupervisorCommand,
         terminationGraceMs,
         timeoutMs
       });
@@ -1877,10 +2101,10 @@ async function runQualification({
     }
     try {
       await verifyGitOwnerPins(gitOwnerPins);
-      finalGit = await captureGitIdentity(assignment);
+      finalGit = await captureGitIdentity(assignment, environment);
       finalGit = {
         ...finalGit,
-        gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins.gitConfig)
+        gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment)
       };
       assertSameGitIdentity(initialGit, finalGit);
     } catch (error) {
@@ -1927,6 +2151,7 @@ async function runQualification({
     }
     return receipt;
   } finally {
+    await Promise.all((layoutState?.runnerFilePins ?? []).map(({ pin }) => pin.handle.close()));
     await closeDirectoryPins(layoutState?.ownerPins);
     await closeDirectoryPins(gitOwnerPins);
     await layoutState?.receiptHandle?.close();
@@ -1956,7 +2181,8 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   },
   openRegularFile(path, afterOpenForTest) {
     return openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, "test regular file", { afterOpenForTest });
-  }
+  },
+  windowsSystemRootCandidate
 });
 
 export {

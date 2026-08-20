@@ -72,7 +72,7 @@ The state root contains all mutable qualification state:
   artifacts/qualification-receipt.json
   browser/{playwright,profile}/
   home/
-  node/{corepack,npm-cache,npm-prefix,npm-userconfig}
+  node/{corepack,npm-cache,npm-prefix,npm-userconfig,tool-shims}
   python/{bytecode,pip-cache,pytest-cache,pytest-temp,ruff-cache,venv}/
   r/{cache,library,user}/
   runs/<runId>/
@@ -84,19 +84,24 @@ The state root contains all mutable qualification state:
 `node_modules`, assigns npm and Corepack caches to the state root, and sets Python, pytest, Ruff, Playwright, browser,
 home, XDG, R, temporary, and artifact variables to the listed task-owned paths. A command that needs Python creates
 and installs its interpreter in the assigned `python/venv` before invoking commands such as `npm run check:pr`; it
-must not fall back to another task's environment. `PATH` is runner-owned and contains only the task venv plus
-canonical directories that own the sealed Git, Node, and operating-system tools; the caller's
-mutable `PATH` is never inherited.
+must not fall back to another task's environment. `PATH` is runner-owned and contains only the task venv, a pinned
+private Git launcher, and canonical directories that own the sealed Git, Node, and operating-system tools; the
+caller's mutable `PATH` is never inherited. The private launcher binds Git commands issued from the assigned
+worktree to the sealed metadata overlay, while Git commands inside a task-owned nested fixture remain local to that
+fixture and receive no authoritative-checkout overrides.
 
-The receipt records the assignment digest, command, worktree, authoritative Git-directory/config/executable
-filesystem identities, exact
+The receipt records the assignment digest, command, worktree, authoritative Git-directory/executable filesystem
+identities, every effective system, global, included, worktree, and local Git config source with its exact bytes and
+scope, exact
 base/head/tree/branch, environment layout, result, and post-command identity. It is eligible only when the assignment,
 source, Git metadata, and state-root directories retain their identities and the command succeeds. Source or
 assignment mutation produces a nonzero result and an explicitly ineligible receipt. Invalid aliases fail before a
-state root or receipt is created. POSIX execution uses an inherited descriptor for the verified executable snapshot;
-Linux qualification additionally uses a subreaper so a new session or process group cannot escape terminal
-tree-empty attestation. Windows uses the existing kill-on-close Job Object supervisor and revalidates the private
-snapshot immediately before launch.
+state root or receipt is created. Linux execution uses an inherited descriptor for the verified executable snapshot
+and a subreaper that repeatedly adopts, signals, and reaps new sessions or process groups through its bounded
+termination phases. Other POSIX hosts are explicitly unsupported: the runner launches no qualification command and
+publishes a terminal ineligible receipt. Windows derives its system tools from the Node executable's installation
+drive instead of inherited `SYSTEMROOT` or `WINDIR`, pins that PowerShell owner, uses the existing kill-on-close Job
+Object supervisor, and revalidates the private target snapshot immediately before launch.
 
 The runner performs no cleanup and never reuses a root. After the receipt is handed off and all owned processes have
 ended, the assigned task may remove only its exact worktree and state root under the portfolio cleanup policy. An

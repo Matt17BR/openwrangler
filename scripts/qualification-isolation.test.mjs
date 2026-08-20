@@ -72,8 +72,8 @@ function gitExecutable() {
   return resolvedGitExecutable;
 }
 
-function cleanGitEnvironment() {
-  const environment = { ...process.env };
+function cleanGitEnvironment(source = process.env) {
+  const environment = { ...source };
   for (const key of Object.keys(environment)) {
     const normalized = key.toUpperCase();
     if (gitOverrideKeys.includes(normalized) || gitOverridePrefixes.some((prefix) => normalized.startsWith(prefix))) {
@@ -98,14 +98,14 @@ function git(root, arguments_) {
   return result.stdout.trim();
 }
 
-function assignedGit(task, arguments_) {
+function assignedGit(task, arguments_, environment = process.env) {
   const result = spawnSync(
     task.assignment.gitExecutable,
     ["--git-dir", task.assignment.gitDirectory, "--work-tree", task.worktree, ...arguments_],
     {
       cwd: task.worktree,
       encoding: "utf8",
-      env: cleanGitEnvironment(),
+      env: cleanGitEnvironment(environment),
       maxBuffer: 1024 * 1024,
       windowsHide: true
     }
@@ -393,14 +393,28 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   ]);
   git(value.root, [`--git-dir=${overlay}`, "symbolic-ref", "HEAD", `refs/heads/${task.branch}`]);
   git(task.worktree, [`--git-dir=${overlay}`, `--work-tree=${task.worktree}`, "read-tree", value.base]);
-  git(value.root, [`--git-dir=${overlay}`, "config", "user.name", "Authoritative Overlay Owner"]);
-  git(value.root, [`--git-dir=${overlay}`, "config", "user.email", "overlay-owner@example.test"]);
   await replaceTaskAssignment(task, { gitDirectory: realpathSync.native(overlay) });
   const configPath = realpathSync.native(join(overlay, "config"));
+  const configHome = join(value.root, "config-home");
+  const includedConfigPath = join(configHome, "identity.inc");
+  const globalConfigPath = join(configHome, ".gitconfig");
+  await mkdir(configHome);
+  await writeFile(
+    includedConfigPath,
+    "[user]\n\tname = Authoritative Included Owner\n\temail = included-owner@example.test\n",
+    { flag: "wx", mode: 0o600 }
+  );
+  await writeFile(globalConfigPath, `[include]\n\tpath = ${includedConfigPath.replaceAll("\\", "/")}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
+  const configEnvironment = { ...process.env, HOME: configHome, XDG_CONFIG_HOME: join(configHome, "xdg") };
   const configBefore = await readFile(configPath);
+  const globalConfigBefore = await readFile(globalConfigPath);
+  const includedConfigBefore = await readFile(includedConfigPath);
   const effectiveBefore = {
-    email: assignedGit(task, ["config", "--get", "user.email"]),
-    name: assignedGit(task, ["config", "--get", "user.name"])
+    email: assignedGit(task, ["config", "--get", "user.email"], configEnvironment),
+    name: assignedGit(task, ["config", "--get", "user.name"], configEnvironment)
   };
   const nestedResultPath = join(task.assignment.stateRoot, "temp", "nested-git-result.json");
   const hostileToolDirectory = join(value.root, "hostile-tools");
@@ -433,6 +447,7 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
     git_config_key_2: "user.name",
     git_config_value_2: "Lowercase Injected Config Author",
     git_dir: staleLinkedGitDirectory,
+    HOME: configHome,
     PATH: `${hostileToolDirectory}${delimiter}${process.env.PATH ?? ""}`
   };
   const valueReceipt = await runQualification({
@@ -446,18 +461,29 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
 
   assert.equal(valueReceipt.eligible, true);
   assert.deepEqual(await readFile(configPath), configBefore);
+  assert.deepEqual(await readFile(globalConfigPath), globalConfigBefore);
+  assert.deepEqual(await readFile(includedConfigPath), includedConfigBefore);
   assert.deepEqual(
     {
-      email: assignedGit(task, ["config", "--get", "user.email"]),
-      name: assignedGit(task, ["config", "--get", "user.name"])
+      email: assignedGit(task, ["config", "--get", "user.email"], configEnvironment),
+      name: assignedGit(task, ["config", "--get", "user.name"], configEnvironment)
     },
     effectiveBefore
   );
   assert.deepEqual(valueReceipt.identity.gitConfig, valueReceipt.postIdentity.gitConfig);
-  assert.equal(valueReceipt.identity.gitConfig.path, configPath);
-  assert.equal(valueReceipt.identity.gitConfig.sha256, sha256(configBefore));
   assert.equal(valueReceipt.identity.gitConfig.effectiveName, effectiveBefore.name);
   assert.equal(valueReceipt.identity.gitConfig.effectiveEmail, effectiveBefore.email);
+  assert.deepEqual(
+    valueReceipt.identity.gitConfig.sources.map((source) => source.path),
+    [globalConfigPath, includedConfigPath, configPath].sort((left, right) => left.localeCompare(right))
+  );
+  for (const [path, bytes] of [
+    [configPath, configBefore],
+    [globalConfigPath, globalConfigBefore],
+    [includedConfigPath, includedConfigBefore]
+  ]) {
+    assert.equal(valueReceipt.identity.gitConfig.sources.find((source) => source.path === path)?.sha256, sha256(bytes));
+  }
   assert.equal(existsSync(hostileToolMarker), false);
   assert.equal(valueReceipt.environment.toolPath.includes(hostileToolDirectory), false);
 
@@ -466,6 +492,8 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   assert.equal(nestedResult.authorEmail, "nested-fixture@openwrangler.invalid");
   assert.equal(nestedResult.committerName, nestedResult.authorName);
   assert.equal(nestedResult.committerEmail, nestedResult.authorEmail);
+  assert.equal(nestedResult.topLevelHead, task.assignment.head);
+  assert.equal(nestedResult.topLevelStatus, "");
   const nestedSuffix = relative(task.assignment.stateRoot, nestedResult.repository);
   assert.ok(nestedSuffix !== "" && !nestedSuffix.startsWith("..") && !isAbsolute(nestedSuffix));
   assert.equal(git(nestedResult.repository, ["config", "--local", "user.name"]), nestedResult.authorName);
@@ -485,14 +513,47 @@ test("makes an authoritative Git config mutation terminal and ineligible", async
       timeoutMs: 120_000,
       writeOutput: false
     }),
-    /Git config owner (?:bytes are invalid|identity changed)/u
+    /Git config source .* (?:bytes are invalid|identity changed)/u
   );
   const valueReceipt = await receipt(task);
   assert.equal(valueReceipt.eligible, false);
   assert.equal(valueReceipt.postIdentity, null);
   assert.ok(
-    valueReceipt.failures.some((failure) => /Git config owner (?:bytes are invalid|identity changed)/u.test(failure))
+    valueReceipt.failures.some((failure) =>
+      /Git config source .* (?:bytes are invalid|identity changed)/u.test(failure)
+    )
   );
+});
+
+test("receipts and rejects mutation of an included effective Git config source", async (context) => {
+  const value = await fixture(context, "git-config-include-mutation");
+  const task = await addTask(value, "git-config-include-mutation");
+  const configHome = join(value.root, "config-home");
+  const includedConfig = join(configHome, "identity.inc");
+  await mkdir(configHome);
+  await writeFile(includedConfig, "[user]\n\tname = Included Owner\n\temail = included@example.test\n", {
+    flag: "wx",
+    mode: 0o600
+  });
+  await writeFile(join(configHome, ".gitconfig"), `[include]\n\tpath = ${includedConfig.replaceAll("\\", "/")}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "mutate-git-config-source", "--path", includedConfig],
+      environment: runnerEnvironment({ HOME: configHome, XDG_CONFIG_HOME: join(configHome, "xdg") }),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Git config source .* (?:bytes are invalid|identity changed)/u
+  );
+  const valueReceipt = await receipt(task);
+  assert.equal(valueReceipt.eligible, false);
+  assert.equal(valueReceipt.postIdentity, null);
+  assert.ok(valueReceipt.identity.gitConfig.sources.some((source) => source.path === includedConfig));
 });
 
 test("opens directory, regular-file, and executable owners before trusting their pathnames", async (context) => {
@@ -593,7 +654,7 @@ test("rejects source replacement before POSIX or Windows snapshot launch", async
 
 test(
   "executes a verified shebang snapshot through an inherited descriptor",
-  { skip: process.platform === "win32" },
+  { skip: process.platform !== "linux" },
   async (context) => {
     const value = await fixture(context, "shebang-snapshot");
     const task = await addTask(value, "shebang-snapshot");
@@ -615,6 +676,32 @@ test(
     await access(valueReceipt.environment.testResult);
   }
 );
+
+test("fails closed before launch on a non-Linux POSIX host", async (context) => {
+  const value = await fixture(context, "unsupported-posix");
+  const task = await addTask(value, "unsupported-posix");
+  let beforeSpawnCalled = false;
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      beforeCommandSpawnForTest: async () => {
+        beforeSpawnCalled = true;
+      },
+      command: [process.execPath, child, "record"],
+      commandPlatformForTest: "darwin",
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /POSIX detached-process containment requires Linux subreaper support/u
+  );
+  const valueReceipt = await receipt(task);
+  assert.equal(valueReceipt.eligible, false);
+  assert.equal(valueReceipt.result.treeEmpty, true);
+  assert.equal(beforeSpawnCalled, false);
+  assert.equal(existsSync(valueReceipt.environment.testResult), false);
+});
 
 test("rejects a Windows private snapshot replacement before supervisor launch", async (context) => {
   const value = await fixture(context, "windows-snapshot-swap");
@@ -650,6 +737,35 @@ test("rejects a Windows private snapshot replacement before supervisor launch", 
   assert.equal(valueReceipt.result.treeEmpty, true);
   assert.equal(existsSync(valueReceipt.environment.testResult), false);
 });
+
+test("derives the Windows supervisor root independently of inherited Windows paths", () => {
+  assert.equal(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSystemRootCandidate("C:\\hostedtoolcache\\node\\node.exe"),
+    "C:\\Windows"
+  );
+  assert.equal(QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSystemRootCandidate("D:\\tools\\node.exe"), "D:\\Windows");
+});
+
+test(
+  "ignores hostile inherited Windows roots when launching the pinned supervisor",
+  { skip: process.platform !== "win32" },
+  async (context) => {
+    const value = await fixture(context, "windows-supervisor-root");
+    const task = await addTask(value, "windows-supervisor-root");
+    const hostileRoot = join(value.root, "hostile-windows-root");
+    const valueReceipt = await runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment({ SYSTEMROOT: hostileRoot, WINDIR: hostileRoot }),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    });
+    assert.equal(valueReceipt.eligible, true);
+    assert.notEqual(valueReceipt.environment.windowsSystemRoot, hostileRoot);
+    assert.ok(valueReceipt.result.executable.supervisor);
+  }
+);
 
 test("rejects aliased worktrees, symlinked roots, and reused state", async (context) => {
   const value = await fixture(context, "aliases");
@@ -783,6 +899,26 @@ test("terminates an escaping descendant, blocks post-exit mutation, and bounds h
   assert.ok(descendantReceipt.result.lingeringDescendants || descendantReceipt.result.timedOut);
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 2200));
   assert.equal(await readFile(tracked, "utf8"), "source\n");
+
+  const nestedTask = await addTask(value, "nested-descendant");
+  const nestedTracked = join(nestedTask.worktree, "tracked.txt");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: nestedTask.assignmentPath,
+      command: [process.execPath, child, "escape-nested-parent", "--path", nestedTracked],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 250,
+      timeoutMs: 500,
+      writeOutput: false
+    }),
+    /descendants|hard timeout/u
+  );
+  const nestedReceipt = await receipt(nestedTask);
+  assert.equal(nestedReceipt.eligible, false);
+  assert.equal(nestedReceipt.result.lingeringDescendants, true);
+  assert.equal(nestedReceipt.result.treeEmpty, true);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 2200));
+  assert.equal(await readFile(nestedTracked, "utf8"), "source\n");
 
   const hungTask = await addTask(value, "hung");
   await assert.rejects(
