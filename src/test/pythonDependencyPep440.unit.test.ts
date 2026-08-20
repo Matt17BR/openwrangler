@@ -55,6 +55,22 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       await writeFile(path.join(purelib, `${fixture.dependency.importModule}.py`), "VALUE = 1\n", "utf8");
       const metadataRoot = path.join(purelib, `${fixture.dependency.importModule}-0.dist-info`);
       await mkdir(metadataRoot);
+      const metadataPath = path.join(metadataRoot, "METADATA");
+      const recordPath = path.join(metadataRoot, "RECORD");
+      const ownedRoot = path.join(purelib, "owned-distribution-module");
+      await mkdir(ownedRoot);
+      await writeFile(path.join(ownedRoot, `${fixture.dependency.importModule}.py`), "VALUE = 2\n", "utf8");
+      await writeFile(
+        metadataPath,
+        ["Metadata-Version: 2.1", `Name: ${fixture.dependency.distribution}`, "Version: 1.5.4", ""].join("\n"),
+        "utf8"
+      );
+      await writeFile(recordPath, `owned-distribution-module/${fixture.dependency.importModule}.py,,\n`, "utf8");
+      await expect(probeDependencies(executable, [fixture.dependency]), "shadowed import module").resolves.toEqual({
+        available: [],
+        missing: [fixture.dependency.installSpec]
+      });
+      await writeFile(recordPath, `${fixture.dependency.importModule}.py,,\n`, "utf8");
 
       for (const entry of fixture.cases) {
         await writeFile(

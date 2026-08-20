@@ -32,6 +32,9 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "cross-platform.yml"
 
 MAX_AUTHORITY_BYTES = 65_536
 MAX_AUTHORITY_JSON_DEPTH = 128
+MAX_AUTHORITY_JSON_NODES = 4_096
+MAX_AUTHORITY_JSON_STRING_BYTES = 4_096
+MAX_AUTHORITY_JSON_TEXT_BYTES = 32_768
 MAX_DEPENDENCIES = 64
 MAX_QUALIFIED_VERSIONS = 16
 MAX_CONSUMER_BYTES = 2_097_152
@@ -165,12 +168,23 @@ def _cohorts_are_contiguous(versions: list[Version], kind: str) -> bool:
     return True
 
 
-def _validate_json_nesting(raw: bytes) -> None:
+def _validate_json_budget(raw: bytes) -> None:
     depth = 0
+    nodes = 0
+    string_bytes = 0
+    total_string_bytes = 0
     in_string = False
     escaped = False
+    in_scalar = False
     for character in raw:
         if in_string:
+            string_bytes += 1
+            total_string_bytes += 1
+            if (
+                string_bytes > MAX_AUTHORITY_JSON_STRING_BYTES
+                or total_string_bytes > MAX_AUTHORITY_JSON_TEXT_BYTES
+            ):
+                _fail("invalid_authority_json")
             if escaped:
                 escaped = False
             elif character == 0x5C:
@@ -179,15 +193,27 @@ def _validate_json_nesting(raw: bytes) -> None:
                 in_string = False
             continue
         if character == 0x22:
+            nodes += 1
+            string_bytes = 0
             in_string = True
         elif character in {0x5B, 0x7B}:
+            nodes += 1
+            in_scalar = False
             depth += 1
             if depth > MAX_AUTHORITY_JSON_DEPTH:
                 _fail("invalid_authority_json")
         elif character in {0x5D, 0x7D}:
+            in_scalar = False
             depth -= 1
             if depth < 0:
                 _fail("invalid_authority_json")
+        elif character in {0x09, 0x0A, 0x0D, 0x20, 0x2C, 0x3A}:
+            in_scalar = False
+        elif not in_scalar:
+            nodes += 1
+            in_scalar = True
+        if nodes > MAX_AUTHORITY_JSON_NODES:
+            _fail("invalid_authority_json")
     if in_string or depth != 0:
         _fail("invalid_authority_json")
 
@@ -233,7 +259,7 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
         _fail("authority_unreadable")
     if len(raw) > MAX_AUTHORITY_BYTES or b"\x00" in raw:
         _fail("authority_too_large")
-    _validate_json_nesting(raw)
+    _validate_json_budget(raw)
     try:
         decoded = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
     except AuthorityError:
@@ -306,7 +332,13 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
                 specifier = SpecifierSet(f">={minimum_text},<{maximum_text}")
             except (MemoryError, RecursionError, ValueError):
                 _fail("invalid_authority_range")
-
+        if (
+            lower.is_prerelease
+            or lower.is_devrelease
+            or upper.is_prerelease
+            or upper.is_devrelease
+        ):
+            _fail("invalid_authority_version")
         qualification_raw = value["qualification"]
         if not isinstance(qualification_raw, dict) or set(qualification_raw) != {
             "cohortKind",
@@ -334,7 +366,7 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
                 _fail("invalid_authority_qualification")
             if not specifier.contains(
                 qualified_version,
-                prereleases=specifier.prereleases is True,
+                prereleases=False,
             ):
                 _fail("invalid_authority_qualification")
             qualified_texts.append(qualified_text)
@@ -395,6 +427,15 @@ class ConsumerSnapshot:
     text: str
     identity: tuple[int, int, int, int, int]
     mode: int
+
+
+@dataclass(frozen=True)
+class AuthorityLockReceipt:
+    authority_identity: tuple[int, int, int, int, int]
+    parent_identity: tuple[int, int]
+    namespace_identity: tuple[int, int]
+    parent_descriptor: int = -1
+    namespace_descriptor: int = -1
 
 
 def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -673,7 +714,7 @@ def _write_consumers_atomically(
     snapshots: tuple[ConsumerSnapshot, ...],
     expected: dict[Path, str],
     *,
-    authority_identity: tuple[int, int, int, int, int] | None = None,
+    authority_receipt: AuthorityLockReceipt | None = None,
 ) -> None:
     targets = tuple(
         snapshot
@@ -695,8 +736,8 @@ def _write_consumers_atomically(
             replacement = replacements[snapshot.path]
             if not _same_snapshot(replacement):
                 _fail("consumer_write_failed")
-            if authority_identity is not None:
-                _assert_authority_identity(authority_identity)
+            if authority_receipt is not None:
+                _assert_authority_receipt(authority_receipt)
             displaced_path = _exchange_paths(snapshot.path, replacement.path)
             replacements[snapshot.path] = ConsumerSnapshot(
                 path=displaced_path,
@@ -735,8 +776,8 @@ def _write_consumers_atomically(
             except OSError:
                 _fail("consumer_write_failed")
         _assert_consumer_states(snapshots, committed)
-        if authority_identity is not None:
-            _assert_authority_identity(authority_identity)
+        if authority_receipt is not None:
+            _assert_authority_receipt(authority_receipt)
     except AuthorityError as error:
         error_code = str(error)
         for path in reversed(replaced):
@@ -781,20 +822,9 @@ def _write_consumers_atomically(
         _remove_staged(iter(replacements.values()))
 
 
-def _assert_authority_identity(identity: tuple[int, int, int, int, int]) -> None:
-    try:
-        current = AUTHORITY_PATH.lstat()
-    except OSError:
-        _fail("authority_changed")
-    if (
-        not stat.S_ISREG(current.st_mode)
-        or current.st_nlink != 1
-        or _identity(current) != identity
-    ):
-        _fail("authority_changed")
-
-
-def _authority_file_identity() -> tuple[int, int, int, int, int]:
+def _authority_file_identity(
+    parent_descriptor: int = -1,
+) -> tuple[int, int, int, int, int]:
     descriptor = -1
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -809,7 +839,14 @@ def _authority_file_identity() -> tuple[int, int, int, int, int]:
             or before.st_size > MAX_AUTHORITY_BYTES
         ):
             _fail("authority_unsafe")
-        descriptor = os.open(AUTHORITY_PATH, flags)
+        if parent_descriptor >= 0:
+            descriptor = os.open(
+                AUTHORITY_PATH.name,
+                flags,
+                dir_fd=parent_descriptor,
+            )
+        else:
+            descriptor = os.open(AUTHORITY_PATH, flags)
         opened = os.fstat(descriptor)
         current = AUTHORITY_PATH.lstat()
         if _identity(opened) != _identity(before) or _identity(current) != _identity(
@@ -826,6 +863,57 @@ def _authority_file_identity() -> tuple[int, int, int, int, int]:
             os.close(descriptor)
 
 
+def _assert_authority_receipt(receipt: AuthorityLockReceipt) -> None:
+    try:
+        parent = AUTHORITY_PATH.parent
+        namespace = parent.parent
+        if receipt.namespace_descriptor >= 0:
+            namespace_opened = os.fstat(receipt.namespace_descriptor)
+            parent_opened = os.fstat(receipt.parent_descriptor)
+            parent_named = os.stat(
+                parent.name,
+                dir_fd=receipt.namespace_descriptor,
+                follow_symlinks=False,
+            )
+            authority_named = os.stat(
+                AUTHORITY_PATH.name,
+                dir_fd=receipt.parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(namespace_opened.st_mode)
+                or (namespace_opened.st_dev, namespace_opened.st_ino)
+                != receipt.namespace_identity
+                or not stat.S_ISDIR(parent_opened.st_mode)
+                or (parent_opened.st_dev, parent_opened.st_ino)
+                != receipt.parent_identity
+                or not stat.S_ISDIR(parent_named.st_mode)
+                or (parent_named.st_dev, parent_named.st_ino) != receipt.parent_identity
+                or not stat.S_ISREG(authority_named.st_mode)
+                or authority_named.st_nlink != 1
+                or _identity(authority_named) != receipt.authority_identity
+            ):
+                _fail("authority_changed")
+        namespace_current = namespace.lstat()
+        parent_current = parent.lstat()
+        authority_current = AUTHORITY_PATH.lstat()
+    except AuthorityError:
+        raise
+    except OSError:
+        _fail("authority_changed")
+    if (
+        not stat.S_ISDIR(namespace_current.st_mode)
+        or (namespace_current.st_dev, namespace_current.st_ino)
+        != receipt.namespace_identity
+        or not stat.S_ISDIR(parent_current.st_mode)
+        or (parent_current.st_dev, parent_current.st_ino) != receipt.parent_identity
+        or not stat.S_ISREG(authority_current.st_mode)
+        or authority_current.st_nlink != 1
+        or _identity(authority_current) != receipt.authority_identity
+    ):
+        _fail("authority_changed")
+
+
 def _windows_mutex_name(path: Path) -> str:
     normalized = os.path.normcase(os.path.abspath(os.fspath(path)))
     digest = hashlib.sha256(os.fsencode(normalized)).hexdigest()
@@ -833,11 +921,16 @@ def _windows_mutex_name(path: Path) -> str:
 
 
 @contextmanager
-def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
-    descriptor = -1
+def _authority_write_lock(
+    *, validate_on_exit: bool = True
+) -> Iterator[AuthorityLockReceipt]:
+    namespace_descriptor = -1
+    parent_descriptor = -1
     mutex_handle: int | None = None
     mutex_acquired = False
     try:
+        parent = AUTHORITY_PATH.parent
+        namespace = parent.parent
         if os.name == "nt":
             kernel32 = ctypes.windll.kernel32
             create_mutex = kernel32.CreateMutexW
@@ -857,43 +950,80 @@ def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
             if wait_result not in {0x00000000, 0x00000080}:
                 _fail("consumer_write_failed")
             mutex_acquired = True
+            namespace_metadata = namespace.lstat()
+            parent_metadata = parent.lstat()
+            if not stat.S_ISDIR(namespace_metadata.st_mode) or not stat.S_ISDIR(
+                parent_metadata.st_mode
+            ):
+                _fail("authority_unsafe")
         else:
-            parent = AUTHORITY_PATH.parent
-            before = parent.lstat()
-            if not stat.S_ISDIR(before.st_mode):
+            namespace_before = namespace.lstat()
+            if not stat.S_ISDIR(namespace_before.st_mode):
                 _fail("authority_unsafe")
             flags = os.O_RDONLY
             if hasattr(os, "O_DIRECTORY"):
                 flags |= os.O_DIRECTORY
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            descriptor = os.open(parent, flags)
-            opened = os.fstat(descriptor)
+            namespace_descriptor = os.open(namespace, flags)
+            namespace_metadata = os.fstat(namespace_descriptor)
             if (
-                not stat.S_ISDIR(opened.st_mode)
-                or opened.st_dev != before.st_dev
-                or opened.st_ino != before.st_ino
+                not stat.S_ISDIR(namespace_metadata.st_mode)
+                or namespace_metadata.st_dev != namespace_before.st_dev
+                or namespace_metadata.st_ino != namespace_before.st_ino
             ):
                 _fail("authority_changed")
             import fcntl
 
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(
+                    namespace_descriptor,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
             except BlockingIOError:
                 _fail("consumer_write_busy")
             except OSError:
                 _fail("consumer_write_failed")
-            current = parent.lstat()
+            namespace_current = namespace.lstat()
             if (
-                not stat.S_ISDIR(current.st_mode)
-                or current.st_dev != opened.st_dev
-                or current.st_ino != opened.st_ino
+                not stat.S_ISDIR(namespace_current.st_mode)
+                or namespace_current.st_dev != namespace_metadata.st_dev
+                or namespace_current.st_ino != namespace_metadata.st_ino
             ):
                 _fail("authority_changed")
-        identity = _authority_file_identity()
-        _assert_authority_identity(identity)
-        yield identity
-        _assert_authority_identity(identity)
+            parent_before = parent.lstat()
+            if not stat.S_ISDIR(parent_before.st_mode):
+                _fail("authority_unsafe")
+            parent_descriptor = os.open(
+                parent.name,
+                flags,
+                dir_fd=namespace_descriptor,
+            )
+            parent_metadata = os.fstat(parent_descriptor)
+            parent_current = parent.lstat()
+            if (
+                not stat.S_ISDIR(parent_metadata.st_mode)
+                or (parent_metadata.st_dev, parent_metadata.st_ino)
+                != (parent_before.st_dev, parent_before.st_ino)
+                or (parent_current.st_dev, parent_current.st_ino)
+                != (parent_metadata.st_dev, parent_metadata.st_ino)
+            ):
+                _fail("authority_changed")
+        authority_identity = _authority_file_identity(parent_descriptor)
+        receipt = AuthorityLockReceipt(
+            authority_identity=authority_identity,
+            parent_identity=(parent_metadata.st_dev, parent_metadata.st_ino),
+            namespace_identity=(
+                namespace_metadata.st_dev,
+                namespace_metadata.st_ino,
+            ),
+            parent_descriptor=parent_descriptor,
+            namespace_descriptor=namespace_descriptor,
+        )
+        _assert_authority_receipt(receipt)
+        yield receipt
+        if validate_on_exit:
+            _assert_authority_receipt(receipt)
     except AuthorityError:
         raise
     except OSError:
@@ -904,14 +1034,16 @@ def _authority_write_lock() -> Iterator[tuple[int, int, int, int, int]]:
             if mutex_acquired:
                 kernel32.ReleaseMutex(ctypes.c_void_p(mutex_handle))
             kernel32.CloseHandle(ctypes.c_void_p(mutex_handle))
-        if descriptor >= 0:
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        if namespace_descriptor >= 0:
             try:
                 import fcntl
 
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                fcntl.flock(namespace_descriptor, fcntl.LOCK_UN)
             except OSError:
                 pass
-            os.close(descriptor)
+            os.close(namespace_descriptor)
 
 
 def _render_pyproject(dependencies: tuple[Dependency, ...], group: str) -> str:
@@ -1027,13 +1159,13 @@ def rendered_consumers(
 def _synchronize_unlocked(
     *,
     write: bool,
-    authority_identity: tuple[int, int, int, int, int] | None = None,
+    authority_receipt: AuthorityLockReceipt | None = None,
 ) -> tuple[Path, ...]:
-    if authority_identity is not None:
-        _assert_authority_identity(authority_identity)
+    if authority_receipt is not None:
+        _assert_authority_receipt(authority_receipt)
     dependencies = load_authority()
-    if authority_identity is not None:
-        _assert_authority_identity(authority_identity)
+    if authority_receipt is not None:
+        _assert_authority_receipt(authority_receipt)
     snapshots = (
         _consumer_snapshot(PYPROJECT_PATH),
         _consumer_snapshot(HOST_PATH),
@@ -1049,16 +1181,18 @@ def _synchronize_unlocked(
         _write_consumers_atomically(
             snapshots,
             expected,
-            authority_identity=authority_identity,
+            authority_receipt=authority_receipt,
         )
+    elif authority_receipt is not None:
+        _assert_authority_receipt(authority_receipt)
     return mismatches
 
 
 def synchronize(*, write: bool) -> tuple[Path, ...]:
     if not write:
         return _synchronize_unlocked(write=False)
-    with _authority_write_lock() as authority_identity:
-        return _synchronize_unlocked(write=True, authority_identity=authority_identity)
+    with _authority_write_lock(validate_on_exit=False) as authority_receipt:
+        return _synchronize_unlocked(write=True, authority_receipt=authority_receipt)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -348,6 +348,9 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
             maximum_version = _pep440_version(maximum)
         except BaseException:
             _fail(code)
+    for parsed_version in (exact_version, minimum_version, maximum_version):
+        if parsed_version is not None and (parsed_version.is_prerelease or parsed_version.is_devrelease):
+            _fail(code)
     if exact_version is not None:
         if minimum_version is not None or maximum_version is not None:
             _fail(code)
@@ -2361,17 +2364,39 @@ def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> 
                 constraints.append(f"<{dependency['maximumVersionExclusive']}")
             specifier = ",".join(constraints)
         parsed = _pep440_specifier(specifier)
-        return bool(parsed.contains(_pep440_version(observed), prereleases=parsed.prereleases is True))
+        return bool(parsed.contains(_pep440_version(observed), prereleases=False))
     except BaseException:
         return False
+
+
+def _distribution_owns_module(distribution: Any, module: Any) -> bool:
+    files = distribution.files
+    origin = getattr(module, "__file__", None)
+    if files is None or not isinstance(origin, str):
+        return False
+    try:
+        resolved_origin = Path(origin).resolve(strict=True)
+        for index, item in enumerate(files):
+            if index >= 100_000:
+                return False
+            try:
+                candidate = Path(distribution.locate_file(item)).resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if candidate == resolved_origin:
+                return True
+    except BaseException:
+        return False
+    return False
 
 
 def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
     with _silence_file_descriptors():
         for dependency in dependencies:
             try:
-                importlib.import_module(dependency["importModule"])
-                observed = importlib.metadata.version(dependency["distribution"])
+                distribution = importlib.metadata.distribution(dependency["distribution"])
+                module = importlib.import_module(dependency["importModule"])
+                observed = distribution.version
             except BaseException:
                 _fail("validation_failed")
             if (
@@ -2383,6 +2408,8 @@ def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
             ):
                 _fail("validation_failed")
             if not _dependency_version_supported(dependency, observed):
+                _fail("validation_failed")
+            if not _distribution_owns_module(distribution, module):
                 _fail("validation_failed")
 
 

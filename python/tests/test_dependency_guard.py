@@ -142,6 +142,10 @@ def _write_fake_dependency(site_packages: Path) -> None:
         "Metadata-Version: 2.1\nName: ow-guard-fixture\nVersion: 1.2.3\n",
         encoding="utf-8",
     )
+    (metadata / "RECORD").write_text(
+        "ow_guard_fixture/__init__.py,,\n",
+        encoding="utf-8",
+    )
 
 
 def _write_fake_pip(site_packages: Path) -> None:
@@ -1562,6 +1566,65 @@ def test_failed_dependency_validation_retains_exact_marker(guard_fixture: GuardF
     assert frames == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
     assert stderr == b""
     assert marker.read_bytes() == original
+
+
+@pytest.mark.parametrize("version", ["1.2.4rc1", "1.2.4.dev1"])
+def test_validation_rejects_prerelease_and_development_versions(
+    guard_fixture: GuardFixture,
+    version: str,
+) -> None:
+    token = str(uuid.uuid4())
+    process = _arm(guard_fixture, token)
+    _write_frame(process, _go_frame(token))
+    assert _finish(process)[0] == 0
+    marker_path = _marker_paths(guard_fixture)[0]
+    original = marker_path.read_bytes()
+    metadata = _site_packages(guard_fixture.executable) / "ow_guard_fixture-1.2.3.dist-info" / "METADATA"
+    metadata.write_text(
+        f"Metadata-Version: 2.1\nName: ow-guard-fixture\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+    code, frames, stderr = _run(
+        guard_fixture,
+        "validate",
+        _validate_request(guard_fixture, token),
+    )
+    assert code == 13
+    assert frames == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker_path.read_bytes() == original
+
+
+def test_validation_rejects_a_shadow_module_not_owned_by_the_distribution(
+    guard_fixture: GuardFixture,
+    tmp_path: Path,
+) -> None:
+    token = str(uuid.uuid4())
+    process = _arm(guard_fixture, token)
+    _write_frame(process, _go_frame(token))
+    assert _finish(process)[0] == 0
+    marker_path = _marker_paths(guard_fixture)[0]
+    original = marker_path.read_bytes()
+    site_packages = _site_packages(guard_fixture.executable)
+    shadow = tmp_path / "shadow-module"
+    package = shadow / "ow_guard_fixture"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (site_packages / "openwrangler-shadow.pth").write_text(
+        f"import sys;sys.path.insert(0, {str(shadow)!r})\n",
+        encoding="utf-8",
+    )
+
+    code, frames, stderr = _run(
+        guard_fixture,
+        "validate",
+        _validate_request(guard_fixture, token),
+    )
+    assert code == 13
+    assert frames == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker_path.read_bytes() == original
 
 
 def test_stale_validator_token_cannot_clear_a_different_marker(guard_fixture: GuardFixture) -> None:

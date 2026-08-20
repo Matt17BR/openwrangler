@@ -135,6 +135,16 @@ def test_guard_rejects_noncanonical_or_malformed_authority_descriptors() -> None
         {**descriptor, "installSpec": f"{distribution}>=0"},
         {**descriptor, "installSpec": f"{distribution}<{maximum}"},
         {**descriptor, "minimumVersion": "not-a-version"},
+        {
+            **descriptor,
+            "installSpec": f"{distribution}>={minimum}rc1,<{maximum}",
+            "minimumVersion": f"{minimum}rc1",
+        },
+        {
+            **descriptor,
+            "installSpec": f"{distribution}>={minimum},<{maximum}.dev1",
+            "maximumVersionExclusive": f"{maximum}.dev1",
+        },
         {**descriptor, "minimumVersion": maximum},
         {**descriptor, "maximumVersionExclusive": minimum},
         {
@@ -254,6 +264,29 @@ def test_parser_resource_failures_are_bounded(
         authority.load_authority(path)
 
 
+def test_json_structure_and_text_budgets_precede_full_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = (
+        b"[" + b",".join(b"0" for _ in range(authority.MAX_AUTHORITY_JSON_NODES + 1)) + b"]",
+        b'"' + b"x" * (authority.MAX_AUTHORITY_JSON_STRING_BYTES + 1) + b'"',
+        b"["
+        + b",".join(b'"' + b"x" * 1_024 + b'"' for _ in range(authority.MAX_AUTHORITY_JSON_TEXT_BYTES // 1_024 + 1))
+        + b"]",
+    )
+
+    def unexpected_decode(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("json.loads must not receive over-budget input")
+
+    monkeypatch.setattr(authority.json, "loads", unexpected_decode)
+    for index, raw in enumerate(candidates):
+        candidate = tmp_path / f"hostile-{index}.json"
+        candidate.write_bytes(raw)
+        with pytest.raises(authority.AuthorityError, match="^invalid_authority_json$"):
+            authority.load_authority(candidate)
+
+
 def test_deep_valid_json_has_a_stable_bounded_failure_taxonomy(
     tmp_path: Path,
 ) -> None:
@@ -312,7 +345,7 @@ def test_epoch_and_supported_pandas_cohorts_have_pep440_boundaries(tmp_path: Pat
 
 
 @pytest.mark.parametrize("version", ["1.0rc1", "1.0.dev1"])
-def test_explicit_exact_prerelease_policy_is_honored(tmp_path: Path, version: str) -> None:
+def test_exact_prerelease_and_development_versions_are_rejected(tmp_path: Path, version: str) -> None:
     value = _authority_json()
     entry = copy.deepcopy(value["dependencies"][0])
     entry.update(
@@ -332,11 +365,26 @@ def test_explicit_exact_prerelease_policy_is_honored(tmp_path: Path, version: st
         }
     )
     value["dependencies"] = [entry]
-    dependency = authority.load_authority(_write_authority(tmp_path / "explicit.json", value))[0]
-    descriptor = _guard_descriptor(dependency)
-    assert dependency.specifier == f"=={version}"
-    assert dependency_guard._dependency_version_supported(descriptor, version)
-    assert not dependency_guard._dependency_version_supported(descriptor, "1.0")
+    with pytest.raises(authority.AuthorityError, match="^invalid_authority_version$"):
+        authority.load_authority(_write_authority(tmp_path / "explicit.json", value))
+
+
+@pytest.mark.parametrize(
+    ("field", "version"),
+    [
+        ("minimumVersion", "1.35.2rc1"),
+        ("maximumVersionExclusive", "2.dev1"),
+    ],
+)
+def test_prerelease_and_development_range_bounds_are_rejected(
+    tmp_path: Path,
+    field: str,
+    version: str,
+) -> None:
+    value = _authority_json()
+    value["dependencies"][0][field] = version
+    with pytest.raises(authority.AuthorityError, match="^invalid_authority_version$"):
+        authority.load_authority(_write_authority(tmp_path / "prerelease-bound.json", value))
 
 
 def _write_probe_workbook(path: Path) -> Path:
@@ -840,6 +888,39 @@ def test_exchange_restores_a_foreign_post_check_replacement(tmp_path: Path, monk
     assert (metadata.st_dev, metadata.st_ino) == foreign_identity[0]
 
 
+def test_completed_consumer_writes_roll_back_on_final_authority_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
+    originals = {path: path.read_bytes() for path in (pyproject, host)}
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    replacement = tmp_path / "replacement-authority.json"
+    replacement.write_bytes(authority_path.read_bytes())
+    replacement_metadata = replacement.stat()
+    replacement_identity = (replacement_metadata.st_dev, replacement_metadata.st_ino)
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+    real_assert = authority._assert_authority_receipt
+    replaced = False
+
+    def replace_after_completed_writes(receipt: authority.AuthorityLockReceipt) -> None:
+        nonlocal replaced
+        if not replaced and pyproject.read_bytes() != originals[pyproject] and host.read_bytes() != originals[host]:
+            os.replace(replacement, authority_path)
+            replaced = True
+        real_assert(receipt)
+
+    monkeypatch.setattr(authority, "_assert_authority_receipt", replace_after_completed_writes)
+    with pytest.raises(authority.AuthorityError, match="^authority_changed$"):
+        authority.synchronize(write=True)
+    assert replaced
+    assert {path: path.read_bytes() for path in (pyproject, host)} == originals
+    metadata = authority_path.stat()
+    assert (metadata.st_dev, metadata.st_ino) == replacement_identity
+    assert not list(tmp_path.glob(".*.openwrangler-*"))
+
+
 def test_concurrent_generator_writer_fails_closed_with_a_stable_code() -> None:
     with authority._authority_write_lock():
         result = subprocess.run(
@@ -907,6 +988,41 @@ def test_authority_lock_detects_replacement_and_preserves_its_identity(
     assert (metadata.st_dev, metadata.st_ino) == replacement_identity
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX namespace-lock behavior")
+def test_authority_parent_replacement_cannot_bypass_the_namespace_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = tmp_path / "repository"
+    parent = namespace / "python"
+    parent.mkdir(parents=True)
+    authority_path = parent / "runtime-dependencies.json"
+    authority_path.write_bytes(authority.AUTHORITY_PATH.read_bytes())
+    replacement_parent = namespace / "replacement-python"
+    replacement_parent.mkdir()
+    replacement_authority = replacement_parent / authority_path.name
+    replacement_authority.write_bytes(authority_path.read_bytes())
+    replacement_metadata = replacement_authority.stat()
+    replacement_identity = (replacement_metadata.st_dev, replacement_metadata.st_ino)
+    displaced_parent = namespace / "displaced-python"
+    monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
+
+    with (
+        pytest.raises(authority.AuthorityError, match="^authority_changed$"),
+        authority._authority_write_lock(),
+    ):
+        os.replace(parent, displaced_parent)
+        os.replace(replacement_parent, parent)
+        with (
+            pytest.raises(authority.AuthorityError, match="^consumer_write_busy$"),
+            authority._authority_write_lock(),
+        ):
+            pytest.fail("a replacement parent bypassed the namespace lock")
+
+    metadata = authority_path.stat()
+    assert (metadata.st_dev, metadata.st_ino) == replacement_identity
+
+
 def test_authority_lock_detects_replacement_between_check_and_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -919,12 +1035,19 @@ def test_authority_lock_detects_replacement_between_check_and_open(
     real_open = os.open
     raced = False
 
-    def replace_before_open(path: os.PathLike[str], flags: int) -> int:
+    def replace_before_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
         nonlocal raced
-        if Path(path) == authority_path and not raced:
+        if Path(path) in {authority_path, Path(authority_path.name)} and not raced:
             os.replace(replacement, authority_path)
             raced = True
-        return real_open(path, flags)
+        if dir_fd is None:
+            return real_open(path, flags)
+        return real_open(path, flags, dir_fd=dir_fd)
 
     monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)
     monkeypatch.setattr(authority.os, "open", replace_before_open)
