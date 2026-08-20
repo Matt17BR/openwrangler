@@ -15,6 +15,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
+import {
+  AXE_MACHINE_RESULT_PREFIX,
+  AXE_RESULT_LIMITS,
+  AXE_RUN_RESULT_PROTOCOL,
+  AxeResultClassificationError,
+  classifyAxeScanResult,
+  createAxeResultCollector,
+  formatAxeFailureDetail,
+  serializeAxeClassificationError,
+  serializeAxeMachineResult
+} from "./accessibility-result-classification.mjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
 import { createFilterPanelScreenshotReadiness } from "./capture-screenshots-readiness.mjs";
 import {
@@ -37,6 +48,124 @@ const completedHeaderReadiness = () =>
     absentText: [{ selector: "th[data-grid-column] > .columnInsight", text: "Profiling…" }],
     emptyArrayGlobals: ["openWranglerHarnessErrors"]
   });
+
+const axeViolation = ({ id, impact, help = `${id} help`, nodes = [] }) => ({ id, impact, help, nodes });
+
+test("Axe classification fails every impact including minor and unknown findings", () => {
+  const scan = classifyAxeScanResult({
+    harness: "impact-harness.html",
+    violations: [
+      axeViolation({ id: "minor-rule", impact: "minor" }),
+      axeViolation({ id: "critical-rule", impact: "critical" }),
+      axeViolation({ id: "moderate-rule", impact: "moderate" }),
+      axeViolation({ id: "serious-rule", impact: "serious" }),
+      axeViolation({ id: "unknown-null-rule", impact: null }),
+      axeViolation({ id: "unknown-new-rule", impact: "future-impact" })
+    ]
+  });
+
+  assert.equal(scan.status, "failed");
+  assert.equal(scan.findingCount, 6);
+  assert.equal(scan.unapprovedFindingCount, 6);
+  assert.deepEqual(
+    scan.findings.map(({ id, impact }) => [id, impact]),
+    [
+      ["critical-rule", "critical"],
+      ["serious-rule", "serious"],
+      ["moderate-rule", "moderate"],
+      ["minor-rule", "minor"],
+      ["unknown-new-rule", "unknown"],
+      ["unknown-null-rule", "unknown"]
+    ]
+  );
+  assert.equal(scan.findings.find(({ id }) => id === "unknown-new-rule").rawImpact, "future-impact");
+  assert.equal(scan.findings.find(({ id }) => id === "unknown-null-rule").rawImpact, null);
+});
+
+test("Axe run classification is deterministic across harness and finding order", () => {
+  const inputs = [
+    {
+      harness: "z-last.html",
+      violations: [
+        axeViolation({ id: "z-rule", impact: "moderate" }),
+        axeViolation({ id: "a-rule", impact: "critical" })
+      ]
+    },
+    { harness: "a-first.html", violations: [axeViolation({ id: "minor-rule", impact: "minor" })] }
+  ];
+  const forward = createAxeResultCollector();
+  for (const input of inputs) forward.record(input);
+  const reverse = createAxeResultCollector();
+  for (const input of [...inputs].reverse()) {
+    reverse.record({ ...input, violations: [...input.violations].reverse() });
+  }
+
+  assert.deepEqual(reverse.report(), forward.report());
+  assert.deepEqual(
+    forward.report().scans.map(({ harness }) => harness),
+    ["a-first.html", "z-last.html"]
+  );
+  const serialized = serializeAxeMachineResult(forward.report());
+  assert.ok(serialized.startsWith(AXE_MACHINE_RESULT_PREFIX));
+  assert.equal(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)).protocol, AXE_RUN_RESULT_PROTOCOL);
+});
+
+test("Axe machine results bound strings, node diagnostics, and finding counts", () => {
+  const longText = "😀".repeat(2_000);
+  const nodes = Array.from({ length: 12 }, (_, index) => ({
+    target: [`.target-${String(11 - index).padStart(2, "0")}`, longText],
+    failureSummary: longText
+  }));
+  const scan = classifyAxeScanResult({
+    harness: "bounded.html",
+    violations: [axeViolation({ id: longText, impact: "minor", help: longText, nodes })]
+  });
+  const finding = scan.findings[0];
+
+  assert.equal(finding.idTruncated, true);
+  assert.equal(finding.helpTruncated, true);
+  assert.equal(finding.nodeCount, 12);
+  assert.equal(finding.nodes.length, AXE_RESULT_LIMITS.diagnosticNodesPerFinding);
+  assert.equal(finding.omittedNodeCount, 7);
+  assert.deepEqual(
+    finding.nodes.map(({ target }) => target.slice(0, 10)),
+    [".target-00", ".target-01", ".target-02", ".target-03", ".target-04"]
+  );
+  assert.match(
+    formatAxeFailureDetail({ scans: [{ harness: scan.harness, findings: scan.findings }] }),
+    /7 additional affected nodes omitted/u
+  );
+  assert.ok(Buffer.byteLength(serializeAxeMachineResult(scan), "utf8") <= AXE_RESULT_LIMITS.machineResultUtf8Bytes);
+  assert.throws(
+    () => serializeAxeMachineResult({ padding: "x".repeat(AXE_RESULT_LIMITS.machineResultUtf8Bytes) }),
+    (error) => error instanceof AxeResultClassificationError && error.code === "machine_result_too_large"
+  );
+
+  assert.throws(
+    () =>
+      classifyAxeScanResult({
+        harness: "too-many.html",
+        violations: Array.from({ length: AXE_RESULT_LIMITS.findingsPerScan + 1 }, (_, index) =>
+          axeViolation({ id: `rule-${index}`, impact: "minor" })
+        )
+      }),
+    (error) => error instanceof AxeResultClassificationError && error.code === "too_many_scan_findings"
+  );
+  let boundedError;
+  try {
+    classifyAxeScanResult({ harness: "too-many.html", violations: Array(AXE_RESULT_LIMITS.findingsPerScan + 1) });
+  } catch (error) {
+    boundedError = error;
+  }
+  const errorResult = JSON.parse(serializeAxeClassificationError(boundedError).slice(AXE_MACHINE_RESULT_PREFIX.length));
+  assert.deepEqual(errorResult, {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "too_many_scan_findings",
+    actual: AXE_RESULT_LIMITS.findingsPerScan + 1,
+    limit: AXE_RESULT_LIMITS.findingsPerScan
+  });
+});
 
 function readinessScope({
   headerCount = 2,
@@ -693,6 +822,12 @@ test("screenshot and accessibility consumers preserve browser isolation ordering
   assert.match(accessibility, /env: browserIsolation\.childEnvironment/u);
   assert.match(accessibility, /finally \{[\s\S]*browserIsolation\.cleanup\(\)/u);
   assert.doesNotMatch(accessibility, /process\.env\.(?:HOME|XDG_[A-Z_]+|TMPDIR?)\s*=/u);
+  assert.equal((accessibility.match(/recordAxeScanResult\(harness, result\.violations\);/gu) ?? []).length, 2);
+  assert.doesNotMatch(accessibility, /violations\.filter|impact\s*!==\s*["']minor["']/u);
+  assert.match(
+    accessibility,
+    /const axeReport = axeResults\.report\(\);[\s\S]*if \(axeReport\.unapprovedFindingCount > 0\) \{[\s\S]*throw new Error\(`Webview accessibility scan failed:/u
+  );
 
   for (const file of ["generate-brand-assets.mjs", "verify-readme-responsive-render.mjs"]) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
