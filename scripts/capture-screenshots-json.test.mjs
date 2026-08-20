@@ -107,6 +107,7 @@ test("Axe run classification is deterministic across harness and finding order",
   );
   const serialized = serializeAxeMachineResult(forward.report());
   assert.ok(serialized.startsWith(AXE_MACHINE_RESULT_PREFIX));
+  assert.equal(serialized, `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify(forward.report())}\n`);
   assert.equal(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)).protocol, AXE_RUN_RESULT_PROTOCOL);
 });
 
@@ -210,6 +211,87 @@ test("Axe target diagnostics cap sparse and multibyte work before later values",
   });
 });
 
+test("Axe aggregate node budgets preflight 512 maximum-node findings and rejected run overflow", () => {
+  let aggregateTargetReads = 0;
+  const aggregateNode = { failureSummary: "aggregate failure" };
+  Object.defineProperty(aggregateNode, "target", {
+    get() {
+      aggregateTargetReads += 1;
+      throw new Error("Aggregate node normalization ran before its budget check.");
+    }
+  });
+  const maximumNodes = Array(AXE_RESULT_LIMITS.nodesPerFinding).fill(aggregateNode);
+  const aggregateFindings = Array.from({ length: AXE_RESULT_LIMITS.findingsPerRun }, (_, index) =>
+    axeViolation({ id: `aggregate-${index}`, impact: "minor", nodes: maximumNodes })
+  );
+  for (const [index, findings] of [
+    aggregateFindings.slice(0, AXE_RESULT_LIMITS.findingsPerScan),
+    aggregateFindings.slice(AXE_RESULT_LIMITS.findingsPerScan)
+  ].entries()) {
+    assert.throws(
+      () => classifyAxeScanResult({ harness: `aggregate-${index}.html`, violations: findings }),
+      (error) =>
+        error instanceof AxeResultClassificationError &&
+        error.code === "too_many_scan_nodes" &&
+        error.actual === AXE_RESULT_LIMITS.nodesPerScan + AXE_RESULT_LIMITS.nodesPerFinding &&
+        error.limit === AXE_RESULT_LIMITS.nodesPerScan
+    );
+  }
+  assert.equal(aggregateTargetReads, 0);
+
+  let nodesAccessorReads = 0;
+  const nodesAccessorFinding = {};
+  Object.defineProperty(nodesAccessorFinding, "nodes", {
+    get() {
+      nodesAccessorReads += 1;
+      return maximumNodes;
+    }
+  });
+  assert.throws(
+    () => classifyAxeScanResult({ harness: "nodes-accessor.html", violations: [nodesAccessorFinding] }),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_findings"
+  );
+  assert.equal(nodesAccessorReads, 0);
+
+  const ordinaryNode = { target: [".bounded"], failureSummary: "failed" };
+  const boundedNodes = Array(AXE_RESULT_LIMITS.nodesPerFinding).fill(ordinaryNode);
+  const exactScanFindings = Array.from(
+    { length: AXE_RESULT_LIMITS.nodesPerScan / AXE_RESULT_LIMITS.nodesPerFinding },
+    (_, index) => axeViolation({ id: `bounded-${index}`, impact: "minor", nodes: boundedNodes })
+  );
+  const collector = createAxeResultCollector();
+  collector.record({ harness: "run-nodes-a.html", violations: exactScanFindings });
+  collector.record({ harness: "run-nodes-b.html", violations: exactScanFindings });
+  let rejectedImpactReads = 0;
+  const rejectedFinding = { nodes: [ordinaryNode] };
+  Object.defineProperty(rejectedFinding, "impact", {
+    get() {
+      rejectedImpactReads += 1;
+      throw new Error("Rejected run-overflow finding was normalized.");
+    }
+  });
+  assert.throws(
+    () => collector.record({ harness: "run-nodes-overflow.html", violations: [rejectedFinding] }),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "too_many_run_nodes" &&
+      error.actual === AXE_RESULT_LIMITS.nodesPerRun + 1 &&
+      error.limit === AXE_RESULT_LIMITS.nodesPerRun
+  );
+  assert.equal(rejectedImpactReads, 0);
+  const report = collector.report();
+  assert.equal(report.scanCount, 2);
+  assert.equal(report.findingCount, exactScanFindings.length * 2);
+  for (const finding of report.scans.flatMap(({ findings }) => findings)) {
+    assert.equal(finding.nodeCount, AXE_RESULT_LIMITS.nodesPerFinding);
+    assert.equal(
+      finding.omittedNodeCount,
+      AXE_RESULT_LIMITS.nodesPerFinding - AXE_RESULT_LIMITS.diagnosticNodesPerFinding
+    );
+    assert.equal(finding.nodes.length, AXE_RESULT_LIMITS.diagnosticNodesPerFinding);
+  }
+});
+
 test("Axe machine-result size includes the prefix and exactly one newline", () => {
   const emptyRecord = `${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify({ padding: "" })}\n`;
   const paddingBytes = AXE_RESULT_LIMITS.machineResultUtf8Bytes - Buffer.byteLength(emptyRecord, "utf8");
@@ -237,6 +319,55 @@ test("Axe machine-result size includes the prefix and exactly one newline", () =
       error.code === "machine_result_too_large" &&
       error.actual === AXE_RESULT_LIMITS.machineResultUtf8Bytes + 2
   );
+
+  const escapedPadding = `${paddingBytes % 2 === 0 ? "" : "x"}${'"'.repeat(Math.floor(paddingBytes / 2))}`;
+  const exactEscapedRecord = serializeAxeMachineResult({ padding: escapedPadding });
+  assert.equal(Buffer.byteLength(exactEscapedRecord, "utf8"), AXE_RESULT_LIMITS.machineResultUtf8Bytes);
+  assert.throws(
+    () => serializeAxeMachineResult({ padding: `${escapedPadding}"` }),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "machine_result_too_large" &&
+      error.actual === AXE_RESULT_LIMITS.machineResultUtf8Bytes + 2
+  );
+
+  const escapedSample = 'quote " slash \\ nul \0 newline\n lone \ud800 emoji 😀 accent é';
+  const escapedSampleRecord = serializeAxeMachineResult({ padding: escapedSample });
+  assert.equal(
+    Buffer.byteLength(escapedSampleRecord, "utf8"),
+    Buffer.byteLength(`${AXE_MACHINE_RESULT_PREFIX}${JSON.stringify({ padding: escapedSample })}\n`, "utf8")
+  );
+});
+
+test("Axe machine-result charging rejects toJSON and accessors without invoking them", () => {
+  let toJSONCalls = 0;
+  const hooked = {
+    padding: "safe",
+    toJSON() {
+      toJSONCalls += 1;
+      return { padding: "x".repeat(AXE_RESULT_LIMITS.machineResultUtf8Bytes) };
+    }
+  };
+  assert.throws(
+    () => serializeAxeMachineResult(hooked),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_machine_result"
+  );
+  assert.equal(toJSONCalls, 0);
+
+  let accessorCalls = 0;
+  const accessor = {};
+  Object.defineProperty(accessor, "padding", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      return "unsafe";
+    }
+  });
+  assert.throws(
+    () => serializeAxeMachineResult(accessor),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_machine_result"
+  );
+  assert.equal(accessorCalls, 0);
 });
 
 function readinessScope({
