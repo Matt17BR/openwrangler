@@ -1,12 +1,16 @@
 from __future__ import annotations
+import __future__
 
 import ast
 import builtins
 from collections.abc import Iterator, Mapping
+from types import CodeType
 from typing import Any
 
 CUSTOM_CODE_FUNCTION_NAME = "_open_wrangler_custom_code"
 _CUSTOM_CODE_FILENAME = "<open-wrangler-custom-code>"
+_CUSTOM_CODE_COMPILER_FLAGS = __future__.annotations.compiler_flag
+_GENERATED_BUILTINS_NAME = "_open_wrangler_builtins"
 _MAX_CUSTOM_CODE_AST_NODES = 262_144
 _MAX_CUSTOM_CODE_AST_DEPTH = 512
 _COMPLEXITY_ERROR = "Custom Code syntax is too complex."
@@ -53,7 +57,7 @@ def validate_custom_code_scope(code: str) -> None:
                 raise CustomCodeScopeError(
                     "Custom Code must assign the dataframe to result instead of yielding from its outer scope."
                 )
-        compile(_function_source(code), _CUSTOM_CODE_FILENAME, "exec")
+        _compile_function_source(code)
     except SyntaxError as error:
         raise CustomCodeScopeError(_syntax_error_message(error, wrapper_line=True)) from error
     except (MemoryError, OverflowError, RecursionError) as error:
@@ -66,9 +70,20 @@ def execute_custom_code(code: str, dataframe: Any, namespace: Mapping[str, Any])
     validate_custom_code_scope(code)
     runtime_namespace = dict(namespace)
     runtime_namespace["__builtins__"] = builtins.__dict__
-    exec(compile(_function_source(code), _CUSTOM_CODE_FILENAME, "exec"), runtime_namespace, runtime_namespace)
+    exec(_compile_function_source(code), runtime_namespace, runtime_namespace)
     function = runtime_namespace[CUSTOM_CODE_FUNCTION_NAME]
     return function(dataframe)
+
+
+def custom_code_prelude_lines() -> list[str]:
+    """Render the caller-independent future and builtins contract for generated scripts."""
+
+    return [
+        "from __future__ import annotations",
+        "",
+        f"import builtins as {_GENERATED_BUILTINS_NAME}",
+        "",
+    ]
 
 
 def custom_code_definition_lines(code: str, *, index: int) -> list[str]:
@@ -103,7 +118,10 @@ def custom_code_execution_lines(
                 f"{prefix}    raise NameError('Custom Code cannot access generated-plan local names: ' "
                 f"+ ', '.join({raw_function}.__code__.co_freevars))"
             ),
-            f"{prefix}{runtime_namespace} = {{{module_name!r}: {module_name}, '__builtins__': __builtins__}}",
+            (
+                f"{prefix}{runtime_namespace} = "
+                f"{{{module_name!r}: {module_name}, '__builtins__': {_GENERATED_BUILTINS_NAME}.__dict__}}"
+            ),
             (
                 f"{prefix}{function} = type({raw_function})("
                 f"{raw_function}.__code__, {runtime_namespace}, {CUSTOM_CODE_FUNCTION_NAME!r})"
@@ -157,6 +175,7 @@ def custom_code_generated_utf8_bytes(
     line_count: int,
     engine_name: str,
     index: int,
+    include_prelude: bool,
 ) -> int:
     """Return the exact Custom Code line contribution without splitting user source."""
 
@@ -171,6 +190,7 @@ def custom_code_generated_utf8_bytes(
     user_lines = code_utf8_bytes - separator_utf8_bytes + (line_count * 5)
     return (
         user_lines
+        + (_joined_line_bytes(custom_code_prelude_lines()) if include_prelude else 0)
         + _joined_line_bytes(fixed_definition_lines)
         + _joined_line_bytes(custom_code_step_lines(prefix="    ", engine_name=engine_name, index=index))
     )
@@ -182,6 +202,16 @@ def _normalized_source(code: str) -> str:
 
 def _function_source(code: str) -> str:
     return "\n".join(_function_lines(code, prefix="")) + "\n"
+
+
+def _compile_function_source(code: str) -> CodeType:
+    return compile(
+        _function_source(code),
+        _CUSTOM_CODE_FILENAME,
+        "exec",
+        flags=_CUSTOM_CODE_COMPILER_FLAGS,
+        dont_inherit=True,
+    )
 
 
 def _function_lines(code: str, *, prefix: str) -> list[str]:

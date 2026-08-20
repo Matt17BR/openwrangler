@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from openwrangler_runtime.custom_code_scope import (
     CustomCodeScopeError,
     custom_code_definition_lines,
     custom_code_generated_utf8_bytes,
+    custom_code_prelude_lines,
     custom_code_step_lines,
 )
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
@@ -130,9 +132,10 @@ def materialize(frame: Any) -> tuple[list[str], list[tuple[Any, ...]]]:
 
 def execute_generated(engine: Any, frame: Any, operation: dict[str, Any] | list[dict[str, Any]]) -> Any:
     plan = operation if isinstance(operation, list) else [operation]
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"__builtins__": builtins}
     source = engine.compile_plan(plan)
-    exec(compile(source, "<generated-custom-code>", "exec"), namespace, namespace)
+    assert source.startswith("from __future__ import annotations\n")
+    exec(compile(source, "<generated-custom-code>", "exec", dont_inherit=True), namespace, namespace)
     return namespace["clean_data"](frame)
 
 
@@ -219,6 +222,7 @@ def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str
     index = 4_999
     line_count, separator_bytes = SessionManager._splitlines_shape(code)
     rendered_lines = [
+        *custom_code_prelude_lines(),
         *custom_code_definition_lines(code, index=index),
         *custom_code_step_lines(prefix="    ", engine_name=engine_name, index=index),
     ]
@@ -229,6 +233,7 @@ def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str
         line_count=line_count,
         engine_name=engine_name,
         index=index,
+        include_prelude=True,
     ) == sum(len(line.encode("utf-8")) + 1 for line in rendered_lines)
 
 
@@ -262,6 +267,36 @@ def test_live_and_generated_custom_code_receive_the_same_exact_globals(
     expected = [alias, "__builtins__", CUSTOM_CODE_FUNCTION_NAME]
     code = f"result = df if list(globals()) == {expected!r} else None"
     operation = custom_step(code, "globals")
+
+    assert materialize(engine.apply_transform(frame, operation)) == materialize(
+        execute_generated(engine, frame, operation)
+    )
+
+
+def test_live_and_generated_custom_code_use_the_same_builtins_dictionary(
+    engine_and_frame: tuple[str, Any, Any],
+) -> None:
+    _backend, engine, frame = engine_and_frame
+    operation = custom_step(
+        "result = df if isinstance(__builtins__, dict) else None",
+        "builtins-dictionary",
+    )
+
+    assert materialize(engine.apply_transform(frame, operation)) == materialize(
+        execute_generated(engine, frame, operation)
+    )
+
+
+def test_live_and_no_future_generated_caller_postpone_annotations(
+    engine_and_frame: tuple[str, Any, Any],
+) -> None:
+    _backend, engine, frame = engine_and_frame
+    operation = custom_step(
+        "def inner(value: missing_annotation_name):\n"
+        "    return value\n"
+        "result = df if inner.__annotations__ == {'value': 'missing_annotation_name'} else None",
+        "postponed-annotations",
+    )
 
     assert materialize(engine.apply_transform(frame, operation)) == materialize(
         execute_generated(engine, frame, operation)

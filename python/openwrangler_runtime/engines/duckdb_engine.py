@@ -16,6 +16,7 @@ from uuid import uuid4
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
+    custom_code_prelude_lines,
     custom_code_step_lines,
     execute_custom_code,
 )
@@ -1113,7 +1114,9 @@ class DuckDBEngine(DataFrameEngine):
         generated_helpers = _GENERATED_HELPERS.rstrip()
         if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
             generated_helpers = f"from collections import Counter\n\n{generated_helpers}"
+        has_custom_code = any(step["kind"] == "customCode" for step in plan)
         lines = [
+            *(custom_code_prelude_lines() if has_custom_code else []),
             generated_helpers,
             "",
             *generated_view_value_helper_lines(),

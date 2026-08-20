@@ -13,6 +13,7 @@ from typing import Any, Literal
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
+    custom_code_prelude_lines,
     custom_code_step_lines,
     execute_custom_code,
 )
@@ -1511,7 +1512,10 @@ class PolarsEngine(DataFrameEngine):
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"} for step in plan)
-        lines = ["from collections import Counter"] if needs_counter else []
+        has_custom_code = any(step["kind"] == "customCode" for step in plan)
+        lines = custom_code_prelude_lines() if has_custom_code else []
+        if needs_counter:
+            lines.append("from collections import Counter")
         if needs_filter_helpers or needs_fill_helpers:
             decimal_import = (
                 "from decimal import Decimal, InvalidOperation, localcontext"

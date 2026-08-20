@@ -514,14 +514,17 @@ Pandas, Polars, and DuckDB adapters implement the same engine contract for schem
 Pandas, Polars, and DuckDB Custom Code uses one function-body scope in live execution and generated scripts. The
 function receives `df`, can use the matching `pd`, `pl`, or `duckdb` module, and must assign its dataframe result to
 `result`. Ordinary imports, explicit `from` imports, control flow, multiline statements, and nested functions or
-closures are supported. A nested function may use its own `return` or `yield`, but decorator, default, keyword-default,
-and annotation expressions execute in the outer scope and cannot yield. Future imports, wildcard imports, `global`,
+closures are supported. A nested function may use its own `return` or `yield`. Decorator, default, and keyword-default
+expressions execute in the outer scope, while annotations use an explicitly postponed future-annotations mode. Yields
+in any of those expressions remain outside the supported scope. Future imports, wildcard imports, `global`,
 `nonlocal`, and `return` or `yield` in the outer Custom Code scope are rejected. The validator parses the same
 `splitlines()`-normalized body that both execution paths render, walks it iteratively under fixed node and depth bounds,
 and maps parser or compiler complexity failures to the Custom Code error contract. Generated wrappers are compiled at
 module scope under the canonical function name and retained under unique raw bindings, so private names, `__class__`,
-function metadata, and globals lookup retain live semantics. Every invocation receives a fresh globals dictionary in
-the same observable order: only its matching engine module, builtins, and the canonical function binding; generated-
+the canonical name and qualified name, and globals lookup retain live semantics. Every generated Custom Code plan
+declares postponed annotations and retains a private builtins-module binding. Every invocation then receives a fresh
+globals dictionary in the same observable order: only its matching engine module, the builtins dictionary, and the
+canonical function binding; generated-
 plan helpers and another Custom Code step's globals are not visible. Generated Pandas and Polars code applies the same
 result-type checks and Series-to-DataFrame normalization as live execution, while DuckDB retains its relation check.
 Validation runs before a new or replacement draft can compile or execute. Streaming generated-size preflight counts
