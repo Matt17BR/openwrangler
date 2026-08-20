@@ -3057,7 +3057,7 @@ test("editor phases pass only runner-owned test values through the environment",
   }
 });
 
-test("editor phases validate and forward exact R and candidate compatibility selectors", async () => {
+test("editor phases validate and forward exact focused selectors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-selector-"));
   const resultPath = join(directory, "result.json");
   const input = {
@@ -3078,11 +3078,15 @@ test("editor phases validate and forward exact R and candidate compatibility sel
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
       /requires the "jupyter-r" phase/u
+    );
+    await assert.rejects(
+      runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "grid-range-copy" }, options),
+      /requires the "platform-smoke" phase/u
     );
     await assert.rejects(
       runEditorAcceptancePhase(
@@ -3127,6 +3131,23 @@ test("editor phases validate and forward exact R and candidate compatibility sel
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "candidate-compatibility-seam");
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "jupyter-allow");
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_EDITOR, "cursor");
+
+    await runEditorAcceptancePhase(
+      { ...input, phase: "platform-smoke", testSelector: "grid-range-copy" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "grid-range-copy");
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "platform-smoke");
 
     await runEditorAcceptancePhase(
       { ...input, testSelector: "core-operations" },

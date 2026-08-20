@@ -4,6 +4,7 @@ import {
   dispatchExtensionHostPhase,
   EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR,
   EXTENSION_HOST_TEST_SELECTOR_ERROR,
+  GRID_RANGE_COPY_SELECTOR,
   parseExtensionHostPhaseSelection,
   type ExtensionHostPhaseHandlers
 } from "./extensionHost/phaseDispatch";
@@ -101,6 +102,15 @@ describe("extension-host phase selection", () => {
     }
   });
 
+  it("accepts the grid range-copy selector only for the platform smoke", () => {
+    expect(selection("platform-smoke", GRID_RANGE_COPY_SELECTOR, "vscode").selector).toBe(GRID_RANGE_COPY_SELECTOR);
+    for (const phase of ["verify", "jupyter-r"]) {
+      expect(() => selection(phase, GRID_RANGE_COPY_SELECTOR, "vscode")).toThrow(
+        EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR
+      );
+    }
+  });
+
   it("rejects selectors outside the bounded runner vocabulary", () => {
     expect(() => selection("jupyter-r", "all-the-things")).toThrow(EXTENSION_HOST_TEST_SELECTOR_ERROR);
   });
@@ -122,6 +132,7 @@ describe("extension-host phase dispatch", () => {
     ["jupyter-r-remote", undefined, undefined, "jupyter:jupyter-r-remote"],
     ["python-environment", undefined, undefined, "python-environment"],
     ["platform-smoke", undefined, undefined, "platform-smoke"],
+    ["platform-smoke", "grid-range-copy", "vscode", "platform-smoke"],
     ["remote-workspace", undefined, undefined, "remote-workspace"],
     ["seed", undefined, undefined, "seed"]
   ] as const)("dispatches %s to its executable owner", async (phase, selector, editor, expected) => {
