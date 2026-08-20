@@ -2,7 +2,14 @@ import Ajv from "ajv";
 import transportSchema from "../../protocol/openwrangler.v2.schema.json";
 import type { GridPage, OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../shared/protocol";
 
-const validateTransportSchema = new Ajv({ strict: false }).compile(transportSchema);
+const validateTransportSchema = new Ajv({ strict: false })
+  .addKeyword({
+    keyword: "x-openwrangler-utf8MaxBytes",
+    type: "string",
+    schemaType: ["number"],
+    validate: (maximumBytes: number, value: string) => new TextEncoder().encode(value).byteLength <= maximumBytes
+  })
+  .compile(transportSchema);
 
 const capabilities = {
   editable: true,

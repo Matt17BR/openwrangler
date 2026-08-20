@@ -19,6 +19,7 @@ from .pivot_longer import (
 )
 from .pivot_wider import PivotWiderContractError, validate_pivot_wider_outputs
 from .portable_regex import PortableRegexError, portable_regex_contract, validate_portable_regex_output_name
+from .protocol_limits_generated import MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
 
 
 class OperationError(ValueError):
@@ -316,8 +317,18 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         key_names = {reference["name"] for reference in params["keys"]}
         if key_names & set(aliases):
             raise OperationError("groupBy aggregation aliases cannot duplicate a group key.")
-    elif kind == "customCode" and (not isinstance(params["code"], str) or not params["code"].strip()):
-        raise OperationError("customCode.code must be non-empty Python code assigning a dataframe to result.")
+    elif kind == "customCode":
+        code = params["code"]
+        if not isinstance(code, str) or not code.strip():
+            raise OperationError("customCode.code must be non-empty Python code assigning a dataframe to result.")
+        try:
+            code_size = len(code.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise OperationError("customCode.code must contain valid Unicode text.") from error
+        if code_size > MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES:
+            raise OperationError(
+                f"customCode.code may contain at most {MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES:,} UTF-8 bytes."
+            )
 
 
 def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
