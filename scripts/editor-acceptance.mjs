@@ -99,6 +99,7 @@ const ACCEPTANCE_FILE_REPLACED_DURING_READ_CODE = "ACCEPTANCE_FILE_REPLACED_DURI
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
 const WINDOWS_JOB_BUILD_TIMEOUT_MS = 300_000;
+const WINDOWS_JOB_BUILD_SETTLEMENT_TIMEOUT_MS = 10_000;
 const WINDOWS_JOB_BUILD_OUTPUT_MAX_BYTES = 16 * 1024;
 const WINDOWS_JOB_EXECUTABLE_MAX_BYTES = 4 * 1024 * 1024;
 const XVFB_DISPLAY_OUTPUT_MAX_BYTES = 64;
@@ -1704,13 +1705,31 @@ let removeWindowsJobSupervisorFallbackRoot = false;
 
 export async function prepareWindowsEditorProcessSupervisor(
   environment = process.env,
-  { platform = process.platform, spawnProcess = spawn, buildTimeoutMs = WINDOWS_JOB_BUILD_TIMEOUT_MS } = {}
+  {
+    platform = process.platform,
+    spawnProcess = spawn,
+    buildTimeoutMs = WINDOWS_JOB_BUILD_TIMEOUT_MS,
+    buildSettlementTimeoutMs = WINDOWS_JOB_BUILD_SETTLEMENT_TIMEOUT_MS,
+    buildAbortSignal
+  } = {}
 ) {
   if (platform !== "win32") return undefined;
   if (!Number.isSafeInteger(buildTimeoutMs) || buildTimeoutMs <= 0 || buildTimeoutMs > WINDOWS_JOB_BUILD_TIMEOUT_MS) {
     throw new Error(
       `The Windows editor Job Object supervisor build timeout must be a positive safe integer no larger than ${WINDOWS_JOB_BUILD_TIMEOUT_MS}.`
     );
+  }
+  if (
+    !Number.isSafeInteger(buildSettlementTimeoutMs) ||
+    buildSettlementTimeoutMs <= 0 ||
+    buildSettlementTimeoutMs > WINDOWS_JOB_BUILD_SETTLEMENT_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `The Windows editor Job Object supervisor settlement timeout must be a positive safe integer no larger than ${WINDOWS_JOB_BUILD_SETTLEMENT_TIMEOUT_MS}.`
+    );
+  }
+  if (buildAbortSignal !== undefined && !(buildAbortSignal instanceof AbortSignal)) {
+    throw new Error("The Windows editor Job Object supervisor build abort signal must be an AbortSignal.");
   }
   // Editor subprocess environments intentionally omit this host-only routing
   // value. Setup commands still belong to the process-owned acceptance root,
@@ -1754,14 +1773,28 @@ export async function prepareWindowsEditorProcessSupervisor(
 
   let build = windowsJobSupervisorBuilds.get(buildRoot);
   if (!build) {
-    build = compileWindowsEditorProcessSupervisor(buildRoot, environment, spawnProcess, buildTimeoutMs);
+    build = compileWindowsEditorProcessSupervisor(
+      buildRoot,
+      environment,
+      spawnProcess,
+      buildTimeoutMs,
+      buildSettlementTimeoutMs,
+      buildAbortSignal
+    );
     windowsJobSupervisorBuilds.set(buildRoot, build);
     build.catch(() => windowsJobSupervisorBuilds.delete(buildRoot));
   }
   return build;
 }
 
-async function compileWindowsEditorProcessSupervisor(buildRoot, environment, spawnProcess, buildTimeoutMs) {
+async function compileWindowsEditorProcessSupervisor(
+  buildRoot,
+  environment,
+  spawnProcess,
+  buildTimeoutMs,
+  buildSettlementTimeoutMs,
+  buildAbortSignal
+) {
   mkdirSync(buildRoot, { recursive: true, mode: 0o700 });
   const outputDirectory = mkdtempSync(join(buildRoot, "job-supervisor-"));
   const executable = join(outputDirectory, "openwrangler-windows-job-supervisor.exe");
@@ -1776,52 +1809,120 @@ async function compileWindowsEditorProcessSupervisor(buildRoot, environment, spa
   const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const compilerEnvironment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
   configureEditorAcceptanceTempRoot(buildRoot, compilerEnvironment);
-  const child = spawnProcess(
-    powerShell,
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      WINDOWS_JOB_SUPERVISOR_PATH,
-      "-CompileTo",
-      executable
-    ],
-    {
-      detached: false,
-      env: compilerEnvironment,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    }
-  );
+  if (buildAbortSignal?.aborted) {
+    const error = new Error("The Windows editor Job Object supervisor compilation was cancelled before launch.");
+    error.code = "EDITOR_ACCEPTANCE_STAGE_ABORTED";
+    error.details = { stage: "windows-supervisor-compilation", reason: "cancelled", treeVerifiedStopped: true };
+    throw error;
+  }
+  let child;
+  try {
+    child = spawnProcess(
+      powerShell,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        WINDOWS_JOB_SUPERVISOR_PATH,
+        "-CompileTo",
+        executable
+      ],
+      {
+        detached: false,
+        env: compilerEnvironment,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+  } catch (error) {
+    throw new Error("The Windows editor Job Object supervisor compilation stage could not start.", { cause: error });
+  }
   const output = createBoundedCommandOutput(WINDOWS_JOB_BUILD_OUTPUT_MAX_BYTES);
   child.stdout?.on("data", (chunk) => output.append("stdout", chunk));
   child.stderr?.on("data", (chunk) => output.append("stderr", chunk));
-  let state;
-  try {
-    state = await promiseWithDeadline(
-      childClose(child),
-      buildTimeoutMs,
-      `Windows editor Job Object supervisor compilation exceeded ${buildTimeoutMs} ms.`
+  const close = childClose(child);
+  let deadlineTimer;
+  let onBuildAbort;
+  const observations = [
+    close.then((state) => ({ kind: "close", state })),
+    new Promise((resolveDeadline) => {
+      deadlineTimer = setTimeout(() => resolveDeadline({ kind: "deadline" }), buildTimeoutMs);
+    })
+  ];
+  if (buildAbortSignal) {
+    observations.push(
+      new Promise((resolveAbort) => {
+        onBuildAbort = () => resolveAbort({ kind: "cancelled" });
+        buildAbortSignal.addEventListener("abort", onBuildAbort, { once: true });
+        if (buildAbortSignal.aborted) onBuildAbort();
+      })
     );
-  } catch (error) {
-    unsafeWindowsJobSupervisorRoots.add(buildRoot);
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // The fixed failure below still prevents an unowned editor launch.
-    }
-    throw unverifiedEditorProcessTreeError(
-      "The Windows editor Job Object supervisor could not be prepared within its bounded bootstrap.",
-      error
-    );
-  } finally {
-    destroyCapturedCommandStdio(child);
   }
+  let observation;
+  try {
+    observation = await Promise.race(observations);
+  } finally {
+    clearTimeout(deadlineTimer);
+    if (onBuildAbort) buildAbortSignal.removeEventListener("abort", onBuildAbort);
+  }
+  if (observation.kind !== "close") {
+    unsafeWindowsJobSupervisorRoots.add(buildRoot);
+    let killError;
+    try {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    } catch (error) {
+      killError = error;
+    }
+    let settlementError;
+    try {
+      await promiseWithDeadline(
+        close,
+        buildSettlementTimeoutMs,
+        `Windows editor Job Object supervisor compiler settlement exceeded ${buildSettlementTimeoutMs} ms.`
+      );
+    } catch (error) {
+      settlementError = error;
+    }
+    destroyCapturedCommandStdio(child);
+    const reason = observation.kind === "deadline" ? "deadline" : "cancelled";
+    const stageMessage =
+      reason === "deadline"
+        ? `The Windows editor Job Object supervisor compilation stage exceeded ${buildTimeoutMs} ms.`
+        : "The Windows editor Job Object supervisor compilation stage was cancelled.";
+    const causes = [killError, settlementError].filter(Boolean);
+    const cause =
+      causes.length > 1
+        ? new AggregateError(causes, "The Windows supervisor compiler could not settle cleanly.")
+        : causes[0];
+    const failure = unverifiedEditorProcessTreeError(
+      settlementError
+        ? `${stageMessage} Its forced settlement exceeded ${buildSettlementTimeoutMs} ms.`
+        : `${stageMessage} The compiler closed after forced termination, but descendant ownership remains unverified.`,
+      cause
+    );
+    failure.details = {
+      ...failure.details,
+      stage: "windows-supervisor-compilation",
+      reason,
+      compilerClosed: settlementError === undefined,
+      buildTimeoutMs,
+      buildSettlementTimeoutMs
+    };
+    throw failure;
+  }
+  destroyCapturedCommandStdio(child);
+  const { state } = observation;
   if (state.error || state.code !== 0 || output.exceeded()) {
-    throw new Error("The Windows editor Job Object supervisor could not be compiled in its private root.");
+    const reason = output.exceeded() ? "output-limit" : state.error ? "spawn-error" : "nonzero-exit";
+    const error = new Error(
+      `The Windows editor Job Object supervisor compilation stage failed (${reason}; code ${String(state.code ?? "unknown")}; signal ${String(state.signal ?? "none")}).`,
+      state.error ? { cause: state.error } : undefined
+    );
+    error.details = { stage: "windows-supervisor-compilation", reason, treeVerifiedStopped: true };
+    throw error;
   }
   const snapshot = lstatSync(executable, { bigint: true });
   if (
