@@ -50,6 +50,38 @@ describe("packaged grid range-copy journey", () => {
     }
   });
 
+  it("retains bounded product and cleanup children in the actual packaged result error field", async () => {
+    const productFailure = new Error(`pointer assertion failed ${"p".repeat(2_048)}`);
+    const cleanupFailure = new Error(`session cleanup failed ${"c".repeat(2_048)}`);
+
+    try {
+      await runPackagedGridRangeCopyLifecycle(
+        async () => {
+          throw productFailure;
+        },
+        async () => {
+          throw cleanupFailure;
+        }
+      );
+      expect.unreachable("The lifecycle must publish its bounded result diagnostic.");
+    } catch (error) {
+      const resultEnvelope = {
+        protocol: 1,
+        runId: "11111111-1111-4111-8111-111111111111",
+        phase: "platform-smoke",
+        ok: false,
+        error: error instanceof Error ? error.message : "Non-Error failure."
+      };
+      const decoded = JSON.parse(JSON.stringify(resultEnvelope)) as typeof resultEnvelope;
+
+      expect(decoded.error).toContain("Product: pointer assertion failed");
+      expect(decoded.error).toContain("Cleanup: session cleanup failed");
+      expect(new TextEncoder().encode(decoded.error).byteLength).toBeLessThanOrEqual(2 * 1024);
+      expect(decoded.error).not.toContain("p".repeat(512));
+      expect(decoded.error).not.toContain("c".repeat(512));
+    }
+  });
+
   it("reports a cleanup-only failure after a successful journey", async () => {
     const cleanupFailure = new Error("cleanup failed");
     await expect(

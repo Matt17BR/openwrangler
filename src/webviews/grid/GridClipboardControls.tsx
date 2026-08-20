@@ -105,6 +105,14 @@ export function useGridClipboard({
   );
   const focusCell = useCallback(
     (coordinate: GridCellCoordinate): void => {
+      if (
+        !wholeColumn.selectedColumnId &&
+        selection.contextId === contextId &&
+        selection.focus.row === coordinate.row &&
+        selection.focus.column === coordinate.column
+      ) {
+        return;
+      }
       copyActionGenerationRef.current += 1;
       resetWholeColumn();
       setSelection((current) =>
@@ -116,7 +124,7 @@ export function useGridClipboard({
       );
       setAnnouncement("");
     },
-    [contextId, resetWholeColumn]
+    [contextId, resetWholeColumn, selection, wholeColumn.selectedColumnId]
   );
   const copy = useCallback(
     async (mode: GridClipboardMode, additionalOwnership?: () => boolean): Promise<boolean> => {
