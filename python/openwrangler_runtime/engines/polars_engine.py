@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..custom_code_scope import CUSTOM_CODE_FUNCTION_NAME, custom_code_function_lines, execute_custom_code
 from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -1453,13 +1454,12 @@ class PolarsEngine(DataFrameEngine):
             )
         if kind == "customCode":
             row_id = self._row_id_column(df)
-            namespace = {"df": df.drop(row_id) if row_id is not None else df, "pl": pl}
+            custom_frame = df.drop(row_id) if row_id is not None else df
             with capture_custom_code_output() as output:
                 try:
-                    exec(params["code"], namespace, namespace)
+                    result = execute_custom_code(str(params["code"]), custom_frame, {"pl": pl})
                 except Exception as error:
                     raise EngineError(custom_code_error_message("Polars", error, output)) from error
-                result = namespace.get("result")
                 if not self.detect(result):
                     raise EngineError(
                         append_custom_code_output(
@@ -2402,13 +2402,9 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
             ]
         if kind == "customCode":
-            function_name = f"_custom_step_{index}"
-            code_lines = str(params["code"]).splitlines()
             return [
-                f"{prefix}def {function_name}(df):",
-                *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
-                f"{prefix}    return result",
-                f"{prefix}df = {function_name}(df)",
+                *custom_code_function_lines(str(params["code"]), prefix=prefix),
+                f"{prefix}df = {CUSTOM_CODE_FUNCTION_NAME}(df)",
             ]
         raise EngineError(f"Polars cannot compile transformation: {kind}")
 
