@@ -14,13 +14,16 @@ import {
   unlinkSync,
   writeSync
 } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { JSDOM } from "jsdom";
+import MarkdownIt from "markdown-it";
 import { SaxesParser } from "saxes";
 import {
   DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
-  assertReleaseCompleteStudyReport
+  assertReleaseCompleteStudyReport,
+  inspectDataWranglerComparisonReview
 } from "./data-wrangler-comparison-report.mjs";
 import {
   inspectChangelog,
@@ -214,8 +217,6 @@ export const PERFORMANCE_EVIDENCE_VERSION = "1.0.0";
 const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"])
 );
-const PERFORMANCE_REPORT_LINK =
-  /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
 const MAX_PERFORMANCE_README_BYTES = 2 * 1024 * 1024;
 const MAX_PERFORMANCE_REVIEW_BYTES = 2 * 1024 * 1024;
 const RELEASE_SOURCE_BINDINGS = new WeakMap();
@@ -241,280 +242,145 @@ function stableRParityProblems(featureParity, version, trackedEvidencePaths) {
     : [];
 }
 
-function markdownAtxHeading(line) {
-  const html = /^ {0,3}<h2(?:[ \t]+[^>]*)?>(?<body>.*?)<\/h2>[ \t]*$/iu.exec(line);
-  if (html !== null) {
-    return { level: 2, span: 1, text: html.groups?.body ?? "" };
+const PERFORMANCE_MARKDOWN = new MarkdownIt({ html: true, linkify: false, typographer: false });
+const MAX_PERFORMANCE_MARKDOWN_TOKENS = 100_000;
+const MAX_PERFORMANCE_RENDERED_BYTES = 8 * 1024 * 1024;
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+const PERFORMANCE_REPORT_URL =
+  /^https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)$/u;
+
+function renderedMarkdownDocument(markdown) {
+  if (
+    typeof markdown !== "string" ||
+    Buffer.byteLength(markdown, "utf8") > MAX_PERFORMANCE_README_BYTES ||
+    DEFAULT_IGNORABLE.test(markdown)
+  ) {
+    return undefined;
   }
-  const match = /^ {0,3}(?<marks>#{1,6})(?:(?:[ \t]+(?<body>.*))|[ \t]*)$/u.exec(line);
-  if (match === null) return undefined;
-  const body = (match.groups?.body ?? "").replace(/[ \t]+#+[ \t]*$/u, "").trim();
-  return { level: match.groups?.marks.length, span: 1, text: body };
-}
-
-const MARKDOWN_NAMED_ENTITIES = new Map([
-  ["amp", "&"],
-  ["apos", "'"],
-  ["colon", ":"],
-  ["gt", ">"],
-  ["lt", "<"],
-  ["nbsp", " "],
-  ["percnt", "%"],
-  ["period", "."],
-  ["quot", '"'],
-  ["sol", "/"],
-  ["times", "×"]
-]);
-
-function decodeRenderedMarkdownEntities(value) {
-  return value.replace(
-    /&(?:#(?<decimal>[0-9]{1,7})|#x(?<hex>[0-9a-f]{1,6})|(?<named>[a-z][a-z0-9]{1,31}));/giu,
-    (entity, _decimal, _hex, _named, _offset, _source, groups) => {
-      const numeric = groups?.decimal ?? groups?.hex;
-      if (numeric !== undefined) {
-        const codePoint = Number.parseInt(numeric, groups?.decimal === undefined ? 16 : 10);
-        return Number.isSafeInteger(codePoint) &&
-          codePoint > 0 &&
-          codePoint <= 0x10ffff &&
-          !(codePoint >= 0xd800 && codePoint <= 0xdfff)
-          ? String.fromCodePoint(codePoint)
-          : "�";
-      }
-      return MARKDOWN_NAMED_ENTITIES.get(String(groups?.named ?? "").toLowerCase()) ?? entity;
+  try {
+    const tokens = PERFORMANCE_MARKDOWN.parse(markdown, {});
+    const tokenCount = tokens.reduce((count, token) => count + 1 + (token.children?.length ?? 0), 0);
+    if (tokenCount > MAX_PERFORMANCE_MARKDOWN_TOKENS) return undefined;
+    const html = PERFORMANCE_MARKDOWN.renderer.render(tokens, PERFORMANCE_MARKDOWN.options, {});
+    if (Buffer.byteLength(html, "utf8") > MAX_PERFORMANCE_RENDERED_BYTES) return undefined;
+    const document = new JSDOM(`<!doctype html><body>${html}</body>`).window.document;
+    if (DEFAULT_IGNORABLE.test(document.body.textContent ?? "")) return undefined;
+    if (
+      document.body.querySelector("script,style,template,[hidden],[aria-hidden='true'],details:not([open])") !== null ||
+      [...document.body.querySelectorAll("[style]")].some((element) =>
+        /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)(?:\s*!important)?\s*(?:;|$)/iu.test(
+          element.getAttribute("style") ?? ""
+        )
+      )
+    ) {
+      return undefined;
     }
-  );
-}
-
-function renderMarkdownInlineCode(value) {
-  const runs = [];
-  for (let index = 0; index < value.length;) {
-    if (value[index] !== "`") {
-      index += 1;
-      continue;
+    if ([...document.body.querySelectorAll("a")].some((anchor) => DEFAULT_IGNORABLE.test(anchor.href))) {
+      return undefined;
     }
-    let end = index + 1;
-    while (value[end] === "`") end += 1;
-    runs.push({ end, length: end - index, next: undefined, start: index });
-    index = end;
+    return document;
+  } catch {
+    return undefined;
   }
-  const nextByLength = new Map();
-  for (let index = runs.length - 1; index >= 0; index -= 1) {
-    const run = runs[index];
-    run.next = nextByLength.get(run.length);
-    nextByLength.set(run.length, index);
-  }
-  let rendered = "";
-  let cursor = 0;
-  for (let index = 0; index < runs.length; index += 1) {
-    const opening = runs[index];
-    if (opening.start < cursor) continue;
-    rendered += value.slice(cursor, opening.start);
-    const closingIndex = opening.next;
-    if (closingIndex === undefined) {
-      rendered += value.slice(opening.start, opening.end);
-      cursor = opening.end;
-      continue;
-    }
-    const closing = runs[closingIndex];
-    let code = value.slice(opening.end, closing.start).replace(/[\t\r\n ]+/gu, " ");
-    if (code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "") code = code.slice(1, -1);
-    rendered += code;
-    cursor = closing.end;
-    index = closingIndex;
-  }
-  return rendered + value.slice(cursor);
 }
 
-function renderedMarkdownInlineText(value) {
-  let rendered = decodeRenderedMarkdownEntities(value);
-  rendered = rendered.replace(/<!--[\s\S]*?-->/gu, "");
-  rendered = renderMarkdownInlineCode(rendered);
-  rendered = rendered
-    .replace(/!?\[(?<label>[^\]\r\n]*)\]\((?:\\.|[^)\r\n])*\)/gu, "$<label>")
-    .replace(/!?\[(?<label>[^\]\r\n]*)\]\[[^\]\r\n]*\]/gu, "$<label>")
-    .replace(/!?\[(?<label>[^\]\r\n]+)\]/gu, "$<label>")
-    .replace(/<[^>\r\n]*>/gu, "")
-    .replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/gu, "$1")
-    .replace(/[*_~]/gu, "");
-  return decodeRenderedMarkdownEntities(rendered);
+function normalizedRenderedText(node) {
+  return normalizedPerformanceCopy(node?.textContent ?? "");
 }
 
-function normalizedRenderedHeading(text) {
-  return normalizedPerformanceCopy(renderedMarkdownInlineText(text)).toLowerCase();
+function semanticLinks(node) {
+  return [...(node?.querySelectorAll?.("a") ?? [])].map((anchor) => ({
+    href: anchor.href,
+    text: normalizedRenderedText(anchor)
+  }));
 }
 
-function markdownFence(line) {
-  const match = /^ {0,3}(?<marks>`{3,}|~{3,})(?<info>.*)$/u.exec(line);
-  if (match === null) return undefined;
-  const marks = match.groups?.marks;
-  const info = match.groups?.info ?? "";
-  if (marks === undefined || (marks.startsWith("`") && info.includes("`"))) return undefined;
-  return { character: marks[0], length: marks.length };
+function isFollowing(left, right) {
+  const following = left.ownerDocument.defaultView.Node.DOCUMENT_POSITION_FOLLOWING;
+  return Boolean(left.compareDocumentPosition(right) & following);
 }
 
-function closesMarkdownFence(line, fence) {
-  const match = /^ {0,3}(?<marks>`{3,}|~{3,})[ \t]*$/u.exec(line);
-  const marks = match?.groups?.marks;
-  return marks !== undefined && marks[0] === fence.character && marks.length >= fence.length;
+function isInsidePerformanceSection(node, heading, followingHeading) {
+  return isFollowing(heading, node) && (followingHeading === undefined || isFollowing(node, followingHeading));
 }
 
-function outsidePerformanceClaim(paragraph, source) {
-  const text = normalizedPerformanceCopy(paragraph).toLowerCase();
-  if (text === "") return false;
-  const claimText = text.replace(/\btime zones?\b/gu, "");
-  const linkedEvidence =
-    /github\.com\/matt17br\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-[0-9]+\.[0-9]+\.[0-9]+\/review\.md/u.test(
-      decodeRenderedMarkdownEntities(source).toLowerCase()
-    );
-  const currentEvidence =
-    /\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.\n]{0,80}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
-      claimText
-    ) &&
-    !/\b(?:no|not|without)\b[^.\n]{0,48}\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.\n]{0,48}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
-      claimText
-    );
-  const comparativeMetric =
-    /\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|reduc\w*|shorter|smaller|twice|twofold|worse|\d+(?:\.\d+)?\s*(?:%|x))\b(?:\s+(?:as|the))?\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|ram|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|ram|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains)\s+(?:greater|higher|less|lower|shorter|smaller|worse)\b/u.test(
-      claimText
-    );
-  const inherentlyComparative =
-    /\b(?:accelerat\w*|beat\w*|faster|outperform\w*|quick(?:er|ly)|slower|sooner|speed(?:s|ing)?\s+up)\b/u.test(
-      claimText
-    );
-  const measuredResult =
-    /\b\d[\d,]*(?:\.\d+)?\s*(?:gib|gb|hours?|kib|kb|mb|mib|milliseconds?|minutes?|ms|rows?\s*(?:\/|per\s+)second|seconds?)\b/u.test(
-      claimText
-    );
-  const namedProductClaim =
-    /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) &&
-    /\b(?:efficient|fast|lightweight|low-latency|responsive|slow)\b/u.test(claimText);
-  return (
-    linkedEvidence ||
-    currentEvidence ||
-    comparativeMetric ||
-    inherentlyComparative ||
-    measuredResult ||
-    namedProductClaim
-  );
-}
-
-function hasOutsidePerformanceClaim(rendered, sectionStart, sectionEnd) {
-  const paragraphs = [];
-  let paragraph = [];
-  let source = [];
-  const flush = () => {
-    if (paragraph.length > 0) paragraphs.push({ source: source.join(" "), text: paragraph.join(" ") });
-    paragraph = [];
-    source = [];
-  };
-  for (let index = 0; index < rendered.length; index += 1) {
-    if (index >= sectionStart && index < sectionEnd) {
-      flush();
-      continue;
-    }
-    const entry = rendered[index];
-    if (entry.code || entry.heading !== undefined || entry.line.trim() === "") {
-      flush();
-      continue;
-    }
-    paragraph.push(entry.visible);
-    source.push(entry.line);
-  }
-  flush();
-  return paragraphs.some((paragraph) => outsidePerformanceClaim(paragraph.text, paragraph.source));
+function sentenceScopedPerformanceClaim(text) {
+  const scopes = normalizedPerformanceCopy(text)
+    .split(/(?<=[.!?;:])\s+|\s+[—–]\s+|\n+/u)
+    .map((scope) => scope.trim().toLowerCase())
+    .filter(Boolean);
+  return scopes.some((scope) => {
+    const claimText = scope.replace(/\btime zones?\b/gu, "");
+    const currentEvidence =
+      /\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.!?;]{0,80}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
+        claimText
+      ) &&
+      !/\b(?:no|not|without)\b[^.!?;]{0,48}\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.!?;]{0,48}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
+        claimText
+      );
+    const comparativeMetric =
+      /\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|reduc\w*|shorter|smaller|twice|twofold|worse|\d+(?:\.\d+)?\s*(?:%|x))\b(?:\s+(?:as|the))?\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|ram|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|ram|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains)\s+(?:greater|higher|less|lower|shorter|smaller|worse)\b/u.test(
+        claimText
+      );
+    const inherentlyComparative =
+      /\b(?:accelerat\w*|beat\w*|faster|outperform\w*|quick(?:er|ly)|slower|sooner|speed(?:s|ing)?\s+up)\b/u.test(
+        claimText
+      );
+    const measuredResult =
+      /\b\d[\d,]*(?:\.\d+)?\s*(?:gib|gb|hours?|kib|kb|mb|mib|milliseconds?|minutes?|ms|rows?\s*(?:\/|per\s+)second|seconds?)\b/u.test(
+        claimText
+      );
+    const namedProductClaim =
+      /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) &&
+      /\b(?:efficient|fast|lightweight|low-latency|responsive|slow)\b/u.test(claimText);
+    return currentEvidence || comparativeMetric || inherentlyComparative || measuredResult || namedProductClaim;
+  });
 }
 
 function performanceSection(readme) {
-  if (typeof readme !== "string" || Buffer.byteLength(readme, "utf8") > MAX_PERFORMANCE_README_BYTES) {
-    return undefined;
-  }
-  const lines = readme.replace(/\r\n?/gu, "\n").split("\n");
-  const rendered = [];
-  let fence;
-  let htmlComment = false;
-  for (const line of lines) {
-    if (fence !== undefined) {
-      rendered.push({ code: true, heading: undefined, line, visible: "" });
-      if (closesMarkdownFence(line, fence)) fence = undefined;
-      continue;
-    }
-    let visibleSource = "";
-    let cursor = 0;
-    while (cursor < line.length) {
-      if (htmlComment) {
-        const closing = line.indexOf("-->", cursor);
-        if (closing === -1) {
-          cursor = line.length;
-          continue;
-        }
-        htmlComment = false;
-        cursor = closing + 3;
-        continue;
-      }
-      const opening = line.indexOf("<!--", cursor);
-      if (opening === -1) {
-        visibleSource += line.slice(cursor);
-        break;
-      }
-      visibleSource += line.slice(cursor, opening);
-      htmlComment = true;
-      cursor = opening + 4;
-    }
-    const openingFence = markdownFence(visibleSource);
-    if (openingFence !== undefined) {
-      fence = openingFence;
-      rendered.push({ code: true, heading: undefined, line, visible: "" });
-      continue;
-    }
-    const code = /^(?: {4}|\t)/u.test(visibleSource);
-    const referenceDefinition = /^ {0,3}\[[^\]\r\n]+\]:[ \t]+\S/u.test(visibleSource);
-    rendered.push({
-      code,
-      heading: code || referenceDefinition ? undefined : markdownAtxHeading(visibleSource),
-      line,
-      visible: code || referenceDefinition ? "" : renderedMarkdownInlineText(visibleSource)
-    });
-  }
-  for (let index = 0; index + 1 < rendered.length; index += 1) {
-    const entry = rendered[index];
-    const underline = rendered[index + 1];
-    if (
-      !entry.code &&
-      entry.heading === undefined &&
-      entry.line.trim() !== "" &&
-      !underline.code &&
-      /^ {0,3}-+[ \t]*$/u.test(underline.line)
-    ) {
-      entry.heading = { level: 2, span: 2, text: entry.line.trim() };
-    }
-  }
-
-  const headings = rendered
-    .map((entry, index) => ({ ...entry.heading, index }))
-    .filter((entry) => entry.level === 2 && normalizedRenderedHeading(entry.text ?? "") === "performance");
-  if (headings.length !== 1) return undefined;
-  const sectionStart = headings[0].index + headings[0].span;
-  const followingHeading = rendered.findIndex(
-    (entry, index) => index >= sectionStart && entry.heading !== undefined && entry.heading.level <= 2
+  const document = renderedMarkdownDocument(readme);
+  if (document === undefined) return undefined;
+  const performanceHeadings = [...document.body.querySelectorAll("h2")].filter(
+    (heading) => normalizedRenderedText(heading).toLowerCase() === "performance"
   );
-  const sectionEnd = followingHeading === -1 ? rendered.length : followingHeading;
-  const entries = rendered.slice(sectionStart, sectionEnd);
+  if (performanceHeadings.length !== 1) return undefined;
+  const heading = performanceHeadings[0];
+  const followingHeading = [...document.body.querySelectorAll("h1,h2")].find((candidate) =>
+    isFollowing(heading, candidate)
+  );
+  const range = document.createRange();
+  range.setStartAfter(heading);
+  if (followingHeading === undefined) range.setEnd(document.body, document.body.childNodes.length);
+  else range.setEndBefore(followingHeading);
+  const section = document.createElement("section");
+  section.append(range.cloneContents());
+
+  const outsideBlocks = [...document.body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,td,th,div")].filter(
+    (node) =>
+      node !== heading &&
+      !isInsidePerformanceSection(node, heading, followingHeading) &&
+      node.closest("pre") === null &&
+      ![...node.children].some((child) =>
+        ["H1", "H2", "H3", "H4", "H5", "H6", "P", "LI", "TD", "TH", "DIV"].includes(child.tagName)
+      )
+  );
+  const linkedEvidence = outsideBlocks.some((block) =>
+    semanticLinks(block).some((link) => PERFORMANCE_REPORT_URL.test(link.href))
+  );
   return {
-    hasCodeContent: entries.some((entry) => entry.code && entry.line.trim() !== ""),
-    hasOutsideClaim: hasOutsidePerformanceClaim(rendered, headings[0].index, sectionEnd),
-    text: entries
-      .filter((entry) => !entry.code)
-      .map((entry) => entry.line)
-      .join("\n")
+    hasCodeContent: [...section.querySelectorAll("pre")].some((node) => normalizedRenderedText(node) !== ""),
+    hasOutsideClaim:
+      linkedEvidence || outsideBlocks.some((block) => sentenceScopedPerformanceClaim(normalizedRenderedText(block))),
+    links: semanticLinks(section),
+    text: normalizedRenderedText(section)
   };
 }
 
 export function performanceReportLink(readme) {
   const section = performanceSection(readme);
   if (section === undefined) return undefined;
-  const links = [...section.text.matchAll(PERFORMANCE_REPORT_LINK)];
+  const links = section.links.map((link) => PERFORMANCE_REPORT_URL.exec(link.href)).filter((match) => match !== null);
   if (links.length !== 1) return undefined;
-
   const path = links[0]?.groups?.path;
   const version = links[0]?.groups?.version;
   return path === undefined || version === undefined ? undefined : { path, version };
@@ -547,6 +413,23 @@ function currentPerformanceLinkOnlyCopy(link) {
   return `[dated report](${performanceReportUrl(link.path)})`;
 }
 
+function performanceCopySemantics(markdown) {
+  const document = renderedMarkdownDocument(markdown);
+  return document === undefined
+    ? undefined
+    : { links: semanticLinks(document.body), text: normalizedRenderedText(document.body) };
+}
+
+function matchesPerformanceCopy(section, markdown) {
+  const expected = performanceCopySemantics(markdown);
+  return (
+    expected !== undefined &&
+    section.text === expected.text &&
+    isDeepStrictEqual(section.links, expected.links) &&
+    !section.hasCodeContent
+  );
+}
+
 export function inspectPerformanceSummary(readme, { currentReport } = {}) {
   const section = performanceSection(readme);
   if (section === undefined) {
@@ -560,17 +443,14 @@ export function inspectPerformanceSummary(readme, { currentReport } = {}) {
     return ["README Performance must link exactly one versioned Data Wrangler review."];
   }
 
-  const observed = normalizedPerformanceCopy(section.text);
-  if (!section.hasCodeContent && observed === normalizedPerformanceCopy(historicalPerformanceCopy(report))) return [];
-  if (!section.hasCodeContent && observed === normalizedPerformanceCopy(currentPerformanceLinkOnlyCopy(report)))
-    return [];
+  if (matchesPerformanceCopy(section, historicalPerformanceCopy(report))) return [];
+  if (matchesPerformanceCopy(section, currentPerformanceLinkOnlyCopy(report))) return [];
   if (currentReport !== undefined) {
     try {
       assertReleaseCompleteStudyReport(currentReport);
       if (
         currentReport.provenance.openWrangler.version === report.version &&
-        !section.hasCodeContent &&
-        observed === normalizedPerformanceCopy(currentPerformanceCopy(currentReport, report))
+        matchesPerformanceCopy(section, currentPerformanceCopy(currentReport, report))
       ) {
         return [];
       }
@@ -668,6 +548,15 @@ function inspectStablePerformanceEvidence(
   if (!trackedEvidencePaths.has(reportJsonPath)) {
     problems.push(`${label} Performance data ${reportJsonPath} must be tracked.`);
   }
+  const reviewSource = performanceReportFiles.get(report.path);
+  if (reviewSource === undefined) {
+    problems.push(`${label} Performance review ${report.path} must be read from the release commit.`);
+  } else if (
+    typeof reviewSource !== "string" ||
+    Buffer.byteLength(reviewSource, "utf8") > MAX_PERFORMANCE_REVIEW_BYTES
+  ) {
+    problems.push(`${label} Performance review ${report.path} must be bounded UTF-8 text.`);
+  }
   const reportSource = performanceReportFiles.get(reportJsonPath);
   if (reportSource === undefined) {
     problems.push(`${label} Performance data ${reportJsonPath} must be read from the release commit.`);
@@ -677,9 +566,19 @@ function inspectStablePerformanceEvidence(
   if (reportData === undefined) {
     return [...problems, ...inspectLabeledPerformanceSummary(readme, label, undefined)];
   }
+  const reviewProblems =
+    typeof reviewSource === "string" && Buffer.byteLength(reviewSource, "utf8") <= MAX_PERFORMANCE_REVIEW_BYTES
+      ? inspectDataWranglerComparisonReview(reviewSource, reportData)
+      : [];
+  problems.push(
+    ...reviewProblems.map((problem) => `${label} Performance review ${report.path} is invalid: ${problem}`)
+  );
   const immutableSourceBinding = RELEASE_SOURCE_BINDINGS.get(performanceReportFiles);
   const snapshotSourceCommit =
-    immutableSourceBinding?.files.get(reportJsonPath) === reportSource ? immutableSourceBinding.commit : undefined;
+    immutableSourceBinding?.files.get(reportJsonPath) === reportSource &&
+    immutableSourceBinding.files.get(report.path) === reviewSource
+      ? immutableSourceBinding.commit
+      : undefined;
   const classification = classifyCurrentCompletedPerformanceReport({
     candidateSha256,
     performanceReportSourceCommit: performanceReportSourceCommit ?? snapshotSourceCommit,
@@ -707,7 +606,12 @@ function inspectStablePerformanceEvidence(
     problems.push(`${label} Performance data ${reportJsonPath} is not bound to the exact release source commit.`);
   }
   const currentReport =
-    trackedEvidencePaths.has(report.path) && trackedEvidencePaths.has(reportJsonPath) && classification.current
+    trackedEvidencePaths.has(report.path) &&
+    trackedEvidencePaths.has(reportJsonPath) &&
+    reviewProblems.length === 0 &&
+    typeof reviewSource === "string" &&
+    Buffer.byteLength(reviewSource, "utf8") <= MAX_PERFORMANCE_REVIEW_BYTES &&
+    classification.current
       ? reportData
       : undefined;
   problems.push(...inspectLabeledPerformanceSummary(readme, label, currentReport));
@@ -1144,25 +1048,150 @@ function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");
 }
 
-function resolveGitExecutable() {
-  const names = process.platform === "win32" ? ["git.exe"] : ["git"];
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    if (directory === "") continue;
-    for (const name of names) {
-      try {
-        const executable = realpathSync.native(resolve(directory, name));
-        if (!lstatSync(executable).isFile()) continue;
-        accessSync(executable, fsConstants.X_OK);
-        return executable;
-      } catch {
-        // Continue until one canonical executable is found on the initial trusted PATH.
-      }
-    }
-  }
-  throw new Error("Git must resolve to one executable regular file before release evidence is inspected.");
+const MAX_GIT_EXECUTABLE_BYTES = 64 * 1024 * 1024;
+const RELEASE_REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
+const WINDOWS_TRUSTED_EXECUTABLE_ROOTS = Object.freeze(
+  [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.SystemRoot]
+    .filter((value) => typeof value === "string" && isAbsolute(value))
+    .map((value) => resolve(value))
+);
+
+function isPathInside(candidate, parent) {
+  const suffix = process.platform === "win32" ? "\\" : "/";
+  const normalizedCandidate = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+  const normalizedParent = process.platform === "win32" ? parent.toLowerCase() : parent;
+  return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(`${normalizedParent}${suffix}`);
 }
 
-const GIT_EXECUTABLE = resolveGitExecutable();
+function executableIdentity(stat) {
+  return Object.freeze({
+    ctimeNs: stat.ctimeNs,
+    dev: stat.dev,
+    gid: stat.gid,
+    ino: stat.ino,
+    mode: stat.mode,
+    mtimeNs: stat.mtimeNs,
+    nlink: stat.nlink,
+    size: stat.size,
+    uid: stat.uid
+  });
+}
+
+function sameExecutableIdentity(left, right) {
+  return Object.keys(left).every((key) => left[key] === right[key]);
+}
+
+function trustedGitAncestry(executable) {
+  const ancestors = [];
+  const root = realpathSync.native(resolve(executable, process.platform === "win32" ? "\\" : "/"));
+  const trustedOwner = lstatSync(root, { bigint: true }).uid;
+  let current = dirname(executable);
+  for (;;) {
+    const canonical = realpathSync.native(current);
+    if (canonical !== current) throw new Error("Git executable ancestry must not contain symbolic links.");
+    const stat = lstatSync(current, { bigint: true });
+    if (!stat.isDirectory()) throw new Error("Git executable ancestry must contain only directories.");
+    if (process.platform !== "win32" && (stat.uid !== trustedOwner || (stat.mode & 0o022n) !== 0n)) {
+      throw new Error("Git executable ancestry must be owned by the platform root and not group/world-writable.");
+    }
+    ancestors.push(Object.freeze({ identity: executableIdentity(stat), path: current }));
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return Object.freeze(ancestors);
+}
+
+function captureTrustedGitExecutable(requestedPath) {
+  const executable = realpathSync.native(resolve(requestedPath));
+  if (
+    !isAbsolute(requestedPath) ||
+    isPathInside(executable, RELEASE_REPOSITORY_ROOT) ||
+    executable.split(/[\\/]/u).some((part) => part.toLowerCase() === "node_modules") ||
+    (process.platform === "win32" && !WINDOWS_TRUSTED_EXECUTABLE_ROOTS.some((root) => isPathInside(executable, root)))
+  ) {
+    throw new Error("Git must be one trusted absolute executable outside repository and npm paths.");
+  }
+  const ancestry = trustedGitAncestry(executable);
+  const pathStat = lstatSync(executable, { bigint: true });
+  const trustedOwner = ancestry.at(-1)?.identity.uid;
+  if (
+    !pathStat.isFile() ||
+    pathStat.size <= 0n ||
+    pathStat.size > BigInt(MAX_GIT_EXECUTABLE_BYTES) ||
+    (process.platform !== "win32" && (pathStat.uid !== trustedOwner || (pathStat.mode & 0o022n) !== 0n))
+  ) {
+    throw new Error("Git must be one bounded platform-owned executable regular file.");
+  }
+  accessSync(executable, fsConstants.X_OK);
+  const descriptor = openSync(
+    executable,
+    fsConstants.O_RDONLY | (process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW ?? 0))
+  );
+  try {
+    const descriptorStat = fstatSync(descriptor, { bigint: true });
+    if (
+      !descriptorStat.isFile() ||
+      !sameExecutableIdentity(executableIdentity(pathStat), executableIdentity(descriptorStat))
+    ) {
+      throw new Error("Git executable identity changed while it was pinned.");
+    }
+    const bytes = readFileSync(descriptor);
+    if (bytes.length !== Number(descriptorStat.size)) {
+      throw new Error("Git executable bytes do not match the pinned identity.");
+    }
+    return Object.freeze({
+      ancestry,
+      digest: sha256(bytes),
+      executable,
+      identity: executableIdentity(descriptorStat)
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function revalidateTrustedGitExecutable(expected) {
+  const observed = captureTrustedGitExecutable(expected.executable);
+  if (
+    observed.executable !== expected.executable ||
+    observed.digest !== expected.digest ||
+    !sameExecutableIdentity(observed.identity, expected.identity) ||
+    observed.ancestry.length !== expected.ancestry.length ||
+    observed.ancestry.some(
+      (entry, index) =>
+        entry.path !== expected.ancestry[index]?.path ||
+        !sameExecutableIdentity(entry.identity, expected.ancestry[index]?.identity ?? {})
+    )
+  ) {
+    throw new Error("Git executable or its trusted ancestry changed after resolution.");
+  }
+}
+
+function resolveGitExecutable() {
+  const candidates = [];
+  if (process.platform === "win32") {
+    for (const root of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.SystemRoot]) {
+      if (typeof root === "string") candidates.push(join(root, "Git", "cmd", "git.exe"));
+    }
+  } else {
+    candidates.push("/usr/bin/git", "/usr/local/bin/git");
+  }
+  const name = process.platform === "win32" ? "git.exe" : "git";
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (directory !== "") candidates.push(resolve(directory, name));
+  }
+  for (const candidate of new Set(candidates)) {
+    try {
+      return captureTrustedGitExecutable(candidate);
+    } catch {
+      // Continue until one immutable platform-owned executable is found.
+    }
+  }
+  throw new Error("Git must resolve to one immutable platform-owned executable before release evidence is inspected.");
+}
+
+const PINNED_GIT_EXECUTABLE = resolveGitExecutable();
 const GIT_READ_ENVIRONMENT = Object.freeze({
   GIT_ALTERNATE_OBJECT_DIRECTORIES: "",
   GIT_ATTR_NOSYSTEM: "1",
@@ -1177,7 +1206,7 @@ const GIT_READ_ENVIRONMENT = Object.freeze({
   LANG: "C",
   LC_ALL: "C",
   PAGER: "cat",
-  PATH: dirname(GIT_EXECUTABLE),
+  PATH: dirname(PINNED_GIT_EXECUTABLE.executable),
   ...(process.platform === "win32"
     ? Object.fromEntries(
         ["SYSTEMROOT", "WINDIR"]
@@ -1199,30 +1228,35 @@ function runGit(root, args, options = {}) {
   ) {
     throw new Error("A bounded Git read requires safe arguments, encoding, and output limits.");
   }
-  return execFileSync(
-    GIT_EXECUTABLE,
-    [
-      "--no-replace-objects",
-      "--literal-pathspecs",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.untrackedCache=false",
-      "-c",
-      "core.useReplaceRefs=false",
-      ...args
-    ],
-    {
-      cwd: root,
-      encoding: options.encoding,
-      env: GIT_READ_ENVIRONMENT,
-      killSignal: "SIGKILL",
-      maxBuffer,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: GIT_READ_TIMEOUT_MS,
-      windowsHide: true
-    }
-  );
+  revalidateTrustedGitExecutable(PINNED_GIT_EXECUTABLE);
+  try {
+    return execFileSync(
+      PINNED_GIT_EXECUTABLE.executable,
+      [
+        "--no-replace-objects",
+        "--literal-pathspecs",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.useReplaceRefs=false",
+        ...args
+      ],
+      {
+        cwd: root,
+        encoding: options.encoding,
+        env: GIT_READ_ENVIRONMENT,
+        killSignal: "SIGKILL",
+        maxBuffer,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: GIT_READ_TIMEOUT_MS,
+        windowsHide: true
+      }
+    );
+  } finally {
+    revalidateTrustedGitExecutable(PINNED_GIT_EXECUTABLE);
+  }
 }
 
 function decodeUtf8(contents, label) {

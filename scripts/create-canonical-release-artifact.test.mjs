@@ -345,21 +345,18 @@ async function createStableV2Fixture(context, { reportedSha256 } = {}) {
     featureParity: `${parityMatrix()}\n${stableRParityMatrix()}`,
     manifest,
     readmeSection,
-    sourceFiles({ candidateBytes }) {
-      const files = stableREvidenceFiles();
-      const candidateSha256 = createHash("sha256").update(candidateBytes).digest("hex");
-      files.set(reviewPath, "# Open Wrangler 2.0.0 performance review\n");
-      files.set(
-        reportPath,
-        `${JSON.stringify(
-          createReleaseComparisonReport({
-            sha256: reportedSha256 ?? candidateSha256,
-            version
-          })
-        )}\n`
-      );
-      return files;
-    }
+    sourceFiles: ((renderDataWranglerComparisonReview) =>
+      function sourceFiles({ candidateBytes }) {
+        const files = stableREvidenceFiles();
+        const candidateSha256 = createHash("sha256").update(candidateBytes).digest("hex");
+        const report = createReleaseComparisonReport({
+          sha256: reportedSha256 ?? candidateSha256,
+          version
+        });
+        files.set(reviewPath, `${renderDataWranglerComparisonReview(report)}\n`);
+        files.set(reportPath, `${JSON.stringify(report)}\n`);
+        return files;
+      })((await import("./data-wrangler-comparison-report.mjs")).renderDataWranglerComparisonReview)
   });
 }
 
