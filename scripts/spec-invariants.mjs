@@ -19,6 +19,7 @@ const CLEANING_HISTORY_MODEL_MAX_BYTES = 8 * 1024;
 const CLEANING_HISTORY_PRODUCTION_AUTHORITY_MAX_BYTES = 32 * 1024;
 const CLEANING_HISTORY_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const CLEANING_HISTORY_SECTION_MAX_BYTES = 128 * 1024;
+const CLEANING_HISTORY_INLINE_TOKEN_MAX = 4096;
 const CLEANING_HISTORY_JSON_MAX_DEPTH = 8;
 const CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES = 64;
 const CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES = 128;
@@ -121,7 +122,10 @@ async function closeBoundedReadHandles(handles, label) {
   }
 }
 
-async function openBoundedAncestorChain(path, label) {
+async function openBoundedAncestorChain(path, label, platform = process.platform) {
+  if (platform !== "linux") {
+    throw new Error(`${label} requires a supported handle-relative file boundary.`);
+  }
   const { absolute, directories } = ancestorDirectories(path);
   const records = [];
   try {
@@ -131,8 +135,7 @@ async function openBoundedAncestorChain(path, label) {
         throw new Error(`${label} must have only regular, non-symbolic-link ancestor directories.`);
       }
       const parent = records.at(-1);
-      const descriptorPath =
-        process.platform === "linux" && parent ? `/proc/self/fd/${parent.handle.fd}/${basename(directory)}` : directory;
+      const descriptorPath = parent ? `/proc/self/fd/${parent.handle.fd}/${basename(directory)}` : directory;
       const handle = await open(
         descriptorPath,
         fileConstants.O_RDONLY |
@@ -166,7 +169,7 @@ async function assertAncestorChainCurrent(records, label) {
 }
 
 export async function readBoundedUtf8File(path, maximumBytes, label = path, testHooks = undefined) {
-  const ancestorChain = await openBoundedAncestorChain(path, label);
+  const ancestorChain = await openBoundedAncestorChain(path, label, testHooks?.platform);
   let handle;
   try {
     const expected = await lstat(ancestorChain.absolute, { bigint: true });
@@ -181,10 +184,7 @@ export async function readBoundedUtf8File(path, maximumBytes, label = path, test
     }
     await testHooks?.afterInitialLeafIdentity?.();
     const parent = ancestorChain.records.at(-1);
-    const descriptorPath =
-      process.platform === "linux" && parent
-        ? `/proc/self/fd/${parent.handle.fd}/${basename(ancestorChain.absolute)}`
-        : ancestorChain.absolute;
+    const descriptorPath = `/proc/self/fd/${parent.handle.fd}/${basename(ancestorChain.absolute)}`;
     handle = await open(
       descriptorPath,
       fileConstants.O_RDONLY | (fileConstants.O_NOFOLLOW ?? 0) | (fileConstants.O_NONBLOCK ?? 0)
@@ -576,7 +576,7 @@ export function renderCleaningHistoryClaims(model) {
 }
 
 const cleaningHistoryMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
-const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]+;/iu;
+const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const markdownClauseBoundary = /(?:[.!?;,\n]|\b(?:but|however|whereas)\b)/iu;
 
 function maskMarkdownComments(source) {
@@ -592,18 +592,38 @@ function parseCleaningHistoryMarkdown(source, label) {
 }
 
 function normalizeVisibleMarkdownText(value, label) {
-  const normalized = value.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'");
   if (unresolvedVisibleNamedEntity.test(normalized)) {
     throw new Error(`${label} contains an unresolved visible named Markdown entity.`);
   }
   return normalized;
 }
 
-function childVisibleText(child, label) {
-  if (child.type === "text" || child.type === "code_inline" || child.type === "image") {
-    return normalizeVisibleMarkdownText(child.content, label);
-  }
-  return child.type === "softbreak" || child.type === "hardbreak" ? "\n" : "";
+function flattenVisibleInlineChildren(children, label) {
+  const fragments = [];
+  let tokenCount = 0;
+  const visit = (childTokens) => {
+    for (const child of childTokens) {
+      tokenCount += 1;
+      if (tokenCount > CLEANING_HISTORY_INLINE_TOKEN_MAX) {
+        throw new Error(
+          `${label} contains more than ${CLEANING_HISTORY_INLINE_TOKEN_MAX} visible inline Markdown tokens.`
+        );
+      }
+      if (child.type === "image" && Array.isArray(child.children)) {
+        visit(child.children);
+      } else if (child.type === "text" || child.type === "code_inline" || child.type === "image") {
+        fragments.push({ type: child.type, text: normalizeVisibleMarkdownText(child.content, label) });
+      } else if (child.type === "softbreak" || child.type === "hardbreak") {
+        fragments.push({ type: "text", text: "\n" });
+      }
+    }
+  };
+  visit(children);
+  return fragments;
 }
 
 function adjacentClause(value, side) {
@@ -611,34 +631,50 @@ function adjacentClause(value, side) {
   return side === "before" ? (clauses.at(-1) ?? "") : (clauses[0] ?? "");
 }
 
-function isExampleCodeSpan(children, index, label) {
-  const visibleOutsideCode = (child) => (child.type === "code_inline" ? " " : childVisibleText(child, label));
-  const before = adjacentClause(children.slice(0, index).map(visibleOutsideCode).join(""), "before");
-  const after = adjacentClause(
-    children
-      .slice(index + 1)
-      .map(visibleOutsideCode)
-      .join(""),
-    "after"
+function exampleCodeSpanIndexes(fragments) {
+  const before = new Map();
+  let context = "";
+  for (let index = 0; index < fragments.length; index += 1) {
+    const fragment = fragments[index];
+    if (fragment.type === "code_inline") {
+      before.set(index, context);
+      context = "";
+    } else {
+      context = adjacentClause(`${context}${fragment.text}`, "before");
+    }
+  }
+
+  const after = new Map();
+  context = "";
+  for (let index = fragments.length - 1; index >= 0; index -= 1) {
+    const fragment = fragments[index];
+    if (fragment.type === "code_inline") {
+      after.set(index, context);
+      context = "";
+    } else {
+      context = adjacentClause(`${fragment.text}${context}`, "after");
+    }
+  }
+
+  const exampleNoun = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu;
+  const presentationVerb =
+    /\b(?:use|uses|used|show|shows|shown|write|writes|written|quote|quotes|quoted|present|presents|presented|label|labels|labeled|call|calls|called|read|reads|say|says)\b/iu;
+  const designation =
+    /^\s*(?:(?:only\s+)?as|is|was|serves?\s+as)\b[^.!?;,\n]{0,256}\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu;
+  return new Set(
+    [...before.keys()].filter((index) => {
+      const preceding = before.get(index) ?? "";
+      const following = after.get(index) ?? "";
+      return (exampleNoun.test(preceding) && presentationVerb.test(preceding)) || designation.test(following);
+    })
   );
-  const context = `${before} ${after}`.normalize("NFKC");
-  const namesExample = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu.test(context);
-  const presentsExample =
-    /\b(?:use|uses|used|show|shows|shown|write|writes|written|quote|quotes|quoted|present|presents|presented|label|labels|labeled|call|calls|called|read|reads|say|says)\b/iu.test(
-      context
-    ) || /\bfor example\b/iu.test(context);
-  return namesExample && presentsExample;
 }
 
 function renderedInlineText(token, label, { excludeExampleCode = false } = {}) {
   if (token?.type !== "inline" || !Array.isArray(token.children)) return "";
-  return token.children
-    .map((child, index, children) =>
-      excludeExampleCode && child.type === "code_inline" && isExampleCodeSpan(children, index, label)
-        ? " "
-        : childVisibleText(child, label)
-    )
-    .join("");
+  const fragments = flattenVisibleInlineChildren(token.children, label);
+  const excluded = excludeExampleCode ? exampleCodeSpanIndexes(fragments) : new Set();
+  return fragments.map((fragment, index) => (excluded.has(index) ? " " : fragment.text)).join("");
 }
 
 function markdownHeadingRecords(tokens, label) {
@@ -832,6 +868,9 @@ function containsContradictoryCleaningHistoryClaim(source) {
         "prior",
         "selected",
         "chosen",
+        "choice",
+        "pick",
+        "which",
         "arbitrary",
         "individual",
         "whichever"
