@@ -819,6 +819,10 @@ function validateStudyManifest(manifest) {
     "highest observed absolute process-tree PSS during each measured notebook workflow",
     "study manifest memory method"
   );
+  const expectedCells = Object.entries(STUDY_CELL_CONTRACT).map(([id, cell]) => ({ id, ...cell }));
+  if (!isDeepStrictEqual(manifest.method.cells, expectedCells)) {
+    throw new TypeError("Study manifest cells must match the canonical workload order.");
+  }
   const cells = new Map();
   for (const cell of manifest.method.cells) {
     exactKeys(cell, ["id", "engine", "format", "rows", "columns"], "study manifest cell");

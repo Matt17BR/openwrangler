@@ -75,6 +75,20 @@ test("validates exactly ten ordered samples inside one scheduled session", () =>
   assert.throws(() => validateDataWranglerComparisonStudyTrial(reordered, entry, manifest), /sample 2 index/u);
 });
 
+test("rejects a noncanonical workload order", () => {
+  const manifest = structuredClone(manifestFixture());
+  [manifest.method.cells[0], manifest.method.cells[1]] = [manifest.method.cells[1], manifest.method.cells[0]];
+  assert.throws(
+    () =>
+      buildDataWranglerComparisonStudyReport({
+        generatedAtUtc: "2026-08-04T12:00:00.000Z",
+        manifest,
+        trials: []
+      }),
+    /canonical workload order/u
+  );
+});
+
 test("validates a two-sample smoke session without weakening the release gate", () => {
   const manifest = manifestFixture({ repetitionsPerSession: 2 });
   const entry = manifest.schedule[0];

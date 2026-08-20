@@ -22,6 +22,7 @@ import {
   DATA_WRANGLER_VERSION,
   LOCAL_MIXED_CELLS,
   LOCAL_REPETITIONS,
+  LOCAL_REQUIRED_SUCCESSES,
   SMOKE_REPETITIONS,
   STUDY_CELLS,
   STUDY_PROTOCOL,
@@ -49,11 +50,17 @@ test("comparison policy and guide derive their sample counts from the protocol a
   const root = resolve(import.meta.dirname, "..");
   const agents = readFileSync(join(root, "AGENTS.md"), "utf8");
   const guide = readFileSync(join(root, "docs/performance-comparison.md"), "utf8");
+  const testingGuide = readFileSync(join(root, "docs/testing.md"), "utf8");
   assert.ok(agents.includes(renderComparisonAgentSamplePolicy()));
   assert.ok(agents.includes(renderComparisonAgentCompletionPolicy()));
   assert.ok(guide.includes(renderComparisonDocumentationSampleSummary()));
   assert.ok(guide.includes(renderComparisonDocumentationCompletionSummary()));
+  assert.ok(testingGuide.includes(renderComparisonDocumentationSampleSummary()));
+  assert.ok(testingGuide.includes(renderComparisonDocumentationCompletionSummary()));
+  assert.ok(testingGuide.includes(renderComparisonAgentCompletionPolicy()));
   assert.equal(WARM_REPETITIONS, DATA_WRANGLER_COMPARISON_AUTHORITY.release.samplesPerSession);
+  assert.equal(LOCAL_REPETITIONS, DATA_WRANGLER_COMPARISON_AUTHORITY.local.samplesPerSession);
+  assert.equal(LOCAL_REQUIRED_SUCCESSES, DATA_WRANGLER_COMPARISON_AUTHORITY.local.requiredSuccesses);
   assert.equal(
     DATA_WRANGLER_COMPARISON_AUTHORITY.release.totalSamples,
     createDataWranglerComparisonSchedule().length * WARM_REPETITIONS
@@ -248,7 +255,7 @@ test("local comparison requires confirmation and removes its generated fixture",
           })
         }
       ),
-      /every product and engine needs at least two of three successful samples.*0 success, 0 failure, and 12 timeout/u
+      /every product and engine needs at least 2 of 3 successful samples.*0 success, 0 failure, and 12 timeout/u
     );
     assert.equal(existsSync(fixtureRoot), false);
   } finally {

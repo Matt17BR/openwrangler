@@ -41,6 +41,7 @@ export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = DATA_WRANGLER_COMPARISON_AUTHORITY.release.samplesPerSession;
 export const SMOKE_REPETITIONS = DATA_WRANGLER_COMPARISON_AUTHORITY.smoke.samplesPerSession;
 export const LOCAL_REPETITIONS = DATA_WRANGLER_COMPARISON_AUTHORITY.local.samplesPerSession;
+export const LOCAL_REQUIRED_SUCCESSES = DATA_WRANGLER_COMPARISON_AUTHORITY.local.requiredSuccesses;
 const LOCAL_FIXTURE_MAX_BYTES = 640 * 1024 * 1024;
 const LOCAL_OUTPUT_MIN_FREE_BYTES = 2 * LOCAL_FIXTURE_MAX_BYTES + 512 * 1024 * 1024;
 const LOCAL_FIXTURE_OWNER_PROTOCOL = "openwrangler-local-comparison-fixture-v1";
@@ -375,7 +376,7 @@ function assertLocalComparisonUsable(result, output, loadResults) {
     trialId,
     successes: trialSamples.filter(({ status }) => status === "success").length
   }));
-  const insufficientTrials = successfulByTrial.filter(({ successes }) => successes < 2);
+  const insufficientTrials = successfulByTrial.filter(({ successes }) => successes < LOCAL_REQUIRED_SUCCESSES);
   if (
     result.completed !== expectedSessions ||
     result.remaining !== 0 ||
@@ -384,9 +385,10 @@ function assertLocalComparisonUsable(result, output, loadResults) {
     insufficientTrials.length > 0
   ) {
     throw new Error(
-      "Local comparison failed: every product and engine needs at least two of three successful samples; found " +
+      `Local comparison failed: every product and engine needs at least ${LOCAL_REQUIRED_SUCCESSES} of ` +
+        `${LOCAL_REPETITIONS} successful samples; found ` +
         `${outcomes.success} success, ${outcomes.failure} failure, and ${outcomes.timeout} timeout. ` +
-        `Insufficient sessions: ${insufficientTrials.map(({ trialId, successes }) => `${trialId} (${successes}/3)`).join(", ") || "none"}. ` +
+        `Insufficient sessions: ${insufficientTrials.map(({ trialId, successes }) => `${trialId} (${successes}/${LOCAL_REPETITIONS})`).join(", ") || "none"}. ` +
         `Results were kept in ${output}.`
     );
   }

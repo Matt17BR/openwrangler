@@ -52,8 +52,8 @@ one second invalidates the session instead of understating memory use.
 For each product and workload, the report keeps all ten outcomes, including failures. Successful timings are summarized
 with the minimum, maximum, median, and type-7 p95. The p95 remains descriptive; only the median is a release gate.
 
-Open Wrangler blocks the release only when its median exceeds both parts of a limit below. Small timing differences
-are treated as noise.
+A numeric regression blocks the release only when Open Wrangler's median exceeds both parts of a limit below. Small
+timing differences are treated as noise.
 
 | Measure           | Relative allowance | Absolute allowance |
 | ----------------- | -----------------: | -----------------: |
