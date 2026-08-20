@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from concurrent.futures import CancelledError
 from typing import Any
 
@@ -33,15 +32,33 @@ from openwrangler_runtime.session import (
 EMPTY_FILTER = {"filters": [], "sort": []}
 
 
-def _envelope(request: dict[str, Any], *, request_id: str = "kernel-request") -> str:
+def _envelope(
+    request: dict[str, Any],
+    *,
+    request_id: str = "kernel-request",
+    priority: str = "interactive",
+) -> str:
     return json.dumps(
         {
             "protocolVersion": 2,
             "requestId": request_id,
-            "priority": "interactive",
+            "priority": priority,
             "request": request,
         }
     )
+
+
+def _view_request(kind: str, session_id: str, view_request_id: str) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "kind": kind,
+        "sessionId": session_id,
+        "revision": 0,
+        "viewRequestId": view_request_id,
+        "filterModel": EMPTY_FILTER,
+    }
+    if kind == "getPage":
+        request.update({"offset": 0, "limit": 20, "columnOffset": 0, "columnLimit": 64})
+    return request
 
 
 def test_standalone_and_kernel_dispatch_share_generated_code_preflight(tmp_path, monkeypatch) -> None:
@@ -989,25 +1006,29 @@ def test_cancel_request_prevents_queued_work_and_original_response_confirms_canc
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = kernel_agent._NotebookRequestRegistry()
-    running_started = threading.Event()
-    release_running = threading.Event()
+    start_attempted = threading.Event()
+    release_start = threading.Event()
     queued_dispatched = threading.Event()
     results: dict[str, dict[str, Any]] = {}
+    original_start = registry.start
+
+    def controlled_start(request_id: str) -> bool:
+        if request_id == "queued-request":
+            start_attempted.set()
+            assert release_start.wait(2)
+        return original_start(request_id)
 
     def controlled_dispatch(
         _manager: SessionManager,
         _request: dict[str, Any],
         request_id: str,
     ) -> dict[str, Any]:
-        if request_id == "running-request":
-            running_started.set()
-            assert release_running.wait(2)
         if request_id == "queued-request":
             queued_dispatched.set()
         return {"kind": "initialized", "runtimeVersion": "test"}
 
     monkeypatch.setattr(kernel_agent, "_request_registry", registry)
-    monkeypatch.setattr(kernel_agent, "_dispatch_lock", threading.Lock())
+    monkeypatch.setattr(registry, "start", controlled_start)
     monkeypatch.setattr(kernel_agent, "dispatch", controlled_dispatch)
 
     def run(request_id: str) -> None:
@@ -1015,34 +1036,28 @@ def test_cancel_request_prevents_queued_work_and_original_response_confirms_canc
             kernel_agent.dispatch_json(_envelope({"kind": "initialize"}, request_id=request_id))
         )
 
-    running_thread = threading.Thread(target=run, args=("running-request",))
     queued_thread = threading.Thread(target=run, args=("queued-request",))
-    running_thread.start()
-    assert running_started.wait(1)
     queued_thread.start()
-    deadline = time.monotonic() + 1
-    while registry.state("queued-request") != "queued" and time.monotonic() < deadline:
-        time.sleep(0.001)
+    assert start_attempted.wait(1)
     assert registry.state("queued-request") == "queued"
 
-    for cancellation_id in ("cancel-queued", "cancel-queued-again"):
-        cancellation = json.loads(
-            kernel_agent.dispatch_json(
-                _envelope(
-                    {"kind": "cancelRequest", "targetRequestId": "queued-request"},
-                    request_id=cancellation_id,
+    try:
+        for cancellation_id in ("cancel-queued", "cancel-queued-again"):
+            cancellation = json.loads(
+                kernel_agent.dispatch_json(
+                    _envelope(
+                        {"kind": "cancelRequest", "targetRequestId": "queued-request"},
+                        request_id=cancellation_id,
+                    )
                 )
             )
-        )
-        assert cancellation["response"] == {"kind": "cancelled", "targetRequestId": "queued-request"}
-    assert queued_dispatched.is_set() is False
+            assert cancellation["response"] == {"kind": "cancelled", "targetRequestId": "queued-request"}
+        assert queued_dispatched.is_set() is False
+    finally:
+        release_start.set()
 
-    release_running.set()
-    running_thread.join(2)
     queued_thread.join(2)
-    assert running_thread.is_alive() is False
     assert queued_thread.is_alive() is False
-    assert results["running-request"]["response"]["kind"] == "initialized"
     assert results["queued-request"]["response"] == {
         "kind": "cancelled",
         "targetRequestId": "queued-request",
@@ -1083,7 +1098,6 @@ def test_cancel_request_does_not_claim_to_interrupt_running_work_or_hide_late_co
         return {"kind": "initialized", "runtimeVersion": "late-result"}
 
     monkeypatch.setattr(kernel_agent, "_request_registry", registry)
-    monkeypatch.setattr(kernel_agent, "_dispatch_lock", threading.Lock())
     monkeypatch.setattr(kernel_agent, "dispatch", running_dispatch)
 
     def run() -> None:
@@ -1131,3 +1145,100 @@ def test_cancel_request_does_not_claim_to_interrupt_running_work_or_hide_late_co
     assert completed["response"]["kind"] == "error"
     assert completed["response"]["code"] == "cancellation_unavailable"
     assert "already completed" in completed["response"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("first_request", "first_priority", "second_request", "second_priority"),
+    [
+        pytest.param(
+            _view_request("getPage", "session-a", "first-view"),
+            "interactive",
+            _view_request("getPage", "session-b", "second-view"),
+            "interactive",
+            id="unrelated-sessions",
+        ),
+        pytest.param(
+            _view_request("getSummary", "session", "profile-view"),
+            "background",
+            _view_request("getPage", "session", "page-view"),
+            "interactive",
+            id="interactive-read-reaches-priority-scheduler",
+        ),
+        pytest.param(
+            _view_request("getSummary", "session", "summary-view"),
+            "background",
+            _view_request("getDatasetStats", "session", "stats-view"),
+            "background",
+            id="read-overlap-reaches-session-admission",
+        ),
+        pytest.param(
+            _view_request("getSummary", "session", "close-wait-view"),
+            "background",
+            {"kind": "closeSession", "sessionId": "session", "revision": 0},
+            "interactive",
+            id="terminal-close-reaches-lifecycle-admission",
+        ),
+    ],
+)
+def test_notebook_registry_does_not_serialize_existing_dispatch_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    first_request: dict[str, Any],
+    first_priority: str,
+    second_request: dict[str, Any],
+    second_priority: str,
+) -> None:
+    registry = kernel_agent._NotebookRequestRegistry()
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    results: dict[str, dict[str, Any]] = {}
+
+    def concurrent_dispatch(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        request_id: str,
+    ) -> dict[str, Any]:
+        if request_id == "first-request":
+            first_started.set()
+            assert release_first.wait(2)
+        else:
+            second_started.set()
+        return {"kind": "initialized", "runtimeVersion": request_id}
+
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+    monkeypatch.setattr(kernel_agent, "dispatch", concurrent_dispatch)
+
+    def run(request_id: str, request: dict[str, Any], priority: str) -> None:
+        results[request_id] = json.loads(
+            kernel_agent.dispatch_json(_envelope(request, request_id=request_id, priority=priority))
+        )
+
+    first_thread = threading.Thread(
+        target=run,
+        args=("first-request", first_request, first_priority),
+    )
+    second_thread = threading.Thread(
+        target=run,
+        args=("second-request", second_request, second_priority),
+    )
+    first_thread.start()
+    assert first_started.wait(1)
+    second_thread.start()
+    try:
+        assert second_started.wait(1)
+        second_thread.join(1)
+        assert second_thread.is_alive() is False
+        assert results["second-request"]["response"] == {
+            "kind": "initialized",
+            "runtimeVersion": "second-request",
+        }
+    finally:
+        release_first.set()
+        first_thread.join(2)
+        second_thread.join(2)
+    assert first_thread.is_alive() is False
+    assert second_thread.is_alive() is False
+    assert results["first-request"]["response"] == {
+        "kind": "initialized",
+        "runtimeVersion": "first-request",
+    }
