@@ -166,6 +166,7 @@ import { createReleasedPythonFileEntrypointJourney } from "./releasedPythonFileE
 import { createPackagedExcelDependencyInstallJourney } from "./packagedExcelDependencyInstallJourney";
 import { createDependencyMutationRecoveryJourney } from "./dependencyMutationRecoveryJourney";
 import { createPackagedFirstUseInteractionJourney } from "./packagedFirstUseInteractionJourney";
+import { exercisePackagedGridRangeCopyJourney } from "./packagedGridRangeCopyJourney";
 import { createPackagedReopenAndUndoJourney } from "./packagedReopenAndUndoJourney";
 import { createPackagedLinkedRendererLiveOpen } from "./packagedLinkedRendererLiveOpen";
 import { createPackagedRendererProvenanceJourneys } from "./packagedRendererProvenanceJourney";
@@ -250,6 +251,7 @@ import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEdi
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   dispatchExtensionHostPhase,
+  GRID_RANGE_COPY_SELECTOR,
   parseExtensionHostPhaseSelection,
   type DataWranglerCoexistencePhase
 } from "./phaseDispatch";
@@ -957,7 +959,7 @@ export async function run(): Promise<void> {
           editor: phaseSelection.editor,
           phase: releasedPhase,
           platform: phaseSelection.platform,
-          selector: testSelector
+          selector: testSelector === GRID_RANGE_COPY_SELECTOR ? undefined : testSelector
         });
         await exerciseReleasedRJupyterExtension(testing, extension, releasedPhase, coverage);
       } else {
@@ -991,6 +993,12 @@ export async function run(): Promise<void> {
       assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
       recordAcceptanceProgress("platform-smoke:start");
       const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
+      if (testSelector === GRID_RANGE_COPY_SELECTOR) {
+        await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
+        recordAcceptanceProgress("platform-smoke:complete");
+        console.log("Open Wrangler packaged grid range-copy acceptance passed.");
+        return;
+      }
       await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
       recordAcceptanceProgress("platform-smoke:excel-dependency-install");
       await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
@@ -7348,6 +7356,46 @@ function trustedPickleSiblingTemporaries(directory: string): string[] {
   return readdirSync(directory)
     .filter((entry) => /^\.openwrangler-.+-\d+\.tmp$/u.test(entry))
     .sort();
+}
+
+async function exercisePackagedGridRangeCopyAcceptance(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "The focused packaged grid range-copy journey must start without another dataframe session."
+  );
+  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+  const workbench = await connectToEditorWorkbench();
+  recordAcceptanceProgress("platform-smoke:grid-range-copy:open");
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+  await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:grid-range-copy:import");
+  const active = testing.activeSession();
+  assert.ok(active, "The focused packaged grid range-copy journey must publish one live session.");
+  assert.equal(active.metadata.source.uri, fixture.toString());
+  assert.deepEqual(active.metadata.shape, {
+    rows: PACKAGED_FIRST_USE_ROW_COUNT,
+    columns: PACKAGED_SCREENSHOT_COLUMNS.length
+  });
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, active.metadata.sessionId);
+  await exercisePackagedGridRangeCopyJourney({
+    frame: target.frame,
+    hostClipboard: vscode.env.clipboard,
+    platform: process.platform,
+    recordProgress: recordAcceptanceProgress
+  });
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "The packaged grid range-copy journey must not modify its source."
+  );
+
+  recordAcceptanceProgress("platform-smoke:grid-range-copy:cleanup");
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the focused packaged grid range-copy session and runtime to terminate"
+  );
 }
 
 async function exercisePackagedPlatformSmoke(

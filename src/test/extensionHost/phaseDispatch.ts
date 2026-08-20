@@ -1,11 +1,17 @@
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
-  EXTENSION_HOST_TEST_SELECTORS,
+  EXTENSION_HOST_TEST_SELECTORS as RELEASED_JUPYTER_TEST_SELECTORS,
   releasedJupyterScenario
 } from "./releasedJupyterScenarios";
 import type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase } from "./releasedJupyterScenarios";
 
-export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, EXTENSION_HOST_TEST_SELECTORS };
+export const GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
+export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
+  ...RELEASED_JUPYTER_TEST_SELECTORS,
+  GRID_RANGE_COPY_SELECTOR
+] as const);
+type ExtensionHostPhaseSelector = ExtensionHostTestSelector | typeof GRID_RANGE_COPY_SELECTOR;
+export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR };
 export type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase };
 
 export type DataWranglerCoexistencePhase =
@@ -25,7 +31,7 @@ export interface ExtensionHostPhaseSelection {
   readonly editor: string | undefined;
   readonly phase: string;
   readonly platform: NodeJS.Platform;
-  readonly selector: ExtensionHostTestSelector | undefined;
+  readonly selector: ExtensionHostPhaseSelector | undefined;
   readonly testPython: string | undefined;
 }
 
@@ -41,10 +47,10 @@ export interface ExtensionHostPhaseHandlers {
 }
 
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
-  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".';
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy".';
 
 export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
-  "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r.";
+  "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r; grid-range-copy requires platform-smoke.";
 
 const extensionHostTestSelectors = new Set<string>(EXTENSION_HOST_TEST_SELECTORS);
 
@@ -57,9 +63,13 @@ export function parseExtensionHostPhaseSelection(
   if (rawSelector !== undefined && !extensionHostTestSelectors.has(rawSelector)) {
     throw new Error(EXTENSION_HOST_TEST_SELECTOR_ERROR);
   }
-  const selector = rawSelector as ExtensionHostTestSelector | undefined;
+  const selector = rawSelector as ExtensionHostPhaseSelector | undefined;
+  if (selector === GRID_RANGE_COPY_SELECTOR && phase !== "platform-smoke") {
+    throw new Error(EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR);
+  }
   if (
     selector !== undefined &&
+    selector !== GRID_RANGE_COPY_SELECTOR &&
     !releasedJupyterScenario({
       editor: environment.OPEN_WRANGLER_TEST_EDITOR,
       phaseId: phase,
@@ -99,7 +109,7 @@ export async function dispatchExtensionHostPhase(
     editor: selection.editor,
     phaseId: selection.phase,
     platform: selection.platform,
-    selector: selection.selector
+    selector: selection.selector === GRID_RANGE_COPY_SELECTOR ? undefined : selection.selector
   });
   if (releasedJupyter?.runnerKey === "focused-r-interactive") {
     await handlers.focusedRInteractive();

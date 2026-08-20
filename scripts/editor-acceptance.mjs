@@ -45,6 +45,7 @@ const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
 const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
+const GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
 export const REAL_JUPYTER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION";
 export const JUPYTER_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX";
 export const REAL_DATA_WRANGLER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_DATA_WRANGLER";
@@ -4204,10 +4205,11 @@ export async function runEditorAcceptancePhase(
     testSelector !== "kernel-restart" &&
     testSelector !== "native-frames" &&
     testSelector !== "interactive-terminal" &&
-    testSelector !== "literate-documents"
+    testSelector !== "literate-documents" &&
+    testSelector !== GRID_RANGE_COPY_SELECTOR
   ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".'
+      'An editor acceptance test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy".'
     );
   }
   if (
@@ -4216,7 +4218,15 @@ export async function runEditorAcceptancePhase(
   ) {
     throw new Error('The candidate compatibility selector requires the "jupyter-allow" phase in the Cursor editor.');
   }
-  if (testSelector !== undefined && testSelector !== CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR && phase !== "jupyter-r") {
+  if (testSelector === GRID_RANGE_COPY_SELECTOR && phase !== "platform-smoke") {
+    throw new Error('The grid range-copy selector requires the "platform-smoke" phase.');
+  }
+  if (
+    testSelector !== undefined &&
+    testSelector !== CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR &&
+    testSelector !== GRID_RANGE_COPY_SELECTOR &&
+    phase !== "jupyter-r"
+  ) {
     throw new Error('An R editor acceptance selector requires the "jupyter-r" phase.');
   }
   if (
