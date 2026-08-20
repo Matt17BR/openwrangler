@@ -1853,7 +1853,7 @@ button.categoryMiniRow.interactive:focus-visible {
   position: sticky;
   left: 0;
   z-index: 1;
-  background: var(--vscode-editor-background);
+  background-color: var(--vscode-editor-background);
   color: var(--vscode-descriptionForeground);
 }
 

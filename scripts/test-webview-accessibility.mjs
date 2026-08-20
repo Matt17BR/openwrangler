@@ -2193,6 +2193,7 @@ async function verifyGridKeyboardWorkflow(browser) {
   const stickyProfileGeometry = await page.evaluate(() => {
     const scroller = document.querySelector("[data-testid='data-grid-scroller']");
     const header = document.querySelector('th[data-grid-column="0"]');
+    const cornerHeader = document.querySelector("thead th.rowHeader");
     const bodyRowHeader = document.querySelector("tbody [role='rowheader']");
     const insight = header?.querySelector(".columnInsight");
     const metrics = header?.querySelector(".exactSummaryStats");
@@ -2202,6 +2203,7 @@ async function verifyGridKeyboardWorkflow(browser) {
     if (
       !(scroller instanceof HTMLElement) ||
       !(header instanceof HTMLElement) ||
+      !(cornerHeader instanceof HTMLElement) ||
       !(bodyRowHeader instanceof HTMLElement) ||
       !(insight instanceof HTMLElement) ||
       !(metrics instanceof HTMLElement) ||
@@ -2229,6 +2231,7 @@ async function verifyGridKeyboardWorkflow(browser) {
       };
     });
     const style = getComputedStyle(header);
+    const cornerStyle = getComputedStyle(cornerHeader);
     const rowHeaderStyle = getComputedStyle(bodyRowHeader);
     return {
       allProfileContentClippedToHeader: profileElements.every((element) => {
@@ -2243,6 +2246,9 @@ async function verifyGridKeyboardWorkflow(browser) {
       backgroundColor: style.backgroundColor,
       backgroundImage: style.backgroundImage,
       bodyRowsPassBehindProfile: regions.some((region) => region.bodyCellBehind),
+      cornerBackgroundColor: cornerStyle.backgroundColor,
+      cornerBackgroundImage: cornerStyle.backgroundImage,
+      cornerAboveHeader: Number.parseInt(cornerStyle.zIndex, 10) > Number.parseInt(style.zIndex, 10),
       headerAboveBodyRowHeader: Number.parseInt(style.zIndex, 10) > Number.parseInt(rowHeaderStyle.zIndex, 10),
       headerInsideScroller:
         headerBounds.top >= scrollerBounds.top - 1 && headerBounds.bottom <= scrollerBounds.bottom + 1,
@@ -2267,6 +2273,10 @@ async function verifyGridKeyboardWorkflow(browser) {
     stickyProfileGeometry.backgroundColor === "rgba(0, 0, 0, 0)" ||
     stickyProfileGeometry.backgroundColor === "transparent" ||
     stickyProfileGeometry.backgroundImage === "none" ||
+    stickyProfileGeometry.cornerBackgroundColor === "rgba(0, 0, 0, 0)" ||
+    stickyProfileGeometry.cornerBackgroundColor === "transparent" ||
+    stickyProfileGeometry.cornerBackgroundImage === "none" ||
+    !stickyProfileGeometry.cornerAboveHeader ||
     stickyProfileGeometry.isolation !== "isolate" ||
     stickyProfileGeometry.overflowX !== "clip" ||
     stickyProfileGeometry.overflowY !== "clip" ||
