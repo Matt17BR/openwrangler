@@ -224,7 +224,12 @@ describe("SessionResponseCommitter", () => {
     const request = pageRequest(session, "current-page", filterModel, 100);
     const callbackFailure = new Error("unexpected activation callback failure");
     const callbacks = callbackSpies();
-    vi.mocked(callbacks.activate).mockImplementation(() => {
+    let publicationOwner = "confirmed";
+    vi.mocked(callbacks.activate).mockImplementation((registerRollback) => {
+      registerRollback?.(() => {
+        publicationOwner = "confirmed";
+      });
+      publicationOwner = "candidate";
       throw callbackFailure;
     });
 
@@ -248,6 +253,7 @@ describe("SessionResponseCommitter", () => {
     expect(session.viewChangeEpoch).toBe(previousViewChangeEpoch);
     expect(session.metadata).toBe(previousMetadata);
     expect(session.viewState).toBe(previousViewState);
+    expect(publicationOwner).toBe("confirmed");
     const key = persistenceKey(session.openRequest.source, "polars");
     expect(stored[key]).toHaveProperty("pendingCurrentCommit");
     expect(persistence.load(session.openRequest.source, "polars")).toBeUndefined();

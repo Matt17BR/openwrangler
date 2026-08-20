@@ -976,8 +976,11 @@ export class SessionCoordinator implements vscode.Disposable {
         this.replayAfterRuntimeLoss(session, failedRuntimeId, replayOptions, requiredSchema, isStillCurrent),
       close: (closeOptions) => this.closeSession(session, closeOptions),
       responseCallbacks: {
-        activate: () => {
-          if (this.isLiveSession(session)) this.setActive(session.publicId);
+        activate: (registerRollback) => {
+          if (this.isLiveSession(session)) {
+            if (registerRollback) registerRollback(this.captureActivePublicationRollback(session));
+            this.setActive(session.publicId);
+          }
         },
         publishInspection: () => {
           if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
@@ -1018,6 +1021,34 @@ export class SessionCoordinator implements vscode.Disposable {
     this.responseCommitter.releaseSession(session.publicId);
     if (this.activeSessionId === session.publicId) this.setActive(undefined);
     this.runtimeCleanup.releaseIfIdle(session.delegate);
+  }
+
+  private captureActivePublicationRollback(session: CoordinatedSession): () => void {
+    const previousActiveSessionId = this.activeSessionId;
+    const inspections = new Map<
+      CoordinatedSession,
+      Pick<CoordinatedSession, "stepInspection" | "latestStepInspectionKey">
+    >();
+    const captureInspection = (candidate: CoordinatedSession | undefined): void => {
+      if (candidate && !inspections.has(candidate)) {
+        inspections.set(candidate, {
+          stepInspection: candidate.stepInspection,
+          latestStepInspectionKey: candidate.latestStepInspectionKey
+        });
+      }
+    };
+    captureInspection(previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined);
+    captureInspection(session);
+
+    return () => {
+      for (const [candidate, inspection] of inspections) {
+        candidate.stepInspection = inspection.stepInspection;
+        candidate.latestStepInspectionKey = inspection.latestStepInspectionKey;
+      }
+      this.activeSessionId = previousActiveSessionId;
+      const active = previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined;
+      this.activeSessionEmitter.fire(active ? activeSessionSnapshot(active) : undefined);
+    };
   }
 
   private installRuntimeSettlementBarrier(session: CoordinatedSession, settlement: Promise<void>): void {

@@ -46,13 +46,13 @@ export interface SessionPersistenceOpeningResult<T> {
 }
 
 export class SessionPersistenceStore {
-  private tail: Promise<void> = Promise.resolve();
-  private queuedTasks = 0;
+  private storageTail: Promise<void> = Promise.resolve();
   private commitOrdinal = 0;
   private replacementOrdinal = 0;
   private readonly ownerStatuses = new Map<string, OwnerPersistenceStatus>();
   private readonly retainedOwnerKeys = new Map<string, string>();
   private readonly ownerRetentionCounts = new Map<string, number>();
+  private readonly keyTaskTails = new Map<string, Promise<void>>();
   private readonly openingOwner = new AsyncLocalStorage<OpeningPersistenceOwner>();
 
   constructor(
@@ -81,11 +81,12 @@ export class SessionPersistenceStore {
   }
 
   private scheduleOwnerKeyRelease(key: string): Promise<void> {
-    if (this.queuedTasks === 0) {
+    const tail = this.keyTaskTails.get(key);
+    if (!tail) {
       this.releaseOwnerKey(key);
       return Promise.resolve();
     }
-    return this.tail.finally(() => this.releaseOwnerKey(key));
+    return tail.finally(() => this.releaseOwnerKey(key));
   }
 
   async withOpeningOwner<T>(
@@ -145,7 +146,7 @@ export class SessionPersistenceStore {
     const serialized = serializePersistedSession(state);
     if (!serialized) return;
     const key = persistenceKey(source, state.backend);
-    await this.enqueue(async () => {
+    await this.enqueue(key, async () => {
       const stored = this.readStored(key);
       if (!stored.ok) return;
       const written = await this.writeStored(key, { ...stored.value, [key]: serialized }, "save");
@@ -174,7 +175,7 @@ export class SessionPersistenceStore {
     const key = persistenceKey(source, state.backend);
     const token = `current-commit:${++this.commitOrdinal}`;
     let result: SessionPersistenceCommitResult = { kind: "stale" };
-    await this.enqueue(async () => {
+    await this.enqueue(key, async () => {
       if (!isCurrent()) return;
       const stored = this.readStored(key);
       if (!stored.ok) {
@@ -251,7 +252,7 @@ export class SessionPersistenceStore {
     const key = persistenceKey(source, state.backend);
     const token = `runtime-replacement:${++this.replacementOrdinal}`;
     let result: SessionPersistenceCommitResult = { kind: "stale" };
-    await this.enqueue(async () => {
+    await this.enqueue(key, async () => {
       if (!isCurrent()) return;
       const stored = this.readStored(key);
       if (!stored.ok) {
@@ -335,7 +336,15 @@ export class SessionPersistenceStore {
 
   private readStored(ownerKey: string): StorageResult<Record<string, unknown>> {
     try {
-      return { ok: true, value: this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {} };
+      const value = this.workspaceState?.get<unknown>(SESSION_STORAGE_KEY, undefined);
+      if (value === undefined) return { ok: true, value: {} };
+      if (!isPersistenceRoot(value)) {
+        return {
+          ok: false,
+          failure: this.recordFailure(ownerKey, "read", { code: "INVALID_ROOT" })
+        };
+      }
+      return { ok: true, value };
     } catch (error) {
       return { ok: false, failure: this.recordFailure(ownerKey, "read", error) };
     }
@@ -408,15 +417,20 @@ export class SessionPersistenceStore {
     return owner;
   }
 
-  private async enqueue(task: () => Promise<void>): Promise<void> {
-    this.queuedTasks += 1;
-    const pending = this.tail
-      .catch(() => undefined)
-      .then(task)
-      .finally(() => {
-        this.queuedTasks -= 1;
-      });
-    this.tail = pending.catch(() => undefined);
+  private async enqueue(ownerKey: string, task: () => Promise<void>): Promise<void> {
+    // Memento stores the complete persistence root, so its read-modify-write
+    // transition stays serialized. Lifecycle settlement is tracked separately
+    // per key so unrelated owners never wait for this global storage sequence.
+    const pending = this.storageTail.catch(() => undefined).then(task);
+    this.storageTail = pending.catch(() => undefined);
+    const keyTail = pending.then(
+      () => undefined,
+      () => undefined
+    );
+    this.keyTaskTails.set(ownerKey, keyTail);
+    void keyTail.finally(() => {
+      if (this.keyTaskTails.get(ownerKey) === keyTail) this.keyTaskTails.delete(ownerKey);
+    });
     await pending;
   }
 }
@@ -516,6 +530,14 @@ function loadableSessionValue(value: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPersistenceRoot(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  if (Object.getOwnPropertySymbols(value).length > 0) return false;
+  return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor);
 }
 
 function isPersistentSession(source: SessionSource, backend: DataBackend): boolean {

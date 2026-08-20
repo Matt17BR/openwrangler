@@ -64,6 +64,39 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
   });
 
+  it.each([
+    ["null", null],
+    ["array", []],
+    ["primitive", 42],
+    ["non-plain object", new Date(0)],
+    ["accessor root", Object.defineProperty({}, "entry", { enumerable: true, get: () => ({}) })]
+  ])("classifies a %s Memento root as unavailable without overwriting durable state", async (_label, root) => {
+    const key = persistenceKey(source, "polars");
+    let durable: Record<string, unknown> = { [key]: serializedState("polars", 7) };
+    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+      durable = value;
+    });
+    const persistence = new SessionPersistenceStore(mementoFrom(() => root as never, update));
+
+    const opening = await persistence.withOpeningOwner("opening:invalid-root", source, undefined, async () =>
+      persistence.load(source, "polars")
+    );
+
+    expect(opening).toEqual({
+      value: undefined,
+      readFailure: {
+        kind: "read",
+        cause: { name: "Error", code: "INVALID_ROOT" },
+        epoch: 1,
+        firstInEpoch: true
+      }
+    });
+    expect(update).not.toHaveBeenCalled();
+    expect(durable).toEqual({ [key]: serializedState("polars", 7) });
+    await persistence.releaseOwner("opening:invalid-root");
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
+  });
+
   it("keeps notebook-output, native R, and Spark state ephemeral", async () => {
     const snapshotSource: SessionSource = { kind: "notebookOutput", label: "capture" };
     const stored = {
@@ -609,6 +642,32 @@ describe("SessionPersistenceStore", () => {
       expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 })
     );
     expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
+  });
+
+  it("releases an unrelated opening owner while another key write never settles", async () => {
+    const otherSource: SessionSource = { ...source, path: "/workspace/other.csv" };
+    const neverSettles = new Promise<void>(() => undefined);
+    const update = vi.fn(() => neverSettles);
+    const persistence = new SessionPersistenceStore(mementoFrom(() => ({}), update));
+    persistence.retainOwner("session-a", source, "polars");
+
+    void persistence.save(source, state("polars", 1));
+    await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+    const opening = await persistence.withOpeningOwner("opening:b", otherSource, undefined, async () =>
+      persistence.load(otherSource, "polars")
+    );
+    expect(opening).toEqual({ value: undefined });
+
+    await expect(persistence.releaseOwner("opening:b")).resolves.toBeUndefined();
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 1, retainedKeys: 1, degradedKeys: 0 });
+
+    let stalledOwnerReleased = false;
+    void persistence.releaseOwner("session-a").then(() => {
+      stalledOwnerReleased = true;
+    });
+    await Promise.resolve();
+    expect(stalledOwnerReleased).toBe(false);
+    expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 1, degradedKeys: 0 });
   });
 
   it("reports one degraded epoch until a confirmed save recovers restart state", async () => {

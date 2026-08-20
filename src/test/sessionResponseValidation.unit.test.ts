@@ -241,6 +241,12 @@ describe("session response validation", () => {
     };
     const response: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
     expect(sessionOpenedResponseMismatch(request, response, true)).toBeUndefined();
+    expect(
+      sessionOpenedResponseMismatch(request, {
+        ...response,
+        metadata: { ...metadata, source: { ...metadata.source, label: "other" } }
+      })
+    ).toBe("metadata reported a different immutable source");
 
     const cases: Array<[string, SessionOpenedResponse]> = [
       [

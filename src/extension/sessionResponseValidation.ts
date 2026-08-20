@@ -137,7 +137,7 @@ export function sessionOpenedResponseMismatch(
   if (strictIdentity && request.mode && response.metadata.mode !== request.mode) {
     return `metadata reported mode ${response.metadata.mode} instead of requested mode ${request.mode}`;
   }
-  if (strictIdentity && !isDeepStrictEqual(response.metadata.source, request.source)) {
+  if (!isDeepStrictEqual(response.metadata.source, request.source)) {
     return "metadata reported a different immutable source";
   }
   if (response.metadata.revision < 0 || !Number.isSafeInteger(response.metadata.revision)) {
