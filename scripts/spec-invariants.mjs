@@ -8,6 +8,26 @@ const SOURCE_PATH = "AGENTS.md";
 const ARCHIVE_PATH = "docs/contracts/invariants-v1.md";
 const EVIDENCE_PATH = "docs/evidence/invariant-crosswalk.json";
 const SCANNED_DOCUMENTS = ["docs/architecture.md", "docs/feature-parity.md", "docs/releasing.md", "docs/testing.md"];
+const CLEANING_HISTORY_MODEL_PATH = "fixtures/cleaning-history-capabilities.json";
+const CLEANING_HISTORY_DOCUMENTS = ["README.md", "docs/product-roadmap.md"];
+const CLEANING_HISTORY_CAPABILITY_IDS = ["inspect", "edit", "delete", "undo", "reorder"];
+const CLEANING_HISTORY_MODEL_MAX_BYTES = 8 * 1024;
+const CLEANING_HISTORY_DOCUMENT_MAX_BYTES = 1024 * 1024;
+const CLEANING_HISTORY_SECTION_MAX_BYTES = 128 * 1024;
+
+const cleaningHistoryScopes = new Map([
+  ["inspect", new Set(["any_committed_step", "latest_committed_step"])],
+  ["edit", new Set(["any_committed_step", "latest_committed_step"])],
+  ["delete", new Set(["any_committed_step", "latest_committed_step"])],
+  ["undo", new Set(["most_recent_committed_step", "any_committed_step"])],
+  ["reorder", new Set(["committed_steps"])]
+]);
+
+const cleaningHistoryActions = new Map([
+  ["inspect", { passive: "inspected", unsupported: "Inspecting" }],
+  ["edit", { passive: "edited", unsupported: "Editing" }],
+  ["delete", { passive: "deleted", unsupported: "Deleting" }]
+]);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -17,6 +37,211 @@ function sha256(value) {
 
 function lineNumberAt(source, offset) {
   return source.slice(0, offset).split("\n").length;
+}
+
+function assertBoundedUtf8(value, maximumBytes, label) {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be UTF-8 text.`);
+  }
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > maximumBytes) {
+    throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
+  }
+}
+
+function assertPlainObject(value, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+}
+
+function assertExactKeys(value, expectedKeys, label) {
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} must contain exactly: ${expected.join(", ")}.`);
+  }
+}
+
+export function parseCleaningHistoryCapabilityModel(source) {
+  assertBoundedUtf8(source, CLEANING_HISTORY_MODEL_MAX_BYTES, CLEANING_HISTORY_MODEL_PATH);
+
+  let model;
+  try {
+    model = JSON.parse(source);
+  } catch (error) {
+    throw new Error(`${CLEANING_HISTORY_MODEL_PATH} is not valid JSON: ${error.message}`);
+  }
+
+  assertPlainObject(model, CLEANING_HISTORY_MODEL_PATH);
+  assertExactKeys(model, ["schemaVersion", "capabilities"], CLEANING_HISTORY_MODEL_PATH);
+  if (model.schemaVersion !== 1) {
+    throw new Error(`${CLEANING_HISTORY_MODEL_PATH} must use schemaVersion 1.`);
+  }
+  if (!Array.isArray(model.capabilities) || model.capabilities.length !== CLEANING_HISTORY_CAPABILITY_IDS.length) {
+    throw new Error(
+      `${CLEANING_HISTORY_MODEL_PATH} must define exactly ${CLEANING_HISTORY_CAPABILITY_IDS.length} capabilities.`
+    );
+  }
+
+  model.capabilities.forEach((capability, index) => {
+    const label = `${CLEANING_HISTORY_MODEL_PATH} capability ${index + 1}`;
+    assertPlainObject(capability, label);
+    assertExactKeys(capability, ["id", "status", "scope"], label);
+    const expectedId = CLEANING_HISTORY_CAPABILITY_IDS[index];
+    if (capability.id !== expectedId) {
+      throw new Error(`${label} must be ${expectedId}, found ${String(capability.id)}.`);
+    }
+    if (!new Set(["implemented", "not_committed"]).has(capability.status)) {
+      throw new Error(`${label} has unsupported status ${String(capability.status)}.`);
+    }
+    if (!cleaningHistoryScopes.get(expectedId).has(capability.scope)) {
+      throw new Error(`${label} has unsupported scope ${String(capability.scope)}.`);
+    }
+  });
+
+  return model;
+}
+
+function formatPassiveList(values) {
+  if (values.length === 1) {
+    return values[0];
+  }
+  if (values.length === 2) {
+    return `${values[0]} or ${values[1]}`;
+  }
+  return `${values.slice(0, -1).join(", ")}, or ${values.at(-1)}`;
+}
+
+function renderStepCapabilityClaims(capabilities, stepNoun) {
+  const claims = [];
+  const shared = capabilities.filter(
+    (capability) => capability.status === "implemented" && capability.scope === "any_committed_step"
+  );
+  if (shared.length > 0) {
+    claims.push(
+      `Any ${stepNoun} can be ${formatPassiveList(
+        shared.map((capability) => cleaningHistoryActions.get(capability.id).passive)
+      )}.`
+    );
+  }
+
+  for (const capability of capabilities.filter((entry) => !shared.includes(entry))) {
+    const action = cleaningHistoryActions.get(capability.id);
+    if (capability.status === "not_committed") {
+      claims.push(`${action.unsupported} ${stepNoun}s is not supported.`);
+    } else {
+      claims.push(`Only the most recent ${stepNoun} can be ${action.passive}.`);
+    }
+  }
+  return claims;
+}
+
+export function renderCleaningHistoryClaims(model) {
+  const capabilities = new Map(model.capabilities.map((capability) => [capability.id, capability]));
+  const access = CLEANING_HISTORY_CAPABILITY_IDS.slice(0, 3).map((id) => capabilities.get(id));
+  const undo = capabilities.get("undo");
+  const reorder = capabilities.get("reorder");
+
+  const undoClaim =
+    undo.status === "not_committed"
+      ? "Cleaning Undo is not supported."
+      : undo.scope === "most_recent_committed_step"
+        ? "Cleaning Undo removes the most recent committed step."
+        : "Cleaning Undo can remove any committed step.";
+  const readmeReorderClaim =
+    reorder.status === "implemented"
+      ? "Committed steps can be reordered."
+      : "Reordering committed steps is not supported.";
+  const roadmapReorderClaim =
+    reorder.status === "implemented"
+      ? "Committed steps can be reordered."
+      : "Reordering committed steps has no product commitment.";
+
+  return {
+    readme: [...renderStepCapabilityClaims(access, "applied step"), undoClaim, readmeReorderClaim],
+    roadmap: [...renderStepCapabilityClaims(access, "committed step"), undoClaim, roadmapReorderClaim]
+  };
+}
+
+function extractMarkdownSection(document, path, heading) {
+  assertBoundedUtf8(document, CLEANING_HISTORY_DOCUMENT_MAX_BYTES, path);
+  const lines = document.split("\n");
+  const indexes = lines.flatMap((line, index) => (line === heading ? [index] : []));
+  if (indexes.length !== 1) {
+    throw new Error(`${path} must contain exactly one ${heading} heading.`);
+  }
+
+  const level = heading.match(/^#+/u)?.[0].length;
+  if (level === undefined) {
+    throw new Error(`Invalid claim-section heading ${heading}.`);
+  }
+  let end = lines.length;
+  for (let index = indexes[0] + 1; index < lines.length; index += 1) {
+    const match = /^(?<marks>#+) /u.exec(lines[index]);
+    if (match !== null && match.groups.marks.length <= level) {
+      end = index;
+      break;
+    }
+  }
+
+  const section = lines.slice(indexes[0] + 1, end).join("\n");
+  assertBoundedUtf8(section, CLEANING_HISTORY_SECTION_MAX_BYTES, `${path} ${heading} section`);
+  return section;
+}
+
+function countOccurrences(source, value) {
+  let count = 0;
+  let offset = 0;
+  while ((offset = source.indexOf(value, offset)) >= 0) {
+    count += 1;
+    offset += value.length;
+  }
+  return count;
+}
+
+function assertSectionClaims(document, path, heading, claims) {
+  const section = extractMarkdownSection(document, path, heading).replace(/\s+/gu, " ").trim();
+  for (const claim of claims) {
+    const normalizedClaim = claim.replace(/\s+/gu, " ").trim();
+    const count = countOccurrences(section, normalizedClaim);
+    if (count !== 1) {
+      throw new Error(`${path} ${heading} must contain the generated claim exactly once: ${claim}`);
+    }
+  }
+}
+
+export function assertCleaningHistoryClaimsCurrent({ modelSource, documents }) {
+  const model = parseCleaningHistoryCapabilityModel(modelSource);
+  const claims = renderCleaningHistoryClaims(model);
+  assertSectionClaims(documents["README.md"], "README.md", "## Transformations", claims.readme);
+  assertSectionClaims(
+    documents["docs/product-roadmap.md"],
+    "docs/product-roadmap.md",
+    "### P1: fidelity and daily use",
+    claims.roadmap
+  );
+  assertSectionClaims(
+    documents["docs/product-roadmap.md"],
+    "docs/product-roadmap.md",
+    "## Audit disposition",
+    claims.roadmap
+  );
+}
+
+async function readCleaningHistoryInputs() {
+  const [modelSource, ...contents] = await Promise.all([
+    readFile(resolve(root, CLEANING_HISTORY_MODEL_PATH), "utf8"),
+    ...CLEANING_HISTORY_DOCUMENTS.map((path) => readFile(resolve(root, path), "utf8"))
+  ]);
+  return {
+    modelSource,
+    documents: Object.fromEntries(CLEANING_HISTORY_DOCUMENTS.map((path, index) => [path, contents[index]]))
+  };
+}
+
+export async function checkCleaningHistoryClaims() {
+  assertCleaningHistoryClaimsCurrent(await readCleaningHistoryInputs());
 }
 
 export function extractInvariantSection(source) {
@@ -150,6 +375,7 @@ async function readDocuments() {
 }
 
 async function writeGeneratedFiles() {
+  await checkCleaningHistoryClaims();
   const source = await readFile(resolve(root, SOURCE_PATH), "utf8");
   const archive = extractInvariantSection(source);
   const documents = await readDocuments();
@@ -169,13 +395,15 @@ export function assertGeneratedFilesCurrent({ source, archive, evidence, documen
 }
 
 export async function checkGeneratedFiles() {
-  const [source, archive, evidence, documents] = await Promise.all([
+  const [source, archive, evidence, documents, cleaningHistoryInputs] = await Promise.all([
     readFile(resolve(root, SOURCE_PATH), "utf8"),
     readFile(resolve(root, ARCHIVE_PATH), "utf8"),
     readFile(resolve(root, EVIDENCE_PATH), "utf8"),
-    readDocuments()
+    readDocuments(),
+    readCleaningHistoryInputs()
   ]);
   assertGeneratedFilesCurrent({ source, archive, evidence, documents });
+  assertCleaningHistoryClaimsCurrent(cleaningHistoryInputs);
 }
 
 async function main() {

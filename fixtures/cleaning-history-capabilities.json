@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "capabilities": [
+    {
+      "id": "inspect",
+      "status": "implemented",
+      "scope": "any_committed_step"
+    },
+    {
+      "id": "edit",
+      "status": "implemented",
+      "scope": "any_committed_step"
+    },
+    {
+      "id": "delete",
+      "status": "implemented",
+      "scope": "any_committed_step"
+    },
+    {
+      "id": "undo",
+      "status": "implemented",
+      "scope": "most_recent_committed_step"
+    },
+    {
+      "id": "reorder",
+      "status": "not_committed",
+      "scope": "committed_steps"
+    }
+  ]
+}

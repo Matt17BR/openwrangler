@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
-import { link, mkdtemp, mkdir, open, opendir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, open, opendir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { checkWebviewStyles, WEBVIEW_STYLE_IMPORTS, WEBVIEW_STYLE_LIMITS } from "./check-webview-styles.mjs";
 import {
+  assertCleaningHistoryClaimsCurrent,
   assertGeneratedFilesCurrent,
   buildCrosswalk,
+  checkCleaningHistoryClaims,
   checkGeneratedFiles,
   extractInvariantSection,
+  parseCleaningHistoryCapabilityModel,
   parseInvariantEntries,
+  renderCleaningHistoryClaims,
   renderCrosswalk,
   scanExplicitReferences
 } from "./spec-invariants.mjs";
@@ -43,6 +47,29 @@ function fixtureSection(overrides = new Map()) {
   return `## Non-negotiable invariants\n\n${entries.join("\n")}\n`;
 }
 
+function cleaningHistoryModel() {
+  return {
+    schemaVersion: 1,
+    capabilities: [
+      { id: "inspect", status: "implemented", scope: "any_committed_step" },
+      { id: "edit", status: "implemented", scope: "any_committed_step" },
+      { id: "delete", status: "implemented", scope: "any_committed_step" },
+      { id: "undo", status: "implemented", scope: "most_recent_committed_step" },
+      { id: "reorder", status: "not_committed", scope: "committed_steps" }
+    ]
+  };
+}
+
+function cleaningHistoryDocuments(model) {
+  const claims = renderCleaningHistoryClaims(model);
+  return {
+    "README.md": `# README\n\n## Transformations\n\n${claims.readme.join(" ")}\n\n## Notebook workflows\n`,
+    "docs/product-roadmap.md": `# Roadmap\n\n### P1: fidelity and daily use\n\n${claims.roadmap.join(
+      " "
+    )}\n\n### P2: next\n\n## Audit disposition\n\n${claims.roadmap.join(" ")}\n\n## Evidence\n`
+  };
+}
+
 test("extractInvariantSection preserves the complete invariant block", () => {
   const section = fixtureSection(new Map([[57, "57. First line.\n    Continued line."]]));
   const source = `# Guide\n\n${section}\n## Public writing\n`;
@@ -68,6 +95,84 @@ test("buildCrosswalk rejects a changed archive", () => {
 
 test("the repository archive and crosswalk match their authoritative inputs", async () => {
   await assert.doesNotReject(checkGeneratedFiles());
+});
+
+test("the cleaning-history registry drives every current claim surface", async () => {
+  const model = parseCleaningHistoryCapabilityModel(JSON.stringify(cleaningHistoryModel()));
+  assert.deepEqual(
+    model.capabilities.map(({ id }) => id),
+    ["inspect", "edit", "delete", "undo", "reorder"]
+  );
+  assert.deepEqual(renderCleaningHistoryClaims(model), {
+    readme: [
+      "Any applied step can be inspected, edited, or deleted.",
+      "Cleaning Undo removes the most recent committed step.",
+      "Reordering committed steps is not supported."
+    ],
+    roadmap: [
+      "Any committed step can be inspected, edited, or deleted.",
+      "Cleaning Undo removes the most recent committed step.",
+      "Reordering committed steps has no product commitment."
+    ]
+  });
+  await assert.doesNotReject(checkCleaningHistoryClaims());
+});
+
+test("the cleaning-history validator reproduces the audited latest-step contradiction", async () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+  const contradiction = JSON.parse(
+    await readFile(new URL("../fixtures/cleaning-history-claim-contradiction.json", import.meta.url), "utf8")
+  );
+  assert.equal(contradiction.schemaVersion, 1);
+  assert.ok(documents["docs/product-roadmap.md"].includes(contradiction.roadmapClaim));
+  documents["README.md"] = documents["README.md"].replace(
+    "Any applied step can be inspected, edited, or deleted.",
+    contradiction.readmeReplacement
+  );
+
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        documents
+      }),
+    /README\.md ## Transformations must contain the generated claim exactly once/u
+  );
+});
+
+test("each cleaning-history capability is mutation-sensitive", () => {
+  const model = cleaningHistoryModel();
+  const documents = cleaningHistoryDocuments(model);
+
+  for (const id of ["inspect", "edit", "delete", "undo", "reorder"]) {
+    const mutant = structuredClone(model);
+    const capability = mutant.capabilities.find((entry) => entry.id === id);
+    capability.status = capability.status === "implemented" ? "not_committed" : "implemented";
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(mutant),
+          documents
+        }),
+      /must contain the generated claim exactly once/u,
+      `${id} mutation must invalidate the checked claims`
+    );
+  }
+});
+
+test("the cleaning-history model is bounded and keeps capability identities distinct", () => {
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel(" ".repeat(8 * 1024 + 1)),
+    /exceeds the 8192-byte validation limit/u
+  );
+
+  const duplicate = cleaningHistoryModel();
+  duplicate.capabilities[1].id = "inspect";
+  assert.throws(
+    () => parseCleaningHistoryCapabilityModel(JSON.stringify(duplicate)),
+    /capability 2 must be edit, found inspect/u
+  );
 });
 
 test("the generated-file check rejects stale archive and evidence bytes", () => {

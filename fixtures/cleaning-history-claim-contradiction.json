@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "readmeReplacement": "Any applied step can be inspected or deleted. Only the latest applied step can be edited.",
+  "roadmapClaim": "Any committed step can be inspected, edited, or deleted."
+}
