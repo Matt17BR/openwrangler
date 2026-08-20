@@ -436,6 +436,20 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   git(task.worktree, [`--git-dir=${overlay}`, `--work-tree=${task.worktree}`, "read-tree", value.base]);
   await replaceTaskAssignment(task, { gitDirectory: realpathSync.native(overlay) });
   const configPath = realpathSync.native(join(overlay, "config"));
+  const fsmonitorMarker = join(value.root, "malicious-fsmonitor-ran.txt");
+  const fsmonitorHelper = join(
+    value.root,
+    process.platform === "win32" ? "malicious-fsmonitor.cmd" : "malicious-fsmonitor"
+  );
+  await writeFile(
+    fsmonitorHelper,
+    process.platform === "win32"
+      ? `@echo off\r\n>"${fsmonitorMarker}" echo invoked\r\nexit /b 1\r\n`
+      : `#!/bin/sh\nprintf invoked > ${JSON.stringify(fsmonitorMarker)}\nexit 1\n`,
+    { flag: "wx", mode: 0o700 }
+  );
+  if (process.platform !== "win32") await chmod(fsmonitorHelper, 0o700);
+  assignedGit(task, ["config", "core.fsmonitor", fsmonitorHelper]);
   const configHome = join(value.root, "config-home");
   const includedConfigPath = join(configHome, "identity.inc");
   const globalConfigPath = join(configHome, ".gitconfig");
@@ -527,6 +541,7 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
     assert.equal(valueReceipt.identity.gitConfig.sources.find((source) => source.path === path)?.sha256, sha256(bytes));
   }
   assert.equal(existsSync(hostileToolMarker), false);
+  assert.equal(existsSync(fsmonitorMarker), false);
   assert.equal(valueReceipt.environment.toolPath.includes(hostileToolDirectory), false);
 
   const nestedResult = JSON.parse(await readFile(nestedResultPath, "utf8"));
@@ -659,6 +674,59 @@ test("rejects Git owner overrides and unbound repositories outside the private t
     assert.equal(valueReceipt.result.signal, null);
     assert.equal(existsSync(resultPath), false);
   }
+});
+
+test("rejects private-root Git commands whose operands or destinations escape the task root", async (context) => {
+  const value = await fixture(context, "git-private-operands");
+  const task = await addTask(value, "git-private-operands");
+  const outside = join(value.root, "outside.txt");
+  const outsideGit = realpathSync.native(join(value.repository, ".git"));
+  const outsideConfig = join(outsideGit, "config");
+  const outsideConfigBefore = await readFile(outsideConfig);
+  const resultPath = join(task.assignment.stateRoot, "temp", "private-operands.txt");
+  await writeFile(outside, "outside\n", { flag: "wx", mode: 0o600 });
+  const valueReceipt = await runQualification({
+    assignmentPath: task.assignmentPath,
+    command: [
+      process.execPath,
+      child,
+      "git-private-operand-attacks",
+      "--outside",
+      outside,
+      "--outside-git",
+      outsideGit,
+      "--result",
+      resultPath
+    ],
+    environment: runnerEnvironment(),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.equal(await readFile(resultPath, "utf8"), "5\n");
+  assert.equal(await readFile(outside, "utf8"), "outside\n");
+  assert.deepEqual(await readFile(outsideConfig), outsideConfigBefore);
+});
+
+test("routes repository Python tools through the sealed bootstrap while retaining the private venv", async (context) => {
+  const value = await fixture(context, "repository-python-tool");
+  const task = await addTask(value, "repository-python-tool");
+  const resultPath = join(task.assignment.stateRoot, "temp", "python-tool.txt");
+  const valueReceipt = await runQualification({
+    assignmentPath: task.assignmentPath,
+    command: [process.execPath, child, "repository-python-tool", "--result", resultPath],
+    environment: runnerEnvironment(),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.equal(valueReceipt.environment.pythonToolExecutable, valueReceipt.bootstrap.bootstrapPython);
+  assert.notEqual(valueReceipt.environment.pythonToolExecutable, valueReceipt.environment.pythonExecutable);
+  assert.equal((await readFile(resultPath, "utf8")).trim(), valueReceipt.bootstrap.bootstrapPython);
+  const executableSuffix = relative(valueReceipt.environment.venv, valueReceipt.environment.pythonExecutable);
+  assert.ok(executableSuffix !== "" && !executableSuffix.startsWith("..") && !isAbsolute(executableSuffix));
 });
 
 test("routes pytest cache and temporary state through the private task root", async (context) => {
@@ -1915,6 +1983,36 @@ test("attempts every owned cleanup and preserves primary plus ordered cleanup fa
     }
   );
   assert.deepEqual(order, ["first", "stalled", "last"]);
+});
+
+test("does not publish an eligible receipt when any owned cleanup fails", async (context) => {
+  const value = await fixture(context, "eligible-cleanup-failure");
+  const task = await addTask(value, "eligible-cleanup-failure");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      cleanupActionsForTest: [
+        {
+          label: "injected final owner",
+          run() {
+            throw new Error("injected owned cleanup failure");
+          }
+        }
+      ],
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.ok(error.errors.some((value) => /injected owned cleanup failure/u.test(value.message)));
+      return true;
+    }
+  );
+  const receiptBytes = await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"));
+  assert.equal(receiptBytes.length, 0);
 });
 
 test(

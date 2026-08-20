@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
 function argument(name) {
@@ -44,6 +44,10 @@ async function recordEnvironment() {
       else privatePaths.set(layoutKey, value);
     }
   }
+  for (const key of Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.pinnedToolFiles)) {
+    const value = process.env[key];
+    assert.ok(value && isAbsolute(value), `${key} must be one absolute pinned tool path`);
+  }
   const expectedWorktreePaths = {
     nodeModules: join(process.cwd(), "node_modules"),
     vitestCache: join(process.cwd(), "node_modules", ".vite")
@@ -70,7 +74,7 @@ async function recordEnvironment() {
   assert.doesNotMatch(process.env.PYTEST_ADDOPTS ?? "", /--cache-dir/u);
   assert.equal(
     process.env.PATH?.split(process.platform === "win32" ? ";" : ":")[0],
-    dirname(process.env.OPEN_WRANGLER_TEST_PYTHON)
+    join(process.env.VIRTUAL_ENV, process.platform === "win32" ? "Scripts" : "bin")
   );
   assert.match(process.env.PYTEST_ADDOPTS ?? "", new RegExp(stateRoot.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const allowedKeys = new Set([
@@ -78,6 +82,7 @@ async function recordEnvironment() {
     ...QUALIFICATION_ENVIRONMENT_CONTRACT.runnerOwnedKeys,
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateDirectories),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.privateFiles),
+    ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.pinnedToolFiles),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.worktreePaths),
     ...Object.keys(QUALIFICATION_ENVIRONMENT_CONTRACT.exactValues),
     "OPEN_WRANGLER_QUALIFICATION_ASSIGNMENT",
@@ -96,7 +101,7 @@ async function recordEnvironment() {
     "target = pathlib.Path(os.environ['PYTHONUSERBASE']) / ('python-' + os.environ['OPEN_WRANGLER_QUALIFICATION_TASK_ID'] + '.txt')",
     "target.parent.mkdir(parents=True, exist_ok=True)",
     "target.write_text(sys.prefix + '\\n', encoding='utf-8')",
-    "print(json.dumps({'prefix': os.path.realpath(sys.prefix)}))"
+    "print(json.dumps({'executable': os.path.realpath(sys.executable), 'prefix': os.path.realpath(sys.prefix)}))"
   ].join("; ");
   const explicitPython = JSON.parse(
     execFileSync(process.env.OPEN_WRANGLER_TEST_PYTHON, ["-I", "-c", prefixProbe], {
@@ -112,8 +117,8 @@ async function recordEnvironment() {
       windowsHide: true
     })
   );
-  assert.equal(explicitPython.prefix, resolve(process.env.VIRTUAL_ENV));
-  assert.equal(pathPython.prefix, explicitPython.prefix);
+  assert.equal(explicitPython.executable, resolve(process.env.OPEN_WRANGLER_TEST_PYTHON));
+  assert.equal(pathPython.prefix, resolve(process.env.VIRTUAL_ENV));
   const writableRoots = [
     process.env.HOME,
     process.env.NPM_CONFIG_CACHE,
@@ -274,6 +279,56 @@ if (mode === "hold") {
     process.exit(1);
   }
   await writeFile(argument("--result"), "executed\n", { flag: "wx", mode: 0o600 });
+} else if (mode === "git-private-operand-attacks") {
+  const outside = argument("--outside");
+  const outsideGit = argument("--outside-git");
+  const privateRepository = join(process.env.RUNNER_TEMP, "private-operand-repository");
+  await mkdir(privateRepository, { mode: 0o700 });
+  execFileSync("git", ["init", "--quiet", "--initial-branch=main"], {
+    cwd: privateRepository,
+    env: process.env,
+    windowsHide: true
+  });
+  const attempts = [
+    ["config", "--file", outside, "user.name", "escaped"],
+    ["init", outside],
+    ["hash-object", "-w", outside],
+    ["diff", "--no-index", ".", outside]
+  ];
+  for (const command of attempts) {
+    assert.throws(() =>
+      execFileSync("git", command, {
+        cwd: privateRepository,
+        env: process.env,
+        stdio: "ignore",
+        windowsHide: true
+      })
+    );
+  }
+  const aliasedRepository = join(process.env.RUNNER_TEMP, "aliased-private-repository");
+  await mkdir(aliasedRepository, { mode: 0o700 });
+  await symlink(outsideGit, join(aliasedRepository, ".git"), process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() =>
+    execFileSync("git", ["config", "--local", "user.name", "escaped"], {
+      cwd: aliasedRepository,
+      env: process.env,
+      stdio: "ignore",
+      windowsHide: true
+    })
+  );
+  await writeFile(argument("--result"), `${String(attempts.length + 1)}\n`, { flag: "wx", mode: 0o600 });
+} else if (mode === "repository-python-tool") {
+  const runPython = join(import.meta.dirname, "..", "run-python.mjs");
+  execFileSync(process.execPath, [runPython, "-m", "pytest", "--version"], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "ignore",
+    windowsHide: true
+  });
+  await writeFile(argument("--result"), `${process.env.OPEN_WRANGLER_PYTHON}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
 } else if (mode === "mutate-git-config") {
   execFileSync("git", ["config", "user.name", "Mutated qualification fixture"], {
     cwd: process.cwd(),

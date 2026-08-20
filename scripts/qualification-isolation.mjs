@@ -132,13 +132,15 @@ const PRIVATE_DIRECTORY_ENVIRONMENT = Object.freeze({
 });
 const PRIVATE_FILE_ENVIRONMENT = Object.freeze({
   NPM_CONFIG_USERCONFIG: "npmUserConfig",
-  OPEN_WRANGLER_PYTHON: "pythonExecutable",
   OPEN_WRANGLER_QUALIFICATION_RECEIPT: "receipt",
   OPEN_WRANGLER_TEST_PROGRESS: "testProgress",
-  OPEN_WRANGLER_TEST_PYTHON: "pythonExecutable",
   OPEN_WRANGLER_TEST_RESULT: "testResult",
   PIP_CONFIG_FILE: "pipConfig",
   npm_config_userconfig: "npmUserConfig"
+});
+const PINNED_TOOL_FILE_ENVIRONMENT = Object.freeze({
+  OPEN_WRANGLER_PYTHON: "pythonToolExecutable",
+  OPEN_WRANGLER_TEST_PYTHON: "pythonToolExecutable"
 });
 const WORKTREE_PATH_ENVIRONMENT = Object.freeze({
   OPEN_WRANGLER_NODE_MODULES: "nodeModules",
@@ -167,6 +169,7 @@ const QUALIFICATION_ENVIRONMENT_CONTRACT = Object.freeze({
   passThroughKeys: SAFE_PASSTHROUGH_ENVIRONMENT_KEYS,
   privateDirectories: PRIVATE_DIRECTORY_ENVIRONMENT,
   privateFiles: PRIVATE_FILE_ENVIRONMENT,
+  pinnedToolFiles: PINNED_TOOL_FILE_ENVIRONMENT,
   runnerOwnedKeys: Object.freeze(["COMSPEC", "PATH", "PWD", "SYSTEMDRIVE", "SYSTEMROOT", "WINDIR"]),
   worktreePaths: WORKTREE_PATH_ENVIRONMENT
 });
@@ -394,18 +397,51 @@ function gitInspectionEnvironment(assignment, hostEnvironment = process.env) {
   return environment;
 }
 
+function safeGitConfigArguments() {
+  const disabledPath = process.platform === "win32" ? "NUL" : "/dev/null";
+  return [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    `core.hooksPath=${disabledPath}`,
+    "-c",
+    `core.attributesFile=${disabledPath}`,
+    "-c",
+    `core.excludesFile=${disabledPath}`,
+    "-c",
+    "core.pager=",
+    "-c",
+    "diff.external=",
+    "-c",
+    "commit.gpgSign=false"
+  ];
+}
+
+function gitInspectionArguments(assignment, arguments_) {
+  const command = arguments_[0];
+  const hardened =
+    command === "diff" ? [command, "--no-ext-diff", "--no-textconv", ...arguments_.slice(1)] : arguments_;
+  return [
+    ...safeGitConfigArguments(),
+    "--no-optional-locks",
+    "--git-dir",
+    assignment.gitDirectory,
+    "--work-tree",
+    assignment.worktree,
+    ...hardened
+  ];
+}
+
 function gitWithEnvironment(assignment, arguments_, hostEnvironment) {
-  const result = spawnSync(
-    assignment.gitExecutable,
-    ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, ...arguments_],
-    {
-      cwd: assignment.worktree,
-      encoding: "utf8",
-      env: gitInspectionEnvironment(assignment, hostEnvironment),
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true
-    }
-  );
+  const result = spawnSync(assignment.gitExecutable, gitInspectionArguments(assignment, arguments_), {
+    cwd: assignment.worktree,
+    encoding: "utf8",
+    env: gitInspectionEnvironment(assignment, hostEnvironment),
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true
+  });
   if (result.error) {
     throw result.error;
   }
@@ -416,17 +452,13 @@ function gitWithEnvironment(assignment, arguments_, hostEnvironment) {
 }
 
 function optionalGitConfig(assignment, key, hostEnvironment = process.env) {
-  const result = spawnSync(
-    assignment.gitExecutable,
-    ["--git-dir", assignment.gitDirectory, "--work-tree", assignment.worktree, "config", "--get", key],
-    {
-      cwd: assignment.worktree,
-      encoding: "utf8",
-      env: gitInspectionEnvironment(assignment, hostEnvironment),
-      maxBuffer: 1024 * 1024,
-      windowsHide: true
-    }
-  );
+  const result = spawnSync(assignment.gitExecutable, gitInspectionArguments(assignment, ["config", "--get", key]), {
+    cwd: assignment.worktree,
+    encoding: "utf8",
+    env: gitInspectionEnvironment(assignment, hostEnvironment),
+    maxBuffer: 1024 * 1024,
+    windowsHide: true
+  });
   if (result.error) {
     throw result.error;
   }
@@ -474,6 +506,10 @@ function parseGitConfigManifestBytes(bytes) {
   for (let index = 0; index < fields.length; index += 3) {
     const scope = fields[index];
     const origin = fields[index + 1];
+    if (origin === "command line:") {
+      if (scope !== "command") fail("Git command-line config has the wrong scope");
+      continue;
+    }
     if (!origin.startsWith("file:")) {
       fail(`Git config source ${origin} is not a receiptable file`);
     }
@@ -494,17 +530,7 @@ function parseGitConfigManifestBytes(bytes) {
 function captureGitConfigManifest(assignment, hostEnvironment) {
   const result = spawnSync(
     assignment.gitExecutable,
-    [
-      "--git-dir",
-      assignment.gitDirectory,
-      "--work-tree",
-      assignment.worktree,
-      "config",
-      "--show-origin",
-      "--show-scope",
-      "--null",
-      "--list"
-    ],
+    gitInspectionArguments(assignment, ["config", "--show-origin", "--show-scope", "--null", "--list"]),
     {
       cwd: assignment.worktree,
       encoding: null,
@@ -1027,6 +1053,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     pytestTempParent: join(assignment.stateRoot, "python", "pytest-temp"),
     pythonBytecode: join(assignment.stateRoot, "python", "bytecode"),
     pythonExecutable,
+    pythonToolExecutable: pythonExecutable,
     pythonUserBase: join(assignment.stateRoot, "python", "user-base"),
     rCache: join(assignment.stateRoot, "r", "cache"),
     rLibrary: join(assignment.stateRoot, "r", "library"),
@@ -1059,6 +1086,7 @@ async function createStateLayout(assignment, assignmentDigest) {
         "pipConfig",
         "pytestTemp",
         "pythonExecutable",
+        "pythonToolExecutable",
         "receipt",
         "stateRoot",
         "testProgress",
@@ -1438,7 +1466,7 @@ function quotePytestPath(path) {
 function gitWrapperProgramSource(assignment, configSelectionEnvironment, gitExecutableLaunch, windowsPowerShell) {
   return `import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 const binding = ${JSON.stringify({
@@ -1448,6 +1476,7 @@ const binding = ${JSON.stringify({
     gitExecutableSha256: gitExecutableLaunch.record.sha256,
     gitExecutableSize: gitExecutableLaunch.record.snapshot.size,
     platform: process.platform,
+    safeConfigArguments: safeGitConfigArguments(),
     stateRoot: assignment.stateRoot,
     windowsPowerShell,
     worktree: assignment.worktree
@@ -1602,6 +1631,92 @@ function requireReadOnlyAssignedCommand(arguments_) {
   }
   validateReadOnlyArguments(command, rest);
 }
+function requirePrivatePathOperand(effectiveCwd, value, label) {
+  if (typeof value !== "string" || value.length === 0 || isAbsolute(value)) {
+    throw new Error("qualification Git " + label + " must be relative to the private repository");
+  }
+  const resolved = resolve(effectiveCwd, value);
+  if (!isInside(binding.stateRoot, resolved)) {
+    throw new Error("qualification Git " + label + " escaped the private task root");
+  }
+  return resolved;
+}
+function requirePrivateTaskCommand(arguments_, effectiveCwd) {
+  const { command, rest } = commandAfterGlobalOptions(arguments_);
+  if (command === "init") {
+    if (
+      rest.some(
+        (argument) =>
+          argument !== "--quiet" &&
+          argument !== "-q" &&
+          argument !== "--initial-branch=main" &&
+          argument !== "-bmain"
+      )
+    ) {
+      throw new Error("qualification Git init is restricted to the current private repository");
+    }
+    return;
+  }
+  if (command === "config") {
+    if (
+      rest.length !== 3 ||
+      rest[0] !== "--local" ||
+      !["user.name", "user.email"].includes(rest[1]) ||
+      rest[2].length === 0 ||
+      rest[2].includes("\0")
+    ) {
+      throw new Error("qualification Git config is restricted to local private fixture identity");
+    }
+    return;
+  }
+  if (command === "add") {
+    if (rest.length === 0 || rest.some((argument) => argument.startsWith("-"))) {
+      throw new Error("qualification Git add is restricted to private relative paths");
+    }
+    for (const argument of rest) requirePrivatePathOperand(effectiveCwd, argument, "add operand");
+    return;
+  }
+  if (command === "commit") {
+    if (
+      rest.length !== 3 ||
+      !["--quiet", "-q"].includes(rest[0]) ||
+      rest[1] !== "-m" ||
+      rest[2].length === 0 ||
+      rest[2].includes("\0")
+    ) {
+      throw new Error("qualification Git commit is restricted to one private fixture message");
+    }
+    return;
+  }
+  if (command === "rev-parse") {
+    if (rest.length !== 1 || rest[0] !== "HEAD") {
+      throw new Error("qualification Git rev-parse is restricted to the private HEAD");
+    }
+    return;
+  }
+  if (command === "status") {
+    if (
+      rest.length !== 2 ||
+      rest[0] !== "--porcelain=v1" ||
+      rest[1] !== "--untracked-files=all"
+    ) {
+      throw new Error("qualification Git status is restricted to the private fixture status");
+    }
+    return;
+  }
+  if (command === "show") {
+    if (
+      rest.length !== 3 ||
+      rest[0] !== "-s" ||
+      rest[1] !== "--format=%an%n%ae%n%cn%n%ce" ||
+      rest[2] !== "HEAD"
+    ) {
+      throw new Error("qualification Git show is restricted to private fixture identity");
+    }
+    return;
+  }
+  throw new Error("qualification Git command is not allowed inside the private task root");
+}
 function hardenedAssignedArguments(arguments_) {
   const { command } = commandAfterGlobalOptions(arguments_);
   const commandIndex = arguments_.findIndex((argument, index) => {
@@ -1614,17 +1729,37 @@ function hardenedAssignedArguments(arguments_) {
     hardened.splice(commandIndex + 1, 0, "--no-ext-diff", "--no-textconv");
   }
   return [
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    "core.untrackedCache=false",
-    "-c",
-    "core.pager=",
+    ...binding.safeConfigArguments,
     "--git-dir",
     binding.gitDirectory,
     "--work-tree",
     binding.worktree,
     ...hardened
+  ];
+}
+function hardenedPrivateArguments(arguments_, effectiveCwd) {
+  const { command, rest } = commandAfterGlobalOptions(arguments_);
+  if (command === "init") {
+    try {
+      lstatSync(resolve(effectiveCwd, ".git"));
+      throw new Error("qualification Git init cannot reuse an existing metadata owner");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    return [...binding.safeConfigArguments, command, ...rest];
+  }
+  const gitDirectory = realpathSync.native(resolve(effectiveCwd, ".git"));
+  if (!isInside(binding.stateRoot, gitDirectory)) {
+    throw new Error("qualification Git metadata escaped the private task root");
+  }
+  return [
+    ...binding.safeConfigArguments,
+    "--git-dir",
+    gitDirectory,
+    "--work-tree",
+    effectiveCwd,
+    command,
+    ...rest
   ];
 }
 const environment = { ...process.env };
@@ -1647,7 +1782,10 @@ if (!usesAssignedWorktree && !isInside(binding.stateRoot, effectiveCwd)) {
   throw new Error("unbound qualification Git is permitted only inside the private task root");
 }
 if (usesAssignedWorktree) requireReadOnlyAssignedCommand(arguments_);
-const commandArguments = usesAssignedWorktree ? hardenedAssignedArguments(arguments_) : arguments_;
+else requirePrivateTaskCommand(arguments_, effectiveCwd);
+const commandArguments = usesAssignedWorktree
+  ? hardenedAssignedArguments(arguments_)
+  : hardenedPrivateArguments(arguments_, effectiveCwd);
 function verifyOpenedExecutable(handle) {
   const value = fstatSync(handle, { bigint: true });
   if (!value.isFile() || value.nlink !== 1n || value.size !== BigInt(binding.gitExecutableSize)) {
@@ -1820,6 +1958,9 @@ function isolatedEnvironment(assignmentFile, assignment, layout, hostEnvironment
     environment[key] = layout[layoutKey];
   }
   for (const [key, layoutKey] of Object.entries(PRIVATE_FILE_ENVIRONMENT)) {
+    environment[key] = layout[layoutKey];
+  }
+  for (const [key, layoutKey] of Object.entries(PINNED_TOOL_FILE_ENVIRONMENT)) {
     environment[key] = layout[layoutKey];
   }
   for (const [key, layoutKey] of Object.entries(WORKTREE_PATH_ENVIRONMENT)) {
@@ -2908,6 +3049,7 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
   });
   const bootstrapPython = await realpath(selected);
   assertCanonicalAbsolutePath(bootstrapPython, "bootstrap Python");
+  layoutState.layout.pythonToolExecutable = bootstrapPython;
   const trustedTools = await trustedToolDirectories(assignment);
   layoutState.layout.toolDirectories = trustedTools.directories;
   layoutState.layout.toolPath = [layoutState.layout.toolShim, ...trustedTools.directories].join(delimiter);
@@ -3023,12 +3165,12 @@ async function verifyLayout(layoutState) {
   }
 }
 
-async function writeReceipt(layoutState, value) {
+async function writeReceiptToHandle(layoutState, receiptHandle, value) {
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
   if (bytes.length === 0 || bytes.length > MAX_RECEIPT_BYTES) {
     fail("receipt bytes are invalid");
   }
-  const opened = await layoutState.receiptHandle.stat({ bigint: true });
+  const opened = await receiptHandle.stat({ bigint: true });
   const named = await lstat(layoutState.layout.receipt, { bigint: true });
   if (
     !sameImmutableSnapshot(layoutState.receiptSnapshot, opened) ||
@@ -3039,12 +3181,12 @@ async function writeReceipt(layoutState, value) {
   }
   let offset = 0;
   while (offset < bytes.length) {
-    const { bytesWritten } = await layoutState.receiptHandle.write(bytes, offset, bytes.length - offset, offset);
+    const { bytesWritten } = await receiptHandle.write(bytes, offset, bytes.length - offset, offset);
     if (bytesWritten === 0) fail("receipt publication made no progress");
     offset += bytesWritten;
   }
-  await layoutState.receiptHandle.sync();
-  const completed = await layoutState.receiptHandle.stat({ bigint: true });
+  await receiptHandle.sync();
+  const completed = await receiptHandle.stat({ bigint: true });
   const finalNamed = await lstat(layoutState.layout.receipt, { bigint: true });
   if (
     completed.dev !== layoutState.receiptSnapshot.dev ||
@@ -3060,6 +3202,67 @@ async function writeReceipt(layoutState, value) {
   ) {
     fail("receipt identity changed during publication");
   }
+}
+
+async function writeReceipt(layoutState, value) {
+  await writeReceiptToHandle(layoutState, layoutState.receiptHandle, value);
+}
+
+async function scrubReceiptReservation(layoutState) {
+  const handle = await open(layoutState.layout.receipt, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
+  let error;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    const named = await lstat(layoutState.layout.receipt, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      named.isSymbolicLink() ||
+      opened.dev !== layoutState.receiptSnapshot.dev ||
+      opened.ino !== layoutState.receiptSnapshot.ino ||
+      opened.dev !== named.dev ||
+      opened.ino !== named.ino ||
+      (await realpath(layoutState.layout.receipt)) !== layoutState.layout.receipt
+    ) {
+      fail("receipt reservation identity changed before scrub");
+    }
+    await handle.truncate(0);
+    await handle.sync();
+  } catch (value) {
+    error = value;
+  }
+  await finishWithOwnedCleanup(error, [{ label: "receipt scrub owner", run: () => handle.close() }]);
+}
+
+async function publishEligibleReceipt(layoutState, value) {
+  let handle;
+  let publicationError;
+  try {
+    handle = await open(layoutState.layout.receipt, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
+    await writeReceiptToHandle(layoutState, handle, value);
+    await handle.close();
+    handle = undefined;
+  } catch (error) {
+    publicationError = error;
+  }
+  if (!publicationError) return;
+  const cleanupErrors = [];
+  if (handle) {
+    try {
+      await handle.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  try {
+    await scrubReceiptReservation(layoutState);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError([publicationError, ...cleanupErrors], "receipt publication and scrub failed");
+  }
+  throw publicationError;
 }
 
 async function runQualification({
@@ -3078,6 +3281,7 @@ async function runQualification({
   command,
   commandPlatformForTest,
   commandRunnerForTest,
+  cleanupActionsForTest = [],
   environment = process.env,
   pytestTempAfterOpenForTest,
   pytestTempLimitsForTest,
@@ -3098,6 +3302,7 @@ async function runQualification({
   let layoutState;
   let gitOwnerPins;
   let primaryError;
+  let completedReceipt;
   try {
     const assignment = initialAssignment.value;
     const worktreePin = await openPinnedDirectory(assignment.worktree, "worktree owner");
@@ -3264,30 +3469,33 @@ async function runQualification({
       result,
       startedAt
     };
-    if (!failures.some((failure) => /artifact|receipt reservation/u.test(failure))) {
+    if (!eligible && !failures.some((failure) => /artifact|receipt reservation/u.test(failure))) {
       await writeReceipt(layoutState, receipt);
       if (writeOutput) process.stdout.write(`${layoutState.layout.receipt}\n`);
     }
     if (!eligible) {
       fail(failures.join("; "));
     }
-    return receipt;
+    completedReceipt = receipt;
   } catch (error) {
     primaryError = error;
-    throw error;
-  } finally {
-    await finishWithOwnedCleanup(primaryError, [
-      { label: "private Git executable launch", run: () => closeExecutableLaunch(layoutState?.gitExecutableLaunch) },
-      ...(layoutState?.runnerFilePins ?? []).map(({ label, pin }) => ({
-        label,
-        run: () => pin.handle.close()
-      })),
-      { label: "layout owners", run: () => closeDirectoryPins(layoutState?.ownerPins) },
-      { label: "Git owners", run: () => closeDirectoryPins(gitOwnerPins) },
-      { label: "receipt owner", run: () => layoutState?.receiptHandle?.close() },
-      { label: "assignment owner", run: () => initialAssignment.pinned.handle.close() }
-    ]);
   }
+  await finishWithOwnedCleanup(primaryError, [
+    { label: "private Git executable launch", run: () => closeExecutableLaunch(layoutState?.gitExecutableLaunch) },
+    ...(layoutState?.runnerFilePins ?? []).map(({ label, pin }) => ({
+      label,
+      run: () => pin.handle.close()
+    })),
+    { label: "layout owners", run: () => closeDirectoryPins(layoutState?.ownerPins) },
+    { label: "Git owners", run: () => closeDirectoryPins(gitOwnerPins) },
+    { label: "receipt owner", run: () => layoutState?.receiptHandle?.close() },
+    { label: "assignment owner", run: () => initialAssignment.pinned.handle.close() },
+    ...cleanupActionsForTest
+  ]);
+  if (!completedReceipt || !layoutState) fail("eligible qualification did not produce a receipt");
+  await publishEligibleReceipt(layoutState, completedReceipt);
+  if (writeOutput) process.stdout.write(`${layoutState.layout.receipt}\n`);
+  return completedReceipt;
 }
 
 function parseCommandLine(arguments_) {
