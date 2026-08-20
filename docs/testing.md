@@ -90,6 +90,12 @@ caller's mutable `PATH` is never inherited. The private launcher binds Git comma
 worktree to the sealed metadata overlay, while Git commands inside a task-owned nested fixture remain local to that
 fixture and receive no authoritative-checkout overrides.
 
+Pytest receives one randomized, initially absent `--basetemp` below a pinned private parent. The final receipt
+streams that complete parent without retaining or sorting an unbounded directory listing, permits no sibling beside
+the assigned basetemp, and binds its entry, path-byte, file-byte, link, and mount inventory. Linux uses descriptor
+mount IDs so a same-device bind mount still fails; Windows rejects reparse aliases while retaining the pinned volume
+owner. An absent basetemp is receipted explicitly when a qualification command does not invoke pytest.
+
 The receipt records the assignment digest, command, worktree, authoritative Git-directory/executable filesystem
 identities, every effective system, global, included, worktree, and local Git config source with its exact bytes and
 scope, exact
@@ -101,7 +107,11 @@ and a subreaper that repeatedly adopts, signals, and reaps new sessions or proce
 termination phases. Other POSIX hosts are explicitly unsupported: the runner launches no qualification command and
 publishes a terminal ineligible receipt. Windows derives its system tools from the Node executable's installation
 drive instead of inherited `SYSTEMROOT` or `WINDIR`, pins that PowerShell owner, uses the existing kill-on-close Job
-Object supervisor, and revalidates the private target snapshot immediately before launch.
+Object supervisor, and revalidates the private target snapshot immediately before launch. PowerShell receives the
+Job Object script through an encoded loader that waits on a private pre-load control barrier, opens the verified
+snapshot with write/delete sharing denied, checks its exact size and SHA-256, and keeps that handle open while the
+script runs. A missing load marker or final Job Object empty attestation leaves process ownership unverified and
+withholds qualification eligibility.
 
 The runner performs no cleanup and never reuses a root. After the receipt is handed off and all owned processes have
 ended, the assigned task may remove only its exact worktree and state root under the portfolio cleanup policy. An

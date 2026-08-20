@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, realpath, readlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, opendir, readFile, realpath, readlink, writeFile } from "node:fs/promises";
 import {
   delimiter,
   dirname,
@@ -25,9 +25,12 @@ const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_PYTEST_TEMP_ENTRIES = 100_000;
+const MAX_PYTEST_TEMP_PATH_BYTES = 16 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TERMINATION_GRACE_MS = 10_000;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
+const WINDOWS_JOB_LOAD_CONTROL_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_LOAD:";
+const WINDOWS_JOB_LOADED_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_LOADED:";
 const WINDOWS_JOB_SUPERVISOR_PATH = join(import.meta.dirname, "windows-job-supervisor.ps1");
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
@@ -1064,91 +1067,200 @@ async function requireAbsentPath(path, label) {
   fail(`${label} must be absent before qualification`);
 }
 
-async function inspectPrivateTree(rootPin, parentPin, label) {
-  await verifyPinnedDirectory(parentPin, `${label} parent`);
-  await verifyPinnedDirectory(rootPin, label);
-  if (rootPin.snapshot.dev !== parentPin.snapshot.dev) {
-    fail(`${label} must not cross a filesystem mount`);
+function pytestTreeLimits(value) {
+  const requested = value ?? {};
+  const maximums = {
+    bytes: MAX_PYTEST_TEMP_BYTES,
+    entries: MAX_PYTEST_TEMP_ENTRIES,
+    pathBytes: MAX_PYTEST_TEMP_PATH_BYTES
+  };
+  const result = {};
+  for (const [key, maximum] of Object.entries(maximums)) {
+    const candidate = requested[key] ?? maximum;
+    if (!Number.isSafeInteger(candidate) || candidate <= 0 || candidate > maximum) {
+      fail(`pytest temporary ${key} limit is invalid`);
+    }
+    result[key] = candidate;
   }
-  const digest = createHash("sha256");
+  return Object.freeze(result);
+}
+
+async function pinnedMountIdentity(handle, path, platform, mountIdentityForTest) {
+  if (mountIdentityForTest) {
+    const injected = await mountIdentityForTest({ handle, path, platform });
+    if (typeof injected !== "string" || injected.length === 0 || injected.length > 256) {
+      fail("pytest temporary mount identity is invalid");
+    }
+    return `injected:${injected}`;
+  }
+  const opened = await handle.stat({ bigint: true });
+  if (platform === "linux") {
+    const bytes = await readFile(`/proc/self/fdinfo/${handle.fd}`);
+    if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
+      fail("pytest temporary Linux mount identity is unavailable");
+    }
+    const matches = [...bytes.toString("utf8").matchAll(/^mnt_id:\s*([0-9]+)$/gmu)];
+    if (matches.length !== 1) fail("pytest temporary Linux mount identity is ambiguous");
+    return `linux:${matches[0][1]}`;
+  }
+  if (platform === "win32") {
+    const root = windowsPath.parse(path).root.toLowerCase();
+    if (!root) fail("pytest temporary Windows volume identity is unavailable");
+    let cursor = root;
+    for (const segment of path
+      .slice(root.length)
+      .split(/[\\/]+/u)
+      .filter(Boolean)) {
+      cursor = windowsPath.join(cursor, segment);
+      const value = await lstat(cursor, { bigint: true });
+      if (value.isSymbolicLink()) fail("pytest temporary tree contains a Windows reparse alias");
+    }
+    return `windows:${root}:${opened.dev.toString()}`;
+  }
+  fail(`pytest temporary mount identity is unsupported on ${platform}`);
+}
+
+function addTreeDigest(accumulator, value) {
+  const entry = createHash("sha256").update(value).digest();
+  for (let index = 0; index < entry.length; index += 1) accumulator.xor[index] ^= entry[index];
+  accumulator.sum = (accumulator.sum + BigInt(`0x${entry.toString("hex")}`)) & ((1n << 256n) - 1n);
+}
+
+function finishTreeDigest(accumulator, entries) {
+  const sum = Buffer.from(accumulator.sum.toString(16).padStart(64, "0"), "hex");
+  return createHash("sha256").update(`${entries}\0`, "utf8").update(accumulator.xor).update(sum).digest("hex");
+}
+
+async function inspectPrivateTree(rootPin, label, options = {}) {
+  const limits = pytestTreeLimits(options.limits);
+  const platform = options.platformForTest ?? process.platform;
+  await verifyPinnedDirectory(rootPin, label);
+  const rootMount = await pinnedMountIdentity(rootPin.handle, rootPin.path, platform, options.mountIdentityForTest);
+  const accumulator = { sum: 0n, xor: Buffer.alloc(32) };
   let directories = 1;
   let entries = 0;
   let files = 0;
+  let pathBytes = 0;
   let symbolicLinks = 0;
   let totalBytes = 0n;
-  const visit = async (directory) => {
-    const before = await lstat(directory, { bigint: true });
-    if (!before.isDirectory() || before.isSymbolicLink() || before.dev !== rootPin.snapshot.dev) {
-      fail(`${label} contains an invalid directory`);
-    }
-    const names = (await readdir(directory)).sort((left, right) => left.localeCompare(right));
-    for (const name of names) {
-      entries += 1;
-      if (entries > MAX_PYTEST_TEMP_ENTRIES) fail(`${label} contains too many entries`);
-      const path = join(directory, name);
-      const relativePath = relative(rootPin.path, path);
-      if (
-        relativePath === "" ||
-        relativePath.startsWith("..") ||
-        isAbsolute(relativePath) ||
-        Buffer.byteLength(relativePath, "utf8") > 4096
-      ) {
-        fail(`${label} contains an invalid path`);
-      }
-      const opened = await lstat(path, { bigint: true });
-      if (opened.dev !== rootPin.snapshot.dev) {
-        fail(`${label} contains an aliased or mounted entry`);
-      }
-      let kind;
-      let linkIdentity = "";
-      if (opened.isSymbolicLink()) {
-        const linkText = await readlink(path);
-        const target = await realpath(path);
-        const targetIdentity = await lstat(target, { bigint: true });
-        if (
-          !isInside(target, rootPin.path) ||
-          targetIdentity.isSymbolicLink() ||
-          targetIdentity.dev !== rootPin.snapshot.dev
-        ) {
-          fail(`${label} contains an escaping symbolic link`);
-        }
-        kind = "symbolic-link";
-        linkIdentity = `${linkText}\0${target}\0`;
-        symbolicLinks += 1;
-      } else if ((await realpath(path)) !== path) {
-        fail(`${label} contains an aliased or mounted entry`);
-      } else if (opened.isDirectory()) {
-        kind = "directory";
-        directories += 1;
-        await visit(path);
-      } else if (opened.isFile() && opened.nlink === 1n) {
-        kind = "file";
-        files += 1;
-        totalBytes += opened.size;
-        if (totalBytes > BigInt(MAX_PYTEST_TEMP_BYTES)) fail(`${label} contains too many bytes`);
-      } else {
-        fail(`${label} contains a linked or unsupported entry`);
-      }
-      const closed = await lstat(path, { bigint: true });
-      if (!sameImmutableSnapshot(opened, closed)) fail(`${label} changed while it was inspected`);
-      digest.update(
-        `${kind}\0${relativePath}\0${linkIdentity}${opened.dev.toString()}\0${opened.ino.toString()}\0${opened.mode.toString()}\0${opened.nlink.toString()}\0${opened.size.toString()}\0${opened.mtimeNs.toString()}\0${opened.ctimeNs.toString()}\0`
-      );
-    }
-    const after = await lstat(directory, { bigint: true });
-    if (!sameImmutableSnapshot(before, after)) fail(`${label} changed while it was inspected`);
+
+  const requireOwnedMount = async (handle, path) => {
+    const identity = await pinnedMountIdentity(handle, path, platform, options.mountIdentityForTest);
+    if (identity !== rootMount) fail(`${label} contains an aliased or mounted entry`);
+    return identity;
   };
-  await visit(rootPin.path);
+  const visit = async (directoryPin, relativeDirectory) => {
+    await verifyPinnedDirectory(directoryPin, label);
+    await requireOwnedMount(directoryPin.handle, directoryPin.path);
+    const stream = await opendir(directoryPin.path);
+    try {
+      for await (const directoryEntry of stream) {
+        entries += 1;
+        if (entries > limits.entries) fail(`${label} contains too many entries`);
+        if (relativeDirectory === "" && options.allowedTopLevelName !== undefined) {
+          if (options.allowedTopLevelName === null || directoryEntry.name !== options.allowedTopLevelName) {
+            fail(`${label} contains an unreceipted sibling entry`);
+          }
+        }
+        const path = join(directoryPin.path, directoryEntry.name);
+        const relativePath = relative(rootPin.path, path);
+        const currentPathBytes = Buffer.byteLength(relativePath, "utf8");
+        pathBytes += currentPathBytes;
+        if (
+          relativePath === "" ||
+          relativePath.startsWith("..") ||
+          isAbsolute(relativePath) ||
+          currentPathBytes > 4096
+        ) {
+          fail(`${label} contains an invalid path`);
+        }
+        if (pathBytes > limits.pathBytes) fail(`${label} contains too many path bytes`);
+        const namedBefore = await lstat(path, { bigint: true });
+        let kind;
+        let linkIdentity = "";
+        if (namedBefore.isSymbolicLink()) {
+          const linkText = await readlink(path);
+          const target = await realpath(path);
+          if (!isInside(target, rootPin.path)) fail(`${label} contains an escaping symbolic link`);
+          const targetValue = await lstat(target, { bigint: true });
+          const targetHandle = await open(
+            target,
+            constants.O_RDONLY |
+              (targetValue.isDirectory() ? (constants.O_DIRECTORY ?? 0) : 0) |
+              (constants.O_NOFOLLOW ?? 0)
+          );
+          try {
+            const openedTarget = await targetHandle.stat({ bigint: true });
+            if (
+              targetValue.isSymbolicLink() ||
+              !sameImmutableSnapshot(targetValue, openedTarget) ||
+              (await realpath(target)) !== target
+            ) {
+              fail(`${label} contains an unstable symbolic link target`);
+            }
+            await requireOwnedMount(targetHandle, target);
+          } finally {
+            await targetHandle.close();
+          }
+          kind = "symbolic-link";
+          linkIdentity = `${linkText}\0${target}\0`;
+          symbolicLinks += 1;
+        } else if ((await realpath(path)) !== path) {
+          fail(`${label} contains an aliased or mounted entry`);
+        } else if (namedBefore.isDirectory()) {
+          const childPin = await openPinnedDirectory(path, label);
+          try {
+            if (!sameDirectorySnapshot(namedBefore, childPin.snapshot)) fail(`${label} changed while it was opened`);
+            await requireOwnedMount(childPin.handle, path);
+            kind = "directory";
+            directories += 1;
+            await visit(childPin, relativePath);
+          } finally {
+            await childPin.handle.close();
+          }
+        } else if (namedBefore.isFile() && namedBefore.nlink === 1n) {
+          const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+          try {
+            const opened = await handle.stat({ bigint: true });
+            if (!sameImmutableSnapshot(namedBefore, opened)) fail(`${label} changed while it was opened`);
+            await requireOwnedMount(handle, path);
+          } finally {
+            await handle.close();
+          }
+          kind = "file";
+          files += 1;
+          totalBytes += namedBefore.size;
+          if (totalBytes > BigInt(limits.bytes)) fail(`${label} contains too many bytes`);
+        } else {
+          fail(`${label} contains a linked or unsupported entry`);
+        }
+        const namedAfter = await lstat(path, { bigint: true });
+        if (!sameImmutableSnapshot(namedBefore, namedAfter)) fail(`${label} changed while it was inspected`);
+        addTreeDigest(
+          accumulator,
+          `${kind}\0${relativePath}\0${linkIdentity}${rootMount}\0${namedBefore.dev.toString()}\0${namedBefore.ino.toString()}\0${namedBefore.mode.toString()}\0${namedBefore.nlink.toString()}\0${namedBefore.size.toString()}\0${namedBefore.mtimeNs.toString()}\0${namedBefore.ctimeNs.toString()}\0`
+        );
+      }
+    } finally {
+      await stream.close().catch((error) => {
+        if (error?.code !== "ERR_DIR_CLOSED") throw error;
+      });
+    }
+    await verifyPinnedDirectory(directoryPin, label);
+  };
+
+  await visit(rootPin, "");
   await verifyPinnedDirectory(rootPin, label);
-  await verifyPinnedDirectory(parentPin, `${label} parent`);
   return {
     bytes: Number(totalBytes),
     device: rootPin.snapshot.dev.toString(),
     directories,
     entries,
     files,
+    mount: rootMount,
+    pathBytes,
     root: fileIdentityRecord(rootPin.path, rootPin.snapshot),
-    sha256: digest.digest("hex"),
+    sha256: finishTreeDigest(accumulator, entries),
     symbolicLinks
   };
 }
@@ -1163,22 +1275,33 @@ function fileIdentityRecord(path, value) {
   };
 }
 
-async function bindPytestTempTree(layoutState, afterOpenForTest) {
+async function bindPytestTempTree(layoutState, { afterOpenForTest, limits, mountIdentityForTest } = {}) {
   let pin;
   try {
     pin = await openPinnedDirectory(layoutState.layout.pytestTemp, "pytest basetemp", { afterOpenForTest });
   } catch (error) {
     if (error?.code === "ENOENT") {
       await requireAbsentPath(layoutState.layout.pytestTemp, "pytest basetemp");
-      return null;
+      const accounting = await inspectPrivateTree(layoutState.ownerPins.pytestTempParent, "pytest temporary parent", {
+        allowedTopLevelName: null,
+        limits,
+        mountIdentityForTest
+      });
+      layoutState.pytestTempTree = { ...accounting, basetemp: null };
+      return layoutState.pytestTempTree;
     }
     throw error;
   }
   try {
-    const accounting = await inspectPrivateTree(pin, layoutState.ownerPins.pytestTempParent, "pytest basetemp");
+    const accounting = await inspectPrivateTree(layoutState.ownerPins.pytestTempParent, "pytest temporary parent", {
+      allowedTopLevelName: parse(layoutState.layout.pytestTemp).base,
+      limits,
+      mountIdentityForTest
+    });
+    await verifyPinnedDirectory(pin, "pytest basetemp");
     layoutState.ownerPins.pytestTemp = pin;
-    layoutState.pytestTempTree = accounting;
-    return accounting;
+    layoutState.pytestTempTree = { ...accounting, basetemp: fileIdentityRecord(pin.path, pin.snapshot) };
+    return layoutState.pytestTempTree;
   } catch (error) {
     await pin.handle.close();
     throw error;
@@ -1779,30 +1902,107 @@ async function runPosixOwnedCommand(command, arguments_, options) {
   };
 }
 
-function windowsAttestation(stream, token) {
-  const marker = Buffer.from(`${WINDOWS_JOB_ATTESTATION_PREFIX}${token}\n`, "ascii");
-  let markerCount = 0;
+function windowsSupervisorSignals(stream, loadedToken, attestationToken) {
+  const markers = [
+    { bytes: Buffer.from(`${WINDOWS_JOB_LOADED_PREFIX}${loadedToken}\n`, "ascii"), count: 0, kind: "loaded" },
+    {
+      bytes: Buffer.from(`${WINDOWS_JOB_ATTESTATION_PREFIX}${attestationToken}\n`, "ascii"),
+      count: 0,
+      kind: "attested"
+    }
+  ];
+  const maximumMarkerBytes = Math.max(...markers.map((marker) => marker.bytes.length));
   let pending = Buffer.alloc(0);
-  return new Promise((resolveAttestation) => {
+  let resolveLoaded;
+  let loadedSettled = false;
+  const loaded = new Promise((resolve) => {
+    resolveLoaded = resolve;
+  });
+  const completed = new Promise((resolveSignals) => {
     stream.on("data", (chunk) => {
       let combined = pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([pending, chunk]);
-      let match;
-      while ((match = combined.indexOf(marker)) >= 0) {
-        if (match > 0) process.stderr.write(combined.subarray(0, match));
-        markerCount += 1;
-        combined = combined.subarray(match + marker.length);
+      while (true) {
+        const matches = markers
+          .map((marker) => ({ marker, offset: combined.indexOf(marker.bytes) }))
+          .filter(({ offset }) => offset >= 0)
+          .sort((left, right) => left.offset - right.offset);
+        if (matches.length === 0) break;
+        const { marker, offset } = matches[0];
+        if (offset > 0) process.stderr.write(combined.subarray(0, offset));
+        marker.count += 1;
+        if (marker.kind === "loaded" && marker.count === 1 && !loadedSettled) {
+          loadedSettled = true;
+          resolveLoaded(true);
+        }
+        combined = combined.subarray(offset + marker.bytes.length);
       }
-      const retained = Math.min(combined.length, marker.length - 1);
+      const retained = Math.min(combined.length, maximumMarkerBytes - 1);
       const published = combined.length - retained;
       if (published > 0) process.stderr.write(combined.subarray(0, published));
       pending = Buffer.from(combined.subarray(published));
     });
-    stream.once("error", () => resolveAttestation(false));
+    stream.once("error", () => {
+      if (!loadedSettled) {
+        loadedSettled = true;
+        resolveLoaded(false);
+      }
+      resolveSignals({ attested: false, loaded: false });
+    });
     stream.once("end", () => {
       if (pending.length > 0) process.stderr.write(pending);
-      resolveAttestation(markerCount === 1);
+      if (!loadedSettled) {
+        loadedSettled = true;
+        resolveLoaded(false);
+      }
+      resolveSignals({
+        attested: markers.find((marker) => marker.kind === "attested").count === 1,
+        loaded: markers.find((marker) => marker.kind === "loaded").count === 1
+      });
     });
   });
+  return { completed, loaded };
+}
+
+function windowsSupervisorLoader(scriptPath, scriptRecord, loadControlToken, loadedToken) {
+  if (
+    !isAbsolute(scriptPath) ||
+    !scriptRecord ||
+    !scriptRecord.snapshot ||
+    !Number.isSafeInteger(scriptRecord.snapshot.size) ||
+    scriptRecord.snapshot.size <= 0 ||
+    typeof scriptRecord.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(scriptRecord.sha256) ||
+    !TOKEN_PATTERN.test(loadControlToken) ||
+    !TOKEN_PATTERN.test(loadedToken)
+  ) {
+    fail("Windows Job Object loader identity is invalid");
+  }
+  const pathBase64 = Buffer.from(scriptPath, "utf8").toString("base64");
+  const source = [
+    '$ErrorActionPreference="Stop"',
+    '$ProgressPreference="SilentlyContinue"',
+    `$expectedControl="${WINDOWS_JOB_LOAD_CONTROL_PREFIX}${loadControlToken}"`,
+    "$actualControl=[Console]::In.ReadLine()",
+    'if(-not [String]::Equals($actualControl,$expectedControl,[StringComparison]::Ordinal)){throw "load-control"}',
+    `$path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${pathBase64}"))`,
+    "$stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)",
+    "try{",
+    `if($stream.Length -ne ${scriptRecord.snapshot.size}){throw "script-size"}`,
+    "$hasher=[Security.Cryptography.SHA256]::Create()",
+    'try{$actual=[BitConverter]::ToString($hasher.ComputeHash($stream)).Replace("-","").ToLowerInvariant()}finally{$hasher.Dispose()}',
+    `if(-not [String]::Equals($actual,"${scriptRecord.sha256}",[StringComparison]::Ordinal)){throw "script-digest"}`,
+    "$stream.Position=0",
+    "$encoding=[Text.UTF8Encoding]::new($false,$true)",
+    "$reader=[IO.StreamReader]::new($stream,$encoding,$false,4096,$true)",
+    "try{$script=$reader.ReadToEnd()}finally{$reader.Dispose()}",
+    "$block=[ScriptBlock]::Create($script)",
+    `[Console]::Error.WriteLine("${WINDOWS_JOB_LOADED_PREFIX}${loadedToken}")`,
+    "& $block",
+    "}finally{$stream.Dispose()}"
+  ].join("\n");
+  const encoded = Buffer.from(source, "utf16le").toString("base64");
+  if (encoded.length === 0 || encoded.length > 24_000) fail("Windows Job Object loader is too large");
+  return encoded;
 }
 
 async function runWindowsOwnedCommand(command, arguments_, options) {
@@ -1846,18 +2046,20 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
     };
   }
   let supervisor;
+  const attestationToken = randomUUID();
+  const loadControlToken = randomUUID();
+  const loadedToken = randomUUID();
+  let encodedLoader;
   try {
+    encodedLoader = windowsSupervisorLoader(
+      options.supervisorScriptExecutedPath,
+      options.supervisorScriptRecord,
+      loadControlToken,
+      loadedToken
+    );
     supervisor = spawn(
       options.supervisorExecutedPath,
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        options.supervisorScriptExecutedPath
-      ],
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedLoader],
       {
         cwd: options.cwd,
         detached: false,
@@ -1888,8 +2090,7 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       treeEmpty: false
     };
   }
-  const token = randomUUID();
-  const attested = windowsAttestation(supervisor.stderr, token);
+  const signals = windowsSupervisorSignals(supervisor.stderr, loadedToken, attestationToken);
   const completion = waitForSpawnedProcess(supervisor);
   let controlError;
   supervisor.stdin.on("error", (error) => {
@@ -1914,13 +2115,70 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
       spawnError: error instanceof Error ? error.message : String(error),
       status: null,
       timedOut: false,
-      treeEmpty: true
+      treeEmpty: false
+    };
+  }
+  try {
+    await options.beforeWindowsLoaderReleaseForTest?.({
+      executedPath: command,
+      sourcePath: options.sourceCommand,
+      supervisorScriptExecutedPath: options.supervisorScriptExecutedPath,
+      supervisorScriptSourcePath: options.supervisorScriptSourcePath,
+      strategy: options.executionStrategy
+    });
+  } catch (error) {
+    supervisor.stdin.destroy();
+    supervisor.kill("SIGKILL");
+    await completion;
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
+  }
+  supervisor.stdin.write(`${WINDOWS_JOB_LOAD_CONTROL_PREFIX}${loadControlToken}\n`, "ascii", (error) => {
+    controlError ??= error;
+  });
+  const loaded = await Promise.race([
+    signals.loaded,
+    completion.then(() => false),
+    delay(Math.min(options.timeoutMs, 30_000)).then(() => false)
+  ]);
+  if (!loaded) {
+    supervisor.stdin.destroy();
+    supervisor.kill("SIGKILL");
+    await Promise.race([completion, delay(options.terminationGraceMs)]);
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: "Windows Job Object supervisor did not bind its pinned script before launch",
+      status: null,
+      timedOut: false,
+      treeEmpty: false
+    };
+  }
+  try {
+    await options.verifyExecutableForSpawn();
+  } catch (error) {
+    supervisor.stdin.destroy();
+    supervisor.kill("SIGKILL");
+    await completion;
+    return {
+      lingeringDescendants: false,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+      status: null,
+      timedOut: false,
+      treeEmpty: false
     };
   }
   supervisor.stdin.write(
     `${JSON.stringify({
       args: arguments_,
-      attestationToken: token,
+      attestationToken,
       command: "launch",
       cwd: options.cwd,
       environment: options.environment,
@@ -1963,7 +2221,8 @@ async function runWindowsOwnedCommand(command, arguments_, options) {
   }
   const finalOutcome = outcome.timedOut === true ? await completion : outcome;
   supervisor.stdin.destroy();
-  const treeEmpty = await attested;
+  const signalResult = await signals.completed;
+  const treeEmpty = signalResult.loaded && signalResult.attested;
   return {
     lingeringDescendants: false,
     signal: finalOutcome.signal ?? null,
@@ -2049,6 +2308,7 @@ async function runOwnedCommand(command, arguments_, options) {
         platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.source).path : null,
       supervisorScriptExecutedPath:
         platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.snapshot).path : null,
+      supervisorScriptRecord: platform === "win32" ? (supervisorScriptLaunch?.record ?? null) : null,
       supervisorExecutableFd: platform === "win32" ? null : executableLeaf(supervisorLaunch.snapshot).handle.fd,
       targetExecutableFd: platform === "win32" ? null : executableLeaf(launch.snapshot).handle.fd,
       verifyExecutableForSpawn: async () => {
@@ -2238,16 +2498,27 @@ async function verifyLayout(layoutState) {
     await verifyVenvPythonIdentity(layoutState.pythonEntry);
   }
   if (layoutState.pytestTempTree) {
-    const after = await inspectPrivateTree(
-      layoutState.ownerPins.pytestTemp,
+    const afterAccounting = await inspectPrivateTree(
       layoutState.ownerPins.pytestTempParent,
-      "pytest basetemp"
+      "pytest temporary parent",
+      {
+        allowedTopLevelName: layoutState.ownerPins.pytestTemp ? parse(layoutState.layout.pytestTemp).base : null,
+        ...layoutState.pytestTreeOptions
+      }
     );
+    if (layoutState.ownerPins.pytestTemp)
+      await verifyPinnedDirectory(layoutState.ownerPins.pytestTemp, "pytest basetemp");
+    const after = {
+      ...afterAccounting,
+      basetemp: layoutState.ownerPins.pytestTemp
+        ? fileIdentityRecord(layoutState.ownerPins.pytestTemp.path, layoutState.ownerPins.pytestTemp.snapshot)
+        : null
+    };
     if (JSON.stringify(after) !== JSON.stringify(layoutState.pytestTempTree)) {
-      fail("pytest basetemp changed after it was bound");
+      fail("pytest temporary parent changed after it was bound");
     }
   } else {
-    await requireAbsentPath(layoutState.layout.pytestTemp, "pytest basetemp");
+    fail("pytest temporary parent was not bound");
   }
   for (const { label, pin } of layoutState.runnerFilePins) {
     await verifyPinnedRegularFile(pin, MAX_ASSIGNMENT_BYTES, label);
@@ -2299,11 +2570,14 @@ async function runQualification({
   afterExecutableSnapshotWriteForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
+  beforeWindowsLoaderReleaseForTest,
   command,
   commandPlatformForTest,
   commandRunnerForTest,
   environment = process.env,
   pytestTempAfterOpenForTest,
+  pytestTempLimitsForTest,
+  pytestTempMountIdentityForTest,
   terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   windowsJobSupervisorScriptForTest,
@@ -2332,6 +2606,10 @@ async function runQualification({
       gitConfig: await captureGitConfigIdentity(assignment, gitOwnerPins, environment)
     };
     layoutState = await createStateLayout(assignment, initialAssignment.digest);
+    layoutState.pytestTreeOptions = {
+      limits: pytestTreeLimits(pytestTempLimitsForTest),
+      mountIdentityForTest: pytestTempMountIdentityForTest
+    };
     await prepareGitWrapper(layoutState, assignment, gitOwnerPins.configManifest.selectionEnvironment);
     const startedAt = new Date().toISOString();
     const failures = [];
@@ -2358,6 +2636,12 @@ async function runQualification({
       try {
         await verifyPinnedDirectory(layoutState.ownerPins.pytestTempParent, "pytest-temp parent owner");
         await requireAbsentPath(layoutState.layout.pytestTemp, "pytest basetemp");
+        const emptyParent = await inspectPrivateTree(
+          layoutState.ownerPins.pytestTempParent,
+          "pytest temporary parent",
+          { allowedTopLevelName: null, ...layoutState.pytestTreeOptions }
+        );
+        if (emptyParent.entries !== 0) fail("pytest temporary parent was not initially empty");
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
       }
@@ -2370,6 +2654,7 @@ async function runQualification({
         afterSpawnForTest: afterCommandSpawnForTest,
         afterSettlementForTest: afterCommandSettlementForTest,
         beforeSpawnForTest: beforeCommandSpawnForTest,
+        beforeWindowsLoaderReleaseForTest,
         executableSnapshotAfterWriteForTest: afterExecutableSnapshotWriteForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
@@ -2388,7 +2673,10 @@ async function runQualification({
       fail("a qualification process tree could not be attested empty; source and receipt paths were not reopened");
     }
     try {
-      await bindPytestTempTree(layoutState, pytestTempAfterOpenForTest);
+      await bindPytestTempTree(layoutState, {
+        afterOpenForTest: pytestTempAfterOpenForTest,
+        ...layoutState.pytestTreeOptions
+      });
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error));
     }
@@ -2491,6 +2779,7 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   openRegularFile(path, afterOpenForTest) {
     return openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, "test regular file", { afterOpenForTest });
   },
+  windowsSupervisorLoader,
   windowsSystemRootCandidate
 });
 

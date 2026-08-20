@@ -604,7 +604,8 @@ test("routes pytest cache and temporary state through the private task root", as
     writeOutput: false
   });
   assert.equal(valueReceipt.eligible, true);
-  assert.equal(valueReceipt.pytestTemp.root.path, valueReceipt.environment.pytestTemp);
+  assert.equal(valueReceipt.pytestTemp.root.path, valueReceipt.environment.pytestTempParent);
+  assert.equal(valueReceipt.pytestTemp.basetemp.path, valueReceipt.environment.pytestTemp);
   assert.ok(valueReceipt.pytestTemp.directories >= 2);
   assert.ok(valueReceipt.pytestTemp.files >= 1);
   assert.ok(valueReceipt.pytestTemp.entries >= 2);
@@ -619,6 +620,140 @@ test("routes pytest cache and temporary state through the private task root", as
   );
   assert.equal(existsSync(join(value.root, ".pytest_cache")), false);
   assert.equal(existsSync(join(task.worktree, ".pytest_cache")), false);
+});
+
+test("receipts an absent pytest basetemp and rejects every sibling in its private parent", async (context) => {
+  const value = await fixture(context, "pytest-parent-ownership");
+  const absent = await addTask(value, "pytest-basetemp-absent");
+  const absentReceipt = await runQualification({
+    assignmentPath: absent.assignmentPath,
+    command: [process.execPath, child, "record"],
+    environment: runnerEnvironment(),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(absentReceipt.eligible, true);
+  assert.equal(absentReceipt.pytestTemp.basetemp, null);
+  assert.equal(absentReceipt.pytestTemp.entries, 0);
+  assert.equal(absentReceipt.pytestTemp.pathBytes, 0);
+
+  const sibling = await addTask(value, "pytest-parent-sibling");
+  await assert.rejects(
+    runQualification({
+      afterCommandSettlementForTest: async () => {
+        await writeFile(join(sibling.assignment.stateRoot, "python", "pytest-temp", "unreceipted"), "leftover\n", {
+          flag: "wx",
+          mode: 0o600
+        });
+      },
+      assignmentPath: sibling.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest temporary parent contains an unreceipted sibling entry/u
+  );
+  assert.equal((await receipt(sibling)).eligible, false);
+});
+
+test("streams pytest entry and path limits before retaining oversized listings", async (context) => {
+  const value = await fixture(context, "pytest-tree-limits");
+  const makeTree = (fileNames) => [
+    process.execPath,
+    "-e",
+    [
+      'const { mkdirSync, writeFileSync } = require("node:fs");',
+      "const match = process.env.PYTEST_ADDOPTS.match(/--basetemp='([^']+)'/u);",
+      "if (!match) process.exit(2);",
+      "mkdirSync(match[1], { recursive: false, mode: 0o700 });",
+      `for (const name of ${JSON.stringify(fileNames)}) writeFileSync(require("node:path").join(match[1], name), "x");`
+    ].join("")
+  ];
+
+  const exactEntries = await addTask(value, "pytest-entry-limit-exact");
+  const exactEntriesReceipt = await runQualification({
+    assignmentPath: exactEntries.assignmentPath,
+    command: makeTree(["a", "b"]),
+    environment: runnerEnvironment(),
+    pytestTempLimitsForTest: { entries: 3 },
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(exactEntriesReceipt.pytestTemp.entries, 3);
+
+  const tooManyEntries = await addTask(value, "pytest-entry-limit-plus-one");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: tooManyEntries.assignmentPath,
+      command: makeTree(["a", "b", "c"]),
+      environment: runnerEnvironment(),
+      pytestTempLimitsForTest: { entries: 3 },
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest temporary parent contains too many entries/u
+  );
+  assert.equal((await receipt(tooManyEntries)).eligible, false);
+
+  const exactPathBytes = await addTask(value, "pytest-path-limit-exact");
+  const exactPathReceipt = await runQualification({
+    assignmentPath: exactPathBytes.assignmentPath,
+    command: makeTree(["a"]),
+    environment: runnerEnvironment(),
+    pytestTempLimitsForTest: { pathBytes: 92 },
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(exactPathReceipt.pytestTemp.pathBytes, 92);
+
+  const tooManyPathBytes = await addTask(value, "pytest-path-limit-plus-one");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: tooManyPathBytes.assignmentPath,
+      command: makeTree(["ab"]),
+      environment: runnerEnvironment(),
+      pytestTempLimitsForTest: { pathBytes: 92 },
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest temporary parent contains too many path bytes/u
+  );
+  assert.equal((await receipt(tooManyPathBytes)).eligible, false);
+});
+
+test("rejects a same-device pytest mount alias from the pinned mount inventory", async (context) => {
+  const value = await fixture(context, "pytest-mount-inventory");
+  const task = await addTask(value, "pytest-mount-alias");
+  const devices = new Map();
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [
+        process.execPath,
+        "-e",
+        'const fs=require("node:fs"),p=require("node:path");const b=process.env.PYTEST_ADDOPTS.match(/--basetemp=\'([^\']+)\'/u)[1];fs.mkdirSync(p.join(b,"mounted"),{recursive:true});'
+      ],
+      environment: runnerEnvironment(),
+      pytestTempMountIdentityForTest: async ({ handle, path }) => {
+        const kind = path.endsWith("/mounted") || path.endsWith("\\mounted") ? "foreign" : "owner";
+        devices.set(kind, (await handle.stat({ bigint: true })).dev);
+        return kind;
+      },
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /pytest temporary parent contains an aliased or mounted entry/u
+  );
+  assert.equal(devices.get("foreign"), devices.get("owner"));
+  assert.equal((await receipt(task)).eligible, false);
 });
 
 test("rejects replacement, escape, and linked leftovers in a created pytest basetemp", async (context) => {
@@ -685,7 +820,7 @@ test("rejects replacement, escape, and linked leftovers in a created pytest base
       timeoutMs: 120_000,
       writeOutput: false
     }),
-    /pytest basetemp contains a linked or unsupported entry/u
+    /pytest temporary parent contains a linked or unsupported entry/u
   );
   assert.equal((await receipt(linked)).eligible, false);
 });
@@ -1139,6 +1274,99 @@ test("rejects a Job Object script replacement after dispatch and before final el
     await access(valueReceipt.environment.testResult);
   }
 });
+
+test("builds a bounded Windows loader that pins the exact Job Object script bytes before execution", () => {
+  const encoded = QUALIFICATION_ISOLATION_TEST_BOUNDARY.windowsSupervisorLoader(
+    join(process.platform === "win32" ? "C:\\" : "/", "private", "job.ps1"),
+    { sha256: "a".repeat(64), snapshot: { size: 1234 } },
+    "load-control-token",
+    "loaded-token"
+  );
+  const loader = Buffer.from(encoded, "base64").toString("utf16le");
+  assert.match(loader, /FileShare\]::Read/u);
+  assert.match(loader, /ComputeHash\(\$stream\)/u);
+  assert.match(loader, /script-digest/u);
+  assert.match(loader, /OPEN_WRANGLER_WINDOWS_JOB_LOAD:load-control-token/u);
+  assert.match(loader, /OPEN_WRANGLER_WINDOWS_JOB_LOADED:loaded-token/u);
+  assert.doesNotMatch(loader, /FileShare\]::ReadWrite/u);
+});
+
+test(
+  "rejects a Windows Job Object script replacement after spawn and before the pinned loader opens it",
+  { skip: process.platform !== "win32" },
+  async (context) => {
+    const value = await fixture(context, "windows-job-script-before-load");
+    for (const identity of ["source", "snapshot"]) {
+      const task = await addTask(value, `windows-job-script-before-load-${identity}`);
+      const jobScript = join(value.root, `windows-job-script-before-load-${identity}.ps1`);
+      const attackerMarker = join(value.root, `windows-job-script-attacker-${identity}.txt`);
+      await copyFile(join(import.meta.dirname, "windows-job-supervisor.ps1"), jobScript);
+      await assert.rejects(
+        runQualification({
+          beforeWindowsLoaderReleaseForTest: async ({ supervisorScriptExecutedPath, supervisorScriptSourcePath }) => {
+            const path = identity === "source" ? supervisorScriptSourcePath : supervisorScriptExecutedPath;
+            const original = await readFile(path);
+            const attack = Buffer.from(
+              `[IO.File]::WriteAllText('${attackerMarker.replaceAll("'", "''")}','attacker')\n`,
+              "utf8"
+            );
+            assert.ok(attack.length < original.length);
+            await rename(path, `${path}.retained`);
+            await writeFile(path, Buffer.concat([attack, Buffer.alloc(original.length - attack.length, 0x20)]), {
+              flag: "wx",
+              mode: 0o600
+            });
+          },
+          assignmentPath: task.assignmentPath,
+          command: [process.execPath, child, "record"],
+          environment: runnerEnvironment(),
+          terminationGraceMs: 5_000,
+          timeoutMs: 120_000,
+          windowsJobSupervisorScriptForTest: jobScript,
+          writeOutput: false
+        }),
+        /process tree could not be attested empty/u
+      );
+      assert.equal(existsSync(attackerMarker), false);
+      assert.equal(
+        existsSync(join(task.assignment.stateRoot, "runs", task.assignment.runId, "test-result.json")),
+        false
+      );
+      assert.equal(
+        (await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"))).length,
+        0
+      );
+    }
+  }
+);
+
+test(
+  "does not claim a Windows process tree empty when the Job Object script omits attestation",
+  { skip: process.platform !== "win32" },
+  async (context) => {
+    const value = await fixture(context, "windows-job-missing-attestation");
+    const task = await addTask(value, "windows-job-missing-attestation");
+    const jobScript = join(value.root, "windows-job-missing-attestation.ps1");
+    await writeFile(jobScript, "$null=[Console]::In.ReadLine();[Environment]::Exit(0)\n", { flag: "wx", mode: 0o600 });
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "record"],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        windowsJobSupervisorScriptForTest: jobScript,
+        writeOutput: false
+      }),
+      /process tree could not be attested empty/u
+    );
+    assert.equal(existsSync(join(task.assignment.stateRoot, "runs", task.assignment.runId, "test-result.json")), false);
+    assert.equal(
+      (await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"))).length,
+      0
+    );
+  }
+);
 
 test("derives the Windows supervisor root independently of inherited Windows paths", () => {
   assert.equal(
