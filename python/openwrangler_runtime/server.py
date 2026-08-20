@@ -15,6 +15,7 @@ from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
 from .response_framing import (
     MAX_RESPONSE_FRAME_BYTES,
+    ResponseEncodingError,
     ResponseFrameTooLargeError,
     encode_response_frame,
     strict_json_byte_length,
@@ -70,6 +71,8 @@ class _ResponsePublisher:
                 failure = _TerminalTransportError(
                     f"response frame exceeds the {MAX_RESPONSE_FRAME_BYTES}-byte limit including LF"
                 )
+            except ResponseEncodingError:
+                failure = _TerminalTransportError("response frame is not valid strict JSON")
             except Exception:
                 failure = _TerminalTransportError("response frame is not valid strict JSON")
             else:

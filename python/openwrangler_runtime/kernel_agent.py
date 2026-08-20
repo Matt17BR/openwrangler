@@ -7,7 +7,12 @@ from concurrent.futures import CancelledError
 
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
-from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
+from .response_framing import (
+    MAX_RESPONSE_FRAME_BYTES,
+    ResponseEncodingError,
+    ResponseFrameTooLargeError,
+    encode_response_frame,
+)
 from .server import dispatch
 from .session import (
     LiveSourceInvalidatedError,
@@ -19,17 +24,29 @@ from .session import (
     UnknownSessionError,
 )
 
+_RECOVERABLE_RESPONSE_ENCODING_KINDS = {
+    "initialize",
+    "getPage",
+    "getSummary",
+    "getDatasetStats",
+    "getColumnValues",
+    "inspectStep",
+    "cancelRequest",
+}
+
 _manager = SessionManager()
 
 
 def dispatch_json(payload: str) -> str:
     """Dispatch an Open Wrangler request inside the active Jupyter kernel."""
     request_id = _safe_request_id(payload)
+    request_kind: str | None = None
     view_request_id = _safe_view_request_id(payload)
     try:
         request_id, _, request = decode_envelope(json.loads(payload))
+        request_kind = request["kind"]
         view_request_id = request.get("viewRequestId")
-        if request["kind"] == "cancelRequest":
+        if request_kind == "cancelRequest":
             response = {"kind": "cancelled", "targetRequestId": request["targetRequestId"]}
         else:
             response = dispatch(_manager, request, request_id)
@@ -55,6 +72,20 @@ def dispatch_json(payload: str) -> str:
         )
     except ResponsePayloadError as error:
         response = error_response(str(error), code=error.code)
+    except ResponseFrameTooLargeError:
+        if request_kind not in _RECOVERABLE_RESPONSE_ENCODING_KINDS:
+            raise
+        response = error_response(
+            "The runtime response exceeds the bounded transport frame limit.",
+            code="response_too_large",
+        )
+    except ResponseEncodingError:
+        if request_kind not in _RECOVERABLE_RESPONSE_ENCODING_KINDS:
+            raise
+        response = error_response(
+            "The runtime response could not be encoded as strict JSON.",
+            code="response_encoding_failed",
+        )
     except AmbiguousViewColumnError as error:
         response = error_response(str(error), code="ambiguous_view_column")
     except EngineError as error:

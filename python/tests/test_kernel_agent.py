@@ -11,7 +11,11 @@ from openwrangler_runtime import kernel_agent, notebook, server
 from openwrangler_runtime import session as session_runtime
 from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
 from openwrangler_runtime.protocol import response_envelope
-from openwrangler_runtime.response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
+from openwrangler_runtime.response_framing import (
+    MAX_RESPONSE_FRAME_BYTES,
+    ResponseEncodingError,
+    encode_response_frame,
+)
 from openwrangler_runtime.session import (
     LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
@@ -361,6 +365,101 @@ def test_kernel_response_uses_the_bounded_compact_utf8_frame_encoder() -> None:
     assert "é" in encoded
     assert "\\u00e9" not in encoded
     assert len(json.dumps(envelope).encode("utf-8")) > MAX_RESPONSE_FRAME_BYTES
+
+
+def test_kernel_response_encoding_failure_is_correlated_bounded_and_not_coerced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StringCoercionTrap:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __str__(self) -> str:
+            self.calls += 1
+            return "private-kernel-response"
+
+    value = StringCoercionTrap()
+
+    def invalid_response(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+    ) -> dict[str, Any]:
+        return {"kind": "page", "private": value}
+
+    monkeypatch.setattr(kernel_agent, "dispatch", invalid_response)
+    encoded = kernel_agent.dispatch_json(
+        _envelope(
+            {
+                "kind": "getPage",
+                "sessionId": "session",
+                "revision": 0,
+                "viewRequestId": "view-invalid-response",
+                "offset": 0,
+                "limit": 20,
+                "columnOffset": 0,
+                "columnLimit": 64,
+                "filterModel": EMPTY_FILTER,
+            },
+            request_id="invalid-response-request",
+        )
+    )
+
+    assert json.loads(encoded) == {
+        "protocolVersion": 2,
+        "requestId": "invalid-response-request",
+        "response": {
+            "kind": "error",
+            "code": "response_encoding_failed",
+            "message": "The runtime response could not be encoded as strict JSON.",
+            "recoverable": True,
+            "viewRequestId": "view-invalid-response",
+        },
+    }
+    assert len(encoded.encode("utf-8")) < 512
+    assert "private-kernel-response" not in encoded
+    assert value.calls == 0
+
+
+def test_kernel_does_not_synthesize_an_error_after_a_mutation_encoding_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StringCoercionTrap:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __str__(self) -> str:
+            self.calls += 1
+            return "private-mutation-response"
+
+    value = StringCoercionTrap()
+
+    def invalid_response(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+    ) -> dict[str, Any]:
+        return {"kind": "planUpdated", "private": value}
+
+    monkeypatch.setattr(kernel_agent, "dispatch", invalid_response)
+
+    with pytest.raises(ResponseEncodingError):
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "applyDraft",
+                    "sessionId": "session",
+                    "revision": 0,
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                },
+                request_id="invalid-mutation-response",
+            )
+        )
+
+    assert value.calls == 0
 
 
 def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(monkeypatch) -> None:
