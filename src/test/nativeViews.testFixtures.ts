@@ -33,6 +33,9 @@ interface CodePreviewTestHarness {
   setSnapshotPostResult(result: "success" | "false" | "reject"): void;
   setSnapshotSequenceOffset(offset: number): void;
   setPublishPendingMarker(enabled: boolean): void;
+  makeUnavailable(reason?: "disposed" | "sequenceExhausted"): void;
+  publishLateMessages(code: string): void;
+  replaceView(): void;
   disposeView(): void;
 }
 
@@ -317,7 +320,7 @@ function register(
       }
     | undefined;
   const publishToHost = (message: CodePreviewWebviewMessage): void => receive?.(message);
-  const codePreviewView = {
+  const createCodePreviewView = () => ({
     description: undefined as string | undefined,
     onDidDispose: (listener: () => unknown) => {
       disposeViewListener = listener;
@@ -401,9 +404,13 @@ function register(
         };
       }
     }
+  });
+  let codePreviewView = createCodePreviewView();
+  const resolveCodePreviewView = (): void => {
+    codePreviewProvider.resolveWebviewView(codePreviewView);
+    publishToHost({ kind: "ready" });
   };
-  codePreviewProvider.resolveWebviewView(codePreviewView);
-  publishToHost({ kind: "ready" });
+  resolveCodePreviewView();
   return {
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;
@@ -473,6 +480,24 @@ function register(
       },
       setPublishPendingMarker(enabled) {
         publishPendingMarker = enabled;
+      },
+      makeUnavailable(reason = "disposed") {
+        if (!currentEdit) throw new Error("Expected a current Code Preview edit.");
+        publishToHost({ kind: "codePreviewUnavailable", generation: currentEdit.generation, reason });
+      },
+      publishLateMessages(code) {
+        if (!currentEdit) throw new Error("Expected a current Code Preview edit.");
+        const generation = currentEdit.generation;
+        const sequence = currentEdit.sequence + 1;
+        currentEdit = { generation, sequence: sequence + 1, result: { valid: false, reason: "invalidUnicode" } };
+        publishToHost({ kind: "codePending", generation, sequence });
+        publishToHost({ kind: "codeChanged", generation, sequence, code });
+        publishToHost({ kind: "codeInvalid", generation, sequence: sequence + 1, reason: "invalidUnicode" });
+      },
+      replaceView() {
+        currentEdit = undefined;
+        codePreviewView = createCodePreviewView();
+        resolveCodePreviewView();
       },
       disposeView() {
         disposeViewListener?.();

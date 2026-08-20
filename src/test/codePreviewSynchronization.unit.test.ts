@@ -505,7 +505,15 @@ const TEST_RUNTIME_IDENTITY = {
   codeDialect: "python.pandas" as const
 };
 
-async function startProductionCodePreview(code = "host generation one"): Promise<{
+interface ProductionCodePreviewOptions {
+  readonly onDocumentScan?: () => void;
+  readonly throwOnPostKind?: CodePreviewWebviewMessage["kind"];
+}
+
+async function startProductionCodePreview(
+  code = "host generation one",
+  options: ProductionCodePreviewOptions = {}
+): Promise<{
   readonly view: EditorView;
   readonly posted: CodePreviewWebviewMessage[];
   send(message: unknown): void;
@@ -516,8 +524,19 @@ async function startProductionCodePreview(code = "host generation one"): Promise
   vi.stubGlobal("acquireVsCodeApi", () => ({
     postMessage(message: CodePreviewWebviewMessage) {
       posted.push(message);
+      if (message.kind === options.throwOnPostKind) throw new Error(`Rejected ${message.kind}.`);
     }
   }));
+  vi.doMock("../shared/codePreviewLimits", async () => {
+    const actual = await vi.importActual<typeof import("../shared/codePreviewLimits")>("../shared/codePreviewLimits");
+    return {
+      ...actual,
+      collectCodePreviewText(chunks: Parameters<typeof actual.collectCodePreviewText>[0]) {
+        options.onDocumentScan?.();
+        return actual.collectCodePreviewText(chunks);
+      }
+    };
+  });
   vi.resetModules();
   await import("../webviews/codePreviewMain");
   const element = document.querySelector<HTMLElement>(".cm-editor");
@@ -541,7 +560,7 @@ async function startProductionCodePreview(code = "host generation one"): Promise
     send,
     dispose() {
       window.dispatchEvent(new Event("pagehide"));
-      view.destroy();
+      vi.doUnmock("../shared/codePreviewLimits");
       vi.unstubAllGlobals();
       document.body.replaceChildren();
     }
@@ -551,7 +570,12 @@ async function startProductionCodePreview(code = "host generation one"): Promise
 describe("production Code Preview lifecycle wiring", () => {
   it("clears actual CodeMirror undo through generation, edit-count, and byte-budget reset paths", async () => {
     vi.useFakeTimers();
-    const preview = await startProductionCodePreview();
+    let documentScans = 0;
+    const preview = await startProductionCodePreview("host generation one", {
+      onDocumentScan: () => {
+        documentScans += 1;
+      }
+    });
     try {
       preview.view.dispatch({ changes: { from: preview.view.state.doc.length, insert: " + local" } });
       expect(undoDepth(preview.view.state)).toBeGreaterThan(0);
@@ -590,6 +614,7 @@ describe("production Code Preview lifecycle wiring", () => {
         });
       }
       const depthAtOverflow = undoDepth(preview.view.state);
+      const scansAtOverflow = documentScans;
       expect(depthAtOverflow).toBe(5);
       for (let index = 5; index < 12; index += 1) {
         preview.view.dispatch({
@@ -598,11 +623,49 @@ describe("production Code Preview lifecycle wiring", () => {
         });
       }
       expect(undoDepth(preview.view.state)).toBe(depthAtOverflow);
+      expect(documentScans).toBe(scansAtOverflow);
       expect(preview.view.state.doc.sliceString(0, 1)).toBe("x");
       await Promise.resolve();
       expect(preview.view.state.doc.length).toBe(CODE_PREVIEW_MAX_UTF8_BYTES / 2);
       expect(preview.view.state.doc.sliceString(0, 1)).toBe("x");
       expect(undoDepth(preview.view.state)).toBe(0);
+    } finally {
+      preview.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retires pending history and listeners when the final pagehide publication throws", async () => {
+    vi.useFakeTimers();
+    const capScaledDocument = "x".repeat(CODE_PREVIEW_MAX_UTF8_BYTES / 2);
+    const preview = await startProductionCodePreview(capScaledDocument, { throwOnPostKind: "codeChanged" });
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        preview.view.dispatch({
+          changes: { from: 0, to: 1, insert: index % 2 === 0 ? "y" : "x" },
+          annotations: isolateHistory.of("full")
+        });
+      }
+
+      expect(() => window.dispatchEvent(new Event("pagehide"))).not.toThrow();
+      const publicationCount = preview.posted.length;
+      expect(preview.posted.filter(({ kind }) => kind === "codeChanged")).toHaveLength(1);
+      expect(preview.posted.filter(({ kind }) => kind === "codePreviewUnavailable")).toEqual([
+        { kind: "codePreviewUnavailable", generation: 1, reason: "disposed" }
+      ]);
+      expect(document.querySelector(".cm-editor")).toBeNull();
+
+      preview.send({
+        kind: "codePreview",
+        generation: 2,
+        acknowledgedSequence: 0,
+        code: "late host state",
+        editable: true,
+        runtimeIdentity: TEST_RUNTIME_IDENTITY
+      });
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(preview.posted).toHaveLength(publicationCount);
     } finally {
       preview.dispose();
       vi.useRealTimers();

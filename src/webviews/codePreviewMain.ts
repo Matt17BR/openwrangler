@@ -102,7 +102,7 @@ const editCoalescer = new CodePreviewEditCoalescer(
 );
 scheduleCodePreviewEdit = () => editCoalescer.schedule();
 
-window.addEventListener("message", (event: MessageEvent<unknown>) => {
+const handleCodePreviewHostMessage = (event: MessageEvent<unknown>): void => {
   if (event.origin !== window.location.origin) return;
   const message = event.data;
   if (!isCodePreviewHostMessage(message)) return;
@@ -153,15 +153,25 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   } finally {
     applyingHostUpdate = false;
   }
-});
+};
+
+window.addEventListener("message", handleCodePreviewHostMessage);
 
 vscode.postMessage({ kind: "ready" });
 window.addEventListener(
   "pagehide",
   () => {
-    editCoalescer.dispose();
-    pageDisposed = true;
-    historyResetOwner += 1;
+    try {
+      editCoalescer.dispose();
+    } catch {
+      // The page is disappearing. Local ownership must still be retired when publication fails.
+    } finally {
+      pageDisposed = true;
+      historyResetOwner += 1;
+      historyResetScheduled = false;
+      window.removeEventListener("message", handleCodePreviewHostMessage);
+      editor.destroy();
+    }
   },
   { once: true }
 );
@@ -189,6 +199,10 @@ function createCodePreviewEditorState(document: string | Text, selection?: Edito
       EditorView.updateListener.of((update) => {
         if (!update.docChanged || applyingHostUpdate) return;
         scheduleCodePreviewEdit();
+        if (historyBudget.isResetPending()) {
+          scheduleHistoryReset();
+          return;
+        }
         const before = collectCodePreviewText(codePreviewDocumentChunks(update.startState.doc));
         const after = collectCodePreviewText(codePreviewDocumentChunks(update.state.doc));
         const beforeBytes = before.valid ? before.utf8Bytes : CODE_PREVIEW_MAX_UTF8_BYTES + 1;

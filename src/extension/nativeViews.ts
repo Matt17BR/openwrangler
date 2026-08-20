@@ -325,6 +325,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.view = view;
     this.viewReady = false;
     this.viewUnavailableReason = undefined;
+    this.pendingSequence = undefined;
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
@@ -439,6 +440,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (message.generation !== this.generation) return;
       this.viewReady = false;
       this.viewUnavailableReason = message.reason;
+      this.pendingSequence = undefined;
       this.settlePendingCodeRequest(
         message.reason === "sequenceExhausted"
           ? { kind: "unavailable", reason: "sequenceExhausted" }
@@ -446,6 +448,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       );
       return;
     }
+    if (this.viewUnavailableReason) return;
     if (message.kind === "codeSnapshotUnavailable") {
       if (!this.matchesPendingCodeRequest(view, message.generation, message.requestId)) return;
       this.settlePendingCodeRequest(
@@ -516,6 +519,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.view = undefined;
     this.viewReady = false;
     this.viewUnavailableReason = "disposed";
+    this.pendingSequence = undefined;
     const messageSubscription = this.viewMessageSubscription;
     const disposeSubscription = this.viewDisposeSubscription;
     this.viewMessageSubscription = undefined;

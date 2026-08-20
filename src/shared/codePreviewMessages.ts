@@ -258,11 +258,21 @@ export class CodePreviewEditCoalescer {
 
   dispose(): void {
     if (this.invalidated) return;
+    let failure: unknown;
     if (this.pending) {
       this.cancelTimer();
-      this.publishPendingEdit();
+      try {
+        this.publishPendingEdit();
+      } catch (error) {
+        failure = error;
+      }
     }
-    this.invalidate("disposed");
+    try {
+      this.invalidate("disposed");
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure !== undefined) throw failure;
   }
 
   private flush(): void {

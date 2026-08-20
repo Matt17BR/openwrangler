@@ -183,6 +183,25 @@ describe("native export commands", () => {
     );
   });
 
+  it("fences a terminal view and clears its pending sequence before a replacement view", async () => {
+    const registered = register(noDraftSnapshot());
+    registered.codePreview.edit("def stale_pending(df):\n    return df.dropna()\n");
+    registered.codePreview.makeUnavailable();
+    registered.codePreview.publishLateMessages("def stale_late(df):\n    return df.fillna(0)\n");
+
+    await command("openWrangler.copyCode")();
+    expect(nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+
+    nativeMocks.showErrorMessage.mockClear();
+    registered.codePreview.replaceView();
+    await command("openWrangler.copyCode")();
+
+    expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledOnce();
+    expect(nativeMocks.clipboardWriteText).toHaveBeenCalledWith("def clean_data(df):\n    return df\n");
+  });
+
   it("invalidates an action when a newer generation replaces its requested document", async () => {
     const active = noDraftSnapshot();
     const registered = register(active);
