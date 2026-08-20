@@ -3,13 +3,19 @@ from __future__ import annotations
 import json
 import threading
 from contextlib import contextmanager
+from datetime import date
+from decimal import Decimal
 from io import BytesIO, StringIO
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 import openwrangler_runtime.server as server
 from openwrangler_runtime.response_framing import (
+    MAX_STRICT_JSON_NESTING_DEPTH,
+    ResponseEncodingError,
     ResponseFrameTooLargeError,
     encode_response_frame,
     strict_json_byte_length,
@@ -30,34 +36,130 @@ class _PassthroughRequestScope:
         yield
 
 
-def test_response_frame_is_compact_utf8_and_stringifies_each_value_once() -> None:
-    class StringifiedOnce:
+def test_response_frame_is_compact_strict_utf8() -> None:
+    frame = encode_response_frame(
+        {
+            "values": [None, True, False, 0, 1.5, "é"],
+            "object": {"nested": "value"},
+        }
+    )
+
+    assert frame == (b'{"values":[null,true,false,0,1.5,"\xc3\xa9"],"object":{"nested":"value"}}\n')
+    assert b"\\u00e9" not in frame
+    assert b": " not in frame
+
+
+def test_response_frame_does_not_invoke_custom_string_coercion() -> None:
+    class StringCoercionTrap:
         def __init__(self) -> None:
             self.calls = 0
 
         def __str__(self) -> str:
             self.calls += 1
-            return "converted"
+            return "private-custom-value"
 
-    value = StringifiedOnce()
+    value = StringCoercionTrap()
 
-    frame = encode_response_frame({"value": value, "unicode": "é"})
-
-    assert frame == b'{"value":"converted","unicode":"\xc3\xa9"}\n'
-    assert value.calls == 1
-    assert b"\\u00e9" not in frame
-    assert b": " not in frame
-    with pytest.raises(TypeError):
+    with pytest.raises(
+        ResponseEncodingError,
+        match=r"^Response contains a value outside the strict JSON data model\.$",
+    ):
+        encode_response_frame({"value": value})
+    with pytest.raises(ResponseEncodingError):
         strict_json_byte_length({"value": value}, 1_024)
-    assert value.calls == 1
+
+    assert value.calls == 0
+
+
+def test_response_frame_matches_canonical_json_escaping_and_numbers() -> None:
+    shared = [1, -0.0, 1e30]
+    payload = {
+        "escaped": 'quote=" backslash=\\ line=\n tab=\t',
+        "emptyObject": {},
+        "emptyArray": [],
+        "shared": [shared, shared],
+    }
+
+    assert encode_response_frame(payload) == (
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        Decimal("1.25"),
+        date(2026, 8, 20),
+        Path("private-path"),
+        np.int64(7),
+        np.float64(1.5),
+        ("tuple-is-not-a-json-array",),
+        {1: "non-string-key"},
+    ),
+    ids=("decimal", "date", "path", "numpy-integer", "numpy-float", "tuple", "object-key"),
+)
+def test_response_frame_rejects_non_json_values_without_echoing_them(value: Any) -> None:
+    with pytest.raises(ResponseEncodingError) as raised:
+        encode_response_frame({"private": value})
+
+    diagnostic = str(raised.value)
+    assert len(diagnostic.encode("utf-8")) < 128
+    assert "private-path" not in diagnostic
+    assert "tuple-is-not-a-json-array" not in diagnostic
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_response_frame_rejects_non_finite_numbers(value: float) -> None:
+    with pytest.raises(
+        ResponseEncodingError,
+        match=r"^Response contains a non-finite JSON number\.$",
+    ):
+        encode_response_frame({"value": value})
+
+
+def test_response_frame_rejects_invalid_unicode_in_keys_and_values() -> None:
+    for payload in ({"value": "\ud800"}, {"\udfff": "value"}):
+        with pytest.raises(
+            ResponseEncodingError,
+            match=r"^Response contains text that is not valid UTF-8\.$",
+        ):
+            encode_response_frame(payload)
+
+
+def test_response_frame_rejects_cycles_without_partial_output() -> None:
+    cycle: list[Any] = []
+    cycle.append({"cycle": cycle})
+
+    with pytest.raises(
+        ResponseEncodingError,
+        match=r"^Response contains a cyclic JSON collection\.$",
+    ):
+        encode_response_frame({"value": cycle})
+
+
+def test_response_frame_accepts_exact_depth_and_rejects_one_more_level() -> None:
+    accepted: Any = "leaf"
+    for _ in range(MAX_STRICT_JSON_NESTING_DEPTH):
+        accepted = [accepted]
+    encode_response_frame(accepted)
+
+    rejected = [accepted]
+    with pytest.raises(
+        ResponseEncodingError,
+        match=rf"^Response exceeds the {MAX_STRICT_JSON_NESTING_DEPTH}-level JSON nesting limit\.$",
+    ):
+        encode_response_frame(rejected)
 
 
 def test_response_frame_cap_counts_multibyte_utf8_and_lf_exactly() -> None:
     payload = {"value": "é" * 64}
-    expected = (
-        json.dumps(payload, default=str, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        + b"\n"
-    )
+    expected = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
 
     assert encode_response_frame(payload, len(expected)) == expected
     with pytest.raises(ResponseFrameTooLargeError):
@@ -72,6 +174,18 @@ def test_strict_json_byte_length_stops_after_crossing_the_bound() -> None:
 
     assert measured > 128
     assert measured <= len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def test_strict_json_byte_length_does_not_traverse_after_crossing_the_bound() -> None:
+    class MustNotBeVisited:
+        pass
+
+    measured = strict_json_byte_length(
+        {"oversized": "x" * 100_000, "later": MustNotBeVisited()},
+        128,
+    )
+
+    assert measured > 128
 
 
 def test_response_payload_error_maps_to_a_correlated_recoverable_response(
@@ -158,10 +272,7 @@ def test_response_publisher_preflights_the_exact_multibyte_frame_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = {"protocolVersion": 2, "response": {"kind": "page", "value": "é" * 32}}
-    expected = (
-        json.dumps(payload, default=str, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        + b"\n"
-    )
+    expected = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
 
     accepted_output = _BinaryOutput()
     accepted_failed = threading.Event()
