@@ -25,6 +25,8 @@ const rendererMocks = vi.hoisted(() => ({
   capture: vi.fn(),
   request: vi.fn(),
   afterInlinePost: undefined as (() => void) | undefined,
+  inlinePostResult: undefined as
+    ((message: unknown, editor: NotebookEditor | undefined) => Promise<boolean>) | undefined,
   bridgeDisposals: 0,
   registerFormatters: true,
   configurationListeners: [] as Array<(event: { affectsConfiguration(section: string): boolean }) => void>,
@@ -62,7 +64,7 @@ vi.mock("vscode", () => ({
       postMessage: async (message: unknown, editor: NotebookEditor | undefined) => {
         rendererMocks.inlinePosts.push({ message, editor });
         rendererMocks.afterInlinePost?.();
-        return true;
+        return rendererMocks.inlinePostResult?.(message, editor) ?? true;
       }
     })
   },
@@ -149,6 +151,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.capture.mockResolvedValue({ backend: "polars", label: "frame", variableName: "frame" });
     rendererMocks.request.mockReset();
     rendererMocks.afterInlinePost = undefined;
+    rendererMocks.inlinePostResult = undefined;
     rendererMocks.bridgeDisposals = 0;
     rendererMocks.registerFormatters = true;
     rendererMocks.configurationListeners.length = 0;
@@ -562,6 +565,251 @@ describe("notebook renderer messaging", () => {
       cloneSpy.mockRestore();
     }
   }, 30_000);
+
+  it("rejects an over-limit empty-output prefix before binding or touching a trailing match", async () => {
+    let trailingItemsRead = 0;
+    const emptyOutput = { items: [] };
+    const trailingOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        trailingItemsRead += 1;
+        return [{ mime: "text/html", data: new Uint8Array(37) }];
+      }
+    });
+    const outputs: unknown[] = Array.from({ length: 100_001 }, () => emptyOutput);
+    outputs.push(trailingOutput);
+    const document = notebook("file:///workspace/output-container-cap.ipynb", false, [{ outputs }]);
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(async () => undefined) };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("5") });
+    await settleMicrotasks();
+
+    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+    expect(trailingItemsRead).toBe(0);
+    expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
+      kind: "openWrangler.inlineRevoke",
+      token: "5".repeat(32)
+    });
+  });
+
+  it("admits one of 129 hanging live actions before payload work and enforces its terminal deadline", async () => {
+    const document = notebook("file:///workspace/hanging-live-actions.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    register({ bindInlineUpgrade: vi.fn(async () => binding) });
+    installCanonicalRuntimeResponses(document, "6");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("6") });
+    await settleMessages();
+    const published = rendererMocks.inlinePosts.at(-1)?.message as { payload?: Record<string, unknown> };
+    const kernelChecksBeforeAction = binding.hasCurrentKernel.mock.calls.length;
+    const hangingKernelCheck = deferred<boolean>();
+    binding.hasCurrentKernel.mockReturnValue(hangingKernelCheck.promise);
+    let pageReads = 0;
+    const revocable = Proxy.revocable(published.payload!, {
+      get(target, property, receiver) {
+        if (property === "page") pageReads += 1;
+        return Reflect.get(target, property, receiver);
+      }
+    });
+
+    vi.useFakeTimers();
+    try {
+      for (let index = 0; index < 129; index += 1) {
+        rendererMocks.inlineListener?.({
+          editor: exactEditor,
+          message: { kind: "openInOpenWrangler", payload: revocable.proxy }
+        });
+      }
+      await settleMicrotasks();
+      expect(pageReads).toBe(2);
+      expect(binding.hasCurrentKernel).toHaveBeenCalledTimes(kernelChecksBeforeAction + 1);
+
+      revocable.revoke();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
+        kind: "openWrangler.inlineRevoke",
+        token: "6".repeat(32)
+      });
+      hangingKernelCheck.resolve(true);
+      await settleMicrotasks();
+      expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("continues a live action from compact authority after its renderer payload is revoked", async () => {
+    const document = notebook("file:///workspace/released-action-payload.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    register({ bindInlineUpgrade: vi.fn(async () => binding) });
+    installCanonicalRuntimeResponses(document, "7");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("7") });
+    await settleMessages();
+    const published = rendererMocks.inlinePosts.at(-1)?.message as { payload?: Record<string, unknown> };
+    const actionKernelCheck = deferred<boolean>();
+    binding.hasCurrentKernel.mockReturnValue(actionKernelCheck.promise);
+    const revocable = Proxy.revocable(published.payload!, {});
+
+    rendererMocks.inlineListener?.({
+      editor: exactEditor,
+      message: { kind: "openInOpenWrangler", payload: revocable.proxy }
+    });
+    await settleMicrotasks();
+    revocable.revoke();
+    actionKernelCheck.resolve(true);
+    await settleMessages();
+
+    expect(rendererMocks.createPanel).toHaveBeenCalledOnce();
+    expect(rendererMocks.createPanel).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ label: "frame", variableName: "frame", uri: document.uri.toString() })
+    );
+  });
+
+  it("keeps hanging live actions within the global ownership cap", async () => {
+    const documents = Array.from({ length: 9 }, (_, index) => notebook(`file:///workspace/action-cap-${index}.ipynb`));
+    const editors = documents.map((document) => editor(document));
+    const bindings = new Map(
+      editors.map((candidateEditor) => [candidateEditor, inlineBinding(candidateEditor.notebook, candidateEditor)])
+    );
+    rendererMocks.notebookDocuments.push(...documents);
+    rendererMocks.visibleNotebookEditors.push(...editors);
+    const { context } = register({
+      bindInlineUpgrade: vi.fn(async (candidateEditor: NotebookEditor) => bindings.get(candidateEditor))
+    });
+    const payloads: unknown[] = [];
+    for (let index = 0; index < editors.length; index += 1) {
+      installCanonicalRuntimeResponses(documents[index]!, String(index));
+      rendererMocks.inlineListener?.({ editor: editors[index]!, message: inlineCandidate(String(index)) });
+      await settleMessages();
+      payloads.push((rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown }).payload);
+    }
+    const kernelChecksBeforeActions = [...bindings.values()].map(
+      (binding) => binding.hasCurrentKernel.mock.calls.length
+    );
+    for (const binding of bindings.values())
+      binding.hasCurrentKernel.mockReturnValue(new Promise<boolean>(() => undefined));
+
+    for (let index = 0; index < editors.length; index += 1) {
+      rendererMocks.inlineListener?.({
+        editor: editors[index]!,
+        message: { kind: "openInOpenWrangler", payload: payloads[index] }
+      });
+    }
+    await settleMicrotasks();
+
+    const actionKernelChecks = [...bindings.values()].reduce(
+      (total, binding, index) => total + binding.hasCurrentKernel.mock.calls.length - kernelChecksBeforeActions[index]!,
+      0
+    );
+    expect(actionKernelChecks).toBe(8);
+    expect(bindings.get(editors[8]!)?.dispose).toHaveBeenCalledOnce();
+    for (const subscription of context.subscriptions) subscription.dispose();
+  });
+
+  it("single-flights repeated retired-token terminals and ignores disposal and late settlement", async () => {
+    const document = notebook("file:///workspace/hanging-retired-terminal.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(async () => binding) };
+    const terminal = deferred<boolean>();
+    rendererMocks.inlinePostResult = async (message) =>
+      (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? terminal.promise : true;
+    const { context } = register(tracker);
+    installCanonicalRuntimeResponses(document, "8");
+    const replay = inlineCandidate("8");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMessages();
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMicrotasks();
+    for (let index = 0; index < 129; index += 1) {
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    }
+    await settleMicrotasks();
+
+    expect(
+      rendererMocks.inlinePosts.filter(
+        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineRevoke"
+      )
+    ).toHaveLength(1);
+    for (const subscription of context.subscriptions) subscription.dispose();
+    const postsAtDisposal = rendererMocks.inlinePosts.length;
+    terminal.resolve(true);
+    await settleMicrotasks();
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMicrotasks();
+
+    expect(rendererMocks.inlinePosts).toHaveLength(postsAtDisposal);
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a replacement owner current when an evicted receipt's terminal send settles late", async () => {
+    const document = notebook("file:///workspace/late-retired-terminal.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const originalBinding = inlineBinding(document, exactEditor);
+    const replacementBinding = inlineBinding(document, exactEditor);
+    let bindCount = 0;
+    const tracker = {
+      bindInlineUpgrade: vi.fn(async () => {
+        bindCount += 1;
+        if (bindCount === 1) return originalBinding;
+        if (bindCount === 130) return replacementBinding;
+        return undefined;
+      })
+    };
+    const terminal = deferred<boolean>();
+    rendererMocks.inlinePostResult = async (message) =>
+      (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? terminal.promise : true;
+    register(tracker);
+    installCanonicalRuntimeResponses(document, "0");
+    const original = inlineCandidate("0");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
+    await settleMessages();
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
+    await settleMicrotasks();
+    for (let index = 1; index <= 128; index += 1) {
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: indexedInlineCandidate(index) });
+      await settleMicrotasks();
+    }
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(129);
+    expect(
+      rendererMocks.inlinePosts.filter(
+        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineRevoke"
+      )
+    ).toHaveLength(8);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
+    await settleMessages();
+    const replacementUpgrade = rendererMocks.inlinePosts.at(-1)?.message as { kind?: string; payload?: unknown };
+    expect(replacementUpgrade.kind).toBe("openWrangler.inlineUpgrade");
+    terminal.resolve(true);
+    await settleMicrotasks();
+    rendererMocks.inlineListener?.({
+      editor: exactEditor,
+      message: { kind: "openInOpenWrangler", payload: replacementUpgrade.payload }
+    });
+    await settleMessages();
+
+    expect(replacementBinding.dispose).not.toHaveBeenCalled();
+    expect(rendererMocks.createPanel).toHaveBeenCalledOnce();
+  });
 
   it("atomically retires a settling replay and keeps its late completion inert beside a replacement", async () => {
     const document = notebook("file:///workspace/settling-replay.ipynb");
@@ -1385,10 +1633,11 @@ function dispatch(origin: NotebookEditor, payload: unknown): void {
   });
 }
 
-function notebook(uri: string, isClosed = false): NotebookDocument {
+function notebook(uri: string, isClosed = false, cells: readonly unknown[] = []): NotebookDocument {
   return {
     uri: { toString: () => uri },
-    isClosed
+    isClosed,
+    getCells: () => cells
   } as unknown as NotebookDocument;
 }
 
