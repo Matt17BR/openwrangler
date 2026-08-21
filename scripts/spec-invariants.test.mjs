@@ -735,6 +735,114 @@ test("cleaning-history Undo restrictions preserve set cardinality and exception 
   }
 });
 
+test("cleaning-history clause ownership closes direct, anaphoric, cardinality, and exception bypasses", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps remain visible. They cannot be edited.",
+    "Committed steps remain visible; th&#101;y cannot be edited.",
+    "An older committed step remains visible. It can be undone.",
+    "An older committed step remains visible\nIt can be **undone**.",
+    "Committed steps cannot be edited.",
+    "A preceding committed step can be undone.",
+    "A nonlatest committed step can be undone.",
+    "Undo can target more than one committed step.",
+    "Undo can target more than &#111;ne committed step.",
+    "Undo can target a pair of committed steps.",
+    "Undo is supported except for the latest committed step.",
+    "Undo is supported apart from the latest committed step.",
+    "Undo is supported save the latest committed step.",
+    "Undo is supp&#111;rted except for the latest committed step.",
+    "Undo is unavailable for every committed step unless the latest report is open.",
+    "Undo is unavailable for every committed step except the latest toolbar action.",
+    "Undo is unavailable for every committed step save the latest generated report.",
+    "Undo is unavailable for every committed step apart from the latest release.",
+    "The toolbar is visible: committed steps cannot be edited.",
+    "Native buttons remain visible, committed steps cannot be deleted.",
+    "Undo is not unavailable for older committed steps.",
+    "Older committed steps are not unable to be undone."
+  ];
+  const truthful = [
+    "Committed steps remain visible. Some notebook cells cannot be edited.",
+    "Committed steps remain visible. Some panels are read-only.",
+    "Committed steps remain visible in an unavailable editor.",
+    "Committed steps are listed in a read-only report.",
+    "Committed steps remain visible; some notebook *cells* cannot be edited.",
+    "Committed steps remain visible, while some generated reports are read-only."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history claims fail closed on malformed entity shapes before clause interpretation", () => {
+  const model = cleaningHistoryModel();
+  for (const example of [
+    "Earlier applied steps cannot be mod&#xZZ;ified.",
+    "Earlier applied steps cannot be mod&#12x;ified.",
+    "Earlier applied steps cannot be mod&#xZZified.",
+    "Only the lat&#xZZ;est committed step can be edited.",
+    "Earlier applied steps cannot be mod&#999999999999;ified.",
+    "Only the lat&#xD800;est committed step can be edited."
+  ]) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /malformed visible numeric Markdown entity/u,
+      example
+    );
+  }
+  for (const example of [
+    "Earlier applied steps cannot be mod&1bad;ified.",
+    "Earlier applied steps cannot be mod&;ified."
+  ]) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /malformed visible named Markdown entity/u,
+      example
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents: cleaningHistoryDocumentsWithReadmeClaim(
+        model,
+        "```text\nEarlier applied steps cannot be mod&#xZZ;ified.\n```"
+      )
+    })
+  );
+});
+
 test("cleaning-history wording preserves exact latest Undo and native single-invocation scope", () => {
   const model = cleaningHistoryModel();
   const truthful = [
