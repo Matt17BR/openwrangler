@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -61,6 +61,9 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const BOUNDED_WORKFLOW_FILE_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+const WORKFLOW_FIFO_PROBE_ARGUMENT = "--open-bounded-workflow-fifo";
+const WORKFLOW_FIFO_PROBE_TIMEOUT_MS = 2_000;
 const WORKFLOW_YAML_NODE_LIMIT = 20_000;
 const WORKFLOW_YAML_DEPTH_LIMIT = 64;
 const WORKFLOW_YAML_ALIAS_LIMIT = 0;
@@ -214,7 +217,7 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
   let result;
   try {
     hooks.afterDirectoryOpen?.({ directories, relativePath });
-    descriptor = openSync(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    descriptor = openSync(absolutePath, BOUNDED_WORKFLOW_FILE_OPEN_FLAGS);
     const opened = fstatSync(descriptor, { bigint: true });
     assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
     assert.equal(opened.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
@@ -287,6 +290,17 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
   }
   if (failure !== undefined) throw failure;
   return result;
+}
+
+if (process.argv[2] === WORKFLOW_FIFO_PROBE_ARGUMENT) {
+  assert.equal(process.argv.length, 5, "the FIFO probe requires one root and one relative path");
+  const root = process.argv[3];
+  const relativePath = process.argv[4];
+  readBoundedNoFollowFile(relativePath, {
+    allowedPaths: new Set([relativePath]),
+    root
+  });
+  throw new Error(`${relativePath} unexpectedly passed the bounded workflow reader`);
 }
 
 function readDirectoryInventory(directoryPath) {
@@ -1656,6 +1670,58 @@ test("capability workflow sources stay on the fixed bounded no-follow allowlist"
     assert.throws(() => loadCapabilityDocuments(graph), /fixed workflow file/u);
   }
 });
+
+test("bounded workflow leaf opens retain no-follow and request nonblocking semantics when available", () => {
+  assert.equal(
+    BOUNDED_WORKFLOW_FILE_OPEN_FLAGS,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+  );
+});
+
+test(
+  "bounded workflow reads reject a FIFO promptly instead of blocking before type validation",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-fifo-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const relativePath = ".github/workflows/fixture.yml";
+    const fifoPath = join(root, relativePath);
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    execFileSync("mkfifo", [fifoPath]);
+    assert.equal(lstatSync(fifoPath).isFIFO(), true);
+
+    const legacy = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        'const { constants, openSync } = require("node:fs"); openSync(process.argv[1], constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));',
+        fifoPath
+      ],
+      { encoding: "utf8", killSignal: "SIGTERM", maxBuffer: 64 * 1024, timeout: 250 }
+    );
+    assert.equal(legacy.error?.code, "ETIMEDOUT", "the preimage leaf open must reproduce its FIFO block");
+    assert.equal(legacy.status, null);
+    assert.equal(legacy.signal, "SIGTERM");
+
+    const startedAt = Date.now();
+    const corrected = spawnSync(
+      process.execPath,
+      [fileURLToPath(import.meta.url), WORKFLOW_FIFO_PROBE_ARGUMENT, root, relativePath],
+      {
+        encoding: "utf8",
+        killSignal: "SIGTERM",
+        maxBuffer: 64 * 1024,
+        timeout: WORKFLOW_FIFO_PROBE_TIMEOUT_MS
+      }
+    );
+    const elapsedMs = Date.now() - startedAt;
+    assert.notEqual(corrected.error?.code, "ETIMEDOUT", "the bounded reader must not block on a FIFO");
+    assert.equal(corrected.signal, null);
+    assert.notEqual(corrected.status, 0);
+    assert.match(corrected.stderr, /must open as a regular file/u);
+    assert.ok(elapsedMs < WORKFLOW_FIFO_PROBE_TIMEOUT_MS, `the bounded reader took ${elapsedMs} ms to reject a FIFO`);
+  }
+);
 
 test("bounded workflow reads reject aliasing, oversize, and in-place content drift", (context) => {
   const createFixture = (contents = "name: fixture\n") => {
