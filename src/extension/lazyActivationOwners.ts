@@ -164,6 +164,47 @@ export interface LazyActivationDiagnostics {
 type NotebookPreviewModule = typeof import("./notebooks/notebookPreviewCoordinator");
 type NotebookPreviewLoader = () => NotebookPreviewModule;
 
+interface LazyActivationModuleLoaders {
+  sessionCoordinator(): Promise<typeof import("./sessionCoordinator")>;
+  pythonBridge(): Promise<typeof import("./pythonBridge")>;
+  fileOpen(): Promise<typeof import("./files/fileOpen")>;
+  trustedPickleConversion(): Promise<typeof import("./files/trustedPickleConversion")>;
+  trustedPickleWorker(): Promise<typeof import("./files/trustedPickleWorker")>;
+  pythonInteractiveCommands(): Promise<typeof import("./notebooks/pythonInteractiveCommands")>;
+  jupyterBridge(): Promise<typeof import("./notebooks/jupyterBridge")>;
+  notebookCellResult(): Promise<typeof import("./notebooks/notebookCellResult")>;
+  rendererMessaging(): Promise<typeof import("./notebooks/rendererMessaging")>;
+  rInteractiveCommands(): Promise<typeof import("./r/rInteractiveCommands")>;
+  rDocumentCommands(): Promise<typeof import("./r/rDocumentCommands")>;
+  runtimeCommands(): Promise<typeof import("./runtimeCommands")>;
+  nativeViews(): Promise<typeof import("./nativeViews")>;
+  webviewPanel(): Promise<typeof import("./webviewPanel")>;
+}
+
+/* eslint-disable @typescript-eslint/no-require-imports -- literal CommonJS loads stay deferred until their owner starts */
+const defaultLazyActivationModuleLoaders: LazyActivationModuleLoaders = {
+  sessionCoordinator: async () => require("./sessionCoordinator") as typeof import("./sessionCoordinator"),
+  pythonBridge: async () => require("./pythonBridge") as typeof import("./pythonBridge"),
+  fileOpen: async () => require("./files/fileOpen") as typeof import("./files/fileOpen"),
+  trustedPickleConversion: async () =>
+    require("./files/trustedPickleConversion") as typeof import("./files/trustedPickleConversion"),
+  trustedPickleWorker: async () =>
+    require("./files/trustedPickleWorker") as typeof import("./files/trustedPickleWorker"),
+  pythonInteractiveCommands: async () =>
+    require("./notebooks/pythonInteractiveCommands") as typeof import("./notebooks/pythonInteractiveCommands"),
+  jupyterBridge: async () => require("./notebooks/jupyterBridge") as typeof import("./notebooks/jupyterBridge"),
+  notebookCellResult: async () =>
+    require("./notebooks/notebookCellResult") as typeof import("./notebooks/notebookCellResult"),
+  rendererMessaging: async () =>
+    require("./notebooks/rendererMessaging") as typeof import("./notebooks/rendererMessaging"),
+  rInteractiveCommands: async () => require("./r/rInteractiveCommands") as typeof import("./r/rInteractiveCommands"),
+  rDocumentCommands: async () => require("./r/rDocumentCommands") as typeof import("./r/rDocumentCommands"),
+  runtimeCommands: async () => require("./runtimeCommands") as typeof import("./runtimeCommands"),
+  nativeViews: async () => require("./nativeViews") as typeof import("./nativeViews"),
+  webviewPanel: async () => require("./webviewPanel") as typeof import("./webviewPanel")
+};
+/* eslint-enable @typescript-eslint/no-require-imports */
+
 const loadNotebookPreviewModule: NotebookPreviewLoader = () =>
   // This intentionally remains a synchronous, non-static load. A relevant
   // notebook that is already visible during activation must install the
@@ -213,7 +254,8 @@ export class LazyActivationOwners implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly notebookPreviewLoader: NotebookPreviewLoader = loadNotebookPreviewModule,
     private readonly ownerSettlementTimeoutMs = DEFAULT_OWNER_SETTLEMENT_TIMEOUT_MS,
-    private readonly additionalOwnerPromises: readonly Promise<unknown>[] = []
+    private readonly additionalOwnerPromises: readonly Promise<unknown>[] = [],
+    private readonly moduleLoaders: LazyActivationModuleLoaders = defaultLazyActivationModuleLoaders
   ) {}
 
   startBeforeFirstYield(): void {
@@ -235,6 +277,7 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.installCustomEditorGate();
     this.installNativeViewGates();
     this.installNotebookVisibilityGate();
+    this.prepareOpenedNotebookPreview();
     this.startVisibleNotebookOwners(true);
   }
 
@@ -414,10 +457,13 @@ export class LazyActivationOwners implements vscode.Disposable {
 
   private installNotebookVisibilityGate(): void {
     const onNotebookSurface = (): void => this.startVisibleNotebookOwners();
+    const onNotebookOpen = (document: vscode.NotebookDocument): void => {
+      if (isRelevantNotebook(document)) this.ensureNotebookPreview();
+    };
     const subscriptions = this.registerDisposablesTransactional("notebook visibility listeners", (retain) => {
       retain(vscode.window.onDidChangeVisibleNotebookEditors(onNotebookSurface));
       retain(vscode.window.onDidChangeActiveNotebookEditor(onNotebookSurface));
-      retain(vscode.workspace.onDidOpenNotebookDocument(onNotebookSurface));
+      retain(vscode.workspace.onDidOpenNotebookDocument(onNotebookOpen));
       retain(vscode.workspace.onDidGrantWorkspaceTrust(onNotebookSurface));
     });
     this.bootstrapSubscriptions.push(...subscriptions);
@@ -434,10 +480,14 @@ export class LazyActivationOwners implements vscode.Disposable {
     void loading.catch((error: unknown) => this.reportLazyFailure("notebook", error));
   }
 
+  private prepareOpenedNotebookPreview(): void {
+    if (vscode.workspace.notebookDocuments.some((document) => isRelevantNotebook(document))) {
+      this.ensureNotebookPreview();
+    }
+  }
+
   private hasRelevantVisibleNotebook(): boolean {
-    return vscode.window.visibleNotebookEditors.some(
-      (editor) => editor.notebook.notebookType === "jupyter-notebook" || editor.notebook.notebookType === "interactive"
-    );
+    return vscode.window.visibleNotebookEditors.some((editor) => isRelevantNotebook(editor.notebook));
   }
 
   private ensureNotebookPreview(): NotebookPreviewCoordinator {
@@ -457,7 +507,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   private async loadSessionOwner(): Promise<SessionOwner> {
-    const { SessionCoordinator } = await import("./sessionCoordinator.js");
+    const { SessionCoordinator } = await this.moduleLoaders.sessionCoordinator();
     this.assertActive();
     const coordinator = new SessionCoordinator(this.context.workspaceState, (message) => {
       let output = this.sessionDiagnosticOutput;
@@ -478,7 +528,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   private async loadPythonOwner(): Promise<PythonOwner> {
-    const { PythonBridge } = await import("./pythonBridge.js");
+    const { PythonBridge } = await this.moduleLoaders.pythonBridge();
     this.assertActive();
     const bridge = new PythonBridge(this.context);
     this.pythonBridge = bridge;
@@ -498,7 +548,7 @@ export class LazyActivationOwners implements vscode.Disposable {
 
   private async loadFileOwner(): Promise<FileOwner> {
     const [module, coordinatedBridge] = await Promise.all([
-      import("./files/fileOpen.js"),
+      this.moduleLoaders.fileOpen(),
       this.ensureCoordinatedPythonBridge()
     ]);
     this.assertActive();
@@ -516,8 +566,8 @@ export class LazyActivationOwners implements vscode.Disposable {
 
   private async loadPickleOwner(): Promise<TrustedPickleWorkerLifecycle> {
     const [conversion, workers, python] = await Promise.all([
-      import("./files/trustedPickleConversion.js"),
-      import("./files/trustedPickleWorker.js"),
+      this.moduleLoaders.trustedPickleConversion(),
+      this.moduleLoaders.trustedPickleWorker(),
       this.ensurePythonOwner()
     ]);
     this.assertActive();
@@ -549,10 +599,10 @@ export class LazyActivationOwners implements vscode.Disposable {
   private async loadNotebookOwner(): Promise<NotebookOwner> {
     this.ensureNotebookPreview();
     const [interactive, jupyter, cellResult, renderer, session] = await Promise.all([
-      import("./notebooks/pythonInteractiveCommands.js"),
-      import("./notebooks/jupyterBridge.js"),
-      import("./notebooks/notebookCellResult.js"),
-      import("./notebooks/rendererMessaging.js"),
+      this.moduleLoaders.pythonInteractiveCommands(),
+      this.moduleLoaders.jupyterBridge(),
+      this.moduleLoaders.notebookCellResult(),
+      this.moduleLoaders.rendererMessaging(),
       this.ensureSessionOwner()
     ]);
     this.assertActive();
@@ -593,7 +643,7 @@ export class LazyActivationOwners implements vscode.Disposable {
 
   private async loadROwner(): Promise<ROwner> {
     const [interactive, session] = await Promise.all([
-      import("./r/rInteractiveCommands.js"),
+      this.moduleLoaders.rInteractiveCommands(),
       this.ensureSessionOwner()
     ]);
     this.assertActive();
@@ -625,7 +675,7 @@ export class LazyActivationOwners implements vscode.Disposable {
 
   private async loadRDocumentOwner(): Promise<void> {
     const [documentCommands, notebook, r, session] = await Promise.all([
-      import("./r/rDocumentCommands.js"),
+      this.moduleLoaders.rDocumentCommands(),
       this.ensureNotebookOwner(),
       this.ensureROwner(),
       this.ensureSessionOwner()
@@ -646,7 +696,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   private async loadRuntimeOwner(): Promise<void> {
-    const [runtime, python] = await Promise.all([import("./runtimeCommands.js"), this.ensurePythonOwner()]);
+    const [runtime, python] = await Promise.all([this.moduleLoaders.runtimeCommands(), this.ensurePythonOwner()]);
     this.assertActive();
     this.replaceCommandGroup("runtime");
     this.captureOwnerRegistration("runtime", () => runtime.registerRuntimeCommands(this.context, python.bridge));
@@ -658,7 +708,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   private async loadNativeOwner(): Promise<NativeOwner> {
-    const [native, session] = await Promise.all([import("./nativeViews.js"), this.ensureSessionOwner()]);
+    const [native, session] = await Promise.all([this.moduleLoaders.nativeViews(), this.ensureSessionOwner()]);
     this.assertActive();
     this.replaceCommandGroup("native");
     this.replaceCommandGroup("utility");
@@ -806,7 +856,7 @@ export class LazyActivationOwners implements vscode.Disposable {
       this.ensureSessionOwner(),
       this.ensurePythonOwner(),
       this.ensureCoordinatedPythonBridge(),
-      import("./webviewPanel.js")
+      this.moduleLoaders.webviewPanel()
     ]);
     void file;
     void pickleWorkers;
@@ -1046,6 +1096,10 @@ function cleanupAggregate(message: string, failures: readonly unknown[]): unknow
 
 function flattenFailures(error: unknown): unknown[] {
   return error instanceof AggregateError ? error.errors.flatMap(flattenFailures) : [error];
+}
+
+function isRelevantNotebook(document: Pick<vscode.NotebookDocument, "notebookType">): boolean {
+  return document.notebookType === "jupyter-notebook" || document.notebookType === "interactive";
 }
 
 async function settlesWithin(settlement: Promise<unknown>, deadlineMs: number): Promise<boolean> {
