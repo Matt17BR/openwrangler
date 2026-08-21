@@ -95,7 +95,9 @@ async function runWindowsNativeStage(
   }
   if (observation.kind === "result") return observation.value;
   if (observation.kind === "error") {
-    throw new Error(`The native Windows supervisor ${stage} stage failed.`, { cause: observation.error });
+    const detail =
+      observation.error instanceof Error ? observation.error.message : "The operation threw a non-Error value.";
+    throw new Error(`The native Windows supervisor ${stage} stage failed: ${detail}`, { cause: observation.error });
   }
 
   if (!controller.signal.aborted) controller.abort();
@@ -338,6 +340,56 @@ test("native stage deadlines cancel and settle their operation before reporting"
   );
   assert.equal(cancellationObserved, true);
   assert.equal(operationSettled, true);
+});
+
+test("native stage failures retain the complete underlying compiler cause", async () => {
+  const compilerCause = new Error("synthetic underlying compiler cause");
+  const compilerFailure = new Error("synthetic bounded compiler diagnostic", { cause: compilerCause });
+  await assert.rejects(
+    runWindowsNativeStage("compilation", { timeoutMs: 1_000 }, () => Promise.reject(compilerFailure)),
+    (error) => {
+      assert.match(error.message, /synthetic bounded compiler diagnostic/u);
+      assert.equal(error.cause, compilerFailure);
+      assert.equal(error.cause.cause, compilerCause);
+      return true;
+    }
+  );
+});
+
+test("native stage failures surface the bounded production compiler diagnostic", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-compiler-diagnostic-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17939 });
+  let stage;
+  try {
+    stage = runWindowsNativeStage("compilation", { timeoutMs: 1_000 }, () =>
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 1_000,
+        spawnProcess: () => {
+          queueMicrotask(() => {
+            compiler.child.stderr.write("OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap\n");
+            compiler.child.exitCode = 125;
+            compiler.child.stdout.end();
+            compiler.child.stderr.end();
+            compiler.child.emit("close", 125, null);
+          });
+          return compiler.child;
+        }
+      })
+    );
+    await assert.rejects(stage, (error) => {
+      assert.match(error.message, /compilation stage failed \(nonzero-exit; code 125; signal none\)/u);
+      assert.match(error.message, /OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap/u);
+      assert.equal(error.cause?.details?.stage, "windows-supervisor-compilation");
+      assert.equal(error.cause?.details?.reason, "nonzero-exit");
+      return true;
+    });
+  } finally {
+    if (stage) await Promise.allSettled([stage]);
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test(
@@ -1193,6 +1245,60 @@ test(
   }
 );
 
+test("verified taskkill settlement returns the correlated compiler deadline without a second kill", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-taskkill-verified-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17937 });
+  const taskkill = new EventEmitter();
+  taskkill.pid = 17938;
+  taskkill.exitCode = null;
+  taskkill.signalCode = null;
+  let taskkillUnrefCount = 0;
+  taskkill.kill = () => assert.fail("a promptly verified taskkill must not require cancellation");
+  taskkill.unref = () => {
+    taskkillUnrefCount += 1;
+  };
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 10,
+        buildSettlementTimeoutMs: 100,
+        spawnProcess: () => compiler.child,
+        spawnTaskkillProcess: () => {
+          queueMicrotask(() => {
+            taskkill.exitCode = 0;
+            taskkill.emit("close", 0, null);
+            compiler.child.signalCode = "SIGKILL";
+            compiler.child.stdout.end();
+            compiler.child.stderr.end();
+            compiler.child.emit("close", null, "SIGKILL");
+          });
+          return taskkill;
+        }
+      }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+        assert.equal(error.details?.stage, "windows-supervisor-compilation");
+        assert.equal(error.details?.reason, "deadline");
+        assert.equal(error.details?.treeVerifiedStopped, true);
+        assert.equal(error.details?.compilerClosed, true);
+        assert.equal(error.details?.compilerTreeTerminated, true);
+        return true;
+      }
+    );
+    assert.deepEqual(compiler.state(), { killCount: 0, closeCount: 0, closeTimerActive: false });
+    assert.equal(taskkillUnrefCount, 1);
+    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 0);
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test(
   "abort settlement retains a finite delayed terminator rejection before bounded release",
   { timeout: 5_000 },
@@ -1426,12 +1532,14 @@ test("joined Windows supervisor callers retain independent compilation deadlines
     }, 50);
     return compiler.child;
   };
+  let longCaller;
   try {
-    const longCaller = prepareWindowsEditorProcessSupervisor(environment, {
+    longCaller = prepareWindowsEditorProcessSupervisor(environment, {
       platform: "win32",
       buildTimeoutMs: 500,
       spawnProcess: spawnCompiler
     });
+    void longCaller.catch(() => undefined);
     await assert.rejects(
       prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
@@ -1454,6 +1562,7 @@ test("joined Windows supervisor callers retain independent compilation deadlines
     assert.equal(receipt.buildRoot, directory);
     assert.equal(compilerLaunches, 1);
   } finally {
+    if (longCaller) await Promise.allSettled([longCaller]);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1467,8 +1576,10 @@ test(
     configureEditorAcceptanceTempRoot(directory, environment);
     const compiler = fakeWindowsCompiler({ closeOnKill: true, pid: 17918 });
     let observedSettlementTimeoutMs;
+    let creator;
+    let finalJoiner;
     try {
-      const creator = prepareWindowsEditorProcessSupervisor(environment, {
+      creator = prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
         buildTimeoutMs: 10,
         buildSettlementTimeoutMs: 90,
@@ -1479,12 +1590,14 @@ test(
           return { treeVerifiedStopped: true };
         }
       });
-      const finalJoiner = prepareWindowsEditorProcessSupervisor(environment, {
+      finalJoiner = prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
         buildTimeoutMs: 30,
         buildSettlementTimeoutMs: 25,
         spawnProcess: () => assert.fail("joined callers must share one compiler")
       });
+      void creator.catch(() => undefined);
+      void finalJoiner.catch(() => undefined);
       await assert.rejects(creator, (error) => {
         assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
         assert.equal(error.details?.limitMs, 10);
@@ -1504,6 +1617,7 @@ test(
       assert.equal(observedSettlementTimeoutMs, 25);
       assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 1, closeTimerActive: false });
     } finally {
+      await Promise.allSettled([creator, finalJoiner].filter(Boolean));
       await rm(directory, { recursive: true, force: true });
     }
   }
@@ -1529,12 +1643,14 @@ test("an already-aborted joined caller cannot cancel another caller's compilatio
     return compiler.child;
   };
   const controller = new AbortController();
+  let activeCaller;
   try {
-    const activeCaller = prepareWindowsEditorProcessSupervisor(environment, {
+    activeCaller = prepareWindowsEditorProcessSupervisor(environment, {
       platform: "win32",
       buildTimeoutMs: 500,
       spawnProcess: spawnCompiler
     });
+    void activeCaller.catch(() => undefined);
     controller.abort();
     await assert.rejects(
       prepareWindowsEditorProcessSupervisor(environment, {
@@ -1552,6 +1668,7 @@ test("an already-aborted joined caller cannot cancel another caller's compilatio
     await activeCaller;
     assert.equal(compilerLaunches, 1);
   } finally {
+    if (activeCaller) await Promise.allSettled([activeCaller]);
     await rm(directory, { recursive: true, force: true });
   }
 });

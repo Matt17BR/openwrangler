@@ -1923,7 +1923,21 @@ async function awaitWindowsEditorProcessSupervisorBuild(
           (error) => ({ kind: "build-error", error })
         ),
         new Promise((resolveDeadline) => {
-          deadlineTimer = setTimeout(() => resolveDeadline({ kind: "deadline" }), remainingMs);
+          const observeDeadline = () => {
+            let remaining;
+            try {
+              remaining = windowsSupervisorBuildRemainingMs(callerDeadline, buildNow);
+            } catch (error) {
+              resolveDeadline({ kind: "build-error", error });
+              return;
+            }
+            if (remaining <= 0) {
+              resolveDeadline({ kind: "deadline" });
+              return;
+            }
+            deadlineTimer = setTimeout(observeDeadline, remaining);
+          };
+          deadlineTimer = setTimeout(observeDeadline, remainingMs);
         })
       ];
       if (buildAbortSignal) {
@@ -2168,8 +2182,9 @@ async function compileWindowsEditorProcessSupervisor(
   const { state } = observation;
   if (state.error || state.code !== 0 || output.exceeded()) {
     const reason = output.exceeded() ? "output-limit" : state.error ? state.errorReason : "nonzero-exit";
+    const diagnostic = sanitizeEditorPhaseOutput(output);
     const error = new Error(
-      `The Windows editor Job Object supervisor compilation stage failed (${reason}; code ${String(state.code ?? "unknown")}; signal ${String(state.signal ?? "none")}).`,
+      `The Windows editor Job Object supervisor compilation stage failed (${reason}; code ${String(state.code ?? "unknown")}; signal ${String(state.signal ?? "none")}).${diagnostic ? `\n${diagnostic}` : ""}`,
       state.error ? { cause: state.error } : undefined
     );
     error.details = { stage: "windows-supervisor-compilation", reason, treeVerifiedStopped: true };
@@ -2452,6 +2467,7 @@ async function terminateWindowsCompilerProcessTree(
   let taskkill;
   let compilerKillAttempted = false;
   let settlementExpired = abortSignal.aborted;
+  let taskkillVerifiedTree = false;
   let onAbort;
   let unregisterAbortSettlementRelease;
   const killCompilerOnce = () => {
@@ -2514,6 +2530,8 @@ async function terminateWindowsCompilerProcessTree(
           `Windows supervisor compiler tree termination failed with code ${String(taskkillState?.code ?? "unknown")} and signal ${String(taskkillState?.signal ?? "none")}.`
         )
       );
+    } else if (!settlementExpired) {
+      taskkillVerifiedTree = true;
     }
   } catch (error) {
     taskkillErrors.push(error);
@@ -2526,7 +2544,7 @@ async function terminateWindowsCompilerProcessTree(
       unrefErrors.push(error);
     }
   }
-  killCompilerOnce();
+  if (!taskkillVerifiedTree) killCompilerOnce();
   const errors = [...taskkillErrors, ...compilerErrors, ...unrefErrors];
   if (settlementExpired && errors.length === 0) {
     return { treeVerifiedStopped: false, settlementTimeoutMs: timeoutMs };
@@ -2535,7 +2553,7 @@ async function terminateWindowsCompilerProcessTree(
   if (errors.length > 1) {
     throw new AggregateError(errors, "The Windows supervisor compiler process tree could not be terminated.");
   }
-  return { treeVerifiedStopped: true };
+  return { treeVerifiedStopped: taskkillVerifiedTree };
 }
 
 function assertWindowsEditorProcessSupervisorReceipt(receipt) {
