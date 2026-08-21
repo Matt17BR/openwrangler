@@ -33,6 +33,13 @@ local({
     selected <- Filter(function(item) identical(item$rule, rule), diagnostics(source))
     vapply(selected, `[[`, character(1L), "symbol")
   }
+  diagnostic_lines <- function(source, rule, symbol) {
+    selected <- Filter(
+      function(item) identical(item$rule, rule) && identical(item$symbol, symbol),
+      diagnostics(source)
+    )
+    vapply(selected, `[[`, integer(1L), "line")
+  }
 
   result <- analyzer$run(".")
   assert_true(identical(result$protocol, "openwrangler-native-r-static-analysis-v1"), "Analyzer protocol changed")
@@ -58,6 +65,23 @@ local({
     "Explicit base::assign mutation of .GlobalEnv was not detected"
   )
   assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols("assign('unsafe_target', 1, envir = .GlobalEnv)", "global-assignment"),
+    "Unqualified base assign mutation of .GlobalEnv was not detected"
+  )
+  assert_true(
+    !("global-assignment" %in% rules(
+      "function() { assign <- function(...) NULL; assign('unsafe_target', 1, envir = .GlobalEnv) }"
+    )),
+    "A locally shadowed assign call was treated as the base global mutator"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "function(value = assign('unsafe_target', 1, envir = .GlobalEnv)) value",
+      "global-assignment"
+    ),
+    "A global assignment in a default expression was not detected"
+  )
+  assert_true(
     ".GlobalEnv$unsafe_target" %in% diagnostic_symbols(".GlobalEnv$unsafe_target <- 1", "global-assignment"),
     "Direct .GlobalEnv member assignment was not detected"
   )
@@ -66,12 +90,46 @@ local({
     "Direct indexed .GlobalEnv member assignment was not detected"
   )
   assert_true(
-    !("global-assignment" %in% rules("on.exit({ if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv) }, add = TRUE)")),
+    !("global-assignment" %in% rules(paste(
+      "function() {",
+      "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  on.exit({",
+      "    if (had_random_seed) {",
+      "      base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+      "    } else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) {",
+      "      base::rm('.Random.seed', envir = .GlobalEnv)",
+      "    }",
+      "  }, add = TRUE)",
+      "}",
+      sep = "\n"
+    ))),
     "The exact bounded random-seed restoration was reported as an unsafe global mutation"
+  )
+  assert_true(
+    "global-assignment" %in% rules(
+      "function() { on.exit({ if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv) }, add = TRUE) }"
+    ),
+    "A spoofed random-seed restoration bypassed global assignment analysis"
   )
   assert_true(
     "global-assignment" %in% rules("on.exit({ if (had_random_seed) base::assign('.Random.seed', replacement_seed, envir = .GlobalEnv) }, add = TRUE)"),
     "An arbitrary random-seed mutation bypassed global assignment analysis"
+  )
+  assert_true(
+    "global-assignment" %in% rules(paste(
+      "function() {",
+      "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  had_random_seed <- TRUE",
+      "  on.exit({",
+      "    if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+      "    else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) base::rm('.Random.seed', envir = .GlobalEnv)",
+      "  }, add = TRUE)",
+      "}",
+      sep = "\n"
+    )),
+    "A rebound random-seed snapshot variable spoofed the exact restoration exemption"
   )
   assert_true(
     !("global-assignment" %in% rules("function() { local_environment <- new.env(); local_environment$target <- 1; base::assign('target', 1, envir = local_environment) }")),
@@ -89,6 +147,38 @@ local({
   assert_true(
     !("unreachable-expression" %in% rules("function(flag) { if (flag) return(1); 2 }")),
     "A conditional without a terminal alternative was reported as unconditional"
+  )
+  assert_true(
+    "unreachable-expression" %in% rules("function() { base::stop('failed'); 2 }"),
+    "A qualified base terminal call did not make the following expression unreachable"
+  )
+  assert_true(
+    "unreachable-expression" %in% rules("function() { base::quit(save = 'no'); 2 }"),
+    "A qualified base quit call did not make the following expression unreachable"
+  )
+  assert_true(
+    !("unreachable-expression" %in% rules("function() { stop <- function(...) NULL; stop('not terminal'); 2 }")),
+    "A locally shadowed stop call was treated as terminal"
+  )
+  assert_true(
+    !("unreachable-expression" %in% rules("function(stop) { stop('not terminal'); 2 }")),
+    "A parameter-masked stop call was treated as terminal"
+  )
+  assert_true(
+    !("unreachable-expression" %in% rules("function() { quit <- function(...) NULL; quit('not terminal'); 2 }")),
+    "A locally shadowed quit call was treated as terminal"
+  )
+  assert_true(
+    "unreachable-expression" %in% rules("function() { quit <- function(...) NULL; base::quit(save = 'no'); 2 }"),
+    "A qualified base quit call was masked by an unrelated local binding"
+  )
+  assert_true(
+    !("partial-argument" %in% rules("data.frame(row.n = 1)")),
+    "A data.frame argument after dots was treated as partially matchable"
+  )
+  assert_true(
+    !("partial-argument" %in% rules("stats::optim(par = 1, fn = function(value) value, meth = 'BFGS')")),
+    "An optim argument after dots was treated as partially matchable"
   )
 
   lexical_false_negative <- paste(
@@ -120,6 +210,94 @@ local({
   assert_true(
     !("target:ap" %in% diagnostic_symbols(lexical_false_positive, "partial-argument")),
     "A nested same-name function leaked into its outer lexical scope"
+  )
+
+  ordered_redefinition <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  target(al = 1, beta = 2)",
+    "  target <- function(apple, pear) apple + pear",
+    "  target(apple = 1, pear = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(ordered_redefinition, "partial-argument"),
+    "A call before a same-scope redefinition did not use the earlier callable"
+  )
+  post_redefinition <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  target <- function(gamma, delta) gamma + delta",
+    "  target(al = 1, delta = 2)",
+    "  target(ga = 1, delta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(post_redefinition, "partial-argument")) &&
+      "target:ga" %in% diagnostic_symbols(post_redefinition, "partial-argument"),
+    "A call after same-scope redefinition did not use only the replacement callable"
+  )
+  conditional_binding <- paste(
+    "function(flag) {",
+    "  if (flag) target <- function(alpha, beta) alpha + beta",
+    "  else target <- function(apple, pear) apple + pear",
+    "  target(al = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(conditional_binding, "partial-argument"),
+    "A reachable conditional callable did not supply partial-match formals"
+  )
+  conditional_mask <- paste(
+    "function(flag) {",
+    "  if (flag) target <- function(alpha, beta) alpha + beta",
+    "  else target <- 1",
+    "  target(al = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(conditional_mask, "partial-argument"),
+    "A branch-reachable callable was lost when another branch installed a non-function mask"
+  )
+  non_function_mask <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  inner <- function() {",
+    "    target <- 1",
+    "    target(al = 1, beta = 2)",
+    "  }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(non_function_mask, "partial-argument")),
+    "A non-function lexical mask leaked to an outer callable"
+  )
+  parameter_mask <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  inner <- function(target) target(al = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(parameter_mask, "partial-argument")),
+    "A function parameter mask leaked to an outer callable"
+  )
+
+  shifted_location <- paste(
+    "unknown(al = 1)",
+    "target <- function(alpha, beta) alpha + beta",
+    "target(al = 1, beta = 2)",
+    sep = "\n"
+  )
+  assert_true(
+    identical(diagnostic_lines(shifted_location, "partial-argument", "target:al"), 3L),
+    "An unresolved earlier call shifted a later argument diagnostic"
   )
 
   expect_error(
