@@ -849,7 +849,9 @@ const BOOLEAN_OUTPUTS = Object.freeze({
   windowsUniqueRequired: true
 });
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
-const VALIDATE_CONDITION = "${{ always() && github.event_name == 'pull_request' }}";
+const PULL_OR_MERGE_GROUP_CONDITION = "github.event_name == 'pull_request' || github.event_name == 'merge_group'";
+const GROUPED_PULL_OR_MERGE_GROUP_CONDITION = `(${PULL_OR_MERGE_GROUP_CONDITION})`;
+const VALIDATE_CONDITION = `\${{ always() && ${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} }}`;
 const VALIDATE_NEEDS = Object.freeze([
   "classify",
   "invariant-core",
@@ -890,6 +892,7 @@ const CAPABILITY_NAMES = Object.freeze([
   "release_fan_in"
 ]);
 const PULL_REQUEST_ACTIVITY_TYPES = Object.freeze(["opened", "synchronize", "reopened", "edited", "stacked"]);
+const MERGE_GROUP_ACTIVITY_TYPES = Object.freeze(["checks_requested"]);
 const CAPABILITY_DOCS_START = "<!-- BEGIN GENERATED CI CAPABILITIES -->";
 const CAPABILITY_DOCS_END = "<!-- END GENERATED CI CAPABILITIES -->";
 const APPROVED_EXTERNAL_ACTIONS = new Set([
@@ -1369,7 +1372,7 @@ function expectedCapabilityJobCondition(workflowId, jobId) {
   if (workflowId === "pull_request" && Object.hasOwn(CHANGED_AREA_OWNER_OUTPUTS, jobId)) {
     const output = CHANGED_AREA_OWNER_OUTPUTS[jobId];
     return (
-      "${{ !cancelled() && github.event_name == 'pull_request' && " +
+      `\${{ !cancelled() && ${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} && ` +
       `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`
     );
   }
@@ -1417,8 +1420,15 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
     if (workflowId === "pull_request" || workflowId === "codeql") {
       assert.deepEqual(owner.activityTypes, PULL_REQUEST_ACTIVITY_TYPES);
       assert.deepEqual(document.on[owner.event]?.types, owner.activityTypes);
+      assert.deepEqual(owner.mergeGroupActivityTypes, MERGE_GROUP_ACTIVITY_TYPES);
+      assert.deepEqual(document.on.merge_group?.types, owner.mergeGroupActivityTypes);
     } else {
       assert.equal(owner.activityTypes, undefined, `${workflowId} must not declare pull-request activity types`);
+      assert.equal(
+        owner.mergeGroupActivityTypes,
+        undefined,
+        `${workflowId} must not declare merge-group activity types`
+      );
     }
   }
 
@@ -1534,7 +1544,10 @@ function renderCapabilityDocs(graph) {
     const requiredChecks = capability.requiredChecks
       ? `; required checks ${capability.requiredChecks.map((check) => `\`${check}\``).join(", ")}`
       : "";
-    return `- \`${name}\`: trigger \`${entry.event}\`; provider \`${provider.file}:${capability.providerJob}\`; mandatory final fan-in \`${fanIn.file}:${capability.fanInJob}\`${requiredChecks}.`;
+    const mergeGroup = entry.mergeGroupActivityTypes
+      ? `; merge queue trigger \`merge_group:${entry.mergeGroupActivityTypes.join(",")}\``
+      : "";
+    return `- \`${name}\`: trigger \`${entry.event}\`${mergeGroup}; provider \`${provider.file}:${capability.providerJob}\`; mandatory final fan-in \`${fanIn.file}:${capability.fanInJob}\`${requiredChecks}.`;
   });
   return [...heading, ...rows, "", CAPABILITY_DOCS_END].join("\n");
 }
@@ -1545,9 +1558,9 @@ function assertChangedAreaOwnersStartAfterClassification(document) {
     assert.deepEqual(job?.needs, ["classify"], `${jobId} must start after classification only`);
     assert.equal(
       normalizeWorkflowExpression(job?.if),
-      "${{ !cancelled() && github.event_name == 'pull_request' && " +
+      `\${{ !cancelled() && ${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} && ` +
         `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`,
-      `${jobId} must retain its exact PR-only fail-open selection condition`
+      `${jobId} must retain its exact pull-request and merge-group fail-open selection condition`
     );
     assert.doesNotMatch(
       JSON.stringify(job),
@@ -1563,6 +1576,7 @@ function assertPullRequestActivityContract(primaryDocument, codeqlDocument) {
     ["CodeQL", codeqlDocument]
   ]) {
     assert.deepEqual(document.on.pull_request.types, PULL_REQUEST_ACTIVITY_TYPES, `${name} activity types drifted`);
+    assert.deepEqual(document.on.merge_group.types, MERGE_GROUP_ACTIVITY_TYPES, `${name} merge-group activity drifted`);
     assert.equal(document.on.pull_request.types.includes("edited"), true, `${name} must qualify base edits`);
     assert.equal(document.on.pull_request.types.includes("stacked"), true, `${name} must qualify stack joins`);
     assert.equal(
@@ -1807,7 +1821,7 @@ test("classifier self-selects and fails open for control-plane, malformed, empty
   ]) {
     assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths }), BOOLEAN_OUTPUTS);
   }
-  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+  for (const eventName of ["merge_group", "push", "schedule", "workflow_dispatch"]) {
     assert.deepEqual(classifyCiChange({ eventName, changedPaths: [] }), BOOLEAN_OUTPUTS);
   }
   assert.throws(() => classifyCiChange({ eventName: "pull_request", changedPaths: "not-an-array" }), /array/u);
@@ -3105,7 +3119,7 @@ function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   assert.equal(python[0].uses, SETUP_PYTHON);
   assert.equal(python[0].with["python-version"], "3.10");
   assert.ok(stepRunning(job, 'python -m pip install -e "python[dev]"'));
-  assert.equal(stepRunning(job, pullRequestCommand).if, "${{ github.event_name == 'pull_request' }}");
+  assert.equal(stepRunning(job, pullRequestCommand).if, `\${{ ${PULL_OR_MERGE_GROUP_CONDITION} }}`);
   assert.equal(
     stepRunning(job, pullRequestCommand).env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
@@ -3645,8 +3659,8 @@ test("changed-area owners start beside the invariant core and reject a restored 
 
     const serialCondition = structuredClone(ci);
     serialCondition.jobs[jobId].if = serialCondition.jobs[jobId].if.replace(
-      "github.event_name == 'pull_request' &&",
-      "github.event_name == 'pull_request' && needs.invariant-core.result == 'success' &&"
+      `${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} &&`,
+      `${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} && needs.invariant-core.result == 'success' &&`
     );
     assert.throws(() => assertChangedAreaOwnersStartAfterClassification(serialCondition));
 
@@ -3660,7 +3674,7 @@ test("changed-area owners start beside the invariant core and reject a restored 
   }
 });
 
-test("validate always evaluates the exact PR-only result fan-in", () => {
+test("validate always evaluates the exact pull-request and merge-group result fan-in", () => {
   for (const condition of [
     "${{ !cancelled() && github.event_name == 'pull_request' }}",
     "${{ success() && github.event_name == 'pull_request' }}",
@@ -4099,7 +4113,8 @@ test("performance and standalone released-Jupyter retain triggers and semantics 
 test("protected branch triggers and obsolete classifier vocabulary are absent from current PR workflow owners", () => {
   for (const document of [ci, codeql]) {
     assert.deepEqual(document.on.pull_request.branches ?? ["main"], ["main"]);
-    assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+    assert.deepEqual(document.on.merge_group.types, MERGE_GROUP_ACTIVITY_TYPES);
+    assert.equal(document.concurrency["cancel-in-progress"], `\${{ ${PULL_OR_MERGE_GROUP_CONDITION} }}`);
   }
   assert.equal(cross.on.pull_request, undefined);
   assert.ok(Object.hasOwn(cross.on, "workflow_dispatch"));
@@ -4231,13 +4246,14 @@ test("every Vitest entry point retains an effective worker ceiling", async () =>
   assert.equal(smoke.config.test?.fileParallelism, false);
 });
 
-test("pull-request workflows cancel only obsolete heads while both required result gates remain fail-complete", () => {
+test("pull-request and merge-group workflows cancel only obsolete candidates while required gates remain fail-complete", () => {
   const alwaysEvaluatedJobs = [];
   for (const [name, group] of REPLACEABLE_PULL_REQUEST_WORKFLOWS) {
     const document = workflow(name);
     assert.equal(document.concurrency.group, group);
-    assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+    assert.equal(document.concurrency["cancel-in-progress"], `\${{ ${PULL_OR_MERGE_GROUP_CONDITION} }}`);
     assert.ok(document.on.pull_request);
+    assert.deepEqual(document.on.merge_group.types, MERGE_GROUP_ACTIVITY_TYPES);
     assert.ok(Object.keys(document.on).some((eventName) => eventName !== "pull_request"));
     for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
       if (String(job.if ?? "").includes("always()")) alwaysEvaluatedJobs.push(`${name}:${jobId}`);
