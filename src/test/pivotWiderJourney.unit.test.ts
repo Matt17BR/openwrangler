@@ -3,6 +3,7 @@ import {
   consumeLayoutCommittedRendererValue,
   reacquireLayoutCommittedRendererTarget
 } from "./extensionHost/acknowledgedRenderer";
+import { materializeExactPivotWiderCell } from "./extensionHost/pivotWiderJourney";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const pendingA = {
@@ -29,6 +30,29 @@ function rendererContext(initial: typeof pendingA | typeof pendingB | typeof com
 }
 
 describe("Pivot wider installed preview synchronization", () => {
+  it("reveals and reacquires an exact missing output outside the materialized horizontal window", async () => {
+    const offscreen = { count: vi.fn(async () => 0), id: "offscreen" };
+    const materialized = { count: vi.fn(async () => 1), id: "materialized" };
+    let current = offscreen;
+    const reveal = vi.fn(async () => {
+      current = materialized;
+    });
+
+    await expect(materializeExactPivotWiderCell(() => current, reveal)).resolves.toBe(materialized);
+    expect(reveal).toHaveBeenCalledOnce();
+    expect(offscreen.count).toHaveBeenCalledOnce();
+    expect(materialized.count).toHaveBeenCalledOnce();
+  });
+
+  it("does not accept an absent or ambiguous cell after its one reveal", async () => {
+    for (const count of [0, 2]) {
+      const cell = { count: vi.fn(async () => count) };
+      const reveal = vi.fn(async () => undefined);
+      await expect(materializeExactPivotWiderCell(() => cell, reveal)).rejects.toThrow("exact Pivot wider cell");
+      expect(reveal).toHaveBeenCalledTimes(count === 0 ? 1 : 0);
+    }
+  });
+
   it("follows pending replacements, then reads the committed receipt once", async () => {
     const context = rendererContext(pendingA);
     const waitFor = vi.fn(async (predicate: () => boolean) => {
