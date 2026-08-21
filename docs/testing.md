@@ -44,11 +44,14 @@ matrix for release candidates or changes that cross those boundaries.
   download, or native compilation. Mutation tests cover every owner and package, override, flag, command, platform,
   and shim boundary.
 
-- `npm run check:r-dependency-lock` strictly validates both native-R lock registries without network or filesystem
-  mutation. `node scripts/r-dependency-lock.mjs generate ... --check true` is the explicit networked byte-regeneration
-  operation; it must reproduce the dated archive graph exactly. The workflow `prepare` command validates the lock and
-  exact R runtime before cache or network mutation. The cache contains only the lock-pinned package archives. On a
-  cache miss, `install --cache-hit false` downloads the bounded archive set; on a cache hit,
+- `npm run check:r-dependency-lock` strictly validates both version-2 native-R lock registries without network or
+  filesystem mutation. Each registry records ordered runtime roots separately from fixture roots. Resolution and
+  reachability use their union, while `packages[].direct` identifies only runtime roots. Candidate acceptance imports
+  that same authority for its exact package list and versioned cache namespace. The explicit networked
+  `generate ... --check true` operation must reproduce the dated archive graph exactly. The workflow `prepare`
+  command validates the lock and exact R runtime before cache or network mutation. The cache contains only the
+  lock-pinned package archives. On a cache miss, `install --cache-hit false` downloads the bounded archive set; on a
+  cache hit,
   `install --cache-hit true` independently revalidates the complete archive inventory, descriptor identities, sizes,
   and SHA-256 values before any package code can run. Both paths install only those authenticated local archives into
   a fresh empty private library, then verify every namespace and seal a new exact package and file-tree receipt.
@@ -1384,12 +1387,13 @@ lane pinned 6.30.1. That proves
 unreviewed dependency drift entered the focused gate, not that IPykernel 7.x caused the Interactive Window stall. The
 correction adds no editor retry and does not extend either the operation or native-phase deadline.
 
-`collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
-library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
-that grouped and indexed objects stay out of the picker. The R contract tests cover the same class boundary directly.
-A setup failure records only a fixed stage name; R errors and notebook output stay out of the retained diagnostic.
-macOS builds collapse from its pinned source package, while Linux and Windows use the pinned binary. Setup loads
-every pinned namespace and exercises all three supported constructors before the editor starts.
+`rlang` is an explicit runtime root; `collapse` is fixture-only and is never marked direct. Packaged R/Jupyter
+acceptance still installs the exact collapse 2.1.7 fixture in its private test library. It creates real `qDF()`,
+`qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms that grouped and indexed objects
+stay out of the picker. The R contract tests cover the same class boundary directly. A setup failure records only a
+fixed stage name; R errors and notebook output stay out of the retained diagnostic. macOS builds collapse from its
+pinned source package, while Linux and Windows use the pinned binary. Setup loads every pinned namespace and exercises
+all three supported constructors before the editor starts.
 
 Across the core notebook and focused literate invocations, local screenshot mode captures the supported IRkernel dataframe list in
 Operations, a generated 2,400-row orders dataframe in the viewing workbench, a Group and aggregate draft after

@@ -20,18 +20,17 @@ import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { parseStrictJson } from "./strict-json.mjs";
 
-export const LOCK_PROTOCOL = "openwrangler-native-r-dependency-lock-v1";
+export const LOCK_PROTOCOL = "openwrangler-native-r-dependency-lock-v2";
+export const LOCK_RESOLVER_VERSION = "2";
 export const LOCK_PURPOSE = "native-r-contract";
-export const LOCK_ROOTS = Object.freeze([
-  "jsonlite",
-  "tibble",
-  "readr",
-  "dplyr",
-  "data.table",
-  "bit64",
-  "collapse",
-  "nanoparquet"
-]);
+export const LOCK_ROOTS = Object.freeze({
+  runtime: Object.freeze(["jsonlite", "tibble", "readr", "dplyr", "data.table", "bit64", "rlang", "nanoparquet"]),
+  fixtures: Object.freeze(["collapse"])
+});
+export const NATIVE_R_CANDIDATE_PACKAGE_SPECS = Object.freeze(
+  [...LOCK_ROOTS.runtime, ...LOCK_ROOTS.fixtures].map((name) => `any::${name}`)
+);
+export const NATIVE_R_CANDIDATE_CACHE_VERSION = `native-r-contract-v${LOCK_RESOLVER_VERSION}`;
 export const SNAPSHOT_DATE = "2026-08-14";
 export const SNAPSHOT_HOST = "packagemanager.posit.co";
 export const LOCK_LIMITS = Object.freeze({
@@ -82,6 +81,7 @@ const SHA256 = /^[0-9a-f]{64}$/u;
 const R_MINOR = /^4\.[45]$/u;
 const SAFE_SYSTEM_PACKAGE = /^[a-z0-9][a-z0-9+.-]*$/u;
 const SAFE_TEXT = /^[^\0\r\n]+$/u;
+const ROOT_KEYS = Object.freeze(["runtime", "fixtures"]);
 const LOCK_KEYS = Object.freeze([
   "protocol",
   "purpose",
@@ -194,11 +194,31 @@ function validateQualification(value) {
 
 function validateResolver(value, rMinor) {
   exactKeys(value, RESOLVER_KEYS, "resolver");
-  if (value.name !== "openwrangler-r-dependency-lock" || value.exactVersion !== "1") {
-    throw new Error("resolver must select the repository-owned version 1 resolver.");
+  if (value.name !== "openwrangler-r-dependency-lock" || value.exactVersion !== LOCK_RESOLVER_VERSION) {
+    throw new Error(`resolver must select the repository-owned version ${LOCK_RESOLVER_VERSION} resolver.`);
   }
   if (value.snapshotDate !== SNAPSHOT_DATE) throw new Error("resolver snapshot date is not the approved date.");
   validateSnapshotUrl(value.repositorySnapshotUrl, rMinor);
+}
+
+function validateRootCategories(value) {
+  exactKeys(value, ROOT_KEYS, "roots");
+  for (const category of ROOT_KEYS) {
+    if (!Array.isArray(value[category])) throw new Error(`roots.${category} must be an array.`);
+    if (value[category].some((name) => typeof name !== "string" || !PACKAGE_NAME.test(name))) {
+      throw new Error(`roots.${category} contains an invalid package name.`);
+    }
+    if (new Set(value[category]).size !== value[category].length) {
+      throw new Error(`roots.${category} must not contain duplicate packages.`);
+    }
+  }
+  if (value.runtime.some((name) => value.fixtures.includes(name))) {
+    throw new Error("Runtime and fixture roots must be disjoint.");
+  }
+  if (JSON.stringify(value) !== JSON.stringify(LOCK_ROOTS)) {
+    throw new Error("R dependency roots must be the exact ordered runtime and fixture roots.");
+  }
+  return [...value.runtime, ...value.fixtures];
 }
 
 function validateDependencies(value, packageNames, packageName) {
@@ -240,12 +260,10 @@ export function validateLock(lock, { expectedPath } = {}) {
   }
   validateQualification(lock.qualification);
   validateResolver(lock.resolver, lock.qualification.rMinor);
-  if (JSON.stringify(lock.roots) !== JSON.stringify(LOCK_ROOTS)) {
-    throw new Error("R dependency roots must be the exact ordered native-contract roots.");
-  }
+  const rootNames = validateRootCategories(lock.roots);
   if (
     !Array.isArray(lock.packages) ||
-    lock.packages.length < LOCK_ROOTS.length ||
+    lock.packages.length < rootNames.length ||
     lock.packages.length > LOCK_LIMITS.packages
   ) {
     throw new Error("R dependency package count is outside the bounded contract.");
@@ -258,8 +276,8 @@ export function validateLock(lock, { expectedPath } = {}) {
   for (const entry of lock.packages) {
     exactKeys(entry, PACKAGE_KEYS, `package ${entry.name}`);
     if (!PACKAGE_NAME.test(entry.name) || !VERSION.test(entry.version)) throw new Error("Package identity is invalid.");
-    if (typeof entry.direct !== "boolean" || entry.direct !== LOCK_ROOTS.includes(entry.name)) {
-      throw new Error(`${entry.name}.direct is inconsistent with the exact roots.`);
+    if (typeof entry.direct !== "boolean" || entry.direct !== lock.roots.runtime.includes(entry.name)) {
+      throw new Error(`${entry.name}.direct is inconsistent with the runtime roots.`);
     }
     if (typeof entry.needsCompilation !== "boolean") throw new Error(`${entry.name}.needsCompilation must be boolean.`);
     requireText(entry.license, `${entry.name}.license`, 1024);
@@ -299,7 +317,7 @@ export function validateLock(lock, { expectedPath } = {}) {
     if (!entry) throw new Error(`R dependency lock is missing ${name}.`);
     for (const dependency of DEPENDENCY_KEYS.flatMap((key) => entry.dependencies[key])) visitReachable(dependency);
   };
-  for (const root of LOCK_ROOTS) visitReachable(root);
+  for (const root of rootNames) visitReachable(root);
   if (reachable.size !== lock.packages.length) throw new Error("R dependency lock contains an unreachable package.");
   topologicalPackages(lock.packages);
   if (expectedPath !== undefined) {
@@ -450,7 +468,7 @@ export async function generateLock({ rMinor, generatedWithRVersion }) {
   });
   const metadata = parseDcf(gunzipSync(packagesResponse.bytes).toString("utf8"));
   const selected = new Map();
-  const queue = [...LOCK_ROOTS];
+  const queue = [...LOCK_ROOTS.runtime, ...LOCK_ROOTS.fixtures];
   while (queue.length > 0) {
     const name = queue.shift();
     if (selected.has(name)) continue;
@@ -479,7 +497,7 @@ export async function generateLock({ rMinor, generatedWithRVersion }) {
     packages.push({
       name,
       version: entry.Version,
-      direct: LOCK_ROOTS.includes(name),
+      direct: LOCK_ROOTS.runtime.includes(name),
       needsCompilation: entry.NeedsCompilation === "yes",
       license: requireText(entry.License, `${name}.License`, 1024),
       dependencies: {
@@ -510,11 +528,14 @@ export async function generateLock({ rMinor, generatedWithRVersion }) {
     },
     resolver: {
       name: "openwrangler-r-dependency-lock",
-      exactVersion: "1",
+      exactVersion: LOCK_RESOLVER_VERSION,
       repositorySnapshotUrl,
       snapshotDate: SNAPSHOT_DATE
     },
-    roots: [...LOCK_ROOTS],
+    roots: {
+      runtime: [...LOCK_ROOTS.runtime],
+      fixtures: [...LOCK_ROOTS.fixtures]
+    },
     packages,
     systemRequirements: { packages: ["libx11-dev"] }
   };
