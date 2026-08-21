@@ -14,6 +14,8 @@ import type {
 } from "./notebooks/pythonInteractiveCommands";
 import type { LiterateRVariableProvider, RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
 import type {
+  NativeTreeViewId,
+  NativeViewsOwner,
   NativeViewsTestController,
   NotebookInsertionDiagnosticStatus,
   ViewSortDispatchStatus
@@ -102,6 +104,7 @@ interface FileOwner {
 }
 
 interface NativeOwner {
+  owner: NativeViewsOwner;
   controller: NativeViewsTestController;
 }
 
@@ -390,12 +393,19 @@ export class LazyActivationOwners implements vscode.Disposable {
   private installNativeViewGates(): void {
     this.nativeViewRegistrations = this.registerDisposablesTransactional("lazy native view providers", (retain) => {
       for (const id of NATIVE_TREE_VIEW_IDS) {
-        retain(vscode.window.registerTreeDataProvider(id, new LazyTreeProvider(() => this.ensureNativeOwner())));
+        retain(
+          vscode.window.registerTreeDataProvider(
+            id,
+            new LazyTreeProvider(() =>
+              this.ensureNativeOwner().then(({ owner }) => owner.treeProvider(id as NativeTreeViewId))
+            )
+          )
+        );
       }
       retain(
         vscode.window.registerWebviewViewProvider(
           "openWrangler.codePreview",
-          new LazyWebviewViewProvider(() => this.ensureNativeOwner()),
+          new LazyWebviewViewProvider(() => this.ensureNativeOwner().then(({ owner }) => owner.codePreviewProvider())),
           { webviewOptions: { retainContextWhenHidden: true } }
         )
       );
@@ -691,11 +701,11 @@ export class LazyActivationOwners implements vscode.Disposable {
         await rVariables.refreshFromCommand();
       }
     ));
-    const controller = this.captureOwnerRegistration("native", () =>
+    const owner = this.captureOwnerRegistration("native", () =>
       native.registerNativeViews(this.context, session.coordinator, notebookVariables, rVariables)
     );
     this.constructedOwners.push("native-views");
-    return { controller };
+    return { owner, controller: owner };
   }
 
   private registerDisposablesTransactional(
@@ -955,23 +965,30 @@ class LazyCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
 }
 
 class LazyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
-  constructor(private readonly load: () => Promise<unknown>) {}
+  private delegate: vscode.TreeDataProvider<vscode.TreeItem> | undefined;
 
-  getTreeItem(item: vscode.TreeItem): vscode.TreeItem {
-    return item;
+  constructor(private readonly load: () => Promise<vscode.TreeDataProvider<vscode.TreeItem>>) {}
+
+  getTreeItem(item: vscode.TreeItem): vscode.TreeItem | Thenable<vscode.TreeItem> {
+    return this.delegate?.getTreeItem(item) ?? item;
   }
 
-  async getChildren(): Promise<vscode.TreeItem[]> {
-    await this.load();
-    return [];
+  async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+    const provider = (this.delegate ??= await this.load());
+    return (await provider.getChildren(element)) ?? [];
   }
 }
 
 class LazyWebviewViewProvider implements vscode.WebviewViewProvider {
-  constructor(private readonly load: () => Promise<unknown>) {}
+  constructor(private readonly load: () => Promise<vscode.WebviewViewProvider>) {}
 
-  async resolveWebviewView(): Promise<void> {
-    await this.load();
+  async resolveWebviewView(
+    view: vscode.WebviewView,
+    context: vscode.WebviewViewResolveContext,
+    token: vscode.CancellationToken
+  ): Promise<void> {
+    const provider = await this.load();
+    await provider.resolveWebviewView(view, context, token);
   }
 }
 

@@ -10,6 +10,8 @@ import {
   activationBudgetFailures,
   activationTriggerBudgets,
   dynamicEdgeClassifications,
+  maximumDependencyFreeActivationMs,
+  measureDependencyFreeActivation,
   measureActivationInventory,
   measureActivationTriggers,
   measureTransitiveRuntimeSources
@@ -17,10 +19,13 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test("production activation trigger classes stay within their dependency-free cold-load budgets", async () => {
+test("production activation trigger classes stay within their closed runtime-source budgets", async () => {
   const report = await measureActivationTriggers();
 
   assert.deepEqual(activationBudgetFailures(report), []);
+  assert.equal(report.elapsedActivation.maximumMs, maximumDependencyFreeActivationMs);
+  assert.equal(report.elapsedActivation.withinBudget, true);
+  assert.equal(report.elapsedActivation.elapsedMs <= maximumDependencyFreeActivationMs, true);
   assert.equal(report.measurements.unrelated.modules <= 3, true);
   assert.equal(report.measurements.unrelated.files.includes("src/extension/lazyActivationOwners.ts"), true);
   assert.equal(report.measurements.runtime.files.includes("src/extension/pythonBridge.ts"), true);
@@ -52,6 +57,22 @@ test("production activation trigger classes stay within their dependency-free co
   assert.deepEqual(report.dynamicEdges.unclassified, []);
   assert.deepEqual(report.dynamicEdges.staleClassifications, []);
   assert.deepEqual(report.dynamicEdges.occurrenceMismatches, []);
+  assert.deepEqual(report.dynamicEdges.closureMismatches, []);
+  for (const [edge, classification] of Object.entries(dynamicEdgeClassifications)) {
+    const [importer, _kind, specifier] = edge.split("|");
+    if (!specifier.startsWith(".")) continue;
+    const unresolvedTarget = path.posix.normalize(path.posix.join(path.posix.dirname(importer), specifier));
+    const target = /\.[cm]?js$/u.test(unresolvedTarget)
+      ? unresolvedTarget
+          .replace(/\.mjs$/u, ".mts")
+          .replace(/\.cjs$/u, ".cts")
+          .replace(/\.js$/u, ".ts")
+      : `${unresolvedTarget}.ts`;
+    for (const trigger of classification.triggers.filter((value) => value !== "test-api")) {
+      assert.equal(report.measurements[trigger].classifiedDynamicRoots.includes(target), true, `${trigger}: ${target}`);
+      assert.equal(report.measurements[trigger].files.includes(target), true, `${trigger}: ${target}`);
+    }
+  }
   assert.equal(report.activationEvents.discovered.length, Object.keys(activationEventClassifications).length);
   assert.equal(report.activationEvents.explicit.length, 51);
   assert.equal(report.activationEvents.contributedCommands.length, 43);
@@ -72,6 +93,19 @@ test("production activation trigger classes stay within their dependency-free co
   assert.deepEqual(report.activationEvents.occurrenceMismatches, []);
   assert.deepEqual(report.activationEvents.contributedViewOccurrenceMismatches, []);
   assert.deepEqual(report.activationEvents.contributedCustomEditorOccurrenceMismatches, []);
+});
+
+test("the elapsed activation gate rejects an injected synchronous registration delay", async () => {
+  const measurement = await measureDependencyFreeActivation(undefined, {
+    synchronousRegistrationDelayMs: maximumDependencyFreeActivationMs + 1
+  });
+
+  assert.equal(measurement.elapsedMs, maximumDependencyFreeActivationMs + 1);
+  assert.equal(measurement.withinBudget, false);
+  assert.match(measurement.failure, /synchronous activation exceeded/u);
+  const failures = activationBudgetFailures(completeInventoryReport({ elapsedActivation: measurement }), {});
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /elapsed activation/u);
 });
 
 test("the gate rejects byte, module, and owner-isolation regressions", () => {
@@ -202,6 +236,22 @@ test("the syntax authority recognizes namespace and CommonJS createRequire loade
         { key: "src/extension/fixture.ts|require|node:module", occurrences: 1 }
       ]);
     }
+  );
+});
+
+test("the syntax authority rejects loader aliases that escape through object properties", async () => {
+  await withInventoryFixture(
+    `
+      import { createRequire as makeRequire } from "node:module";
+      const loaders = { load: require };
+      const factories = { makeRequire };
+      loaders.load("./escaped-owner.js");
+      factories.makeRequire(import.meta.url)("./also-escaped-owner.js");
+    `,
+    { activationEvents: [], contributes: { commands: [] } },
+    async () => assert.fail("a property-held loader must not escape the closed dynamic-edge model"),
+    {},
+    /loader alias escapes through an object property/u
   );
 });
 
@@ -393,6 +443,11 @@ test("the syntax preflight rejects token and nesting overflow before AST invento
 
 function completeInventoryReport(report) {
   return {
+    elapsedActivation: {
+      elapsedMs: 0,
+      maximumMs: maximumDependencyFreeActivationMs,
+      withinBudget: true
+    },
     ...report,
     dynamicEdges: {
       discovered: [],
@@ -400,7 +455,8 @@ function completeInventoryReport(report) {
       unclassified: [],
       staleClassifications: [],
       occurrenceMismatches: [],
-      unknownTriggerClasses: []
+      unknownTriggerClasses: [],
+      closureMismatches: []
     },
     activationEvents: {
       discovered: [],

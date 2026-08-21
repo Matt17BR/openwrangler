@@ -2,6 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import vm from "node:vm";
 import ts from "typescript";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,7 @@ const maximumViewContributionGroups = 256;
 const maximumSyntaxTokens = 500_000;
 const maximumSyntaxNesting = 512;
 const maximumSyntaxNodes = 250_000;
+export const maximumDependencyFreeActivationMs = 2_000;
 
 export const activationTriggerBudgets = Object.freeze({
   unrelated: {
@@ -254,22 +256,33 @@ export async function measureActivationTriggers(repositoryRoot = defaultReposito
   const root = path.resolve(repositoryRoot);
   const measurements = {};
   for (const [trigger, budget] of Object.entries(activationTriggerBudgets)) {
-    const discovery = await discoverTransitiveRuntimeSources(root, budget.roots);
+    const classifiedDynamicRoots = await dynamicRootsForTrigger(root, trigger);
+    const discovery = await discoverTransitiveRuntimeSources(root, [
+      ...new Set([...budget.roots, ...classifiedDynamicRoots])
+    ]);
     const relativeFiles = [...discovery.files].map((file) => toPosix(path.relative(root, file))).sort();
     measurements[trigger] = {
       modules: discovery.files.size,
       bytes: discovery.bytes,
       files: relativeFiles,
+      classifiedDynamicRoots,
       forbiddenMatches: budget.forbidden.flatMap((needle) =>
         relativeFiles.filter((file) => matchesOwnerNeedle(file, needle)).map((file) => ({ needle, file }))
       )
     };
   }
   const { dynamicEdges, activationEvents } = await measureActivationInventory(root);
+  const elapsedActivation = await measureDependencyFreeActivation(root);
+  dynamicEdges.closureMismatches = Object.entries(measurements).flatMap(([trigger, measurement]) =>
+    measurement.classifiedDynamicRoots
+      .filter((target) => !measurement.files.includes(target))
+      .map((target) => ({ trigger, target }))
+  );
   return {
-    metric: "transitive-static-typescript-source-load-surface",
+    metric: "classified-trigger-runtime-source-closure",
     repositoryRoot: root,
     measurements,
+    elapsedActivation,
     dynamicEdges,
     activationEvents
   };
@@ -292,6 +305,101 @@ export async function measureTransitiveRuntimeSources(repositoryRoot, roots, opt
   };
 }
 
+export async function measureDependencyFreeActivation(
+  repositoryRoot = defaultRepositoryRoot,
+  { synchronousRegistrationDelayMs = 0 } = {}
+) {
+  if (
+    !Number.isSafeInteger(synchronousRegistrationDelayMs) ||
+    synchronousRegistrationDelayMs < 0 ||
+    synchronousRegistrationDelayMs > maximumDependencyFreeActivationMs + 1
+  ) {
+    throw new Error("Dependency-free activation delay injection is outside its bounded test range.");
+  }
+  const root = path.resolve(repositoryRoot);
+  const aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes);
+  const [activateSource, ownersSource] = await Promise.all([
+    readBoundedRegularFile(root, path.resolve(root, "src/extension/activate.ts"), aggregateBudget),
+    readBoundedRegularFile(root, path.resolve(root, "src/extension/lazyActivationOwners.ts"), aggregateBudget)
+  ]);
+  let virtualElapsedMs = 0;
+  let delayInjected = false;
+  const clock = synchronousRegistrationDelayMs === 0 ? globalThis.performance : { now: () => virtualElapsedMs };
+  const disposable = () => ({ dispose: () => undefined });
+  const register = () => {
+    if (!delayInjected) {
+      delayInjected = true;
+      virtualElapsedMs += synchronousRegistrationDelayMs;
+    }
+    return disposable();
+  };
+  const vscode = {
+    commands: { registerCommand: register, executeCommand: async () => undefined },
+    env: { appName: "Visual Studio Code", openExternal: async () => true },
+    window: {
+      visibleNotebookEditors: [],
+      registerCustomEditorProvider: register,
+      registerTreeDataProvider: register,
+      registerWebviewViewProvider: register,
+      onDidChangeVisibleNotebookEditors: register,
+      onDidChangeActiveNotebookEditor: register,
+      showErrorMessage: async () => undefined
+    },
+    workspace: {
+      onDidOpenNotebookDocument: register,
+      onDidGrantWorkspaceTrust: register
+    },
+    Uri: { parse: (value) => value },
+    version: "activation-budget"
+  };
+  const sandbox = {
+    AggregateError,
+    console,
+    performance: clock,
+    process: { env: {}, platform: process.platform },
+    Promise,
+    setTimeout,
+    clearTimeout
+  };
+  const owners = evaluateCommonJs(ownersSource.source, "src/extension/lazyActivationOwners.ts", sandbox, (id) => {
+    if (id === "vscode") return vscode;
+    throw new Error(`Dependency-free activation unexpectedly loaded ${id}.`);
+  });
+  const activation = evaluateCommonJs(activateSource.source, "src/extension/activate.ts", sandbox, (id) => {
+    if (id === "vscode") return vscode;
+    if (id === "./lazyActivationOwners") return owners;
+    throw new Error(`Dependency-free activation unexpectedly loaded ${id}.`);
+  });
+  const context = { subscriptions: [] };
+  const startedAt = clock.now();
+  let failure;
+  let elapsedMs;
+  try {
+    const activated = activation.activate(context);
+    elapsedMs = Math.max(0, clock.now() - startedAt);
+    await activated;
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  } finally {
+    try {
+      await activation.deactivate();
+    } catch (error) {
+      failure ??= error instanceof Error ? error.message : String(error);
+    }
+  }
+  elapsedMs ??= Math.max(0, clock.now() - startedAt);
+  const declaredMaximumMs = activation.MAX_SYNCHRONOUS_ACTIVATION_MS;
+  if (declaredMaximumMs !== maximumDependencyFreeActivationMs) {
+    failure = `Activation declares ${String(declaredMaximumMs)} ms instead of ${maximumDependencyFreeActivationMs} ms.`;
+  }
+  return {
+    elapsedMs,
+    maximumMs: maximumDependencyFreeActivationMs,
+    withinBudget: failure === undefined && elapsedMs <= maximumDependencyFreeActivationMs,
+    ...(failure === undefined ? {} : { failure })
+  };
+}
+
 export function activationBudgetFailures(report, budgets = activationTriggerBudgets) {
   const failures = [];
   for (const [trigger, budget] of Object.entries(budgets)) {
@@ -310,6 +418,18 @@ export function activationBudgetFailures(report, budgets = activationTriggerBudg
       failures.push(`${trigger}: unexpectedly loads ${match.file} through exclusion ${match.needle}`);
     }
   }
+  if (!report.elapsedActivation) {
+    failures.push("elapsed activation: missing dependency-free measurement");
+  } else if (
+    report.elapsedActivation.maximumMs !== maximumDependencyFreeActivationMs ||
+    !Number.isFinite(report.elapsedActivation.elapsedMs) ||
+    report.elapsedActivation.elapsedMs < 0 ||
+    !report.elapsedActivation.withinBudget
+  ) {
+    failures.push(
+      `elapsed activation: ${report.elapsedActivation.failure ?? `${String(report.elapsedActivation.elapsedMs)} ms exceeds ${maximumDependencyFreeActivationMs} ms`}`
+    );
+  }
   if (!report.dynamicEdges) {
     failures.push("dynamic edges: missing independent production-edge inventory");
   } else {
@@ -321,6 +441,9 @@ export function activationBudgetFailures(report, budgets = activationTriggerBudg
     }
     for (const trigger of report.dynamicEdges.unknownTriggerClasses) {
       failures.push(`dynamic edge: unknown trigger class ${trigger}`);
+    }
+    for (const mismatch of report.dynamicEdges.closureMismatches ?? []) {
+      failures.push(`dynamic edge: ${mismatch.target} is absent from the ${mismatch.trigger} trigger closure`);
     }
   }
   if (!report.activationEvents) {
@@ -346,6 +469,45 @@ export function activationBudgetFailures(report, budgets = activationTriggerBudg
     }
   }
   return failures;
+}
+
+function evaluateCommonJs(source, file, sandbox, requireModule) {
+  preflightTypeScriptSyntax(source, file, {});
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true
+    },
+    fileName: file,
+    reportDiagnostics: true
+  });
+  const diagnostic = output.diagnostics?.find((entry) => entry.category === ts.DiagnosticCategory.Error);
+  if (diagnostic) throw new Error(`Dependency-free activation could not transpile ${file} (TS${diagnostic.code}).`);
+  const module = { exports: {} };
+  const context = vm.createContext({ ...sandbox });
+  const wrapper = new vm.Script(`(function (exports, require, module) { ${output.outputText}\n})`, {
+    filename: file
+  }).runInContext(context);
+  wrapper(module.exports, requireModule, module);
+  return module.exports;
+}
+
+async function dynamicRootsForTrigger(repositoryRoot, trigger) {
+  const roots = [];
+  for (const [key, classification] of Object.entries(dynamicEdgeClassifications)) {
+    if (!classification.triggers.includes(trigger)) continue;
+    const [relativeImporter, _kind, specifier, ...extra] = key.split("|");
+    if (extra.length > 0 || !relativeImporter || !specifier) {
+      throw new Error(`Dynamic edge classification has an invalid key: ${key}`);
+    }
+    if (!specifier.startsWith(".")) continue;
+    const importer = path.resolve(repositoryRoot, relativeImporter);
+    const resolved = await resolveTypescriptImport(repositoryRoot, importer, specifier);
+    if (!resolved) throw new Error(`Dynamic edge classification target is unavailable: ${key}`);
+    roots.push(toPosix(path.relative(repositoryRoot, resolved)));
+  }
+  return [...new Set(roots)].sort();
 }
 
 async function measureDynamicEdges(repositoryRoot, options = {}) {
@@ -771,6 +933,19 @@ function syntaxRuntimeInventory(source, file, options = {}) {
     }
   }
 
+  const loaderEscapes = propertyLoaderEscapes(
+    sourceFile,
+    importAliases,
+    requireAliases,
+    createRequireAliases,
+    createRequireNamespaces
+  );
+  if (loaderEscapes.length > 0) {
+    throw new Error(
+      `Activation inventory loader alias escapes through an object property (${loaderEscapes.join(", ")}): ${file}`
+    );
+  }
+
   const dynamicEdges = [];
   for (const call of callExpressions) {
     if (wrapperCalls.has(call)) continue;
@@ -784,6 +959,44 @@ function syntaxRuntimeInventory(source, file, options = {}) {
     });
   }
   return { dynamicEdges, staticSpecifiers };
+}
+
+function propertyLoaderEscapes(
+  sourceFile,
+  importAliases,
+  requireAliases,
+  createRequireAliases,
+  createRequireNamespaces
+) {
+  const escapes = [];
+  const loaderKind = (expression) => {
+    const value = unwrapExpression(expression);
+    if (!ts.isIdentifier(value)) return undefined;
+    if (importAliases.has(value.text)) return "import";
+    if (requireAliases.has(value.text)) return "require";
+    if (createRequireAliases.has(value.text)) return "createRequire";
+    return createRequireNamespaces.has(value.text) ? "createRequireNamespace" : undefined;
+  };
+  const visit = (node) => {
+    if (ts.isPropertyAssignment(node)) {
+      const kind = loaderKind(node.initializer);
+      if (kind) escapes.push(`${node.name.getText(sourceFile)}:${kind}`);
+    } else if (ts.isShorthandPropertyAssignment(node)) {
+      const kind = loaderKind(node.name);
+      if (kind) escapes.push(`${node.name.text}:${kind}`);
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      (ts.isPropertyAccessExpression(unwrapExpression(node.left)) ||
+        ts.isElementAccessExpression(unwrapExpression(node.left)))
+    ) {
+      const kind = loaderKind(node.right);
+      if (kind) escapes.push(`${node.left.getText(sourceFile)}:${kind}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return escapes;
 }
 
 function scriptKind(file) {

@@ -14,7 +14,7 @@ vi.mock("../extension/lazyActivationOwners", () => ({
   })
 }));
 
-import { activate, deactivate, isCursorAppName } from "../extension/activate";
+import { MAX_SYNCHRONOUS_ACTIVATION_MS, activate, deactivate, isCursorAppName } from "../extension/activate";
 
 describe("extension activation boundary", () => {
   beforeEach(async () => {
@@ -45,6 +45,20 @@ describe("extension activation boundary", () => {
     contextGate.resolve();
     await activation;
     expect(lifecycle.extensionApiForCurrentEnvironment).toHaveBeenCalledOnce();
+  });
+
+  it("fails real synchronous activation work that exceeds the dependency-free elapsed budget", async () => {
+    vi.spyOn(performance, "now")
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_000 + MAX_SYNCHRONOUS_ACTIVATION_MS + 1);
+
+    await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toThrow(
+      `synchronous activation exceeded its ${MAX_SYNCHRONOUS_ACTIVATION_MS} ms dependency-free budget`
+    );
+
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.extensionApiForCurrentEnvironment).not.toHaveBeenCalled();
   });
 
   it("publishes the exact editor-title context before completing activation", async () => {

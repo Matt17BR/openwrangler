@@ -13,6 +13,7 @@ let activationState: ActivationState | undefined;
 let activeDeactivation: Promise<void> | undefined;
 
 const NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT = "openWrangler.forceNotebookEditorTitleAction";
+export const MAX_SYNCHRONOUS_ACTIVATION_MS = 2_000;
 
 export function isCursorAppName(appName: string): boolean {
   const normalized = appName.trim().toLowerCase();
@@ -22,6 +23,7 @@ export function isCursorAppName(appName: string): boolean {
 export async function activate(context: vscode.ExtensionContext): Promise<OpenWranglerExtensionApi | undefined> {
   while (activeDeactivation) await activeDeactivation;
   if (activationState) throw new Error("Open Wrangler is already active or activating.");
+  const synchronousStartedAt = performance.now();
   const owners = new LazyActivationOwners(context);
   const state: ActivationState = { owners, phase: "activating" };
   activationState = state;
@@ -30,6 +32,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
     // notebook is already visible, its formatter preparation hooks before the
     // first yield. Runtime and UI owners remain unloaded until their trigger.
     owners.startBeforeFirstYield();
+    const synchronousElapsedMs = performance.now() - synchronousStartedAt;
+    if (
+      !Number.isFinite(synchronousElapsedMs) ||
+      synchronousElapsedMs < 0 ||
+      synchronousElapsedMs > MAX_SYNCHRONOUS_ACTIVATION_MS
+    ) {
+      throw new Error(
+        `Open Wrangler synchronous activation exceeded its ${MAX_SYNCHRONOUS_ACTIVATION_MS} ms dependency-free budget.`
+      );
+    }
     await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
     assertCurrentActivation(state);
     const api = await owners.extensionApiForCurrentEnvironment();
