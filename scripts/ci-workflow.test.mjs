@@ -39,6 +39,7 @@ import {
   EVENT_SCALAR,
   EVENT_SEQUENCE,
   SCALAR_STYLE_PLAIN,
+  dump as dumpYaml,
   load as parseYaml,
   mergeTag,
   parseEvents as parseYamlEvents
@@ -60,7 +61,7 @@ import {
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
 import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
-import { inspectNodeToolchainContract } from "./node-toolchain-contract.mjs";
+import { inspectNodeToolchainContract, isGithubWorkflowFile } from "./node-toolchain-contract.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -832,6 +833,7 @@ const releasedJupyter = workflow("released-jupyter.yml");
 function nodeToolchainInputs(overrides = {}) {
   return {
     azureSource: readFileSync("azure-pipelines-marketplace.yml", "utf8"),
+    changelogSource: readFileSync("CHANGELOG.md", "utf8"),
     contributingSource: readFileSync("CONTRIBUTING.md", "utf8"),
     nodeVersionSource: readFileSync(".node-version", "utf8"),
     packageJson,
@@ -848,10 +850,10 @@ function mutableNodeToolchainInputs() {
   return structuredClone(nodeToolchainInputs());
 }
 
-function assertNodeToolchainRejected(inputs, pattern) {
+function assertNodeToolchainRejected(inputs, pattern, message) {
   const problems = inspectNodeToolchainContract(inputs);
-  assert.notDeepEqual(problems, []);
-  assert.match(problems.join("\n"), pattern);
+  assert.notDeepEqual(problems, [], message);
+  assert.match(problems.join("\n"), pattern, message);
 }
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
@@ -4245,6 +4247,15 @@ test("Node toolchain authority rejects canonical, engine, and type drift", () =>
           "Node 23 is included."
         )),
       /releasing/u
+    ],
+    [
+      "Unreleased changelog drift",
+      (inputs) =>
+        (inputs.changelogSource = inputs.changelogSource.replace(
+          "Node.js 24.19.0 with npm 11.17.0",
+          "Node.js 24.18.0 with npm 11.16.0"
+        )),
+      /CHANGELOG\.md Unreleased/u
     ]
   ];
   for (const [label, mutate, pattern] of mutations) {
@@ -4252,6 +4263,60 @@ test("Node toolchain authority rejects canonical, engine, and type drift", () =>
     mutate(inputs);
     assertNodeToolchainRejected(inputs, pattern, label);
   }
+});
+
+test("Node toolchain authority structurally owns the exact Azure NodeTool fallbacks", () => {
+  const mutations = [
+    [
+      "missing owner hidden by a free-floating pin",
+      (pipeline) => {
+        const step = pipeline.stages[0].jobs[0].steps[1];
+        step.task = "Bash@3";
+        delete step.inputs.versionSpec;
+        pipeline.decoy = { versionSpec: "24.19.0" };
+      }
+    ],
+    [
+      "duplicate owner",
+      (pipeline) => pipeline.stages[0].jobs[0].steps.push(structuredClone(pipeline.stages[0].jobs[0].steps[1]))
+    ],
+    [
+      "moved owner",
+      (pipeline) => {
+        const steps = pipeline.stages[0].jobs[0].steps;
+        [steps[1], steps[2]] = [steps[2], steps[1]];
+      }
+    ],
+    ["free-floating pin", (pipeline) => (pipeline.versionSpec = "24.19.0")],
+    ["wrong task", (pipeline) => (pipeline.stages[0].jobs[0].steps[1].task = "UseNode@1")]
+  ];
+  for (const [label, mutate] of mutations) {
+    const inputs = mutableNodeToolchainInputs();
+    const pipeline = parseYaml(inputs.azureSource);
+    mutate(pipeline);
+    inputs.azureSource = dumpYaml(pipeline);
+    assertNodeToolchainRejected(inputs, /Azure/u, label);
+  }
+});
+
+test("Node toolchain callers admit both YAML workflow suffixes and reject hidden YAML drift", () => {
+  assert.equal(isGithubWorkflowFile("owner.yml"), true);
+  assert.equal(isGithubWorkflowFile("owner.yaml"), true);
+  assert.equal(isGithubWorkflowFile("owner.yml.bak"), false);
+  const inputs = mutableNodeToolchainInputs();
+  inputs.workflows["hidden-owner.yaml"] = {
+    jobs: {
+      hidden: {
+        steps: [
+          {
+            uses: "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+            with: { "node-version-file": ".node-version" }
+          }
+        ]
+      }
+    }
+  };
+  assertNodeToolchainRejected(inputs, /Canonical setup-node inventory/u);
 });
 
 test("Node toolchain authority rejects compatibility topology and command drift", () => {

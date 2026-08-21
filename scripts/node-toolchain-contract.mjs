@@ -1,3 +1,5 @@
+import { load as parseYaml } from "js-yaml";
+
 export const NODE_TOOLCHAIN_CONTRACT = Object.freeze({
   canonicalNode: "24.19.0",
   canonicalNpm: "11.17.0",
@@ -17,7 +19,7 @@ const COMPATIBILITY_SETUP_NAME = "Select the Node 22 maintained-LTS compatibilit
 const COMPATIBILITY_SMOKE_NAME = "Node 22 maintained-LTS compatibility smoke";
 const PULL_REQUEST_ONLY = "${{ github.event_name == 'pull_request' }}";
 const COMPATIBILITY_SMOKE = `test "$(node --version)" = "v${NODE_TOOLCHAIN_CONTRACT.compatibilityNode}"
-test "$(npm --version)" = "${NODE_TOOLCHAIN_CONTRACT.compatibilityNpm}"
+npm version --json | grep --fixed-strings --line-regexp '  "npm": "${NODE_TOOLCHAIN_CONTRACT.compatibilityNpm}",' > /dev/null
 npm ci --ignore-scripts --no-audit
 test -z "$(git status --porcelain --untracked-files=no)"
 npm run check:invariants
@@ -41,9 +43,141 @@ const RELEASING_SNIPPETS = Object.freeze([
   "`@types/vscode` 1.106.0",
   "`@types/node` 22.20.1"
 ]);
+const CHANGELOG_SNIPPETS = Object.freeze([
+  "Node.js 24.19.0 with npm 11.17.0",
+  "`^22.22.0 || ^24.0.0`",
+  "excluding Node 23",
+  "Node 22.23.2 with npm 10.9.8",
+  "`engines.vscode` `^1.106.0`",
+  "`@types/vscode` 1.106.0",
+  "`@types/node` 22.20.1"
+]);
+const AZURE_NODE_OWNERS = Object.freeze([
+  Object.freeze({ stage: "Intake", job: "Bind", stepIndex: 1 }),
+  Object.freeze({ stage: "Promote", job: "Marketplace", stepIndex: 1 })
+]);
+const AZURE_NODE_STEP_KEYS = Object.freeze(["displayName", "inputs", "task"]);
+const AZURE_NODE_INPUT_KEYS = Object.freeze(["checkLatest", "versionSpec"]);
+
+export function isGithubWorkflowFile(name) {
+  return typeof name === "string" && /\.ya?ml$/u.test(name);
+}
 
 function addMismatch(problems, actual, expected, label) {
   if (actual !== expected) problems.push(`${label} must be ${expected}, not ${String(actual)}.`);
+}
+
+function exactKeys(value, expected) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort())
+  );
+}
+
+function azureJobSteps(job) {
+  if (Array.isArray(job?.steps)) return job.steps;
+  return Array.isArray(job?.strategy?.runOnce?.deploy?.steps) ? job.strategy.runOnce.deploy.steps : [];
+}
+
+function collectPropertyPaths(value, property, path = "$", seen = new WeakSet(), result = []) {
+  if (typeof value !== "object" || value === null) return result;
+  if (seen.has(value)) {
+    result.aliasDetected = true;
+    return result;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      collectPropertyPaths(value[index], property, `${path}[${index}]`, seen, result);
+    }
+    return result;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = `${path}.${key}`;
+    if (key === property) result.push(childPath);
+    collectPropertyPaths(child, property, childPath, seen, result);
+  }
+  return result;
+}
+
+function inspectAzureNodeOwners(source, problems) {
+  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 64 * 1024) {
+    problems.push("Azure Node fallback source must be bounded UTF-8 text.");
+    return;
+  }
+  let pipeline;
+  try {
+    pipeline = parseYaml(source);
+  } catch {
+    problems.push("Azure Node fallback source must contain valid YAML.");
+    return;
+  }
+  const versionPaths = collectPropertyPaths(pipeline, "versionSpec");
+  if (versionPaths.aliasDetected) problems.push("Azure Node fallback YAML may not use shared aliases.");
+  const rows = [];
+  for (const [stageIndex, stage] of (pipeline?.stages ?? []).entries()) {
+    for (const [jobIndex, job] of (stage?.jobs ?? []).entries()) {
+      for (const [stepIndex, step] of azureJobSteps(job).entries()) {
+        if (step?.task !== "NodeTool@0") continue;
+        rows.push({
+          job: job.job ?? job.deployment,
+          jobIndex,
+          stage: stage.stage,
+          stageIndex,
+          step,
+          stepIndex
+        });
+      }
+    }
+  }
+  if (rows.length !== AZURE_NODE_OWNERS.length) {
+    problems.push(`Azure Node fallbacks must contain exactly ${AZURE_NODE_OWNERS.length} NodeTool@0 owners.`);
+  }
+  const expectedVersionPaths = [
+    "$.stages[0].jobs[0].steps[1].inputs.versionSpec",
+    "$.stages[1].jobs[0].strategy.runOnce.deploy.steps[1].inputs.versionSpec"
+  ];
+  if (JSON.stringify(versionPaths) !== JSON.stringify(expectedVersionPaths)) {
+    problems.push("Azure versionSpec values must belong only to the two exact NodeTool@0 owners.");
+  }
+  for (let index = 0; index < AZURE_NODE_OWNERS.length; index += 1) {
+    const expected = AZURE_NODE_OWNERS[index];
+    const row = rows[index];
+    const location = `Azure Node owner ${index + 1}`;
+    addMismatch(problems, row?.stage, expected.stage, `${location} stage`);
+    addMismatch(problems, row?.job, expected.job, `${location} job`);
+    addMismatch(problems, row?.jobIndex, 0, `${location} job position`);
+    addMismatch(problems, row?.stepIndex, expected.stepIndex, `${location} step position`);
+    if (!exactKeys(row?.step, AZURE_NODE_STEP_KEYS)) problems.push(`${location} must retain its exact task mapping.`);
+    if (!exactKeys(row?.step?.inputs, AZURE_NODE_INPUT_KEYS)) {
+      problems.push(`${location} must retain its exact input mapping.`);
+    }
+    addMismatch(problems, row?.step?.displayName, "Use pinned Node.js", `${location} display name`);
+    addMismatch(
+      problems,
+      row?.step?.inputs?.versionSpec,
+      NODE_TOOLCHAIN_CONTRACT.canonicalNode,
+      `${location} versionSpec`
+    );
+    addMismatch(problems, row?.step?.inputs?.checkLatest, false, `${location} checkLatest`);
+  }
+}
+
+function currentUnreleasedSection(source, problems) {
+  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 2 * 1024 * 1024) {
+    problems.push("CHANGELOG.md must be bounded UTF-8 text.");
+    return "";
+  }
+  const headings = [...source.matchAll(/^## \[Unreleased\]\s*$/gmu)];
+  if (headings.length !== 1) {
+    problems.push("CHANGELOG.md must contain exactly one Unreleased section.");
+    return "";
+  }
+  const start = headings[0].index + headings[0][0].length;
+  const next = source.slice(start).search(/^## \[/mu);
+  return source.slice(start, next === -1 ? source.length : start + next);
 }
 
 function setupNodeSteps(workflows) {
@@ -66,6 +200,7 @@ function setupNodeSteps(workflows) {
 
 export function inspectNodeToolchainContract({
   azureSource,
+  changelogSource,
   contributingSource,
   nodeVersionSource,
   packageJson,
@@ -112,19 +247,17 @@ export function inspectNodeToolchainContract({
     "lock root VS Code type contract"
   );
 
-  const azureVersions = [...azureSource.matchAll(/^\s+versionSpec:\s*(\S+)\s*$/gmu)].map((match) => match[1]);
-  if (
-    azureVersions.length !== 2 ||
-    azureVersions.some((version) => version !== NODE_TOOLCHAIN_CONTRACT.canonicalNode)
-  ) {
-    problems.push(`Azure Node fallbacks must be exactly two ${NODE_TOOLCHAIN_CONTRACT.canonicalNode} pins.`);
-  }
+  inspectAzureNodeOwners(azureSource, problems);
 
   for (const snippet of CONTRIBUTING_SNIPPETS) {
     if (!contributingSource.includes(snippet)) problems.push(`CONTRIBUTING.md is missing: ${snippet}`);
   }
   for (const snippet of RELEASING_SNIPPETS) {
     if (!releasingSource.includes(snippet)) problems.push(`docs/releasing.md is missing: ${snippet}`);
+  }
+  const unreleased = currentUnreleasedSection(changelogSource, problems);
+  for (const snippet of CHANGELOG_SNIPPETS) {
+    if (!unreleased.includes(snippet)) problems.push(`CHANGELOG.md Unreleased is missing: ${snippet}`);
   }
 
   const setupRows = setupNodeSteps(workflows);

@@ -15,7 +15,7 @@ import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from 
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
-import { inspectNodeToolchainContract } from "./node-toolchain-contract.mjs";
+import { inspectNodeToolchainContract, isGithubWorkflowFile } from "./node-toolchain-contract.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -55,12 +55,13 @@ const releasingSource = readFileSync(resolve(root, "docs/releasing.md"), "utf8")
 const workflowRoot = resolve(root, ".github/workflows");
 const workflowDocuments = Object.fromEntries(
   readdirSync(workflowRoot)
-    .filter((name) => name.endsWith(".yml"))
+    .filter(isGithubWorkflowFile)
     .sort()
     .map((name) => [name, parseYaml(readFileSync(resolve(workflowRoot, name), "utf8"))])
 );
 const nodeToolchainProblems = inspectNodeToolchainContract({
   azureSource: readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8"),
+  changelogSource: readFileSync(resolve(root, "CHANGELOG.md"), "utf8"),
   contributingSource,
   nodeVersionSource: readFileSync(resolve(root, ".node-version"), "utf8"),
   packageJson,

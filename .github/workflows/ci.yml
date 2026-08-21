@@ -94,7 +94,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           test "$(node --version)" = "v22.23.2"
-          test "$(npm --version)" = "10.9.8"
+          npm version --json | grep --fixed-strings --line-regexp '  "npm": "10.9.8",' > /dev/null
           npm ci --ignore-scripts --no-audit
           test -z "$(git status --porcelain --untracked-files=no)"
           npm run check:invariants

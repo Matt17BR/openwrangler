@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const INSTALL = "npm ci --ignore-scripts";
+export const COMPATIBILITY_INSTALL = "npm ci --ignore-scripts --no-audit";
 const PREFIXED_INSTALL = "npm ci --ignore-scripts --prefix release-source";
 const SHIM_PATHS = Object.freeze({
   "@vscode/vsce-sign": "scripts/npm-shims/vsce-sign",
@@ -28,7 +29,7 @@ export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
   [".github/workflows/candidate-acceptance.yml", "performance", [INSTALL]],
   [".github/workflows/candidate-acceptance.yml", "jupyter", [INSTALL]],
   [".github/workflows/candidate-acceptance.yml", "r_local", [INSTALL]],
-  [".github/workflows/ci.yml", "invariant-core", [INSTALL]],
+  [".github/workflows/ci.yml", "invariant-core", [INSTALL, COMPATIBILITY_INSTALL]],
   [".github/workflows/ci.yml", "r-contract-kernel", [INSTALL]],
   [".github/workflows/ci.yml", "r-contract-protocol", [INSTALL]],
   [".github/workflows/ci.yml", "canonical-editor", [INSTALL]],
