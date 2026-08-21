@@ -424,6 +424,59 @@ test("cleaning-history claims accept truthful prose about unrelated editable and
   );
 });
 
+test("cleaning-history claims bind Undo targets and restrictions to their semantic clause", () => {
+  const model = cleaningHistoryModel();
+  const truthful = [
+    "Undo targets only the most recent committed step.",
+    "Undo applies to no other committed step than the latest one.",
+    "Every committed step remains editable, while Undo targets the most recent committed step.",
+    "Inspection can target any committed step and Undo affects only the latest committed step.",
+    "Undo targets the most recent committed step—while inspection can target any committed step."
+  ];
+  const contradictions = [
+    "Undo can restore each committed step.",
+    "Undo can restore any other committed step.",
+    "Undo can restore a changed committed step.",
+    "Undo—can remove any committed step.",
+    "Undo is not limited to the latest committed step."
+  ];
+
+  for (const example of truthful) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      example
+    );
+  }
+
+  for (const example of contradictions) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+});
+
 test("a code example cannot hide a separate rendered inline contradiction", () => {
   const model = cleaningHistoryModel();
   const documents = cleaningHistoryDocuments(model);
@@ -674,43 +727,51 @@ test("the cleaning-history JSON scanner enforces entry, depth, and text budgets 
   );
 });
 
-test("bounded cleaning-history reads reject hostile size before decoding the complete file", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-bound-"));
-  const path = join(directory, "oversized.json");
-  const handle = await openFile(path, "w");
-  try {
-    await handle.truncate(8 * 1024 + 1);
-  } finally {
-    await handle.close();
+test(
+  "bounded cleaning-history reads reject hostile size before decoding the complete file",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-bound-"));
+    const path = join(directory, "oversized.json");
+    const handle = await openFile(path, "w");
+    try {
+      await handle.truncate(8 * 1024 + 1);
+    } finally {
+      await handle.close();
+    }
+    try {
+      await assert.rejects(readBoundedUtf8File(path, 8 * 1024, "hostile model"), /exceeds the 8192-byte/u);
+    } finally {
+      await rm(directory, { recursive: true });
+    }
   }
-  try {
-    await assert.rejects(readBoundedUtf8File(path, 8 * 1024, "hostile model"), /exceeds the 8192-byte/u);
-  } finally {
-    await rm(directory, { recursive: true });
+);
+
+test(
+  "bounded cleaning-history reads reject symlinks and hard-link aliases",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-identity-"));
+    const source = join(directory, "source.json");
+    const symbolicAlias = join(directory, "symbolic.json");
+    const hardAlias = join(directory, "hard.json");
+    try {
+      await writeFile(source, "{}", { encoding: "utf8", mode: 0o600 });
+      await symlink(source, symbolicAlias);
+      await assert.rejects(
+        readBoundedUtf8File(symbolicAlias, 8 * 1024, "symbolic model"),
+        /regular file, not a symbolic link or special file/u
+      );
+
+      await link(source, hardAlias);
+      await assert.rejects(readBoundedUtf8File(hardAlias, 8 * 1024, "hard-linked model"), /exactly one hard link/u);
+    } finally {
+      await rm(directory, { recursive: true });
+    }
   }
-});
+);
 
-test("bounded cleaning-history reads reject symlinks and hard-link aliases", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-identity-"));
-  const source = join(directory, "source.json");
-  const symbolicAlias = join(directory, "symbolic.json");
-  const hardAlias = join(directory, "hard.json");
-  try {
-    await writeFile(source, "{}", { encoding: "utf8", mode: 0o600 });
-    await symlink(source, symbolicAlias);
-    await assert.rejects(
-      readBoundedUtf8File(symbolicAlias, 8 * 1024, "symbolic model"),
-      /regular file, not a symbolic link or special file/u
-    );
-
-    await link(source, hardAlias);
-    await assert.rejects(readBoundedUtf8File(hardAlias, 8 * 1024, "hard-linked model"), /exactly one hard link/u);
-  } finally {
-    await rm(directory, { recursive: true });
-  }
-});
-
-test("bounded cleaning-history reads reject a symlinked ancestor", async () => {
+test("bounded cleaning-history reads reject a symlinked ancestor", { skip: process.platform !== "linux" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-ancestor-"));
   const realDirectory = join(directory, "real");
   const aliasDirectory = join(directory, "alias");
@@ -727,32 +788,44 @@ test("bounded cleaning-history reads reject a symlinked ancestor", async () => {
   }
 });
 
-test("bounded cleaning-history reads use immutable committed objects on macOS and Windows", async () => {
-  const committedPath = fileURLToPath(new URL("../fixtures/cleaning-history-capabilities.json", import.meta.url));
-  const expected = await readFile(committedPath, "utf8");
-  const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-platform-boundary-"));
-  const path = join(directory, "model.json");
-  try {
-    await writeFile(path, "{}", { encoding: "utf8", mode: 0o600 });
-    for (const platform of ["darwin", "win32"]) {
+test(
+  "bounded cleaning-history reads use immutable committed objects natively on macOS and Windows",
+  { skip: process.platform !== "darwin" && process.platform !== "win32" },
+  async () => {
+    const committedPath = fileURLToPath(new URL("../fixtures/cleaning-history-capabilities.json", import.meta.url));
+    const expected = await readFile(committedPath, "utf8");
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-platform-boundary-"));
+    const path = join(directory, "model.json");
+    let identityChecks = 0;
+    let completedReads = 0;
+    try {
+      await writeFile(path, "{}", { encoding: "utf8", mode: 0o600 });
       assert.equal(
-        await readBoundedUtf8File(committedPath, 8 * 1024, `${platform} committed model`, { platform }),
+        await readBoundedUtf8File(committedPath, 8 * 1024, `${process.platform} committed model`, {
+          afterPortableIdentity: () => {
+            identityChecks += 1;
+          },
+          afterPortableRead: () => {
+            completedReads += 1;
+          }
+        }),
         expected
       );
+      assert.equal(identityChecks, 1);
+      assert.equal(completedReads, 1);
       await assert.rejects(
-        readBoundedUtf8File(path, 8 * 1024, `${platform} model`, { platform }),
+        readBoundedUtf8File(path, 8 * 1024, `${process.platform} model`),
         /outside the bounded repository input inventory/u
       );
       await assert.rejects(
-        readBoundedUtf8File(committedPath, 1, `${platform} oversized model`, { platform }),
+        readBoundedUtf8File(committedPath, 1, `${process.platform} oversized model`),
         /exceeds the 1-byte validation limit/u
       );
+    } finally {
+      await rm(directory, { recursive: true });
     }
-    assert.equal(await readBoundedUtf8File(path, 8 * 1024, "supported-platform model"), "{}");
-  } finally {
-    await rm(directory, { recursive: true });
   }
-});
+);
 
 test(
   "bounded cleaning-history reads close a just-opened ancestor when identity changes before recording",
@@ -853,7 +926,7 @@ test(
 
 test(
   "bounded cleaning-history reads reject a regular-to-FIFO swap without blocking or leaking the descriptor",
-  { skip: process.platform === "win32" },
+  { skip: process.platform !== "linux" },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-fifo-swap-"));
     const path = join(directory, "model.json");
@@ -883,7 +956,7 @@ test(
 
 test(
   "bounded cleaning-history reads reject a FIFO before allocating a read buffer",
-  { skip: process.platform === "win32" },
+  { skip: process.platform !== "linux" },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-fifo-"));
     const path = join(directory, "model.pipe");
