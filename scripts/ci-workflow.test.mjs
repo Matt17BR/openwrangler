@@ -74,6 +74,7 @@ const WORKFLOW_FIFO_LEGACY_BLOCK_MS = 250;
 const WORKFLOW_FIFO_PROBE_TIMEOUT_MS = 2_000;
 const WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS = 2_000;
 const WORKFLOW_FIFO_TERM_GRACE_MS = 100;
+const WORKFLOW_FIFO_FINAL_DISPOSITION_MS = 100;
 const WORKFLOW_YAML_NODE_LIMIT = 20_000;
 const WORKFLOW_YAML_DEPTH_LIMIT = 64;
 const WORKFLOW_YAML_ALIAS_LIMIT = 0;
@@ -411,6 +412,9 @@ function observeChildSettlement(child) {
       settle(state.exit, true);
     },
     exited,
+    failUnverifiedTerminalRelease() {
+      settle(undefined, false);
+    },
     result,
     state
   };
@@ -422,6 +426,7 @@ function terminateObservedChild(
   control,
   {
     cancelDeadline = clearTimeout,
+    finalDispositionMs = WORKFLOW_FIFO_FINAL_DISPOSITION_MS,
     scheduleDeadline = setTimeout,
     settlementTimeoutMs = WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS,
     termGraceMs = WORKFLOW_FIFO_TERM_GRACE_MS,
@@ -445,6 +450,8 @@ function terminateObservedChild(
   const escalation = scheduleDeadline(() => {
     if (!observation.state.exited) signal("SIGKILL");
   }, termGraceMs);
+  let finalDisposition;
+  let onControlClose;
   const terminalDeadline = scheduleDeadline(() => {
     if (!observation.state.closed) {
       faults.push(new Error("FIFO child did not close before its settlement deadline"));
@@ -456,7 +463,13 @@ function terminateObservedChild(
       if (!observation.state.settled && !observation.state.exited) signal("SIGKILL");
       const controlClosed = control.closed
         ? Promise.resolve()
-        : new Promise((resolvePromise) => control.once("close", resolvePromise));
+        : new Promise((resolvePromise) => {
+            onControlClose = () => {
+              onControlClose = undefined;
+              resolvePromise();
+            };
+            control.once("close", onControlClose);
+          });
       if (!observation.state.settled && !control.closed) {
         try {
           control.destroy();
@@ -472,12 +485,58 @@ function terminateObservedChild(
       attestTerminalRelease();
       if (!observation.state.settled) {
         void Promise.all([observation.exited, controlClosed]).then(attestTerminalRelease);
+        finalDisposition = scheduleDeadline(() => {
+          attestTerminalRelease();
+          if (observation.state.settled) return;
+          if (onControlClose !== undefined) {
+            try {
+              control.off("close", onControlClose);
+              onControlClose = undefined;
+            } catch (error) {
+              faults.push(error);
+            }
+          }
+          if (!(control.closed || control.destroyed)) {
+            try {
+              control.destroy();
+            } catch (error) {
+              faults.push(error);
+            }
+          }
+          if (typeof control.unref === "function") {
+            try {
+              control.unref();
+            } catch (error) {
+              faults.push(error);
+            }
+          }
+          if (typeof child.unref === "function") {
+            try {
+              child.unref();
+            } catch (error) {
+              faults.push(error);
+            }
+          } else {
+            faults.push(new Error("FIFO child did not expose its owned unref boundary"));
+          }
+          faults.push(new Error("FIFO child release remained unverified after its final disposition deadline"));
+          observation.failUnverifiedTerminalRelease();
+        }, finalDispositionMs);
       }
     }
   }, settlementTimeoutMs);
   if (!observation.state.exited) signal("SIGTERM");
   void observation.result.then(({ close, exit, terminalReleaseAttested }) => {
-    for (const deadline of [escalation, terminalDeadline]) {
+    if (onControlClose !== undefined) {
+      try {
+        control.off("close", onControlClose);
+        onControlClose = undefined;
+      } catch (error) {
+        faults.push(error);
+      }
+    }
+    for (const deadline of [escalation, terminalDeadline, finalDisposition]) {
+      if (deadline === undefined) continue;
       try {
         cancelDeadline(deadline);
       } catch (error) {
@@ -1933,6 +1992,7 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       this.signalOutcomes = [...signalOutcomes];
       this.stdio = [null, null, null, new PassThrough()];
       this.syntheticExited = false;
+      this.unrefCalls = 0;
     }
 
     kill(signal) {
@@ -1958,6 +2018,10 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       this.exit(code, signal);
       this.stdio[3].destroy();
       this.emit("close", code, signal);
+    }
+
+    unref() {
+      this.unrefCalls += 1;
     }
   }
 
@@ -1989,6 +2053,7 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       observation,
       result: terminateObservedChild(child, observation, child.stdio[3], {
         cancelDeadline: deadlines.cancelDeadline,
+        finalDispositionMs: 3,
         scheduleDeadline: deadlines.scheduleDeadline,
         settlementTimeoutMs: 2,
         termGraceMs: 1,
@@ -2002,7 +2067,9 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
   };
   const assertReleased = (child, deadlines) => {
     assert.equal(child.stdio[3].destroyed, true, "the synthetic fd3 pipe must be released before settlement");
-    assert.equal(child.listenerCount("error"), 0, "the child error observer must be released after close");
+    for (const event of ["error", "exit", "close"]) {
+      assert.equal(child.listenerCount(event), 0, `the child ${event} observer must be released after settlement`);
+    }
     assert.ok(deadlines.timers.every((timer) => timer.fired || timer.cancelled));
   };
 
@@ -2142,6 +2209,85 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
     assert.equal(boundedResult.faults.includes(terminalFailure), terminalFailure !== undefined);
     assertReleased(terminalChild, terminalDeadlines);
   }
+
+  const noExitResults = [];
+  for (const [description, finalKillOutcome] of [
+    ["false", false],
+    ["thrown", new Error("synthetic final SIGKILL throw")],
+    ["success without exit", true]
+  ]) {
+    const terminalChild = new SyntheticChild([false, false, finalKillOutcome]);
+    const terminalDeadlines = createDeadlines();
+    const terminalFailure = new Error(`synthetic terminal ownership failure before ${description}`);
+    const terminalSettlement = startSettlement(terminalChild, terminalDeadlines, () => {
+      throw terminalFailure;
+    });
+    terminalDeadlines.run(1);
+    terminalDeadlines.run(2);
+    await assertPending(terminalSettlement.result);
+    terminalDeadlines.run(3);
+    const boundedResult = await Promise.race([
+      terminalSettlement.result,
+      waitForMonotonicDelay(25).then(() => undefined)
+    ]);
+    noExitResults.push({
+      boundedResult,
+      description,
+      finalKillOutcome,
+      terminalChild,
+      terminalDeadlines,
+      terminalFailure,
+      terminalSettlement
+    });
+  }
+  assert.deepEqual(
+    noExitResults.map(({ boundedResult }) => boundedResult !== undefined),
+    [true, true, true],
+    "false, thrown, and successful-without-exit final kills must all reach a bounded disposition"
+  );
+  for (const {
+    boundedResult,
+    description,
+    finalKillOutcome,
+    terminalChild,
+    terminalDeadlines,
+    terminalFailure,
+    terminalSettlement
+  } of noExitResults) {
+    assert.notEqual(boundedResult, undefined, `a ${description} final kill must reach a bounded disposition`);
+    assert.equal(boundedResult.terminalReleaseAttested, false);
+    assert.equal(boundedResult.close, undefined);
+    assert.equal(boundedResult.exit, undefined);
+    assert.equal(terminalSettlement.observation.state.settled, true);
+    assert.equal(terminalSettlement.observation.state.exited, false);
+    assert.equal(terminalChild.syntheticExited, false);
+    assert.equal(terminalChild.stdio[3].destroyed, true);
+    assert.equal(terminalChild.unrefCalls, 1);
+    assert.deepEqual(terminalChild.killCalls, ["SIGTERM", "SIGKILL", "SIGKILL"]);
+    assert.equal(boundedResult.faults.includes(terminalFailure), true);
+    assert.match(boundedResult.faults.at(-1).message, /release remained unverified/u);
+    if (finalKillOutcome === false) {
+      assert.equal(
+        boundedResult.faults.filter((fault) => fault.message === "SIGKILL returned false").length,
+        2,
+        "a false final kill must retain both failed SIGKILL receipts"
+      );
+    } else if (finalKillOutcome instanceof Error) {
+      assert.equal(boundedResult.faults.includes(finalKillOutcome), true);
+    } else {
+      assert.equal(
+        boundedResult.faults.filter((fault) => fault.message === "SIGKILL returned false").length,
+        1,
+        "a successful final kill without exit must retain only the earlier failed SIGKILL receipt"
+      );
+    }
+    assert.equal(
+      boundedResult.faults.length,
+      finalKillOutcome === true ? 5 : 6,
+      `a ${description} final kill must retain every ordered fault`
+    );
+    assertReleased(terminalChild, terminalDeadlines);
+  }
 });
 
 test(
@@ -2200,16 +2346,22 @@ test(
       }
     });
     faults.push(...settlement.faults);
-    if (settlement.close.code !== null) {
-      faults.push(new Error(`the legacy FIFO child exited with code ${settlement.close.code}`));
-    }
-    if (settlement.close.signal !== "SIGTERM" && settlement.close.signal !== "SIGKILL") {
-      faults.push(new Error(`the legacy FIFO child settled with unexpected signal ${settlement.close.signal}`));
-    }
-    if (legacy.signalCode !== settlement.close.signal) {
-      faults.push(
-        new Error(`the legacy FIFO child's signal ${legacy.signalCode} did not match close ${settlement.close.signal}`)
-      );
+    if (settlement.close === undefined) {
+      faults.push(new Error("the legacy FIFO child produced no verified close receipt"));
+    } else {
+      if (settlement.close.code !== null) {
+        faults.push(new Error(`the legacy FIFO child exited with code ${settlement.close.code}`));
+      }
+      if (settlement.close.signal !== "SIGTERM" && settlement.close.signal !== "SIGKILL") {
+        faults.push(new Error(`the legacy FIFO child settled with unexpected signal ${settlement.close.signal}`));
+      }
+      if (legacy.signalCode !== settlement.close.signal) {
+        faults.push(
+          new Error(
+            `the legacy FIFO child's signal ${legacy.signalCode} did not match close ${settlement.close.signal}`
+          )
+        );
+      }
     }
     if (!control.readableEnded) {
       faults.push(new Error("the private readiness channel did not end before child close"));
