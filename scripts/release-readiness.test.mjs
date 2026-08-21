@@ -16,7 +16,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { deflateSync } from "node:zlib";
@@ -1148,6 +1148,9 @@ test("constrains historical and current Performance summaries to exact evidence-
     "README Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.";
   for (const claim of [
     "Open Wrangler uses less memory than Data Wrangler.",
+    "Data Wrangler uses more memory than Open Wrangler.",
+    "Open Wrangler uses half as much memory as Data Wrangler.",
+    "Open Wrangler uses 50% of the memory Data Wrangler uses.",
     "Open Wrangler takes half the time for notebook previews.",
     "Open Wrangler is twice as fast on CSV workloads.",
     "Open Wrangler beats Data Wrangler for profiling.",
@@ -1246,13 +1249,30 @@ test("constrains historical and current Performance summaries to exact evidence-
       inspectPerformanceSummary(
         historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n\`\`\`text\n${outsideClaim}\n\`\`\``)
       ),
-      [],
-      `fenced code: ${outsideClaim}`
+      [outOfSectionProblem],
+      `plain-English fenced content: ${outsideClaim}`
+    );
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n\`\`\`js\n${outsideClaim}\n\`\`\``)
+      ),
+      [outOfSectionProblem],
+      `language-label-only fenced content: ${outsideClaim}`
     );
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n    ${outsideClaim}`)),
+      [outOfSectionProblem],
+      `plain-English indented content: ${outsideClaim}`
+    );
+  }
+  for (const codeExample of [
+    '```js\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
+    '    const comparison = "Open Wrangler uses less memory than Data Wrangler.";'
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${codeExample}`)),
       [],
-      `indented code: ${outsideClaim}`
+      `source-code example: ${codeExample}`
     );
   }
   for (const renderedClaim of [
@@ -1267,6 +1287,9 @@ test("constrains historical and current Performance summaries to exact evidence-
     "<button>Open Wrangler uses less memory than Data Wrangler.</button>",
     '<input type="button" value="Open Wrangler beats Data Wrangler.">',
     '<span aria-label="Open Wrangler outperforms Data Wrangler."></span>',
+    '<span aria-description="Open Wrangler uses half as much memory as Data Wrangler."></span>',
+    '<textarea placeholder="Data Wrangler uses more memory than Open Wrangler."></textarea>',
+    "<pre>Open Wrangler uses 50% of the memory Data Wrangler uses.</pre>",
     'Open Wrangler is <strong title="formatted emphasis">fa</strong>ster than Data Wrangler.',
     "<figure><figcaption>Open Wrangler beats Data Wrangler.</figcaption></figure>",
     "![Open Wrangler uses fewer resources than Data Wrangler.](https://example.invalid/chart.png)",
@@ -1275,7 +1298,12 @@ test("constrains historical and current Performance summaries to exact evidence-
     "Open Wrangler is fаster than Data Wrangler.",
     "Open Wrangler is faѕter than Data Wrangler.",
     "Open Wrangler is fαster than Data Wrangler.",
-    "Open Wrangler uses less memоry than Data Wrangler."
+    "Open Wrangler uses less memоry than Data Wrangler.",
+    "Open Wrangler is fɑster than Data Wrangler.",
+    "Open Wrangler is fᴀster than Data Wrangler.",
+    "Open Wrangler uses less memօry than Data Wrangler.",
+    "Open Wrangler is f&#x251;ster than Data Wrangler.",
+    "Open Wrangler uses less me&#x6d;&#x585;ry than Data Wrangler."
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${renderedClaim}`)),
@@ -1291,7 +1319,8 @@ test("constrains historical and current Performance summaries to exact evidence-
     "The current section explains installation. Performance evidence remains historical.",
     "Open Wrangler is documented below. The parser accepts fast syntax.",
     "Resource comparisons require a dated report and do not assert a current result.",
-    "The image alternative identifies the performance study chart."
+    "The image alternative identifies the performance study chart.",
+    "The résumé describes the performance methodology without asserting a result."
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${truthfulProse}`)),
@@ -1305,6 +1334,38 @@ test("constrains historical and current Performance summaries to exact evidence-
     ),
     [outOfSectionProblem]
   );
+
+  for (const supplementalClaim of [
+    '<span aria-label="Open Wrangler is faster than Data Wrangler."></span>',
+    '<img alt="Open Wrangler uses half as much memory as Data Wrangler." src="chart.png">',
+    '<input type="button" value="Data Wrangler uses more memory than Open Wrangler.">',
+    '<textarea placeholder="Open Wrangler uses 50% of the memory Data Wrangler uses."></textarea>',
+    '<span aria-description="Open Wrangler outperforms Data Wrangler."></span>'
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("## Performance\n", `## Performance\n\n${supplementalClaim}\n`)
+      ),
+      [structuralProblem],
+      `Performance accessibility claim: ${supplementalClaim}`
+    );
+  }
+
+  const malformedReadmeProblem =
+    "README must contain exactly one Performance section with one versioned Data Wrangler review.";
+  const structuralInputs = [
+    `${"<div>".repeat(10_000)}claim${"</div>".repeat(10_000)}`,
+    "<br>".repeat(20_001),
+    "<!-- node -->".repeat(40_001)
+  ];
+  const structuralStartedAt = Date.now();
+  for (const rawHtml of structuralInputs) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${rawHtml}`)),
+      [malformedReadmeProblem]
+    );
+  }
+  assert.ok(Date.now() - structuralStartedAt < 2_000, "raw HTML limits must reject before synchronous DOM parsing");
 
   const referenceHistorical = historicalReadme
     .replace(
@@ -2690,6 +2751,40 @@ test("pins trusted Git independently of hostile initial and post-resolution PATH
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.signal, null);
   assert.equal(existsSync(marker), false, "neither hostile PATH executable may run");
+});
+
+test("fails closed before invoking Git from mutable Windows installation roots", (context) => {
+  if (process.platform === "win32") {
+    context.skip("The release-readiness module intentionally fails closed before this test file loads on Windows.");
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "ow-release-windows-git-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const marker = join(root, "git-ran");
+  const executable = join(root, "Git", "cmd", "git.exe");
+  mkdirSync(join(root, "Git", "cmd"), { recursive: true });
+  writeFileSync(executable, `#!/bin/sh\n: > '${marker}'\nexit 91\n`, { mode: 0o700 });
+  chmodSync(executable, 0o700);
+  const moduleUrl = pathToFileURL(resolve(repositoryRoot, "scripts/release-readiness.mjs")).href;
+  const program = `
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    await import(${JSON.stringify(moduleUrl)});
+  `;
+  for (const environment of [
+    { PATH: dirname(executable), ProgramFiles: root, SystemRoot: join(root, "Windows") },
+    { PATH: join(root, "Windows"), "ProgramFiles(x86)": root, SystemRoot: root }
+  ]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", program], {
+      encoding: "utf8",
+      env: { ...process.env, ...environment },
+      timeout: 5_000,
+      windowsHide: true
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Windows release evidence requires an immutable Git authority/u);
+    assert.equal(result.signal, null);
+    assert.equal(existsSync(marker), false, "mutable Windows-root Git must not run");
+  }
 });
 
 test("reads performance evidence only from bounded regular immutable Git blobs", (context) => {

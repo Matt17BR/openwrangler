@@ -245,41 +245,53 @@ function stableRParityProblems(featureParity, version, trackedEvidencePaths) {
 const PERFORMANCE_MARKDOWN = new MarkdownIt({ html: true, linkify: false, typographer: false });
 const MAX_PERFORMANCE_MARKDOWN_TOKENS = 100_000;
 const MAX_PERFORMANCE_RENDERED_BYTES = 8 * 1024 * 1024;
+const MAX_PERFORMANCE_RAW_HTML_TAGS = 20_000;
+const MAX_PERFORMANCE_RAW_HTML_NODES = 40_000;
+const MAX_PERFORMANCE_RAW_HTML_DEPTH = 64;
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
-const PERFORMANCE_CONFUSABLES = new Map([
-  ["\u0430", "a"],
-  ["\u0432", "b"],
-  ["\u0435", "e"],
-  ["\u043a", "k"],
-  ["\u043c", "m"],
-  ["\u043d", "h"],
-  ["\u043e", "o"],
-  ["\u0440", "p"],
-  ["\u0441", "c"],
-  ["\u0442", "t"],
-  ["\u0443", "y"],
-  ["\u0445", "x"],
-  ["\u0455", "s"],
-  ["\u0456", "i"],
-  ["\u0458", "j"],
-  ["\u0475", "v"],
-  ["\u04bb", "h"],
-  ["\u04cf", "l"],
-  ["\u0501", "d"],
-  ["\u051b", "q"],
-  ["\u051d", "w"],
-  ["\u03b1", "a"],
-  ["\u03b2", "b"],
-  ["\u03b5", "e"],
-  ["\u03b9", "i"],
-  ["\u03ba", "k"],
-  ["\u03bf", "o"],
-  ["\u03c1", "p"],
-  ["\u03c4", "t"],
-  ["\u03c5", "y"],
-  ["\u03c7", "x"],
-  ["\u03bd", "v"],
-  ["\u03f2", "c"]
+const UNICODE_LETTER = /\p{Letter}/u;
+const PERFORMANCE_CLAIM_CONTEXT =
+  /\b(?:allocation\w*|benchmark|comparison|cpu|data\s+wrangler|duration|evidence|fast|footprint|latency|memory|open\s+wrangler|performance|ram|resource\w*|result|speed|throughput|timing|workbench|wrangler)\b/u;
+const PERFORMANCE_RAW_HTML_VOID_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr"
+]);
+const PERFORMANCE_CODE_LANGUAGES = new Set([
+  "bash",
+  "c",
+  "cpp",
+  "css",
+  "diff",
+  "html",
+  "javascript",
+  "js",
+  "json",
+  "jsx",
+  "powershell",
+  "py",
+  "python",
+  "r",
+  "shell",
+  "sh",
+  "sql",
+  "toml",
+  "ts",
+  "tsx",
+  "xml",
+  "yaml",
+  "yml"
 ]);
 const PERFORMANCE_TEXT_BOUNDARIES = new Set([
   "ADDRESS",
@@ -329,6 +341,76 @@ const PERFORMANCE_TEXT_BOUNDARIES = new Set([
 ]);
 const PERFORMANCE_REPORT_URL =
   /^https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)$/u;
+const PERFORMANCE_REPORT_REFERENCE =
+  /https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-\d+\.\d+\.\d+\/review\.md/u;
+
+function rawHtmlFragments(tokens) {
+  const fragments = [];
+  const visit = (token) => {
+    if (token.type === "html_block" || token.type === "html_inline") fragments.push(token.content);
+    for (const child of token.children ?? []) visit(child);
+  };
+  for (const token of tokens) visit(token);
+  return fragments.join("\n");
+}
+
+function hasBoundedRawHtml(tokens) {
+  const rawHtml = rawHtmlFragments(tokens);
+  let depth = 0;
+  let index = 0;
+  let nodes = 0;
+  let tags = 0;
+  const stack = [];
+  const incrementNode = () => {
+    nodes += 1;
+    return nodes <= MAX_PERFORMANCE_RAW_HTML_NODES;
+  };
+  while (index < rawHtml.length) {
+    const opening = rawHtml.indexOf("<", index);
+    if (opening === -1) return (!/\S/u.test(rawHtml.slice(index)) || incrementNode()) && stack.length === 0;
+    if (/\S/u.test(rawHtml.slice(index, opening)) && !incrementNode()) return false;
+    if (rawHtml.startsWith("<!--", opening)) {
+      const end = rawHtml.indexOf("-->", opening + 4);
+      if (end === -1 || !incrementNode()) return false;
+      index = end + 3;
+      continue;
+    }
+    let quote;
+    let closing = opening + 1;
+    for (; closing < rawHtml.length; closing += 1) {
+      const character = rawHtml[closing];
+      if (quote !== undefined) {
+        if (character === quote) quote = undefined;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === ">") {
+        break;
+      }
+    }
+    if (closing >= rawHtml.length || quote !== undefined) return false;
+    const source = rawHtml.slice(opening, closing + 1);
+    tags += 1;
+    if (tags > MAX_PERFORMANCE_RAW_HTML_TAGS) return false;
+    const closingTag = /^<\s*\/\s*([a-z][a-z0-9:-]*)\s*>$/iu.exec(source);
+    if (closingTag !== null) {
+      const name = closingTag[1]?.toLowerCase();
+      if (name === undefined || stack.pop() !== name) return false;
+      depth -= 1;
+    } else {
+      const openingTag = /^<\s*([a-z][a-z0-9:-]*)(?:\s[^<>]*)?\s*\/?>$/iu.exec(source);
+      const name = openingTag?.[1]?.toLowerCase();
+      if (name === undefined || ["script", "style", "template"].includes(name)) return false;
+      if (!incrementNode()) return false;
+      if (!PERFORMANCE_RAW_HTML_VOID_TAGS.has(name) && !/\/\s*>$/u.test(source)) {
+        stack.push(name);
+        depth += 1;
+        if (depth > MAX_PERFORMANCE_RAW_HTML_DEPTH) return false;
+      }
+    }
+    index = closing + 1;
+  }
+  return stack.length === 0;
+}
 
 function renderedMarkdownDocument(markdown) {
   if (
@@ -341,7 +423,7 @@ function renderedMarkdownDocument(markdown) {
   try {
     const tokens = PERFORMANCE_MARKDOWN.parse(markdown, {});
     const tokenCount = tokens.reduce((count, token) => count + 1 + (token.children?.length ?? 0), 0);
-    if (tokenCount > MAX_PERFORMANCE_MARKDOWN_TOKENS) return undefined;
+    if (tokenCount > MAX_PERFORMANCE_MARKDOWN_TOKENS || !hasBoundedRawHtml(tokens)) return undefined;
     const html = PERFORMANCE_MARKDOWN.renderer.render(tokens, PERFORMANCE_MARKDOWN.options, {});
     if (Buffer.byteLength(html, "utf8") > MAX_PERFORMANCE_RENDERED_BYTES) return undefined;
     const document = new JSDOM(`<!doctype html><body>${html}</body>`).window.document;
@@ -371,16 +453,28 @@ function normalizedRenderedText(node) {
 
 function performanceClaimSkeleton(value) {
   return value
-    .normalize("NFKC")
+    .normalize("NFKD")
+    .replace(/\p{Mark}+/gu, "")
     .toLowerCase()
     .replace(/[^\S\r\n]+/gu, " ")
     .replace(/\r\n?/gu, "\n")
     .replace(/ *\n+ */gu, "\n")
-    .trim()
-    .replace(
-      /[\u0430\u0432\u0435\u043a\u043c\u043d\u043e\u0440\u0441\u0442\u0443\u0445\u0455\u0456\u0458\u0475\u04bb\u04cf\u0501\u051b\u051d\u03b1\u03b2\u03b5\u03b9\u03ba\u03bd\u03bf\u03c1\u03c4\u03c5\u03c7\u03f2]/gu,
-      (character) => PERFORMANCE_CONFUSABLES.get(character) ?? character
-    );
+    .trim();
+}
+
+function hasNonAsciiLetter(value) {
+  for (const character of value) {
+    if ((character.codePointAt(0) ?? 0) > 0x7f && UNICODE_LETTER.test(character)) return true;
+  }
+  return false;
+}
+
+function matchesClaimWord(value, expected) {
+  const characters = [...performanceClaimSkeleton(value)];
+  return (
+    characters.length === expected.length &&
+    characters.every((character, index) => character === expected[index] || hasNonAsciiLetter(character))
+  );
 }
 
 function semanticLinks(node) {
@@ -406,6 +500,7 @@ function sentenceScopedPerformanceClaim(text) {
     .filter(Boolean);
   return scopes.some((scope) => {
     const claimText = scope.replace(/\btime zones?\b/gu, "");
+    const unsupportedClaimLetters = hasNonAsciiLetter(claimText) && PERFORMANCE_CLAIM_CONTEXT.test(claimText);
     const currentEvidence =
       /\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.!?;]{0,80}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
         claimText
@@ -414,7 +509,7 @@ function sentenceScopedPerformanceClaim(text) {
         claimText
       );
     const comparativeMetric =
-      /\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|reduc\w*|shorter|smaller|twice|twofold|worse|\d+(?:\.\d+)?\s*(?:%|x))\b(?:\s+(?:as|many|the)){0,2}\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains)\s+(?:greater|higher|less|lower|shorter|smaller|worse)\b/u.test(
+      /(?:\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|more|reduc\w*|shorter|smaller|twice|twofold|worse)\b|\b\d+(?:\.\d+)?\s*(?:%|x))(?:\s+(?:as|many|much|of|the)){0,3}\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains|uses?)\s+(?:greater|higher|less|lower|more|shorter|smaller|worse)\b/u.test(
         claimText
       );
     const inherentlyComparative =
@@ -428,11 +523,32 @@ function sentenceScopedPerformanceClaim(text) {
     const namedProductClaim =
       /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) &&
       /\b(?:efficient|fast|lightweight|low-latency|responsive|slow)\b/u.test(claimText);
-    return currentEvidence || comparativeMetric || inherentlyComparative || measuredResult || namedProductClaim;
+    return (
+      unsupportedClaimLetters ||
+      currentEvidence ||
+      comparativeMetric ||
+      inherentlyComparative ||
+      measuredResult ||
+      namedProductClaim
+    );
   });
 }
 
-function outsidePerformanceVisibleText(document, heading, followingHeading) {
+function isLegitimateCodeBlock(node) {
+  const code = node.querySelector(":scope > code") ?? node.querySelector("code");
+  const language = [...(code?.classList ?? [])]
+    .find((name) => name.startsWith("language-"))
+    ?.slice("language-".length)
+    .toLowerCase();
+  const text = node.textContent ?? "";
+  const hasSourceStructure =
+    /^(?:\s*(?:[$>#]\s+|class\s+\w+|const\s+\w+|def\s+\w+|export\s+|from\s+\S+\s+import\s+|function\s+\w+|import\s+|let\s+\w+|library\s*\(|require\s*\(|select\s+\S+\s+from\s+|var\s+\w+))/imu.test(
+      text
+    );
+  return hasSourceStructure && (language === undefined || PERFORMANCE_CODE_LANGUAGES.has(language));
+}
+
+function renderedClaimText(root, shouldSkip = () => false) {
   const fragments = [];
   const supplementalFragments = [];
   let byteLength = 0;
@@ -443,44 +559,53 @@ function outsidePerformanceVisibleText(document, heading, followingHeading) {
     target.push(value);
     return true;
   };
-  const appendAttribute = (node, name) => {
-    const value = node.getAttribute(name);
-    return value === null || value === "" || append(` ${value} `);
-  };
   const appendSupplementalAttribute = (node, name) => {
     const value = node.getAttribute(name);
     return value === null || value === "" || append(`${value}\n`, supplementalFragments);
   };
   const visit = (node) => {
-    if (node === heading || isInsidePerformanceSection(node, heading, followingHeading)) return true;
+    if (shouldSkip(node)) return true;
     if (node.nodeType === node.TEXT_NODE) return append(node.nodeValue ?? "");
-    if (node.nodeType !== node.ELEMENT_NODE || node.tagName === "PRE") return true;
-    for (const attribute of ["aria-label", "title"]) {
+    if (node.nodeType !== node.ELEMENT_NODE || (node.tagName === "PRE" && isLegitimateCodeBlock(node))) return true;
+    for (const attribute of ["aria-description", "aria-label", "title"]) {
       if (!appendSupplementalAttribute(node, attribute)) return false;
     }
-    if (["AREA", "IMG"].includes(node.tagName) && !appendAttribute(node, "alt")) return false;
-    if (node.tagName === "INPUT") {
+    if (["AREA", "IMG"].includes(node.tagName) && !appendSupplementalAttribute(node, "alt")) return false;
+    if (["INPUT", "TEXTAREA"].includes(node.tagName)) {
       const type = node.getAttribute("type")?.toLowerCase() ?? "text";
-      if (type === "image" && !appendAttribute(node, "alt")) return false;
-      if (type !== "hidden" && !appendAttribute(node, "value")) return false;
-      if (!appendAttribute(node, "placeholder")) return false;
+      if (node.tagName === "INPUT" && type === "image" && !appendSupplementalAttribute(node, "alt")) return false;
+      if ((node.tagName !== "INPUT" || type !== "hidden") && !appendSupplementalAttribute(node, "value")) {
+        return false;
+      }
+      if (!appendSupplementalAttribute(node, "placeholder")) return false;
     }
     if (["OPTGROUP", "OPTION"].includes(node.tagName)) {
-      if (!appendAttribute(node, "label")) return false;
+      if (!appendSupplementalAttribute(node, "label")) return false;
     }
     for (const child of node.childNodes) {
       if (!visit(child)) return false;
     }
     return !PERFORMANCE_TEXT_BOUNDARIES.has(node.tagName) || append("\n");
   };
-  return visit(document.body) ? `${fragments.join("")}\n${supplementalFragments.join("")}` : undefined;
+  return visit(root)
+    ? Object.freeze({ supplemental: supplementalFragments.join(""), visible: fragments.join("") })
+    : undefined;
+}
+
+function outsidePerformanceVisibleText(document, heading, followingHeading) {
+  return renderedClaimText(
+    document.body,
+    (node) => node === heading || isInsidePerformanceSection(node, heading, followingHeading)
+  );
 }
 
 function performanceSection(readme) {
   const document = renderedMarkdownDocument(readme);
   if (document === undefined) return undefined;
   const performanceHeadings = [...document.body.querySelectorAll("h2")].filter(
-    (heading) => performanceClaimSkeleton(normalizedRenderedText(heading)) === "performance"
+    (heading) =>
+      performanceClaimSkeleton(normalizedRenderedText(heading)) === "performance" ||
+      matchesClaimWord(normalizedRenderedText(heading), "performance")
   );
   if (performanceHeadings.length !== 1) return undefined;
   const heading = performanceHeadings[0];
@@ -495,17 +620,26 @@ function performanceSection(readme) {
   section.append(range.cloneContents());
 
   const outsideText = outsidePerformanceVisibleText(document, heading, followingHeading);
-  if (outsideText === undefined || DEFAULT_IGNORABLE.test(outsideText)) return undefined;
+  const headingText = renderedClaimText(heading);
+  const sectionText = renderedClaimText(section);
+  if (outsideText === undefined || headingText === undefined || sectionText === undefined) return undefined;
+  const outsideClaimText = `${outsideText.visible}\n${outsideText.supplemental}`;
+  const sectionSupplementalText = `${headingText.supplemental}\n${sectionText.supplemental}`;
+  if (DEFAULT_IGNORABLE.test(outsideClaimText) || DEFAULT_IGNORABLE.test(sectionSupplementalText)) return undefined;
   const linkedEvidence = [...document.body.querySelectorAll("a")].some(
     (anchor) =>
       anchor !== heading &&
       !isInsidePerformanceSection(anchor, heading, followingHeading) &&
-      anchor.closest("pre") === null &&
+      (anchor.closest("pre") === null || !isLegitimateCodeBlock(anchor.closest("pre"))) &&
       PERFORMANCE_REPORT_URL.test(anchor.href)
   );
   return {
     hasCodeContent: [...section.querySelectorAll("pre")].some((node) => normalizedRenderedText(node) !== ""),
-    hasOutsideClaim: linkedEvidence || sentenceScopedPerformanceClaim(outsideText),
+    hasOutsideClaim:
+      linkedEvidence ||
+      PERFORMANCE_REPORT_REFERENCE.test(outsideClaimText) ||
+      sentenceScopedPerformanceClaim(outsideClaimText),
+    hasSupplementalClaim: sentenceScopedPerformanceClaim(sectionSupplementalText),
     links: semanticLinks(section),
     text: normalizedRenderedText(section)
   };
@@ -561,7 +695,8 @@ function matchesPerformanceCopy(section, markdown) {
     expected !== undefined &&
     section.text === expected.text &&
     isDeepStrictEqual(section.links, expected.links) &&
-    !section.hasCodeContent
+    !section.hasCodeContent &&
+    !section.hasSupplementalClaim
   );
 }
 
@@ -1185,11 +1320,6 @@ function sha256(contents) {
 
 const MAX_GIT_EXECUTABLE_BYTES = 64 * 1024 * 1024;
 const RELEASE_REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
-const WINDOWS_TRUSTED_EXECUTABLE_ROOTS = Object.freeze(
-  [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.SystemRoot]
-    .filter((value) => typeof value === "string" && isAbsolute(value))
-    .map((value) => resolve(value))
-);
 
 function isPathInside(candidate, parent) {
   const suffix = process.platform === "win32" ? "\\" : "/";
@@ -1217,8 +1347,13 @@ function sameExecutableIdentity(left, right) {
 }
 
 function trustedGitAncestry(executable) {
+  if (process.platform === "win32") {
+    throw new Error(
+      "Windows release evidence requires an immutable Git authority; mutable installation roots are not trusted."
+    );
+  }
   const ancestors = [];
-  const root = realpathSync.native(resolve(executable, process.platform === "win32" ? "\\" : "/"));
+  const root = realpathSync.native(resolve(executable, "/"));
   const trustedOwner = lstatSync(root, { bigint: true }).uid;
   let current = dirname(executable);
   for (;;) {
@@ -1226,7 +1361,7 @@ function trustedGitAncestry(executable) {
     if (canonical !== current) throw new Error("Git executable ancestry must not contain symbolic links.");
     const stat = lstatSync(current, { bigint: true });
     if (!stat.isDirectory()) throw new Error("Git executable ancestry must contain only directories.");
-    if (process.platform !== "win32" && (stat.uid !== trustedOwner || (stat.mode & 0o022n) !== 0n)) {
+    if (stat.uid !== trustedOwner || (stat.mode & 0o022n) !== 0n) {
       throw new Error("Git executable ancestry must be owned by the platform root and not group/world-writable.");
     }
     ancestors.push(Object.freeze({ identity: executableIdentity(stat), path: current }));
@@ -1238,12 +1373,16 @@ function trustedGitAncestry(executable) {
 }
 
 function captureTrustedGitExecutable(requestedPath) {
+  if (process.platform === "win32") {
+    throw new Error(
+      "Windows release evidence requires an immutable Git authority; mutable installation roots are not trusted."
+    );
+  }
   const executable = realpathSync.native(resolve(requestedPath));
   if (
     !isAbsolute(requestedPath) ||
     isPathInside(executable, RELEASE_REPOSITORY_ROOT) ||
-    executable.split(/[\\/]/u).some((part) => part.toLowerCase() === "node_modules") ||
-    (process.platform === "win32" && !WINDOWS_TRUSTED_EXECUTABLE_ROOTS.some((root) => isPathInside(executable, root)))
+    executable.split(/[\\/]/u).some((part) => part.toLowerCase() === "node_modules")
   ) {
     throw new Error("Git must be one trusted absolute executable outside repository and npm paths.");
   }
@@ -1254,15 +1393,13 @@ function captureTrustedGitExecutable(requestedPath) {
     !pathStat.isFile() ||
     pathStat.size <= 0n ||
     pathStat.size > BigInt(MAX_GIT_EXECUTABLE_BYTES) ||
-    (process.platform !== "win32" && (pathStat.uid !== trustedOwner || (pathStat.mode & 0o022n) !== 0n))
+    pathStat.uid !== trustedOwner ||
+    (pathStat.mode & 0o022n) !== 0n
   ) {
     throw new Error("Git must be one bounded platform-owned executable regular file.");
   }
   accessSync(executable, fsConstants.X_OK);
-  const descriptor = openSync(
-    executable,
-    fsConstants.O_RDONLY | (process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW ?? 0))
-  );
+  const descriptor = openSync(executable, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
     const descriptorStat = fstatSync(descriptor, { bigint: true });
     if (
@@ -1304,15 +1441,13 @@ function revalidateTrustedGitExecutable(expected) {
 }
 
 function resolveGitExecutable() {
-  const candidates = [];
   if (process.platform === "win32") {
-    for (const root of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.SystemRoot]) {
-      if (typeof root === "string") candidates.push(join(root, "Git", "cmd", "git.exe"));
-    }
-  } else {
-    candidates.push("/usr/bin/git", "/usr/local/bin/git");
+    throw new Error(
+      "Windows release evidence requires an immutable Git authority; mutable installation roots are not trusted."
+    );
   }
-  const name = process.platform === "win32" ? "git.exe" : "git";
+  const candidates = ["/usr/bin/git", "/usr/local/bin/git"];
+  const name = "git";
   for (const directory of (process.env.PATH ?? "").split(delimiter)) {
     if (directory !== "") candidates.push(resolve(directory, name));
   }
