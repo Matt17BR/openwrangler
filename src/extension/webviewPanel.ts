@@ -440,6 +440,15 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "webviewFailure") {
+      this.bridge.reportDiagnostic?.(
+        decoded.phase === "message"
+          ? "Open Wrangler webview message handling stopped. A renderer reload was offered."
+          : "Open Wrangler webview rendering stopped. A renderer reload was offered."
+      );
+      return;
+    }
+
     if (decoded.kind === "requestSessionSnapshot") {
       this.rendererSync.rendererStarted();
       await this.publishSessionOpenProgress();

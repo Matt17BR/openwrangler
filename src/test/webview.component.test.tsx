@@ -3535,7 +3535,55 @@ describe("App file import options", () => {
     ).toEqual([expect.stringContaining("city"), expect.stringContaining("sales")]);
   });
 
-  it("opens the Filters drawer from a native sort node and applies validated priority changes", async () => {
+  it.each([
+    { column: "city", sortAction: "moveDown" as const, expectedSortIndex: 0 },
+    { column: "sales", sortAction: "moveUp" as const, expectedSortIndex: 1 }
+  ])(
+    "opens the Filters drawer from a native sort node and applies a validated $sortAction priority change",
+    async ({ column, sortAction, expectedSortIndex }) => {
+      const sortedMetadata: SessionMetadata = {
+        ...metadata,
+        filterModel: {
+          filters: [],
+          sort: [
+            { column: "city", direction: "asc", nulls: "last" },
+            { column: "sales", direction: "desc", nulls: "first" }
+          ]
+        }
+      };
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+      await screen.findByRole("cell", { name: "Milan" });
+
+      dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "sales" });
+
+      expect(await screen.findByRole("complementary", { name: "Column profiles and filters" })).toBeVisible();
+      expect(screen.getByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("combobox", { name: "Sort column" })).toHaveValue("c:1");
+
+      webviewPostMessage.mockClear();
+      dispatchAppMessage({
+        kind: "editorAction",
+        action: "changeViewSort",
+        column,
+        sortAction,
+        expectedSessionId: "session",
+        expectedSortModelSignature: JSON.stringify(sortedMetadata.filterModel.sort),
+        expectedSortIndex
+      });
+
+      const pageRequest = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")
+        .at(-1);
+      expect(pageRequest?.request.filterModel.sort).toEqual([
+        { column: "sales", direction: "desc", nulls: "first" },
+        { column: "city", direction: "asc", nulls: "last" }
+      ]);
+    }
+  );
+
+  it("rejects adversarial native sort messages without changing the current sort order", async () => {
     const sortedMetadata: SessionMetadata = {
       ...metadata,
       filterModel: {
@@ -3546,27 +3594,36 @@ describe("App file import options", () => {
         ]
       }
     };
-    render(<App />);
-    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
-    await screen.findByRole("cell", { name: "Milan" });
-
-    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "sales" });
-
-    expect(await screen.findByRole("complementary", { name: "Column profiles and filters" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("combobox", { name: "Sort column" })).toHaveValue("c:1");
-
-    webviewPostMessage.mockClear();
-    dispatchAppMessage({
+    const expectedSortModelSignature = JSON.stringify(sortedMetadata.filterModel.sort);
+    const validMessage = {
       kind: "editorAction",
       action: "changeViewSort",
       column: "city",
       sortAction: "moveDown",
       expectedSessionId: "session",
-      expectedSortModelSignature: JSON.stringify(sortedMetadata.filterModel.sort),
+      expectedSortModelSignature,
       expectedSortIndex: 0
-    });
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
 
+    for (const message of [
+      { ...validMessage, expectedSortIndex: -1 },
+      { ...validMessage, expectedSortIndex: 2 },
+      { ...validMessage, expectedSortIndex: 0.5 },
+      { ...validMessage, expectedSortIndex: "0" },
+      { ...validMessage, column: "__proto__" },
+      { ...validMessage, sortAction: "__proto__" },
+      { ...validMessage, expectedSessionId: "stale-session" },
+      { ...validMessage, expectedSortModelSignature: "[]" }
+    ]) {
+      dispatchAppMessage(message);
+    }
+    expect(webviewPostMessage).not.toHaveBeenCalled();
+
+    dispatchAppMessage(validMessage);
     const pageRequest = webviewPostMessage.mock.calls
       .map(([message]) => message)
       .filter((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")

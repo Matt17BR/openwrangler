@@ -2,6 +2,7 @@ import { supportsOperation } from "../shared/operations";
 import type { OpenWranglerRequest, SessionMode, SessionOpenedResponse } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState } from "../shared/viewState";
+import { isWebviewFailurePhase, type WebviewFailurePhase } from "../shared/webviewFailure";
 
 export interface WebviewMessageDecodeContext {
   sessionId: string | undefined;
@@ -11,6 +12,7 @@ export interface WebviewMessageDecodeContext {
 
 export type WebviewRequest =
   | { kind: "ready" }
+  | { kind: "webviewFailure"; phase: WebviewFailurePhase }
   | { kind: "requestSessionSnapshot" }
   | {
       kind: "rendererSynchronized";
@@ -71,6 +73,11 @@ export function decodeWebviewMessage(
   if (!isRecord(message) || typeof message.kind !== "string") return undefined;
   if (message.kind === "ready") {
     return hasExactKeys(message, ["kind"]) ? { kind: "ready" } : undefined;
+  }
+  if (message.kind === "webviewFailure") {
+    return hasExactKeys(message, ["kind", "phase"]) && isWebviewFailurePhase(message.phase)
+      ? { kind: "webviewFailure", phase: message.phase }
+      : undefined;
   }
   if (message.kind === "requestSessionSnapshot") {
     return hasExactKeys(message, ["kind"]) ? { kind: "requestSessionSnapshot" } : undefined;

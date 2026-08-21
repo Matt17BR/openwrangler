@@ -63,6 +63,8 @@ export async function promptImportOptions(
   const defaults = defaultImportOptions(uri);
   if (!defaults) return undefined;
   const extension = path.extname(uri.fsPath).toLowerCase();
+  await focusActiveEditorGroupBeforeImportPrompt();
+  ensureNotCancelled(cancellation);
   if (extension === ".xlsx" || extension === ".xls") {
     return promptExcelImportOptions(currentImportOptions, cancellation, sheetNames);
   }
@@ -246,6 +248,15 @@ async function focusImportQuickInput(): Promise<void> {
   } catch {
     // Experimental forks may not expose this workbench command. Their native
     // Quick Input focus behavior remains the fallback.
+  }
+}
+
+async function focusActiveEditorGroupBeforeImportPrompt(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+  } catch {
+    // Experimental forks may not expose this workbench command. Their native
+    // active-editor focus behavior remains the fallback.
   }
 }
 

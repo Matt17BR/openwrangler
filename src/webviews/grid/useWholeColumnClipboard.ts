@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnSchema, FilterModel, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { liveGridPageHasMore } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
+import { reportWebviewFailure } from "../WebviewErrorBoundary";
 import { vscode } from "../vscodeApi";
 import {
   clipboardCellLimitError,
@@ -208,8 +209,12 @@ export function useWholeColumnClipboard({
 
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>): void => {
-      if (event.origin !== window.location.origin || !isOpenWranglerResponse(event.data)) return;
-      handleResponse(event.data);
+      try {
+        if (event.origin !== window.location.origin || !isOpenWranglerResponse(event.data)) return;
+        handleResponse(event.data);
+      } catch {
+        reportWebviewFailure("message");
+      }
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);

@@ -711,11 +711,12 @@ jobs:
             any::dplyr
             any::data.table
             any::bit64
-            any::collapse
+            any::rlang
             any::nanoparquet
+            any::collapse
           dependencies: '"hard"'
           cache: true
-          cache-version: native-r-contract-v1
+          cache-version: native-r-contract-v2
           install-pandoc: false
           install-quarto: false
       - run: python -m pip install --upgrade pip

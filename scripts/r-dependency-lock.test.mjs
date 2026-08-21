@@ -20,13 +20,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import {
+  LOCK_LIMITS,
   LOCK_PROTOCOL,
   LOCK_PURPOSE,
+  LOCK_RESOLVER_VERSION,
   LOCK_ROOTS,
   SNAPSHOT_DATE,
   canonicalLockBytes,
   installFromArchiveCache,
+  parsePackagesMetadataArchive,
   readOwnedRegularFile,
   readLock,
   sha256,
@@ -34,6 +38,30 @@ import {
   validateLock,
   verifyArchiveCache
 } from "./r-dependency-lock.mjs";
+
+test("PACKAGES metadata decompression enforces its byte ceiling before parsing", () => {
+  const maximumBytes = 256;
+  const prefix = "Package: bounded\nVersion: 1.2.3\nDescription: ";
+  const exactText = `${prefix}${"a".repeat(maximumBytes - Buffer.byteLength(prefix))}`;
+  const exactArchive = gzipSync(Buffer.from(exactText, "utf8"));
+  const exact = parsePackagesMetadataArchive(exactArchive, { maximumBytes });
+  assert.equal(exact.get("bounded").Version, "1.2.3");
+
+  const expandedText = `${exactText}a`;
+  const expandedArchive = gzipSync(Buffer.from(expandedText, "utf8"));
+  assert.ok(expandedArchive.length < Buffer.byteLength(expandedText));
+  assert.throws(
+    () => parsePackagesMetadataArchive(expandedArchive, { maximumBytes }),
+    /Decompressed PACKAGES metadata exceeds the byte bound/u
+  );
+  assert.throws(
+    () =>
+      parsePackagesMetadataArchive(exactArchive, {
+        maximumBytes: LOCK_LIMITS.packagesMetadataBytes + 1
+      }),
+    /decompression limit is invalid/u
+  );
+});
 
 function packageEntry(name, rMinor = "4.5") {
   const repositorySnapshotUrl = `https://packagemanager.posit.co/cran/${SNAPSHOT_DATE}/bin/linux/noble-x86_64/${rMinor}/src/contrib`;
@@ -70,12 +98,17 @@ function validLock(rMinor = "4.5") {
     },
     resolver: {
       name: "openwrangler-r-dependency-lock",
-      exactVersion: "1",
+      exactVersion: LOCK_RESOLVER_VERSION,
       repositorySnapshotUrl,
       snapshotDate: SNAPSHOT_DATE
     },
-    roots: [...LOCK_ROOTS],
-    packages: [...LOCK_ROOTS].sort().map((name) => packageEntry(name, rMinor)),
+    roots: {
+      runtime: [...LOCK_ROOTS.runtime],
+      fixtures: [...LOCK_ROOTS.fixtures]
+    },
+    packages: [...LOCK_ROOTS.runtime, ...LOCK_ROOTS.fixtures]
+      .sort()
+      .map((name) => ({ ...packageEntry(name, rMinor), direct: LOCK_ROOTS.runtime.includes(name) })),
     systemRequirements: { packages: ["libx11-dev"] }
   };
 }
@@ -145,7 +178,7 @@ test("strict canonical locks bind the exact qualification, roots, archives, and 
     const bytes = canonicalLockBytes(lock);
     writeFileSync(path, bytes);
     assert.equal(readLock(path).digest, sha256(bytes));
-    assert.equal(validateLock(lock).packageCount, 8);
+    assert.equal(validateLock(lock).packageCount, 9);
 
     writeFileSync(path, bytes.trimEnd());
     assert.throws(() => readLock(path), /not canonical JSON/u);
@@ -189,8 +222,65 @@ test("lock validation rejects cycles, unreachable extras, and inconsistent direc
   assert.throws(() => validateLock(unreachable), /unreachable/u);
 
   const ownership = clone(validLock());
-  ownership.packages[0].direct = false;
-  assert.throws(() => validateLock(ownership), /inconsistent/u);
+  ownership.packages.find((entry) => entry.name === "rlang").direct = false;
+  assert.throws(() => validateLock(ownership), /runtime roots/u);
+
+  const fixtureOwnership = clone(validLock());
+  fixtureOwnership.packages.find((entry) => entry.name === "collapse").direct = true;
+  assert.throws(() => validateLock(fixtureOwnership), /runtime roots/u);
+});
+
+test("lock validation binds categorized roots and version 2 generation semantics", () => {
+  const lock = validLock();
+  assert.deepEqual(LOCK_ROOTS.runtime, [
+    "jsonlite",
+    "tibble",
+    "readr",
+    "dplyr",
+    "data.table",
+    "bit64",
+    "rlang",
+    "nanoparquet"
+  ]);
+  assert.deepEqual(LOCK_ROOTS.fixtures, ["collapse"]);
+  assert.deepEqual(lock.roots, LOCK_ROOTS);
+  assert.equal(lock.packages.find((entry) => entry.name === "rlang").direct, true);
+  assert.equal(lock.packages.find((entry) => entry.name === "collapse").direct, false);
+
+  const transitiveRlang = clone(lock);
+  transitiveRlang.roots.runtime = transitiveRlang.roots.runtime.filter((name) => name !== "rlang");
+  transitiveRlang.packages.find((entry) => entry.name === "tibble").dependencies.imports = ["rlang"];
+  assert.throws(() => validateLock(transitiveRlang), /exact ordered runtime and fixture roots/u);
+
+  const duplicate = clone(lock);
+  duplicate.roots.runtime.push("rlang");
+  assert.throws(() => validateLock(duplicate), /duplicate packages/u);
+
+  const crossCategory = clone(lock);
+  crossCategory.roots.runtime.push("collapse");
+  assert.throws(() => validateLock(crossCategory), /must be disjoint/u);
+
+  const missing = clone(lock);
+  missing.roots.fixtures = [];
+  assert.throws(() => validateLock(missing), /exact ordered runtime and fixture roots/u);
+
+  const missingRootPackage = clone(lock);
+  missingRootPackage.packages = missingRootPackage.packages.filter((entry) => entry.name !== "rlang");
+  missingRootPackage.packages.push({ ...packageEntry("unused"), direct: false });
+  missingRootPackage.packages.sort((left, right) => left.name.localeCompare(right.name));
+  assert.throws(() => validateLock(missingRootPackage), /missing rlang/u);
+
+  const legacyProtocol = clone(lock);
+  legacyProtocol.protocol = "openwrangler-native-r-dependency-lock-v1";
+  assert.throws(() => validateLock(legacyProtocol), /protocol or purpose/u);
+
+  const legacyResolver = clone(lock);
+  legacyResolver.resolver.exactVersion = "1";
+  assert.throws(() => validateLock(legacyResolver), /version 2 resolver/u);
+
+  const legacyRoots = clone(lock);
+  legacyRoots.roots = [...LOCK_ROOTS.runtime, ...LOCK_ROOTS.fixtures];
+  assert.throws(() => validateLock(legacyRoots), /roots must be an object/u);
 });
 
 test("lock validation accepts fixed base and recommended R dependencies but no unlocked package", () => {

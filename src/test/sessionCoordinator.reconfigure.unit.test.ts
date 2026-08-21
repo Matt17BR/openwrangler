@@ -257,7 +257,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     });
   });
 
-  it("waits for restored state persistence before acknowledging a replacement closed immediately afterward", async () => {
+  it("does not publish a replacement whose durable stage is overtaken by close", async () => {
     let stored: Record<string, unknown> = {};
     const persistenceWrite = deferred<void>();
     const workspaceState = {
@@ -356,22 +356,55 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     expect(acknowledged).toBe(false);
 
     persistenceWrite.resolve();
-    await expect(replacement).resolves.toMatchObject({
-      kind: "sessionOpened",
-      metadata: {
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision + 1,
-        source: replacementSource,
-        steps: [appliedStep],
-        draftStep
-      }
-    });
-    expect(stored[persistenceKey(replacementSource, "polars")]).toMatchObject({
-      backend: "polars",
-      cleaning: { steps: [appliedStep], draftStep },
-      view: { filterModel: savedFilter }
-    });
+    await expect(replacement).resolves.toMatchObject({ kind: "error", code: "session_closing" });
+    expect(stored[persistenceKey(replacementSource, "polars")]).toBeUndefined();
   });
+
+  it.each(["read", "stage", "final"] as const)(
+    "keeps the prior import runtime and state when the persistence %s transition fails",
+    async (failurePoint) => {
+      let reads = 0;
+      let stored: Record<string, unknown> = {};
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        const attempt = update.mock.calls.length;
+        if ((failurePoint === "stage" && attempt === 1) || (failurePoint === "final" && attempt === 2)) {
+          throw new Error(`${failurePoint} import persistence unavailable`);
+        }
+        stored = value;
+      });
+      const workspaceState = {
+        get: vi.fn((_key: string, fallback?: unknown) => {
+          reads += 1;
+          if (failurePoint === "read" && reads === 2) throw new Error("import persistence read unavailable");
+          return Object.keys(stored).length > 0 ? stored : fallback;
+        }),
+        update,
+        keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      } as unknown as Memento;
+      const delegate = simpleReconfiguringDelegate("runtime-old");
+      const coordinator = new SessionCoordinator(workspaceState);
+      const bridge = coordinator.createBridge({ request: delegate.request });
+      const opened = await open(bridge, initialSource);
+      const before = coordinator.activeSession();
+
+      const response = await bridge.reconfigureFileSession!(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        replacementSource
+      );
+
+      expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable", recoverable: true });
+      expect(coordinator.activeSession()).toEqual(before);
+      const closedBeforeShutdown = vi
+        .mocked(delegate.request)
+        .mock.calls.map(([request]) => request)
+        .filter((request) => request.kind === "closeSession")
+        .map((request) => request.sessionId);
+      expect(closedBeforeShutdown).toHaveLength(1);
+      expect(closedBeforeShutdown).not.toContain("runtime-old");
+      await coordinator.shutdown();
+    }
+  );
 
   it.each([
     [

@@ -20,6 +20,17 @@ import {
 import { initialViewingState } from "../extension/sessionRuntimeStateRestorer";
 
 const emptyFilter: FilterModel = { filters: [], sort: [] };
+const nonemptyFilter: FilterModel = {
+  logic: "and",
+  filters: [
+    {
+      column: "value",
+      type: "integer",
+      predicates: [{ kind: "predicate", operator: "gte", value: 2 }]
+    }
+  ],
+  sort: [{ column: "value", direction: "desc", nulls: "last" }]
+};
 const schema: SessionMetadata["schema"] = [
   { id: "c:value", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }
 ];
@@ -70,7 +81,9 @@ describe("SessionResponseCommitter", () => {
 
   it("atomically persists and publishes only the latest changed page", async () => {
     let stored: Record<string, unknown> = {};
+    const writes: Record<string, unknown>[] = [];
     const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      writes.push(value);
       stored = value;
     });
     const persistence = new SessionPersistenceStore(memento(() => stored, update));
@@ -133,6 +146,13 @@ describe("SessionResponseCommitter", () => {
       }
     });
     expect(callbacks.activate).toHaveBeenCalledOnce();
+    const key = persistenceKey(session.openRequest.source, "polars");
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.[key]).toHaveProperty("pendingCurrentCommit");
+    expect(
+      new SessionPersistenceStore(memento(() => writes[0] ?? {}, vi.fn())).load(session.openRequest.source, "polars")
+    ).toBeUndefined();
+    expect(writes[1]?.[key]).toEqual(stored[key]);
 
     const stale = responseState({ latestRequestedPageRequestId: "newer-page" });
     await expect(
@@ -146,7 +166,208 @@ describe("SessionResponseCommitter", () => {
         callbackSpies()
       )
     ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "current-page" });
-    expect(update).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an actionable availability error without publishing a page after a persistence read failure", async () => {
+    const persistence = new SessionPersistenceStore(
+      memento(() => {
+        throw Object.assign(new Error("cannot read /private/workspace/state.json"), { code: "EACCES" });
+      }, vi.fn())
+    );
+    const committer = new SessionResponseCommitter(persistence);
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const session = responseState({
+      latestRequestedViewContextId: "current-view",
+      latestRequestedPageRequestId: "current-page"
+    });
+    const request = pageRequest(session, "current-page", filterModel, 100);
+    const callbacks = callbackSpies();
+
+    const response = await committer.commit(
+      session,
+      request,
+      pageResponse(request, metadata({ filterModel }), 240),
+      0,
+      emptyFilter,
+      { viewContextId: "current-view" },
+      callbacks
+    );
+
+    expect(response).toEqual({
+      kind: "error",
+      code: "persistence_unavailable",
+      message:
+        "Open Wrangler could not save workspace recovery state, so the active session was left unchanged. Retry after workspace storage is available.",
+      recoverable: true,
+      sessionId: session.publicId,
+      viewRequestId: "current-page"
+    });
+    expect(JSON.stringify(response)).not.toContain("/private/workspace");
+    expect(session.metadata.filterModel).toEqual(emptyFilter);
+    expect(session.activeViewContextId).toBeUndefined();
+    expect(callbacks.activate).not.toHaveBeenCalled();
+  });
+
+  it.each(["stage", "read", "final"] as const)(
+    "restores a changed page after its persistence %s fails",
+    async (failurePoint) => {
+      let stored: Record<string, unknown> = {};
+      let reads = 0;
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        const attempt = update.mock.calls.length;
+        if ((failurePoint === "stage" && attempt === 1) || (failurePoint === "final" && attempt === 2)) {
+          throw new Error(`${failurePoint} page persistence unavailable`);
+        }
+        stored = value;
+      });
+      const committer = new SessionResponseCommitter(
+        new SessionPersistenceStore(
+          memento(() => {
+            reads += 1;
+            if (failurePoint === "read" && reads === 2) throw new Error("page persistence read unavailable");
+            return stored;
+          }, update)
+        )
+      );
+      const filterModel: FilterModel = {
+        filters: [],
+        sort: [{ column: "value", direction: "desc", nulls: "last" }]
+      };
+      const session = responseState({
+        publicRevision: 4,
+        activeViewContextId: "old-view",
+        latestRequestedViewContextId: "next-view",
+        latestRequestedPageRequestId: "current-page"
+      });
+      const previousMetadata = session.metadata;
+      const previousViewState = session.viewState;
+      const callbacks = callbackSpies();
+      const request = pageRequest(session, "current-page", filterModel, 100);
+
+      await expect(
+        committer.commit(
+          session,
+          request,
+          pageResponse(request, metadata({ filterModel }), 240),
+          0,
+          emptyFilter,
+          { viewContextId: "next-view" },
+          callbacks
+        )
+      ).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable" });
+
+      expect(session.publicRevision).toBe(4);
+      expect(session.activeViewContextId).toBe("old-view");
+      expect(session.metadata).toBe(previousMetadata);
+      expect(session.viewState).toBe(previousViewState);
+      expect(callbacks.activate).toHaveBeenCalledTimes(failurePoint === "final" ? 1 : 0);
+    }
+  );
+
+  it("preserves a reentrant newer view when a page's final persistence write fails", async () => {
+    let stored: Record<string, unknown> = {};
+    const session = responseState({
+      latestRequestedViewContextId: "current-view",
+      latestRequestedPageRequestId: "current-page"
+    });
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 2) {
+        session.latestRequestedPageRequestId = "newer-page";
+        session.viewState = {
+          ...session.viewState,
+          viewport: { ...session.viewState.viewport, scrollLeft: 999 }
+        };
+        throw new Error("final page persistence unavailable");
+      }
+      stored = value;
+    });
+    const committer = new SessionResponseCommitter(new SessionPersistenceStore(memento(() => stored, update)));
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const request = pageRequest(session, "current-page", filterModel, 100);
+
+    const response = await committer.commit(
+      session,
+      request,
+      pageResponse(request, metadata({ filterModel }), 240),
+      0,
+      emptyFilter,
+      { viewContextId: "current-view" },
+      callbackSpies()
+    );
+
+    expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable" });
+    expect(response).toHaveProperty(
+      "message",
+      "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available."
+    );
+    expect(session.latestRequestedPageRequestId).toBe("newer-page");
+    expect(session.viewState.viewport.scrollLeft).toBe(999);
+    expect(session.metadata.filterModel).toEqual(filterModel);
+  });
+
+  it("restores the confirmed page state when its publication callback rejects", async () => {
+    let stored: Record<string, unknown> = {};
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      stored = value;
+    });
+    const persistence = new SessionPersistenceStore(memento(() => stored, update));
+    const committer = new SessionResponseCommitter(persistence);
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const session = responseState({
+      publicRevision: 4,
+      activeViewContextId: "old-view",
+      latestRequestedViewContextId: "next-view",
+      latestRequestedPageRequestId: "current-page"
+    });
+    const previousMetadata = session.metadata;
+    const previousViewState = session.viewState;
+    const previousViewChangeEpoch = session.viewChangeEpoch;
+    const request = pageRequest(session, "current-page", filterModel, 100);
+    const callbackFailure = new Error("unexpected activation callback failure");
+    const callbacks = callbackSpies();
+    let publicationOwner = "confirmed";
+    vi.mocked(callbacks.activate).mockImplementation((registerRollback) => {
+      registerRollback?.(() => {
+        publicationOwner = "confirmed";
+      });
+      publicationOwner = "candidate";
+      throw callbackFailure;
+    });
+
+    await expect(
+      committer.commit(
+        session,
+        request,
+        pageResponse(request, metadata({ filterModel }), 240),
+        0,
+        emptyFilter,
+        { viewContextId: "next-view" },
+        callbacks
+      )
+    ).rejects.toBe(callbackFailure);
+
+    expect(session).toMatchObject({
+      publicRevision: 4,
+      runtimeRevision: 0,
+      activeViewContextId: "old-view"
+    });
+    expect(session.viewChangeEpoch).toBe(previousViewChangeEpoch);
+    expect(session.metadata).toBe(previousMetadata);
+    expect(session.viewState).toBe(previousViewState);
+    expect(publicationOwner).toBe("confirmed");
+    const key = persistenceKey(session.openRequest.source, "polars");
+    expect(stored[key]).toBeUndefined();
+    expect(persistence.load(session.openRequest.source, "polars")).toBeUndefined();
   });
 
   it("returns a current ephemeral clipboard page without committing visible view state", async () => {
@@ -212,10 +433,20 @@ describe("SessionResponseCommitter", () => {
     ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "clipboard-page" });
   });
 
-  it("publishes preview, apply, and undo as one public revision stream", async () => {
-    const committer = new SessionResponseCommitter(new SessionPersistenceStore());
+  it("persists one nonempty draft view through preview, apply, and discard", async () => {
+    let stored: Record<string, unknown> = {};
+    const persistence = new SessionPersistenceStore(
+      memento(
+        () => stored,
+        async (_key, value) => {
+          stored = value;
+        }
+      )
+    );
+    const committer = new SessionResponseCommitter(persistence);
     const callbacks = callbackSpies();
     const session = responseState({
+      metadata: metadata({ filterModel: nonemptyFilter }),
       activeViewContextId: "view",
       latestRequestedViewContextId: "view",
       latestRequestedPageRequestId: "page"
@@ -230,7 +461,7 @@ describe("SessionResponseCommitter", () => {
       columnOffset: 0,
       columnLimit: 1
     };
-    const previewMetadata = metadata({ revision: 1, draftStep: step });
+    const previewMetadata = metadata({ revision: 1, draftStep: step, filterModel: nonemptyFilter });
     const preview = {
       kind: "stepPreview" as const,
       revision: 1,
@@ -242,22 +473,22 @@ describe("SessionResponseCommitter", () => {
     };
 
     await expect(
-      committer.commit(session, previewRequest, preview, 0, emptyFilter, undefined, callbacks)
+      committer.commit(session, previewRequest, preview, 0, nonemptyFilter, undefined, callbacks)
     ).resolves.toMatchObject({ kind: "stepPreview", revision: 1 });
     expect(session).toMatchObject({
       publicRevision: 1,
       runtimeRevision: 1,
       code: "# preview",
-      draftBaseFilterModel: emptyFilter,
+      draftBaseFilterModel: nonemptyFilter,
       draftPresentation: { warnings: ["review"], beforeSchema: schema }
+    });
+    expect(persistence.load(session.openRequest.source, "polars")).toMatchObject({
+      cleaning: { steps: [], draftStep: step, draftBaseFilterModel: nonemptyFilter },
+      view: { filterModel: nonemptyFilter }
     });
     expect(session.activeViewContextId).toBeUndefined();
     expect(session.latestRequestedPageRequestId).toBeUndefined();
 
-    const appliedFilter: FilterModel = {
-      filters: [],
-      sort: [{ column: "value", direction: "asc", nulls: "first" }]
-    };
     const applyRequest: SessionBoundRequest = {
       kind: "applyDraft",
       sessionId: session.publicId,
@@ -267,24 +498,26 @@ describe("SessionResponseCommitter", () => {
       columnOffset: 0,
       columnLimit: 1
     };
-    const appliedMetadata = metadata({ revision: 2, steps: [step], filterModel: appliedFilter });
+    const appliedMetadata = metadata({ revision: 2, steps: [step], filterModel: nonemptyFilter });
     await committer.commit(
       session,
       applyRequest,
       planResponse("apply", appliedMetadata, "# applied"),
       1,
-      emptyFilter,
+      nonemptyFilter,
       undefined,
       callbacks
     );
     expect(session).toMatchObject({
       publicRevision: 2,
       runtimeRevision: 2,
-      metadata: { steps: [step], filterModel: appliedFilter },
+      metadata: { steps: [step], filterModel: nonemptyFilter },
       code: "# applied"
     });
     expect(session.draftBaseFilterModel).toBeUndefined();
     expect(session.draftPresentation).toBeUndefined();
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning).toMatchObject({ steps: [step] });
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toBeUndefined();
 
     const undoRequest: SessionBoundRequest = {
       kind: "undoStep",
@@ -298,19 +531,60 @@ describe("SessionResponseCommitter", () => {
     await committer.commit(
       session,
       undoRequest,
-      planResponse("undo", metadata({ revision: 3 }), "# original"),
+      planResponse("undo", metadata({ revision: 3, filterModel: nonemptyFilter }), "# original"),
       2,
-      appliedFilter,
+      nonemptyFilter,
       undefined,
       callbacks
     );
     expect(session).toMatchObject({
       publicRevision: 3,
       runtimeRevision: 3,
-      metadata: { steps: [], filterModel: emptyFilter },
+      metadata: { steps: [], filterModel: nonemptyFilter },
       code: "# original"
     });
-    expect(callbacks.activate).toHaveBeenCalledTimes(3);
+
+    const discardPreviewRequest: SessionBoundRequest = { ...previewRequest, revision: 3 };
+    await committer.commit(
+      session,
+      discardPreviewRequest,
+      { ...preview, revision: 4, metadata: metadata({ revision: 4, draftStep: step, filterModel: nonemptyFilter }) },
+      3,
+      nonemptyFilter,
+      undefined,
+      callbacks
+    );
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toEqual(
+      nonemptyFilter
+    );
+
+    const discardRequest: SessionBoundRequest = {
+      kind: "discardDraft",
+      sessionId: session.publicId,
+      revision: 4,
+      offset: 0,
+      limit: 10,
+      columnOffset: 0,
+      columnLimit: 1
+    };
+    await committer.commit(
+      session,
+      discardRequest,
+      planResponse("discard", metadata({ revision: 5, filterModel: nonemptyFilter }), "# discarded"),
+      4,
+      nonemptyFilter,
+      undefined,
+      callbacks
+    );
+    expect(session).toMatchObject({
+      publicRevision: 5,
+      runtimeRevision: 5,
+      metadata: { steps: [], filterModel: nonemptyFilter },
+      code: "# discarded"
+    });
+    expect(session.draftBaseFilterModel).toBeUndefined();
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toBeUndefined();
+    expect(callbacks.activate).toHaveBeenCalledTimes(5);
   });
 
   it("commits a terminal Spark shape even without a filter, plan, or revision change", async () => {
@@ -547,7 +821,7 @@ function pageResponse(
 }
 
 function planResponse(
-  action: "apply" | "undo",
+  action: "apply" | "discard" | "undo",
   confirmed: SessionMetadata,
   code: string
 ): Extract<OpenWranglerResponse, { kind: "planUpdated" }> {

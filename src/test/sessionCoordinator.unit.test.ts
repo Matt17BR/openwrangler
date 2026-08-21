@@ -34,6 +34,57 @@ describe("SessionCoordinator", () => {
     expect(observeRejection.mock.calls[0][0]).toBeTypeOf("function");
   });
 
+  it("forwards a fixed panel diagnostic without opening or changing a session", () => {
+    const fallbackDiagnostic = vi.fn();
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => {
+      throw new Error("A diagnostic must not dispatch a runtime request.");
+    });
+    const reportDiagnostic = vi.fn();
+    const coordinator = new SessionCoordinator(undefined, fallbackDiagnostic);
+    const bridge = coordinator.createBridge({ request, reportDiagnostic });
+
+    bridge.reportDiagnostic?.("Open Wrangler webview rendering stopped. A renderer reload was offered.");
+
+    expect(reportDiagnostic).toHaveBeenCalledOnce();
+    expect(reportDiagnostic).toHaveBeenCalledWith(
+      "Open Wrangler webview rendering stopped. A renderer reload was offered."
+    );
+    expect(fallbackDiagnostic).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(coordinator.diagnostics()).toMatchObject({ activeSessionId: undefined, sessionCount: 0, sessions: [] });
+  });
+
+  it.each(["missing", "throwing"] as const)(
+    "contains a %s delegate reporter and uses the fixed fallback diagnostic without changing a session",
+    (reporter) => {
+      const request = vi.fn(async (): Promise<OpenWranglerResponse> => {
+        throw new Error("A diagnostic must not dispatch a runtime request.");
+      });
+      const fallbackDiagnostic = vi.fn();
+      const reportDiagnostic = vi.fn(() => {
+        throw new Error("private delegate diagnostic failure");
+      });
+      const coordinator = new SessionCoordinator(undefined, fallbackDiagnostic);
+      const bridge = coordinator.createBridge({
+        request,
+        ...(reporter === "throwing" ? { reportDiagnostic } : {})
+      });
+
+      expect(() =>
+        bridge.reportDiagnostic?.("Open Wrangler webview message handling stopped. A renderer reload was offered.")
+      ).not.toThrow();
+
+      if (reporter === "throwing") expect(reportDiagnostic).toHaveBeenCalledOnce();
+      else expect(reportDiagnostic).not.toHaveBeenCalled();
+      expect(fallbackDiagnostic).toHaveBeenCalledOnce();
+      expect(fallbackDiagnostic).toHaveBeenCalledWith(
+        "Open Wrangler webview message handling stopped. A renderer reload was offered."
+      );
+      expect(request).not.toHaveBeenCalled();
+      expect(coordinator.diagnostics()).toMatchObject({ activeSessionId: undefined, sessionCount: 0, sessions: [] });
+    }
+  );
+
   it("translates live Excel sheet discovery through the confirmed runtime identity only", async () => {
     const source = {
       kind: "file" as const,

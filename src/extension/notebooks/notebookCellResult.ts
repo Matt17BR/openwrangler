@@ -37,19 +37,23 @@ export function registerNotebookCellResultAction(
   coordinator: SessionCoordinator,
   tracker = new NotebookCellResultTracker()
 ): void {
-  tracker.start();
-  const provider: vscode.NotebookCellStatusBarItemProvider = {
-    onDidChangeCellStatusBarItems: tracker.onDidChangeCellStatusBarItems,
-    provideCellStatusBarItems: (cell) => notebookCellResultStatusItem(cell, tracker)
-  };
-  context.subscriptions.push(
-    tracker,
-    vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", provider),
-    vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", provider),
-    vscode.commands.registerCommand(OPEN_NOTEBOOK_CELL_RESULT_COMMAND, (cell: unknown) =>
-      openNotebookCellResult(context, coordinator, tracker, cell)
-    )
-  );
+  registerAtomically(context.subscriptions, () => {
+    tracker.start();
+    context.subscriptions.push(tracker);
+    const provider: vscode.NotebookCellStatusBarItemProvider = {
+      onDidChangeCellStatusBarItems: tracker.onDidChangeCellStatusBarItems,
+      provideCellStatusBarItems: (cell) => notebookCellResultStatusItem(cell, tracker)
+    };
+    context.subscriptions.push(
+      vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", provider)
+    );
+    context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", provider));
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_NOTEBOOK_CELL_RESULT_COMMAND, (cell: unknown) =>
+        openNotebookCellResult(context, coordinator, tracker, cell)
+      )
+    );
+  });
 }
 
 export function notebookCellResultStatusItem(
@@ -240,10 +244,19 @@ export class NotebookCellResultTracker implements vscode.Disposable {
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.workspaceSubscriptions.push(
-      vscode.workspace.onDidChangeNotebookDocument((event) => this.recordDocumentChange(event)),
-      vscode.workspace.onDidCloseNotebookDocument((notebook) => this.forgetNotebook(notebook))
-    );
+    try {
+      registerAtomically(this.workspaceSubscriptions, () => {
+        this.workspaceSubscriptions.push(
+          vscode.workspace.onDidChangeNotebookDocument((event) => this.recordDocumentChange(event))
+        );
+        this.workspaceSubscriptions.push(
+          vscode.workspace.onDidCloseNotebookDocument((notebook) => this.forgetNotebook(notebook))
+        );
+      });
+    } catch (error) {
+      this.started = false;
+      throw error;
+    }
   }
 
   recordDocumentChange(event: vscode.NotebookDocumentChangeEvent): void {
@@ -753,4 +766,22 @@ function hasOpenWranglerOutput(cell: vscode.NotebookCell): boolean {
 
 function hasExecuteResultOutput(cell: vscode.NotebookCell): boolean {
   return cell.outputs.some((output) => output.metadata?.outputType === "execute_result");
+}
+
+function registerAtomically(subscriptions: vscode.Disposable[], register: () => void): void {
+  const start = subscriptions.length;
+  try {
+    register();
+  } catch (error) {
+    const failures: unknown[] = [error];
+    for (const disposable of subscriptions.splice(start).reverse()) {
+      try {
+        disposable.dispose();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    if (failures.length === 1) throw error;
+    throw new AggregateError(failures, "Open Wrangler notebook-result registration failed during rollback.");
+  }
 }

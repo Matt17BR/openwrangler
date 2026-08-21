@@ -415,7 +415,8 @@ describe("SessionCoordinator", () => {
       if (request.kind === "openSession") {
         openCount += 1;
         if (openCount === 2) setOpenNotebookDocuments(notebook, overlappingReplacement);
-        return openedResponse(openCount === 1 ? "runtime-old" : "runtime-recovery-candidate");
+        const opened = openedResponse(openCount === 1 ? "runtime-old" : "runtime-recovery-candidate");
+        return { ...opened, metadata: { ...opened.metadata, source: request.source } };
       }
       if (request.kind === "getPage" && request.sessionId === "runtime-old") {
         return {
@@ -655,9 +656,9 @@ describe("SessionCoordinator", () => {
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
         openCount += 1;
-        if (openCount === 1) return openedResponse("runtime-old");
-        if (openCount === 2) return openedResponse("runtime-recovery");
-        return openedResponse("runtime-fresh");
+        const runtimeId = openCount === 1 ? "runtime-old" : openCount === 2 ? "runtime-recovery" : "runtime-fresh";
+        const opened = openedResponse(runtimeId);
+        return { ...opened, metadata: { ...opened.metadata, source: request.source } };
       }
       if (request.kind === "getPage" && request.sessionId === "runtime-old") {
         return {

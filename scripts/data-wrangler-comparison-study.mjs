@@ -19,23 +19,29 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
+  DATA_WRANGLER_COMPARISON_AUTHORITY,
+  isRetryableComparisonSession,
+  renderComparisonReleaseStatisticsMethod
+} from "./data-wrangler-comparison-contract.mjs";
+import {
   DATA_WRANGLER_STUDY_TOOL_NAMES,
   DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
   DATA_WRANGLER_REGRESSION_LIMITS,
-  assertReleaseCompleteStudyReport,
+  assertDataWranglerComparisonStudyReport,
   buildDataWranglerComparisonStudyReport,
   updateDataWranglerComparisonReview,
   validateDataWranglerComparisonStudyTrial
 } from "./data-wrangler-comparison-report.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 
-export const STUDY_PROTOCOL = "openwrangler-data-wrangler-study-v2";
+export const STUDY_PROTOCOL = DATA_WRANGLER_COMPARISON_AUTHORITY.protocols.study;
 export const TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
 export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 export const DATA_WRANGLER_VERSION = "1.24.2";
-export const WARM_REPETITIONS = 5;
-export const SMOKE_REPETITIONS = 2;
-export const LOCAL_REPETITIONS = 3;
+export const WARM_REPETITIONS = DATA_WRANGLER_COMPARISON_AUTHORITY.release.samplesPerSession;
+export const SMOKE_REPETITIONS = DATA_WRANGLER_COMPARISON_AUTHORITY.smoke.samplesPerSession;
+export const LOCAL_REPETITIONS = DATA_WRANGLER_COMPARISON_AUTHORITY.local.samplesPerSession;
+export const LOCAL_REQUIRED_SUCCESSES = DATA_WRANGLER_COMPARISON_AUTHORITY.local.requiredSuccesses;
 const LOCAL_FIXTURE_MAX_BYTES = 640 * 1024 * 1024;
 const LOCAL_OUTPUT_MIN_FREE_BYTES = 2 * LOCAL_FIXTURE_MAX_BYTES + 512 * 1024 * 1024;
 const LOCAL_FIXTURE_OWNER_PROTOCOL = "openwrangler-local-comparison-fixture-v1";
@@ -76,7 +82,7 @@ function sampleCountWord(value) {
   return new Map([
     [SMOKE_REPETITIONS, "two"],
     [LOCAL_REPETITIONS, "three"],
-    [WARM_REPETITIONS, "five"]
+    [WARM_REPETITIONS, "ten"]
   ]).get(value);
 }
 
@@ -140,7 +146,7 @@ export function buildStudyManifest({
     throw new TypeError(
       localProfile
         ? "The local comparison requires exactly three samples."
-        : "The release comparison requires two smoke or five release samples."
+        : "The release comparison requires two smoke or ten release samples."
     );
   }
   if (candidate.version === DATA_WRANGLER_VERSION) {
@@ -175,7 +181,7 @@ export function buildStudyManifest({
       statistics: localProfile
         ? "three planned warm samples per product and engine; summaries require at least two successful samples; Hyndman-Fan type 7 min, max, median, and p95"
         : repetitionsPerSession === WARM_REPETITIONS
-          ? "five planned warm samples per product and workload; Open Wrangler requires five successes and Data Wrangler at least three; Hyndman-Fan type 7 min, max, median, and p95"
+          ? renderComparisonReleaseStatisticsMethod()
           : `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
       memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
     },
@@ -218,8 +224,7 @@ export function terminalTrialIds(directory, manifest) {
 }
 
 function isHarnessInterrupted(result) {
-  const unsuccessful = result.samples.filter(({ status }) => status !== "success");
-  return unsuccessful.length > 0 && unsuccessful.every(({ failure }) => failure?.kind === "harness");
+  return isRetryableComparisonSession(result.samples);
 }
 
 export async function runDataWranglerComparisonStudy(options, dependencies = {}) {
@@ -371,7 +376,7 @@ function assertLocalComparisonUsable(result, output, loadResults) {
     trialId,
     successes: trialSamples.filter(({ status }) => status === "success").length
   }));
-  const insufficientTrials = successfulByTrial.filter(({ successes }) => successes < 2);
+  const insufficientTrials = successfulByTrial.filter(({ successes }) => successes < LOCAL_REQUIRED_SUCCESSES);
   if (
     result.completed !== expectedSessions ||
     result.remaining !== 0 ||
@@ -380,9 +385,10 @@ function assertLocalComparisonUsable(result, output, loadResults) {
     insufficientTrials.length > 0
   ) {
     throw new Error(
-      "Local comparison failed: every product and engine needs at least two of three successful samples; found " +
+      `Local comparison failed: every product and engine needs at least ${LOCAL_REQUIRED_SUCCESSES} of ` +
+        `${LOCAL_REPETITIONS} successful samples; found ` +
         `${outcomes.success} success, ${outcomes.failure} failure, and ${outcomes.timeout} timeout. ` +
-        `Insufficient sessions: ${insufficientTrials.map(({ trialId, successes }) => `${trialId} (${successes}/3)`).join(", ") || "none"}. ` +
+        `Insufficient sessions: ${insufficientTrials.map(({ trialId, successes }) => `${trialId} (${successes}/${LOCAL_REPETITIONS})`).join(", ") || "none"}. ` +
         `Results were kept in ${output}.`
     );
   }
@@ -479,11 +485,11 @@ export async function runDataWranglerComparisonSmoke(options, dependencies = {})
 }
 
 export function writeDataWranglerComparisonStudyReport(output, report) {
-  assertReleaseCompleteStudyReport(report);
+  assertDataWranglerComparisonStudyReport(report);
   const path = resolve(output);
   if (existsSync(path)) {
     const existing = readJson(path, DATA_WRANGLER_STUDY_REPORT_MAX_BYTES);
-    assertReleaseCompleteStudyReport(existing);
+    assertDataWranglerComparisonStudyReport(existing);
     if (!isDeepStrictEqual(existing, report)) {
       throw new Error("Comparison report output already contains different evidence.");
     }
@@ -838,6 +844,7 @@ function readOptionalSystemText(path) {
 
 function comparisonToolFiles() {
   return {
+    contract: resolve("scripts/data-wrangler-comparison-contract.mjs"),
     method: resolve("docs/performance-comparison.md"),
     study: resolve("scripts/data-wrangler-comparison-study.mjs"),
     driver: resolve("scripts/data-wrangler-comparison-neutral-driver.mjs"),
@@ -1196,7 +1203,6 @@ async function main() {
     ? readJson(reportPath, DATA_WRANGLER_STUDY_REPORT_MAX_BYTES).generatedAtUtc
     : new Date().toISOString();
   const report = buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifest, trials });
-  assertReleaseCompleteStudyReport(report);
   let review;
   if (options.review !== undefined) {
     const reportPath = resolve(options.output);

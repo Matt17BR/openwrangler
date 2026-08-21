@@ -112,6 +112,9 @@ filter rules remain visible in a compact row above the data while the sidebar is
 [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry points,
 by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
 
+If an unexpected renderer failure stops the workbench, Open Wrangler replaces the editor content with a focused
+**Reload Open Wrangler** action. Reloading restores the view from the existing session instead of opening another one.
+
 ## Open files
 
 Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. BOM-marked UTF-16LE
