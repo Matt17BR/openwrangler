@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   excelDependencyGateSource,
@@ -27,7 +31,50 @@ describe("Excel dependency-install fixture", () => {
     expect(source).toContain(`_openwrangler_marker = ${JSON.stringify(marker)}`);
     expect(source).toContain("if name == 'openpyxl' and not _openwrangler_os.path.exists(_openwrangler_marker):");
     expect(source).toContain("return _openwrangler_find_spec_original(name, package)");
+    expect(source).toContain("class _OpenWranglerDependencyGate(_openwrangler_importlib_abc.MetaPathFinder):");
+    expect(source).toContain("_openwrangler_sys.meta_path.insert(0, _OpenWranglerDependencyGate())");
     expect(source.endsWith("\n")).toBe(true);
+  });
+
+  it("blocks the production-shaped module probe only until the install marker exists", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-excel-gate-"));
+    const marker = path.join(directory, 'openpyxl "installed"');
+    const gate = excelDependencyGateSource(marker);
+    const probe = [
+      gate,
+      "import importlib",
+      "import importlib.metadata",
+      "import importlib.util",
+      "import json",
+      "distribution = importlib.metadata.distribution('openpyxl')",
+      "result = {'version': distribution.version, 'other': importlib.import_module('json').__name__}",
+      "result['find_spec'] = importlib.util.find_spec('openpyxl') is not None",
+      "try:",
+      "    result['module'] = importlib.import_module('openpyxl').__name__",
+      "except ModuleNotFoundError as error:",
+      "    result['module'] = None",
+      "    result['missing'] = error.name",
+      "print(json.dumps(result, sort_keys=True))"
+    ].join("\n");
+
+    try {
+      const before = JSON.parse(execFileSync(selectedPython(), ["-I", "-c", probe], { encoding: "utf8" })) as Record<
+        string,
+        unknown
+      >;
+      expect(before).toMatchObject({ find_spec: false, missing: "openpyxl", module: null, other: "json" });
+      expect(before.version).toEqual(expect.any(String));
+
+      writeFileSync(marker, "openpyxl installed\n", { encoding: "utf8", flag: "wx" });
+      const after = JSON.parse(execFileSync(selectedPython(), ["-I", "-c", probe], { encoding: "utf8" })) as Record<
+        string,
+        unknown
+      >;
+      expect(after).toMatchObject({ find_spec: true, module: "openpyxl", other: "json", version: before.version });
+      expect(after).not.toHaveProperty("missing");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("builds an exact isolated pip invocation and publishes evidence before installation", () => {
@@ -67,3 +114,11 @@ describe("Excel dependency-install fixture", () => {
     expect(source.endsWith("\n")).toBe(true);
   });
 });
+
+function selectedPython(): string {
+  return (
+    process.env.OPEN_WRANGLER_TEST_PYTHON ??
+    process.env.OPEN_WRANGLER_PYTHON ??
+    (process.platform === "win32" ? "python" : "python3")
+  );
+}

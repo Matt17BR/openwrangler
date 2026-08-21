@@ -36,8 +36,10 @@ export function packagedExcelDependencyWorkbookSource(): string {
 
 export function excelDependencyGateSource(marker: string): string {
   return [
+    "import importlib.abc as _openwrangler_importlib_abc",
     "import importlib.util as _openwrangler_importlib_util",
     "import os as _openwrangler_os",
+    "import sys as _openwrangler_sys",
     `_openwrangler_marker = ${JSON.stringify(marker)}`,
     "_openwrangler_find_spec_original = _openwrangler_importlib_util.find_spec",
     "def _openwrangler_find_spec(name, package=None):",
@@ -45,6 +47,12 @@ export function excelDependencyGateSource(marker: string): string {
     "        return None",
     "    return _openwrangler_find_spec_original(name, package)",
     "_openwrangler_importlib_util.find_spec = _openwrangler_find_spec",
+    "class _OpenWranglerDependencyGate(_openwrangler_importlib_abc.MetaPathFinder):",
+    "    def find_spec(self, fullname, path=None, target=None):",
+    "        if fullname == 'openpyxl' and not _openwrangler_os.path.exists(_openwrangler_marker):",
+    '            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)',
+    "        return None",
+    "_openwrangler_sys.meta_path.insert(0, _OpenWranglerDependencyGate())",
     ""
   ].join("\n");
 }

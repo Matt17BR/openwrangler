@@ -24,9 +24,9 @@ from scripts import python_runtime_dependency_authority as authority
 from openwrangler_runtime import dependency_guard
 from openwrangler_runtime.session import SessionManager
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:  # pragma: no cover - exercised by the Python 3.10 qualification cohort
+else:  # pragma: no cover - exercised by the Python 3.10 qualification cohort
     from pip._vendor import tomli as tomllib
 
 ROOT = Path(__file__).parents[2]

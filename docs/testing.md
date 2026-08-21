@@ -44,11 +44,14 @@ matrix for release candidates or changes that cross those boundaries.
   download, or native compilation. Mutation tests cover every owner and package, override, flag, command, platform,
   and shim boundary.
 
-- `npm run check:r-dependency-lock` strictly validates both native-R lock registries without network or filesystem
-  mutation. `node scripts/r-dependency-lock.mjs generate ... --check true` is the explicit networked byte-regeneration
-  operation; it must reproduce the dated archive graph exactly. The workflow `prepare` command validates the lock and
-  exact R runtime before cache or network mutation. The cache contains only the lock-pinned package archives. On a
-  cache miss, `install --cache-hit false` downloads the bounded archive set; on a cache hit,
+- `npm run check:r-dependency-lock` strictly validates both version-2 native-R lock registries without network or
+  filesystem mutation. Each registry records ordered runtime roots separately from fixture roots. Resolution and
+  reachability use their union, while `packages[].direct` identifies only runtime roots. Candidate acceptance imports
+  that same authority for its exact package list and versioned cache namespace. The explicit networked
+  `generate ... --check true` operation must reproduce the dated archive graph exactly. The workflow `prepare`
+  command validates the lock and exact R runtime before cache or network mutation. The cache contains only the
+  lock-pinned package archives. On a cache miss, `install --cache-hit false` downloads the bounded archive set; on a
+  cache hit,
   `install --cache-hit true` independently revalidates the complete archive inventory, descriptor identities, sizes,
   and SHA-256 values before any package code can run. Both paths install only those authenticated local archives into
   a fresh empty private library, then verify every namespace and seal a new exact package and file-tree receipt.
@@ -553,6 +556,8 @@ checks that exact delimiter before and after persisted-plan replay, and still pr
 Installed-editor performance acceptance uses private release-sized fixtures, strict versioned and path-free evidence, all untrimmed timing samples, descriptor-bound candidate and result receipts, exact packaged defaults, native Polars, and synchronized Linux page-residency proofs. It never enters ordinary pull-request CI, touches a normal editor profile, or launches on the user’s desktop. The preview-development, stable-release, and numeric-gate contracts are defined in [Performance](#performance).
 
 Engine lifecycle tests must prove that the registry creates distinct adapters per session, closes rejected detection candidates, transfers ownership only for a match, and preserves adapter factory/detection diagnostics. Failure injection covers reader, shape/schema, initial page, source-version validation, and response-metadata construction; every failure must close the acquired adapter and retain no session. Preview/apply/discard/undo fault injection must prove atomic rollback of frame, plan, draft, revision, lineage, and page cache after a late page/diff/code/source failure. Cleanup hooks run at most once, a repeated explicit close is rejected, concurrent runtime shutdown callers join safely, cleanup failure is reported for an explicit close, and cleanup never masks an earlier open or notebook-render failure. Close must wait for foreground work and active profile leases, accept the caller's last confirmed revision after an ambiguous runtime mutation, cancel queued profiles, reject later work, remain terminal after transport failure, and never replay a closing session. Cancelled and wrong-session close acknowledgements receive one fresh bounded cleanup attempt; candidate, retired, saved-plan fallback, and late-open cleanup use the same correlation checks and fallback diagnostic sink. A detached cleanup timeout may not restart a shared standalone process. Shutdown must wait for pending opens and tracked detached cleanup within its bound, reject late registration, respect its grace bound, and retain a delayed kernel close after that bound until active work settles. Scheduler tests must prove exclusive mutation ordering, read-only same-session page/profile overlap, writer preference over newly arriving profiles, cross-session concurrency, explicit priority overrides, queued-view cancellation, stale logical-view/runtime-generation isolation, and no persistence/native-view churn for ordinary same-view paging. Persistence tests require the exact v4 cleaning/view split, source-and-confirmed-backend keys, rejection of unknown or malformed cleaning state, independent tolerance of a missing or malformed view, stable-ID width/selection pruning, restoration of the block containing the first visible row, clamping after a smaller result, final presentation flush on page hide/unload/unmount, and recovery without reinterpretation by another engine. They must prove that stale viewing state falls back to an empty view while preserving valid steps and a valid draft, and that only cleaning replay failure reopens the immutable original. Selection changes must refresh the active native snapshot, while scroll/width-only changes must not churn native views. Standalone process tests require stdin/EOF first, exit-cancelled fallback, idempotent stop, replacement-start gating through exact process exit, a latched failure when post-kill exit cannot be confirmed, reserved interactive worker capacity, authoritative results for already-running cancellation targets, and force-kill only after the ordinary request bound or a broken stream. Timeout-selection tests require the same 60-second session-open and 30-second initialized-request defaults in standalone and notebook transports, independently configured values, and explicit per-call precedence for bounded cleanup. A fresh subprocess must open a real Polars CSV and then a real Pandas TSV in one server process, and a second fresh subprocess must open a real Polars Excel workbook after discoverable PyArrow initialization on the owner thread; missing PyArrow keeps the newer native capsule path, while `fastexcel` and the Calamine read remain on the dispatched worker. Each regression returns correlated session envelopes within the session-open bound, closes its sessions, and exits cleanly on EOF. Windows runtime CI is the release guard for both cold native-import orders. Notebook lifecycle tests must prove single-flight acquisition/bootstrap, generation-conditional invalidation, an end-to-end acquisition-through-parsing reporting deadline, hung-acquisition detachment, fresh never-cancel Jupyter tokens for bootstrap and every request, no mutation/export/open/close retry after dispatch, stale-ignore after host detachment, and at most one retry for explicitly idempotent reads. Coordinator tests must prove ambiguous mutations are not reissued and the next request first reconstructs the last confirmed runtime state. Notebook snapshots must enforce source capabilities and close transient adapters on success and failure, and the stdio server must drain all sessions when input ends. Capability snapshots cover Pandas editing, eager Polars notebook values, lazy Polars file and live-notebook values, file-only lazy DuckDB sources without request-cancellation claims, viewing mode, notebook insertion, and a synthetic read-only/no-export engine.
+
+Notebook-agent cancellation tests distinguish unknown, queued, running, and recent completed targets. They prove repeated queued cancellation prevents dispatch, the target's own correlated response confirms cancellation, and a running request retains its authoritative late result without any interruption claim. Concurrency regressions prove that this bookkeeping does not serialize unrelated sessions, interactive reads behind background profiles, overlapping reads, or terminal close before the existing scheduler and lifecycle admission rules apply.
 
 Live-kernel open coverage must prove that the host supplies a non-empty candidate session identity, the runtime reserves and echoes it, and a failed, logically detached, timed-out, malformed, or mis-correlated open queues bounded exact-kernel cleanup for that known ID so lost output cannot orphan a session. Cleanup for a dispatched open may begin only after that exact open execution settles; `unknown_session` before settlement is never authoritative. The host bound must never cancel the Jupyter execution token, and a late correlated close must still retire the mapping. Coordinator concurrency tests must distinguish typed host detachment from transport loss, park all later same-session work behind the exact settlement promise, avoid automatic read replay or reissue, restore an indeterminate mutation only after settlement, and leave a pre-dispatch cancellation free of recovery side effects.
 
@@ -1384,12 +1389,13 @@ lane pinned 6.30.1. That proves
 unreviewed dependency drift entered the focused gate, not that IPykernel 7.x caused the Interactive Window stall. The
 correction adds no editor retry and does not extend either the operation or native-phase deadline.
 
-`collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
-library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
-that grouped and indexed objects stay out of the picker. The R contract tests cover the same class boundary directly.
-A setup failure records only a fixed stage name; R errors and notebook output stay out of the retained diagnostic.
-macOS builds collapse from its pinned source package, while Linux and Windows use the pinned binary. Setup loads
-every pinned namespace and exercises all three supported constructors before the editor starts.
+`rlang` is an explicit runtime root; `collapse` is fixture-only and is never marked direct. Packaged R/Jupyter
+acceptance still installs the exact collapse 2.1.7 fixture in its private test library. It creates real `qDF()`,
+`qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms that grouped and indexed objects
+stay out of the picker. The R contract tests cover the same class boundary directly. A setup failure records only a
+fixed stage name; R errors and notebook output stay out of the retained diagnostic. macOS builds collapse from its
+pinned source package, while Linux and Windows use the pinned binary. Setup loads every pinned namespace and exercises
+all three supported constructors before the editor starts.
 
 Across the core notebook and focused literate invocations, local screenshot mode captures the supported IRkernel dataframe list in
 Operations, a generated 2,400-row orders dataframe in the viewing workbench, a Group and aggregate draft after
@@ -1714,8 +1720,9 @@ The comparison method is in [`docs/performance-comparison.md`](performance-compa
 - `npm run comparison:report` for `report.json` and the generated results block in its sibling `review.md`.
 
 The benchmark covers Pandas and Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. A session is one isolated
-headless VS Code window for one product and workload; a sample is one timed pass through the notebook workflow. The full
-study has eight sessions and 40 samples. Each sample uses the public Run Cell, launch, usable-grid, and
+headless VS Code window for one product and workload; a sample is one timed pass through the notebook workflow.
+The full benchmark uses 8 sessions and records 80 samples.
+Each sample uses the public Run Cell, launch, usable-grid, and
 all-column-profile controls. Linux PSS sampling covers the same measured window, requires at least two observations,
 and rejects a gap longer than one second.
 
@@ -1723,10 +1730,16 @@ Ordinary pull-request CI runs the focused harness contracts, not the real-produc
 two-sample-per-product
 smoke and eight-session study run against the release candidate and produce release-only evidence.
 
-The report keeps all five outcomes, including failures, and summarizes successful timings with the minimum, maximum,
-and median. Its p95 field remains for report compatibility, but it is not a five-sample headline or release gate.
-Release evidence requires all five Open Wrangler samples and at least three of five Data Wrangler samples for every
-workload.
+The report keeps all ten outcomes, including failures, and summarizes successful timings with the minimum, maximum,
+median, and type-7 p95. The p95 is descriptive; only a material median regression is a numeric release gate.
+The release contract requires all 10 Open Wrangler successes and at least 6 Data Wrangler successes per workload.
+A complete report passes when those success thresholds hold and no material median regression exists. It fails when
+an Open Wrangler sample failed or timed out, or a material median regression exists. It is inconclusive when a
+scheduled session is missing, a harness-aborted session needs replacement, fewer than six baseline samples succeeded,
+or the report uses the two-sample smoke profile.
+
+Measured product failures and timeouts are immutable; only harness-aborted sessions may be replaced. A retry or
+confirmation collection remains separate evidence and must not replace or merge outcomes from the primary collection.
 
 The 1.2.1 results remain the published comparison during the 1.99 preview series. Before 2.0 is released, rerun the
 full study with the candidate VSIX, review the raw results, and update the README and a new dated report. A stable
