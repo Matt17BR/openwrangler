@@ -523,6 +523,95 @@ test("cleaning-history universal and restrictive wording cannot hide capability 
   }
 });
 
+test("cleaning-history partial-set and existential denials remain contradictions", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Some committed steps cannot be edited.",
+    "**S&#111;me** committed steps cannot be [edited](#cleaning-history).",
+    "Several applied steps are not editable.",
+    "Sev&#101;ral applied steps cannot be deleted.",
+    "There are committed steps that cannot be deleted.",
+    "A committed step cannot be edited.",
+    "A committed step is uneditable.",
+    "One or more committed steps cannot be edited.",
+    "Part of the committed steps cannot be deleted.",
+    "Certain committed steps cannot be inspected.",
+    "At least one committed step cannot be inspected.",
+    "At least one of them cannot be edited.",
+    "None of the committed steps can be edited.",
+    "Neither committed step may be deleted.",
+    "All committed steps but one can be edited.",
+    "All committed steps but the latest can be undone.",
+    "Committed steps remain visible, but some of them cannot be edited.",
+    "Applied steps remain listed, and several cannot be inspected.",
+    "Some of them cannot be edited.",
+    "They cannot all be inspected.",
+    "Committed steps remain visible, yet n&#111;ne of them can be deleted.",
+    "Two committed steps remain visible, while ne&#105;ther can be edited.",
+    "None can be undone.",
+    "Neither can be undone."
+  ];
+
+  for (const example of contradictions) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+});
+
+test("cleaning-history clause scope preserves invocation and exact-latest Undo truths", () => {
+  const model = cleaningHistoryModel();
+  const truthful = [
+    "All committed steps can be edited, but one selected step is changed per native invocation.",
+    "Every committed step remains editable, while a native command changes only one selected step per invocation.",
+    "Several native surfaces expose Edit, but each invocation changes one selected committed step.",
+    "Some native surfaces expose Edit, but every committed step remains editable.",
+    "Every committed step remains editable, although several native surfaces expose Edit.",
+    "No single invocation edits more than one committed step.",
+    "No other committed step is edited by the same invocation.",
+    "Several committed steps cannot be edited by the same invocation.",
+    "Undo is unavailable for all but the latest committed step.",
+    "Undo is unavailable for all but the most&nbsp;recent committed step.",
+    "Undo can target no committed step except the most recent one.",
+    "No committed step other than the latest one can be undone.",
+    "Undo cannot remove any committed step unless it is the most recent one.",
+    "The latest committed step, and no other, can be undone.",
+    "The most recent committed step—but no other one—can be undone.",
+    "Undo is unavailable for every committed step except the latest one.",
+    "Except for the latest committed step, Undo is unavailable.",
+    "Undo is supported only for the newest committed step."
+  ];
+
+  for (const example of truthful) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history wording preserves exact latest Undo and native single-invocation scope", () => {
   const model = cleaningHistoryModel();
   const truthful = [
