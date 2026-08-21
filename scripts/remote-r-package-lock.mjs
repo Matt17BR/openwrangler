@@ -17,6 +17,12 @@ export const REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES = 32 * 1024 * 1024;
 export const REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES = 128 * 1024 * 1024;
 export const REMOTE_R_PACKAGE_MAX_COUNT = 128;
 export const REMOTE_R_PACKAGE_MAX_DEPENDENCIES = 64;
+const DEFAULT_FETCH_DEADLINES = Object.freeze({
+  requestHeaderMs: 30_000,
+  bodyProgressMs: 30_000,
+  aggregateMs: 15 * 60_000
+});
+const MAX_FETCH_DEADLINE_MS = 30 * 60_000;
 
 export const REMOTE_R_PACKAGE_REPOSITORIES = Object.freeze([
   Object.freeze({
@@ -88,8 +94,76 @@ const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9.]{0,63}$/u;
 const PACKAGE_VERSION = /^[0-9][0-9A-Za-z.+-]{0,63}$/u;
 const LOWER_SHA256 = /^[0-9a-f]{64}$/u;
 
+function contractFailure(message) {
+  return new Error(`Remote R package lock contract failed: ${message}`);
+}
+
 function fail(message) {
-  throw new Error(`Remote R package lock contract failed: ${message}`);
+  throw contractFailure(message);
+}
+
+function normalizeFetchDeadlines(value) {
+  if (value === undefined) return DEFAULT_FETCH_DEADLINES;
+  const keys = Object.keys(value ?? {}).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(["aggregateMs", "bodyProgressMs", "requestHeaderMs"])) {
+    throw new TypeError("Remote R lock generation requires exact fetch deadline fields.");
+  }
+  for (const key of keys) {
+    if (!Number.isSafeInteger(value[key]) || value[key] <= 0 || value[key] > MAX_FETCH_DEADLINE_MS) {
+      throw new TypeError("Remote R lock generation fetch deadlines are outside their fixed bound.");
+    }
+  }
+  return Object.freeze({
+    requestHeaderMs: value.requestHeaderMs,
+    bodyProgressMs: value.bodyProgressMs,
+    aggregateMs: value.aggregateMs
+  });
+}
+
+function linkedAbortController(parentSignal) {
+  const controller = new AbortController();
+  const forward = () => controller.abort(parentSignal.reason);
+  if (parentSignal.aborted) forward();
+  else parentSignal.addEventListener("abort", forward, { once: true });
+  return {
+    controller,
+    detach() {
+      parentSignal.removeEventListener("abort", forward);
+    }
+  };
+}
+
+function settleBeforeDeadline(operation, signal, timeoutMs, controller, deadlineLabel) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    let timer;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () =>
+      finish(
+        rejectPromise,
+        signal.reason instanceof Error ? signal.reason : contractFailure(`${deadlineLabel} was aborted.`)
+      );
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const error = contractFailure(`${deadlineLabel} deadline expired.`);
+      controller.abort(error);
+      finish(rejectPromise, error);
+    }, timeoutMs);
+    Promise.resolve(operation).then(
+      (value) => finish(resolvePromise, value),
+      (error) => finish(rejectPromise, error)
+    );
+  });
 }
 
 function isPlainObject(value) {
@@ -446,7 +520,14 @@ async function fetchBounded(
   url,
   maximumBytes,
   fetchImpl,
-  { expectedBytes, allowArchiveRedirect = false, hashOnly = false } = {}
+  {
+    expectedBytes,
+    allowArchiveRedirect = false,
+    hashOnly = false,
+    signal,
+    requestHeaderTimeoutMs,
+    bodyProgressTimeoutMs
+  } = {}
 ) {
   const parsed = new URL(url);
   if (
@@ -458,146 +539,194 @@ async function fetchBounded(
   ) {
     fail("network generation accepts only canonical P3M HTTPS URLs.");
   }
-  const response = await fetchImpl(url, {
-    method: "GET",
-    redirect: allowArchiveRedirect ? "follow" : "error",
-    headers: { accept: "*/*" }
-  });
-  const finalUrl = response?.url;
-  const admittedFinalUrl =
-    finalUrl === url ||
-    (allowArchiveRedirect &&
-      /^https:\/\/rspm-sync\.rstudio\.com\/v4\/1\/packages\/[0-9a-f]{64}\.tar\.gz$/u.test(finalUrl ?? ""));
-  if (!response || response.status !== 200 || !admittedFinalUrl || !response.body) {
-    fail(`download ${url} did not return one exact immutable response.`);
-  }
-  const declared = response.headers?.get?.("content-length");
-  if (declared !== null && declared !== undefined) {
-    const parsedLength = Number(declared);
-    if (!Number.isSafeInteger(parsedLength) || parsedLength <= 0 || parsedLength > maximumBytes) {
-      fail(`download ${url} declared an invalid size.`);
+  if (!(signal instanceof AbortSignal)) throw new TypeError("Remote R lock generation requires an AbortSignal.");
+  const { controller, detach } = linkedAbortController(signal);
+  try {
+    const response = await settleBeforeDeadline(
+      Promise.resolve().then(() =>
+        fetchImpl(url, {
+          method: "GET",
+          redirect: allowArchiveRedirect ? "follow" : "error",
+          headers: { accept: "*/*" },
+          signal: controller.signal
+        })
+      ),
+      controller.signal,
+      requestHeaderTimeoutMs,
+      controller,
+      `download ${url} request-header`
+    );
+    const finalUrl = response?.url;
+    const admittedFinalUrl =
+      finalUrl === url ||
+      (allowArchiveRedirect &&
+        /^https:\/\/rspm-sync\.rstudio\.com\/v4\/1\/packages\/[0-9a-f]{64}\.tar\.gz$/u.test(finalUrl ?? ""));
+    if (!response || response.status !== 200 || !admittedFinalUrl || !response.body) {
+      fail(`download ${url} did not return one exact immutable response.`);
     }
-    if (expectedBytes !== undefined && parsedLength !== expectedBytes) fail(`download ${url} size drifted.`);
-  }
-  const chunks = [];
-  const digest = hashOnly ? createHash("sha256") : undefined;
-  let total = 0;
-  for await (const chunk of response.body) {
-    const bytes = Buffer.from(chunk);
-    total += bytes.length;
-    if (total > maximumBytes || (expectedBytes !== undefined && total > expectedBytes)) {
-      fail(`download ${url} exceeded its streaming bound.`);
+    const declared = response.headers?.get?.("content-length");
+    if (declared !== null && declared !== undefined) {
+      const parsedLength = Number(declared);
+      if (!Number.isSafeInteger(parsedLength) || parsedLength <= 0 || parsedLength > maximumBytes) {
+        fail(`download ${url} declared an invalid size.`);
+      }
+      if (expectedBytes !== undefined && parsedLength !== expectedBytes) fail(`download ${url} size drifted.`);
     }
-    if (hashOnly) digest.update(bytes);
-    else chunks.push(bytes);
+    const iterator = response.body[Symbol.asyncIterator]?.();
+    if (!iterator || typeof iterator.next !== "function") fail(`download ${url} has no bounded async body.`);
+    const chunks = [];
+    const digest = hashOnly ? createHash("sha256") : undefined;
+    let total = 0;
+    for (;;) {
+      const item = await settleBeforeDeadline(
+        Promise.resolve().then(() => iterator.next()),
+        controller.signal,
+        bodyProgressTimeoutMs,
+        controller,
+        `download ${url} body-progress`
+      );
+      if (item.done) break;
+      const bytes = Buffer.from(item.value);
+      total += bytes.length;
+      if (total > maximumBytes || (expectedBytes !== undefined && total > expectedBytes)) {
+        fail(`download ${url} exceeded its streaming bound.`);
+      }
+      if (hashOnly) digest.update(bytes);
+      else chunks.push(bytes);
+    }
+    if (total === 0 || (expectedBytes !== undefined && total !== expectedBytes)) fail(`download ${url} size drifted.`);
+    return {
+      bytes: hashOnly ? undefined : Buffer.concat(chunks, total),
+      byteLength: total,
+      sha256: digest?.digest("hex"),
+      finalUrl
+    };
+  } catch (error) {
+    if (!controller.signal.aborted) controller.abort(error);
+    throw error;
+  } finally {
+    detach();
   }
-  if (total === 0 || (expectedBytes !== undefined && total !== expectedBytes)) fail(`download ${url} size drifted.`);
-  return {
-    bytes: hashOnly ? undefined : Buffer.concat(chunks, total),
-    byteLength: total,
-    sha256: digest?.digest("hex"),
-    finalUrl
-  };
 }
 
-export async function generateRemoteRPackageLock({ fetchImpl = globalThis.fetch } = {}) {
+export async function generateRemoteRPackageLock({ fetchImpl = globalThis.fetch, deadlines } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("Remote R lock generation requires a fetch implementation.");
-  const metadataByRepository = new Map();
-  for (const repository of REMOTE_R_PACKAGE_REPOSITORIES) {
-    const { bytes: compressed } = await fetchBounded(`${repository.url}/PACKAGES.gz`, 16 * 1024 * 1024, fetchImpl);
-    let metadata;
-    try {
-      metadata = gunzipSync(compressed, { maxOutputLength: 32 * 1024 * 1024 }).toString("utf8");
-    } catch {
-      fail(`repository ${repository.id} metadata could not be decoded within bounds.`);
+  const fetchDeadlines = normalizeFetchDeadlines(deadlines);
+  const aggregateController = new AbortController();
+  const aggregateTimer = setTimeout(() => {
+    aggregateController.abort(contractFailure("remote R lock fetch aggregate deadline expired."));
+  }, fetchDeadlines.aggregateMs);
+  const deadlineOptions = {
+    signal: aggregateController.signal,
+    requestHeaderTimeoutMs: fetchDeadlines.requestHeaderMs,
+    bodyProgressTimeoutMs: fetchDeadlines.bodyProgressMs
+  };
+  try {
+    const metadataByRepository = new Map();
+    for (const repository of REMOTE_R_PACKAGE_REPOSITORIES) {
+      const { bytes: compressed } = await fetchBounded(
+        `${repository.url}/PACKAGES.gz`,
+        16 * 1024 * 1024,
+        fetchImpl,
+        deadlineOptions
+      );
+      let metadata;
+      try {
+        metadata = gunzipSync(compressed, { maxOutputLength: 32 * 1024 * 1024 }).toString("utf8");
+      } catch {
+        fail(`repository ${repository.id} metadata could not be decoded within bounds.`);
+      }
+      metadataByRepository.set(repository.id, parseDcfPackages(metadata, repository.id));
     }
-    metadataByRepository.set(repository.id, parseDcfPackages(metadata, repository.id));
-  }
 
-  const selected = new Map();
-  const select = (name, repositoryId) => {
-    if (BASE_R_PACKAGES.has(name) || selected.has(name)) return;
-    const metadata = metadataByRepository.get(repositoryId)?.get(name);
-    if (!metadata) fail(`repository ${repositoryId} does not contain required package ${name}.`);
-    selected.set(name, { ...metadata, repository: repositoryId });
-    for (const dependency of metadata.dependencies) select(dependency, repositoryId);
-  };
-  for (const root of [...REMOTE_R_PACKAGE_ROOTS.runtime, ...REMOTE_R_PACKAGE_ROOTS.fixtures]) {
-    select(root.name, root.repository);
-  }
-  if (selected.size === 0 || selected.size > REMOTE_R_PACKAGE_MAX_COUNT)
-    fail("generated closure exceeds its package bound.");
+    const selected = new Map();
+    const select = (name, repositoryId) => {
+      if (BASE_R_PACKAGES.has(name) || selected.has(name)) return;
+      const metadata = metadataByRepository.get(repositoryId)?.get(name);
+      if (!metadata) fail(`repository ${repositoryId} does not contain required package ${name}.`);
+      selected.set(name, { ...metadata, repository: repositoryId });
+      for (const dependency of metadata.dependencies) select(dependency, repositoryId);
+    };
+    for (const root of [...REMOTE_R_PACKAGE_ROOTS.runtime, ...REMOTE_R_PACKAGE_ROOTS.fixtures]) {
+      select(root.name, root.repository);
+    }
+    if (selected.size === 0 || selected.size > REMOTE_R_PACKAGE_MAX_COUNT)
+      fail("generated closure exceeds its package bound.");
 
-  const ordered = [];
-  const visiting = new Set();
-  const visited = new Set();
-  const visit = (name) => {
-    if (visited.has(name)) return;
-    if (visiting.has(name)) fail(`package dependency cycle includes ${name}.`);
-    visiting.add(name);
-    for (const dependency of selected.get(name).dependencies) visit(dependency);
-    visiting.delete(name);
-    visited.add(name);
-    ordered.push(name);
-  };
-  for (const name of [...selected.keys()].sort()) visit(name);
+    const ordered = [];
+    const visiting = new Set();
+    const visited = new Set();
+    const visit = (name) => {
+      if (visited.has(name)) return;
+      if (visiting.has(name)) fail(`package dependency cycle includes ${name}.`);
+      visiting.add(name);
+      for (const dependency of selected.get(name).dependencies) visit(dependency);
+      visiting.delete(name);
+      visited.add(name);
+      ordered.push(name);
+    };
+    for (const name of [...selected.keys()].sort()) visit(name);
 
-  const dependencyOnly = new Map(
-    [...selected].map(([name, entry]) => [
-      name,
-      { dependencies: entry.dependencies.filter((dependency) => selected.has(dependency)) }
-    ])
-  );
-  const runtimeReachable = walkReachability(
-    REMOTE_R_PACKAGE_ROOTS.runtime.map(({ name }) => name),
-    dependencyOnly
-  );
-  const runtimeRoots = new Set(REMOTE_R_PACKAGE_ROOTS.runtime.map(({ name }) => name));
-  const repositories = new Map(REMOTE_R_PACKAGE_REPOSITORIES.map((repository) => [repository.id, repository]));
-  const packages = [];
-  let aggregateBytes = 0;
-  for (const [index, name] of ordered.entries()) {
-    const entry = selected.get(name);
-    const sourceUrl = `${repositories.get(entry.repository).url}/${name}_${entry.version}.tar.gz`;
-    const {
-      byteLength,
-      sha256,
-      finalUrl: url
-    } = await fetchBounded(sourceUrl, REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES, fetchImpl, {
-      allowArchiveRedirect: true,
-      hashOnly: true
+    const dependencyOnly = new Map(
+      [...selected].map(([name, entry]) => [
+        name,
+        { dependencies: entry.dependencies.filter((dependency) => selected.has(dependency)) }
+      ])
+    );
+    const runtimeReachable = walkReachability(
+      REMOTE_R_PACKAGE_ROOTS.runtime.map(({ name }) => name),
+      dependencyOnly
+    );
+    const runtimeRoots = new Set(REMOTE_R_PACKAGE_ROOTS.runtime.map(({ name }) => name));
+    const repositories = new Map(REMOTE_R_PACKAGE_REPOSITORIES.map((repository) => [repository.id, repository]));
+    const packages = [];
+    let aggregateBytes = 0;
+    for (const [index, name] of ordered.entries()) {
+      const entry = selected.get(name);
+      const sourceUrl = `${repositories.get(entry.repository).url}/${name}_${entry.version}.tar.gz`;
+      const {
+        byteLength,
+        sha256,
+        finalUrl: url
+      } = await fetchBounded(sourceUrl, REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES, fetchImpl, {
+        ...deadlineOptions,
+        allowArchiveRedirect: true,
+        hashOnly: true
+      });
+      aggregateBytes += byteLength;
+      if (aggregateBytes > REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES) fail("generated archives exceed the aggregate bound.");
+      packages.push({
+        name,
+        version: entry.version,
+        category: runtimeReachable.has(name) ? "runtime" : "fixture",
+        direct: runtimeRoots.has(name),
+        repository: entry.repository,
+        sourceUrl,
+        url,
+        bytes: byteLength,
+        sha256,
+        dependencies: entry.dependencies.filter((dependency) => selected.has(dependency)),
+        installOrder: index + 1
+      });
+    }
+    const text = canonicalRemoteRPackageLockText({
+      protocol: REMOTE_R_PACKAGE_LOCK_PROTOCOL,
+      target: {
+        rVersion: REMOTE_R_PACKAGE_LOCK_R_VERSION,
+        os: "linux",
+        distribution: "ubuntu",
+        codename: "noble",
+        architecture: "x86_64"
+      },
+      repositories: REMOTE_R_PACKAGE_REPOSITORIES,
+      roots: REMOTE_R_PACKAGE_ROOTS,
+      packages
     });
-    aggregateBytes += byteLength;
-    if (aggregateBytes > REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES) fail("generated archives exceed the aggregate bound.");
-    packages.push({
-      name,
-      version: entry.version,
-      category: runtimeReachable.has(name) ? "runtime" : "fixture",
-      direct: runtimeRoots.has(name),
-      repository: entry.repository,
-      sourceUrl,
-      url,
-      bytes: byteLength,
-      sha256,
-      dependencies: entry.dependencies.filter((dependency) => selected.has(dependency)),
-      installOrder: index + 1
-    });
+    validateRemoteRPackageLock(text);
+    return text;
+  } finally {
+    clearTimeout(aggregateTimer);
   }
-  const text = canonicalRemoteRPackageLockText({
-    protocol: REMOTE_R_PACKAGE_LOCK_PROTOCOL,
-    target: {
-      rVersion: REMOTE_R_PACKAGE_LOCK_R_VERSION,
-      os: "linux",
-      distribution: "ubuntu",
-      codename: "noble",
-      architecture: "x86_64"
-    },
-    repositories: REMOTE_R_PACKAGE_REPOSITORIES,
-    roots: REMOTE_R_PACKAGE_ROOTS,
-    packages
-  });
-  validateRemoteRPackageLock(text);
-  return text;
 }
 
 async function main() {

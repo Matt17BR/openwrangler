@@ -9,9 +9,12 @@ import json
 import os
 import platform
 import re
+import selectors
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -25,6 +28,8 @@ PACKAGE_MAX_COUNT = 128
 DEPENDENCY_MAX_COUNT = 64
 COMMAND_LOG_MAX_BYTES = 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 300
+COMMAND_TERMINATION_GRACE_SECONDS = 2
+COMMAND_READ_CHUNK_BYTES = 64 * 1024
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PACKAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,63}$")
 PACKAGE_VERSION = re.compile(r"^[0-9][0-9A-Za-z.+-]{0,63}$")
@@ -338,38 +343,185 @@ def isolated_environment(root: Path, library: Path) -> dict[str, str]:
     }
 
 
+def process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def terminate_owned_process_group(process: subprocess.Popen[bytes]) -> None:
+    process_group = process.pid
+    for termination_signal in (signal.SIGTERM, signal.SIGKILL):
+        if process_group_exists(process_group):
+            try:
+                os.killpg(process_group, termination_signal)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + COMMAND_TERMINATION_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            process.poll()
+            if not process_group_exists(process_group):
+                break
+            time.sleep(0.01)
+        if not process_group_exists(process_group):
+            break
+    try:
+        process.wait(timeout=COMMAND_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise ContractError(
+            "Remote R package installation failed: isolated R command could not be reaped"
+        ) from error
+    if process_group_exists(process_group):
+        raise ContractError(
+            "Remote R package installation failed: isolated R command descendants did not settle"
+        )
+
+
 def bounded_command(arguments: list[str], environment: dict[str, str], log_path: Path) -> bytes:
-    import resource
-
-    def bound_output() -> None:
-        resource.setrlimit(resource.RLIMIT_FSIZE, (COMMAND_LOG_MAX_BYTES, COMMAND_LOG_MAX_BYTES))
-
     descriptor = os.open(log_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o600)
+    process: subprocess.Popen[bytes] | None = None
+    selector: selectors.BaseSelector | None = None
+    stdout = bytearray()
+    total = 0
     try:
         with os.fdopen(descriptor, "wb", closefd=True) as log:
+            process = subprocess.Popen(
+                arguments,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                start_new_session=True,
+            )
+            if process.stdout is None or process.stderr is None:
+                fail("isolated R command pipes were not created")
+            selector = selectors.DefaultSelector()
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    fail("isolated R command exceeded its deadline")
+                for key, _ in selector.select(timeout=min(0.05, remaining)):
+                    chunk = os.read(key.fileobj.fileno(), COMMAND_READ_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    available = COMMAND_LOG_MAX_BYTES - total
+                    if available > 0:
+                        retained = chunk[:available]
+                        log.write(retained)
+                        if key.data == "stdout":
+                            stdout.extend(retained)
+                        total += len(retained)
+                    if len(chunk) > available:
+                        fail("isolated R command output exceeded its bounded log")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                fail("isolated R command exceeded its deadline")
+            return_code = process.wait(timeout=remaining)
+            if process_group_exists(process.pid):
+                terminate_owned_process_group(process)
+                fail("isolated R command left a live descendant")
+            log.flush()
+            os.fsync(log.fileno())
+            if return_code != 0:
+                fail("isolated R command failed")
+            return bytes(stdout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        primary: BaseException = ContractError(
+            "Remote R package installation failed: isolated R command did not settle"
+        )
+        if process is not None:
             try:
-                result = subprocess.run(
-                    arguments,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    env=environment,
-                    check=False,
-                    timeout=COMMAND_TIMEOUT_SECONDS,
-                    preexec_fn=bound_output,
-                )
-            except (OSError, subprocess.TimeoutExpired) as error:
-                raise ContractError(
-                    "Remote R package installation failed: isolated R command did not settle"
-                ) from error
+                terminate_owned_process_group(process)
+            except ContractError as settlement_error:
+                raise settlement_error from error
+        raise primary from error
+    except BaseException as error:
+        if process is not None:
+            try:
+                terminate_owned_process_group(process)
+            except ContractError as settlement_error:
+                raise settlement_error from error
+        raise
     finally:
-        if not log_path.exists():
-            os.close(descriptor)
-    if result.returncode != 0:
-        fail("isolated R command failed")
-    output = log_path.read_bytes()
-    log_path.unlink()
-    return output
+        if selector is not None:
+            selector.close()
+        if process is not None:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+        log_path.unlink(missing_ok=True)
+
+
+def verify_archive(package: dict[str, Any], archive: Path) -> None:
+    descriptor = os.open(
+        archive,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size != package["bytes"]
+        ):
+            fail(f"package {package['name']} archive verification failed")
+        identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_nlink,
+            before.st_uid,
+            before.st_gid,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        digest = hashlib.sha256()
+        total = 0
+        while total <= package["bytes"]:
+            chunk = os.read(descriptor, min(64 * 1024, package["bytes"] + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > package["bytes"]:
+                fail(f"package {package['name']} archive verification failed")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_nlink,
+            after.st_uid,
+            after.st_gid,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if total != package["bytes"] or identity != after_identity or digest.hexdigest() != package["sha256"]:
+            fail(f"package {package['name']} archive verification failed")
+    finally:
+        os.close(descriptor)
+
+
+def install_verified_archive(
+    package: dict[str, Any],
+    archive: Path,
+    arguments: list[str],
+    environment: dict[str, str],
+    log_path: Path,
+) -> bytes:
+    verify_archive(package, archive)
+    return bounded_command(arguments, environment, log_path)
 
 
 def download_archive(package: dict[str, Any], destination: Path) -> None:
@@ -415,6 +567,7 @@ def download_archive(package: dict[str, Any], destination: Path) -> None:
     ):
         destination.unlink(missing_ok=True)
         fail(f"package {package['name']} archive verification failed")
+    verify_archive(package, destination)
 
 
 def install(lock: dict[str, Any], digest: str, library: Path, prefix: Path) -> None:
@@ -429,7 +582,9 @@ def install(lock: dict[str, Any], digest: str, library: Path, prefix: Path) -> N
             archive = root / f"{package['installOrder']:03d}.tar.gz"
             download_archive(package, archive)
             try:
-                bounded_command(
+                install_verified_archive(
+                    package,
+                    archive,
                     [
                         "/usr/bin/unshare",
                         "--user",

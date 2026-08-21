@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   REMOTE_JUPYTER_INPUT_PATH,
@@ -28,12 +29,38 @@ import {
   REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES,
   REMOTE_R_PACKAGE_LOCK_PATH,
   REMOTE_R_PACKAGE_LOCK_PROTOCOL,
+  generateRemoteRPackageLock,
   readRemoteRPackageLockFile,
   remoteRPackageLockDigest,
   validateRemoteRPackageLock
 } from "./remote-r-package-lock.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
+const R_PACKAGE_INSTALLER = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "install-r-packages.py");
+
+function runInstallerProbe(source, timeout = 10_000) {
+  return spawnSync("python3", ["-I", "-c", source, R_PACKAGE_INSTALLER], {
+    cwd: REPOSITORY_ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout
+  });
+}
+
+async function expectBoundedDeadline(promise, pattern) {
+  let timer;
+  const result = await Promise.race([
+    promise.then(
+      () => ({ state: "resolved" }),
+      (error) => ({ error, state: "rejected" })
+    ),
+    new Promise((resolvePromise) => {
+      timer = setTimeout(() => resolvePromise({ state: "stalled" }), 1_000);
+    })
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(result.state, "rejected", `expected a bounded rejection, received ${result.state}`);
+  assert.match(String(result.error), pattern);
+}
 
 test("the remote Jupyter lock is complete, canonical, and above its security floor", async () => {
   const { directEntries, lockedEntries } = await checkRemoteJupyterLockFiles();
@@ -63,7 +90,7 @@ test("the remote R archive lock is complete, canonical, bounded, and category-ex
   assert.equal(result.lock.target.codename, "noble");
   assert.equal(result.lock.target.architecture, "x86_64");
   assert.equal(result.digest, remoteRPackageLockDigest(await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8")));
-  assert.ok(result.packageCount >= 20 && result.packageCount <= 128);
+  assert.equal(result.packageCount, 26);
   assert.ok(result.aggregateBytes > 0 && result.aggregateBytes <= REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES);
   assert.deepEqual(
     result.lock.roots.runtime.map(({ name }) => name),
@@ -180,6 +207,203 @@ test("the dependency-free Python installer independently validates the exact com
   );
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stderr, /digest does not match/u);
+});
+
+test("the installer bounds owned logs without truncating package-created files", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-output-") as directory:
+    root = Path(directory)
+    package_output = root / "package-output.bin"
+    size = installer.COMMAND_LOG_MAX_BYTES + 4096
+    installer.bounded_command(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'x' * int(sys.argv[2])); print('ok')",
+            str(package_output),
+            str(size),
+        ],
+        dict(os.environ),
+        root / "command.log",
+    )
+    assert package_output.stat().st_size == size
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer settles a timed-out process group before descendants can mutate", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+installer.COMMAND_TIMEOUT_SECONDS = 0.2
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-timeout-") as directory:
+    root = Path(directory)
+    marker = root / "descendant-survived"
+    descendant = "from pathlib import Path; import sys,time; time.sleep(0.4); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
+    parent = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]]); time.sleep(10)"
+    try:
+        installer.bounded_command(
+            [sys.executable, "-c", parent, str(marker), descendant],
+            dict(os.environ),
+            root / "command.log",
+        )
+    except installer.ContractError:
+        pass
+    else:
+        raise AssertionError("the timed-out command unexpectedly succeeded")
+    time.sleep(0.7)
+    assert not marker.exists(), "a timed-out descendant remained alive"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer settles an output-overflow process group before descendants can mutate", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-overflow-") as directory:
+    root = Path(directory)
+    marker = root / "descendant-survived"
+    descendant = "from pathlib import Path; import sys,time; time.sleep(0.4); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
+    parent = "import os,subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]]); os.write(1, b'x' * (1048576 + 65536)); time.sleep(10)"
+    try:
+        installer.bounded_command(
+            [sys.executable, "-c", parent, str(marker), descendant],
+            dict(os.environ),
+            root / "command.log",
+        )
+    except installer.ContractError:
+        pass
+    else:
+        raise AssertionError("the overflowing command unexpectedly succeeded")
+    time.sleep(0.7)
+    assert not marker.exists(), "an overflowing descendant remained alive"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("changed same-version archive bytes reject before install dispatch", () => {
+  const probe = runInstallerProbe(String.raw`
+import hashlib
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+expected = b"expected archive bytes"
+changed = b"changed! archive bytes"
+assert len(expected) == len(changed)
+package = {
+    "name": "fixture",
+    "version": "1.0.0",
+    "bytes": len(expected),
+    "sha256": hashlib.sha256(expected).hexdigest(),
+}
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-drift-") as directory:
+    root = Path(directory)
+    dispatched = []
+    installer.bounded_command = lambda *arguments, **options: dispatched.append((arguments, options))
+    for index, archive_bytes in enumerate((changed, changed + b"!")):
+        archive = root / f"fixture_1.0.0-{index}.tar.gz"
+        archive.write_bytes(archive_bytes)
+        try:
+            installer.install_verified_archive(
+                package,
+                archive,
+                ["/usr/local/bin/R", "CMD", "INSTALL", str(archive)],
+                dict(os.environ),
+                root / f"command-{index}.log",
+            )
+        except installer.ContractError:
+            pass
+        else:
+            raise AssertionError("changed same-version bytes were accepted")
+    assert dispatched == [], "install dispatch occurred before archive identity rejection"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("lock generation has request-header, body-progress, and aggregate deadlines", async () => {
+  const headerSignals = [];
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 250, bodyProgressMs: 100, requestHeaderMs: 25 },
+      fetchImpl: (_url, { signal }) => {
+        headerSignals.push(signal);
+        return new Promise(() => {});
+      }
+    }),
+    /request-header deadline/u
+  );
+  assert.equal(headerSignals.length, 1);
+  assert.equal(headerSignals[0].aborted, true);
+
+  const stalledBody = {
+    [Symbol.asyncIterator]() {
+      return { next: () => new Promise(() => {}) };
+    }
+  };
+  const bodySignals = [];
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 250, bodyProgressMs: 25, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        bodySignals.push(signal);
+        return { body: stalledBody, headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /body-progress deadline/u
+  );
+  assert.equal(bodySignals.length, 1);
+  assert.equal(bodySignals[0].aborted, true);
+
+  const aggregateSignals = [];
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 25, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        aggregateSignals.push(signal);
+        await delay(100);
+        return { body: [], headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /aggregate deadline/u
+  );
+  assert.equal(aggregateSignals.length, 1);
+  assert.equal(aggregateSignals[0].aborted, true);
 });
 
 test("the remote Jupyter lock rejects a vulnerable server regression", async () => {
