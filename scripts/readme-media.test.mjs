@@ -513,7 +513,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Choose from 32 operations/u);
   assert.match(
     readme,
-    /Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step/u
+    /Any applied step can be inspected, edited, or deleted\. Cleaning Undo removes the most recent committed step\./u
   );
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);

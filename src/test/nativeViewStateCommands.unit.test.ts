@@ -434,8 +434,12 @@ describe("native state and presentation commands", () => {
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
     const registered = register(noDraftSnapshot());
+    const stepNode = treeChildren("openWrangler.cleaningSteps").find(
+      (node) => (node.cleaningStepHandle as { stepId?: unknown } | undefined)?.stepId === appliedStep.id
+    );
+    expect(stepNode).toBeDefined();
 
-    await command("openWrangler.selectStep")(appliedStep.id);
+    await command("openWrangler.selectStep")(stepNode);
     expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
       action: "selectStep",
       expectedSessionId: "session",
@@ -445,7 +449,9 @@ describe("native state and presentation commands", () => {
     expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
 
     nativeMocks.sendEditorActionForSession.mockClear();
-    await command("openWrangler.selectStep")("retired-step");
+    await command("openWrangler.selectStep")({
+      cleaningStepHandle: { sessionId: "session", revision: 0, stepId: "retired-step" }
+    });
     expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
     expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
       "That cleaning step is no longer available in the active dataframe."
@@ -460,9 +466,26 @@ describe("native state and presentation commands", () => {
     });
 
     nativeMocks.sendEditorActionForSession.mockResolvedValueOnce(false);
-    await command("openWrangler.selectStep")(appliedStep.id);
+    await command("openWrangler.selectStep")(stepNode);
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
       "Open the active dataframe editor before selecting a cleaning step."
+    );
+
+    nativeMocks.sendEditorActionForSession.mockClear();
+    const replacementSession = noDraftSnapshot();
+    replacementSession.sessionId = "replacement-session";
+    replacementSession.metadata = { ...replacementSession.metadata, sessionId: "replacement-session" };
+    registered.setActiveSession(replacementSession);
+    await command("openWrangler.selectStep")(stepNode);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+
+    const advancedRevision = noDraftSnapshot();
+    advancedRevision.metadata = { ...advancedRevision.metadata, revision: 1 };
+    registered.setActiveSession(advancedRevision);
+    await command("openWrangler.selectStep")(stepNode);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenLastCalledWith(
+      "That cleaning step is no longer available in the active dataframe."
     );
   });
 
@@ -577,7 +600,7 @@ describe("native state and presentation commands", () => {
     expect(stepNode?.command).toBeUndefined();
     expect(stepNode?.contextValue).toBe("openWrangler.latestCleaningStep");
 
-    await command("openWrangler.selectStep")(appliedStep.id);
+    await command("openWrangler.selectStep")(stepNode);
     await command("openWrangler.editLatestStep")();
     await command("openWrangler.editSelectedStep")(stepNode);
     await command("openWrangler.deleteSelectedStep")(stepNode);

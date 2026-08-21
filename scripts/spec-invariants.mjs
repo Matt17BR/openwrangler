@@ -1,9 +1,10 @@
 import MarkdownIt from "markdown-it";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fileConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, parse, resolve } from "node:path";
-import { TextDecoder } from "node:util";
+import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
+import { promisify, TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_INVARIANT_COUNT = 58;
@@ -69,6 +70,16 @@ const cleaningHistoryActions = new Map([
 ]);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
+const boundedRepositoryInputs = new Set([
+  SOURCE_PATH,
+  ARCHIVE_PATH,
+  EVIDENCE_PATH,
+  ...SCANNED_DOCUMENTS,
+  CLEANING_HISTORY_MODEL_PATH,
+  CLEANING_HISTORY_PRODUCTION_AUTHORITY_PATH,
+  ...CLEANING_HISTORY_DOCUMENTS
+]);
 
 function sha256(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -122,30 +133,45 @@ async function closeBoundedReadHandles(handles, label) {
   }
 }
 
-async function openBoundedAncestorChain(path, label, platform = process.platform) {
-  if (platform !== "linux") {
-    throw new Error(`${label} requires a supported handle-relative file boundary.`);
-  }
+async function openBoundedAncestorChain(path, label, testHooks = undefined) {
   const { absolute, directories } = ancestorDirectories(path);
   const records = [];
   try {
-    for (const directory of directories) {
+    for (const [index, directory] of directories.entries()) {
       const expected = await lstat(directory, { bigint: true });
       if (!expected.isDirectory()) {
         throw new Error(`${label} must have only regular, non-symbolic-link ancestor directories.`);
       }
       const parent = records.at(-1);
       const descriptorPath = parent ? `/proc/self/fd/${parent.handle.fd}/${basename(directory)}` : directory;
-      const handle = await open(
-        descriptorPath,
-        fileConstants.O_RDONLY |
-          (fileConstants.O_DIRECTORY ?? 0) |
-          (fileConstants.O_NOFOLLOW ?? 0) |
-          (fileConstants.O_NONBLOCK ?? 0)
-      );
-      const opened = await handle.stat({ bigint: true });
-      assertSameDirectoryIdentity(expected, opened, label);
-      records.push({ path: directory, expected: opened, handle });
+      let handle;
+      try {
+        handle = await open(
+          descriptorPath,
+          fileConstants.O_RDONLY |
+            (fileConstants.O_DIRECTORY ?? 0) |
+            (fileConstants.O_NOFOLLOW ?? 0) |
+            (fileConstants.O_NONBLOCK ?? 0)
+        );
+        await testHooks?.afterAncestorOpenBeforeIdentity?.({ directory, index });
+        const [opened, current] = await Promise.all([
+          handle.stat({ bigint: true }),
+          lstat(directory, { bigint: true })
+        ]);
+        assertSameDirectoryIdentity(expected, opened, label);
+        assertSameDirectoryIdentity(expected, current, label);
+        records.push({ path: directory, expected: opened, handle });
+        handle = undefined;
+      } catch (error) {
+        if (handle) {
+          try {
+            await handle.close();
+          } catch (closeError) {
+            throw new AggregateError([error, closeError], `${label} ancestor descriptor did not close cleanly.`);
+          }
+        }
+        throw error;
+      }
     }
     return { absolute, records };
   } catch (error) {
@@ -154,6 +180,105 @@ async function openBoundedAncestorChain(path, label, platform = process.platform
       label
     );
     throw error;
+  }
+}
+
+function repositoryRelativeInput(path, label) {
+  const absolute = resolve(path);
+  const repositoryPath = relative(root, absolute).split(sep).join("/");
+  if (
+    repositoryPath.length === 0 ||
+    repositoryPath === ".." ||
+    repositoryPath.startsWith("../") ||
+    isAbsolute(repositoryPath) ||
+    !boundedRepositoryInputs.has(repositoryPath)
+  ) {
+    throw new Error(`${label} is outside the bounded repository input inventory.`);
+  }
+  return repositoryPath;
+}
+
+function boundedGitEnvironment() {
+  const environment = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.toUpperCase().startsWith("GIT_") && value !== undefined) environment[key] = value;
+  }
+  return {
+    ...environment,
+    GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+    LC_ALL: "C"
+  };
+}
+
+async function boundedGit(args, maximumBytes, label) {
+  try {
+    const { stdout } = await execFileAsync("git", ["--no-pager", "-c", "core.fsmonitor=false", ...args], {
+      cwd: root,
+      encoding: "buffer",
+      env: boundedGitEnvironment(),
+      maxBuffer: maximumBytes + 1,
+      timeout: 10_000,
+      windowsHide: true
+    });
+    return stdout;
+  } catch (error) {
+    throw new Error(`${label} could not be verified through the bounded repository object boundary.`, {
+      cause: error
+    });
+  }
+}
+
+async function committedInputIdentity(repositoryPath, label) {
+  const status = await boundedGit(
+    ["status", "--porcelain=v1", "--untracked-files=all", "--", repositoryPath],
+    32 * 1024,
+    label
+  );
+  if (status.length !== 0) {
+    throw new Error(`${label} must match its committed repository object on this platform.`);
+  }
+  const staged = await boundedGit(["ls-files", "--stage", "-z", "--", repositoryPath], 32 * 1024, label);
+  const entries = staged.toString("utf8").split("\0").filter(Boolean);
+  if (entries.length !== 1) {
+    throw new Error(`${label} must resolve to exactly one tracked repository object.`);
+  }
+  const match = /^(100644|100755) ([0-9a-f]{40,64}) 0\t([^\0]+)$/u.exec(entries[0]);
+  if (!match || match[3] !== repositoryPath) {
+    throw new Error(`${label} must resolve to one ordinary tracked file.`);
+  }
+  const head = (await boundedGit(["rev-parse", "--verify", `HEAD:${repositoryPath}`], 1024, label))
+    .toString("ascii")
+    .trim();
+  if (head !== match[2]) {
+    throw new Error(`${label} index and committed object identities differ.`);
+  }
+  return { objectId: head, mode: match[1] };
+}
+
+async function readBoundedCommittedUtf8File(path, maximumBytes, label, testHooks) {
+  const repositoryPath = repositoryRelativeInput(path, label);
+  const before = await committedInputIdentity(repositoryPath, label);
+  await testHooks?.afterPortableIdentity?.({ repositoryPath, ...before });
+  const sizeText = (await boundedGit(["cat-file", "-s", before.objectId], 1024, label)).toString("ascii").trim();
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(sizeText) || BigInt(sizeText) > BigInt(maximumBytes)) {
+    throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
+  }
+  const contents = await boundedGit(["cat-file", "blob", before.objectId], maximumBytes, label);
+  if (contents.length !== Number(sizeText)) {
+    throw new Error(`${label} changed identity or contents while it was being read.`);
+  }
+  await testHooks?.afterPortableRead?.({ repositoryPath, ...before });
+  const after = await committedInputIdentity(repositoryPath, label);
+  if (after.objectId !== before.objectId || after.mode !== before.mode) {
+    throw new Error(`${label} changed identity or contents while it was being read.`);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(contents);
+  } catch {
+    throw new Error(`${label} must be valid UTF-8 text.`);
   }
 }
 
@@ -169,7 +294,14 @@ async function assertAncestorChainCurrent(records, label) {
 }
 
 export async function readBoundedUtf8File(path, maximumBytes, label = path, testHooks = undefined) {
-  const ancestorChain = await openBoundedAncestorChain(path, label, testHooks?.platform);
+  const platform = testHooks?.platform ?? process.platform;
+  if (platform === "darwin" || platform === "win32") {
+    return await readBoundedCommittedUtf8File(path, maximumBytes, label, testHooks);
+  }
+  if (platform !== "linux") {
+    throw new Error(`${label} requires a supported bounded repository file boundary.`);
+  }
+  const ancestorChain = await openBoundedAncestorChain(path, label, testHooks);
   let handle;
   try {
     const expected = await lstat(ancestorChain.absolute, { bigint: true });
@@ -201,6 +333,7 @@ export async function readBoundedUtf8File(path, maximumBytes, label = path, test
       if (bytesRead === 0) break;
       chunks.push(buffer.subarray(0, bytesRead));
       totalBytes += bytesRead;
+      await testHooks?.afterReadChunk?.({ bytesRead, totalBytes });
     }
     if (totalBytes > maximumBytes) {
       throw new Error(`${label} exceeds the ${maximumBytes}-byte validation limit.`);
@@ -595,7 +728,8 @@ function normalizeVisibleMarkdownText(value, label) {
   const normalized = value
     .normalize("NFKC")
     .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
-    .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'");
+    .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'")
+    .replace(/[\u2010-\u2015\u2212\u2e3a\u2e3b\ufe58\ufe63\uff0d]/gu, "-");
   if (unresolvedVisibleNamedEntity.test(normalized)) {
     throw new Error(`${label} contains an unresolved visible named Markdown entity.`);
   }
@@ -874,7 +1008,7 @@ function containsContradictoryCleaningHistoryClaim(source) {
         "arbitrary",
         "individual",
         "whichever"
-      ]) || hasStem(tokens, ["specif"]);
+      ]) || hasStem(tokens, ["choos", "pick", "select", "specif", "target"]);
     const arbitraryUndo = hasSubject && undo && arbitraryTarget && !negative;
     const standaloneUndoClaim = undo && tokens.length <= 5;
     const undoDenied = undo && unavailable && (hasSubject || hasCleaningContext || standaloneUndoClaim);

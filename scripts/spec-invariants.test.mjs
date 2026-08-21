@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { link, mkdtemp, mkdir, open, opendir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, open, opendir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { checkWebviewStyles, WEBVIEW_STYLE_IMPORTS, WEBVIEW_STYLE_LIMITS } from "./check-webview-styles.mjs";
 import {
   assertCleaningHistoryClaimsCurrent,
@@ -350,6 +351,8 @@ test("cleaning-history structural claims reject synonym and word-order contradic
     "A selected older applied operation is reversible through Undo.",
     "Undo can restore the committed step of your choice.",
     "Pick which committed step to undo.",
+    "Choose a committed step to undo.",
+    "Target whichever committed operation for rollback.",
     "Plan entries have a mutable sequence.",
     "You may rearrange the applied workflow.",
     "Shuffling the cleaning plan is offered."
@@ -380,6 +383,8 @@ test("cleaning-history claims use rendered inline Markdown and decoded entity te
     "Earlier *applied steps* cannot be mod&#x69;fied or removed.",
     "Undo can remove any&nbsp;committed step.",
     "Committed steps may be re&#x2d;arranged.",
+    "Earlier applied steps cannot be non‑latest targets for editing.",
+    "The non&#x2011;latest committed step cannot be edited.",
     "Only the lat\u200best committed step can be edited.",
     "Only the lat&#x200b;est committed step can be edited.",
     "Earlier applied steps cannot be mod&shy;ified.",
@@ -733,15 +738,25 @@ test("bounded cleaning-history reads reject a symlinked ancestor", async () => {
   }
 });
 
-test("bounded cleaning-history reads fail closed without a handle-relative platform boundary", async () => {
+test("bounded cleaning-history reads use immutable committed objects on macOS and Windows", async () => {
+  const committedPath = fileURLToPath(new URL("../fixtures/cleaning-history-capabilities.json", import.meta.url));
+  const expected = await readFile(committedPath, "utf8");
   const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-platform-boundary-"));
   const path = join(directory, "model.json");
   try {
     await writeFile(path, "{}", { encoding: "utf8", mode: 0o600 });
     for (const platform of ["darwin", "win32"]) {
+      assert.equal(
+        await readBoundedUtf8File(committedPath, 8 * 1024, `${platform} committed model`, { platform }),
+        expected
+      );
       await assert.rejects(
         readBoundedUtf8File(path, 8 * 1024, `${platform} model`, { platform }),
-        /requires a supported handle-relative file boundary/u
+        /outside the bounded repository input inventory/u
+      );
+      await assert.rejects(
+        readBoundedUtf8File(committedPath, 1, `${platform} oversized model`, { platform }),
+        /exceeds the 1-byte validation limit/u
       );
     }
     assert.equal(await readBoundedUtf8File(path, 8 * 1024, "supported-platform model"), "{}");
@@ -749,6 +764,73 @@ test("bounded cleaning-history reads fail closed without a handle-relative platf
     await rm(directory, { recursive: true });
   }
 });
+
+test(
+  "bounded cleaning-history reads close a just-opened ancestor when identity changes before recording",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-ancestor-open-race-"));
+    const active = join(directory, "active");
+    const retired = join(directory, "retired");
+    const path = join(active, "model.json");
+    try {
+      await mkdir(active, { mode: 0o700 });
+      await writeFile(path, "{}", { encoding: "utf8", mode: 0o600 });
+      const descriptorCount = (await readdir("/proc/self/fd")).length;
+      await assert.rejects(
+        readBoundedUtf8File(path, 8 * 1024, "ancestor-open-race model", {
+          afterAncestorOpenBeforeIdentity: async ({ directory: openedDirectory }) => {
+            if (openedDirectory !== active) return;
+            await rename(active, retired);
+            await mkdir(active, { mode: 0o700 });
+            await writeFile(path, '{"source":"replacement"}', { encoding: "utf8", mode: 0o600 });
+          }
+        }),
+        /ancestor changed identity/u
+      );
+      assert.equal((await readdir("/proc/self/fd")).length, descriptorCount);
+      await rm(active, { recursive: true });
+      await rename(retired, active);
+      assert.equal(await readBoundedUtf8File(path, 8 * 1024, "restored open-race model"), "{}");
+    } finally {
+      await rm(directory, { recursive: true });
+    }
+  }
+);
+
+test(
+  "bounded cleaning-history reads reject a same-size torn rewrite and preserve stable content",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ow-cleaning-history-torn-read-"));
+    const path = join(directory, "model.json");
+    const original = `${"a".repeat(128 * 1024 - 2)}{}`;
+    try {
+      await writeFile(path, original, { encoding: "utf8", mode: 0o600 });
+      let replaced = false;
+      await assert.rejects(
+        readBoundedUtf8File(path, 256 * 1024, "same-size torn model", {
+          afterReadChunk: async () => {
+            if (replaced) return;
+            replaced = true;
+            const writer = await open(path, "r+");
+            try {
+              await writer.write(Buffer.from("b"), 0, 1, 0);
+              await writer.sync();
+            } finally {
+              await writer.close();
+            }
+          }
+        }),
+        /changed identity or contents/u
+      );
+      await writeFile(path, original, { encoding: "utf8", mode: 0o600 });
+      assert.equal(await readBoundedUtf8File(path, 256 * 1024, "stable model"), original);
+    } finally {
+      await rm(directory, { recursive: true });
+    }
+  }
+);
 
 test(
   "bounded cleaning-history reads reject an ancestor replace-read and remain usable after restore",
