@@ -715,7 +715,32 @@ const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const visibleEntityShape = /&[^\s&<>;]*;/gu;
 const validNumericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);$/iu;
 const validNamedEntityShape = /^&[a-z][a-z0-9]*;$/iu;
-const markdownClauseBoundary = /(?:[.!?;,\n]|\b(?:and|or|but|however|whereas|while|although|though|yet)\b)/iu;
+const cleaningHistoryClauseBoundaryAuthority = Object.freeze({
+  connectors: Object.freeze([
+    "and",
+    "or",
+    "plus",
+    "but",
+    "because",
+    "whenever",
+    "however",
+    "whereas",
+    "while",
+    "although",
+    "though",
+    "yet"
+  ]),
+  inlinePunctuationPattern: "[.!?;,:\\n]",
+  segmentPunctuation: Object.freeze([",", ":"]),
+  statementPunctuationPattern: "[.!?;\\n]+"
+});
+const cleaningHistoryClauseConnectors = new Set(cleaningHistoryClauseBoundaryAuthority.connectors);
+const cleaningHistorySegmentPunctuation = new Set(cleaningHistoryClauseBoundaryAuthority.segmentPunctuation);
+const cleaningHistoryStatementBoundary = new RegExp(
+  cleaningHistoryClauseBoundaryAuthority.statementPunctuationPattern,
+  "gu"
+);
+const cleaningHistoryInlineClauseBoundarySource = `(?:${cleaningHistoryClauseBoundaryAuthority.inlinePunctuationPattern}|\\b(?:${cleaningHistoryClauseBoundaryAuthority.connectors.join("|")})\\b)`;
 const cleaningHistoryPriorWords = Object.freeze([
   "earlier",
   "older",
@@ -859,35 +884,67 @@ function flattenVisibleInlineChildren(children, label) {
   return fragments;
 }
 
-function adjacentClause(value, side) {
-  const clauses = value.split(markdownClauseBoundary);
-  return side === "before" ? (clauses.at(-1) ?? "") : (clauses[0] ?? "");
-}
-
-function exampleCodeSpanIndexes(fragments) {
-  const before = new Map();
-  let context = "";
+function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
+  let operations = fragments.length;
+  const chunks = [];
+  const codeSpans = [];
+  let offset = 0;
   for (let index = 0; index < fragments.length; index += 1) {
     const fragment = fragments[index];
+    const start = offset;
+    offset += fragment.text.length;
     if (fragment.type === "code_inline") {
-      before.set(index, context);
-      context = "";
+      codeSpans.push({ end: offset, index, start });
+      chunks.push(" ".repeat(fragment.text.length));
     } else {
-      context = adjacentClause(`${context}${fragment.text}`, "before");
+      chunks.push(fragment.text);
     }
+  }
+  if (codeSpans.length === 0) {
+    testHooks?.recordInlineFragmentContextOperations?.(operations);
+    return new Set();
+  }
+
+  const visible = chunks.join("");
+  operations += visible.length;
+  const boundaries = [];
+  const boundaryPattern = new RegExp(cleaningHistoryInlineClauseBoundarySource, "giu");
+  for (const match of visible.matchAll(boundaryPattern)) {
+    boundaries.push({ end: match.index + match[0].length, start: match.index });
+    operations += match[0].length;
+  }
+
+  const before = new Map();
+  let boundaryIndex = 0;
+  let previousBarrierEnd = 0;
+  let previousCodeEnd = 0;
+  for (const codeSpan of codeSpans) {
+    while (boundaryIndex < boundaries.length && boundaries[boundaryIndex].end <= codeSpan.start) {
+      previousBarrierEnd = boundaries[boundaryIndex].end;
+      boundaryIndex += 1;
+    }
+    const start = Math.max(previousBarrierEnd, previousCodeEnd);
+    before.set(codeSpan.index, visible.slice(start, codeSpan.start));
+    operations += codeSpan.start - start;
+    previousCodeEnd = codeSpan.end;
   }
 
   const after = new Map();
-  context = "";
-  for (let index = fragments.length - 1; index >= 0; index -= 1) {
-    const fragment = fragments[index];
-    if (fragment.type === "code_inline") {
-      after.set(index, context);
-      context = "";
-    } else {
-      context = adjacentClause(`${fragment.text}${context}`, "after");
+  boundaryIndex = boundaries.length - 1;
+  let nextBarrierStart = visible.length;
+  let nextCodeStart = visible.length;
+  for (let index = codeSpans.length - 1; index >= 0; index -= 1) {
+    const codeSpan = codeSpans[index];
+    while (boundaryIndex >= 0 && boundaries[boundaryIndex].start >= codeSpan.end) {
+      nextBarrierStart = boundaries[boundaryIndex].start;
+      boundaryIndex -= 1;
     }
+    const end = Math.min(nextBarrierStart, nextCodeStart);
+    after.set(codeSpan.index, visible.slice(codeSpan.end, end));
+    operations += end - codeSpan.end;
+    nextCodeStart = codeSpan.start;
   }
+  testHooks?.recordInlineFragmentContextOperations?.(operations);
 
   const exampleNoun = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu;
   const presentationVerb =
@@ -903,10 +960,10 @@ function exampleCodeSpanIndexes(fragments) {
   );
 }
 
-function renderedInlineText(token, label, { excludeExampleCode = false } = {}) {
+function renderedInlineText(token, label, { excludeExampleCode = false, testHooks = undefined } = {}) {
   if (token?.type !== "inline" || !Array.isArray(token.children)) return "";
   const fragments = flattenVisibleInlineChildren(token.children, label);
-  const excluded = excludeExampleCode ? exampleCodeSpanIndexes(fragments) : new Set();
+  const excluded = excludeExampleCode ? exampleCodeSpanIndexes(fragments, testHooks) : new Set();
   return fragments.map((fragment, index) => (excluded.has(index) ? " " : fragment.text)).join("");
 }
 
@@ -971,7 +1028,7 @@ export function renderCleaningHistoryClaimBlock(marker, claims) {
   ].join("\n");
 }
 
-function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
+function assertExclusiveClaimBlock(document, path, heading, marker, claims, testHooks = undefined) {
   const section = extractMarkdownSection(document, path, heading);
   const startMarker = `<!-- cleaning-history-capabilities:${marker}:start -->`;
   const endMarker = `<!-- cleaning-history-capabilities:${marker}:end -->`;
@@ -992,25 +1049,13 @@ function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
     );
   }
   const outside = `${section.slice(0, section.indexOf(startMarker))}${section.slice(end + endMarker.length)}`;
-  if (containsContradictoryCleaningHistoryClaim(outside)) {
+  if (containsContradictoryCleaningHistoryClaim(outside, testHooks)) {
     throw new Error(
       `${path} ${heading} contains a contradictory cleaning-history capability claim outside its exclusive claim block.`
     );
   }
 }
 
-const cleaningHistoryClauseConnectors = new Set([
-  "and",
-  "or",
-  "plus",
-  "but",
-  "however",
-  "whereas",
-  "while",
-  "although",
-  "though",
-  "yet"
-]);
 const cleaningHistoryAnaphors = new Set([
   "another",
   "all",
@@ -1033,6 +1078,16 @@ const cleaningHistoryAnaphors = new Set([
   "they",
   "this",
   "those"
+]);
+const cleaningHistoryBareHistoryNouns = new Set([
+  "entries",
+  "entry",
+  "operation",
+  "operations",
+  "step",
+  "steps",
+  "transformation",
+  "transformations"
 ]);
 const cleaningHistoryLatestWords = new Set(["latest", "newest", "last", "final"]);
 const cleaningHistoryMultiWords = new Set([
@@ -1254,7 +1309,7 @@ function cleaningHistoryStatements(rendered) {
   const statements = [];
   let predicateCount = 0;
   let tokenCount = 0;
-  for (const value of rendered.split(/[.!?;\n]+/gu)) {
+  for (const value of rendered.split(cleaningHistoryStatementBoundary)) {
     const result = cleaningHistoryTokens(
       value,
       CLEANING_HISTORY_WORD_TOKEN_MAX - tokenCount,
@@ -1279,7 +1334,7 @@ function cleaningHistorySegments(tokens) {
   };
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (token === "," || token === ":" || cleaningHistoryClauseConnectors.has(token)) {
+    if (cleaningHistorySegmentPunctuation.has(token) || cleaningHistoryClauseConnectors.has(token)) {
       finish();
       separatorBefore = token;
       startIndex = index + 1;
@@ -1562,15 +1617,46 @@ function cleaningHistoryInvocationScoped(tokens) {
   );
 }
 
+function isCleaningHistoryBareUndoContinuation(record, tokens) {
+  if (record?.kind !== "undo" || record.subject.owner !== "cleaning") return false;
+  const hasExplicitHistoryNoun = tokens.some((_, index) => isCleaningHistoryNoun(tokens, index));
+  const hasHistoryReference =
+    hasExplicitHistoryNoun ||
+    tokens.some((token) => cleaningHistoryBareHistoryNouns.has(token) || cleaningHistoryAnaphors.has(token));
+  const hasBoundedReference =
+    (tokens.includes("most") && tokens.some((token) => ["recent", "recently"].includes(token))) ||
+    tokens.some(
+      (token) =>
+        cleaningHistoryLatestWords.has(token) ||
+        cleaningHistoryPriorWords.includes(token) ||
+        cleaningHistoryAnaphors.has(token) ||
+        cleaningHistoryMultiWords.has(token) ||
+        /^(?:[2-9]|[1-9][0-9]+)$/u.test(token)
+    );
+  return (
+    (record.subject.explicit || hasExplicitHistoryNoun) &&
+    hasHistoryReference &&
+    hasBoundedReference &&
+    tokens.every(
+      (token) =>
+        cleaningHistoryBareHistoryNouns.has(token) ||
+        isCleaningHistoryGrammarToken(token) ||
+        /^(?:[1-9][0-9]*)$/u.test(token)
+    )
+  );
+}
+
 function cleaningHistoryPredicateRecords(rendered) {
   const records = [];
   let previousStatementSubject;
+  let immediatelyPriorRecord;
   for (const statementTokens of cleaningHistoryStatements(rendered)) {
     let currentSubject;
-    let continuationRecord;
     let pendingClausePrefix;
     const statementRecords = [];
     for (const segment of cleaningHistorySegments(statementTokens)) {
+      const priorRecord = immediatelyPriorRecord;
+      immediatelyPriorRecord = undefined;
       const clausePrefix =
         pendingClausePrefix !== undefined && (pendingClausePrefix.exception || segment.separatorBefore === "but")
           ? [...pendingClausePrefix.tokens, segment.separatorBefore]
@@ -1603,15 +1689,15 @@ function cleaningHistoryPredicateRecords(rendered) {
       if (subject.owner !== "none" && subject.owner !== "anaphor") currentSubject = subject;
       if (predicates.length === 0) {
         const exceptionContinuation =
-          continuationRecord !== undefined &&
-          cleaningHistoryExceptionIndex(continuationRecord.clauseTokens) >= 0 &&
+          priorRecord !== undefined &&
+          cleaningHistoryExceptionIndex(priorRecord.clauseTokens) >= 0 &&
           ["and", "or", "plus"].includes(segment.separatorBefore);
-        const cleaningContinuation =
-          continuationRecord?.kind === "undo" && segment.separatorBefore !== undefined && subject.owner !== "unrelated";
+        const cleaningContinuation = isCleaningHistoryBareUndoContinuation(priorRecord, segment.tokens);
         if (exceptionContinuation || cleaningContinuation) {
-          continuationRecord.clauseTokens.push(segment.separatorBefore, ...segment.tokens);
-        } else {
-          continuationRecord = undefined;
+          priorRecord.clauseTokens.push(
+            ...(segment.separatorBefore ? [segment.separatorBefore] : []),
+            ...segment.tokens
+          );
         }
         const exceptionPrefix = cleaningHistoryExceptionIndex(segment.tokens) >= 0;
         if (
@@ -1651,7 +1737,7 @@ function cleaningHistoryPredicateRecords(rendered) {
         };
         statementRecords.push(record);
         records.push(record);
-        continuationRecord = predicate.kind === "undo" ? record : undefined;
+        immediatelyPriorRecord = record;
       }
     }
     const lastSubject =
@@ -1701,15 +1787,15 @@ function cleaningHistoryRecordContradicts(record) {
   return restrictsImplementedCapability;
 }
 
-function containsContradictoryCleaningHistoryClaim(source) {
+function containsContradictoryCleaningHistoryClaim(source, testHooks = undefined) {
   const rendered = parseCleaningHistoryMarkdown(source, "cleaning-history claim prose")
     .filter((token) => token.type === "inline")
-    .map((token) => renderedInlineText(token, "cleaning-history claim prose", { excludeExampleCode: true }))
+    .map((token) => renderedInlineText(token, "cleaning-history claim prose", { excludeExampleCode: true, testHooks }))
     .join("\n");
   return cleaningHistoryPredicateRecords(rendered).some(cleaningHistoryRecordContradicts);
 }
 
-export function assertCleaningHistoryClaimsCurrent({ modelSource, productionAuthoritySource, documents }) {
+export function assertCleaningHistoryClaimsCurrent({ modelSource, productionAuthoritySource, documents, testHooks }) {
   const model = parseCleaningHistoryCapabilityModel(modelSource);
   const productionAuthority = parseCleaningHistoryProductionAuthority(productionAuthoritySource);
   assertCleaningHistoryModelMatchesProduction(model, productionAuthority);
@@ -1720,7 +1806,8 @@ export function assertCleaningHistoryClaimsCurrent({ modelSource, productionAuth
       surface.path,
       surface.heading,
       surface.marker,
-      claims[surface.claimKind]
+      claims[surface.claimKind],
+      testHooks
     );
   }
 }

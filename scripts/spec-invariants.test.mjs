@@ -1021,6 +1021,57 @@ test("cleaning-history predicates keep ownership, polarity, cardinality, and exc
   }
 });
 
+test("cleaning-history Undo continuations and subordinate connectors share exact clause ownership", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Undo targets the latest committed step, and the previous step.",
+    "Undo targets the latest committed step; previous step.",
+    "Undo targets the latest committed step. Previous step.",
+    "Undo targets the latest committed step, plus a prior step.",
+    "Undo targets the latest committed step, or an older step.",
+    "Undo targets the latest committed step, and another step.",
+    "Reports can be edited because committed steps cannot be edited.",
+    "Committed steps cannot be edited because reports can be edited.",
+    "Reports can be edited whenever committed steps cannot be edited.",
+    "Committed steps cannot be edited whenever reports can be edited.",
+    "Use this sample because `Committed steps cannot be edited`.",
+    "Use this sample whenever `Committed steps cannot be edited`."
+  ];
+  const truthful = [
+    "Undo targets only the latest committed step. The previous troubleshooting step explains clipboard recovery.",
+    "Undo targets only the latest committed step; the prior troubleshooting step remains documented.",
+    "Reports cannot be edited because committed steps can be edited.",
+    "Committed steps can be edited because reports cannot be edited.",
+    "Reports cannot be edited whenever committed steps can be edited.",
+    "Committed steps can be edited whenever reports cannot be edited.",
+    "Use `Committed steps cannot be edited` as a rejected-input example because committed steps can be edited."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history predicate work is explicitly bounded before clause analysis", () => {
   const model = cleaningHistoryModel();
   const atLimit = `Applied ${"edit ".repeat(512)}.`;
@@ -1046,6 +1097,32 @@ test("cleaning-history predicate work is explicitly bounded before clause analys
       /exceeds the 512-predicate-token work limit/u
     );
   }
+});
+
+test("cleaning-history inline fragment context has a deterministic operation bound", () => {
+  const model = cleaningHistoryModel();
+  const emphasisFragments = [`*${"a".repeat(24_074)}*`, ...Array.from({ length: 999 }, () => `*${"a".repeat(74)}*`)];
+  const reviewedAdversary = emphasisFragments.join(" ");
+  let fragmentContextOperations = 0;
+  assert.equal(Buffer.byteLength(reviewedAdversary), 100_999);
+
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents: cleaningHistoryDocumentsWithReadmeClaim(model, reviewedAdversary),
+      testHooks: {
+        recordInlineFragmentContextOperations(operations) {
+          fragmentContextOperations += operations;
+        }
+      }
+    })
+  );
+  assert.ok(fragmentContextOperations >= 1_999, `expected fragment work, observed ${fragmentContextOperations}`);
+  assert.ok(
+    fragmentContextOperations <= 4_096,
+    `inline fragment context exceeded its deterministic operation bound: ${fragmentContextOperations}`
+  );
 });
 
 test("a code example cannot hide a separate rendered inline contradiction", () => {
