@@ -11,13 +11,19 @@ import type {
 } from "../shared/protocol";
 import type { BridgeRequestOptions, SessionPresentation } from "./dataBridge";
 import { persistedSessionState } from "./sessionPersistence";
-import { SessionPersistenceStore, type SessionPersistenceCommitResult } from "./sessionPersistenceStore";
+import {
+  SessionPersistenceStore,
+  type SessionPersistenceCommitResult,
+  type SessionPersistenceStageResult,
+  type SessionPersistenceTransaction
+} from "./sessionPersistenceStore";
 import { gridState, reconcileViewingState, type RuntimeSessionState } from "./sessionRuntimeStateRestorer";
 import { requestViewId } from "./sessionRequestScheduler";
 
 export interface SessionResponseState extends RuntimeSessionState {
   publicRevision: number;
   openRequest: OpenSessionRequest;
+  recoveryRequired?: boolean;
   activeViewContextId?: string;
   latestRequestedViewContextId?: string;
   latestRequestedPageRequestId?: string;
@@ -28,11 +34,13 @@ export interface SessionResponseState extends RuntimeSessionState {
 }
 
 export interface SessionResponseCallbacks {
-  activate(registerRollback?: (rollback: () => void) => void): void;
+  activate(registerRollback?: (rollback: () => boolean | void) => void): void;
   publishInspection(): void;
 }
 
 export class SessionResponseCommitter {
+  private readonly stagedMutations = new WeakMap<SessionResponseState, SessionPersistenceTransaction>();
+
   constructor(private readonly persistence: SessionPersistenceStore) {}
 
   retainSession(session: SessionResponseState): void {
@@ -43,10 +51,26 @@ export class SessionResponseCommitter {
     void this.persistence.releaseOwner(sessionId);
   }
 
-  async persistSession(session: SessionResponseState): Promise<void> {
+  async persistSession(session: SessionResponseState): Promise<SessionPersistenceCommitResult> {
     this.retainSession(session);
     const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
-    await this.persistence.save(session.openRequest.source, state);
+    return this.persistence.save(session.openRequest.source, state);
+  }
+
+  async stageMutation(session: SessionResponseState): Promise<SessionPersistenceStageResult> {
+    if (this.stagedMutations.has(session)) throw new Error("A session persistence mutation is already staged.");
+    this.retainSession(session);
+    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
+    const result = await this.persistence.stageCurrent(session.openRequest.source, state);
+    if (result.kind === "staged") this.stagedMutations.set(session, result.transaction);
+    return result;
+  }
+
+  async restoreStagedMutation(session: SessionResponseState): Promise<SessionPersistenceCommitResult | undefined> {
+    const transaction = this.stagedMutations.get(session);
+    if (!transaction) return undefined;
+    this.stagedMutations.delete(session);
+    return this.persistence.restoreStagedCurrent(transaction);
   }
 
   async commitRuntimeReplacement(
@@ -289,63 +313,82 @@ export class SessionResponseCommitter {
         session.draftBaseViewChangeEpoch = nextDraftBaseViewChangeEpoch;
       }
     };
-    if (pageRequest && stateChanged) {
+    if (stateChanged) {
       const state = persistedSessionState(response.metadata, gridState(nextViewState), session.draftBaseFilterModel);
-      const previous = {
-        activeViewContextId: session.activeViewContextId,
-        publicRevision: session.publicRevision,
-        runtimeRevision: session.runtimeRevision,
-        metadata: session.metadata,
-        viewState: session.viewState,
-        viewChangeEpoch: session.viewChangeEpoch
-      };
-      const persistenceResult = await this.persistence.commitCurrent(
-        session.openRequest.source,
-        state,
-        () => isCurrentPageRequest(session, pageRequest, options),
-        () => {
-          let rollbackActivation: (() => void) | undefined;
-          try {
-            commitState();
-            callbacks.activate((rollback) => {
-              rollbackActivation = rollback;
-            });
-          } catch (error) {
-            session.activeViewContextId = previous.activeViewContextId;
-            session.publicRevision = previous.publicRevision;
-            session.runtimeRevision = previous.runtimeRevision;
-            session.metadata = previous.metadata;
-            session.viewState = previous.viewState;
-            session.viewChangeEpoch = previous.viewChangeEpoch;
-            if (rollbackActivation) {
-              try {
-                rollbackActivation();
-              } catch (rollbackError) {
-                throw new AggregateError(
-                  [error, rollbackError],
-                  "Current-page publication and its coordinator rollback both failed."
-                );
-              }
+      const previous = sessionPublication(session);
+      let published: SessionPublication | undefined;
+      const commitPublication = (): (() => boolean) => {
+        let rollbackActivation: (() => boolean | void) | undefined;
+        try {
+          commitState();
+          callbacks.activate((rollback) => {
+            rollbackActivation = rollback;
+          });
+          published = sessionPublication(session);
+        } catch (error) {
+          restoreSessionPublication(session, previous);
+          if (rollbackActivation) {
+            try {
+              rollbackActivation();
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [error, rollbackError],
+                "Grid publication and its coordinator rollback both failed."
+              );
             }
-            throw error;
           }
+          throw error;
         }
-      );
+        return () => {
+          if (!published || !sameSessionPublication(session, published)) return false;
+          restoreSessionPublication(session, previous);
+          if (rollbackActivation) return rollbackActivation() !== false;
+          return true;
+        };
+      };
+      const isCurrent = pageRequest
+        ? () => isCurrentPageRequest(session, pageRequest, options)
+        : () =>
+            published ? sameSessionPublication(session, published) : publicRequest.revision === session.publicRevision;
+      const staged = planChanged ? this.stagedMutations.get(session) : undefined;
+      let persistenceResult: SessionPersistenceCommitResult;
+      try {
+        if (staged) {
+          try {
+            persistenceResult = await this.persistence.commitStagedCurrent(staged, state, isCurrent, commitPublication);
+          } finally {
+            this.stagedMutations.delete(session);
+          }
+        } else {
+          persistenceResult = await this.persistence.commitCurrent(
+            session.openRequest.source,
+            state,
+            isCurrent,
+            commitPublication
+          );
+        }
+      } catch (error) {
+        if (planChanged) session.recoveryRequired = true;
+        throw error;
+      }
       if (persistenceResult.kind === "unavailable") {
-        return persistenceUnavailableError(session.publicId, pageRequest.viewRequestId, persistenceResult.liveState);
+        if (planChanged && persistenceResult.liveState === "unchanged") session.recoveryRequired = true;
+        return persistenceUnavailableError(session.publicId, pageRequest?.viewRequestId, persistenceResult.liveState);
       }
       if (persistenceResult.kind === "stale") {
+        if (planChanged) session.recoveryRequired = true;
         return protocolError(
           "stale_response",
-          "Ignored a page superseded while its viewing state was being saved.",
+          pageRequest
+            ? "Ignored a page superseded while its viewing state was being saved."
+            : "Ignored a mutation superseded while its session state was being saved.",
           true,
           session.publicId,
-          pageRequest.viewRequestId
+          pageRequest?.viewRequestId
         );
       }
     } else {
       commitState();
-      if (stateChanged) await this.persistSession(session);
       if (stateChanged || viewContextChanged) callbacks.activate();
     }
     return {
@@ -445,4 +488,72 @@ function normalizeFilterModel(model: FilterModel): unknown {
 function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
   const { stats: _stats, ...withoutStats } = metadata;
   return withoutStats;
+}
+
+interface SessionPublication {
+  readonly publicRevision: number;
+  readonly runtimeRevision: number;
+  readonly activeViewContextId: string | undefined;
+  readonly latestRequestedViewContextId: string | undefined;
+  readonly latestRequestedPageRequestId: string | undefined;
+  readonly metadata: SessionResponseState["metadata"];
+  readonly viewState: SessionResponseState["viewState"];
+  readonly viewChangeEpoch: number | undefined;
+  readonly code: string;
+  readonly draftPresentation: SessionResponseState["draftPresentation"];
+  readonly draftBaseFilterModel: SessionResponseState["draftBaseFilterModel"];
+  readonly draftBaseViewChangeEpoch: number | undefined;
+  readonly recoveryRequired: boolean | undefined;
+}
+
+function sessionPublication(session: SessionResponseState): SessionPublication {
+  return {
+    publicRevision: session.publicRevision,
+    runtimeRevision: session.runtimeRevision,
+    activeViewContextId: session.activeViewContextId,
+    latestRequestedViewContextId: session.latestRequestedViewContextId,
+    latestRequestedPageRequestId: session.latestRequestedPageRequestId,
+    metadata: session.metadata,
+    viewState: session.viewState,
+    viewChangeEpoch: session.viewChangeEpoch,
+    code: session.code,
+    draftPresentation: session.draftPresentation,
+    draftBaseFilterModel: session.draftBaseFilterModel,
+    draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
+    recoveryRequired: session.recoveryRequired
+  };
+}
+
+function sameSessionPublication(session: SessionResponseState, publication: SessionPublication): boolean {
+  return (
+    session.publicRevision === publication.publicRevision &&
+    session.runtimeRevision === publication.runtimeRevision &&
+    session.activeViewContextId === publication.activeViewContextId &&
+    session.latestRequestedViewContextId === publication.latestRequestedViewContextId &&
+    session.latestRequestedPageRequestId === publication.latestRequestedPageRequestId &&
+    session.metadata === publication.metadata &&
+    session.viewState === publication.viewState &&
+    session.viewChangeEpoch === publication.viewChangeEpoch &&
+    session.code === publication.code &&
+    session.draftPresentation === publication.draftPresentation &&
+    session.draftBaseFilterModel === publication.draftBaseFilterModel &&
+    session.draftBaseViewChangeEpoch === publication.draftBaseViewChangeEpoch &&
+    session.recoveryRequired === publication.recoveryRequired
+  );
+}
+
+function restoreSessionPublication(session: SessionResponseState, publication: SessionPublication): void {
+  session.publicRevision = publication.publicRevision;
+  session.runtimeRevision = publication.runtimeRevision;
+  session.activeViewContextId = publication.activeViewContextId;
+  session.latestRequestedViewContextId = publication.latestRequestedViewContextId;
+  session.latestRequestedPageRequestId = publication.latestRequestedPageRequestId;
+  session.metadata = publication.metadata;
+  session.viewState = publication.viewState;
+  session.viewChangeEpoch = publication.viewChangeEpoch;
+  session.code = publication.code;
+  session.draftPresentation = publication.draftPresentation;
+  session.draftBaseFilterModel = publication.draftBaseFilterModel;
+  session.draftBaseViewChangeEpoch = publication.draftBaseViewChangeEpoch;
+  session.recoveryRequired = publication.recoveryRequired;
 }

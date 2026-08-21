@@ -293,7 +293,7 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     releaseFinalWrite.resolve();
     await expect(rewrite).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable" });
     await expect(close).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
-    expect(harness.closedRuntimeIds()).toEqual([candidateId, "runtime-old"]);
+    expect(harness.closedRuntimeIds()).toEqual(["runtime-old", candidateId]);
     expect(coordinator.activeSession()).toBeUndefined();
   });
 
