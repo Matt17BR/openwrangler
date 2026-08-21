@@ -819,7 +819,14 @@ def test_generation_markers_are_exact_ordered_standalone_lines() -> None:
         assert len(str(raised.value)) < 64
 
 
-def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+def _temporary_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    require_write_support: bool = True,
+) -> tuple[Path, Path]:
+    if require_write_support and sys.platform == "darwin":
+        pytest.skip("consumer publication is explicitly unsupported on Darwin")
     pyproject = tmp_path / "pyproject.toml"
     host = tmp_path / "pythonEnvironmentModel.ts"
     workflow = tmp_path / "cross-platform.yml"
@@ -1018,6 +1025,7 @@ def test_locked_authority_descriptor_prevents_aba_publication(tmp_path: Path, mo
     assert authority_path.read_bytes() == authority_bytes
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="consumer publication is unsupported on Darwin")
 def test_concurrent_generator_writer_fails_closed_with_a_stable_code() -> None:
     with authority._authority_write_lock():
         result = subprocess.run(
@@ -2023,6 +2031,7 @@ def test_rollback_exchange_preserves_a_foreign_post_check_replacement(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative namespace behavior")
+@pytest.mark.skipif(sys.platform == "darwin", reason="consumer publication is unsupported on Darwin")
 def test_consumer_parent_replacement_preserves_the_foreign_namespace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2121,3 +2130,152 @@ def test_consumer_reads_reject_links_invalid_utf8_and_oversized_input(tmp_path: 
         authority._consumer_snapshot(invalid)
     with pytest.raises(authority.AuthorityError, match="^consumer_too_large$"):
         authority._consumer_snapshot(oversized)
+
+
+def test_darwin_write_rejects_before_lock_or_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pyproject, host = _temporary_consumers(
+        tmp_path,
+        monkeypatch,
+        require_write_support=False,
+    )
+    originals = {path: path.read_bytes() for path in (pyproject, host)}
+    assert authority.synchronize(write=False) == (pyproject, host)
+
+    def unexpected_write_boundary(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("Darwin write entered the authority lock or staging boundary")
+
+    monkeypatch.setattr(authority.sys, "platform", "darwin")
+    monkeypatch.setattr(authority, "_authority_write_lock", unexpected_write_boundary)
+    monkeypatch.setattr(authority, "_stage_sibling", unexpected_write_boundary)
+
+    with pytest.raises(
+        authority.AuthorityError,
+        match="^consumer_write_unsupported$",
+    ):
+        authority.synchronize(write=True)
+
+    assert {path: path.read_bytes() for path in (pyproject, host)} == originals
+    assert not list(tmp_path.glob(".*.openwrangler-*"))
+
+
+def test_final_claim_revalidates_a_post_verification_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owned = tmp_path / "owned"
+    owned.write_bytes(b"owned bytes")
+    owned_metadata = owned.stat()
+    claim = authority._claim_consumer_for_unlink(
+        owned,
+        None,
+        (owned_metadata.st_dev, owned_metadata.st_ino),
+    )
+    assert claim is not None
+
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"foreign replacement bytes")
+    foreign_metadata = foreign.stat()
+    foreign_identity = (foreign_metadata.st_dev, foreign_metadata.st_ino)
+    real_unlink = authority._unlink_consumer_leaf
+    replaced = False
+
+    def replace_after_claim_verification(
+        path: Path,
+        parent_receipt: authority.ConsumerParentReceipt | None,
+        expected_identity: tuple[int, int] | None = None,
+        expected_link_count: int = 1,
+    ) -> bool:
+        nonlocal replaced
+        if not replaced:
+            os.replace(foreign, path)
+            replaced = True
+        return real_unlink(path, parent_receipt, expected_identity, expected_link_count)
+
+    monkeypatch.setattr(
+        authority,
+        "_unlink_consumer_leaf",
+        replace_after_claim_verification,
+    )
+
+    assert not authority._discard_consumer_claim(claim)
+    assert replaced
+    assert claim.quarantine.read_bytes() == b"foreign replacement bytes"
+    current = claim.quarantine.stat()
+    assert (current.st_dev, current.st_ino) == foreign_identity
+
+
+def test_remove_owned_preserves_a_nested_cleanup_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    root = OSError("bounded-sentinel-cleanup-root")
+    sentinel = authority.AuthorityError("sentinel_cleanup_failure")
+    sentinel.__cause__ = root
+
+    def fail_owned_unlink(*_args: Any, **_kwargs: Any) -> bool:
+        raise sentinel
+
+    monkeypatch.setattr(authority, "_consumer_unlink", fail_owned_unlink)
+    with pytest.raises(
+        authority.AuthorityError,
+        match="^consumer_cleanup_failed$",
+    ) as captured:
+        authority._remove_staged(iter((staged,)))
+
+    assert len(captured.value.cleanup_failures) == 1
+    nested = captured.value.cleanup_failures[0]
+    assert str(nested) == "staged_cleanup_failed"
+    assert nested.__cause__ is sentinel
+    assert sentinel.__cause__ is root
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="consumer publication is unsupported on Darwin",
+)
+def test_post_verification_replacement_fails_transaction_and_survives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"foreign transaction replacement")
+    foreign_metadata = foreign.stat()
+    foreign_identity = (foreign_metadata.st_dev, foreign_metadata.st_ino)
+    real_unlink = authority._unlink_consumer_leaf
+    replaced_path: Path | None = None
+
+    def replace_recovery_after_claim_verification(
+        path: Path,
+        parent_receipt: authority.ConsumerParentReceipt | None,
+        expected_identity: tuple[int, int] | None = None,
+        expected_link_count: int = 1,
+    ) -> bool:
+        nonlocal replaced_path
+        if ".openwrangler-recovery-" in path.name and "-stage-" not in path.name and replaced_path is None:
+            os.replace(foreign, path)
+            replaced_path = path
+        return real_unlink(path, parent_receipt, expected_identity, expected_link_count)
+
+    monkeypatch.setattr(
+        authority,
+        "_unlink_consumer_leaf",
+        replace_recovery_after_claim_verification,
+    )
+    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+        authority._remove_staged(iter((staged,)))
+
+    assert replaced_path is not None
+    assert replaced_path.read_bytes() == b"foreign transaction replacement"
+    current = replaced_path.stat()
+    assert (current.st_dev, current.st_ino) == foreign_identity
+    retained_sources = list(tmp_path.glob(".*.openwrangler-source-*"))
+    assert any(path.read_bytes() == b"generated" for path in retained_sources)

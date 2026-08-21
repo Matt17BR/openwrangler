@@ -551,6 +551,7 @@ class ConsumerUnlinkClaim:
     original: Path
     quarantine: Path
     identity: tuple[int, int]
+    link_count: int = 1
     parent_receipt: ConsumerParentReceipt | None = field(
         default=None, compare=False, repr=False
     )
@@ -728,11 +729,22 @@ def _consumer_open(
 def _unlink_consumer_leaf(
     path: Path,
     parent_receipt: ConsumerParentReceipt | None,
-) -> None:
+    expected_identity: tuple[int, int] | None = None,
+    expected_link_count: int = 1,
+) -> bool:
+    if expected_identity is not None:
+        current = _consumer_lstat(path, parent_receipt)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != expected_link_count
+            or (current.st_dev, current.st_ino) != expected_identity
+        ):
+            return False
     if parent_receipt is not None and parent_receipt.descriptor >= 0:
         os.unlink(path.name, dir_fd=parent_receipt.descriptor)
     else:
         path.unlink()
+    return True
 
 
 def _claim_consumer_for_unlink(
@@ -767,7 +779,13 @@ def _claim_consumer_for_unlink(
             and current.st_nlink >= 1
             and (current.st_dev, current.st_ino) == expected_identity
         ):
-            return claim
+            return ConsumerUnlinkClaim(
+                original=path,
+                quarantine=quarantine,
+                identity=expected_identity,
+                link_count=current.st_nlink,
+                parent_receipt=parent_receipt,
+            )
         _restore_consumer_claim(claim)
         return None
     return None
@@ -783,12 +801,43 @@ def _restore_consumer_claim(claim: ConsumerUnlinkClaim) -> bool:
 
 
 def _discard_consumer_claim(claim: ConsumerUnlinkClaim) -> bool:
+    descriptor = -1
     try:
-        _unlink_consumer_leaf(claim.quarantine, claim.parent_receipt)
-    except OSError:
-        _restore_consumer_claim(claim)
-        return False
-    return True
+        descriptor = _open_cleanup_descriptor(
+            claim.quarantine,
+            claim.parent_receipt,
+            allowed_links=frozenset({claim.link_count}),
+        )
+        opened = os.fstat(descriptor)
+        current = _consumer_lstat(claim.quarantine, claim.parent_receipt)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != claim.link_count
+            or (opened.st_dev, opened.st_ino) != claim.identity
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != claim.link_count
+            or (current.st_dev, current.st_ino) != claim.identity
+        ):
+            return False
+        if not _unlink_consumer_leaf(
+            claim.quarantine,
+            claim.parent_receipt,
+            claim.identity,
+            claim.link_count,
+        ):
+            return False
+        after = os.fstat(descriptor)
+        return (
+            stat.S_ISREG(after.st_mode)
+            and (after.st_dev, after.st_ino) == claim.identity
+            and (os.name == "nt" or after.st_nlink == claim.link_count - 1)
+        )
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _consumer_unlink(
@@ -1499,14 +1548,11 @@ def _remove_owned(
     require_named_parent: bool = True,
 ) -> bool:
     for _attempt in range(8):
-        try:
-            before = _consumer_snapshot(
-                path,
-                parent_receipt,
-                require_named_parent=require_named_parent,
-            )
-        except AuthorityError:
-            return False
+        before = _consumer_snapshot(
+            path,
+            parent_receipt,
+            require_named_parent=require_named_parent,
+        )
         if not _exact_snapshot_matches(before, expected):
             return False
         claimed = path.with_name(
@@ -1652,8 +1698,10 @@ def _remove_owned(
                         _restore_consumer_claim(source_claim)
                         return False
                     return _discard_consumer_claim(source_claim)
-        except (AuthorityError, OSError):
-            return False
+        except AuthorityError:
+            raise
+        except OSError as error:
+            raise _cleanup_fault("consumer_cleanup_failed", error)
         finally:
             if recovery_descriptor >= 0:
                 try:
@@ -2561,6 +2609,8 @@ def _synchronize_unlocked(
 def synchronize(*, write: bool) -> tuple[Path, ...]:
     if not write:
         return _synchronize_unlocked(write=False)
+    if sys.platform == "darwin":
+        _fail("consumer_write_unsupported")
     with _authority_write_lock(validate_on_exit=False) as authority_receipt:
         return _synchronize_unlocked(write=True, authority_receipt=authority_receipt)
 
