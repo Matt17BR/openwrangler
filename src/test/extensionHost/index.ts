@@ -9541,6 +9541,77 @@ async function connectToEditorWorkbenchOnce(): Promise<Page> {
   return workbench;
 }
 
+async function editLiveCodePreviewAndInvoke<T>(
+  currentGeneratedCode: string,
+  replacementCode: string,
+  description: string,
+  action: () => Thenable<T>
+): Promise<T> {
+  assert.ok(currentGeneratedCode.length > 0, `${description} requires the current generated code.`);
+  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  const workbench = await connectToEditorWorkbench();
+  const selector = '[aria-label="Editable generated Python code preview"]';
+  const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+  const frames = workbench.frames();
+  assert.ok(frames.length > 0, `${description} requires the live editor workbench frames.`);
+  let content: Locator;
+  try {
+    content = await Promise.any(
+      frames.map(async (frame) => {
+        await frame.waitForFunction(
+          ({ currentCode, previewSelector }) => {
+            const previewDocument = (
+              globalThis as unknown as { readonly document: { querySelector(selector: string): unknown } }
+            ).document;
+            const target = previewDocument.querySelector(previewSelector) as
+              | {
+                  readonly isContentEditable: boolean;
+                  cmTile?: { view?: { readonly state: { readonly doc: { toString(): string } } } };
+                }
+              | undefined;
+            return target?.isContentEditable === true && target.cmTile?.view?.state.doc.toString() === currentCode;
+          },
+          { currentCode: currentGeneratedCode, previewSelector: selector },
+          { timeout: Math.max(1, deadline - Date.now()) }
+        );
+        return frame.locator(selector);
+      })
+    );
+  } catch (error) {
+    throw new Error(`${description} did not reach one exact editable module-ready Code Preview.`, { cause: error });
+  }
+  await content.evaluate(
+    (element, expected) => {
+      type CodePreviewContent = {
+        readonly isContentEditable: boolean;
+        cmTile?: {
+          view?: {
+            readonly state: { readonly doc: { readonly length: number; toString(): string } };
+            dispatch(transaction: { changes: { from: number; to: number; insert: string } }): void;
+          };
+        };
+      };
+      const codePreview = element as unknown as CodePreviewContent;
+      const view = codePreview.cmTile?.view;
+      if (!codePreview.isContentEditable || !view || typeof view.dispatch !== "function") {
+        throw new Error("The live Code Preview did not expose its editable module-ready CodeMirror view.");
+      }
+      const currentCode = view.state.doc.toString();
+      if (currentCode !== expected.currentGeneratedCode) {
+        throw new Error("The live Code Preview did not contain the exact current generated code.");
+      }
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: expected.replacementCode }
+      });
+      if (view.state.doc.toString() !== expected.replacementCode) {
+        throw new Error("The live Code Preview did not apply the exact acceptance document replacement.");
+      }
+    },
+    { currentGeneratedCode, replacementCode }
+  );
+  return withBoundedAcceptancePromise(action(), WORKBENCH_OPERATION_TIMEOUT_MS, description);
+}
+
 async function waitForVisibleEditorDialog(workbench: Page, text: string): Promise<{ page: Page; dialog: Locator }> {
   const deadline = Date.now() + 10_000;
   do {
@@ -15188,10 +15259,15 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(applied.kind, "planUpdated");
     if (applied.kind !== "planUpdated") throw new Error("Pandas notebook step did not apply.");
     const editedNotebookCode = "# edited notebook export\ndef clean_data(df):\n    return df\n";
-    testing.setCodeForExport(editedNotebookCode);
     const insertionIndex = notebook.cellCount;
     recordAcceptanceProgress("verify:notebook:pandas-basic:insert");
-    await vscode.commands.executeCommand("openWrangler.insertNotebookCode");
+    const insertionResult = await editLiveCodePreviewAndInvoke(
+      applied.code,
+      editedNotebookCode,
+      "the live edited Code Preview notebook insertion",
+      () => vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode")
+    );
+    assert.equal(insertionResult, true, "The live edited Code Preview notebook insertion must report success.");
     await waitFor(
       () => notebook.cellCount === insertionIndex + 1,
       10_000,
@@ -19945,16 +20021,23 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         active?.metadata.schema.map((column) => column.name),
         ["active", "total_sales"]
       );
-      assert.match(active?.code ?? "", /def clean_data/u, `${backend} must retain executable generated code.`);
+      assert.ok(active, `${backend} must retain an active operation-group session.`);
+      const currentGeneratedCode = active.code;
+      assert.ok(currentGeneratedCode, `${backend} must retain executable generated code.`);
+      assert.match(currentGeneratedCode, /def clean_data/u, `${backend} must retain executable generated code.`);
       if (backend === "duckdb") {
-        assert.match(active?.code ?? "", /\bimport duckdb\b/u);
-        assert.doesNotMatch(active?.code ?? "", DUCKDB_FOREIGN_ENGINE_CONVERSION);
+        assert.match(currentGeneratedCode, /\bimport duckdb\b/u);
+        assert.doesNotMatch(currentGeneratedCode, DUCKDB_FOREIGN_ENGINE_CONVERSION);
       }
 
       const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
       const priorClipboard = await vscode.env.clipboard.readText();
-      testing.setCodeForExport(editedCode);
-      const copiedCode = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
+      const copiedCode = await editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        editedCode,
+        `the live edited ${backend} Code Preview copy`,
+        () => vscode.commands.executeCommand<string>("openWrangler.copyCode")
+      );
       assert.equal(copiedCode, editedCode, `${backend} must copy the edited code buffer.`);
       if ((await vscode.env.clipboard.readText()) === editedCode) {
         await vscode.env.clipboard.writeText(priorClipboard);

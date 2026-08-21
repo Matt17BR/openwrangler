@@ -104,6 +104,7 @@ try {
     testModule,
     python: process.env.OPEN_WRANGLER_TEST_PYTHON,
     phase: "single",
+    requiresWorkbenchCdp: true,
     resultPath: resolve(profile, "single-result.json")
   });
 
