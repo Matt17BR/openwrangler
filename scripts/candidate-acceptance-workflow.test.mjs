@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { inspectCandidateAcceptanceWorkflow, inspectCandidateCaller } from "./candidate-acceptance-workflow.mjs";
+import { NATIVE_R_CANDIDATE_CACHE_VERSION, NATIVE_R_CANDIDATE_PACKAGE_SPECS } from "./r-dependency-lock.mjs";
 
 const source = readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8");
 
@@ -455,6 +456,35 @@ test("candidate acceptance omits the protected-PR native R contract owner", () =
   expectRejected((mutated) => {
     mutated.jobs.performance.steps.push({ run: "npm run test:r-contract" });
   }, /must not reintroduce.*source-only native R contract.*protected PR CI/u);
+});
+
+test("r_local consumes the categorized Native R package authority and versioned cache", () => {
+  const value = workflow();
+  const dependency = step(value.jobs.r_local, (entry) => entry.name === "Resolve local R packages");
+  assert.deepEqual(dependency.with["extra-packages"].split("\n"), NATIVE_R_CANDIDATE_PACKAGE_SPECS);
+  assert.equal(dependency.with["cache-version"], NATIVE_R_CANDIDATE_CACHE_VERSION);
+  assert.equal(NATIVE_R_CANDIDATE_PACKAGE_SPECS.filter((spec) => spec === "any::rlang").length, 1);
+  assert.equal(NATIVE_R_CANDIDATE_PACKAGE_SPECS.at(-1), "any::collapse");
+
+  expectRejected((mutated) => {
+    step(mutated.jobs.r_local, (entry) => entry.name === "Resolve local R packages").with["extra-packages"] =
+      NATIVE_R_CANDIDATE_PACKAGE_SPECS.filter((spec) => spec !== "any::rlang").join("\n");
+  }, /exact hosted R 4\.5\.2 package contract/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.r_local, (entry) => entry.name === "Resolve local R packages").with["extra-packages"] =
+      NATIVE_R_CANDIDATE_PACKAGE_SPECS.filter((spec) => spec !== "any::collapse").join("\n");
+  }, /exact hosted R 4\.5\.2 package contract/u);
+  expectRejected((mutated) => {
+    const packages = [...NATIVE_R_CANDIDATE_PACKAGE_SPECS];
+    packages.splice(packages.indexOf("any::rlang"), 1);
+    packages.push("any::rlang");
+    step(mutated.jobs.r_local, (entry) => entry.name === "Resolve local R packages").with["extra-packages"] =
+      packages.join("\n");
+  }, /exact hosted R 4\.5\.2 package contract/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.r_local, (entry) => entry.name === "Resolve local R packages").with["cache-version"] =
+      "native-r-contract-v1";
+  }, /exact hosted R 4\.5\.2 package contract/u);
 });
 
 test("r_local remains a direct artifact-backed sibling of the other candidate lanes", () => {
