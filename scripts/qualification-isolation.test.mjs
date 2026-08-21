@@ -161,8 +161,10 @@ async function fixture(context, name = "fixture") {
   git(repository, ["init", "--quiet", "--initial-branch=main"]);
   git(repository, ["config", "user.email", "qualification-test@openwrangler.invalid"]);
   git(repository, ["config", "user.name", "Open Wrangler Qualification Test"]);
+  await mkdir(join(repository, "nested"));
+  await writeFile(join(repository, "nested", "fixture.txt"), "nested source\n", "utf8");
   await writeFile(join(repository, "tracked.txt"), "source\n", "utf8");
-  git(repository, ["add", "tracked.txt"]);
+  git(repository, ["add", "nested/fixture.txt", "tracked.txt"]);
   git(repository, ["commit", "--quiet", "-m", "fixture"]);
   await mkdir(join(root, "assignments"));
   await mkdir(join(root, "states"));
@@ -560,6 +562,7 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   );
   assert.equal(nestedResult.topLevelHead, task.assignment.head);
   assert.equal(nestedResult.topLevelHeadFromPrivateRoot, task.assignment.head);
+  assert.equal(nestedResult.topLevelHeadFromRelativeChild, task.assignment.head);
   assert.equal(nestedResult.topLevelStatus, "");
   const nestedSuffix = relative(task.assignment.stateRoot, nestedResult.repository);
   assert.ok(nestedSuffix !== "" && !nestedSuffix.startsWith("..") && !isAbsolute(nestedSuffix));
@@ -852,9 +855,13 @@ test("pins repository Python and its package inventory independently for each ta
     completed[0].valueReceipt.pythonInventory.before.prefix,
     completed[1].valueReceipt.pythonInventory.before.prefix
   );
-  assert.notEqual(
+  assert.equal(
     completed[0].valueReceipt.pythonInventory.before.packageInventorySha256,
     completed[1].valueReceipt.pythonInventory.before.packageInventorySha256
+  );
+  assert.notEqual(
+    completed[0].valueReceipt.pythonInventory.before.payloadManifest.sha256,
+    completed[1].valueReceipt.pythonInventory.before.payloadManifest.sha256
   );
   assert.deepEqual(
     completed[0].valueReceipt.pythonInventory.before.packages.map(({ metadataSha256, name, version }) => ({
@@ -870,11 +877,9 @@ test("pins repository Python and its package inventory independently for each ta
   );
   for (const [index, { task, valueReceipt }] of completed.entries()) {
     const peerRoot = completed[index === 0 ? 1 : 0].task.assignment.stateRoot;
-    assert.ok(
-      valueReceipt.pythonInventory.before.packages.some((package_) =>
-        package_.metadataPath.startsWith(`${valueReceipt.environment.venv}${process.platform === "win32" ? "\\" : "/"}`)
-      )
-    );
+    assert.ok(valueReceipt.bootstrap.importBoundary.privateSite.startsWith(valueReceipt.environment.venv));
+    assert.ok(valueReceipt.bootstrap.importBoundary.externalRoots.length > 0);
+    assert.match(valueReceipt.bootstrap.importBoundary.preloadManifest.sha256, /^[0-9a-f]{64}$/u);
     assert.equal(
       valueReceipt.pythonInventory.before.packages.some((package_) => package_.metadataPath.startsWith(peerRoot)),
       false
@@ -885,7 +890,16 @@ test("pins repository Python and its package inventory independently for each ta
 
 test("rejects every newly exposed Python package payload class", async (context) => {
   const value = await fixture(context, "python-inventory-mutation");
-  for (const kind of ["source", "native", "path", "entry-point", "record"]) {
+  for (const kind of [
+    "source",
+    "case-source",
+    "native",
+    "platform-native",
+    "symlink",
+    "path",
+    "entry-point",
+    "record"
+  ]) {
     const task = await addTask(value, `python-inventory-${kind}`);
     await assert.rejects(
       runQualification({
@@ -896,7 +910,7 @@ test("rejects every newly exposed Python package payload class", async (context)
         timeoutMs: 120_000,
         writeOutput: false
       }),
-      /task Python payload selection changed during qualification/u
+      /(?:task Python payload selection changed during qualification|Python after prelaunch directory .* changed during qualification)/u
     );
     const valueReceipt = await receipt(task);
     assert.equal(valueReceipt.eligible, false);
@@ -917,11 +931,104 @@ test("rejects a restored mutation of an already pinned Python payload", async (c
       timeoutMs: 120_000,
       writeOutput: false
     }),
-    /Python payload .* changed during qualification/u
+    /Python (?:after prelaunch directory|payload) .* changed during qualification/u
   );
   const valueReceipt = await receipt(task);
   assert.equal(valueReceipt.eligible, false);
   assert.equal(valueReceipt.pythonInventory.after, null);
+});
+
+test("rejects an atomic Python payload swap even when the original pathname is restored", async (context) => {
+  const value = await fixture(context, "python-payload-atomic-swap");
+  const task = await addTask(value, "python-payload-atomic-swap");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "swap-python-payload"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python (?:after prelaunch directory|payload) .* changed during qualification/u
+  );
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("pins shared path configuration before startup without executing shared pth code", async (context) => {
+  const value = await fixture(context, "python-preinventory-pth");
+  const task = await addTask(value, "python-preinventory-pth");
+  const shared = join(value.root, "shared-python-packages");
+  const marker = join(value.root, "shared-pth-executed.txt");
+  const linkedTarget = join(shared, "linked-target.py");
+  const caseVariantSource = join(shared, "case-variant.PY");
+  const platformNative = join(shared, process.platform === "win32" ? "platform-native.DLL" : "platform-native.DYLIB");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(
+    join(shared, "hostile.pth"),
+    `import pathlib; pathlib.Path(${JSON.stringify(marker)}).write_text('executed\\n', encoding='utf-8')\n`,
+    { flag: "wx", mode: 0o600 }
+  );
+  await writeFile(linkedTarget, "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  const linkedModule = join(shared, "linked-module.py");
+  await symlink(linkedTarget, linkedModule, "file");
+  await writeFile(caseVariantSource, "VALUE = 2\n", { flag: "wx", mode: 0o600 });
+  await writeFile(platformNative, "native-placeholder\n", { flag: "wx", mode: 0o600 });
+  let preloadedPayloads;
+  const valueReceipt = await runQualification({
+    additionalPythonPackageRootsForTest: [shared],
+    afterPythonPreinventoryForTest: async ({ payloads }) => {
+      preloadedPayloads = payloads;
+    },
+    assignmentPath: task.assignmentPath,
+    command: [process.execPath, child, "record"],
+    environment: runnerEnvironment(),
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.equal(existsSync(marker), false);
+  assert.ok(valueReceipt.pythonInventory.before.sysPath.includes(shared));
+  assert.ok(valueReceipt.pythonInventory.before.payloadManifest.kinds["path-configuration"] > 0);
+  assert.deepEqual(
+    preloadedPayloads
+      .filter(({ path }) => path.startsWith(`${shared}${process.platform === "win32" ? "\\" : "/"}`))
+      .map(({ kind, path, target }) => ({ kind, path, target })),
+    [
+      { kind: "python-source", path: caseVariantSource, target: caseVariantSource },
+      { kind: "path-configuration", path: join(shared, "hostile.pth"), target: join(shared, "hostile.pth") },
+      { kind: "python-source", path: linkedModule, target: linkedTarget },
+      { kind: "python-source", path: linkedTarget, target: linkedTarget },
+      { kind: "native-extension", path: platformNative, target: platformNative }
+    ].sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)))
+  );
+});
+
+test("rejects a pth insertion after preinventory before any startup code can run", async (context) => {
+  const value = await fixture(context, "python-preinventory-pth-swap");
+  const task = await addTask(value, "python-preinventory-pth-swap");
+  const marker = join(value.root, "late-pth-executed.txt");
+  await assert.rejects(
+    runQualification({
+      afterPythonPreinventoryForTest: async ({ privateSite }) => {
+        await writeFile(
+          join(privateSite, "late-hostile.pth"),
+          `import pathlib; pathlib.Path(${JSON.stringify(marker)}).write_text('executed\\n', encoding='utf-8')\n`,
+          { flag: "wx", mode: 0o600 }
+        );
+      },
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python prelaunch directory .* changed during qualification/u
+  );
+  assert.equal(existsSync(marker), false);
+  assert.equal((await receipt(task)).eligible, false);
 });
 
 test("fails hard before protected paths reopen when Python inventory loses tree ownership", async (context) => {
@@ -1243,15 +1350,19 @@ test("rejects every config, output, helper, index, object, and ref escape agains
   for (const kind of [
     "config",
     "configEnv",
+    "configEnvAbbreviated",
     "configParameter",
     "diffOutput",
+    "diffOutputAbbreviated",
     "externalDiff",
+    "externalDiffAbbreviated",
     "index",
     "object",
     "ref",
     "showOutput",
     "showShortOutput",
-    "textconv"
+    "textconv",
+    "textconvAbbreviated"
   ]) {
     const task = await addTask(value, `git-authoritative-${kind}`);
     const resultPath = join(task.assignment.stateRoot, "temp", `${kind}.txt`);
@@ -1439,6 +1550,7 @@ test("rejects source replacement before POSIX or Windows snapshot launch", async
     );
     assert.equal(launchedSnapshot.sourcePath, executable);
     assert.equal(launchedSnapshot.strategy, valueReceipt.result.executable.strategy);
+    if (platform === "linux") assert.equal(launchedSnapshot.executedPath, "/proc/self/fd/4");
     assert.ok(
       relative(task.assignment.stateRoot, valueReceipt.result.executable.snapshot.path) !== "" &&
         !relative(task.assignment.stateRoot, valueReceipt.result.executable.snapshot.path).startsWith("..")
@@ -1657,19 +1769,22 @@ test("binds the pinned Windows Job Object supervisor through venv creation and v
     writeOutput: false
   });
   assert.equal(valueReceipt.eligible, true);
-  assert.equal(bootstrapRecords.length, 4);
+  assert.equal(bootstrapRecords.length, 5);
   assert.ok(bootstrapRecords[0].arguments_.includes("venv"));
+  assert.ok(bootstrapRecords[1].arguments_.some((argument) => argument.includes("sys.platlibdir")));
+  assert.ok(bootstrapRecords[1].arguments_.includes("-S"));
   assert.ok(
-    bootstrapRecords[1].arguments_.includes(
+    bootstrapRecords[2].arguments_.includes(
       "import os,sys; expected=os.path.realpath(sys.argv[1]); raise SystemExit(0 if os.path.realpath(sys.prefix)==expected and os.path.realpath(sys.base_prefix)!=expected else 1)"
     )
   );
-  for (const record of bootstrapRecords.slice(2)) {
+  for (const record of bootstrapRecords.slice(3)) {
     assert.ok(record.arguments_.some((argument) => argument.includes("import importlib.metadata as metadata")));
+    assert.equal(record.arguments_.includes("-S"), false);
   }
   for (const record of bootstrapRecords) {
     assert.equal(record.jobScript.sha256, expectedScriptDigest);
-    assert.ok(record.supervisorScriptExecutedPath.startsWith(valueReceipt.environment.executableSnapshots));
+    assert.ok(record.supervisorScriptExecutedPath.startsWith(valueReceipt.environment.pythonExecutableSnapshots));
   }
   assert.equal(valueReceipt.bootstrap.result.executable.supervisor.jobScript.sha256, expectedScriptDigest);
   assert.equal(valueReceipt.bootstrap.verification.executable.supervisor.jobScript.sha256, expectedScriptDigest);
@@ -2239,6 +2354,17 @@ test("does not publish an eligible receipt when any owned cleanup fails", async 
   );
   const receiptBytes = await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"));
   assert.equal(receiptBytes.length, 0);
+});
+
+test("defines portable POSIX control and outer settlement bounds explicitly", () => {
+  assert.deepEqual(QUALIFICATION_ISOLATION_TEST_BOUNDARY.posixSettlementBounds(1_000, 100), {
+    control: 500,
+    outer: 6_500
+  });
+  assert.throws(
+    () => QUALIFICATION_ISOLATION_TEST_BOUNDARY.posixSettlementBounds(1_000, 0),
+    /process termination grace must be one positive safe integer/u
+  );
 });
 
 test(

@@ -221,6 +221,12 @@ if (mode === "hold") {
     env: process.env,
     windowsHide: true
   }).trim();
+  const topLevelHeadFromRelativeChild = execFileSync("git", ["-C", "nested", "rev-parse", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: process.env,
+    windowsHide: true
+  }).trim();
   const nestedHeadFromWorktree = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -248,6 +254,7 @@ if (mode === "hold") {
       repository,
       topLevelHead,
       topLevelHeadFromPrivateRoot,
+      topLevelHeadFromRelativeChild,
       topLevelStatus
     })}\n`,
     { flag: "wx", mode: 0o600 }
@@ -428,25 +435,58 @@ if (mode === "hold") {
       join(purelib, process.platform === "win32" ? "qualification_escape.pyd" : "qualification_escape.so"),
       "native-placeholder\n"
     ],
+    "case-source": [join(purelib, "qualification_escape.PY"), "def main():\n    return None\n"],
+    "platform-native": [
+      join(purelib, process.platform === "win32" ? "qualification_escape.DLL" : "qualification_escape.DYLIB"),
+      "native-placeholder\n"
+    ],
     path: [join(purelib, "qualification_escape.pth"), "qualification_escape\n"],
     record: [join(purelib, "qualification_escape-1.0.dist-info", "RECORD"), "qualification_escape.py,,\n"],
-    source: [join(purelib, "qualification_escape.py"), "def main():\n    return None\n"]
+    source: [join(purelib, "qualification_escape.py"), "def main():\n    return None\n"],
+    symlink: [join(purelib, "qualification_escape_link.py"), null]
   };
   assert.ok(Object.hasOwn(mutations, kind), `unknown Python payload mutation ${kind}`);
   const [path, bytes] = mutations[kind];
   await mkdir(dirname(path), { mode: 0o700, recursive: true });
-  await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+  if (kind === "symlink") {
+    const target = join(process.env.RUNNER_TEMP, "qualification_escape_target.py");
+    await writeFile(target, "def main():\n    return None\n", { flag: "wx", mode: 0o600 });
+    await symlink(target, path, "file");
+  } else {
+    await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+  }
 } else if (mode === "replace-python-payload") {
   const target = execFileSync(
     process.env.OPEN_WRANGLER_PYTHON,
-    ["-I", "-c", "import pathlib,pip; print(pathlib.Path(pip.__file__).resolve())"],
+    [
+      "-I",
+      "-c",
+      "import pathlib,sysconfig; print((pathlib.Path(sysconfig.get_path('purelib')) / 'openwrangler-pinned-packages.pth').resolve())"
+    ],
     { encoding: "utf8", env: process.env, windowsHide: true }
   ).trim();
-  const targetSuffix = relative(process.env.VIRTUAL_ENV, target);
-  assert.ok(targetSuffix !== "" && !targetSuffix.startsWith("..") && !isAbsolute(targetSuffix));
   const original = await readFile(target);
   await writeFile(target, Buffer.concat([original, Buffer.from("# temporary mutation\n", "utf8")]));
   await writeFile(target, original);
+} else if (mode === "swap-python-payload") {
+  const target = execFileSync(
+    process.env.OPEN_WRANGLER_PYTHON,
+    [
+      "-I",
+      "-c",
+      "import pathlib,sysconfig; print((pathlib.Path(sysconfig.get_path('purelib')) / 'openwrangler-pinned-packages.pth').resolve())"
+    ],
+    { encoding: "utf8", env: process.env, windowsHide: true }
+  ).trim();
+  const retained = `${target}.qualification-retained`;
+  const original = await readFile(target);
+  await rename(target, retained);
+  await writeFile(target, Buffer.concat([original, Buffer.from("# transient replacement\n", "utf8")]), {
+    flag: "wx",
+    mode: 0o600
+  });
+  await rm(target);
+  await rename(retained, target);
 } else if (mode === "mutate-git-config") {
   execFileSync("git", ["config", "user.name", "Mutated qualification fixture"], {
     cwd: process.cwd(),
@@ -459,15 +499,19 @@ if (mode === "hold") {
   const commands = {
     config: ["config", "user.name", "Mutated qualification fixture"],
     configEnv: ["--config-env=user.name=QUALIFICATION_ATTACK_VALUE", "rev-parse", "HEAD"],
+    configEnvAbbreviated: ["--config-en=user.name=QUALIFICATION_ATTACK_VALUE", "rev-parse", "HEAD"],
     configParameter: ["-c", "user.name=Mutated qualification fixture", "rev-parse", "HEAD"],
     diffOutput: ["diff", "--output", result, "HEAD", "HEAD"],
+    diffOutputAbbreviated: ["diff", "--out", result, "HEAD", "HEAD"],
     externalDiff: ["diff", "--ext-diff", "HEAD", "HEAD"],
+    externalDiffAbbreviated: ["diff", "--ext-di", "HEAD", "HEAD"],
     index: ["update-index", "--chmod=+x", "tracked.txt"],
     object: ["hash-object", "-w", "tracked.txt"],
     ref: ["update-ref", "refs/heads/qualification-attack", "HEAD"],
     showOutput: ["show", `--output=${result}`, "--format=%H", "HEAD"],
     showShortOutput: ["show", `-o${result}`, "--format=%H", "HEAD"],
-    textconv: ["show", "--textconv", "HEAD:tracked.txt"]
+    textconv: ["show", "--textconv", "HEAD:tracked.txt"],
+    textconvAbbreviated: ["show", "--textc", "HEAD:tracked.txt"]
   };
   assert.ok(Object.hasOwn(commands, kind), `unknown authoritative Git mutation ${kind}`);
   try {

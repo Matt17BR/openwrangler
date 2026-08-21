@@ -28,6 +28,7 @@ const MAX_PYTHON_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_FILES = 100_000;
 const MAX_PYTHON_PAYLOAD_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_PATH_BYTES = 16 * 1024 * 1024;
+const MAX_PYTHON_PAYLOAD_DIRECTORIES = MAX_PYTHON_PAYLOAD_FILES * 8;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
@@ -35,6 +36,10 @@ const MAX_PYTEST_TEMP_ENTRIES = 100_000;
 const MAX_PYTEST_TEMP_PATH_BYTES = 16 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TERMINATION_GRACE_MS = 10_000;
+const POSIX_CONTROL_SETTLEMENT_PASSES = 5;
+const POSIX_OUTER_SETTLEMENT_OVERHEAD_MS = 5_000;
+const POSIX_SUPERVISOR_DESCRIPTOR_PATH = "/proc/self/fd/3";
+const POSIX_TARGET_DESCRIPTOR_PATH = "/proc/self/fd/4";
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
 const WINDOWS_JOB_LOAD_CONTROL_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_LOAD:";
 const WINDOWS_JOB_LOADED_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_LOADED:";
@@ -245,7 +250,7 @@ def main():
     argv0 = sys.argv[2]
     timeout = int(sys.argv[3]) / 1000.0
     grace = int(sys.argv[4]) / 1000.0
-    target_path = "/dev/fd/%d" % TARGET_FD
+    target_path = "/proc/self/fd/%d" % TARGET_FD
     target = None
     parent_terminated = False
     signal.signal(signal.SIGTERM, request_parent_termination)
@@ -1069,6 +1074,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     pytestTempParent: join(assignment.stateRoot, "python", "pytest-temp"),
     pythonBytecode: join(assignment.stateRoot, "python", "bytecode"),
     pythonExecutable,
+    pythonExecutableSnapshots: join(assignment.stateRoot, "python", "venv", "executable-snapshots"),
     pythonToolExecutable: pythonExecutable,
     pythonUserBase: join(assignment.stateRoot, "python", "user-base"),
     rCache: join(assignment.stateRoot, "r", "cache"),
@@ -1612,22 +1618,25 @@ function commandAfterGlobalOptions(arguments_) {
 }
 function rejectUnsafeReadOption(argument) {
   const name = argument.includes("=") ? argument.slice(0, argument.indexOf("=")) : argument;
+  const unsafeLongOptions = [
+    "--alternate-refs",
+    "--config-env",
+    "--exec-path",
+    "--ext-diff",
+    "--filter",
+    "--filters",
+    "--index-info",
+    "--no-index",
+    "--output",
+    "--receive-pack",
+    "--show-signature",
+    "--textconv",
+    "--upload-pack"
+  ];
   return (
     name === "-o" ||
     (name.startsWith("-o") && !name.startsWith("--")) ||
-    name === "--output" ||
-    name === "--config-env" ||
-    name === "--ext-diff" ||
-    name === "--textconv" ||
-    name === "--filters" ||
-    name === "--filter" ||
-    name === "--exec-path" ||
-    name === "--upload-pack" ||
-    name === "--receive-pack" ||
-    name === "--show-signature" ||
-    name === "--no-index" ||
-    name === "--index-info" ||
-    name === "--alternate-refs" ||
+    unsafeLongOptions.some((unsafe) => unsafe.startsWith(name) || name.startsWith(unsafe)) ||
     name.startsWith("--write") ||
     name.startsWith("--update") ||
     name.includes("helper")
@@ -1798,15 +1807,11 @@ function requirePrivateTaskCommand(arguments_, effectiveCwd) {
   throw new Error("qualification Git command is not allowed inside the private task root");
 }
 function hardenedAssignedArguments(arguments_) {
-  const { command } = commandAfterGlobalOptions(arguments_);
-  const commandIndex = arguments_.findIndex((argument, index) => {
-    if (index > 0 && arguments_[index - 1] === "-C") return false;
-    return argument === command;
-  });
-  if (commandIndex < 0) throw new Error("qualification Git command is missing");
-  const hardened = [...arguments_];
+  const { command, rest } = commandAfterGlobalOptions(arguments_);
+  if (!command) throw new Error("qualification Git command is missing");
+  const hardened = [command, ...rest];
   if (["diff", "diff-index", "diff-tree", "log", "show"].includes(command)) {
-    hardened.splice(commandIndex + 1, 0, "--no-ext-diff", "--no-textconv");
+    hardened.splice(1, 0, "--no-ext-diff", "--no-textconv");
   }
   return [
     ...binding.safeConfigArguments,
@@ -2100,6 +2105,9 @@ function delay(milliseconds) {
 const SETTLEMENT_UNCERTAIN = Symbol("settlement-uncertain");
 
 async function boundedWait(promise, milliseconds) {
+  if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0) {
+    fail("process settlement bound must be one positive safe integer");
+  }
   let timer;
   try {
     return await Promise.race([
@@ -2111,6 +2119,24 @@ async function boundedWait(promise, milliseconds) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function repeatedSettlementBound(graceMilliseconds, passes = POSIX_CONTROL_SETTLEMENT_PASSES) {
+  if (!Number.isSafeInteger(graceMilliseconds) || graceMilliseconds <= 0) {
+    fail("process termination grace must be one positive safe integer");
+  }
+  if (!Number.isSafeInteger(passes) || passes <= 0) {
+    fail("process settlement pass count must be one positive safe integer");
+  }
+  const value = graceMilliseconds * passes;
+  if (!Number.isSafeInteger(value)) fail("process settlement bound exceeds the safe integer range");
+  return value;
+}
+
+function posixOuterSettlementBound(timeoutMilliseconds, graceMilliseconds) {
+  const value = timeoutMilliseconds + repeatedSettlementBound(graceMilliseconds) + POSIX_OUTER_SETTLEMENT_OVERHEAD_MS;
+  if (!Number.isSafeInteger(value)) fail("POSIX outer settlement bound exceeds the safe integer range");
+  return value;
 }
 
 function appendCleanupErrors(target, error) {
@@ -2292,7 +2318,7 @@ async function hashPinnedExecutable(executable) {
 async function createExecutableSnapshot(
   executable,
   snapshotRoot,
-  { afterWriteForTest, requireExecutable = true } = {}
+  { afterWriteForTest, requireExecutable = true, snapshotBesideOwnedExecutable = true } = {}
 ) {
   await verifyPinnedExecutable(executable);
   const source = executableLeaf(executable);
@@ -2301,7 +2327,8 @@ async function createExecutableSnapshot(
   }
   const extension = extname(source.path);
   const stateRoot = resolve(snapshotRoot, "../../..");
-  const destinationRoot = isInside(executable.path, stateRoot) ? dirname(executable.path) : snapshotRoot;
+  const destinationRoot =
+    snapshotBesideOwnedExecutable && isInside(executable.path, stateRoot) ? dirname(executable.path) : snapshotRoot;
   const snapshotPath = join(destinationRoot, `${randomUUID()}${extension}`);
   const writer = await open(
     snapshotPath,
@@ -2507,7 +2534,11 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       strategy: options.executionStrategy
     });
   } catch (error) {
-    const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(
+      child,
+      completion,
+      repeatedSettlementBound(options.terminationGraceMs)
+    );
     return {
       lingeringDescendants: false,
       signal: null,
@@ -2524,7 +2555,11 @@ async function runPosixOwnedCommand(command, arguments_, options) {
   }
   const controlStream = options.posixMissingControlPipeForTest ? null : child.stdio[5];
   if (!controlStream) {
-    const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(
+      child,
+      completion,
+      repeatedSettlementBound(options.terminationGraceMs)
+    );
     return {
       lingeringDescendants: false,
       signal: null,
@@ -2544,14 +2579,16 @@ async function runPosixOwnedCommand(command, arguments_, options) {
     new Promise((resolveTimeout) => {
       timer = setTimeout(
         () => resolveTimeout({ timedOut: true }),
-        options.posixOuterSettlementMsForTest ?? options.timeoutMs + 5 * options.terminationGraceMs + 5_000
+        options.posixOuterSettlementMsForTest ??
+          posixOuterSettlementBound(options.timeoutMs, options.terminationGraceMs)
       );
     })
   ]);
   clearTimeout(timer);
   if (outcome.timedOut === true) {
-    const settlement = await terminateAndAwaitProcess(child, completion, 5 * options.terminationGraceMs);
-    const boundedControl = await boundedWait(control, 5 * options.terminationGraceMs);
+    const settlementBound = repeatedSettlementBound(options.terminationGraceMs);
+    const settlement = await terminateAndAwaitProcess(child, completion, settlementBound);
+    const boundedControl = await boundedWait(control, settlementBound);
     const reported = boundedControl === SETTLEMENT_UNCERTAIN ? null : boundedControl;
     return {
       lingeringDescendants: reported?.lingeringDescendants === true,
@@ -2565,7 +2602,7 @@ async function runPosixOwnedCommand(command, arguments_, options) {
       treeEmpty: settlement !== null && reported?.treeEmpty === true
     };
   }
-  const boundedControl = await boundedWait(control, 5 * options.terminationGraceMs);
+  const boundedControl = await boundedWait(control, repeatedSettlementBound(options.terminationGraceMs));
   const reported = boundedControl === SETTLEMENT_UNCERTAIN ? null : boundedControl;
   if (outcome.error || outcome.status !== 0 || outcome.signal !== null || !reported) {
     return {
@@ -2973,7 +3010,8 @@ async function runOwnedCommand(command, arguments_, options) {
       options.executableAfterOpenForTest ? { afterOpenForTest: options.executableAfterOpenForTest } : undefined
     );
     launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot, {
-      afterWriteForTest: options.executableSnapshotAfterWriteForTest
+      afterWriteForTest: options.executableSnapshotAfterWriteForTest,
+      snapshotBesideOwnedExecutable: options.snapshotBesideOwnedExecutable
     });
     if (platform !== "win32") {
       supervisorExecutable = await openPinnedExecutable(options.posixSupervisorCommand);
@@ -3023,7 +3061,7 @@ async function runOwnedCommand(command, arguments_, options) {
   let primaryError;
   try {
     const executionStrategy = platform === "win32" ? "private-snapshot" : "inherited-descriptor";
-    const executedPath = platform === "win32" ? executableLeaf(launch.snapshot).path : "/dev/fd/4";
+    const executedPath = platform === "win32" ? executableLeaf(launch.snapshot).path : POSIX_TARGET_DESCRIPTOR_PATH;
     const runner = options.ownedRunnerForTest ?? (platform === "win32" ? runWindowsOwnedCommand : runPosixOwnedCommand);
     const result = await runner(executedPath, arguments_, {
       ...options,
@@ -3034,7 +3072,11 @@ async function runOwnedCommand(command, arguments_, options) {
       supervisorSourceCommand:
         platform === "win32" && supervisorLaunch ? executableLeaf(supervisorLaunch.source).path : null,
       supervisorExecutedPath:
-        platform === "win32" ? (supervisorLaunch ? executableLeaf(supervisorLaunch.snapshot).path : null) : "/dev/fd/3",
+        platform === "win32"
+          ? supervisorLaunch
+            ? executableLeaf(supervisorLaunch.snapshot).path
+            : null
+          : POSIX_SUPERVISOR_DESCRIPTOR_PATH,
       supervisorScriptSourcePath:
         platform === "win32" && supervisorScriptLaunch ? executableLeaf(supervisorScriptLaunch.source).path : null,
       supervisorScriptExecutedPath:
@@ -3156,7 +3198,7 @@ async function digestPinnedPayload(handle, expected, label) {
   return hash.digest("hex");
 }
 
-async function openPinnedPythonPayload(value) {
+async function openPinnedPythonPayload(value, discoverySnapshot) {
   let handle;
   try {
     handle = await open(value.target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -3164,6 +3206,9 @@ async function openPinnedPythonPayload(value) {
     const sourceBefore = await lstat(value.path, { bigint: true });
     const targetBefore = await lstat(value.target, { bigint: true });
     if (
+      !discoverySnapshot ||
+      !sameImmutableSnapshot(discoverySnapshot.source, sourceBefore) ||
+      !sameImmutableSnapshot(discoverySnapshot.target, targetBefore) ||
       !opened.isFile() ||
       opened.nlink !== 1n ||
       targetBefore.isSymbolicLink() ||
@@ -3196,6 +3241,73 @@ async function openPinnedPythonPayload(value) {
   } catch (error) {
     await finishWithOwnedCleanup(error, [{ label: `Python payload ${value.path}`, run: () => handle?.close() }]);
   }
+}
+
+function validatePythonDirectorySelection(directories, phase) {
+  if (!Array.isArray(directories) || directories.length === 0 || directories.length > MAX_PYTHON_PAYLOAD_DIRECTORIES) {
+    fail(`Python ${phase} directory selection is invalid`);
+  }
+  let pathBytes = 0;
+  let previousPath = null;
+  for (const directory of directories) {
+    assertExactKeys(
+      directory,
+      ["ctimeNs", "device", "inode", "links", "mode", "mtimeNs", "path", "size"],
+      `Python ${phase} directory`
+    );
+    if (
+      typeof directory.path !== "string" ||
+      !isAbsolute(directory.path) ||
+      !["ctimeNs", "device", "inode", "links", "mode", "mtimeNs", "size"].every(
+        (key) => typeof directory[key] === "string" && /^(?:0|[1-9][0-9]*)$/u.test(directory[key])
+      )
+    ) {
+      fail(`Python ${phase} directory selection is invalid`);
+    }
+    pathBytes += Buffer.byteLength(directory.path, "utf8");
+    if (
+      pathBytes > MAX_PYTHON_PAYLOAD_PATH_BYTES ||
+      (previousPath !== null &&
+        Buffer.compare(Buffer.from(directory.path, "utf8"), Buffer.from(previousPath, "utf8")) <= 0)
+    ) {
+      fail(`Python ${phase} directory selection is ambiguous or oversized`);
+    }
+    previousPath = directory.path;
+  }
+  return directories;
+}
+
+async function verifyPythonDirectorySelection(directories, phase) {
+  for (const directory of directories) {
+    const value = await lstat(directory.path, { bigint: true });
+    if (
+      !value.isDirectory() ||
+      value.isSymbolicLink() ||
+      (await realpath(directory.path)) !== directory.path ||
+      value.dev.toString() !== directory.device ||
+      value.ino.toString() !== directory.inode ||
+      value.nlink.toString() !== directory.links ||
+      value.mode.toString() !== directory.mode ||
+      value.size.toString() !== directory.size ||
+      value.mtimeNs.toString() !== directory.mtimeNs ||
+      value.ctimeNs.toString() !== directory.ctimeNs
+    ) {
+      fail(`Python ${phase} directory ${directory.path} changed during qualification`);
+    }
+  }
+}
+
+async function bindPythonDirectories(layoutState, directories, phase) {
+  const selection = validatePythonDirectorySelection(directories, phase);
+  const serialized = JSON.stringify(selection);
+  if (layoutState.pythonDirectorySelection === undefined) {
+    if (phase !== "preload") fail("Python payload directories were not bound before interpreter startup");
+    layoutState.pythonDirectorySelection = serialized;
+    layoutState.pythonDirectories = selection;
+  } else if (serialized !== layoutState.pythonDirectorySelection) {
+    fail(`task Python directory selection changed during ${phase} inventory`);
+  }
+  await verifyPythonDirectorySelection(layoutState.pythonDirectories, phase);
 }
 
 async function verifyPinnedPythonPayload(value) {
@@ -3285,7 +3397,7 @@ function pythonPayloadSummary(pins, pathBytes) {
 async function bindPythonPayloads(layoutState, payloads, phase) {
   const selection = validatePythonPayloadSelection(payloads, phase);
   const serialized = JSON.stringify(selection.values);
-  if (phase === "after") {
+  if (layoutState.pythonPayloadSelection !== undefined) {
     if (serialized !== layoutState.pythonPayloadSelection) {
       const before = JSON.parse(layoutState.pythonPayloadSelection);
       const maximum = Math.max(before.length, selection.values.length);
@@ -3301,11 +3413,15 @@ async function bindPythonPayloads(layoutState, payloads, phase) {
     for (const pin of layoutState.pythonPayloadPins) await verifyPinnedPythonPayload(pin);
     return layoutState.pythonPayloadSummary;
   }
+  if (phase !== "preload") fail("Python payloads were not bound before interpreter startup");
   const pins = [];
   try {
     let bytes = 0;
     for (const payload of selection.values) {
-      const pin = await openPinnedPythonPayload(payload);
+      const pin = await openPinnedPythonPayload(
+        payload,
+        layoutState.pythonPayloadDiscoverySnapshots?.get(payload.path)
+      );
       pins.push(pin);
       bytes += pin.size;
       if (bytes > MAX_PYTHON_PAYLOAD_BYTES) fail("Python payload inventory exceeds its byte bound");
@@ -3341,7 +3457,6 @@ function requireOwnedProcessTree(result, label) {
 }
 
 const PYTHON_INVENTORY_SCRIPT = [
-  "import importlib.machinery as machinery",
   "import importlib.metadata as metadata",
   "import hashlib",
   "import json",
@@ -3354,15 +3469,15 @@ const PYTHON_INVENTORY_SCRIPT = [
   "payloads = {}",
   "walked_entries = 0",
   "walked_path_bytes = 0",
-  "extension_suffixes = tuple(sorted(set(machinery.EXTENSION_SUFFIXES), key=len, reverse=True))",
   "def payload_kind(name, scripts=False):",
   "    if scripts: return 'script'",
-  "    if name == 'RECORD': return 'record'",
-  "    if name == 'entry_points.txt': return 'entry-point'",
-  "    if name.endswith('.pth'): return 'path-configuration'",
-  "    if name.endswith(extension_suffixes): return 'native-extension'",
-  "    if name.endswith(tuple(machinery.SOURCE_SUFFIXES)): return 'python-source'",
-  "    if name.endswith(tuple(machinery.BYTECODE_SUFFIXES)): return 'python-bytecode'",
+  "    folded = name.casefold()",
+  "    if folded == 'record': return 'record'",
+  "    if folded == 'entry_points.txt': return 'entry-point'",
+  "    if folded.endswith('.pth'): return 'path-configuration'",
+  "    if folded.endswith(('.so', '.pyd', '.dll', '.dylib')): return 'native-extension'",
+  "    if folded.endswith(('.py', '.pyw')): return 'python-source'",
+  "    if folded.endswith(('.pyc', '.pyo')): return 'python-bytecode'",
   "    return None",
   "def add_payload(path, kind):",
   "    global walked_path_bytes",
@@ -3376,8 +3491,8 @@ const PYTHON_INVENTORY_SCRIPT = [
   "def scan_root(root, scripts=False):",
   "    global walked_entries, walked_path_bytes",
   "    for current, directories, files in os.walk(root, topdown=True, followlinks=False):",
-  "        directories.sort()",
-  "        files.sort()",
+  "        directories.sort(key=os.fsencode)",
+  "        files.sort(key=os.fsencode)",
   "        walked_entries += len(directories) + len(files)",
   "        walked_path_bytes += sum(len(os.fsencode(os.path.join(current, name))) for name in directories)",
   "        if walked_entries > MAX_FILES * 8 or walked_path_bytes > MAX_PATH_BYTES:",
@@ -3395,7 +3510,6 @@ const PYTHON_INVENTORY_SCRIPT = [
   "    scan_root(root, scripts)",
   "venv_configuration = os.path.join(os.path.realpath(sys.prefix), 'pyvenv.cfg')",
   "if os.path.isfile(venv_configuration): add_payload(venv_configuration, 'venv-configuration')",
-  "entry_point_names = set()",
   "packages = []",
   "for distribution in metadata.distributions():",
   "    name = distribution.metadata.get('Name')",
@@ -3406,14 +3520,10 @@ const PYTHON_INVENTORY_SCRIPT = [
   "    if os.path.isfile(metadata_file):",
   "        with open(metadata_file, 'rb') as handle:",
   "            metadata_digest = hashlib.file_digest(handle, 'sha256').hexdigest()",
-  "    entry_point_names.update(entry.name for entry in distribution.entry_points if entry.name and os.sep not in entry.name and (os.altsep is None or os.altsep not in entry.name))",
   "    packages.append({'location': os.path.realpath(str(distribution.locate_file(''))), 'metadataPath': metadata_path, 'metadataSha256': metadata_digest, 'name': name or '', 'version': version or ''})",
   "packages.sort(key=lambda value: (value['name'].casefold(), value['name'], value['version'], value['metadataPath']))",
   "scripts_root = os.path.abspath(sysconfig.get_path('scripts'))",
-  "for name in sorted(entry_point_names):",
-  "    for candidate in (name, name + '.exe', name + '-script.py'):",
-  "        path = os.path.join(scripts_root, candidate)",
-  "        if os.path.isfile(path): add_payload(path, 'script')",
+  "if os.path.isdir(scripts_root): scan_root(scripts_root, True)",
   "payload = {",
   "    'basePrefix': os.path.realpath(sys.base_prefix),",
   "    'cacheTag': sys.implementation.cache_tag,",
@@ -3436,6 +3546,7 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
   const inventoryPath = join(layoutState.layout.run, `python-inventory-${phase}.json`);
   await requireAbsentPath(inventoryPath, `Python ${phase} inventory`);
   const environment = isolatedEnvironment(options.assignmentPath, assignment, layoutState.layout, hostEnvironment);
+  await verifyPythonDirectorySelection(layoutState.pythonDirectories, `${phase} prelaunch`);
   const result = await runOwnedCommand(
     layoutState.layout.pythonExecutable,
     ["-I", "-c", PYTHON_INVENTORY_SCRIPT, inventoryPath],
@@ -3444,7 +3555,8 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
         layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined,
       cwd: assignment.worktree,
       environment,
-      executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      executableSnapshotRoot: layoutState.layout.pythonExecutableSnapshots,
+      snapshotBesideOwnedExecutable: false,
       ownedRunnerForTest: options.ownedRunnerForTest,
       platformForTest: options.platformForTest,
       posixSupervisorCommand: bootstrapPython,
@@ -3517,6 +3629,7 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
       }
     }
     payloadManifest = await bindPythonPayloads(layoutState, inventory.payloads, phase);
+    await verifyPythonDirectorySelection(layoutState.pythonDirectories, `${phase} completed`);
   } catch (error) {
     await finishWithOwnedCleanup(error, [{ label: `Python ${phase} inventory`, run: () => pin.handle.close() }]);
   }
@@ -3553,6 +3666,288 @@ function resultFailure(result, label) {
   return null;
 }
 
+const PYTHON_RUNTIME_LAYOUT_SCRIPT = [
+  "import sys",
+  "values = (sys.base_prefix, sys.prefix, sys.platlibdir, str(sys.version_info[0]), str(sys.version_info[1]), '--sys-path--', *sys.path)",
+  "if any(('\\n' in value or '\\r' in value) for value in values): raise RuntimeError('Python runtime layout contains a line break')",
+  "with open(sys.argv[1], 'x', encoding='utf-8', newline='\\n') as handle:",
+  "    handle.write('\\n'.join(values) + '\\n')"
+].join("\n");
+
+async function capturePythonRuntimeLayout(
+  assignmentPath,
+  assignment,
+  layoutState,
+  hostEnvironment,
+  bootstrapPython,
+  options
+) {
+  const path = join(layoutState.layout.run, "python-runtime-layout.txt");
+  await requireAbsentPath(path, "Python runtime layout");
+  const result = await runOwnedCommand(
+    layoutState.layout.pythonExecutable,
+    ["-I", "-S", "-c", PYTHON_RUNTIME_LAYOUT_SCRIPT, path],
+    {
+      allowedSymbolicLinkTarget:
+        layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined,
+      cwd: assignment.worktree,
+      environment: isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment),
+      executableSnapshotRoot: layoutState.layout.pythonExecutableSnapshots,
+      snapshotBesideOwnedExecutable: false,
+      ownedRunnerForTest: options.ownedRunnerForTest,
+      platformForTest: options.platformForTest,
+      posixSupervisorCommand: bootstrapPython,
+      windowsJobSupervisorScript: options.windowsJobSupervisorScript,
+      windowsSupervisorCommand: options.windowsSupervisorCommand ?? layoutState.layout.windowsSupervisorCommand,
+      terminationGraceMs: options.terminationGraceMs,
+      timeoutMs: 30_000
+    }
+  );
+  requireOwnedProcessTree(result, "task Python runtime layout");
+  const failure = resultFailure(result, "task Python runtime layout");
+  if (failure) fail(failure);
+  const pin = await openPinnedRegularFile(path, 16 * 1024, "Python runtime layout");
+  try {
+    const values = decodeStrictUtf8(pin.bytes, "Python runtime layout").split("\n");
+    if (
+      values.length < 8 ||
+      values[5] !== "--sys-path--" ||
+      values.at(-1) !== "" ||
+      !isAbsolute(values[0]) ||
+      !isAbsolute(values[1]) ||
+      !/^[A-Za-z0-9._-]+$/u.test(values[2]) ||
+      !/^[1-9][0-9]*$/u.test(values[3]) ||
+      !/^[0-9]+$/u.test(values[4]) ||
+      !values.slice(6, -1).every((value) => isAbsolute(value))
+    ) {
+      fail("Python runtime layout is malformed");
+    }
+    const basePrefix = await realpath(values[0]);
+    const prefix = await realpath(values[1]);
+    if (prefix !== (await realpath(layoutState.layout.venv))) {
+      fail("Python runtime layout does not bind the private venv");
+    }
+    layoutState.runnerFilePins.push({ label: "Python runtime layout", maximumBytes: 16 * 1024, pin });
+    return {
+      basePrefix,
+      major: Number(values[3]),
+      minor: Number(values[4]),
+      platlibdir: values[2],
+      prefix,
+      sysPath: values.slice(6, -1)
+    };
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [{ label: "Python runtime layout", run: () => pin.handle.close() }]);
+  }
+}
+
+async function canonicalExistingPythonRoots(candidates) {
+  const roots = [];
+  for (const candidate of candidates) {
+    let value;
+    try {
+      value = await lstat(candidate, { bigint: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (!value.isDirectory() || value.isSymbolicLink()) {
+      fail(`Python package root ${candidate} is not one directory`);
+    }
+    const canonical = await realpath(candidate);
+    if (canonical !== candidate) fail(`Python package root ${candidate} is aliased`);
+    if (!roots.includes(canonical)) roots.push(canonical);
+  }
+  return roots;
+}
+
+function pythonPayloadKind(name) {
+  const folded = name.toLocaleLowerCase("en-US");
+  if (folded === "record") return "record";
+  if (folded === "entry_points.txt") return "entry-point";
+  if (folded.endsWith(".pth")) return "path-configuration";
+  if ([".so", ".pyd", ".dll", ".dylib"].some((suffix) => folded.endsWith(suffix))) {
+    return "native-extension";
+  }
+  if (folded.endsWith(".py") || folded.endsWith(".pyw")) return "python-source";
+  if (folded.endsWith(".pyc") || folded.endsWith(".pyo")) return "python-bytecode";
+  return null;
+}
+
+function pythonDirectoryRecord(path, value) {
+  return {
+    ctimeNs: value.ctimeNs.toString(),
+    device: value.dev.toString(),
+    inode: value.ino.toString(),
+    links: value.nlink.toString(),
+    mode: value.mode.toString(),
+    mtimeNs: value.mtimeNs.toString(),
+    path,
+    size: value.size.toString()
+  };
+}
+
+async function discoverPythonPayloads(searchPaths, venv) {
+  const directories = new Map();
+  const payloads = new Map();
+  const snapshots = new Map();
+  let entries = 0;
+  let pathBytes = 0;
+  const decodeName = (value) => {
+    const bytes = Buffer.isBuffer(value) ? Buffer.from(value) : Buffer.from(value, "utf8");
+    let name;
+    try {
+      name = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      fail("Python payload discovery contains an undecodable path");
+    }
+    if (name.length === 0 || !Buffer.from(name, "utf8").equals(bytes)) {
+      fail("Python payload discovery contains an undecodable path");
+    }
+    return { bytes, name };
+  };
+  const accountPath = (path) => {
+    pathBytes += Buffer.byteLength(path, "utf8");
+    if (pathBytes > MAX_PYTHON_PAYLOAD_PATH_BYTES) {
+      fail("Python payload discovery exceeded its path-byte bound");
+    }
+  };
+  const addPayload = async (path, kind) => {
+    const sourceBefore = await lstat(path, { bigint: true });
+    const target = await realpath(path);
+    const targetValue = await lstat(target, { bigint: true });
+    if (!targetValue.isFile() || targetValue.isSymbolicLink()) {
+      fail(`Python payload is not a regular file: ${path}`);
+    }
+    accountPath(path);
+    accountPath(target);
+    payloads.set(path, { kind, path, target });
+    snapshots.set(path, { source: sourceBefore, target: targetValue });
+    if (payloads.size > MAX_PYTHON_PAYLOAD_FILES) fail("Python payload inventory exceeded its file bound");
+  };
+  const scanDirectory = async (path, scripts = false) => {
+    const before = await lstat(path, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink() || (await realpath(path)) !== path) {
+      fail(`Python payload directory is not canonical: ${path}`);
+    }
+    directories.set(path, pythonDirectoryRecord(path, before));
+    if (directories.size > MAX_PYTHON_PAYLOAD_DIRECTORIES) {
+      fail("Python payload directory inventory exceeded its bound");
+    }
+    accountPath(path);
+    const values = [];
+    const stream = await opendir(path, { encoding: process.platform === "win32" ? "utf8" : "buffer" });
+    try {
+      for await (const entry of stream) {
+        entries += 1;
+        if (entries > MAX_PYTHON_PAYLOAD_DIRECTORIES) {
+          fail("Python payload discovery exceeded its entry bound");
+        }
+        const decoded = decodeName(entry.name);
+        values.push({ bytes: decoded.bytes, name: decoded.name });
+      }
+    } finally {
+      await stream.close().catch((error) => {
+        if (error?.code !== "ERR_DIR_CLOSED") throw error;
+      });
+    }
+    values.sort((left, right) => Buffer.compare(left.bytes, right.bytes));
+    for (const entry of values) {
+      const child = join(path, entry.name);
+      const value = await lstat(child, { bigint: true });
+      if (value.isDirectory() && !value.isSymbolicLink()) {
+        await scanDirectory(child, scripts);
+        continue;
+      }
+      const kind = scripts ? "script" : pythonPayloadKind(entry.name);
+      if (kind !== null && (value.isFile() || value.isSymbolicLink())) await addPayload(child, kind);
+    }
+    const after = await lstat(path, { bigint: true });
+    if (!sameImmutableSnapshot(before, after)) fail(`Python payload directory ${path} changed while inspected`);
+  };
+  for (const candidate of [...new Set(searchPaths)]) {
+    let value;
+    try {
+      value = await lstat(candidate, { bigint: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (value.isDirectory() && !value.isSymbolicLink()) await scanDirectory(await realpath(candidate));
+    else if (value.isFile() || value.isSymbolicLink()) await addPayload(candidate, "import-archive");
+    else fail(`Python import search path is unsupported: ${candidate}`);
+  }
+  const scriptsRoot = join(venv, process.platform === "win32" ? "Scripts" : "bin");
+  await scanDirectory(await realpath(scriptsRoot), true);
+  await addPayload(join(venv, "pyvenv.cfg"), "venv-configuration");
+  const byPath = (left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8"));
+  return {
+    directories: [...directories.values()].sort(byPath),
+    payloads: [...payloads.values()].sort(byPath),
+    snapshots
+  };
+}
+
+async function preparePythonImportBoundary(
+  assignmentPath,
+  assignment,
+  layoutState,
+  hostEnvironment,
+  bootstrapPython,
+  options
+) {
+  const runtime = await capturePythonRuntimeLayout(
+    assignmentPath,
+    assignment,
+    layoutState,
+    hostEnvironment,
+    bootstrapPython,
+    options
+  );
+  const version = `python${String(runtime.major)}.${String(runtime.minor)}`;
+  const privateSite =
+    process.platform === "win32"
+      ? join(layoutState.layout.venv, "Lib", "site-packages")
+      : join(layoutState.layout.venv, runtime.platlibdir, version, "site-packages");
+  await fileIdentity(privateSite, "directory");
+  const candidates =
+    process.platform === "win32"
+      ? [join(runtime.basePrefix, "Lib", "site-packages")]
+      : [
+          join(runtime.basePrefix, "local", runtime.platlibdir, version, "site-packages"),
+          join(runtime.basePrefix, "local", runtime.platlibdir, version, "dist-packages"),
+          join(runtime.basePrefix, runtime.platlibdir, version, "site-packages"),
+          join(runtime.basePrefix, runtime.platlibdir, version, "dist-packages"),
+          join(runtime.basePrefix, runtime.platlibdir, "python3", "dist-packages")
+        ];
+  for (const value of options.additionalPackageRootsForTest ?? []) {
+    if (typeof value !== "string" || !isAbsolute(value)) fail("test Python package root must be absolute");
+    candidates.unshift(value);
+  }
+  const externalRoots = await canonicalExistingPythonRoots(candidates);
+  for (const root of externalRoots) {
+    if (root.includes("\n") || root.includes("\r")) fail("Python package root contains a line break");
+  }
+  const pathConfiguration = join(privateSite, "openwrangler-pinned-packages.pth");
+  await writeFile(pathConfiguration, `${externalRoots.join("\n")}\n`, { flag: "wx", mode: 0o600 });
+  const preload = await discoverPythonPayloads(
+    [...runtime.sysPath, privateSite, ...externalRoots],
+    layoutState.layout.venv
+  );
+  layoutState.pythonPayloadDiscoverySnapshots = preload.snapshots;
+  await bindPythonDirectories(layoutState, preload.directories, "preload");
+  const preloadManifest = await bindPythonPayloads(layoutState, preload.payloads, "preload");
+  await options.afterPythonPreinventoryForTest?.({
+    externalRoots,
+    pathConfiguration,
+    payloads: JSON.parse(layoutState.pythonPayloadSelection),
+    privateSite
+  });
+  await bindPythonDirectories(layoutState, JSON.parse(layoutState.pythonDirectorySelection), "prelaunch");
+  await bindPythonPayloads(layoutState, JSON.parse(layoutState.pythonPayloadSelection), "prelaunch");
+  return { externalRoots, preloadManifest, privateSite };
+}
+
 async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, hostEnvironment, options) {
   const selected = resolveAcceptancePython({
     environment: hostEnvironment,
@@ -3577,11 +3972,12 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
   environment.OPEN_WRANGLER_TEST_PYTHON = bootstrapPython;
   const creation = await runOwnedCommand(
     bootstrapPython,
-    ["-I", "-m", "venv", "--system-site-packages", layoutState.layout.venv],
+    ["-I", "-S", "-m", "venv", "--without-pip", layoutState.layout.venv],
     {
       cwd: assignment.worktree,
       environment,
-      executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      executableSnapshotRoot: layoutState.layout.pythonExecutableSnapshots,
+      snapshotBesideOwnedExecutable: false,
       ownedRunnerForTest: options.ownedRunnerForTest,
       platformForTest: options.platformForTest,
       posixSupervisorCommand: bootstrapPython,
@@ -3603,6 +3999,14 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined
   );
   layoutState.layout.pythonToolExecutable = layoutState.layout.pythonExecutable;
+  const importBoundary = await preparePythonImportBoundary(
+    assignmentPath,
+    assignment,
+    layoutState,
+    hostEnvironment,
+    bootstrapPython,
+    options
+  );
   const verificationEnvironment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   const verification = await runOwnedCommand(
     layoutState.layout.pythonExecutable,
@@ -3617,7 +4021,8 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
         layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined,
       cwd: assignment.worktree,
       environment: verificationEnvironment,
-      executableSnapshotRoot: layoutState.layout.executableSnapshots,
+      executableSnapshotRoot: layoutState.layout.pythonExecutableSnapshots,
+      snapshotBesideOwnedExecutable: false,
       ownedRunnerForTest: options.ownedRunnerForTest,
       platformForTest: options.platformForTest,
       posixSupervisorCommand: bootstrapPython,
@@ -3638,6 +4043,11 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
   return {
     bootstrapPython,
     failure: null,
+    importBoundary: {
+      externalRoots: importBoundary.externalRoots,
+      privateSite: importBoundary.privateSite,
+      preloadManifest: importBoundary.preloadManifest
+    },
     inventory: inventory.identity,
     inventoryResult: inventory.result,
     result: creation,
@@ -3673,6 +4083,9 @@ async function verifyLayout(layoutState) {
   }
   for (const pin of layoutState.pythonPayloadPins ?? []) {
     await verifyPinnedPythonPayload(pin);
+  }
+  if (layoutState.pythonDirectories) {
+    await verifyPythonDirectorySelection(layoutState.pythonDirectories, "final");
   }
   if (layoutState.pytestTempTree) {
     const afterAccounting = await inspectPrivateTree(
@@ -3808,6 +4221,8 @@ async function runQualification({
   afterExecutableSnapshotWriteForTest,
   afterGitExecutableSnapshotWriteForTest,
   afterGitWrapperPreparedForTest,
+  afterPythonPreinventoryForTest,
+  additionalPythonPackageRootsForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
   beforeWindowsLoaderReleaseForTest,
@@ -3875,6 +4290,8 @@ async function runQualification({
     try {
       bootstrap = await bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, environment, {
         ownedRunnerForTest: bootstrapCommandRunnerForTest,
+        additionalPackageRootsForTest: additionalPythonPackageRootsForTest,
+        afterPythonPreinventoryForTest,
         platformForTest: bootstrapCommandPlatformForTest,
         terminationGraceMs,
         timeoutMs,
@@ -4094,6 +4511,12 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   },
   openRegularFile(path, afterOpenForTest) {
     return openPinnedRegularFile(path, MAX_ASSIGNMENT_BYTES, "test regular file", { afterOpenForTest });
+  },
+  posixSettlementBounds(timeoutMilliseconds, graceMilliseconds) {
+    return {
+      control: repeatedSettlementBound(graceMilliseconds),
+      outer: posixOuterSettlementBound(timeoutMilliseconds, graceMilliseconds)
+    };
   },
   terminateAndAwaitProcess,
   windowsSupervisorLoader,
