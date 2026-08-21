@@ -208,7 +208,7 @@ class PandasEngine(DataFrameEngine):
         ):
             return {"kind": "positional", "levelNames": []}
         return {
-            "kind": "multiIndex" if isinstance(index, pd.MultiIndex) else "index",
+            "kind": "multiIndex" if isinstance(index, pd.MultiIndex) and index.nlevels >= 2 else "index",
             "levelNames": [_pandas_row_axis_level_name(name) for name in index.names],
         }
 
@@ -320,6 +320,8 @@ class PandasEngine(DataFrameEngine):
         total_rows: int | None = None,
         column_projection: PageColumnProjection | None = None,
     ) -> dict[str, Any]:
+        import pandas as pd
+
         df = self.normalize(frame)
         visible_positions = self._visible_positions(df)
         projection = normalize_page_projection(len(visible_positions), column_projection)
@@ -332,6 +334,7 @@ class PandasEngine(DataFrameEngine):
         row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
         row_axis = self.row_axis(df)
+        one_level_multi_index = isinstance(df.index, pd.MultiIndex) and df.index.nlevels == 1
         for row_number, (row_label, row) in enumerate(
             zip(sliced.index, sliced.itertuples(index=False, name=None), strict=True),
             start=offset,
@@ -342,7 +345,13 @@ class PandasEngine(DataFrameEngine):
                     "id": f"r:{row_id_token}:{identity}" if row_id_token is not None else f"r:{row_number}",
                     "rowNumber": row_number,
                     **(
-                        {"rowLabel": _pandas_row_axis_label(row_label, row_axis)}
+                        {
+                            "rowLabel": _pandas_row_axis_label(
+                                row_label,
+                                row_axis,
+                                one_level_multi_index=one_level_multi_index,
+                            )
+                        }
                         if row_axis["kind"] != "positional"
                         else {}
                     ),
@@ -2548,8 +2557,12 @@ def _pandas_row_axis_value(value: Any, purpose: str) -> str:
     return display
 
 
-def _pandas_row_axis_label(value: Any, row_axis: RowAxis) -> str:
-    if row_axis["kind"] == "multiIndex":
+def _pandas_row_axis_label(value: Any, row_axis: RowAxis, *, one_level_multi_index: bool = False) -> str:
+    if one_level_multi_index:
+        if row_axis["kind"] != "index" or not isinstance(value, tuple) or len(value) != 1:
+            raise EngineError("Pandas returned a malformed one-level MultiIndex row label.")
+        label = _pandas_row_axis_value(value[0], "Pandas row-index label")
+    elif row_axis["kind"] == "multiIndex":
         if not isinstance(value, tuple) or len(value) != len(row_axis["levelNames"]):
             raise EngineError("Pandas returned a malformed MultiIndex row label.")
         parts = [_pandas_row_axis_value(part, "Pandas row-index label") for part in value]

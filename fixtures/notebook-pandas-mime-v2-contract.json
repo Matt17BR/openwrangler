@@ -6,21 +6,32 @@
       "rowAxis": {
         "kind": "positional",
         "levelNames": []
-      }
+      },
+      "expectedRowLabels": [null, null]
     },
     {
       "name": "named-index",
       "rowAxis": {
         "kind": "index",
         "levelNames": ["record_id"]
-      }
+      },
+      "expectedRowLabels": ["10", "20"]
+    },
+    {
+      "name": "one-level-multi-index",
+      "rowAxis": {
+        "kind": "index",
+        "levelNames": ["region"]
+      },
+      "expectedRowLabels": ["north", "south"]
     },
     {
       "name": "named-multi-index",
       "rowAxis": {
         "kind": "multiIndex",
         "levelNames": ["region", "sequence"]
-      }
+      },
+      "expectedRowLabels": ["north · 1", "south · 2"]
     }
   ],
   "nonPandasBackends": ["polars", "duckdb"]

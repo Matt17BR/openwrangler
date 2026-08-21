@@ -111,26 +111,56 @@ describe("notebook output", () => {
     expect(pandasMimeV2Contract).toEqual({
       schemaVersion: 1,
       pandasRowAxisCases: [
-        { name: "positional-range-index", rowAxis: { kind: "positional", levelNames: [] } },
-        { name: "named-index", rowAxis: { kind: "index", levelNames: ["record_id"] } },
+        {
+          name: "positional-range-index",
+          rowAxis: { kind: "positional", levelNames: [] },
+          expectedRowLabels: [null, null]
+        },
+        {
+          name: "named-index",
+          rowAxis: { kind: "index", levelNames: ["record_id"] },
+          expectedRowLabels: ["10", "20"]
+        },
+        {
+          name: "one-level-multi-index",
+          rowAxis: { kind: "index", levelNames: ["region"] },
+          expectedRowLabels: ["north", "south"]
+        },
         {
           name: "named-multi-index",
-          rowAxis: { kind: "multiIndex", levelNames: ["region", "sequence"] }
+          rowAxis: { kind: "multiIndex", levelNames: ["region", "sequence"] },
+          expectedRowLabels: ["north · 1", "south · 2"]
         }
       ],
       nonPandasBackends: ["polars", "duckdb"]
     });
 
-    for (const { name, rowAxis } of pandasMimeV2Contract.pandasRowAxisCases) {
-      const rows = page.rows.map((row) => (rowAxis.kind === "positional" ? row : { ...row, rowLabel: `${name}-row` }));
+    for (const { name, rowAxis, expectedRowLabels } of pandasMimeV2Contract.pandasRowAxisCases) {
+      const rows = expectedRowLabels.map((rowLabel, rowNumber) => ({
+        ...page.rows[0],
+        id: `r:${rowNumber}`,
+        rowNumber,
+        values: page.rows[0].values.map((value) => ({ ...value })),
+        ...(rowLabel === null ? {} : { rowLabel })
+      }));
       const normalized = normalizeNotebookOutputPayload({
         mimeVersion: 2,
-        metadata: { ...metadata, backend: "pandas", rowAxis },
-        page: { ...page, rows },
+        metadata: {
+          ...metadata,
+          backend: "pandas",
+          rowAxis,
+          shape: { rows: rows.length, columns: 1 },
+          filteredShape: { rows: rows.length, columns: 1 }
+        },
+        page: { ...page, limit: rows.length, totalRows: rows.length, rows },
         summaries: []
       });
 
       expect(normalized?.metadata.rowAxis, name).toEqual(rowAxis);
+      expect(
+        normalized?.page.rows.map((row) => row.rowLabel ?? null),
+        name
+      ).toEqual(expectedRowLabels);
     }
 
     expect(

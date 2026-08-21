@@ -65,6 +65,13 @@ def test_pandas_snapshot_matches_the_shared_row_axis_contract():
             {"value": [1, 2]},
             index=pd.Index([10, 20], name="record_id"),
         ),
+        "one-level-multi-index": pd.DataFrame(
+            {"value": [1, 2]},
+            index=pd.MultiIndex.from_arrays(
+                [["north", "south"]],
+                names=["region"],
+            ),
+        ),
         "named-multi-index": pd.DataFrame(
             {"value": [1, 2]},
             index=pd.MultiIndex.from_tuples(
@@ -80,10 +87,22 @@ def test_pandas_snapshot_matches_the_shared_row_axis_contract():
         payload = notebook.build_payload(frames[case["name"]], backend="pandas", page_size=2)
 
         assert payload["metadata"]["rowAxis"] == case["rowAxis"]
-        if case["rowAxis"]["kind"] == "positional":
-            assert all("rowLabel" not in row for row in payload["page"]["rows"])
-        else:
-            assert all(isinstance(row.get("rowLabel"), str) for row in payload["page"]["rows"])
+        assert [row.get("rowLabel") for row in payload["page"]["rows"]] == case["expectedRowLabels"]
+
+
+def test_ordinary_tuple_valued_index_keeps_its_tuple_label_representation():
+    tuple_index = pd.Index(
+        pd.Series([("north", 1), ("south", 2)], dtype="object"),
+        name="tuple_key",
+    )
+    payload = notebook.build_payload(
+        pd.DataFrame({"value": [1, 2]}, index=tuple_index),
+        backend="pandas",
+        page_size=2,
+    )
+
+    assert payload["metadata"]["rowAxis"] == {"kind": "index", "levelNames": ["tuple_key"]}
+    assert [row["rowLabel"] for row in payload["page"]["rows"]] == ['["north",1]', '["south",2]']
 
 
 def test_non_pandas_snapshots_match_the_shared_row_axis_omission_contract():
