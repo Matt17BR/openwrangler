@@ -386,6 +386,38 @@ test("DOM class liveness follows lexical bindings, reassignment, and forced togg
   });
 });
 
+test("a named class expression keeps its name private from a live global document sibling", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    [
+      "const Holder = class document {",
+      "  static probe() {",
+      '    document.createElement("div").classList.add("classLocalDocumentSink");',
+      "  }",
+      "};",
+      'document.createElement("div").classList.add("globalDocumentLive");',
+      "void Holder;",
+      'export const app = <div className="used" />;',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(resolve(styleRoot, "application.css"), ".globalDocumentLive { display: block; }\n", "utf8");
+  await assert.doesNotReject(checkWebviewStyles(root));
+
+  await writeFile(
+    resolve(styleRoot, "application.css"),
+    ".globalDocumentLive, .classLocalDocumentSink { display: block; }\n",
+    "utf8"
+  );
+  await assert.rejects(checkWebviewStyles(root), (error) => {
+    assert.match(error.message, /classLocalDocumentSink \(application\.css\)/u);
+    assert.doesNotMatch(error.message, /globalDocumentLive \(application\.css\)/u);
+    return true;
+  });
+});
+
 test("the TypeScript liveness walk handles deeply nested valid TSX iteratively", async (t) => {
   const { root, webviewRoot } = await webviewStyleFixture(t);
   const depth = 300;
@@ -396,6 +428,21 @@ test("the TypeScript liveness walk handles deeply nested valid TSX iteratively",
   );
 
   await assert.doesNotReject(checkWebviewStyles(root));
+});
+
+test("parser stack exhaustion becomes the bounded TypeScript AST-depth diagnostic", async (t) => {
+  const { root, webviewRoot } = await webviewStyleFixture(t);
+  const depth = 5_000;
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    `export const app = ${"<div>".repeat(depth)}<span className="used" />${"</div>".repeat(depth)};\n`,
+    "utf8"
+  );
+
+  await assert.rejects(
+    checkWebviewStyles(root),
+    new RegExp(`App\\.tsx exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstDepth}-level TypeScript AST limit\\.`, "u")
+  );
 });
 
 test("the CSS parser inventories @scope and native nested selectors without declaration false positives", async (t) => {
