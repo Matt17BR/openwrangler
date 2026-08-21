@@ -334,11 +334,25 @@ test("the syntax authority recognizes namespace and CommonJS createRequire loade
 });
 
 test("the syntax authority rejects TypeScript import-equals createRequire aliases", async () => {
+  await withInventoryFixture(
+    `
+      import type moduleApi = require("node:module");
+      type ModuleApi = typeof moduleApi;
+    `,
+    { activationEvents: [], contributes: { commands: [] } },
+    async (report) => assert.deepEqual(report.dynamicEdges.discovered, [])
+  );
+
   const aliases = [
     `
       import moduleApi = require("node:module");
       const importedRequire = moduleApi.createRequire(import.meta.url);
       importedRequire("./import-equals-owner.js");
+    `,
+    `
+      import moduleApi = require("module");
+      const bareImportedRequire = moduleApi.createRequire(import.meta.url);
+      bareImportedRequire("./bare-import-equals-owner.js");
     `,
     `
       import * as moduleApi from "node:module";
