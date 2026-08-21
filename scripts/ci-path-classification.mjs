@@ -162,7 +162,7 @@ function fullSelection() {
 
 export function classifyCiChange({ eventName, changedPaths }) {
   if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
-  if (!["pull_request", "push", "schedule", "workflow_dispatch"].includes(eventName)) {
+  if (!["pull_request", "merge_group", "push", "schedule", "workflow_dispatch"].includes(eventName)) {
     throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
   }
   if (eventName !== "pull_request") return fullSelection();

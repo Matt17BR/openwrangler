@@ -5,12 +5,14 @@
       "file": ".github/workflows/ci.yml",
       "event": "pull_request",
       "activityTypes": ["opened", "synchronize", "reopened", "edited", "stacked"],
+      "mergeGroupActivityTypes": ["checks_requested"],
       "terminalJob": "validate"
     },
     "codeql": {
       "file": ".github/workflows/codeql.yml",
       "event": "pull_request",
       "activityTypes": ["opened", "synchronize", "reopened", "edited", "stacked"],
+      "mergeGroupActivityTypes": ["checks_requested"],
       "terminalJob": "codeql-gate"
     },
     "candidate": {
