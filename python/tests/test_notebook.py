@@ -17,7 +17,7 @@ from dateutil import tz as dateutil_tz
 import openwrangler_runtime.engines.pandas_engine as pandas_engine
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineError, EngineRegistry
-from openwrangler_runtime.engines.base import normalize_cell
+from openwrangler_runtime.engines.base import RowAxis, normalize_cell
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 
@@ -159,7 +159,7 @@ def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
     with pytest.raises(EngineError, match="exceeds 1024 characters"):
         pandas_engine._pandas_row_axis_value("x" * 1_025, "Pandas row-index label")
 
-    multi_index_axis = {"kind": "multiIndex", "levelNames": [None, None]}
+    multi_index_axis: RowAxis = {"kind": "multiIndex", "levelNames": [None, None]}
     assert len(pandas_engine._pandas_row_axis_label(("x" * 512, "y" * 509), multi_index_axis)) == 1_024
     with pytest.raises(EngineError, match="exceeds 1024 characters"):
         pandas_engine._pandas_row_axis_label(("x" * 512, "y" * 510), multi_index_axis)
