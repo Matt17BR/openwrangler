@@ -30,6 +30,7 @@ import {
 } from "./sessionOrigin";
 import { type SessionPersistenceFailure, SessionPersistenceStore } from "./sessionPersistenceStore";
 import {
+  persistenceUnavailableError,
   persistenceReadUnavailableError,
   protocolError,
   SessionResponseCommitter,
@@ -82,6 +83,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly pendingOpenWaiters = new Set<() => void>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
+  private activePublicationGeneration = 0;
   private disposed = false;
   private persistenceOwnerOrdinal = 0;
   private shutdownPromise: Promise<void> | undefined;
@@ -245,6 +247,7 @@ export class SessionCoordinator implements vscode.Disposable {
       const next = sessionId ? this.sessions.get(sessionId) : undefined;
       if (next) this.invalidateStepInspection(next);
     }
+    this.activePublicationGeneration += 1;
     this.activeSessionId = sessionId;
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
     this.activeSessionEmitter.fire(session ? activeSessionSnapshot(session) : undefined);
@@ -296,8 +299,13 @@ export class SessionCoordinator implements vscode.Disposable {
     const next = reconcileViewingState({ ...state, filterModel: session.metadata.filterModel }, session.metadata);
     if (isDeepStrictEqual(next, session.viewState)) return;
     const selectedColumnChanged = next.selectedColumnId !== session.viewState.selectedColumnId;
+    const previous = session.viewState;
     session.viewState = next;
-    await this.responseCommitter.persistSession(session);
+    const persistenceResult = await this.responseCommitter.persistSession(session);
+    if (persistenceResult.kind === "unavailable" && session.viewState === next) {
+      session.viewState = previous;
+      return;
+    }
     if (selectedColumnChanged && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
       this.setActive(session.publicId);
     }
@@ -874,15 +882,11 @@ export class SessionCoordinator implements vscode.Disposable {
       { ...viewState, filterModel: session.metadata.filterModel },
       session.metadata
     );
-    const selectedColumnChanged = nextViewState.selectedColumnId !== session.viewState.selectedColumnId;
-    const viewStateChanged = !isDeepStrictEqual(nextViewState, session.viewState);
-    session.viewState = nextViewState;
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     let replacementPublished = false;
     try {
-      if (viewStateChanged) await this.responseCommitter.persistSession(session);
       await session.scheduler.waitForIdle();
       if (!this.isLiveSession(session) || session.closing) {
         return protocolError(
@@ -908,6 +912,7 @@ export class SessionCoordinator implements vscode.Disposable {
         this.runtimeReconfigurer.reopenLiveSessionInMode(
           session,
           mode,
+          nextViewState,
           options,
           this.runtimeReconfigurationHooks(session)
         )
@@ -917,7 +922,7 @@ export class SessionCoordinator implements vscode.Disposable {
     } finally {
       session.reconfiguring = false;
       if (
-        (replacementPublished || (viewStateChanged && selectedColumnChanged)) &&
+        replacementPublished &&
         this.isLiveSession(session) &&
         !session.closing &&
         this.activeSessionId === session.publicId
@@ -962,33 +967,65 @@ export class SessionCoordinator implements vscode.Disposable {
     session.latestRequestedViewContextId = viewContextId;
   }
 
-  private executeSessionRequest(
+  private async executeSessionRequest(
     session: CoordinatedSession,
     publicRequest: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
-    return this.runtimeRequestExecutor.execute(session, publicRequest, options, {
-      isCoordinatorAvailable: () => !this.disposed,
-      waitForRuntimeSettlement: () => this.waitForRuntimeSettlement(session),
-      installRuntimeSettlement: (settlement) => this.installRuntimeSettlementBarrier(session, settlement),
-      replay: (replayOptions) => this.replay(session, replayOptions),
-      replayAfterRuntimeLoss: (failedRuntimeId, replayOptions, requiredSchema, isStillCurrent) =>
-        this.replayAfterRuntimeLoss(session, failedRuntimeId, replayOptions, requiredSchema, isStillCurrent),
-      close: (closeOptions) => this.closeSession(session, closeOptions),
-      responseCallbacks: {
-        activate: (registerRollback) => {
-          if (this.isLiveSession(session)) {
-            if (registerRollback) registerRollback(this.captureActivePublicationRollback(session));
-            this.setActive(session.publicId);
-          }
-        },
-        publishInspection: () => {
-          if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
-            this.activeSessionEmitter.fire(activeSessionSnapshot(session));
+    if (isRuntimeStateMutation(publicRequest)) {
+      const staged = await this.responseCommitter.stageMutation(session);
+      if (staged.kind === "unavailable") {
+        return persistenceUnavailableError(session.publicId, requestViewId(publicRequest));
+      }
+    }
+    try {
+      const response = await this.runtimeRequestExecutor.execute(session, publicRequest, options, {
+        isCoordinatorAvailable: () => !this.disposed,
+        waitForRuntimeSettlement: () => this.waitForRuntimeSettlement(session),
+        installRuntimeSettlement: (settlement) => this.installRuntimeSettlementBarrier(session, settlement),
+        replay: (replayOptions) => this.replay(session, replayOptions),
+        replayAfterRuntimeLoss: (failedRuntimeId, replayOptions, requiredSchema, isStillCurrent) =>
+          this.replayAfterRuntimeLoss(session, failedRuntimeId, replayOptions, requiredSchema, isStillCurrent),
+        close: (closeOptions) => this.closeSession(session, closeOptions),
+        responseCallbacks: {
+          activate: (registerRollback) => {
+            if (this.isLiveSession(session)) {
+              const rollback = registerRollback ? this.captureActivePublicationRollback(session) : undefined;
+              if (rollback && registerRollback) {
+                const generation = this.activePublicationGeneration + 1;
+                registerRollback(() => rollback(generation));
+              }
+              this.setActive(session.publicId);
+            }
+          },
+          publishInspection: () => {
+            if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+              this.activeSessionEmitter.fire(activeSessionSnapshot(session));
+            }
           }
         }
+      });
+      const restored = await this.responseCommitter.restoreStagedMutation(session);
+      if (restored?.kind === "unavailable") {
+        if (response.kind === "error" || response.kind === "cancelled") {
+          throw new AggregateError(
+            [response, restored.failure],
+            "The runtime result and persistence rollback both failed."
+          );
+        }
+        return persistenceUnavailableError(session.publicId, requestViewId(publicRequest));
       }
-    });
+      return response;
+    } catch (error) {
+      const restored = await this.responseCommitter.restoreStagedMutation(session);
+      if (restored?.kind === "unavailable") {
+        throw new AggregateError(
+          [error, restored.failure],
+          "The runtime request and persistence rollback both failed."
+        );
+      }
+      throw error;
+    }
   }
 
   private async closeSession(
@@ -1023,8 +1060,9 @@ export class SessionCoordinator implements vscode.Disposable {
     this.runtimeCleanup.releaseIfIdle(session.delegate);
   }
 
-  private captureActivePublicationRollback(session: CoordinatedSession): () => void {
+  private captureActivePublicationRollback(session: CoordinatedSession): (generation: number) => boolean {
     const previousActiveSessionId = this.activeSessionId;
+    const previousActiveSession = previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined;
     const inspections = new Map<
       CoordinatedSession,
       Pick<CoordinatedSession, "stepInspection" | "latestStepInspectionKey">
@@ -1037,17 +1075,26 @@ export class SessionCoordinator implements vscode.Disposable {
         });
       }
     };
-    captureInspection(previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined);
+    captureInspection(previousActiveSession);
     captureInspection(session);
 
-    return () => {
+    return (generation) => {
+      if (
+        this.activePublicationGeneration !== generation ||
+        this.sessions.get(session.publicId) !== session ||
+        (previousActiveSessionId !== undefined && this.sessions.get(previousActiveSessionId) !== previousActiveSession)
+      ) {
+        return false;
+      }
       for (const [candidate, inspection] of inspections) {
         candidate.stepInspection = inspection.stepInspection;
         candidate.latestStepInspectionKey = inspection.latestStepInspectionKey;
       }
+      this.activePublicationGeneration += 1;
       this.activeSessionId = previousActiveSessionId;
       const active = previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined;
       this.activeSessionEmitter.fire(active ? activeSessionSnapshot(active) : undefined);
+      return true;
     };
   }
 

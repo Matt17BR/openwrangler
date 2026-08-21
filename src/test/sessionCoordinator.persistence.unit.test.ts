@@ -1,10 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
-import type { Memento } from "vscode";
-import type { OpenWranglerRequest, OpenWranglerResponse, SessionSource } from "../shared/protocol";
-import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import type { Memento, NotebookDocument } from "vscode";
+import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata, SessionSource } from "../shared/protocol";
+import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { inspectionStep, openedResponse, openRequest, stepInspectionResponse } from "./sessionCoordinatorTestFixtures";
+import {
+  inspectionStep,
+  openedResponse,
+  openRequest,
+  pageResponseForMetadata,
+  planUpdatedResponse,
+  setOpenNotebookDocuments,
+  stepInspectionResponse
+} from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
   it.each([
@@ -142,7 +150,7 @@ describe("SessionCoordinator persistence diagnostics", () => {
       2,
       "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
     );
-    expect(coordinator.activeSession()?.viewState.viewport.scrollLeft).toBe(40);
+    expect(coordinator.activeSession()?.viewState.viewport.scrollLeft).toBe(30);
 
     await coordinator.shutdown();
   });
@@ -253,6 +261,243 @@ describe("SessionCoordinator persistence diagnostics", () => {
     await coordinator.shutdown(100);
     expect(coordinator.diagnostics()).toMatchObject({ activeSessionId: undefined, sessionCount: 0 });
   });
+
+  it.each([
+    ["applyDraft", "apply"],
+    ["discardDraft", "discard"],
+    ["undoStep", "undo"]
+  ] as const)("durably stages %s before runtime dispatch", async (kind, action) => {
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn((_key: string, fallback?: unknown) => (Object.keys(stored).length > 0 ? stored : fallback)),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const key = persistenceKey(openRequest.source, "polars");
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === kind) {
+        expect(stored[key]).toHaveProperty("pendingCurrentCommit");
+        return {
+          ...planUpdatedResponse(1, kind === "applyDraft" ? [inspectionStep] : [], request.sessionId),
+          action
+        };
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected staged-mutation request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the staged-mutation session to open.");
+
+    const response = await bridge.request({
+      kind,
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      offset: 0,
+      limit: 100,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+
+    expect(response).toMatchObject({ kind: "planUpdated", action });
+    expect(stored[key]).not.toHaveProperty("pendingCurrentCommit");
+    expect(workspaceState.update).toHaveBeenCalledTimes(2);
+    await coordinator.shutdown();
+  });
+
+  it.each([
+    ["applyDraft", "read"],
+    ["applyDraft", "stage"],
+    ["discardDraft", "read"],
+    ["discardDraft", "stage"],
+    ["undoStep", "read"],
+    ["undoStep", "stage"]
+  ] as const)(
+    "returns a typed persistence error and does not dispatch %s after a %s failure",
+    async (kind, failurePoint) => {
+      let reads = 0;
+      const workspaceState = {
+        get: vi.fn((_key: string, fallback?: unknown) => {
+          reads += 1;
+          if (failurePoint === "read" && reads === 2) throw new Error("mutation persistence read unavailable");
+          return fallback;
+        }),
+        update: vi.fn(async () => {
+          if (failurePoint === "stage") throw new Error("mutation persistence stage unavailable");
+        }),
+        keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      } as unknown as Memento;
+      const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return openedResponse();
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`The ${request.kind} mutation must not dispatch after persistence ${failurePoint}.`);
+      });
+      const coordinator = new SessionCoordinator(workspaceState);
+      const bridge = coordinator.createBridge({ request: delegateRequest });
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the persistence-failure session to open.");
+
+      await expect(
+        bridge.request({
+          kind,
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          offset: 0,
+          limit: 100,
+          columnOffset: 0,
+          columnLimit: 16
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable", recoverable: true });
+      expect(delegateRequest.mock.calls.map(([request]) => request.kind)).toEqual(["openSession"]);
+      await coordinator.shutdown();
+    }
+  );
+
+  it.each([
+    ["applyDraft", "apply"],
+    ["discardDraft", "discard"],
+    ["undoStep", "undo"]
+  ] as const)("rolls back %s after its final persistence write fails", async (kind, action) => {
+    let stored: Record<string, unknown> = {};
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 2) throw new Error("mutation final persistence unavailable");
+      stored = value;
+    });
+    const workspaceState = {
+      get: vi.fn((_key: string, fallback?: unknown) => (Object.keys(stored).length > 0 ? stored : fallback)),
+      update,
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === kind) {
+        return {
+          ...planUpdatedResponse(1, kind === "applyDraft" ? [inspectionStep] : [], request.sessionId),
+          action
+        };
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected final-write mutation request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the final-write mutation session to open.");
+    const before = coordinator.activeSession();
+
+    await expect(
+      bridge.request({
+        kind,
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        offset: 0,
+        limit: 100,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable", recoverable: true });
+
+    expect(coordinator.activeSession()).toEqual(before);
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === kind)).toHaveLength(1);
+    expect(stored[persistenceKey(openRequest.source, "polars")]).toHaveProperty("pendingCurrentCommit");
+    await coordinator.shutdown();
+  });
+
+  it.each(["read", "stage", "final"] as const)(
+    "keeps the prior live-mode runtime and view when the persistence %s transition fails",
+    async (failurePoint) => {
+      const notebook = {
+        uri: vscode.Uri.parse("file:///workspace/persistence-mode.ipynb"),
+        isClosed: false
+      } as NotebookDocument;
+      const source: SessionSource = {
+        kind: "notebookVariable",
+        label: "frame",
+        variableName: "frame",
+        uri: notebook.uri.toString()
+      };
+      let reads = 0;
+      let stored: Record<string, unknown> = {};
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        const attempt = update.mock.calls.length;
+        if ((failurePoint === "stage" && attempt === 1) || (failurePoint === "final" && attempt === 2)) {
+          throw new Error(`${failurePoint} mode persistence unavailable`);
+        }
+        stored = value;
+      });
+      const workspaceState = {
+        get: vi.fn((_key: string, fallback?: unknown) => {
+          reads += 1;
+          if (failurePoint === "read" && reads === 2) throw new Error("mode persistence read unavailable");
+          return Object.keys(stored).length > 0 ? stored : fallback;
+        }),
+        update,
+        keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      } as unknown as Memento;
+      const metadataByRuntime = new Map<string, SessionMetadata>();
+      const closedRuntimeIds: string[] = [];
+      const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          const runtimeId = request.requestedSessionId ?? "runtime-old";
+          const opened = openedResponse(runtimeId);
+          const metadata = {
+            ...opened.metadata,
+            sessionId: runtimeId,
+            source: request.source,
+            mode: request.mode ?? "viewing",
+            capabilities: { ...opened.metadata.capabilities, notebookInsert: true }
+          };
+          metadataByRuntime.set(runtimeId, metadata);
+          return { ...opened, metadata };
+        }
+        if (request.kind === "getPage") {
+          const metadata = metadataByRuntime.get(request.sessionId);
+          if (!metadata) throw new Error("Expected the live-mode runtime metadata.");
+          return pageResponseForMetadata(request, {
+            ...metadata,
+            revision: request.revision,
+            filterModel: request.filterModel
+          });
+        }
+        if (request.kind === "closeSession") {
+          closedRuntimeIds.push(request.sessionId);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected live-mode persistence request: ${request.kind}`);
+      });
+      setOpenNotebookDocuments(notebook);
+      const coordinator = new SessionCoordinator(workspaceState);
+      const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+      try {
+        const opened = await bridge.request({ ...openRequest, source, mode: "viewing" });
+        if (opened.kind !== "sessionOpened") throw new Error("Expected the live-mode session to open.");
+        const before = coordinator.activeSession();
+
+        const response = await bridge.reconfigureLiveSessionMode!(
+          opened.metadata.sessionId,
+          opened.metadata.revision,
+          "editing",
+          {
+            selectedColumnId: undefined,
+            columnWidths: new Map(),
+            viewport: { firstVisibleRow: 0, scrollLeft: 71 }
+          }
+        );
+
+        expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable", recoverable: true });
+        expect(coordinator.activeSession()).toEqual(before);
+        expect(closedRuntimeIds).toHaveLength(1);
+        expect(closedRuntimeIds).not.toContain("runtime-old");
+        await coordinator.shutdown();
+      } finally {
+        setOpenNotebookDocuments();
+      }
+    }
+  );
 
   it("rolls back real active-session publication side effects when a page callback fails", async () => {
     let stored: Record<string, unknown> = {};

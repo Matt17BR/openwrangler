@@ -158,7 +158,7 @@ describe("SessionResponseCommitter", () => {
     expect(update).toHaveBeenCalledTimes(2);
   });
 
-  it("returns an actionable availability error while retaining a current page's confirmed live state", async () => {
+  it("returns an actionable availability error without publishing a page after a persistence read failure", async () => {
     const persistence = new SessionPersistenceStore(
       memento(() => {
         throw Object.assign(new Error("cannot read /private/workspace/state.json"), { code: "EACCES" });
@@ -190,15 +190,115 @@ describe("SessionResponseCommitter", () => {
       kind: "error",
       code: "persistence_unavailable",
       message:
-        "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available.",
+        "Open Wrangler could not save workspace recovery state, so the active session was left unchanged. Retry after workspace storage is available.",
       recoverable: true,
       sessionId: session.publicId,
       viewRequestId: "current-page"
     });
     expect(JSON.stringify(response)).not.toContain("/private/workspace");
+    expect(session.metadata.filterModel).toEqual(emptyFilter);
+    expect(session.activeViewContextId).toBeUndefined();
+    expect(callbacks.activate).not.toHaveBeenCalled();
+  });
+
+  it.each(["stage", "read", "final"] as const)(
+    "restores a changed page after its persistence %s fails",
+    async (failurePoint) => {
+      let stored: Record<string, unknown> = {};
+      let reads = 0;
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        const attempt = update.mock.calls.length;
+        if ((failurePoint === "stage" && attempt === 1) || (failurePoint === "final" && attempt === 2)) {
+          throw new Error(`${failurePoint} page persistence unavailable`);
+        }
+        stored = value;
+      });
+      const committer = new SessionResponseCommitter(
+        new SessionPersistenceStore(
+          memento(() => {
+            reads += 1;
+            if (failurePoint === "read" && reads === 2) throw new Error("page persistence read unavailable");
+            return stored;
+          }, update)
+        )
+      );
+      const filterModel: FilterModel = {
+        filters: [],
+        sort: [{ column: "value", direction: "desc", nulls: "last" }]
+      };
+      const session = responseState({
+        publicRevision: 4,
+        activeViewContextId: "old-view",
+        latestRequestedViewContextId: "next-view",
+        latestRequestedPageRequestId: "current-page"
+      });
+      const previousMetadata = session.metadata;
+      const previousViewState = session.viewState;
+      const callbacks = callbackSpies();
+      const request = pageRequest(session, "current-page", filterModel, 100);
+
+      await expect(
+        committer.commit(
+          session,
+          request,
+          pageResponse(request, metadata({ filterModel }), 240),
+          0,
+          emptyFilter,
+          { viewContextId: "next-view" },
+          callbacks
+        )
+      ).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable" });
+
+      expect(session.publicRevision).toBe(4);
+      expect(session.activeViewContextId).toBe("old-view");
+      expect(session.metadata).toBe(previousMetadata);
+      expect(session.viewState).toBe(previousViewState);
+      expect(callbacks.activate).toHaveBeenCalledTimes(failurePoint === "final" ? 1 : 0);
+    }
+  );
+
+  it("preserves a reentrant newer view when a page's final persistence write fails", async () => {
+    let stored: Record<string, unknown> = {};
+    const session = responseState({
+      latestRequestedViewContextId: "current-view",
+      latestRequestedPageRequestId: "current-page"
+    });
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 2) {
+        session.latestRequestedPageRequestId = "newer-page";
+        session.viewState = {
+          ...session.viewState,
+          viewport: { ...session.viewState.viewport, scrollLeft: 999 }
+        };
+        throw new Error("final page persistence unavailable");
+      }
+      stored = value;
+    });
+    const committer = new SessionResponseCommitter(new SessionPersistenceStore(memento(() => stored, update)));
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const request = pageRequest(session, "current-page", filterModel, 100);
+
+    const response = await committer.commit(
+      session,
+      request,
+      pageResponse(request, metadata({ filterModel }), 240),
+      0,
+      emptyFilter,
+      { viewContextId: "current-view" },
+      callbackSpies()
+    );
+
+    expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable" });
+    expect(response).toHaveProperty(
+      "message",
+      "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available."
+    );
+    expect(session.latestRequestedPageRequestId).toBe("newer-page");
+    expect(session.viewState.viewport.scrollLeft).toBe(999);
     expect(session.metadata.filterModel).toEqual(filterModel);
-    expect(session.activeViewContextId).toBe("current-view");
-    expect(callbacks.activate).toHaveBeenCalledOnce();
   });
 
   it("restores the confirmed page state when its publication callback rejects", async () => {
@@ -255,7 +355,7 @@ describe("SessionResponseCommitter", () => {
     expect(session.viewState).toBe(previousViewState);
     expect(publicationOwner).toBe("confirmed");
     const key = persistenceKey(session.openRequest.source, "polars");
-    expect(stored[key]).toHaveProperty("pendingCurrentCommit");
+    expect(stored[key]).toBeUndefined();
     expect(persistence.load(session.openRequest.source, "polars")).toBeUndefined();
   });
 
