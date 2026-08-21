@@ -610,7 +610,14 @@ function readDirectoryInventory(directoryPath) {
 }
 
 function parseBoundedWorkflowYaml(bytes) {
-  const source = Buffer.isBuffer(bytes) ? bytes.toString("utf8") : bytes;
+  let source = bytes;
+  if (Buffer.isBuffer(bytes)) {
+    try {
+      source = CAPABILITY_UTF8_DECODER.decode(bytes);
+    } catch (cause) {
+      throw new Error("workflow YAML is not valid UTF-8", { cause });
+    }
+  }
   assert.equal(typeof source, "string", "workflow YAML must be text");
   assert.ok(Buffer.byteLength(source, "utf8") <= CAPABILITY_FILE_LIMIT, "workflow YAML exceeds its byte limit");
   const stack = [];
@@ -2728,6 +2735,20 @@ test("workflow YAML enforces parser bounds and rejects aliases, merges, tags, de
   assert.throws(() => parseBoundedWorkflowYaml(deeplyNested), /depth limit|maxDepth/u);
   const excessiveNodes = `items: [${"x,".repeat(WORKFLOW_YAML_NODE_LIMIT)}x]\n`;
   assert.throws(() => parseBoundedWorkflowYaml(excessiveNodes), /node limit/u);
+});
+
+test("complete workflow inventory rejects invalid UTF-8 before YAML parsing", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-workflow-utf8-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  mkdirSync(join(root, WORKFLOW_DIRECTORY), { recursive: true });
+  const invalidWorkflow = Buffer.concat([
+    Buffer.from('name: "fixture ', "utf8"),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('"\njobs: {}\n', "utf8")
+  ]);
+  assert.doesNotThrow(() => parseYaml(invalidWorkflow.toString("utf8"), WORKFLOW_YAML_LOAD_OPTIONS));
+  writeFileSync(join(root, WORKFLOW_DIRECTORY, "invalid.yml"), invalidWorkflow);
+  assert.throws(() => loadRepositoryWorkflowInventory({ root }), /workflow YAML is not valid UTF-8/u);
 });
 
 test("bounded workflow reads close every descriptor while preserving the primary failure", (context) => {
