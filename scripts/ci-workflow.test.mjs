@@ -362,20 +362,26 @@ function readExactChildReadinessMarker(
 }
 
 function observeChildSettlement(child) {
-  const state = { closed: false, errors: [] };
+  const state = { closed: false, errors: [], exit: undefined, exited: false, termination: undefined };
   const result = new Promise((resolvePromise) => {
     const onError = (error) => state.errors.push(error);
+    const onExit = (code, signal) => {
+      state.exit = { code, signal };
+      state.exited = true;
+    };
     child.on("error", onError);
+    child.once("exit", onExit);
     child.once("close", (code, signal) => {
       state.closed = true;
       child.off("error", onError);
-      resolvePromise({ code, signal });
+      child.off("exit", onExit);
+      resolvePromise({ close: { code, signal }, exit: state.exit });
     });
   });
   return { result, state };
 }
 
-async function terminateObservedChild(
+function terminateObservedChild(
   child,
   observation,
   control,
@@ -383,9 +389,16 @@ async function terminateObservedChild(
     cancelDeadline = clearTimeout,
     scheduleDeadline = setTimeout,
     settlementTimeoutMs = WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS,
-    termGraceMs = WORKFLOW_FIFO_TERM_GRACE_MS
+    termGraceMs = WORKFLOW_FIFO_TERM_GRACE_MS,
+    terminalOwnership
   } = {}
 ) {
+  if (observation.state.termination !== undefined) return observation.state.termination;
+  let resolveTermination;
+  const termination = new Promise((resolvePromise) => {
+    resolveTermination = resolvePromise;
+  });
+  observation.state.termination = termination;
   const faults = [];
   const signal = (name) => {
     try {
@@ -395,23 +408,34 @@ async function terminateObservedChild(
     }
   };
   const escalation = scheduleDeadline(() => {
-    if (!observation.state.closed) signal("SIGKILL");
+    if (!observation.state.exited) signal("SIGKILL");
   }, termGraceMs);
-  const settlementDeadline = scheduleDeadline(() => {
+  const terminalDeadline = scheduleDeadline(() => {
     if (!observation.state.closed) {
       faults.push(new Error("FIFO child did not close before its settlement deadline"));
-      signal("SIGKILL");
+      try {
+        terminalOwnership({ control, state: observation.state });
+      } catch (error) {
+        faults.push(error);
+      }
     }
   }, settlementTimeoutMs);
-  signal("SIGTERM");
-  const close = await observation.result;
-  cancelDeadline(escalation);
-  cancelDeadline(settlementDeadline);
-  faults.unshift(...observation.state.errors);
-  if (!(control.readableEnded || control.destroyed)) {
-    faults.push(new Error("FIFO child control pipe remained live after close"));
-  }
-  return { close, faults };
+  if (!observation.state.exited) signal("SIGTERM");
+  void observation.result.then(({ close, exit }) => {
+    for (const deadline of [escalation, terminalDeadline]) {
+      try {
+        cancelDeadline(deadline);
+      } catch (error) {
+        faults.push(error);
+      }
+    }
+    faults.unshift(...observation.state.errors);
+    if (!(control.readableEnded || control.destroyed)) {
+      faults.push(new Error("FIFO child control pipe remained live after close"));
+    }
+    resolveTermination({ close, exit, faults });
+  });
+  return termination;
 }
 
 async function waitForMonotonicDelay(delayMs) {
@@ -1853,6 +1877,7 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       this.signalCode = null;
       this.signalOutcomes = [...signalOutcomes];
       this.stdio = [null, null, null, new PassThrough()];
+      this.syntheticExited = false;
     }
 
     kill(signal) {
@@ -1862,10 +1887,18 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       return outcome;
     }
 
-    close(signal) {
+    exit(code, signal) {
+      if (this.syntheticExited) return;
+      this.syntheticExited = true;
+      this.exitCode = code;
       this.signalCode = signal;
+      this.emit("exit", code, signal);
+    }
+
+    close(code, signal) {
+      this.exit(code, signal);
       this.stdio[3].destroy();
-      this.emit("close", null, signal);
+      this.emit("close", code, signal);
     }
   }
 
@@ -1891,7 +1924,7 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       timers
     };
   };
-  const startSettlement = (child, deadlines) => {
+  const startSettlement = (child, deadlines, terminalOwnership = () => child.close(1, null)) => {
     const observation = observeChildSettlement(child);
     return {
       observation,
@@ -1899,7 +1932,8 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
         cancelDeadline: deadlines.cancelDeadline,
         scheduleDeadline: deadlines.scheduleDeadline,
         settlementTimeoutMs: 2,
-        termGraceMs: 1
+        termGraceMs: 1,
+        terminalOwnership
       })
     };
   };
@@ -1922,12 +1956,70 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
     cancelDeadline: errorDeadlines.cancelDeadline,
     scheduleDeadline: errorDeadlines.scheduleDeadline,
     settlementTimeoutMs: 2,
-    termGraceMs: 1
+    termGraceMs: 1,
+    terminalOwnership() {
+      errorChild.close(1, null);
+    }
   });
   await assertPending(errorResult);
-  errorChild.close("SIGTERM");
+  errorChild.close(null, "SIGTERM");
   assert.deepEqual((await errorResult).faults, [childError]);
   assertReleased(errorChild, errorDeadlines);
+
+  const singleFlightChild = new SyntheticChild([true]);
+  const singleFlightDeadlines = createDeadlines();
+  const singleFlightObservation = observeChildSettlement(singleFlightChild);
+  const singleFlightOptions = {
+    cancelDeadline: singleFlightDeadlines.cancelDeadline,
+    scheduleDeadline: singleFlightDeadlines.scheduleDeadline,
+    settlementTimeoutMs: 2,
+    termGraceMs: 1,
+    terminalOwnership() {
+      singleFlightChild.close(1, null);
+    }
+  };
+  const firstTermination = terminateObservedChild(
+    singleFlightChild,
+    singleFlightObservation,
+    singleFlightChild.stdio[3],
+    singleFlightOptions
+  );
+  const secondTermination = terminateObservedChild(
+    singleFlightChild,
+    singleFlightObservation,
+    singleFlightChild.stdio[3],
+    singleFlightOptions
+  );
+  assert.equal(firstTermination, secondTermination);
+  assert.deepEqual(singleFlightChild.killCalls, ["SIGTERM"]);
+  assert.equal(singleFlightDeadlines.timers.length, 2);
+  singleFlightChild.close(null, "SIGTERM");
+  await firstTermination;
+  assertReleased(singleFlightChild, singleFlightDeadlines);
+
+  const drainingChild = new SyntheticChild([]);
+  const drainingDeadlines = createDeadlines();
+  const drainingObservation = observeChildSettlement(drainingChild);
+  drainingChild.exit(0, null);
+  const drainingResult = terminateObservedChild(drainingChild, drainingObservation, drainingChild.stdio[3], {
+    cancelDeadline: drainingDeadlines.cancelDeadline,
+    scheduleDeadline: drainingDeadlines.scheduleDeadline,
+    settlementTimeoutMs: 2,
+    termGraceMs: 1,
+    terminalOwnership() {
+      drainingChild.stdio[3].destroy();
+      drainingChild.emit("close", 0, null);
+    }
+  });
+  drainingDeadlines.run(1);
+  assert.deepEqual(drainingChild.killCalls, [], "an exited child must not receive a cleanup signal while fd3 drains");
+  assert.equal(drainingChild.stdio[3].destroyed, false);
+  drainingChild.close(0, null);
+  const drained = await drainingResult;
+  assert.deepEqual(drained.exit, { code: 0, signal: null });
+  assert.deepEqual(drained.close, { code: 0, signal: null });
+  assert.deepEqual(drained.faults, []);
+  assertReleased(drainingChild, drainingDeadlines);
 
   for (const termOutcome of [false, new Error("synthetic SIGTERM failure")]) {
     const child = new SyntheticChild([termOutcome, true]);
@@ -1937,32 +2029,48 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
     deadlines.run(1);
     assert.deepEqual(child.killCalls, ["SIGTERM", "SIGKILL"]);
     await assertPending(settlement.result);
-    child.close("SIGKILL");
+    child.close(null, "SIGKILL");
     const result = await settlement.result;
     assert.equal(result.faults.length, 1);
     assert.match(result.faults[0].message, /SIGTERM/u);
     assertReleased(child, deadlines);
   }
 
-  const lateChild = new SyntheticChild([false, false, false]);
+  for (const signalOutcomes of [
+    [false, false],
+    [new Error("synthetic TERM throw"), new Error("synthetic KILL throw")]
+  ]) {
+    const terminalChild = new SyntheticChild(signalOutcomes);
+    const terminalDeadlines = createDeadlines();
+    let terminalOwnerCalls = 0;
+    const terminalSettlement = startSettlement(terminalChild, terminalDeadlines, () => {
+      terminalOwnerCalls += 1;
+      terminalChild.close(1, null);
+    });
+    terminalDeadlines.run(1);
+    terminalDeadlines.run(2);
+    const terminalResult = await terminalSettlement.result;
+    assert.equal(terminalOwnerCalls, 1);
+    assert.deepEqual(terminalChild.killCalls, ["SIGTERM", "SIGKILL"]);
+    assert.equal(terminalResult.faults.length, 3);
+    assert.match(terminalResult.faults[2].message, /settlement deadline/u);
+    assertReleased(terminalChild, terminalDeadlines);
+  }
+
+  const lateChild = new SyntheticChild([false, false]);
   const lateDeadlines = createDeadlines();
-  const lateSettlement = startSettlement(lateChild, lateDeadlines);
+  let terminalBoundaryEntered = false;
+  const lateSettlement = startSettlement(lateChild, lateDeadlines, () => {
+    terminalBoundaryEntered = true;
+  });
   lateDeadlines.run(1);
   lateDeadlines.run(2);
-  assert.deepEqual(lateChild.killCalls, ["SIGTERM", "SIGKILL", "SIGKILL"]);
+  assert.equal(terminalBoundaryEntered, true);
   await assertPending(lateSettlement.result);
-  assert.equal(lateChild.stdio[3].destroyed, false, "timeout must not release ownership before close");
-  lateChild.close("SIGKILL");
+  assert.equal(lateChild.stdio[3].destroyed, false, "terminal ownership must persist until late close");
+  lateChild.close(1, null);
   const lateResult = await lateSettlement.result;
-  assert.deepEqual(
-    lateResult.faults.map((fault) => fault.message),
-    [
-      "SIGTERM returned false",
-      "SIGKILL returned false",
-      "FIFO child did not close before its settlement deadline",
-      "SIGKILL returned false"
-    ]
-  );
+  assert.equal(lateResult.faults.length, 3);
   assertReleased(lateChild, lateDeadlines);
 });
 
@@ -2002,7 +2110,24 @@ test(
     }
     const settlement = await terminateObservedChild(legacy, observation, control, {
       settlementTimeoutMs:
-        WORKFLOW_FIFO_READINESS_TIMEOUT_MS + WORKFLOW_FIFO_LEGACY_BLOCK_MS + WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS
+        WORKFLOW_FIFO_READINESS_TIMEOUT_MS + WORKFLOW_FIFO_LEGACY_BLOCK_MS + WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS,
+      terminalOwnership({ state }) {
+        if (state.exited) {
+          control.destroy();
+          return;
+        }
+        let writer;
+        try {
+          writer = openSync(fifoPath, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+          assert.equal(
+            fstatSync(writer).isFIFO(),
+            true,
+            "the terminal FIFO writer must retain exact special-file type"
+          );
+        } finally {
+          if (writer !== undefined) closeSync(writer);
+        }
+      }
     });
     faults.push(...settlement.faults);
     if (settlement.close.code !== null) {
