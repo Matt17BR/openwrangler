@@ -514,6 +514,7 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
       const minimumEntryBytes = length === 0 ? 0 : length * 2 - 1;
       if (minimumEntryBytes > budget.remainingAscii()) budget.rejectMinimumAscii(minimumEntryBytes);
       const snapshot = [];
+      Object.setPrototypeOf(snapshot, null);
       for (let index = 0; index < length; index += 1) {
         const entry = readOwnArrayEntry(
           value,
@@ -523,14 +524,13 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
         );
         if (!entry.present) {
           budget.chargeAscii(index > 0 ? 5 : 4);
-          snapshot.push(null);
+          snapshot[index] = null;
         } else {
           if (index > 0) budget.chargeAscii(1);
           const snapshotEntry = snapshotJsonValue(entry.value, budget, ancestors, depth + 1);
-          snapshot.push(snapshotEntry);
+          snapshot[index] = snapshotEntry;
         }
       }
-      Object.setPrototypeOf(snapshot, null);
       return snapshot;
     }
 

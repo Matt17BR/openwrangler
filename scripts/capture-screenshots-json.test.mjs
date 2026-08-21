@@ -507,13 +507,18 @@ test("Axe machine-result sparse arrays pass at the exact byte boundary and fail 
   );
 });
 
-test("Axe sparse serialization never walks an Array.prototype Proxy", () => {
+test("Axe sparse serialization never walks or writes through an Array.prototype Proxy", () => {
   const originalPrototypeParent = Object.getPrototypeOf(Array.prototype);
-  let prototypeTrapCalls = 0;
+  let prototypeHasCalls = 0;
+  let prototypeSetCalls = 0;
   const proxyPrototypeParent = new Proxy(originalPrototypeParent, {
     has() {
-      prototypeTrapCalls += 1;
+      prototypeHasCalls += 1;
       throw new Error("Sparse serialization walked the Array prototype chain.");
+    },
+    set() {
+      prototypeSetCalls += 1;
+      throw new Error("Sparse serialization wrote through the Array prototype chain.");
     }
   });
   const sparse = Array(3);
@@ -525,9 +530,32 @@ test("Axe sparse serialization never walks an Array.prototype Proxy", () => {
     Object.setPrototypeOf(Array.prototype, originalPrototypeParent);
   }
 
-  assert.equal(prototypeTrapCalls, 0);
+  assert.equal(prototypeHasCalls, 0);
+  assert.equal(prototypeSetCalls, 0);
   assert.deepEqual(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)), {
     sparse: [null, null, null]
+  });
+});
+
+test("Axe sparse serialization ignores inherited non-writable numeric properties", () => {
+  const inheritedIndex = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  assert.equal(inheritedIndex, undefined);
+  const sparse = Array(1);
+  let serialized;
+  Object.defineProperty(Array.prototype, "0", {
+    value: "inherited",
+    enumerable: false,
+    configurable: true,
+    writable: false
+  });
+  try {
+    serialized = serializeAxeMachineResult({ sparse });
+  } finally {
+    delete Array.prototype[0];
+  }
+
+  assert.deepEqual(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    sparse: [null]
   });
 });
 
