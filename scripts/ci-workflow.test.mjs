@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -19,10 +19,13 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
-  writeFileSync
+  writeFileSync,
+  writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
+import { performance as nodePerformance } from "node:perf_hooks";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -63,7 +66,13 @@ const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
 const BOUNDED_WORKFLOW_FILE_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const WORKFLOW_FIFO_PROBE_ARGUMENT = "--open-bounded-workflow-fifo";
+const WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT = "--open-legacy-workflow-fifo";
+const WORKFLOW_FIFO_READY_MARKER = Buffer.from("open-wrangler-fifo-ready-v1\n", "utf8");
+const WORKFLOW_FIFO_READINESS_TIMEOUT_MS = 2_000;
+const WORKFLOW_FIFO_LEGACY_BLOCK_MS = 250;
 const WORKFLOW_FIFO_PROBE_TIMEOUT_MS = 2_000;
+const WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS = 2_000;
+const WORKFLOW_FIFO_TERM_GRACE_MS = 100;
 const WORKFLOW_YAML_NODE_LIMIT = 20_000;
 const WORKFLOW_YAML_DEPTH_LIMIT = 64;
 const WORKFLOW_YAML_ALIAS_LIMIT = 0;
@@ -290,6 +299,99 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
   }
   if (failure !== undefined) throw failure;
   return result;
+}
+
+function readExactChildReadinessMarker(
+  stream,
+  {
+    cancelDeadline = clearTimeout,
+    expected = WORKFLOW_FIFO_READY_MARKER,
+    scheduleDeadline = setTimeout,
+    timeoutMs = WORKFLOW_FIFO_READINESS_TIMEOUT_MS
+  } = {}
+) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const chunks = [];
+    let deadline;
+    let settled = false;
+    let total = 0;
+    const cleanup = () => {
+      if (deadline !== undefined) cancelDeadline(deadline);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onError);
+    };
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error === undefined) resolvePromise();
+      else rejectPromise(error);
+    };
+    const onData = (chunk) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.length;
+      if (total > expected.length) {
+        settle(new Error("FIFO child emitted duplicate or extra readiness marker data"));
+        return;
+      }
+      chunks.push(bytes);
+    };
+    const onEnd = () => {
+      if (total === 0) {
+        settle(new Error("FIFO child emitted no readiness marker"));
+        return;
+      }
+      const actual = Buffer.concat(chunks, total);
+      if (!actual.equals(expected)) {
+        settle(new Error("FIFO child emitted a malformed readiness marker"));
+        return;
+      }
+      settle();
+    };
+    const onError = (error) => settle(error);
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+    deadline = scheduleDeadline(
+      () => settle(new Error("FIFO child readiness marker arrived after its deadline")),
+      timeoutMs
+    );
+  });
+}
+
+function waitForChildSettlement(child, timeoutMs = WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const deadline = setTimeout(
+      () => rejectPromise(new Error("FIFO child did not settle after termination")),
+      timeoutMs
+    );
+    child.once("error", (error) => {
+      clearTimeout(deadline);
+      rejectPromise(error);
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(deadline);
+      resolvePromise({ code, signal });
+    });
+  });
+}
+
+async function waitForMonotonicDelay(delayMs) {
+  const deadline = nodePerformance.now() + delayMs;
+  while (true) {
+    const remaining = deadline - nodePerformance.now();
+    if (remaining <= 0) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, remaining));
+  }
+}
+
+if (process.argv[2] === WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT) {
+  assert.equal(process.argv.length, 4, "the legacy FIFO probe requires one path");
+  writeSync(3, WORKFLOW_FIFO_READY_MARKER);
+  closeSync(3);
+  openSync(process.argv[3], constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  throw new Error(`${process.argv[3]} unexpectedly passed the legacy workflow reader`);
 }
 
 if (process.argv[2] === WORKFLOW_FIFO_PROBE_ARGUMENT) {
@@ -1678,10 +1780,37 @@ test("bounded workflow leaf opens retain no-follow and request nonblocking seman
   );
 });
 
+test("FIFO child readiness accepts exactly one bounded marker before its deadline", async () => {
+  await readExactChildReadinessMarker(Readable.from([WORKFLOW_FIFO_READY_MARKER]));
+  await assert.rejects(readExactChildReadinessMarker(Readable.from([])), /no readiness marker/u);
+  await assert.rejects(
+    readExactChildReadinessMarker(Readable.from([Buffer.alloc(WORKFLOW_FIFO_READY_MARKER.length, 0x78)])),
+    /malformed readiness marker/u
+  );
+  await assert.rejects(
+    readExactChildReadinessMarker(Readable.from([WORKFLOW_FIFO_READY_MARKER, WORKFLOW_FIFO_READY_MARKER])),
+    /duplicate or extra readiness marker data/u
+  );
+  await assert.rejects(
+    readExactChildReadinessMarker(Readable.from([WORKFLOW_FIFO_READY_MARKER, Buffer.from("extra", "utf8")])),
+    /duplicate or extra readiness marker data/u
+  );
+
+  const late = new PassThrough();
+  const lateResult = readExactChildReadinessMarker(late, {
+    cancelDeadline() {},
+    scheduleDeadline(onDeadline) {
+      onDeadline();
+    }
+  });
+  late.end(WORKFLOW_FIFO_READY_MARKER);
+  await assert.rejects(lateResult, /arrived after its deadline/u);
+});
+
 test(
   "bounded workflow reads reject a FIFO promptly instead of blocking before type validation",
   { skip: process.platform === "win32" },
-  (context) => {
+  async (context) => {
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-fifo-")));
     context.after(() => rmSync(root, { force: true, recursive: true }));
     const relativePath = ".github/workflows/fixture.yml";
@@ -1690,20 +1819,51 @@ test(
     execFileSync("mkfifo", [fifoPath]);
     assert.equal(lstatSync(fifoPath).isFIFO(), true);
 
-    const legacy = spawnSync(
+    const legacy = spawn(
       process.execPath,
-      [
-        "-e",
-        'const { constants, openSync } = require("node:fs"); openSync(process.argv[1], constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));',
-        fifoPath
-      ],
-      { encoding: "utf8", killSignal: "SIGTERM", maxBuffer: 64 * 1024, timeout: 250 }
+      [fileURLToPath(import.meta.url), WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT, fifoPath],
+      { stdio: ["ignore", "ignore", "ignore", "pipe"] }
     );
-    assert.equal(legacy.error?.code, "ETIMEDOUT", "the preimage leaf open must reproduce its FIFO block");
-    assert.equal(legacy.status, null);
-    assert.equal(legacy.signal, "SIGTERM");
+    const control = legacy.stdio[3];
+    assert.notEqual(control, null, "the legacy FIFO probe requires its private readiness channel");
+    const settlement = waitForChildSettlement(
+      legacy,
+      WORKFLOW_FIFO_READINESS_TIMEOUT_MS + WORKFLOW_FIFO_LEGACY_BLOCK_MS + WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS
+    );
+    let escalation;
+    let settled;
+    try {
+      await readExactChildReadinessMarker(control);
+      const blockStartedAt = nodePerformance.now();
+      await waitForMonotonicDelay(WORKFLOW_FIFO_LEGACY_BLOCK_MS);
+      assert.ok(
+        nodePerformance.now() - blockStartedAt >= WORKFLOW_FIFO_LEGACY_BLOCK_MS,
+        "the legacy FIFO observation must span its complete monotonic deadline"
+      );
+      assert.equal(legacy.exitCode, null, "the preimage child must remain blocked after its readiness marker");
+      assert.equal(legacy.signalCode, null, "the preimage child must remain unsignalled until its deadline");
+    } finally {
+      if (legacy.exitCode === null && legacy.signalCode === null) {
+        assert.equal(legacy.kill("SIGTERM"), true, "the blocked legacy child must accept bounded termination");
+        escalation = setTimeout(() => {
+          if (legacy.exitCode === null && legacy.signalCode === null) legacy.kill("SIGKILL");
+        }, WORKFLOW_FIFO_TERM_GRACE_MS);
+      }
+      try {
+        settled = await settlement;
+      } finally {
+        if (escalation !== undefined) clearTimeout(escalation);
+      }
+    }
+    assert.equal(settled.code, null);
+    assert.ok(
+      settled.signal === "SIGTERM" || settled.signal === "SIGKILL",
+      `the legacy FIFO child settled with unexpected signal ${settled.signal}`
+    );
+    assert.equal(legacy.signalCode, settled.signal);
+    assert.equal(control.readableEnded, true, "the private readiness channel must be completely settled");
 
-    const startedAt = Date.now();
+    const startedAt = nodePerformance.now();
     const corrected = spawnSync(
       process.execPath,
       [fileURLToPath(import.meta.url), WORKFLOW_FIFO_PROBE_ARGUMENT, root, relativePath],
@@ -1714,7 +1874,7 @@ test(
         timeout: WORKFLOW_FIFO_PROBE_TIMEOUT_MS
       }
     );
-    const elapsedMs = Date.now() - startedAt;
+    const elapsedMs = nodePerformance.now() - startedAt;
     assert.notEqual(corrected.error?.code, "ETIMEDOUT", "the bounded reader must not block on a FIFO");
     assert.equal(corrected.signal, null);
     assert.notEqual(corrected.status, 0);
