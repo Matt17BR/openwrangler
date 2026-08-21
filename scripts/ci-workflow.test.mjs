@@ -1908,16 +1908,20 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   const expression = "${{ matrix.value }}";
   const dense64 = Array.from({ length: REQUIRED_CHECK_EXPRESSION_LIMIT }, () => expression).join("-");
   const dense65 = dense64 + "-" + expression;
+  const dense66 = dense65 + "-" + expression;
   assert.equal(requiredCheckName("fixture", { name: dense64 }).mayEqual("validate"), false);
   assert.equal(requiredCheckName("fixture", { name: dense65 }).mayEqual("validate"), true);
   let yieldedMatches = 0;
   function* countedDenseMatches() {
-    for (const match of dense65.matchAll(REQUIRED_CHECK_EXPRESSION_PATTERN)) {
+    for (const match of dense66.matchAll(REQUIRED_CHECK_EXPRESSION_PATTERN)) {
       yieldedMatches += 1;
+      if (yieldedMatches === REQUIRED_CHECK_EXPRESSION_LIMIT + 2) {
+        throw new Error("the 66th expression must not be consumed");
+      }
       yield match;
     }
   }
-  assert.equal(parseDynamicCheckNameParts(dense65, countedDenseMatches()), undefined);
+  assert.equal(parseDynamicCheckNameParts(dense66, countedDenseMatches()), undefined);
   assert.equal(yieldedMatches, REQUIRED_CHECK_EXPRESSION_LIMIT + 1);
 
   const exactWorkName = "x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT - expression.length) + expression;
@@ -1935,6 +1939,21 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   };
   assert.equal(parseDynamicCheckNameParts(overWorkName, overWorkMatches), undefined);
   assert.equal(openedOverWorkIterator, 0);
+
+  const astral = "\u{1f9ea}";
+  const astralFillUnits = REQUIRED_CHECK_MATCH_WORK_LIMIT - expression.length;
+  const exactAstralWorkName =
+    astral.repeat(Math.floor(astralFillUnits / astral.length)) +
+    "x".repeat(astralFillUnits % astral.length) +
+    expression;
+  const overAstralWorkName = exactAstralWorkName + "x";
+  assert.equal(astral.length, 2);
+  assert.equal(exactAstralWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.equal(overAstralWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT + 1);
+  assert.ok(Array.from(exactAstralWorkName).length < REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.ok(Buffer.byteLength(exactAstralWorkName, "utf8") > REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.equal(requiredCheckName("fixture", { name: exactAstralWorkName }).mayEqual("validate"), false);
+  assert.equal(requiredCheckName("fixture", { name: overAstralWorkName }).mayEqual("validate"), true);
 
   for (const name of [dense65, overWorkName]) {
     const overBudgetNameOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
