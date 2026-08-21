@@ -315,17 +315,6 @@ export function DataGrid({
     row: viewState.viewport.firstVisibleRow,
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
-  const gridClipboard = useGridClipboard({
-    contextId: logicalViewContext,
-    metadata,
-    pageSize,
-    schema: metadata.schema,
-    page,
-    initialCoordinate: focusedCell,
-    viewContextId
-  });
-  const resetGridClipboardSelection = gridClipboard.resetSelection;
-  const selectGridClipboardCell = gridClipboard.selectCell;
   const cellActionMenu = useCellActionMenuLifecycle({
     prepareFocus: (coordinate) => {
       pointerSelectionFocusRequest.current = coordinate;
@@ -333,6 +322,18 @@ export function DataGrid({
     scrollerRef,
     viewContextId: logicalViewContext
   });
+  const gridClipboard = useGridClipboard({
+    contextId: logicalViewContext,
+    metadata,
+    pageSize,
+    schema: metadata.schema,
+    page,
+    initialCoordinate: focusedCell,
+    onSelectionWillChange: cellActionMenu.dismiss,
+    viewContextId
+  });
+  const resetGridClipboardSelection = gridClipboard.resetSelection;
+  const selectGridClipboardCell = gridClipboard.selectCell;
   const cellFilterMenuTarget = cellActionMenu.target;
   const dismissCellActionMenu = cellActionMenu.dismiss;
 
@@ -1467,11 +1468,15 @@ export function DataGrid({
                       ...target,
                       columnId: column.id,
                       clipboardSelection,
-                      returnFocus: clipboardSelection === "range" ? focusedCell : target
+                      returnFocus: clipboardSelection === "range" ? focusedCell : target,
+                      selectionGeneration: gridClipboard.getSelectionGeneration()
                     });
                   };
                   const copySelection = async () => {
-                    const operation = cellActionMenu.beginOperation(cellFilterMenuTarget);
+                    const operation = cellActionMenu.beginOperation(
+                      cellFilterMenuTarget,
+                      gridClipboard.getSelectionGeneration()
+                    );
                     if (!operation || operation.owner.row !== row.rowNumber || operation.owner.columnId !== column.id) {
                       return;
                     }

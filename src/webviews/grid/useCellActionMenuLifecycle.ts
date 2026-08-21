@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { gridClipboardFallbackOwnsFocus } from "./gridClipboard";
 
 export interface CellActionMenuTarget {
   row: number;
@@ -7,6 +8,7 @@ export interface CellActionMenuTarget {
   clipboardSelection?: "column" | "range";
   generation: number;
   returnFocus: { row: number; column: number };
+  selectionGeneration: number;
   viewContextId: string;
 }
 
@@ -16,6 +18,7 @@ interface CellActionMenuInput {
   columnId: string;
   clipboardSelection?: "column" | "range";
   returnFocus: { row: number; column: number };
+  selectionGeneration: number;
 }
 
 interface CellActionMenuOperation {
@@ -25,7 +28,10 @@ interface CellActionMenuOperation {
 }
 
 export interface CellActionMenuLifecycle {
-  beginOperation(expected: CellActionMenuTarget | undefined): CellActionMenuOperation | undefined;
+  beginOperation(
+    expected: CellActionMenuTarget | undefined,
+    selectionGeneration: number
+  ): CellActionMenuOperation | undefined;
   close(owner: CellActionMenuTarget | undefined, restoreFocus?: boolean): boolean;
   completeOperation(operation: CellActionMenuOperation | undefined, restoreFocus?: boolean): boolean;
   dismiss(owner?: CellActionMenuTarget): boolean;
@@ -73,9 +79,16 @@ export function useCellActionMenuLifecycle({
   );
 
   const beginOperation = useCallback(
-    (expected: CellActionMenuTarget | undefined): CellActionMenuOperation | undefined => {
+    (expected: CellActionMenuTarget | undefined, selectionGeneration: number): CellActionMenuOperation | undefined => {
       const owner = targetRef.current;
-      if (!owner || owner !== expected || owner.viewContextId !== viewContextRef.current) return undefined;
+      if (
+        !owner ||
+        owner !== expected ||
+        owner.selectionGeneration !== selectionGeneration ||
+        owner.viewContextId !== viewContextRef.current
+      ) {
+        return undefined;
+      }
       operationGenerationRef.current += 1;
       const generation = operationGenerationRef.current;
       return {
@@ -83,6 +96,7 @@ export function useCellActionMenuLifecycle({
         owner,
         ownsResult: () => {
           const scroller = scrollerRef.current;
+          const activeElement = document.activeElement;
           const ownsOperation =
             mountedRef.current &&
             targetRef.current === owner &&
@@ -92,7 +106,7 @@ export function useCellActionMenuLifecycle({
             !ownsOperation ||
             !document.hasFocus() ||
             scroller === null ||
-            !scroller.contains(document.activeElement)
+            (!scroller.contains(activeElement) && !gridClipboardFallbackOwnsFocus(activeElement))
           ) {
             return false;
           }

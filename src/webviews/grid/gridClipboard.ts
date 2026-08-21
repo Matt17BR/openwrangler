@@ -261,6 +261,12 @@ export function buildGridClipboardPayload({
   };
 }
 
+const clipboardFallbackFocusOwners = new WeakSet<Element>();
+
+export function gridClipboardFallbackOwnsFocus(element: Element | null): boolean {
+  return element !== null && clipboardFallbackFocusOwners.has(element);
+}
+
 export async function writeGridClipboardText(text: string, ownsAttempt: () => boolean): Promise<void> {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -283,16 +289,25 @@ export async function writeGridClipboardText(text: string, ownsAttempt: () => bo
   input.setAttribute("aria-hidden", "true");
   input.style.position = "fixed";
   input.style.inset = "0 auto auto -10000px";
+  clipboardFallbackFocusOwners.add(input);
   document.body.append(input);
   try {
     input.select();
     const copied = document.execCommand("copy");
+    const activeAfterCopy = document.activeElement;
+    if (activeAfterCopy !== input && activeAfterCopy !== activeElement) {
+      throw new Error("Clipboard focus ownership changed during the fallback attempt.");
+    }
     if (!ownsAttempt()) throw new Error("Clipboard ownership changed during the fallback attempt.");
     if (!copied) throw new Error("Clipboard access is unavailable in this editor.");
   } finally {
     const inputRetainsFocus = document.activeElement === input;
-    input.remove();
-    if (inputRetainsFocus && ownsAttempt()) activeElement?.focus({ preventScroll: true });
+    try {
+      if (inputRetainsFocus && ownsAttempt()) activeElement?.focus({ preventScroll: true });
+    } finally {
+      input.remove();
+      clipboardFallbackFocusOwners.delete(input);
+    }
   }
 }
 

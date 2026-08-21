@@ -147,7 +147,10 @@ describe("DataGrid clipboard interactions", () => {
 
   it("announces a successful keyboard fallback without invalidating its same-cell owner", async () => {
     writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
-    const execCommand = vi.fn(() => true);
+    const execCommand = vi.fn(() => {
+      document.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+      return true;
+    });
     Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
@@ -247,6 +250,31 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
+  it("lets an owned menu fallback take private textarea focus and restore the range endpoint", async () => {
+    writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
+    const execCommand = vi.fn(() => {
+      document.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 61);
+    openClipboardMenu(milan, 62);
+
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+        name: "Copy selection"
+      })
+    );
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy"));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(document.activeElement).toBe(emptySales);
+    expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
   it("invalidates an owning range menu before left pointerdown collapses its exact selection", async () => {
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
@@ -265,6 +293,28 @@ describe("DataGrid clipboard interactions", () => {
 
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByText(/Copied|Could not write/u)).toBeNull();
+  });
+
+  it("invalidates a range menu before pointerless focus replaces its exact selection", async () => {
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const paris = screen.getByRole("cell", { name: "Paris" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 59);
+    openClipboardMenu(milan, 60);
+    const staleCopy = within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole(
+      "menuitem",
+      { name: "Copy selection" }
+    );
+
+    act(() => paris.focus());
+    fireEvent.click(staleCopy);
+    await act(async () => Promise.resolve());
+
+    expect(screen.getByText("1 cell selected, row 2, column 1")).toBeTruthy();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(writeText).not.toHaveBeenCalled();
     expect(screen.queryByText(/Copied|Could not write/u)).toBeNull();
   });
 

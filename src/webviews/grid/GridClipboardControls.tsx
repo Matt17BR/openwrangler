@@ -18,6 +18,7 @@ export interface GridClipboardController {
   copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<boolean>;
   copyColumn(ownsResult?: () => boolean): Promise<boolean>;
   focusCell(coordinate: GridCellCoordinate): void;
+  getSelectionGeneration(): number;
   isColumnSelected(columnId: string): boolean;
   isRangeSelected(coordinate: GridCellCoordinate): boolean;
   isSelected(coordinate: GridCellCoordinate): boolean;
@@ -38,6 +39,7 @@ export function useGridClipboard({
   schema,
   page,
   initialCoordinate,
+  onSelectionWillChange,
   viewContextId
 }: {
   contextId: string;
@@ -46,20 +48,27 @@ export function useGridClipboard({
   schema: readonly ColumnSchema[];
   page: LiveGridPage;
   initialCoordinate: GridCellCoordinate;
+  onSelectionWillChange?: () => void;
   viewContextId?: string;
 }): GridClipboardController {
   const [selection, setSelection] = useState(() => collapsedGridClipboardSelection(contextId, initialCoordinate));
   const [announcement, setAnnouncement] = useState("");
   const contextIdRef = useRef(contextId);
   const copyActionGenerationRef = useRef(0);
+  const selectionGenerationRef = useRef(0);
   const mountedRef = useRef(true);
+  const invalidateSelectionOwner = useCallback((): void => {
+    onSelectionWillChange?.();
+    selectionGenerationRef.current += 1;
+    copyActionGenerationRef.current += 1;
+  }, [onSelectionWillChange]);
   const wholeColumn = useWholeColumnClipboard({ metadata, pageSize, viewContextId });
   const resetWholeColumn = wholeColumn.reset;
   const selectWholeColumn = wholeColumn.selectColumn;
   useLayoutEffect(() => {
-    if (contextIdRef.current !== contextId) copyActionGenerationRef.current += 1;
+    if (contextIdRef.current !== contextId) invalidateSelectionOwner();
     contextIdRef.current = contextId;
-  }, [contextId]);
+  }, [contextId, invalidateSelectionOwner]);
   const rectangleResults = useMemo(
     () => ({
       cell: buildGridClipboardPayload({ mode: "cell", selection, contextId, schema, page }),
@@ -78,21 +87,21 @@ export function useGridClipboard({
   }, [rectangleResults, wholeColumn.selectedColumnId]);
   const resultsRef = useRef(results);
   useLayoutEffect(() => {
-    if (resultsRef.current !== results) copyActionGenerationRef.current += 1;
+    if (resultsRef.current !== results) invalidateSelectionOwner();
     resultsRef.current = results;
-  }, [results]);
+  }, [invalidateSelectionOwner, results]);
   const resetSelection = useCallback(
     (coordinate: GridCellCoordinate): void => {
-      copyActionGenerationRef.current += 1;
+      invalidateSelectionOwner();
       resetWholeColumn();
       setSelection(collapsedGridClipboardSelection(contextIdRef.current, coordinate));
       setAnnouncement("");
     },
-    [resetWholeColumn]
+    [invalidateSelectionOwner, resetWholeColumn]
   );
   const selectCell = useCallback(
     (coordinate: GridCellCoordinate, extend: boolean): void => {
-      copyActionGenerationRef.current += 1;
+      invalidateSelectionOwner();
       resetWholeColumn();
       setSelection((current) =>
         extend
@@ -101,7 +110,7 @@ export function useGridClipboard({
       );
       setAnnouncement("");
     },
-    [contextId, resetWholeColumn]
+    [contextId, invalidateSelectionOwner, resetWholeColumn]
   );
   const focusCell = useCallback(
     (coordinate: GridCellCoordinate): void => {
@@ -113,7 +122,7 @@ export function useGridClipboard({
       ) {
         return;
       }
-      copyActionGenerationRef.current += 1;
+      invalidateSelectionOwner();
       resetWholeColumn();
       setSelection((current) =>
         current.contextId === contextId &&
@@ -124,7 +133,7 @@ export function useGridClipboard({
       );
       setAnnouncement("");
     },
-    [contextId, resetWholeColumn, selection, wholeColumn.selectedColumnId]
+    [contextId, invalidateSelectionOwner, resetWholeColumn, selection, wholeColumn.selectedColumnId]
   );
   const copy = useCallback(
     async (mode: GridClipboardMode, additionalOwnership?: () => boolean): Promise<boolean> => {
@@ -167,11 +176,11 @@ export function useGridClipboard({
   );
   const selectColumn = useCallback(
     (column: ColumnSchema): void => {
-      copyActionGenerationRef.current += 1;
+      invalidateSelectionOwner();
       setAnnouncement("");
       selectWholeColumn(column);
     },
-    [selectWholeColumn]
+    [invalidateSelectionOwner, selectWholeColumn]
   );
 
   useEffect(() => {
@@ -187,6 +196,7 @@ export function useGridClipboard({
     copy,
     copyColumn: wholeColumn.copy,
     focusCell,
+    getSelectionGeneration: () => selectionGenerationRef.current,
     isColumnSelected: wholeColumn.isColumnSelected,
     isRangeSelected: (coordinate) =>
       !wholeColumn.selectedColumnId &&

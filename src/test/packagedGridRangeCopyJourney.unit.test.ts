@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   packagedGridCopyShortcut,
   runPackagedGridRangeCopyLifecycle,
-  runWithPackagedGridClipboardRestoration
+  runWithPackagedGridClipboardRestoration,
+  waitForPackagedGridClipboard
 } from "./extensionHost/packagedGridRangeCopyJourney";
 
 describe("packaged grid range-copy journey", () => {
@@ -174,6 +175,29 @@ describe("packaged grid range-copy journey", () => {
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
 
+  it("wraps a secret-bearing initial clipboard rejection before it can escape the privacy lifecycle", async () => {
+    const clipboardSecret = "private-initial-read-clipboard-sentinel";
+    const exercise = vi.fn(async () => undefined);
+    const hostClipboard = {
+      readText: vi.fn(async () => {
+        throw Object.assign(new Error("initial clipboard read rejected"), { actual: clipboardSecret });
+      }),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    let failure: unknown;
+    try {
+      await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
+    expect(diagnosticRetainsAny(failure, [clipboardSecret])).toBe(false);
+    expect(exercise).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
+  });
+
   it("restores the prior clipboard after a successful packaged journey", async () => {
     const exercise = vi.fn(async () => undefined);
     const hostClipboard = {
@@ -187,6 +211,25 @@ describe("packaged grid range-copy journey", () => {
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
 
+  it("bounds an oversized concurrent clipboard replacement before polling can normalize or retain it", async () => {
+    const oversizedObserved = "private-polling-clipboard-sentinel".repeat(140_000);
+    const hostClipboard = {
+      readText: vi.fn().mockResolvedValueOnce("pending").mockResolvedValueOnce(oversizedObserved),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    let failure: unknown;
+    try {
+      await waitForPackagedGridClipboard(hostClipboard, "expected range");
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
+    expect(diagnosticRetainsAny(failure, ["private-polling-clipboard-sentinel"])).toBe(false);
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects a non-string prior clipboard value before the packaged journey can mutate it", async () => {
     const exercise = vi.fn(async () => undefined);
     const hostClipboard = {
@@ -194,10 +237,14 @@ describe("packaged grid range-copy journey", () => {
       writeText: vi.fn(async () => undefined)
     };
 
-    await expect(runWithPackagedGridClipboardRestoration(hostClipboard, exercise)).rejects.toThrow(
-      "The prior host clipboard value is invalid or exceeds the 4 MiB restoration limit."
-    );
+    let failure: unknown;
+    try {
+      await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
+    } catch (error) {
+      failure = error;
+    }
 
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
     expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
     expect(exercise).not.toHaveBeenCalled();
     expect(hostClipboard.writeText).not.toHaveBeenCalled();
@@ -210,10 +257,14 @@ describe("packaged grid range-copy journey", () => {
       writeText: vi.fn(async () => undefined)
     };
 
-    await expect(runWithPackagedGridClipboardRestoration(hostClipboard, exercise)).rejects.toThrow(
-      "The prior host clipboard value is invalid or exceeds the 4 MiB restoration limit."
-    );
+    let failure: unknown;
+    try {
+      await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
+    } catch (error) {
+      failure = error;
+    }
 
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
     expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
     expect(exercise).not.toHaveBeenCalled();
     expect(hostClipboard.writeText).not.toHaveBeenCalled();

@@ -63,10 +63,16 @@ export async function runWithPackagedGridClipboardRestoration(
   hostClipboard: PackagedGridRangeCopyHostClipboard,
   exercise: () => Promise<void>
 ): Promise<void> {
-  const priorClipboard = validatePriorPackagedClipboard(await hostClipboard.readText());
-  await runPackagedGridRangeCopyLifecycle(exercise, async () => {
-    await hostClipboard.writeText(priorClipboard);
-  });
+  let priorClipboard: string | undefined;
+  await runPackagedGridRangeCopyLifecycle(
+    async () => {
+      priorClipboard = validatePriorPackagedClipboard(await hostClipboard.readText());
+      await exercise();
+    },
+    async () => {
+      if (priorClipboard !== undefined) await hostClipboard.writeText(priorClipboard);
+    }
+  );
 }
 
 export function validatePriorPackagedClipboard(value: unknown): string {
@@ -84,15 +90,20 @@ function normalizeClipboardText(value: string): string {
   return value.replaceAll("\r\n", "\n");
 }
 
-async function waitForHostClipboard(
+export async function waitForPackagedGridClipboard(
   hostClipboard: PackagedGridRangeCopyHostClipboard,
   expected: string
 ): Promise<void> {
-  const deadline = Date.now() + clipboardWaitMs;
-  do {
-    if (normalizeClipboardText(await hostClipboard.readText()) === expected) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 25));
-  } while (Date.now() < deadline);
+  try {
+    const deadline = Date.now() + clipboardWaitMs;
+    do {
+      const observed = validatePriorPackagedClipboard(await hostClipboard.readText());
+      if (normalizeClipboardText(observed) === expected) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    } while (Date.now() < deadline);
+  } catch {
+    throw new PackagedGridRangeCopyFailure(true, false);
+  }
   throw new PackagedGridRangeCopyFailure(true, false);
 }
 
@@ -131,7 +142,7 @@ export async function exercisePackagedGridRangeCopyJourney({
     recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
     await hostClipboard.writeText("open-wrangler-grid-range-copy-keyboard-pending");
     await endpoint.press(packagedGridCopyShortcut(platform));
-    await waitForHostClipboard(hostClipboard, expectedRangeText);
+    await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
     await frame.getByText("Copied 2 by 2 cell range.", { exact: true }).waitFor({ timeout: 5_000 });
 
     recordProgress("platform-smoke:grid-range-copy:context-menu");
@@ -146,7 +157,7 @@ export async function exercisePackagedGridRangeCopyJourney({
     );
     const copySelection = menu.getByRole("menuitem", { name: "Copy selection", exact: true });
     await copySelection.click();
-    await waitForHostClipboard(hostClipboard, expectedRangeText);
+    await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
     await frame
       .locator('td[data-grid-row="1"][data-grid-column="1"]:focus')
       .waitFor({ state: "visible", timeout: 5_000 });
