@@ -20,6 +20,17 @@ import {
 import { initialViewingState } from "../extension/sessionRuntimeStateRestorer";
 
 const emptyFilter: FilterModel = { filters: [], sort: [] };
+const nonemptyFilter: FilterModel = {
+  logic: "and",
+  filters: [
+    {
+      column: "value",
+      type: "integer",
+      predicates: [{ kind: "predicate", operator: "gte", value: 2 }]
+    }
+  ],
+  sort: [{ column: "value", direction: "desc", nulls: "last" }]
+};
 const schema: SessionMetadata["schema"] = [
   { id: "c:value", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }
 ];
@@ -422,10 +433,20 @@ describe("SessionResponseCommitter", () => {
     ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "clipboard-page" });
   });
 
-  it("publishes preview, apply, and undo as one public revision stream", async () => {
-    const committer = new SessionResponseCommitter(new SessionPersistenceStore());
+  it("persists one nonempty draft view through preview, apply, and discard", async () => {
+    let stored: Record<string, unknown> = {};
+    const persistence = new SessionPersistenceStore(
+      memento(
+        () => stored,
+        async (_key, value) => {
+          stored = value;
+        }
+      )
+    );
+    const committer = new SessionResponseCommitter(persistence);
     const callbacks = callbackSpies();
     const session = responseState({
+      metadata: metadata({ filterModel: nonemptyFilter }),
       activeViewContextId: "view",
       latestRequestedViewContextId: "view",
       latestRequestedPageRequestId: "page"
@@ -440,7 +461,7 @@ describe("SessionResponseCommitter", () => {
       columnOffset: 0,
       columnLimit: 1
     };
-    const previewMetadata = metadata({ revision: 1, draftStep: step });
+    const previewMetadata = metadata({ revision: 1, draftStep: step, filterModel: nonemptyFilter });
     const preview = {
       kind: "stepPreview" as const,
       revision: 1,
@@ -452,22 +473,22 @@ describe("SessionResponseCommitter", () => {
     };
 
     await expect(
-      committer.commit(session, previewRequest, preview, 0, emptyFilter, undefined, callbacks)
+      committer.commit(session, previewRequest, preview, 0, nonemptyFilter, undefined, callbacks)
     ).resolves.toMatchObject({ kind: "stepPreview", revision: 1 });
     expect(session).toMatchObject({
       publicRevision: 1,
       runtimeRevision: 1,
       code: "# preview",
-      draftBaseFilterModel: emptyFilter,
+      draftBaseFilterModel: nonemptyFilter,
       draftPresentation: { warnings: ["review"], beforeSchema: schema }
+    });
+    expect(persistence.load(session.openRequest.source, "polars")).toMatchObject({
+      cleaning: { steps: [], draftStep: step, draftBaseFilterModel: nonemptyFilter },
+      view: { filterModel: nonemptyFilter }
     });
     expect(session.activeViewContextId).toBeUndefined();
     expect(session.latestRequestedPageRequestId).toBeUndefined();
 
-    const appliedFilter: FilterModel = {
-      filters: [],
-      sort: [{ column: "value", direction: "asc", nulls: "first" }]
-    };
     const applyRequest: SessionBoundRequest = {
       kind: "applyDraft",
       sessionId: session.publicId,
@@ -477,24 +498,26 @@ describe("SessionResponseCommitter", () => {
       columnOffset: 0,
       columnLimit: 1
     };
-    const appliedMetadata = metadata({ revision: 2, steps: [step], filterModel: appliedFilter });
+    const appliedMetadata = metadata({ revision: 2, steps: [step], filterModel: nonemptyFilter });
     await committer.commit(
       session,
       applyRequest,
       planResponse("apply", appliedMetadata, "# applied"),
       1,
-      emptyFilter,
+      nonemptyFilter,
       undefined,
       callbacks
     );
     expect(session).toMatchObject({
       publicRevision: 2,
       runtimeRevision: 2,
-      metadata: { steps: [step], filterModel: appliedFilter },
+      metadata: { steps: [step], filterModel: nonemptyFilter },
       code: "# applied"
     });
     expect(session.draftBaseFilterModel).toBeUndefined();
     expect(session.draftPresentation).toBeUndefined();
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning).toMatchObject({ steps: [step] });
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toBeUndefined();
 
     const undoRequest: SessionBoundRequest = {
       kind: "undoStep",
@@ -508,19 +531,60 @@ describe("SessionResponseCommitter", () => {
     await committer.commit(
       session,
       undoRequest,
-      planResponse("undo", metadata({ revision: 3 }), "# original"),
+      planResponse("undo", metadata({ revision: 3, filterModel: nonemptyFilter }), "# original"),
       2,
-      appliedFilter,
+      nonemptyFilter,
       undefined,
       callbacks
     );
     expect(session).toMatchObject({
       publicRevision: 3,
       runtimeRevision: 3,
-      metadata: { steps: [], filterModel: emptyFilter },
+      metadata: { steps: [], filterModel: nonemptyFilter },
       code: "# original"
     });
-    expect(callbacks.activate).toHaveBeenCalledTimes(3);
+
+    const discardPreviewRequest: SessionBoundRequest = { ...previewRequest, revision: 3 };
+    await committer.commit(
+      session,
+      discardPreviewRequest,
+      { ...preview, revision: 4, metadata: metadata({ revision: 4, draftStep: step, filterModel: nonemptyFilter }) },
+      3,
+      nonemptyFilter,
+      undefined,
+      callbacks
+    );
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toEqual(
+      nonemptyFilter
+    );
+
+    const discardRequest: SessionBoundRequest = {
+      kind: "discardDraft",
+      sessionId: session.publicId,
+      revision: 4,
+      offset: 0,
+      limit: 10,
+      columnOffset: 0,
+      columnLimit: 1
+    };
+    await committer.commit(
+      session,
+      discardRequest,
+      planResponse("discard", metadata({ revision: 5, filterModel: nonemptyFilter }), "# discarded"),
+      4,
+      nonemptyFilter,
+      undefined,
+      callbacks
+    );
+    expect(session).toMatchObject({
+      publicRevision: 5,
+      runtimeRevision: 5,
+      metadata: { steps: [], filterModel: nonemptyFilter },
+      code: "# discarded"
+    });
+    expect(session.draftBaseFilterModel).toBeUndefined();
+    expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toBeUndefined();
+    expect(callbacks.activate).toHaveBeenCalledTimes(5);
   });
 
   it("commits a terminal Spark shape even without a filter, plan, or revision change", async () => {
@@ -757,7 +821,7 @@ function pageResponse(
 }
 
 function planResponse(
-  action: "apply" | "undo",
+  action: "apply" | "discard" | "undo",
   confirmed: SessionMetadata,
   code: string
 ): Extract<OpenWranglerResponse, { kind: "planUpdated" }> {

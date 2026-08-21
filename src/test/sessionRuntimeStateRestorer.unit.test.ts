@@ -22,7 +22,7 @@ const schema: SessionMetadata["schema"] = [
 ];
 
 describe("SessionRuntimeStateRestorer", () => {
-  it("replays exact committed steps and restores a draft against its confirmed base view", async () => {
+  it("replays exact committed steps and restores a draft against its nonempty confirmed base view", async () => {
     const groupStep: TransformStep = {
       id: "group",
       kind: "groupBy",
@@ -52,7 +52,14 @@ describe("SessionRuntimeStateRestorer", () => {
       params: { column: { id: "c:step:group:0", name: "total" }, decimals: 1 }
     };
     const draftBaseFilter: FilterModel = {
-      filters: [],
+      logic: "and",
+      filters: [
+        {
+          column: "total",
+          type: "integer",
+          predicates: [{ kind: "predicate", operator: "gte", value: 2 }]
+        }
+      ],
       sort: [{ column: "total", direction: "desc", nulls: "last" }]
     };
     const requests: OpenWranglerRequest[] = [];
@@ -117,6 +124,9 @@ describe("SessionRuntimeStateRestorer", () => {
         )
         .map((request) => request.step)
     ).toEqual([groupStep, exampleStep, draftStep]);
+    expect(requests.find((request) => request.kind === "getPage")).toMatchObject({
+      filterModel: draftBaseFilter
+    });
     expect(session).toMatchObject({
       runtimeRevision: 5,
       metadata: { steps: [groupStep, exampleStep], draftStep, filterModel: draftBaseFilter },
