@@ -84,6 +84,22 @@ jobs:
         run: npm audit
       - name: Full Python and fixture dependency audits
         run: npm run audit:python
+      - name: Select the Node 22 maintained-LTS compatibility runtime
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+      - name: Node 22 maintained-LTS compatibility smoke
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          test "$(node --version)" = "v22.23.2"
+          test "$(npm --version)" = "10.9.8"
+          npm ci --ignore-scripts --no-audit
+          test -z "$(git status --porcelain --untracked-files=no)"
+          npm run check:invariants
+          npm run typecheck
+          npm run test:scripts:workflow
 
   r-contract-kernel:
     name: R 4.5 kernel contract

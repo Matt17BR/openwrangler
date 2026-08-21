@@ -5,7 +5,7 @@
   "version": "1.99.7",
   "publisher": "Matt17BR",
   "license": "MIT",
-  "packageManager": "npm@10.9.4",
+  "packageManager": "npm@11.17.0",
   "preview": true,
   "repository": {
     "type": "git",
@@ -40,7 +40,7 @@
     "cursor"
   ],
   "engines": {
-    "node": ">=22.22.0 <23",
+    "node": "^22.22.0 || ^24.0.0",
     "vscode": "^1.106.0"
   },
   "categories": [

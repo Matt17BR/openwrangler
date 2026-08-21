@@ -60,6 +60,7 @@ import {
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
 import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
+import { inspectNodeToolchainContract } from "./node-toolchain-contract.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -828,6 +829,31 @@ const codeql = capabilityDocuments.codeql;
 const performance = workflow("performance.yml");
 const releasedJupyter = workflow("released-jupyter.yml");
 
+function nodeToolchainInputs(overrides = {}) {
+  return {
+    azureSource: readFileSync("azure-pipelines-marketplace.yml", "utf8"),
+    contributingSource: readFileSync("CONTRIBUTING.md", "utf8"),
+    nodeVersionSource: readFileSync(".node-version", "utf8"),
+    packageJson,
+    packageLock,
+    releasingSource: readFileSync("docs/releasing.md", "utf8"),
+    workflows: Object.fromEntries(
+      repositoryWorkflowNames.map((name) => [name, workflow(name)])
+    ),
+    ...overrides
+  };
+}
+
+function mutableNodeToolchainInputs() {
+  return structuredClone(nodeToolchainInputs());
+}
+
+function assertNodeToolchainRejected(inputs, pattern) {
+  const problems = inspectNodeToolchainContract(inputs);
+  assert.notDeepEqual(problems, []);
+  assert.match(problems.join("\n"), pattern);
+}
+
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97";
@@ -917,7 +943,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "4dad193f568dbbe53ecaf6c0d3f0ee1a85dc80a6ff0f07d13b1790f56115411a";
+const WORKFLOW_USE_INVENTORY_SHA256 = "2d17c23d0758803c3adb70758c6905c766c243605a136bdd24383122f3bb0b97";
 const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[2].uses", SETUP_PYTHON],
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[3].uses", SETUP_JAVA],
@@ -1121,7 +1147,7 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
     external.push([name, path, uses]);
   }
   if (!exactInventory) return Object.freeze({ external, local });
-  assert.equal(external.length, 146);
+  assert.equal(external.length, 147);
   assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
   const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
   assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
@@ -3131,7 +3157,10 @@ function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   );
   assert.equal(
     job.steps.some(
-      (step) => typeof step.run === "string" && /\b(?:typecheck(?::dependencies)?|test:ts)\b/u.test(step.run)
+      (step) =>
+        step.name !== "Node 22 maintained-LTS compatibility smoke" &&
+        typeof step.run === "string" &&
+        /\b(?:typecheck(?::dependencies)?|test:ts)\b/u.test(step.run)
     ),
     false
   );
@@ -3847,7 +3876,7 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
   const names = repositoryWorkflowNames;
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
-  assert.equal(inventory.external.length, 146);
+  assert.equal(inventory.external.length, 147);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
   assertReviewedDependencyActionCallsites(rows);
 
@@ -4164,29 +4193,117 @@ test("CI and CodeQL align edited, stacked, readiness, and draft activity semanti
 });
 
 test("automation retains the exact Node and npm toolchain authority", () => {
-  const nodeVersion = readFileSync(".node-version", "utf8").trim();
-  assert.equal(nodeVersion, "22.22.0");
-  assert.equal(packageJson.engines.node, ">=22.22.0 <23");
-  assert.equal(packageJson.packageManager, "npm@10.9.4");
-  let setupNodeCount = 0;
-  for (const name of repositoryWorkflowNames.filter((entry) => entry.endsWith(".yml"))) {
-    const document = workflow(name);
-    for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
-      for (const [stepIndex, step] of (job.steps ?? []).entries()) {
-        if (typeof step?.uses !== "string" || !step.uses.startsWith("actions/setup-node@")) continue;
-        setupNodeCount += 1;
-        assert.equal(step.with?.["node-version-file"], ".node-version", `${name}:${jobId}:${stepIndex}`);
-        assert.equal(Object.hasOwn(step.with ?? {}, "node-version"), false, `${name}:${jobId}:${stepIndex}`);
-      }
-    }
+  assert.deepEqual(inspectNodeToolchainContract(nodeToolchainInputs()), []);
+});
+
+test("Node toolchain authority rejects the Node 22-only preimage", () => {
+  const inputs = mutableNodeToolchainInputs();
+  inputs.nodeVersionSource = "22.22.0\n";
+  inputs.packageJson.packageManager = "npm@10.9.4";
+  inputs.packageJson.engines.node = ">=22.22.0 <23";
+  inputs.packageLock.packages[""].engines.node = ">=22.22.0 <23";
+  inputs.azureSource = inputs.azureSource.replaceAll("24.19.0", "22.22.0");
+  inputs.workflows["ci.yml"].jobs["invariant-core"].steps.splice(-2);
+  assertNodeToolchainRejected(inputs, /canonical|24\.19\.0|11\.17\.0|compatibility/iu);
+});
+
+test("Node toolchain authority rejects canonical, engine, and type drift", () => {
+  const mutations = [
+    ["version-file drift", (inputs) => (inputs.nodeVersionSource = "24.18.0\n"), /\.node-version/u],
+    ["npm drift", (inputs) => (inputs.packageJson.packageManager = "npm@11.16.0"), /packageManager/u],
+    [
+      "odd-major admission",
+      (inputs) => {
+        inputs.packageJson.engines.node = ">=22.22.0 <25";
+        inputs.packageLock.packages[""].engines.node = ">=22.22.0 <25";
+      },
+      /Node engine/u
+    ],
+    [
+      "extension-host type drift",
+      (inputs) => {
+        inputs.packageJson.devDependencies["@types/node"] = "24.0.0";
+        inputs.packageLock.packages[""].devDependencies["@types/node"] = "24.0.0";
+      },
+      /Node type contract/u
+    ],
+    ["Azure drift", (inputs) => (inputs.azureSource = inputs.azureSource.replace("24.19.0", "24.18.0")), /Azure/u],
+    [
+      "contributor drift",
+      (inputs) =>
+        (inputs.contributingSource = inputs.contributingSource.replace(
+          "Node 23 is intentionally unsupported.",
+          "Node 23 is supported."
+        )),
+      /CONTRIBUTING/u
+    ],
+    [
+      "release drift",
+      (inputs) =>
+        (inputs.releasingSource = inputs.releasingSource.replace(
+          "Node 23 is intentionally excluded.",
+          "Node 23 is included."
+        )),
+      /releasing/u
+    ]
+  ];
+  for (const [label, mutate, pattern] of mutations) {
+    const inputs = mutableNodeToolchainInputs();
+    mutate(inputs);
+    assertNodeToolchainRejected(inputs, pattern, label);
   }
-  assert.ok(setupNodeCount > 0);
-  const azure = readFileSync("azure-pipelines-marketplace.yml", "utf8");
-  assert.equal((azure.match(/task: NodeTool@0/gu) ?? []).length, 2);
-  assert.deepEqual(
-    [...azure.matchAll(/^\s+versionSpec:\s*(\S+)\s*$/gmu)].map((match) => match[1]),
-    [nodeVersion, nodeVersion]
-  );
+});
+
+test("Node toolchain authority rejects compatibility topology and command drift", () => {
+  const mutations = [
+    [
+      "missing",
+      (inputs) => inputs.workflows["ci.yml"].jobs["invariant-core"].steps.splice(-2),
+      /compatibility exception/u
+    ],
+    [
+      "duplicate",
+      (inputs) => {
+        const steps = inputs.workflows["ci.yml"].jobs["invariant-core"].steps;
+        steps.push(structuredClone(steps.at(-2)), structuredClone(steps.at(-1)));
+      },
+      /compatibility exception/u
+    ],
+    [
+      "wrong owner",
+      (inputs) => {
+        const source = inputs.workflows["ci.yml"].jobs["invariant-core"].steps;
+        inputs.workflows["ci.yml"].jobs["canonical-editor"].steps.push(...source.splice(-2));
+      },
+      /compatibility job/u
+    ],
+    [
+      "condition drift",
+      (inputs) => {
+        inputs.workflows["ci.yml"].jobs["invariant-core"].steps.at(-2).if = "${{ always() }}";
+      },
+      /compatibility condition/u
+    ],
+    [
+      "command drift",
+      (inputs) => {
+        inputs.workflows["ci.yml"].jobs["invariant-core"].steps.at(-1).run = "npm run check:pr";
+      },
+      /compatibility smoke command/u
+    ],
+    [
+      "Node drift",
+      (inputs) => {
+        inputs.workflows["ci.yml"].jobs["invariant-core"].steps.at(-2).with["node-version"] = "23.0.0";
+      },
+      /compatibility Node/u
+    ]
+  ];
+  for (const [label, mutate, pattern] of mutations) {
+    const inputs = mutableNodeToolchainInputs();
+    mutate(inputs);
+    assertNodeToolchainRejected(inputs, pattern, label);
+  }
 });
 
 test("script groups remain pairwise disjoint and exactly cover the script-test inventory", () => {
