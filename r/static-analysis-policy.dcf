@@ -1,0 +1,17 @@
+Protocol: openwrangler-native-r-static-analysis-v1
+Codetools-Version: 0.2-20
+Supported-R-Minors: 4.4,4.5
+Pinned-CI-R-Version: 4.5.3
+Production-Paths: r/openwrangler_runtime/frame_contract.R,r/openwrangler_runtime/interactive_agent.R,r/openwrangler_runtime/kernel_agent.R,r/openwrangler_runtime/process_agent.R
+Maximum-Source-Bytes: 1048576
+Maximum-Aggregate-Source-Bytes: 2097152
+Maximum-AST-Nodes: 500000
+Maximum-AST-Depth: 256
+Maximum-Diagnostics: 256
+Maximum-Suppressions: 128
+Ratchet-Undefined-Symbol: 4
+Ratchet-Partial-Argument: 0
+Ratchet-Global-Assignment: 0
+Ratchet-Unqualified-Call: 6
+Ratchet-Namespace-Attachment: 0
+Ratchet-Unreachable-Expression: 0
