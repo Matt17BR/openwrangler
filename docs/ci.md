@@ -117,6 +117,8 @@ readiness rule, provenance contract, or publication topology changes with this f
 
 The release tier adds the expensive product checks that no longer run on every pull request:
 
+<!-- open-wrangler-ci-compatibility-owners:start -->
+
 - focused packaged VS Code `platform-smoke` OS compatibility on macOS and Windows, without native-R setup or
   execution, while one pinned Linux Cursor smoke owns the lifecycle/renderer-replacement/narrow-grid/reveal-state
   fork-compatibility seam;
@@ -134,6 +136,8 @@ The release tier adds the expensive product checks that no longer run on every p
   platform/package checks, live public-metadata and security audits, and the strict runtime benchmark;
   protected pull-request CI remains the sole owner of source, coverage, extension-host, browser-baseline, and
   accessibility suites.
+
+<!-- open-wrangler-ci-compatibility-owners:end -->
 
 Release prerequisites are explicit gates, not product evidence. Python resolution never searches PATH; browser work
 uses the lockfile-pinned Playwright executable or one absolute override, private child-only profiles, and one bounded

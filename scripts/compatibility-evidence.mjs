@@ -25,6 +25,10 @@ const RELEASE_START = "<!-- open-wrangler-compatibility-tiers:start -->";
 const RELEASE_END = "<!-- open-wrangler-compatibility-tiers:end -->";
 const ARCHITECTURE_START = "<!-- open-wrangler-compatibility-owners:start -->";
 const ARCHITECTURE_END = "<!-- open-wrangler-compatibility-owners:end -->";
+const ARCHITECTURE_CURRENT_OWNERS_START = "<!-- open-wrangler-current-compatibility-owners:start -->";
+const ARCHITECTURE_CURRENT_OWNERS_END = "<!-- open-wrangler-current-compatibility-owners:end -->";
+const CI_CURRENT_OWNERS_START = "<!-- open-wrangler-ci-compatibility-owners:start -->";
+const CI_CURRENT_OWNERS_END = "<!-- open-wrangler-ci-compatibility-owners:end -->";
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_WORKFLOW_JOBS = 64;
 const MAX_WORKFLOW_STEPS = 128;
@@ -32,6 +36,11 @@ const MAX_ENVIRONMENT_MEMBERS = 64;
 const MAX_WORKFLOW_NODES = 50_000;
 const MAX_WORKFLOW_DEPTH = 64;
 const MAX_WORKFLOW_MEMBERS = 512;
+const MAX_SHELL_BYTES = 64 * 1024;
+const MAX_SHELL_TOKENS = 2_048;
+const MAX_SHELL_TOKEN_BYTES = 4 * 1024;
+const MAX_SHELL_COMMANDS = 512;
+const MAX_VISIBLE_HTML_TAGS = 4_096;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
 const EXPECTED_EDITOR_OWNERS = new Map([
@@ -66,6 +75,60 @@ const EXPECTED_VSCODE_EVIDENCE = Object.freeze({
     ".github/workflows/candidate-acceptance.yml#acceptance"
   ]
 });
+const EXPECTED_OWNER_JOB_CONDITIONS = new Map([
+  ["candidate-acceptance.yml#contract", undefined],
+  ["candidate-acceptance.yml#platform", undefined],
+  ["candidate-acceptance.yml#r_platform", undefined],
+  ["candidate-acceptance.yml#linux", undefined],
+  ["candidate-acceptance.yml#performance", undefined],
+  ["candidate-acceptance.yml#jupyter", undefined],
+  ["candidate-acceptance.yml#r_local", undefined],
+  ["candidate-acceptance.yml#acceptance", "${{ always() }}"],
+  [
+    "ci.yml#canonical-editor",
+    "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.canonical_editor_required != 'false') }}"
+  ]
+]);
+const EXPECTED_RUNNER_CONDITIONS = new Map([
+  ["platform#packaged_editor", undefined],
+  ["r_platform#packaged_editor_r_core", "${{ always() && steps.canonical_r_core.outcome == 'success' }}"],
+  ["r_platform#packaged_editor_r_native", "${{ always() && steps.canonical_r_native.outcome == 'success' }}"],
+  ["r_platform#packaged_editor_r_restart", "${{ always() && steps.canonical_r_restart.outcome == 'success' }}"],
+  ["linux#packaged_vscode", undefined],
+  ["linux#packaged_cursor", undefined],
+  ["performance#installed_performance", undefined],
+  ["jupyter#packaged_editor", "${{ matrix.phase == 'python' }}"],
+  ["jupyter#packaged_editor_r_remote", "${{ matrix.phase == 'r-remote' }}"],
+  [
+    "r_local#packaged_editor_r_core",
+    "${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_core.outcome == 'success' }}"
+  ],
+  [
+    "r_local#packaged_editor_r_restart",
+    "${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_restart.outcome == 'success' }}"
+  ],
+  [
+    "r_local#packaged_editor_r_interactive",
+    "${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_interactive.outcome == 'success' }}"
+  ],
+  [
+    "r_local#packaged_editor_r_literate",
+    "${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_literate.outcome == 'success' }}"
+  ],
+  [
+    "r_local#packaged_editor_r_native",
+    "${{ always() && matrix.shard == 'editing' && steps.canonical_r_native.outcome == 'success' }}"
+  ],
+  [
+    "r_local#packaged_editor_r_values",
+    "${{ always() && matrix.shard == 'editing' && steps.canonical_r_values.outcome == 'success' }}"
+  ],
+  [
+    "r_local#packaged_editor_r_categorical",
+    "${{ always() && matrix.shard == 'editing' && steps.canonical_r_categorical.outcome == 'success' }}"
+  ],
+  ["canonical-editor#packaged_editor", undefined]
+]);
 const EXPECTED_EDITOR_FIELDS = new Map([
   [
     "vscode",
@@ -134,6 +197,128 @@ const EXPECTED_NATIVE_R_OWNERS = [
   ".github/workflows/candidate-acceptance.yml#r_platform",
   ".github/workflows/candidate-acceptance.yml#r_local"
 ];
+const STRUCTURED_PUBLIC_RECORDS = Object.freeze([
+  {
+    source: "architectureSource",
+    start: ARCHITECTURE_CURRENT_OWNERS_START,
+    end: ARCHITECTURE_CURRENT_OWNERS_END,
+    text: [
+      "VS Code owns the one full generic packaged journey. Linux Cursor and the generic macOS/Windows VS Code cells run",
+      "the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate",
+      "`r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then",
+      "`kernel-restart`. The candidate `r_platform` matrix runs installed-artifact VS Code journeys with R 4.4.3 on Ubuntu, R 4.5.2 on macOS, and R 4.5.2 on Windows.",
+      "Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts."
+    ].join("\n"),
+    label: "docs/architecture.md current compatibility ownership record"
+  },
+  {
+    source: "ciDocumentationSource",
+    start: CI_CURRENT_OWNERS_START,
+    end: CI_CURRENT_OWNERS_END,
+    text: [
+      "- focused packaged VS Code `platform-smoke` OS compatibility on macOS and Windows, without native-R setup or",
+      "  execution, while one pinned Linux Cursor smoke owns the lifecycle/renderer-replacement/narrow-grid/reveal-state",
+      "  fork-compatibility seam;",
+      "- native-R platform acceptance in a separate Ubuntu, macOS, and Windows matrix: R 4.4.3 on Ubuntu and R 4.5.2 on macOS and Windows, with fresh VS Code-only core, native-frame, and kernel-restart phases;",
+      "- released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs uses VS Code only for complete",
+      "  local and remote Python and R coverage; Cursor owns no Jupyter or R phase, and the complete value and categorical",
+      "  catalogs are owned once by Linux VS Code;",
+      "- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI owns the R 4.5",
+      "  source contracts, while scheduled/manual Cross owns the R 4.4 source qualification;",
+      "- Remote SSH;",
+      "- installed performance in pinned VS Code, gated on first-grid timing, cache residency, scrolling, outstanding-work",
+      "  responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling; Cursor performance remains",
+      "  historical evidence only;",
+      "- one full generic packaged journey in Linux VS Code, a focused Linux Cursor `platform-smoke`, exact-artifact",
+      "  platform/package checks, live public-metadata and security audits, and the strict runtime benchmark;",
+      "  protected pull-request CI remains the sole owner of source, coverage, extension-host, browser-baseline, and",
+      "  accessibility suites."
+    ].join("\n"),
+    label: "docs/ci.md current compatibility ownership record"
+  }
+]);
+const ALLOWLISTED_OUTSIDE_CLAIMS = Object.freeze([
+  {
+    source: "releasingSource",
+    text: "A first-attempt dispatch from protected `main` validates stable metadata, packages one canonical triple, and reuses its numeric artifact ID across VS Code, one pinned Cursor lifecycle/responsive-grid seam, Python/Jupyter, R 4.4 and 4.5 compatibility, installed performance, and Remote SSH"
+  },
+  {
+    source: "releasingSource",
+    text: "Protected pull-request CI owns the direct R 4.5 contract, while scheduled/manual Cross retains direct R 4.4 evidence"
+  },
+  {
+    source: "releasingSource",
+    text: "Candidate editor coverage keeps one complete installed Clone lifecycle, targeted value/categorical catalogs, one comprehensive Linux VS Code native-frame owner, representative macOS/Windows R seams, and exactly one Cursor lifecycle/responsive-grid/reveal-state seam"
+  },
+  {
+    source: "releasingSource",
+    text: "Cursor runs exactly one pinned Linux lifecycle/responsive-grid/reveal-state seam and owns no operation catalog, Jupyter, R catalog, performance, or operating-system matrix"
+  },
+  {
+    source: "featureParitySource",
+    text: "macOS/Windows VS Code gate | Preview release | | Exact active R-terminal transport | 1.99 preview | Partial | Zero-command vscode-R hints, explicit PID-checked bootstrap, native callback tests, and packaged VS Code/Cursor journey | Preview release | | Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview | Partial | Executor-aware mixed-fence and exact-origin tests"
+  },
+  {
+    source: "featureParitySource",
+    text: "This slice closes the released command-argument mismatch, and the local packaged run recorded below closes the released-Jupyter functional gate for VS Code 1.130.0 and Cursor 3.13.10"
+  },
+  {
+    source: "featureParitySource",
+    text: "candidate gate now also requires Cursor | Preview release | | Cleaned-data export | R notebook/document CSV/Parquet | Partial | Native writers, bounded transfer, atomic save, installed notebook/document run | Preview release | | Active R-terminal cleaned-data export | 1.99 preview | Partial | Real-R streaming and atomic-save tests"
+  },
+  {
+    source: "featureParitySource",
+    text: "## PySpark live-notebook viewer Open Wrangler supports viewing local PySpark 4.2.x Classic and Connect batch DataFrames from live Jupyter notebooks in VS Code and Cursor"
+  },
+  {
+    source: "testingSource",
+    text: "A local packaged run on 2026-07-26 passed both released-Jupyter phases and the complete ordinary packaged phases in VS Code 1.130.0 and Cursor 3.13.10"
+  },
+  {
+    source: "testingSource",
+    text: "the default `linux-all` lane keeps the broader VS Code, Cursor, Python, active R terminal, and remote-Jupyter coverage"
+  },
+  {
+    source: "testingSource",
+    text: "Before DuckDB can move beyond preview, add its full semantic edge matrix, installed VS Code/Cursor Jupyter evidence, large mixed/nested fixtures, cross-platform CI evidence, and repeated full-size performance reports"
+  },
+  {
+    source: "testingSource",
+    text: "On a fresh run, Open Wrangler sends one empty selection to create the source-routed Interactive Window without user code, waits for that exact sole-open window's marked Jupyter system cell or canonical auto-selected Python metadata, and explicitly reveals that same captured notebook when Cursor has not published a stable visible editor"
+  },
+  {
+    source: "testingSource",
+    text: "candidate selectors prove only the installed editor seams and do not repeat that catalog through Cursor or performance"
+  },
+  {
+    source: "testingSource",
+    text: "It runs only the five existing remote R Docker phases and does not prepare hosted R, a local R or Python kernel environment, Cursor, or native R/Quarto tooling"
+  },
+  {
+    source: "testingSource",
+    text: "On a supported Linux host, run the released-Jupyter phases in both editors on a prepared private Xvfb display: On Linux, run VS Code without creating a window or touching the current desktop: Cursor uses the same isolated profiles but currently requires the explicit invisible Xvfb compatibility mode on this reference host: Xvfb here is a deterministic test compositor, not a claim that production Linux desktops use X11"
+  },
+  {
+    source: "testingSource",
+    text: "These timings cover native-R runtime and owned stdin/stdout request boundaries, not IRkernel, VS Code, Cursor, webview, editor first paint, filesystem-cold reads, or cross-language comparison"
+  },
+  {
+    source: "testingSource",
+    text: "They prove every consumer uses the numeric artifact ID, candidate jobs remain read-only, VS Code owns semantic acceptance, Cursor runs exactly one generic Linux lifecycle seam, R 4.4 and 4.5 platform evidence remains present, performance emits one digest-bound report, and no current candidate path publishes"
+  },
+  {
+    source: "ciDocumentationSource",
+    text: "The dedicated Linux restart phase passed in both VS Code and Cursor, value and categorical editing passed, and both native-R platform journeys passed with their then-embedded restart coverage"
+  },
+  {
+    source: "ciDocumentationSource",
+    text: "The R 4.5 source contract stays in protected pull-request CI and the R 4.4 source contract stays in scheduled/manual Cross rather than running inside or beside either packaged-editor shard"
+  },
+  {
+    source: "ciDocumentationSource",
+    text: "macOS/Windows packaged VS Code, Cursor, and released-Jupyter journeys already run again against the exact release candidate"
+  }
+]);
 const VISIBLE_PUBLIC_RECORDS = Object.freeze([
   {
     source: "testingSource",
@@ -219,26 +404,6 @@ const VISIBLE_PUBLIC_RECORDS = Object.freeze([
     source: "architectureSource",
     text: "Linux, macOS, and Windows run both selectors in VS Code; Cursor owns only its focused Linux `platform-smoke`.",
     label: "docs/architecture.md selector ownership record"
-  }
-]);
-const PUBLIC_CONTRADICTIONS = Object.freeze([
-  {
-    pattern:
-      /Cursor\s+(?:owns|runs|executes|qualifies)\s+(?!(?:no|only|one pinned)\b)[^.\n]{0,192}\b(?:Jupyter|Native R|R (?:phase|journey|coverage)|installed[- ]performance)\b/iu,
-    label: "Cursor may not own Jupyter, Native R, or installed-performance evidence outside its focused Linux seam"
-  },
-  {
-    pattern: /installed[- ]performance[^.\n]{0,128}\b(?:and|plus)\s+Cursor\b/iu,
-    label: "installed performance must remain VS Code-only"
-  },
-  {
-    pattern:
-      /(?:protected pull-request CI|candidate acceptance)(?:\s+solely)?\s+owns(?:\s+the)?\s+(?:direct\s+)?R 4\.4\b/iu,
-    label: "direct R 4.4 source qualification must remain owned by scheduled/manual Cross"
-  },
-  {
-    pattern: /installed performance in moving stable VS Code/iu,
-    label: "the exact installed-performance record may not be attributed to moving stable VS Code"
   }
 ]);
 const PUBLIC_DOCUMENT_SOURCES = Object.freeze([
@@ -431,23 +596,186 @@ function environmentValue(environment, label, problems) {
   return { present: true, value };
 }
 
-function commandEditorVersionAssignments(command) {
-  if (typeof command !== "string") return { values: [], unsupported: false };
-  const assignment =
-    /(?:^|[\s;&|])(?:export\s+|env\s+)?(?:VSCODE_TEST_VERSION|"VSCODE_TEST_VERSION"|'VSCODE_TEST_VERSION')\s*=\s*(?:"(?<double>[^"\n]*)"|'(?<single>[^'\n]*)'|(?<bare>[^\s;&|]+))/gmu;
-  const matches = [...command.matchAll(assignment)];
-  const values = matches.map((match) => match.groups.double ?? match.groups.single ?? match.groups.bare);
+function boundedShellTokens(command) {
+  if (typeof command !== "string" || Buffer.byteLength(command, "utf8") > MAX_SHELL_BYTES) {
+    return { commands: [], error: "command text is not bounded" };
+  }
+  const commands = [];
+  const controls = [];
+  let tokens = [];
+  let token = "";
+  let quote;
+  let retainedTokens = 0;
+  const retainToken = () => {
+    if (token.length === 0) return true;
+    if (Buffer.byteLength(token, "utf8") > MAX_SHELL_TOKEN_BYTES || retainedTokens >= MAX_SHELL_TOKENS) {
+      return false;
+    }
+    tokens.push(token);
+    retainedTokens += 1;
+    token = "";
+    return true;
+  };
+  const retainCommand = () => {
+    if (!retainToken()) return false;
+    if (tokens.length === 0) return true;
+    if (commands.length >= MAX_SHELL_COMMANDS) return false;
+    commands.push(tokens);
+    tokens = [];
+    return true;
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (quote === "single") {
+      if (character === "'") quote = undefined;
+      else token += character;
+      continue;
+    }
+    if (quote === "double") {
+      if (character === '"') {
+        quote = undefined;
+      } else if (character === "\\") {
+        index += 1;
+        if (index >= command.length) return { commands: [], error: "command ends with an escape" };
+        token += command[index];
+      } else {
+        token += character;
+      }
+      continue;
+    }
+    if (character === "'") {
+      quote = "single";
+    } else if (character === '"') {
+      quote = "double";
+    } else if (character === "\\") {
+      index += 1;
+      if (index >= command.length) return { commands: [], error: "command ends with an escape" };
+      if (command[index] !== "\n") token += command[index];
+    } else if (character === "`" || (character === "$" && command[index + 1] === "(")) {
+      return { commands: [], error: "command substitution is outside the evidence grammar" };
+    } else if (character === "#" && token.length === 0) {
+      while (index < command.length && command[index] !== "\n") index += 1;
+      if (!retainCommand()) return { commands: [], error: "command structure exceeds its bounds" };
+    } else if (/\s/u.test(character)) {
+      if (!retainToken()) return { commands: [], error: "command structure exceeds its bounds" };
+      if (character === "\n" && !retainCommand()) {
+        return { commands: [], error: "command structure exceeds its bounds" };
+      }
+    } else if (character === ";" || character === "|" || character === "&") {
+      if (!retainCommand()) return { commands: [], error: "command structure exceeds its bounds" };
+      if (command[index + 1] === character) {
+        controls.push(`${character}${character}`);
+        index += 1;
+      } else {
+        controls.push(character);
+      }
+    } else {
+      token += character;
+    }
+  }
+  if (quote !== undefined) return { commands: [], error: "command contains an unterminated quote" };
+  if (!retainCommand()) return { commands: [], error: "command structure exceeds its bounds" };
+  return { commands, controls, error: undefined };
+}
+
+function shellAssignment(token) {
+  const match = /^(?<key>[A-Za-z_][A-Za-z0-9_]*)=(?<value>.*)$/u.exec(token);
+  return match ? { key: match.groups.key, value: match.groups.value } : undefined;
+}
+
+function executableShellCommands(command) {
+  const parsed = boundedShellTokens(command);
+  if (parsed.error) return { commands: [], controls: [], assignments: [], error: parsed.error };
+  const commands = [];
+  const assignments = [];
+  const exported = new Map();
+  for (const tokens of parsed.commands) {
+    let index = 0;
+    const local = new Map(exported);
+    if (tokens[index] === "export") {
+      index += 1;
+      for (; index < tokens.length; index += 1) {
+        const assignment = shellAssignment(tokens[index]);
+        if (!assignment) {
+          return {
+            commands: [],
+            controls: parsed.controls,
+            assignments,
+            error: "export must contain only literal assignments"
+          };
+        }
+        assignments.push(assignment);
+        exported.set(assignment.key, assignment.value);
+      }
+      continue;
+    }
+    while (index < tokens.length) {
+      const assignment = shellAssignment(tokens[index]);
+      if (!assignment) break;
+      assignments.push(assignment);
+      local.set(assignment.key, assignment.value);
+      index += 1;
+    }
+    if (index === tokens.length) {
+      for (const [key, value] of local) exported.set(key, value);
+      continue;
+    }
+    if (tokens[index] === "env") {
+      index += 1;
+      if (tokens[index]?.startsWith("-") && tokens[index] !== "--") {
+        return {
+          commands: [],
+          controls: parsed.controls,
+          assignments,
+          error: "env options are outside the evidence grammar"
+        };
+      }
+      if (tokens[index] === "--") index += 1;
+      while (index < tokens.length) {
+        const assignment = shellAssignment(tokens[index]);
+        if (!assignment) break;
+        assignments.push(assignment);
+        local.set(assignment.key, assignment.value);
+        index += 1;
+      }
+    }
+    if (index < tokens.length) {
+      commands.push({ tokens: tokens.slice(index), environment: local });
+    }
+  }
+  const foldedKeyReferences = command.replace(/["'\\]/gu, "").includes(EDITOR_VERSION_ENVIRONMENT_KEY);
+  const hasClassifiedKey = assignments.some(({ key }) => key === EDITOR_VERSION_ENVIRONMENT_KEY);
   return {
-    values,
-    unsupported: countOccurrences(command, EDITOR_VERSION_ENVIRONMENT_KEY) !== matches.length
+    commands,
+    controls: parsed.controls,
+    assignments,
+    error: foldedKeyReferences && !hasClassifiedKey ? "editor-version reference is not a literal assignment" : undefined
   };
 }
 
+function runnerKind(command) {
+  let tokens = command.tokens;
+  if (tokens[0] === "/usr/bin/dbus-run-session") {
+    if (tokens[1] !== "--") return undefined;
+    tokens = tokens.slice(2);
+  }
+  if (tokens[0] === "node" && tokens[1] === "scripts/run-packaged-editor-tests.mjs") return "packaged-editor";
+  if (tokens[0] === "npm" && tokens[1] === "run" && tokens[2] === "benchmark:installed" && tokens[3] === "--") {
+    return "installed-performance";
+  }
+  return undefined;
+}
+
+function analyzedRunner(step) {
+  const analysis = executableShellCommands(step?.run);
+  if (analysis.error || analysis.commands.length !== 1) return undefined;
+  const command = analysis.commands[0];
+  const kind = runnerKind(command);
+  return kind ? { ...command, kind, assignments: analysis.assignments } : undefined;
+}
+
 function compatibilityRunner(step) {
-  return (
-    typeof step?.run === "string" &&
-    (step.run.includes("scripts/run-packaged-editor-tests.mjs") || step.run.includes("benchmark:installed"))
-  );
+  return analyzedRunner(step) !== undefined;
 }
 
 function ownsRVersion(job, version) {
@@ -462,40 +790,53 @@ function ownsRVersion(job, version) {
   );
 }
 
-function inspectEffectiveEditorVersions(workflow, movingStableJobs, problems) {
+function normalizedCondition(condition) {
+  return typeof condition === "string" ? condition.trim().replace(/\s+/gu, " ") : condition;
+}
+
+function inspectEffectiveEditorVersions(workflow, expectedVersions, workflowLabel, problems) {
   if (!workflow) return;
-  const workflowAssignment = environmentValue(workflow.env, "Candidate workflow environment", problems);
+  const workflowAssignment = environmentValue(workflow.env, `${workflowLabel} workflow environment`, problems);
   for (const [jobId, job] of Object.entries(workflow.jobs)) {
-    const jobAssignment = environmentValue(job.env, `Candidate lane ${jobId} environment`, problems);
+    if (!expectedVersions.has(jobId)) continue;
+    const expectedVersion = expectedVersions.get(jobId);
+    const jobAssignment = environmentValue(job.env, `${workflowLabel} owner ${jobId} environment`, problems);
     const runners = (job.steps ?? []).filter(compatibilityRunner);
-    if (movingStableJobs.has(jobId) && runners.length === 0) {
-      problems.push(`VS Code moving stable candidate lane ${jobId} must retain an exact editor runner.`);
+    if (expectedVersion !== undefined && runners.length === 0) {
+      problems.push(`${workflowLabel} owner ${jobId} must retain an exact editor runner.`);
       continue;
     }
-    for (const [runnerIndex, step] of runners.entries()) {
-      const label = `Candidate lane ${jobId} runner ${runnerIndex + 1}`;
+    for (const [stepIndex, step] of (job.steps ?? []).entries()) {
+      const label = `${workflowLabel} owner ${jobId} step ${stepIndex + 1}`;
       const stepAssignment = environmentValue(step.env, `${label} environment`, problems);
       const inheritedAssignment = stepAssignment.present
         ? stepAssignment
         : jobAssignment.present
           ? jobAssignment
           : workflowAssignment;
-      const commandAssignments = commandEditorVersionAssignments(step.run);
-      const effectiveValue = commandAssignments.values.at(-1) ?? inheritedAssignment.value;
-      if (commandAssignments.unsupported) {
+      const commandAnalysis = executableShellCommands(step.run);
+      if (
+        commandAnalysis.error &&
+        typeof step.run === "string" &&
+        step.run.replace(/["'\\]/gu, "").includes(EDITOR_VERSION_ENVIRONMENT_KEY)
+      ) {
         problems.push(`${label} has an unsupported command-level editor-version reference.`);
       }
-      if (movingStableJobs.has(jobId)) {
-        if (
-          effectiveValue !== MOVING_EDITOR_VERSION ||
-          commandAssignments.values.some((value) => value !== MOVING_EDITOR_VERSION)
-        ) {
-          problems.push(
-            `VS Code moving stable candidate lane ${jobId} must give every exact runner an effective editor version equal to stable.`
-          );
+      const commandValues = commandAnalysis.assignments
+        .filter(({ key }) => key === EDITOR_VERSION_ENVIRONMENT_KEY)
+        .map(({ value }) => value);
+      if (
+        (inheritedAssignment.present && inheritedAssignment.value !== expectedVersion) ||
+        commandValues.some((value) => value !== expectedVersion)
+      ) {
+        problems.push(`${workflowLabel} owner ${jobId} has an invalid effective editor version.`);
+      }
+      const runner = analyzedRunner(step);
+      if (runner) {
+        const effectiveValue = runner.environment.get(EDITOR_VERSION_ENVIRONMENT_KEY) ?? inheritedAssignment.value;
+        if (effectiveValue !== expectedVersion) {
+          problems.push(`${workflowLabel} owner ${jobId} runner must use its exact effective editor version.`);
         }
-      } else if (inheritedAssignment.present || commandAssignments.values.length > 0) {
-        problems.push(`Candidate lane ${jobId} has an unexpected effective editor-version assignment.`);
       }
     }
   }
@@ -513,13 +854,96 @@ function orderedRunnerEnvironmentValues(job, key) {
   return runnerSteps(job).map((step) => step.env?.[key]);
 }
 
-function oneRunnerCommand(job, markers) {
+function containsTokenSequence(tokens, expected) {
+  for (let index = 0; index <= tokens.length - expected.length; index += 1) {
+    if (expected.every((token, offset) => tokens[index + offset] === token)) return true;
+  }
+  return false;
+}
+
+function oneRunnerCommand(job, expectedKind, sequences) {
   const runners = runnerSteps(job);
+  if (runners.length !== 1) return false;
+  const runner = analyzedRunner(runners[0]);
+  return runner?.kind === expectedKind && sequences.every((sequence) => containsTokenSequence(runner.tokens, sequence));
+}
+
+function executableSuccessTest(step, environmentKey) {
+  const analysis = executableShellCommands(step?.run);
   return (
-    runners.length === 1 &&
-    typeof runners[0].run === "string" &&
-    markers.every((marker) => runners[0].run.includes(marker))
+    !analysis.error &&
+    !analysis.controls.some((control) => ["|", "||", "&", "&&"].includes(control)) &&
+    analysis.commands.some(({ tokens }) => sameArray(tokens, ["test", `$${environmentKey}`, "=", "success"]))
   );
+}
+
+function strictShellFailureMode(step) {
+  const analysis = executableShellCommands(step?.run);
+  return !analysis.error && sameArray(analysis.commands[0]?.tokens, ["set", "-euo", "pipefail"]);
+}
+
+function exactSuccessFanIn(step, environmentKeys) {
+  const analysis = executableShellCommands(step?.run);
+  return (
+    !analysis.error &&
+    analysis.controls.every((control) => control === ";") &&
+    analysis.commands.length === environmentKeys.length + 1 &&
+    sameArray(analysis.commands[0]?.tokens, ["set", "-euo", "pipefail"]) &&
+    environmentKeys.every((key, index) =>
+      sameArray(analysis.commands[index + 1]?.tokens, ["test", `$${key}`, "=", "success"])
+    )
+  );
+}
+
+function runnerOutcomeIsOwned(job, runnerId) {
+  return (job.steps ?? []).some((step) => {
+    const condition = normalizedCondition(step.if);
+    const commandAnalysis = executableShellCommands(step.run);
+    const exactFailureExit =
+      condition === `\${{ always() && steps.${runnerId}.outcome == 'failure' }}` &&
+      !commandAnalysis.error &&
+      commandAnalysis.commands.length === 1 &&
+      sameArray(commandAnalysis.commands[0].tokens, ["exit", "1"]);
+    const outcomeEnvironment = record(step.env)
+      ? Object.entries(step.env).find(([, value]) => value === `\${{ steps.${runnerId}.outcome }}`)
+      : undefined;
+    return (
+      exactFailureExit ||
+      (normalizedCondition(step.if) === "${{ always() }}" &&
+        strictShellFailureMode(step) &&
+        outcomeEnvironment &&
+        executableSuccessTest(step, outcomeEnvironment[0]))
+    );
+  });
+}
+
+function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
+  if (!workflow) return;
+  for (const jobId of jobIds) {
+    const job = workflow.jobs[jobId];
+    if (!job) continue;
+    const owner = `${workflowName}#${jobId}`;
+    if (normalizedCondition(job.if) !== EXPECTED_OWNER_JOB_CONDITIONS.get(owner)) {
+      problems.push(`Compatibility owner ${owner} must retain its exact effective condition.`);
+    }
+    for (const step of runnerSteps(job)) {
+      const conditionOwner = `${jobId}#${step.id}`;
+      if (
+        typeof step.id !== "string" ||
+        !EXPECTED_RUNNER_CONDITIONS.has(conditionOwner) ||
+        normalizedCondition(step.if) !== EXPECTED_RUNNER_CONDITIONS.get(conditionOwner)
+      ) {
+        problems.push(`Compatibility runner ${owner} must retain its exact effective condition.`);
+      }
+      if (workflowName === "candidate-acceptance.yml") {
+        if (step["continue-on-error"] !== true || !runnerOutcomeIsOwned(job, step.id)) {
+          problems.push(`Compatibility runner ${owner} must retain an executable success owner.`);
+        }
+      } else if (step["continue-on-error"] === true) {
+        problems.push(`Compatibility runner ${owner} may not suppress its result.`);
+      }
+    }
+  }
 }
 
 function inspectSemanticCandidateClaims(jobs, problems) {
@@ -552,11 +976,11 @@ function inspectSemanticCandidateClaims(jobs, problems) {
 
   if (
     jobs.performance?.name !== "Installed performance in pinned editors" ||
-    !oneRunnerCommand(jobs.performance, [
-      "/usr/bin/dbus-run-session -- npm run benchmark:installed --",
-      "--pinned-editors",
-      "--editors vscode",
-      "--candidate-in canonical-release/openwrangler.vsix"
+    !oneRunnerCommand(jobs.performance, "installed-performance", [
+      ["npm", "run", "benchmark:installed", "--"],
+      ["--pinned-editors"],
+      ["--editors", "vscode"],
+      ["--candidate-in", "canonical-release/openwrangler.vsix"]
     ])
   ) {
     problems.push("VS Code installed-performance owner must retain its exact pinned-editor command.");
@@ -591,14 +1015,12 @@ function inspectSemanticCandidateClaims(jobs, problems) {
     R_LOCAL_RESULT: "r_local"
   });
   if (
+    normalizedCondition(jobs.acceptance?.if) !== "${{ always() }}" ||
     !sameArray(jobs.acceptance?.needs, expectedNeeds) ||
     jobs.acceptance?.steps?.length !== 1 ||
     !record(acceptanceStep?.env) ||
-    Object.entries(acceptanceResults).some(
-      ([key, job]) =>
-        acceptanceStep.env[key] !== `\${{ needs.${job}.result }}` ||
-        !acceptanceStep.run?.includes(`test "$${key}" = "success"`)
-    )
+    Object.entries(acceptanceResults).some(([key, job]) => acceptanceStep.env[key] !== `\${{ needs.${job}.result }}`) ||
+    !exactSuccessFanIn(acceptanceStep, Object.keys(acceptanceResults))
   ) {
     problems.push("complete VS Code qualification fan-in must retain every exact semantic owner result.");
   }
@@ -647,23 +1069,93 @@ function visibleMarkdown(source, label, problems) {
     problems.push(`${label} must be bounded documentation text.`);
     return "";
   }
-  const visible = [];
+  const uncommented = [];
   let cursor = 0;
   while (cursor < source.length) {
     const commentStart = source.indexOf("<!--", cursor);
     if (commentStart < 0) {
-      visible.push(source.slice(cursor));
+      uncommented.push(source.slice(cursor));
       break;
     }
-    visible.push(source.slice(cursor, commentStart));
+    uncommented.push(source.slice(cursor, commentStart));
     const commentEnd = source.indexOf("-->", commentStart + 4);
     if (commentEnd < 0) {
       problems.push(`${label} contains an unterminated HTML comment.`);
-      return visible.join("");
+      return uncommented.join("");
     }
+    uncommented.push("\n".repeat(source.slice(commentStart, commentEnd + 3).split("\n").length - 1));
     cursor = commentEnd + 3;
   }
-  return visible.join("");
+  const visible = [];
+  let fence;
+  let suppressedTag;
+  let retainedHtmlTags = 0;
+  for (const line of uncommented.join("").split("\n")) {
+    const fenceMarker = /^ {0,3}(?<marker>`{3,}|~{3,})/u.exec(line)?.groups?.marker;
+    if (fence) {
+      const close = /^ {0,3}(?<marker>`{3,}|~{3,})\s*$/u.exec(line)?.groups?.marker;
+      if (close?.[0] === fence.character && close.length >= fence.length) fence = undefined;
+      visible.push("");
+      continue;
+    }
+    if (fenceMarker) {
+      fence = { character: fenceMarker[0], length: fenceMarker.length };
+      visible.push("");
+      continue;
+    }
+    if (/^(?: {4}|\t)/u.test(line)) {
+      visible.push("");
+      continue;
+    }
+    let remainder = line;
+    let retained = "";
+    while (remainder.length > 0) {
+      if (suppressedTag) {
+        const close = new RegExp(`</${suppressedTag}\\s*>`, "iu").exec(remainder);
+        if (!close) {
+          remainder = "";
+          continue;
+        }
+        remainder = remainder.slice(close.index + close[0].length);
+        suppressedTag = undefined;
+        continue;
+      }
+      const tagPattern = /<(?<tag>[A-Za-z][A-Za-z0-9:-]*)\b(?<attributes>[^>]*)>/gu;
+      let hidden;
+      for (const candidate of remainder.matchAll(tagPattern)) {
+        retainedHtmlTags += 1;
+        if (retainedHtmlTags > MAX_VISIBLE_HTML_TAGS) {
+          problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
+          return visible.join("\n");
+        }
+        const tag = candidate.groups.tag.toLowerCase();
+        const attributes = candidate.groups.attributes;
+        if (
+          ["pre", "template", "details"].includes(tag) ||
+          /(?:^|\s)hidden(?:\s|=|$)/iu.test(attributes) ||
+          /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?:\s|$)/iu.test(attributes) ||
+          /(?:^|\s)style\s*=\s*(?:"[^"]*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"]*"|'[^']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^']*')/iu.test(
+            attributes
+          )
+        ) {
+          hidden = candidate;
+          break;
+        }
+      }
+      if (!hidden) {
+        retained += remainder;
+        remainder = "";
+        continue;
+      }
+      retained += remainder.slice(0, hidden.index);
+      suppressedTag = hidden.groups.tag.toLowerCase();
+      remainder = remainder.slice(hidden.index + hidden[0].length);
+    }
+    visible.push(retained);
+  }
+  if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
+  if (suppressedTag) problems.push(`${label} contains an unterminated hidden or preformatted container.`);
+  return visible.join("\n");
 }
 
 function countOccurrences(source, expected) {
@@ -683,7 +1175,121 @@ function normalizedVisibleRecord(source) {
   return source.trim().replace(/\s+/gu, " ");
 }
 
-function inspectVisiblePublicRecords(inputs, problems) {
+function inspectStructuredPublicRecords(inputs, visibleSources, problems) {
+  for (const record of STRUCTURED_PUBLIC_RECORDS) {
+    const source = inputs[record.source];
+    if (typeof source !== "string") {
+      problems.push(`${record.label} must remain one exact top-level structured record.`);
+      continue;
+    }
+    const startIndex = source.indexOf(record.start);
+    const endIndex = source.indexOf(record.end);
+    const body =
+      startIndex >= 0 && endIndex > startIndex
+        ? source.slice(startIndex + record.start.length, endIndex).trim()
+        : undefined;
+    if (
+      countOccurrences(source, record.start) !== 1 ||
+      countOccurrences(source, record.end) !== 1 ||
+      body !== record.text ||
+      countOccurrences(
+        normalizedVisibleRecord(visibleSources.get(record.source)),
+        normalizedVisibleRecord(record.text)
+      ) !== 1
+    ) {
+      problems.push(`${record.label} must remain one exact top-level structured record.`);
+    }
+  }
+}
+
+function compatibilityClaimTexts(authority, source, problems) {
+  const texts = [];
+  const rendered = new Map([
+    ["readmeSource", [renderCompatibilityReadmeTable(authority), renderLegacyReadmeSupportTable(authority)]],
+    ["releasingSource", [renderCompatibilityReleaseSection(authority)]],
+    ["architectureSource", [renderCompatibilityArchitectureParagraph(authority)]],
+    ["featureParitySource", [renderCompatibilityParityReference(authority)]]
+  ]);
+  for (const text of rendered.get(source) ?? []) {
+    texts.push(visibleMarkdown(text, `${source} canonical compatibility record`, problems));
+  }
+  texts.push(
+    ...STRUCTURED_PUBLIC_RECORDS.filter((record) => record.source === source).map((record) => record.text),
+    ...ALLOWLISTED_OUTSIDE_CLAIMS.filter((record) => record.source === source).map((record) => record.text),
+    ...VISIBLE_PUBLIC_RECORDS.filter((record) => record.source === source).map((record) => record.text)
+  );
+  return texts.map(normalizedVisibleRecord).filter((text) => text.length > 0);
+}
+
+function claimTokens(claim) {
+  return new Set(claim.toLowerCase().match(/[a-z0-9]+(?:\.[0-9]+)*/gu) ?? []);
+}
+
+function hasTokenStem(tokens, stems) {
+  return [...tokens].some((token) => stems.some((stem) => token.startsWith(stem)));
+}
+
+function structuredOwnershipViolation(claim) {
+  const tokens = claimTokens(claim);
+  const has = (...values) => values.every((value) => tokens.has(value));
+  const ownsEvidence = hasTokenStem(tokens, [
+    "own",
+    "run",
+    "execut",
+    "qualif",
+    "certif",
+    "validat",
+    "cover",
+    "assign",
+    "attribut",
+    "responsib",
+    "attest",
+    "designat",
+    "demonstrat",
+    "establish",
+    "eviden",
+    "prov",
+    "support"
+  ]);
+  const cursorRestrictedTarget =
+    tokens.has("jupyter") ||
+    has("native", "r") ||
+    has("installed", "performance") ||
+    (tokens.has("r") && ["phase", "journey", "coverage", "catalog"].some((value) => tokens.has(value)));
+  if (/\bCursor\b/u.test(claim) && cursorRestrictedTarget && ownsEvidence) {
+    return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
+  }
+  if (
+    tokens.has("r") &&
+    tokens.has("4.4") &&
+    ownsEvidence &&
+    (has("protected", "pull", "request", "ci") || has("candidate", "acceptance"))
+  ) {
+    return "direct R 4.4 source qualification must remain owned by scheduled/manual Cross";
+  }
+  if (has("installed", "performance") && has("vs", "code") && (tokens.has("moving") || tokens.has("stable"))) {
+    return "the exact installed-performance record may not be attributed to moving stable VS Code";
+  }
+  return undefined;
+}
+
+function inspectStructuredOwnershipClaims(authority, source, visible, problems) {
+  let outside = normalizedVisibleRecord(visible);
+  for (const record of compatibilityClaimTexts(authority, source, problems)) {
+    outside = outside.replace(record, " ");
+  }
+  const claims = outside.split(/[!?;]\s+|\.(?=\s|$)/gu);
+  if (claims.length > 4_096 || claims.some((claim) => Buffer.byteLength(claim, "utf8") > 16 * 1024)) {
+    problems.push(`${source}: compatibility claim inspection exceeds its structural bounds.`);
+    return;
+  }
+  for (const claim of claims) {
+    const violation = structuredOwnershipViolation(claim);
+    if (violation) problems.push(`${source}: ${violation}.`);
+  }
+}
+
+function inspectVisiblePublicRecords(inputs, authority, problems) {
   const visibleSources = new Map();
   for (const source of PUBLIC_DOCUMENT_SOURCES) {
     visibleSources.set(source, visibleMarkdown(inputs[source], source, problems));
@@ -698,12 +1304,19 @@ function inspectVisiblePublicRecords(inputs, problems) {
       problems.push(`${record.label} must remain one exact visible compatibility record.`);
     }
   }
-  for (const [source, visible] of visibleSources) {
-    for (const contradiction of PUBLIC_CONTRADICTIONS) {
-      if (contradiction.pattern.test(visible)) {
-        problems.push(`${source}: ${contradiction.label}.`);
-      }
+  for (const record of ALLOWLISTED_OUTSIDE_CLAIMS) {
+    if (
+      countOccurrences(
+        normalizedVisibleRecord(visibleSources.get(record.source)),
+        normalizedVisibleRecord(record.text)
+      ) !== 1
+    ) {
+      problems.push(`${record.source} must retain each exact allowlisted compatibility claim once.`);
     }
+  }
+  inspectStructuredPublicRecords(inputs, visibleSources, problems);
+  for (const [source, visible] of visibleSources) {
+    inspectStructuredOwnershipClaims(authority, source, visible, problems);
   }
 }
 
@@ -1084,7 +1697,21 @@ export function inspectCompatibilityEvidence(inputs) {
   const movingStableJobs = new Set(
     vscode.movingStableWorkflowOwners.map((owner) => owner.slice(owner.indexOf("#") + 1))
   );
-  inspectEffectiveEditorVersions(candidateWorkflow, movingStableJobs, problems);
+  const candidateEditorVersions = new Map(
+    vscode.workflowOwners.map((owner) => {
+      const jobId = owner.slice(owner.indexOf("#") + 1);
+      return [jobId, movingStableJobs.has(jobId) ? MOVING_EDITOR_VERSION : undefined];
+    })
+  );
+  inspectEffectiveEditorVersions(candidateWorkflow, candidateEditorVersions, "candidate-acceptance.yml", problems);
+  inspectEffectiveEditorVersions(
+    ciWorkflow,
+    new Map([["canonical-editor", MOVING_EDITOR_VERSION]]),
+    "ci.yml",
+    problems
+  );
+  inspectOwnerConditions(candidateWorkflow, "candidate-acceptance.yml", [...candidateEditorVersions.keys()], problems);
+  inspectOwnerConditions(ciWorkflow, "ci.yml", ["canonical-editor"], problems);
   inspectSemanticCandidateClaims(candidateJobs, problems);
   if (
     !sameArray(authority.nativeR.versions, [
@@ -1106,7 +1733,7 @@ export function inspectCompatibilityEvidence(inputs) {
   ) {
     problems.push("Native R source ownership must retain the two protected R 4.5 jobs and scheduled R 4.4 job.");
   }
-  inspectVisiblePublicRecords(inputs, problems);
+  inspectVisiblePublicRecords(inputs, authority, problems);
 
   inspectExactBlock(
     inputs.readmeSource,

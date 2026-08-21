@@ -126,7 +126,7 @@ test("the exact VS Code pin is not attributed to moving stable candidate lanes",
     "VSCODE_TEST_VERSION: stable",
     "VSCODE_TEST_VERSION: 1.130.0"
   );
-  assert.match(inspect({ candidateWorkflowSource: pinnedPlatform }).join(" "), /moving stable candidate lane/u);
+  assert.match(inspect({ candidateWorkflowSource: pinnedPlatform }).join(" "), /effective editor version/u);
   for (const field of ["movingStableWorkflowOwners", "pinnedWorkflowOwners", "fanInWorkflowOwners"]) {
     assert.match(
       inspect(changedAuthority((candidate) => candidate.editors[0][field].pop())).join(" "),
@@ -167,10 +167,7 @@ test("semantic workflow inspection resolves inherited, command, escaped, quoted,
     "run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
     'run: env "VSCODE_TEST_VERSION=1.130.0" node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix'
   );
-  assert.match(
-    inspect({ candidateWorkflowSource: quotedCommandOverride }).join(" "),
-    /unsupported command-level editor-version reference/u
-  );
+  assert.match(inspect({ candidateWorkflowSource: quotedCommandOverride }).join(" "), /effective editor version/u);
 
   for (const replacement of [
     '          "VSCODE_TEST_\\u0056ERSION": 1.130.0',
@@ -190,6 +187,110 @@ test("semantic workflow inspection resolves inherited, command, escaped, quoted,
   );
   assert.match(inspect({ candidateWorkflowSource: prototypeKey }).join(" "), /bounded jobs mapping/u);
   assert.equal(Object.prototype.polluted, undefined);
+});
+
+test("shell ownership normalizes split, quoted, escaped, and env-prefixed editor assignments", () => {
+  const original = "run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
+  for (const command of [
+    'VSCODE_TEST_""VERSION=1.130.0 node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix',
+    "VSCODE_TEST_\\VERSION=1.130.0 node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
+    'env "VSCODE_TEST_VERSION=1.130.0" node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix'
+  ]) {
+    assert.match(
+      inspect({ candidateWorkflowSource: sources.candidateWorkflowSource.replace(original, `run: ${command}`) }).join(
+        " "
+      ),
+      /effective editor version/u
+    );
+  }
+
+  const exported = sources.candidateWorkflowSource.replace(
+    original,
+    "run: |\n          export VSCODE_TEST_VERSION=1.130.0\n          node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+  );
+  assert.match(inspect({ candidateWorkflowSource: exported }).join(" "), /effective editor version/u);
+
+  const unsetOverride = sources.candidateWorkflowSource.replace(
+    original,
+    "run: env --unset=VSCODE_TEST_VERSION node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+  );
+  assert.match(
+    inspect({ candidateWorkflowSource: unsetOverride }).join(" "),
+    /unsupported command-level editor-version reference|exact editor runner/u
+  );
+
+  const tokenOverflow = sources.candidateWorkflowSource.replace(
+    original,
+    `run: VSCODE_TEST_VERSION=stable ${"argument ".repeat(2_049)}node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix`
+  );
+  assert.match(
+    inspect({ candidateWorkflowSource: tokenOverflow }).join(" "),
+    /unsupported command-level editor-version reference|exact editor runner/u
+  );
+});
+
+test("runner commands and success ownership must be executable and active", () => {
+  const commentedPerformance = sources.candidateWorkflowSource.replace(
+    "/usr/bin/dbus-run-session -- npm run benchmark:installed --",
+    ": # /usr/bin/dbus-run-session -- npm run benchmark:installed --"
+  );
+  assert.match(inspect({ candidateWorkflowSource: commentedPerformance }).join(" "), /installed-performance owner/u);
+
+  const disabledOwner = sources.candidateWorkflowSource.replace(
+    "  performance:\n    name: Installed performance in pinned editors",
+    "  performance:\n    if: false\n    name: Installed performance in pinned editors"
+  );
+  assert.match(inspect({ candidateWorkflowSource: disabledOwner }).join(" "), /effective condition/u);
+
+  const disabledRunner = sources.candidateWorkflowSource.replace(
+    "      - id: packaged_editor\n        name: Test packaged VS Code",
+    "      - id: packaged_editor\n        if: false\n        name: Test packaged VS Code"
+  );
+  assert.match(inspect({ candidateWorkflowSource: disabledRunner }).join(" "), /effective condition/u);
+
+  const skippedOutcomeOwner = sources.candidateWorkflowSource.replace(
+    "      - name: Require successful platform R outcomes\n        if: ${{ always() }}",
+    "      - name: Require successful platform R outcomes\n        if: false"
+  );
+  assert.match(inspect({ candidateWorkflowSource: skippedOutcomeOwner }).join(" "), /executable success owner/u);
+
+  const commentedFanIn = sources.candidateWorkflowSource.replace(
+    '          test "$PERFORMANCE_RESULT" = "success"',
+    '          : # test "$PERFORMANCE_RESULT" = "success"'
+  );
+  assert.match(inspect({ candidateWorkflowSource: commentedFanIn }).join(" "), /qualification fan-in/u);
+
+  const bypassedFanIn = sources.candidateWorkflowSource.replace(
+    '          test "$PERFORMANCE_RESULT" = "success"',
+    '          test "$PERFORMANCE_RESULT" = "success" || true'
+  );
+  assert.match(inspect({ candidateWorkflowSource: bypassedFanIn }).join(" "), /qualification fan-in/u);
+
+  const nonFailingOutcomeOwner = sources.candidateWorkflowSource
+    .replace(
+      "      - name: Require successful platform R outcomes\n        if: ${{ always() }}\n        shell: bash\n        env:",
+      "      - name: Require successful platform R outcomes\n        if: ${{ always() }}\n        shell: bash\n        env:"
+    )
+    .replace(
+      '          set -euo pipefail\n          test "$CORE_OUTCOME" = "success"',
+      '          set +e\n          test "$CORE_OUTCOME" = "success"'
+    );
+  assert.match(inspect({ candidateWorkflowSource: nonFailingOutcomeOwner }).join(" "), /executable success owner/u);
+});
+
+test("every workflow owner retains its own effective editor-version authority", () => {
+  const pinnedExtensionHost = sources.ciWorkflowSource.replace(
+    "          VSCODE_TEST_VERSION: stable",
+    "          VSCODE_TEST_VERSION: 1.130.0"
+  );
+  assert.match(inspect({ ciWorkflowSource: pinnedExtensionHost }).join(" "), /ci\.yml owner canonical-editor/u);
+
+  const packagedMarker = "          OPEN_WRANGLER_PACKAGED_EDITORS: vscode\n          VSCODE_TEST_VERSION: stable";
+  const pinnedPackagedOwner = sources.ciWorkflowSource.replace(
+    packagedMarker,
+    "          OPEN_WRANGLER_PACKAGED_EDITORS: vscode\n          VSCODE_TEST_VERSION: 1.130.0"
+  );
+  assert.match(inspect({ ciWorkflowSource: pinnedPackagedOwner }).join(" "), /ci\.yml owner canonical-editor/u);
 });
 
 test("the exact Antigravity smoke stays separate and bound to its immutable record", () => {
@@ -303,9 +404,47 @@ test("visible records reject hidden or appended compatibility contradictions any
       inspect({
         [source]: `${sources[source]}\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n`
       }).join(" "),
-      /Cursor may not own/u
+      /compatibility-sensitive Cursor ownership/u
     );
   }
+});
+
+test("canonical ownership records must remain visible top-level Markdown", () => {
+  const architectureBlock = sources.architectureSource.match(
+    /<!-- open-wrangler-current-compatibility-owners:start -->[\s\S]*?<!-- open-wrangler-current-compatibility-owners:end -->/u
+  )?.[0];
+  assert.ok(architectureBlock);
+  for (const hiddenBlock of [
+    `\`\`\`markdown\n${architectureBlock}\n\`\`\``,
+    `<pre>\n${architectureBlock}\n</pre>`,
+    `<section hidden>\n${architectureBlock}\n</section>`
+  ]) {
+    assert.match(
+      inspect({ architectureSource: sources.architectureSource.replace(architectureBlock, hiddenBlock) }).join(" "),
+      /top-level structured record/u
+    );
+  }
+});
+
+test("synonym and passive compatibility claims cannot escape the canonical records", () => {
+  for (const outsideClaim of [
+    "Cursor certifies released-Jupyter and Native R phases.",
+    "Installed-performance and released-Jupyter are certified by Cursor.",
+    "R 4.4 source qualification is certified by protected pull-request CI.",
+    "Installed performance is attributed to moving stable VS Code."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership|direct R 4\.4 source qualification|installed-performance record/u
+    );
+  }
+
+  const historicalRecord =
+    "The dedicated Linux restart phase passed in both VS Code and Cursor, value and categorical editing passed, and both native-R platform journeys passed with their then-embedded restart coverage.";
+  assert.match(
+    inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${historicalRecord}\n` }).join(" "),
+    /allowlisted compatibility claim once/u
+  );
 });
 
 test("Native R source and installed-artifact ownership are independently exact", () => {
