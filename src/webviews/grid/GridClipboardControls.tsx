@@ -54,14 +54,19 @@ export function useGridClipboard({
   const [selection, setSelection] = useState(() => collapsedGridClipboardSelection(contextId, initialCoordinate));
   const [announcement, setAnnouncement] = useState("");
   const contextIdRef = useRef(contextId);
+  const accountedResultRefreshRef = useRef(false);
   const copyActionGenerationRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const mountedRef = useRef(true);
-  const invalidateSelectionOwner = useCallback((): void => {
-    onSelectionWillChange?.();
-    selectionGenerationRef.current += 1;
-    copyActionGenerationRef.current += 1;
-  }, [onSelectionWillChange]);
+  const invalidateSelectionOwner = useCallback(
+    (accountForResultRefresh = false): void => {
+      onSelectionWillChange?.();
+      selectionGenerationRef.current += 1;
+      copyActionGenerationRef.current += 1;
+      if (accountForResultRefresh) accountedResultRefreshRef.current = true;
+    },
+    [onSelectionWillChange]
+  );
   const wholeColumn = useWholeColumnClipboard({ metadata, pageSize, viewContextId });
   const resetWholeColumn = wholeColumn.reset;
   const selectWholeColumn = wholeColumn.selectColumn;
@@ -87,12 +92,15 @@ export function useGridClipboard({
   }, [rectangleResults, wholeColumn.selectedColumnId]);
   const resultsRef = useRef(results);
   useLayoutEffect(() => {
-    if (resultsRef.current !== results) invalidateSelectionOwner();
+    if (resultsRef.current !== results) {
+      if (accountedResultRefreshRef.current) accountedResultRefreshRef.current = false;
+      else invalidateSelectionOwner();
+    }
     resultsRef.current = results;
   }, [invalidateSelectionOwner, results]);
   const resetSelection = useCallback(
     (coordinate: GridCellCoordinate): void => {
-      invalidateSelectionOwner();
+      invalidateSelectionOwner(true);
       resetWholeColumn();
       setSelection(collapsedGridClipboardSelection(contextIdRef.current, coordinate));
       setAnnouncement("");
@@ -101,7 +109,7 @@ export function useGridClipboard({
   );
   const selectCell = useCallback(
     (coordinate: GridCellCoordinate, extend: boolean): void => {
-      invalidateSelectionOwner();
+      invalidateSelectionOwner(true);
       resetWholeColumn();
       setSelection((current) =>
         extend
@@ -122,7 +130,7 @@ export function useGridClipboard({
       ) {
         return;
       }
-      invalidateSelectionOwner();
+      invalidateSelectionOwner(true);
       resetWholeColumn();
       setSelection((current) =>
         current.contextId === contextId &&
@@ -176,7 +184,7 @@ export function useGridClipboard({
   );
   const selectColumn = useCallback(
     (column: ColumnSchema): void => {
-      invalidateSelectionOwner();
+      invalidateSelectionOwner(true);
       setAnnouncement("");
       selectWholeColumn(column);
     },

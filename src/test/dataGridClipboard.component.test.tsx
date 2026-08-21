@@ -318,6 +318,58 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.queryByText(/Copied|Could not write/u)).toBeNull();
   });
 
+  it.each([
+    ["current", "Milan", "1 cell selected, row 1, column 1"],
+    ["different", "Paris", "1 cell selected, row 2, column 1"]
+  ])("keeps a %s-cell filter-only menu through its accounted selection result refresh", async (_kind, name, status) => {
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const target = screen.getByRole("cell", { name });
+    focusCell(milan);
+
+    fireEvent.click(within(target).getByRole("button", { name: "Filter city by this cell" }));
+    await act(async () => Promise.resolve());
+
+    const menu = screen.getByRole("menu", { name: "Filter city by this cell" });
+    expect(menu).toBeInTheDocument();
+    expect(document.activeElement).toBe(menu);
+    expect(screen.getByText(status)).toBeTruthy();
+  });
+
+  it.each(["success", "fallback"] as const)(
+    "makes delayed menu clipboard %s inert when focus moves to a column header",
+    async (outcome) => {
+      const delayedWrite = deferred<void>();
+      writeText.mockImplementationOnce(() => delayedWrite.promise);
+      const execCommand = vi.fn(() => {
+        document.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+        return true;
+      });
+      Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+      renderGrid();
+      const milan = screen.getByRole("cell", { name: "Milan" });
+      const emptySales = screen.getByRole("cell", { name: "" });
+      pointerDrag(milan, emptySales, outcome === "success" ? 63 : 65);
+      openClipboardMenu(milan, outcome === "success" ? 64 : 66);
+      fireEvent.click(
+        within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+          name: "Copy selection"
+        })
+      );
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      const cityHeader = screen.getByRole("columnheader", { name: "city" });
+      act(() => cityHeader.focus());
+
+      if (outcome === "success") await act(async () => delayedWrite.resolve());
+      else await act(async () => delayedWrite.reject(new Error("primary adapter denied")));
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(cityHeader);
+      expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
+      expect(screen.queryByText(/Copied 2 by 2|Could not write/u)).toBeNull();
+    }
+  );
+
   it("leaves a newer menu and its focus untouched when an older clipboard write finishes", async () => {
     const delayedWrite = deferred<void>();
     writeText.mockImplementationOnce(() => delayedWrite.promise);

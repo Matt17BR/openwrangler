@@ -15,20 +15,31 @@ export interface PackagedGridRangeCopyJourneyOptions {
 }
 
 const expectedRangeText = "2400001\tBenelux\n2400002\tNordics";
+const keyboardPendingClipboard = "open-wrangler-grid-range-copy-keyboard-pending";
+const menuPendingClipboard = "open-wrangler-grid-range-copy-menu-pending";
 const clipboardWaitMs = 10_000;
 const maximumPriorClipboardBytes = 4 * 1024 * 1024;
 
+class PackagedGridClipboardInterference extends Error {
+  constructor() {
+    super("The packaged grid range-copy journey detected clipboard interference.");
+    this.name = "PackagedGridClipboardInterference";
+  }
+}
+
 export class PackagedGridRangeCopyFailure extends Error {
   readonly cleanupFailed: boolean;
+  readonly clipboardInterference: boolean;
   readonly productFailed: boolean;
 
-  constructor(productFailed: boolean, cleanupFailed: boolean) {
+  constructor(productFailed: boolean, cleanupFailed: boolean, clipboardInterference = false) {
     super(
-      `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard text retained: no.`
+      `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard interference: ${clipboardInterference ? "detected" : "none"}; clipboard text retained: no.`
     );
     this.name = "PackagedGridRangeCopyFailure";
     this.productFailed = productFailed;
     this.cleanupFailed = cleanupFailed;
+    this.clipboardInterference = clipboardInterference;
   }
 }
 
@@ -42,6 +53,7 @@ export async function runPackagedGridRangeCopyLifecycle(
 ): Promise<void> {
   let productFailed = false;
   let cleanupFailed = false;
+  let clipboardInterference = false;
   try {
     try {
       await exercise();
@@ -51,17 +63,21 @@ export async function runPackagedGridRangeCopyLifecycle(
   } finally {
     try {
       await cleanup();
-    } catch {
+    } catch (error) {
       cleanupFailed = true;
+      clipboardInterference = error instanceof PackagedGridClipboardInterference;
     }
   }
 
-  if (productFailed || cleanupFailed) throw new PackagedGridRangeCopyFailure(productFailed, cleanupFailed);
+  if (productFailed || cleanupFailed) {
+    throw new PackagedGridRangeCopyFailure(productFailed, cleanupFailed, clipboardInterference);
+  }
 }
 
 export async function runWithPackagedGridClipboardRestoration(
   hostClipboard: PackagedGridRangeCopyHostClipboard,
-  exercise: () => Promise<void>
+  exercise: () => Promise<void>,
+  testOwnedClipboardValues: readonly string[] = []
 ): Promise<void> {
   let priorClipboard: string | undefined;
   await runPackagedGridRangeCopyLifecycle(
@@ -70,7 +86,18 @@ export async function runWithPackagedGridClipboardRestoration(
       await exercise();
     },
     async () => {
-      if (priorClipboard !== undefined) await hostClipboard.writeText(priorClipboard);
+      if (priorClipboard === undefined) return;
+      let currentClipboard: string;
+      try {
+        currentClipboard = validatePriorPackagedClipboard(await hostClipboard.readText());
+      } catch {
+        throw new PackagedGridClipboardInterference();
+      }
+      if (currentClipboard === priorClipboard) return;
+      if (!testOwnedClipboardValues.some((ownedValue) => currentClipboard === ownedValue)) {
+        throw new PackagedGridClipboardInterference();
+      }
+      await hostClipboard.writeText(priorClipboard);
     }
   );
 }
@@ -140,13 +167,13 @@ export async function exercisePackagedGridRangeCopyJourney({
 
   await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
     recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
-    await hostClipboard.writeText("open-wrangler-grid-range-copy-keyboard-pending");
+    await hostClipboard.writeText(keyboardPendingClipboard);
     await endpoint.press(packagedGridCopyShortcut(platform));
     await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
     await frame.getByText("Copied 2 by 2 cell range.", { exact: true }).waitFor({ timeout: 5_000 });
 
     recordProgress("platform-smoke:grid-range-copy:context-menu");
-    await hostClipboard.writeText("open-wrangler-grid-range-copy-menu-pending");
+    await hostClipboard.writeText(menuPendingClipboard);
     await start.click({ button: "right" });
     const menu = frame.getByRole("menu", { name: "Cell and range actions for order_id", exact: true });
     await menu.waitFor({ state: "visible", timeout: 5_000 });
@@ -162,5 +189,5 @@ export async function exercisePackagedGridRangeCopyJourney({
       .locator('td[data-grid-row="1"][data-grid-column="1"]:focus')
       .waitFor({ state: "visible", timeout: 5_000 });
     assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
-  });
+  }, [keyboardPendingClipboard, menuPendingClipboard, expectedRangeText]);
 }

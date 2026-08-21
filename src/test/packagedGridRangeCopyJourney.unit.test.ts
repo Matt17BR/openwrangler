@@ -41,10 +41,15 @@ describe("packaged grid range-copy journey", () => {
         failure = error;
       }
 
-      const record = failure as Error & { cleanupFailed?: boolean; productFailed?: boolean };
-      const expectedMessage = `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard text retained: no.`;
+      const record = failure as Error & {
+        cleanupFailed?: boolean;
+        clipboardInterference?: boolean;
+        productFailed?: boolean;
+      };
+      const expectedMessage = packagedFailureMessage(productFailed, cleanupFailed);
       expect({
         cleanupFailed: record?.cleanupFailed,
+        clipboardInterference: record?.clipboardInterference,
         isAggregate: failure instanceof AggregateError,
         messageMatches: record?.message === expectedMessage,
         name: record?.name,
@@ -52,6 +57,7 @@ describe("packaged grid range-copy journey", () => {
         retainsClipboardText: diagnosticRetainsAny(failure, [productSecret, expectedSecret, cleanupSecret])
       }).toEqual({
         cleanupFailed,
+        clipboardInterference: false,
         isAggregate: false,
         messageMatches: true,
         name: "PackagedGridRangeCopyFailure",
@@ -155,7 +161,7 @@ describe("packaged grid range-copy journey", () => {
     const productFailure = new Error("context-menu payload assertion failed");
     const restorationFailure = new Error("host clipboard restoration failed");
     const hostClipboard = {
-      readText: vi.fn(async () => "prior clipboard"),
+      readText: vi.fn().mockResolvedValueOnce("prior clipboard").mockResolvedValueOnce("test-owned clipboard"),
       writeText: vi.fn(async () => {
         throw restorationFailure;
       })
@@ -165,13 +171,13 @@ describe("packaged grid range-copy journey", () => {
     try {
       await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
         throw productFailure;
-      });
+      }, ["test-owned clipboard"]);
       expect.unreachable("The production clipboard-restoration helper must report both failures.");
     } catch (error) {
       failure = error;
     }
     expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, true));
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
 
@@ -201,14 +207,41 @@ describe("packaged grid range-copy journey", () => {
   it("restores the prior clipboard after a successful packaged journey", async () => {
     const exercise = vi.fn(async () => undefined);
     const hostClipboard = {
-      readText: vi.fn(async () => "prior clipboard"),
+      readText: vi.fn().mockResolvedValueOnce("prior clipboard").mockResolvedValueOnce("test-owned clipboard"),
       writeText: vi.fn(async () => undefined)
     };
 
-    await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
+    await runWithPackagedGridClipboardRestoration(hostClipboard, exercise, ["test-owned clipboard"]);
 
     expect(exercise).toHaveBeenCalledTimes(1);
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
+  });
+
+  it("preserves a concurrent foreign clipboard value and reports only structural interference", async () => {
+    const foreignClipboard = "private-concurrent-foreign-clipboard-sentinel";
+    let currentClipboard = "prior clipboard";
+    const hostClipboard = {
+      readText: vi.fn(async () => currentClipboard),
+      writeText: vi.fn(async (value: string) => {
+        currentClipboard = value;
+      })
+    };
+
+    let failure: unknown;
+    try {
+      await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
+        currentClipboard = foreignClipboard;
+      }, ["test-owned clipboard"]);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true, true));
+    expect(diagnosticRetainsAny(failure, [foreignClipboard])).toBe(false);
+    expect(currentClipboard).toBe(foreignClipboard);
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("bounds an oversized concurrent clipboard replacement before polling can normalize or retain it", async () => {
@@ -290,27 +323,35 @@ function diagnosticRetainsAny(value: unknown, needles: readonly string[]): boole
   return false;
 }
 
-function packagedFailureMessage(productFailed: boolean, cleanupFailed: boolean): string {
-  return `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard text retained: no.`;
+function packagedFailureMessage(productFailed: boolean, cleanupFailed: boolean, clipboardInterference = false): string {
+  return `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard interference: ${clipboardInterference ? "detected" : "none"}; clipboard text retained: no.`;
 }
 
 function packagedFailureShape(value: unknown) {
-  const record = value as Error & { cleanupFailed?: boolean; productFailed?: boolean };
+  const record = value as Error & {
+    cleanupFailed?: boolean;
+    clipboardInterference?: boolean;
+    productFailed?: boolean;
+  };
   return {
     cleanupFailed: record?.cleanupFailed,
+    clipboardInterference: record?.clipboardInterference,
     isAggregate: value instanceof AggregateError,
     messageMatches:
       typeof record?.productFailed === "boolean" &&
       typeof record.cleanupFailed === "boolean" &&
-      record.message === packagedFailureMessage(record.productFailed, record.cleanupFailed),
+      typeof record.clipboardInterference === "boolean" &&
+      record.message ===
+        packagedFailureMessage(record.productFailed, record.cleanupFailed, record.clipboardInterference),
     name: record?.name,
     productFailed: record?.productFailed
   };
 }
 
-function expectedPackagedFailureShape(productFailed: boolean, cleanupFailed: boolean) {
+function expectedPackagedFailureShape(productFailed: boolean, cleanupFailed: boolean, clipboardInterference = false) {
   return {
     cleanupFailed,
+    clipboardInterference,
     isAggregate: false,
     messageMatches: true,
     name: "PackagedGridRangeCopyFailure",

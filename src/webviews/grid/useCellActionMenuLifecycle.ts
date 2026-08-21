@@ -89,6 +89,14 @@ export function useCellActionMenuLifecycle({
       ) {
         return undefined;
       }
+      const scroller = scrollerRef.current;
+      const activeElement = document.activeElement;
+      const activeCell = scroller?.querySelector<HTMLElement>(
+        `[data-grid-row="${owner.row}"][data-grid-column="${owner.column}"]`
+      );
+      const menu = activeCell?.querySelector<HTMLElement>(".cellFilterMenuPopup");
+      if (!(activeElement instanceof HTMLElement) || !menu?.contains(activeElement)) return undefined;
+      const focusOwner = activeElement;
       operationGenerationRef.current += 1;
       const generation = operationGenerationRef.current;
       return {
@@ -96,7 +104,7 @@ export function useCellActionMenuLifecycle({
         owner,
         ownsResult: () => {
           const scroller = scrollerRef.current;
-          const activeElement = document.activeElement;
+          const currentFocus = document.activeElement;
           const ownsOperation =
             mountedRef.current &&
             targetRef.current === owner &&
@@ -106,7 +114,8 @@ export function useCellActionMenuLifecycle({
             !ownsOperation ||
             !document.hasFocus() ||
             scroller === null ||
-            (!scroller.contains(activeElement) && !gridClipboardFallbackOwnsFocus(activeElement))
+            !focusOwner.isConnected ||
+            (!focusOwner.contains(currentFocus) && !gridClipboardFallbackOwnsFocus(currentFocus))
           ) {
             return false;
           }
