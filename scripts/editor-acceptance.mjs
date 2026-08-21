@@ -1868,6 +1868,7 @@ export async function prepareWindowsEditorProcessSupervisor(
   if (!build) {
     const controller = new AbortController();
     build = {
+      buildRoot,
       controller,
       waiters: new Set(),
       settled: false,
@@ -1926,54 +1927,85 @@ async function awaitWindowsEditorProcessSupervisorBuild(
 ) {
   const waiter = { buildSettlementTimeoutMs };
   build.waiters.add(waiter);
-  let deadlineTimer;
+  const callerDeadlineObservation = createWindowsSupervisorCallerDeadline(callerStartedAt, callerDeadline, {
+    now: buildNow,
+    schedule: buildSchedule,
+    cancelSchedule: buildCancelSchedule
+  });
   let onAbort;
   let observation;
+  let callerDeadlineCancelFailure;
   try {
-    const remainingMs = windowsSupervisorBuildRemainingMs(callerDeadline, buildNow);
-    if (remainingMs <= 0) {
-      observation = { kind: "deadline" };
-    } else if (buildAbortSignal?.aborted) {
-      observation = { kind: "cancelled" };
-    } else {
-      const observations = [
-        build.promise.then(
-          (receipt) => ({ kind: "receipt", receipt }),
-          (error) => ({ kind: "build-error", error })
-        ),
-        new Promise((resolveDeadline) => {
-          const observeDeadline = () => {
-            let remaining;
-            try {
-              remaining = windowsSupervisorBuildRemainingMs(callerDeadline, buildNow);
-            } catch (error) {
-              resolveDeadline({ kind: "build-error", error });
-              return;
-            }
-            if (remaining <= 0) {
-              resolveDeadline({ kind: "deadline" });
-              return;
-            }
-            deadlineTimer = buildSchedule(observeDeadline, remaining);
-          };
-          deadlineTimer = buildSchedule(observeDeadline, remainingMs);
+    const observations = [
+      build.promise.then(
+        (receipt) => ({ kind: "receipt", receipt }),
+        (error) => ({ kind: "build-error", error })
+      ),
+      callerDeadlineObservation.promise
+    ];
+    if (buildAbortSignal) {
+      observations.push(
+        new Promise((resolveAbort) => {
+          onAbort = () => resolveAbort(callerDeadlineObservation.observe("cancelled"));
+          buildAbortSignal.addEventListener("abort", onAbort, { once: true });
+          if (buildAbortSignal.aborted) onAbort();
         })
-      ];
-      if (buildAbortSignal) {
-        observations.push(
-          new Promise((resolveAbort) => {
-            onAbort = () => resolveAbort({ kind: "cancelled" });
-            buildAbortSignal.addEventListener("abort", onAbort, { once: true });
-            if (buildAbortSignal.aborted) onAbort();
-          })
-        );
-      }
-      observation = await Promise.race(observations);
+      );
     }
+    observation = await Promise.race(observations);
   } finally {
-    if (deadlineTimer !== undefined) buildCancelSchedule(deadlineTimer);
+    callerDeadlineCancelFailure = callerDeadlineObservation.cancel();
     if (onAbort) buildAbortSignal.removeEventListener("abort", onAbort);
     build.waiters.delete(waiter);
+  }
+  const dependencyObservations = [];
+  if (observation.kind === "deadline-dependency-error") dependencyObservations.push(observation);
+  if (callerDeadlineCancelFailure) dependencyObservations.push(callerDeadlineCancelFailure);
+  if (dependencyObservations.length > 0) {
+    const buildStillOwned = build.waiters.size > 0;
+    let settlementError;
+    if (!build.settled && !buildStillOwned) {
+      build.controller.abort(
+        Object.freeze({
+          reason: "dependency-failure",
+          timeoutMs: buildTimeoutMs,
+          settlementTimeoutMs: waiter.buildSettlementTimeoutMs
+        })
+      );
+      try {
+        await build.promise;
+      } catch (error) {
+        settlementError = error;
+      }
+    }
+    const retainedErrors = [];
+    const processTreeErrors = [];
+    if (observation.kind === "build-error") {
+      retainedErrors.push(observation.error);
+      processTreeErrors.push(observation.error);
+    }
+    retainedErrors.push(
+      ...dependencyObservations.map((dependencyObservation) =>
+        windowsSupervisorCallerDeadlineDependencyError(dependencyObservation)
+      )
+    );
+    if (settlementError && !retainedErrors.includes(settlementError)) {
+      retainedErrors.push(settlementError);
+      processTreeErrors.push(settlementError);
+    }
+    const treeVerifiedStopped = buildStillOwned
+      ? null
+      : processTreeErrors.some((error) => editorProcessTreeMayBeLive(error))
+        ? false
+        : true;
+    if (treeVerifiedStopped === false) unsafeWindowsJobSupervisorRoots.add(build.buildRoot);
+    throw windowsSupervisorBuildCallerDependencyFailure(
+      dependencyObservations,
+      buildTimeoutMs,
+      buildStillOwned,
+      treeVerifiedStopped,
+      retainedErrors
+    );
   }
   if (observation.kind === "receipt") return observation.receipt;
   if (observation.kind === "build-error") throw observation.error;
@@ -1991,9 +2023,81 @@ async function awaitWindowsEditorProcessSupervisorBuild(
   throw windowsSupervisorBuildCallerFailure(
     observation.kind,
     buildTimeoutMs,
-    windowsSupervisorBuildElapsedMs(callerStartedAt, buildNow),
+    observation.elapsedMs,
     build.waiters.size > 0
   );
+}
+
+function createWindowsSupervisorCallerDeadline(callerStartedAt, callerDeadline, { now, schedule, cancelSchedule }) {
+  let timer;
+  let finished = false;
+  let released = false;
+  let lastObservedAt = callerStartedAt;
+  let resolveDeadline;
+  const dependencyObservation = (dependency, error) =>
+    windowsSupervisorDeadlineDependencyObservation(dependency, error, {
+      elapsedMs: Math.max(0, lastObservedAt - callerStartedAt)
+    });
+  const observe = (kind) => {
+    let observedAt;
+    try {
+      observedAt = windowsSupervisorBuildClockValue(now);
+    } catch (error) {
+      return dependencyObservation("clock", error);
+    }
+    lastObservedAt = observedAt;
+    return { kind, elapsedMs: Math.max(0, observedAt - callerStartedAt) };
+  };
+  const observeDeadline = () => {
+    if (finished) return;
+    const clockObservation = observe("deadline");
+    if (clockObservation.kind === "deadline-dependency-error") {
+      finished = true;
+      resolveDeadline(clockObservation);
+      return;
+    }
+    const remainingMs = Math.max(0, Math.ceil(callerDeadline - lastObservedAt));
+    if (remainingMs <= 0) {
+      finished = true;
+      resolveDeadline(clockObservation);
+      return;
+    }
+    try {
+      timer = schedule(observeDeadline, remainingMs);
+    } catch (error) {
+      finished = true;
+      resolveDeadline(dependencyObservation("schedule", error));
+    }
+  };
+  const promise = new Promise((resolve) => {
+    resolveDeadline = resolve;
+    observeDeadline();
+  });
+  return Object.freeze({
+    promise,
+    observe,
+    cancel() {
+      if (released) return undefined;
+      released = true;
+      finished = true;
+      if (timer === undefined) return undefined;
+      try {
+        cancelSchedule(timer);
+        return undefined;
+      } catch (error) {
+        let retainedError = error;
+        try {
+          timer?.unref?.();
+        } catch (releaseError) {
+          retainedError = new AggregateError(
+            [error, releaseError],
+            "The Windows supervisor caller deadline timer could not be cancelled or unreferenced."
+          );
+        }
+        return dependencyObservation("cancel", retainedError);
+      }
+    }
+  });
 }
 
 function windowsSupervisorBuildClockValue(buildNow) {
@@ -2012,8 +2116,62 @@ function windowsSupervisorBuildElapsedMs(startedAt, buildNow) {
   return Math.max(0, windowsSupervisorBuildClockValue(buildNow) - startedAt);
 }
 
-function windowsSupervisorDeadlineDependencyObservation(dependency, error) {
-  return Object.freeze({ kind: "deadline-dependency-error", dependency, error });
+function windowsSupervisorDeadlineDependencyObservation(dependency, error, details = {}) {
+  return Object.freeze({ kind: "deadline-dependency-error", dependency, error, ...details });
+}
+
+function windowsSupervisorCallerDeadlineDependencyError(observation) {
+  const cause =
+    observation.error instanceof Error
+      ? observation.error
+      : new Error("The Windows supervisor caller deadline dependency threw a non-Error value.");
+  const failure = new Error(
+    `The Windows editor Job Object supervisor caller deadline ${observation.dependency} dependency failed.`,
+    { cause }
+  );
+  failure.code = "EDITOR_ACCEPTANCE_STAGE_ABORTED";
+  failure.details = {
+    stage: "windows-supervisor-compilation-caller-deadline",
+    reason: "dependency-failure",
+    window: "caller-deadline",
+    dependency: observation.dependency,
+    elapsedMs: observation.elapsedMs
+  };
+  return failure;
+}
+
+function windowsSupervisorBuildCallerDependencyFailure(
+  observations,
+  limitMs,
+  buildStillOwned,
+  treeVerifiedStopped,
+  retainedErrors
+) {
+  const dependencies = observations.map((observation) => observation.dependency);
+  const cause =
+    retainedErrors.length > 1
+      ? new AggregateError(retainedErrors, "The Windows supervisor caller deadline failed and then settled.")
+      : retainedErrors[0];
+  const failure =
+    treeVerifiedStopped === false
+      ? unverifiedEditorProcessTreeError(
+          "The Windows editor Job Object supervisor caller deadline dependency failed before its process tree could be verified as stopped.",
+          cause
+        )
+      : new Error("The Windows editor Job Object supervisor caller deadline dependency failed.", { cause });
+  if (treeVerifiedStopped !== false) failure.code = "EDITOR_ACCEPTANCE_STAGE_ABORTED";
+  failure.details = {
+    ...failure.details,
+    stage: "windows-supervisor-compilation",
+    reason: "dependency-failure",
+    window: "caller-deadline",
+    dependencies,
+    elapsedMs: Math.max(...observations.map((observation) => observation.elapsedMs ?? 0)),
+    limitMs,
+    buildStillOwned,
+    treeVerifiedStopped
+  };
+  return failure;
 }
 
 function createWindowsSupervisorAbsoluteDeadline(timeoutMs, { now, schedule, cancelSchedule, onDeadline }) {
