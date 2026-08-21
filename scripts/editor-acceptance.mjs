@@ -1881,7 +1881,10 @@ export async function prepareWindowsEditorProcessSupervisor(
       WINDOWS_JOB_BUILD_SETTLEMENT_TIMEOUT_MS,
       controller.signal,
       terminateBuildProcessTree,
-      spawnTaskkillProcess
+      spawnTaskkillProcess,
+      buildNow,
+      buildSchedule,
+      buildCancelSchedule
     );
     windowsJobSupervisorBuilds.set(buildRoot, build);
     void build.promise.then(
@@ -2009,6 +2012,44 @@ function windowsSupervisorBuildElapsedMs(startedAt, buildNow) {
   return Math.max(0, windowsSupervisorBuildClockValue(buildNow) - startedAt);
 }
 
+function createWindowsSupervisorAbsoluteDeadline(startedAt, timeoutMs, { now, schedule, cancelSchedule, onDeadline }) {
+  const deadlineAt = startedAt + timeoutMs;
+  let timer;
+  let finished = false;
+  const promise = new Promise((resolveDeadline, rejectDeadline) => {
+    const observeDeadline = () => {
+      if (finished) return;
+      try {
+        const observedAt = windowsSupervisorBuildClockValue(now);
+        const remainingMs = Math.max(0, Math.ceil(deadlineAt - observedAt));
+        if (remainingMs > 0) {
+          timer = schedule(observeDeadline, remainingMs);
+          return;
+        }
+        finished = true;
+        resolveDeadline(onDeadline(observedAt));
+      } catch (error) {
+        finished = true;
+        rejectDeadline(error);
+      }
+    };
+    try {
+      timer = schedule(observeDeadline, timeoutMs);
+    } catch (error) {
+      finished = true;
+      rejectDeadline(error);
+    }
+  });
+  return Object.freeze({
+    promise,
+    cancel() {
+      if (finished) return;
+      finished = true;
+      if (timer !== undefined) cancelSchedule(timer);
+    }
+  });
+}
+
 function windowsSupervisorBuildCallerFailure(reason, limitMs, elapsedMs, buildStillOwned = false, cause) {
   const failure = new Error(
     reason === "deadline"
@@ -2036,7 +2077,10 @@ async function compileWindowsEditorProcessSupervisor(
   buildSettlementTimeoutMs,
   buildAbortSignal,
   terminateBuildProcessTree,
-  spawnTaskkillProcess
+  spawnTaskkillProcess,
+  buildNow,
+  buildSchedule,
+  buildCancelSchedule
 ) {
   const compileStartedAt = performance.now();
   mkdirSync(buildRoot, { recursive: true, mode: 0o700 });
@@ -2143,7 +2187,10 @@ async function compileWindowsEditorProcessSupervisor(
       systemRoot,
       terminateBuildProcessTree,
       spawnTaskkillProcess,
-      releaseCompilerOutputListeners
+      releaseCompilerOutputListeners,
+      buildNow,
+      buildSchedule,
+      buildCancelSchedule
     });
     if (!settlement.treeVerifiedStopped) {
       unsafeWindowsJobSupervisorRoots.add(buildRoot);
@@ -2252,7 +2299,10 @@ async function settleWindowsCompilerProcessTree(
     systemRoot,
     terminateBuildProcessTree,
     spawnTaskkillProcess,
-    releaseCompilerOutputListeners
+    releaseCompilerOutputListeners,
+    buildNow,
+    buildSchedule,
+    buildCancelSchedule
   }
 ) {
   const errors = [];
@@ -2270,7 +2320,7 @@ async function settleWindowsCompilerProcessTree(
   let compilerClosed = false;
   let deadline;
   let deadlineError;
-  const settlementStartedAt = performance.now();
+  const settlementStartedAt = windowsSupervisorBuildClockValue(buildNow);
   const settlementController = new AbortController();
   const abortSettlementReleases = new Set();
   let observedTermination;
@@ -2320,24 +2370,26 @@ async function settleWindowsCompilerProcessTree(
     }),
     (error) => ({ kind: "error", error })
   );
-  let settlementTimer;
-  const settlementDeadline = new Promise((resolveDeadline) => {
-    settlementTimer = setTimeout(() => {
+  const settlementDeadline = createWindowsSupervisorAbsoluteDeadline(settlementStartedAt, buildSettlementTimeoutMs, {
+    now: buildNow,
+    schedule: buildSchedule,
+    cancelSchedule: buildCancelSchedule,
+    onDeadline: (observedAt) => {
       const reason = Object.freeze({ reason: "deadline", timeoutMs: buildSettlementTimeoutMs });
       const deadlineObservation = {
         kind: "deadline",
         reason,
-        elapsedMs: Math.max(0, performance.now() - settlementStartedAt)
+        elapsedMs: Math.max(0, observedAt - settlementStartedAt)
       };
       settlementController.abort(reason);
-      resolveDeadline(deadlineObservation);
-    }, buildSettlementTimeoutMs);
+      return deadlineObservation;
+    }
   });
   let observation;
   try {
-    observation = await Promise.race([completeSettlement, settlementDeadline]);
+    observation = await Promise.race([completeSettlement, settlementDeadline.promise]);
   } finally {
-    clearTimeout(settlementTimer);
+    settlementDeadline.cancel();
   }
   if (observation.kind === "deadline") {
     deadlineError = new Error(
@@ -2353,35 +2405,43 @@ async function settleWindowsCompilerProcessTree(
     };
     retainError(deadlineError, { affectsVerification: false });
 
-    let abortSettlementTimer;
     let releasedTerminationOwners = 0;
-    const abortSettlementDeadline = new Promise((resolveDeadline) => {
-      abortSettlementTimer = setTimeout(() => {
-        for (const release of [...abortSettlementReleases]) {
-          try {
-            release();
-            releasedTerminationOwners += 1;
-          } catch (error) {
-            retainError(error);
+    const abortSettlementStartedAt = windowsSupervisorBuildClockValue(buildNow);
+    const abortSettlementDeadline = createWindowsSupervisorAbsoluteDeadline(
+      abortSettlementStartedAt,
+      buildSettlementTimeoutMs,
+      {
+        now: buildNow,
+        schedule: buildSchedule,
+        cancelSchedule: buildCancelSchedule,
+        onDeadline: (observedAt) => {
+          for (const release of [...abortSettlementReleases]) {
+            try {
+              release();
+              releasedTerminationOwners += 1;
+            } catch (error) {
+              retainError(error);
+            }
           }
+          return {
+            kind: "abort-settlement-deadline",
+            elapsedMs: Math.max(0, observedAt - settlementStartedAt),
+            intervalElapsedMs: Math.max(0, observedAt - abortSettlementStartedAt)
+          };
         }
-        resolveDeadline({
-          kind: "abort-settlement-deadline",
-          elapsedMs: Math.max(0, performance.now() - settlementStartedAt)
-        });
-      }, buildSettlementTimeoutMs);
-    });
+      }
+    );
     let abortObservation;
     try {
-      abortObservation = await Promise.race([completeSettlement, abortSettlementDeadline]);
+      abortObservation = await Promise.race([completeSettlement, abortSettlementDeadline.promise]);
     } finally {
-      clearTimeout(abortSettlementTimer);
+      abortSettlementDeadline.cancel();
     }
     if (abortObservation.kind === "abort-settlement-deadline") {
       if (releasedTerminationOwners > 0) observedTermination = await termination;
       deadlineError.details = {
         ...deadlineError.details,
-        abortSettlementElapsedMs: abortObservation.elapsedMs - observation.elapsedMs,
+        abortSettlementElapsedMs: abortObservation.intervalElapsedMs,
         abortSettlementLimitMs: buildSettlementTimeoutMs
       };
       if (observedTermination?.kind === "error") {
