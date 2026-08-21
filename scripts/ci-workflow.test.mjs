@@ -988,6 +988,11 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
     assert.ok(entry, `${capabilityName} has an unknown entry workflow`);
     assert.ok(providerOwner, `${capabilityName} has an unknown provider workflow`);
     assert.ok(fanInOwner, `${capabilityName} has an unknown fan-in workflow`);
+    assert.equal(
+      capability.entryWorkflow,
+      capability.fanInWorkflow,
+      `${capabilityName} entry workflow must own its final fan-in`
+    );
 
     const providerDocument = documents[capability.providerWorkflow];
     const fanInDocument = documents[capability.fanInWorkflow];
@@ -1617,6 +1622,15 @@ test("machine-readable capabilities bind correct events, fatal providers, and ma
     "stable-release.yml"
   ]);
   assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, capabilityDocuments));
+});
+
+test("capability entry workflows own their declared final fan-in", () => {
+  const wrongSourceCoverageEntry = structuredClone(capabilityGraph);
+  wrongSourceCoverageEntry.capabilities.source_coverage.entryWorkflow = "candidate";
+  assert.throws(
+    () => assertCapabilityGraph(wrongSourceCoverageEntry, capabilityDocuments),
+    /source_coverage entry workflow must own its final fan-in/u
+  );
 });
 
 test("capability workflow sources stay on the fixed bounded no-follow allowlist", () => {
