@@ -1978,27 +1978,36 @@ async function awaitWindowsEditorProcessSupervisorBuild(
         settlementError = error;
       }
     }
-    const retainedErrors = [];
     const processTreeErrors = [];
-    if (observation.kind === "build-error") {
-      retainedErrors.push(observation.error);
-      processTreeErrors.push(observation.error);
-    }
-    retainedErrors.push(
-      ...dependencyObservations.map((dependencyObservation) =>
-        windowsSupervisorCallerDeadlineDependencyError(dependencyObservation)
-      )
-    );
-    if (settlementError && !retainedErrors.includes(settlementError)) {
-      retainedErrors.push(settlementError);
-      processTreeErrors.push(settlementError);
-    }
+    if (observation.kind === "build-error") processTreeErrors.push(observation.error);
+    if (settlementError && !processTreeErrors.includes(settlementError)) processTreeErrors.push(settlementError);
     const treeVerifiedStopped = buildStillOwned
       ? null
       : processTreeErrors.some((error) => editorProcessTreeMayBeLive(error))
         ? false
         : true;
     if (treeVerifiedStopped === false) unsafeWindowsJobSupervisorRoots.add(build.buildRoot);
+    const retainedErrors = [];
+    if (observation.kind === "build-error") {
+      retainedErrors.push(observation.error);
+    } else if (observation.kind === "deadline" || observation.kind === "cancelled") {
+      retainedErrors.push(
+        windowsSupervisorBuildCallerFailure(
+          observation.kind,
+          buildTimeoutMs,
+          observation.elapsedMs,
+          buildStillOwned,
+          undefined,
+          treeVerifiedStopped
+        )
+      );
+    }
+    retainedErrors.push(
+      ...dependencyObservations.map((dependencyObservation) =>
+        windowsSupervisorCallerDeadlineDependencyError(dependencyObservation)
+      )
+    );
+    if (settlementError && !retainedErrors.includes(settlementError)) retainedErrors.push(settlementError);
     throw windowsSupervisorBuildCallerDependencyFailure(
       dependencyObservations,
       buildTimeoutMs,
@@ -2258,7 +2267,14 @@ function windowsSupervisorSettlementDependencyFailure(window, observation) {
   return failure;
 }
 
-function windowsSupervisorBuildCallerFailure(reason, limitMs, elapsedMs, buildStillOwned = false, cause) {
+function windowsSupervisorBuildCallerFailure(
+  reason,
+  limitMs,
+  elapsedMs,
+  buildStillOwned = false,
+  cause,
+  treeVerifiedStopped = buildStillOwned ? null : true
+) {
   const failure = new Error(
     reason === "deadline"
       ? `The Windows editor Job Object supervisor compilation caller exceeded ${limitMs} ms.`
@@ -2272,7 +2288,7 @@ function windowsSupervisorBuildCallerFailure(reason, limitMs, elapsedMs, buildSt
     elapsedMs,
     limitMs,
     buildStillOwned,
-    treeVerifiedStopped: buildStillOwned ? null : true
+    treeVerifiedStopped
   };
   return failure;
 }

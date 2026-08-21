@@ -1067,6 +1067,23 @@ function settleSyntheticWindowsCompiler(compiler, taskkill) {
   compiler.child.emit("close", null, "SIGKILL");
 }
 
+async function waitForSyntheticWindowsTaskkill(taskkillStarted, timeoutMs = 1_000) {
+  let timeout;
+  try {
+    await Promise.race([
+      taskkillStarted,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`The synthetic Windows taskkill process did not start within ${timeoutMs} ms.`)),
+          timeoutMs
+        );
+      })
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 test("the Windows supervisor compiler stays attached while taskkill owns descendant termination", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-compiler-spawn-options-"));
   const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
@@ -1979,7 +1996,7 @@ test("caller-deadline dependency faults retain sole compiler ownership through s
             }
           }
 
-          await taskkillStarted;
+          await waitForSyntheticWindowsTaskkill(taskkillStarted);
           await Promise.resolve();
           if (cancelledCallerTimer) {
             assert.equal(cancelledCallerTimer.cancelled, true);
@@ -2003,10 +2020,15 @@ test("caller-deadline dependency faults retain sole compiler ownership through s
             assert.equal(error.details?.buildStillOwned, false);
             assert.equal(error.details?.treeVerifiedStopped, true);
             assert.equal(error.cause instanceof AggregateError, true);
-            assert.equal(error.cause.errors[0]?.details?.dependency, dependency);
-            assert.equal(error.cause.errors[0]?.cause, injectedError);
-            assert.equal(error.cause.errors[1]?.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
-            assert.equal(error.cause.errors[1]?.details?.treeVerifiedStopped, true);
+            const dependencyIndex = dependency === "cancel" ? 1 : 0;
+            if (dependency === "cancel") {
+              assert.equal(error.cause.errors[0]?.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+              assert.equal(error.cause.errors[0]?.details?.reason, "cancelled");
+            }
+            assert.equal(error.cause.errors[dependencyIndex]?.details?.dependency, dependency);
+            assert.equal(error.cause.errors[dependencyIndex]?.cause, injectedError);
+            assert.equal(error.cause.errors[dependencyIndex + 1]?.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+            assert.equal(error.cause.errors[dependencyIndex + 1]?.details?.treeVerifiedStopped, true);
             return true;
           });
           assert.equal(outcome, "rejected");
@@ -2023,6 +2045,68 @@ test("caller-deadline dependency faults retain sole compiler ownership through s
         }
       });
     }
+  }
+});
+
+test("a caller deadline remains primary when its timer cancellation fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-caller-deadline-cancel-failure-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 18110 });
+  const taskkill = new EventEmitter();
+  taskkill.pid = 18111;
+  taskkill.exitCode = null;
+  taskkill.signalCode = null;
+  taskkill.kill = () => true;
+  taskkill.unref = () => undefined;
+  const dependencies = controlledWindowsBuildDependencies();
+  const injectedError = new Error("synthetic expired caller timer cancellation failure");
+  let resolveTaskkillStarted;
+  const taskkillStarted = new Promise((resolve) => {
+    resolveTaskkillStarted = resolve;
+  });
+  try {
+    const preparation = prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      buildTimeoutMs: 10,
+      buildSettlementTimeoutMs: 20,
+      buildNow: dependencies.now,
+      buildSchedule: dependencies.schedule,
+      buildCancelSchedule: dependencies.cancel,
+      spawnProcess: () => compiler.child,
+      spawnTaskkillProcess: () => {
+        resolveTaskkillStarted();
+        return taskkill;
+      }
+    });
+    void preparation.catch(() => undefined);
+    assert.equal(dependencies.timers.length, 1);
+    dependencies.failCancel(dependencies.timers[0], injectedError);
+    dependencies.setClock(10);
+    dependencies.timers[0].callback();
+
+    await waitForSyntheticWindowsTaskkill(taskkillStarted);
+    taskkill.exitCode = 0;
+    taskkill.emit("close", 0, null);
+    compiler.child.signalCode = "SIGKILL";
+    compiler.child.stdout.end();
+    compiler.child.stderr.end();
+    compiler.child.emit("close", null, "SIGKILL");
+
+    await assert.rejects(preparation, (error) => {
+      assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+      assert.equal(error.details?.reason, "dependency-failure");
+      assert.equal(error.cause instanceof AggregateError, true);
+      assert.equal(error.cause.errors[0]?.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+      assert.equal(error.cause.errors[0]?.details?.reason, "deadline");
+      assert.equal(error.cause.errors[1]?.details?.dependency, "cancel");
+      assert.equal(error.cause.errors[1]?.cause, injectedError);
+      assert.equal(error.cause.errors[2]?.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+      assert.equal(error.cause.errors[2]?.details?.treeVerifiedStopped, true);
+      return true;
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -2187,6 +2271,73 @@ test("joined Windows supervisor callers retain independent compilation deadlines
     assert.equal(compilerLaunches, 1);
   } finally {
     if (longCaller) await Promise.allSettled([longCaller]);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a joined caller deadline dependency fault cannot abort the surviving compiler owner", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-joined-dependency-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17944 });
+  const dependencies = controlledWindowsBuildDependencies();
+  const injectedError = new Error("synthetic joined caller schedule failure");
+  let compilerLaunches = 0;
+  let taskkillLaunches = 0;
+  let compilerOutput;
+  let survivingCaller;
+  try {
+    survivingCaller = prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      buildTimeoutMs: 500,
+      spawnProcess: (_executable, args) => {
+        compilerLaunches += 1;
+        compilerOutput = args[args.indexOf("-CompileTo") + 1];
+        return compiler.child;
+      },
+      spawnTaskkillProcess: () => {
+        taskkillLaunches += 1;
+        return assert.fail("a failed joined caller must not start taskkill while another waiter owns the build");
+      }
+    });
+    void survivingCaller.catch(() => undefined);
+
+    dependencies.failNextSchedule(injectedError);
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 50,
+        buildNow: dependencies.now,
+        buildSchedule: dependencies.schedule,
+        buildCancelSchedule: dependencies.cancel,
+        spawnProcess: () => assert.fail("joined callers must share the surviving compiler")
+      }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+        assert.equal(error.details?.reason, "dependency-failure");
+        assert.deepEqual(error.details?.dependencies, ["schedule"]);
+        assert.equal(error.details?.buildStillOwned, true);
+        assert.equal(error.details?.treeVerifiedStopped, null);
+        assert.equal(error.cause?.details?.dependency, "schedule");
+        assert.equal(error.cause?.cause, injectedError);
+        return true;
+      }
+    );
+    assert.equal(compilerLaunches, 1);
+    assert.equal(taskkillLaunches, 0);
+    assert.deepEqual(compiler.state(), { killCount: 0, closeCount: 0, closeTimerActive: false });
+
+    await writeFile(compilerOutput, "compiled-supervisor", { encoding: "utf8" });
+    compiler.child.exitCode = 0;
+    compiler.child.stdout.end();
+    compiler.child.stderr.end();
+    compiler.child.emit("exit", 0, null);
+    compiler.child.emit("close", 0, null);
+    const receipt = await survivingCaller;
+    assert.equal(receipt.buildRoot, directory);
+    assert.equal(taskkillLaunches, 0);
+  } finally {
+    if (survivingCaller) await Promise.allSettled([survivingCaller]);
     await rm(directory, { recursive: true, force: true });
   }
 });
