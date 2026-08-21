@@ -10,9 +10,12 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
+import struct
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -41,6 +44,11 @@ MAX_QUALIFIED_VERSIONS = 16
 MAX_CONSUMER_BYTES = 2_097_152
 MAX_TEXT = 256
 
+# Linux UAPI values not exposed by the Python 3.10 fcntl module.
+_LINUX_F_SETOWN_EX = 15
+_LINUX_F_GETOWN_EX = 16
+_LINUX_F_OWNER_TID = 0
+
 PYPROJECT_RUNTIME_START = "  # BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES"
 PYPROJECT_RUNTIME_END = "  # END GENERATED PYTHON RUNTIME DEPENDENCIES"
 PYPROJECT_DEV_START = "  # BEGIN GENERATED PYTHON OPTIONAL RUNTIME DEPENDENCIES"
@@ -63,9 +71,73 @@ class AuthorityError(Exception):
         code: str,
         *,
         cleanup_diagnostics: tuple[str, ...] = (),
+        cleanup_failures: tuple[BaseException, ...] = (),
     ) -> None:
         super().__init__(code)
         self.cleanup_diagnostics = cleanup_diagnostics
+        self.cleanup_failures = cleanup_failures
+
+
+class CommittedWithCleanupFault(AuthorityError):
+    """Every consumer committed, but private staged evidence could not be removed."""
+
+    def __init__(
+        self,
+        committed_paths: tuple[Path, ...],
+        cleanup_error: AuthorityError,
+    ) -> None:
+        super().__init__(
+            "consumer_committed_with_cleanup_fault",
+            cleanup_diagnostics=cleanup_error.cleanup_diagnostics,
+            cleanup_failures=cleanup_error.cleanup_failures,
+        )
+        self.committed_paths = committed_paths
+        self.__cause__ = cleanup_error
+
+
+def _cleanup_fault(code: str, cause: BaseException | None = None) -> AuthorityError:
+    fault = AuthorityError(code, cleanup_diagnostics=(code,))
+    if cause is not None:
+        fault.__cause__ = cause
+    return fault
+
+
+def _aggregate_cleanup_error(
+    code: str,
+    failures: tuple[AuthorityError, ...],
+) -> AuthorityError:
+    return AuthorityError(
+        code,
+        cleanup_diagnostics=tuple(
+            diagnostic
+            for failure in failures
+            for diagnostic in failure.cleanup_diagnostics
+        ),
+        cleanup_failures=failures,
+    )
+
+
+def _attach_cleanup_error(
+    primary: BaseException,
+    cleanup_error: AuthorityError,
+) -> BaseException:
+    if isinstance(primary, AuthorityError):
+        primary.cleanup_diagnostics = (
+            *primary.cleanup_diagnostics,
+            *cleanup_error.cleanup_diagnostics,
+        )
+        primary.cleanup_failures = (
+            *primary.cleanup_failures,
+            cleanup_error,
+        )
+    tail = primary
+    visited = {id(tail)}
+    while tail.__cause__ is not None and id(tail.__cause__) not in visited:
+        tail = tail.__cause__
+        visited.add(id(tail))
+    if tail.__cause__ is None:
+        tail.__cause__ = cleanup_error
+    return primary
 
 
 @dataclass(frozen=True)
@@ -475,6 +547,16 @@ class ConsumerSnapshot:
 
 
 @dataclass(frozen=True)
+class ConsumerUnlinkClaim:
+    original: Path
+    quarantine: Path
+    identity: tuple[int, int]
+    parent_receipt: ConsumerParentReceipt | None = field(
+        default=None, compare=False, repr=False
+    )
+
+
+@dataclass(frozen=True)
 class AuthorityLockReceipt:
     authority_identity: tuple[int, int, int, int, int]
     parent_identity: tuple[int, int]
@@ -643,24 +725,79 @@ def _consumer_open(
     return os.open(path, flags, mode)
 
 
-def _consumer_unlink(
+def _unlink_consumer_leaf(
     path: Path,
     parent_receipt: ConsumerParentReceipt | None,
-    expected_identity: tuple[int, int] | None = None,
-) -> bool:
-    if expected_identity is not None:
-        current = _consumer_lstat(path, parent_receipt)
-        if (
-            not stat.S_ISREG(current.st_mode)
-            or current.st_nlink < 1
-            or (current.st_dev, current.st_ino) != expected_identity
-        ):
-            return False
+) -> None:
     if parent_receipt is not None and parent_receipt.descriptor >= 0:
         os.unlink(path.name, dir_fd=parent_receipt.descriptor)
     else:
         path.unlink()
+
+
+def _claim_consumer_for_unlink(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    expected_identity: tuple[int, int],
+) -> ConsumerUnlinkClaim | None:
+    for _attempt in range(8):
+        quarantine = path.with_name(
+            f".{path.name}.openwrangler-unlink-{secrets.token_hex(16)}"
+        )
+        if not _rename_noreplace(
+            path,
+            quarantine,
+            parent_receipt,
+            require_named_parent=False,
+        ):
+            continue
+        claim = ConsumerUnlinkClaim(
+            original=path,
+            quarantine=quarantine,
+            identity=expected_identity,
+            parent_receipt=parent_receipt,
+        )
+        try:
+            current = _consumer_lstat(quarantine, parent_receipt)
+        except OSError:
+            _restore_consumer_claim(claim)
+            return None
+        if (
+            stat.S_ISREG(current.st_mode)
+            and current.st_nlink >= 1
+            and (current.st_dev, current.st_ino) == expected_identity
+        ):
+            return claim
+        _restore_consumer_claim(claim)
+        return None
+    return None
+
+
+def _restore_consumer_claim(claim: ConsumerUnlinkClaim) -> bool:
+    return _rename_noreplace(
+        claim.quarantine,
+        claim.original,
+        claim.parent_receipt,
+        require_named_parent=False,
+    )
+
+
+def _discard_consumer_claim(claim: ConsumerUnlinkClaim) -> bool:
+    try:
+        _unlink_consumer_leaf(claim.quarantine, claim.parent_receipt)
+    except OSError:
+        _restore_consumer_claim(claim)
+        return False
     return True
+
+
+def _consumer_unlink(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    expected_identity: tuple[int, int],
+) -> bool:
+    claim = _claim_consumer_for_unlink(path, parent_receipt, expected_identity)
+    return claim is not None and _discard_consumer_claim(claim)
 
 
 def _consumer_link(
@@ -1032,6 +1169,144 @@ def _descriptor_snapshot(
     )
 
 
+def _open_windows_writer_proof(
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    expected_identity: tuple[int, int],
+) -> int:
+    if os.name != "nt":
+        return -1
+    descriptor = -1
+    handle: int | None = None
+    try:
+        if parent_receipt is not None:
+            _assert_consumer_parent(parent_receipt, require_named=False)
+        import msvcrt
+
+        kernel32 = ctypes.windll.kernel32
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+        ]
+        create_file.restype = ctypes.c_void_p
+        opened_handle = create_file(
+            str(path),
+            0x80000000,
+            0x00000001 | 0x00000004,
+            None,
+            3,
+            0x00000080 | 0x00200000,
+            None,
+        )
+        if opened_handle in {None, 0, ctypes.c_void_p(-1).value}:
+            return -1
+        handle = int(opened_handle)
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        handle = None
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (metadata.st_dev, metadata.st_ino) != expected_identity
+        ):
+            os.close(descriptor)
+            return -1
+        return descriptor
+    except (AttributeError, OSError, ValueError):
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        elif handle is not None:
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return -1
+
+
+@contextmanager
+def _writer_quiescence_proof(
+    descriptor: int,
+    path: Path,
+    parent_receipt: ConsumerParentReceipt | None,
+    expected_identity: tuple[int, int],
+) -> Iterator[bool]:
+    if sys.platform.startswith("linux"):
+        import fcntl
+
+        owner_before: bytes | None = None
+        previous_mask: set[Any] | None = None
+        acquired = False
+        try:
+            try:
+                owner_before = fcntl.fcntl(descriptor, _LINUX_F_GETOWN_EX, b"\0" * 8)
+                previous_mask = signal.pthread_sigmask(
+                    signal.SIG_BLOCK,
+                    {signal.SIGIO},
+                )
+                owner = struct.pack("ii", _LINUX_F_OWNER_TID, threading.get_native_id())
+                fcntl.fcntl(descriptor, _LINUX_F_SETOWN_EX, owner)
+                fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_RDLCK)
+                acquired = True
+            except (AttributeError, OSError, ValueError):
+                pass
+            valid = False
+            if acquired:
+                try:
+                    descriptor_metadata = os.fstat(descriptor)
+                    named_metadata = _consumer_lstat(path, parent_receipt)
+                    valid = (
+                        stat.S_ISREG(descriptor_metadata.st_mode)
+                        and descriptor_metadata.st_nlink == 1
+                        and (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+                        == expected_identity
+                        and (named_metadata.st_dev, named_metadata.st_ino)
+                        == expected_identity
+                    )
+                except OSError:
+                    valid = False
+            yield valid
+        finally:
+            if acquired:
+                try:
+                    fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+                except (AttributeError, OSError, ValueError):
+                    pass
+            if owner_before is not None:
+                try:
+                    fcntl.fcntl(descriptor, _LINUX_F_SETOWN_EX, owner_before)
+                except (AttributeError, OSError, ValueError):
+                    pass
+            if previous_mask is not None:
+                try:
+                    while signal.SIGIO in signal.sigpending():
+                        signal.sigwait({signal.SIGIO})
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        return
+    if os.name == "nt":
+        proof_descriptor = _open_windows_writer_proof(
+            path,
+            parent_receipt,
+            expected_identity,
+        )
+        try:
+            yield proof_descriptor >= 0
+        finally:
+            if proof_descriptor >= 0:
+                try:
+                    os.close(proof_descriptor)
+                except OSError:
+                    pass
+        return
+    yield False
+
+
 def _link_recovery_source(
     path: Path,
     parent_receipt: ConsumerParentReceipt | None,
@@ -1245,6 +1520,7 @@ def _remove_owned(
         ):
             continue
         descriptor = -1
+        recovery_descriptor = -1
         try:
             snapshot = _consumer_snapshot(
                 claimed,
@@ -1294,29 +1570,96 @@ def _remove_owned(
             settled = _settled_recovery_source(descriptor, source, parent_receipt)
             recovery = _publish_recovery_receipt(path, settled, parent_receipt)
             confirmed = _settled_recovery_source(descriptor, source, parent_receipt)
-            if not _exact_snapshot_matches(confirmed, settled):
+            if not _exact_snapshot_matches(
+                confirmed, settled
+            ) or not _claimed_snapshot_matches(confirmed, linked):
                 return False
-            if not _claimed_snapshot_matches(confirmed, linked):
-                return False
-            if not _consumer_unlink(source, parent_receipt, confirmed.identity[:2]):
-                return False
-            after_source_unlink = _descriptor_snapshot(
+            recovery_descriptor = _open_cleanup_descriptor(
+                recovery.path,
+                parent_receipt,
+                allowed_links=frozenset({1}),
+            )
+            with _writer_quiescence_proof(
                 descriptor,
                 source,
                 parent_receipt,
-                allowed_links=frozenset({0, 1}),
-            )
-            if not _claimed_snapshot_matches(after_source_unlink, confirmed):
-                _publish_recovery_receipt(path, after_source_unlink, parent_receipt)
-                return False
-            os.close(descriptor)
-            descriptor = -1
-            return _consumer_unlink(
-                recovery.path, parent_receipt, recovery.identity[:2]
-            )
+                confirmed.identity[:2],
+            ) as source_quiet:
+                if not source_quiet:
+                    return False
+                with _writer_quiescence_proof(
+                    recovery_descriptor,
+                    recovery.path,
+                    parent_receipt,
+                    recovery.identity[:2],
+                ) as recovery_quiet:
+                    if not recovery_quiet:
+                        return False
+                    final_source = _descriptor_snapshot(
+                        descriptor,
+                        source,
+                        parent_receipt,
+                        allowed_links=frozenset({1}),
+                    )
+                    final_recovery = _descriptor_snapshot(
+                        recovery_descriptor,
+                        recovery.path,
+                        parent_receipt,
+                        allowed_links=frozenset({1}),
+                    )
+                    if (
+                        not _exact_snapshot_matches(final_source, confirmed)
+                        or not _exact_snapshot_matches(final_recovery, recovery)
+                        or final_source.raw != final_recovery.raw
+                    ):
+                        return False
+                    source_claim = _claim_consumer_for_unlink(
+                        source,
+                        parent_receipt,
+                        final_source.identity[:2],
+                    )
+                    if source_claim is None:
+                        return False
+                    recovery_claim = _claim_consumer_for_unlink(
+                        recovery.path,
+                        parent_receipt,
+                        final_recovery.identity[:2],
+                    )
+                    if recovery_claim is None:
+                        _restore_consumer_claim(source_claim)
+                        return False
+                    source_after_claim = _descriptor_snapshot(
+                        descriptor,
+                        source_claim.quarantine,
+                        parent_receipt,
+                        allowed_links=frozenset({1}),
+                    )
+                    recovery_after_claim = _descriptor_snapshot(
+                        recovery_descriptor,
+                        recovery_claim.quarantine,
+                        parent_receipt,
+                        allowed_links=frozenset({1}),
+                    )
+                    if not _claimed_snapshot_matches(
+                        source_after_claim, final_source
+                    ) or not _claimed_snapshot_matches(
+                        recovery_after_claim, final_recovery
+                    ):
+                        _restore_consumer_claim(recovery_claim)
+                        _restore_consumer_claim(source_claim)
+                        return False
+                    if not _discard_consumer_claim(recovery_claim):
+                        _restore_consumer_claim(source_claim)
+                        return False
+                    return _discard_consumer_claim(source_claim)
         except (AuthorityError, OSError):
             return False
         finally:
+            if recovery_descriptor >= 0:
+                try:
+                    os.close(recovery_descriptor)
+                except OSError:
+                    pass
             if descriptor >= 0:
                 try:
                     os.close(descriptor)
@@ -1401,7 +1744,7 @@ def _stage_sibling(
     except (OSError, UnicodeDecodeError):
         primary_error = AuthorityError("consumer_write_failed")
 
-    cleanup_diagnostics: list[str] = []
+    cleanup_failures: list[AuthorityError] = []
     if descriptor >= 0:
         if temporary is not None:
             try:
@@ -1414,43 +1757,47 @@ def _stage_sibling(
                     mode=stat.S_IMODE(metadata.st_mode),
                     parent_receipt=parent_receipt,
                 )
-            except BaseException:  # noqa: BLE001 -- primary failure must survive cleanup
+            except BaseException as error:  # noqa: BLE001 -- cleanup is isolated
+                cleanup_failures.append(
+                    _cleanup_fault("staged_descriptor_snapshot_failed", error)
+                )
                 owned_snapshot = None
         try:
             os.close(descriptor)
-        except BaseException:  # noqa: BLE001 -- primary failure must survive cleanup
-            cleanup_diagnostics.append("staged_descriptor_close_failed")
+        except BaseException as error:  # noqa: BLE001 -- cleanup is isolated
+            cleanup_failures.append(
+                _cleanup_fault("staged_descriptor_close_failed", error)
+            )
     if temporary is not None:
-        cleanup_failed = owned_snapshot is None
-        if owned_snapshot is not None:
+        if owned_snapshot is None:
+            cleanup_failures.append(_cleanup_fault("staged_cleanup_failed"))
+        else:
             try:
-                cleanup_failed = not _remove_owned(
+                removed = _remove_owned(
                     temporary,
                     owned_snapshot,
                     parent_receipt,
                     require_named_parent=False,
                 )
-            except BaseException:  # noqa: BLE001 -- every cleanup attempt is isolated
-                cleanup_failed = True
-        if cleanup_failed:
-            cleanup_diagnostics.append("staged_cleanup_failed")
+            except BaseException as error:  # noqa: BLE001 -- cleanup is isolated
+                cleanup_failures.append(_cleanup_fault("staged_cleanup_failed", error))
+            else:
+                if not removed:
+                    cleanup_failures.append(_cleanup_fault("staged_cleanup_failed"))
     assert primary_error is not None
-    if cleanup_diagnostics:
-        diagnostics = (
-            *primary_error.cleanup_diagnostics,
-            *cleanup_diagnostics,
+    if cleanup_failures:
+        cleanup_error = _aggregate_cleanup_error(
+            "consumer_cleanup_failed",
+            tuple(cleanup_failures),
         )
-        primary_error.cleanup_diagnostics = diagnostics
-        raise primary_error from AuthorityError(
-            "consumer_cleanup_failed", cleanup_diagnostics=tuple(cleanup_diagnostics)
-        )
+        raise _attach_cleanup_error(primary_error, cleanup_error)
     raise primary_error
 
 
 def _cleanup_staged(
     snapshots: Iterator[ConsumerSnapshot],
-) -> tuple[str, ...]:
-    diagnostics: list[str] = []
+) -> tuple[AuthorityError, ...]:
+    failures: list[AuthorityError] = []
     for snapshot in snapshots:
         try:
             removed = _remove_owned(
@@ -1459,17 +1806,18 @@ def _cleanup_staged(
                 snapshot.parent_receipt,
                 require_named_parent=False,
             )
-        except BaseException:  # noqa: BLE001 -- every staged cleanup is isolated
-            removed = False
-        if not removed:
-            diagnostics.append("staged_cleanup_failed")
-    return tuple(diagnostics)
+        except BaseException as error:  # noqa: BLE001 -- every cleanup is isolated
+            failures.append(_cleanup_fault("staged_cleanup_failed", error))
+        else:
+            if not removed:
+                failures.append(_cleanup_fault("staged_cleanup_failed"))
+    return tuple(failures)
 
 
 def _remove_staged(snapshots: Iterator[ConsumerSnapshot]) -> None:
-    diagnostics = _cleanup_staged(snapshots)
-    if diagnostics:
-        raise AuthorityError("consumer_cleanup_failed", cleanup_diagnostics=diagnostics)
+    failures = _cleanup_staged(snapshots)
+    if failures:
+        raise _aggregate_cleanup_error("consumer_cleanup_failed", failures)
 
 
 def _same_snapshot(
@@ -1707,25 +2055,29 @@ def _write_consumers_atomically(
                 continue
             error_code = "consumer_rollback_failed"
         assert error_code is not None
-        primary_error = AuthorityError(
-            error_code, cleanup_diagnostics=error.cleanup_diagnostics
-        )
+        if error_code == str(error):
+            primary_error = error
+        else:
+            rollback_error = AuthorityError(
+                error_code,
+                cleanup_diagnostics=error.cleanup_diagnostics,
+                cleanup_failures=error.cleanup_failures,
+            )
+            rollback_error.__cause__ = error
+            primary_error = rollback_error
     except BaseException as error:  # noqa: BLE001 -- cleanup precedes propagation
         primary_error = error
 
-    cleanup_diagnostics = _cleanup_staged(iter(replacements.values()))
-    if cleanup_diagnostics:
-        cleanup_error = AuthorityError(
+    cleanup_failures = _cleanup_staged(iter(replacements.values()))
+    if cleanup_failures:
+        cleanup_error = _aggregate_cleanup_error(
             "consumer_cleanup_failed",
-            cleanup_diagnostics=cleanup_diagnostics,
+            cleanup_failures,
         )
         if primary_error is not None:
-            if isinstance(primary_error, AuthorityError):
-                primary_error.cleanup_diagnostics = (
-                    *primary_error.cleanup_diagnostics,
-                    *cleanup_diagnostics,
-                )
-            raise primary_error from cleanup_error
+            raise _attach_cleanup_error(primary_error, cleanup_error)
+        if len(committed) == len(targets):
+            raise CommittedWithCleanupFault(tuple(committed), cleanup_error)
         raise cleanup_error
     if primary_error is not None:
         raise primary_error
@@ -2048,14 +2400,15 @@ def _authority_write_lock(
         namespace_acquired=namespace_acquired,
     )
     if cleanup_diagnostics:
-        cleanup_error = AuthorityError(
+        cleanup_failures = tuple(
+            _cleanup_fault(diagnostic) for diagnostic in cleanup_diagnostics
+        )
+        cleanup_error = _aggregate_cleanup_error(
             "authority_lock_cleanup_failed",
-            cleanup_diagnostics=cleanup_diagnostics,
+            cleanup_failures,
         )
         if primary_error is not None:
-            if isinstance(primary_error, AuthorityError):
-                primary_error.cleanup_diagnostics = cleanup_diagnostics
-            raise primary_error from cleanup_error
+            raise _attach_cleanup_error(primary_error, cleanup_error)
         raise cleanup_error
     if primary_error is not None:
         raise primary_error

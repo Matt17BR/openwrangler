@@ -1332,6 +1332,46 @@ def test_stage_failure_preserves_primary_and_attaches_cleanup_fault(
         "staged_descriptor_close_failed",
         "staged_cleanup_failed",
     )
+    failures = captured.value.__cause__.cleanup_failures
+    assert len(failures) == 2
+    assert isinstance(failures[0].__cause__, RuntimeError)
+    assert str(failures[0].__cause__) == "bounded-cleanup-close-failure"
+    assert isinstance(failures[1].__cause__, RuntimeError)
+    assert str(failures[1].__cause__) == "bounded-cleanup-remove-failure"
+
+
+def test_nested_cleanup_appends_without_replacing_existing_causes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    primary_root = ValueError("bounded-primary-root")
+    primary = authority.AuthorityError("consumer_write_failed")
+    primary.__cause__ = primary_root
+    cleanup_root = RuntimeError("bounded-cleanup-root")
+    cleanup_failure = authority.AuthorityError("nested-cleanup-failure")
+    cleanup_failure.__cause__ = cleanup_root
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise primary
+
+    def fail_remove(*_args: Any, **_kwargs: Any) -> bool:
+        raise cleanup_failure
+
+    monkeypatch.setattr(authority.os, "fsync", fail_fsync)
+    monkeypatch.setattr(authority, "_remove_owned", fail_remove)
+    with pytest.raises(authority.AuthorityError, match="^consumer_write_failed$") as captured:
+        authority._stage_sibling(target, b"generated", 0o644)
+
+    assert captured.value is primary
+    assert captured.value.__cause__ is primary_root
+    aggregate = primary_root.__cause__
+    assert isinstance(aggregate, authority.AuthorityError)
+    assert str(aggregate) == "consumer_cleanup_failed"
+    assert len(aggregate.cleanup_failures) == 1
+    nested = aggregate.cleanup_failures[0]
+    assert nested.__cause__ is cleanup_failure
+    assert cleanup_failure.__cause__ is cleanup_root
 
 
 def test_primary_transaction_failure_attaches_every_staged_cleanup_fault(
@@ -1507,7 +1547,7 @@ def test_final_unlink_identity_condition_preserves_a_foreign_replacement(
     def replace_before_identity_condition(
         path: Path,
         parent_receipt: authority.ConsumerParentReceipt | None,
-        expected_identity: tuple[int, int] | None = None,
+        expected_identity: tuple[int, int],
     ) -> bool:
         nonlocal replaced
         if ".openwrangler-dispose-" in path.name and expected_identity is not None and not replaced:
@@ -1528,11 +1568,48 @@ def test_final_unlink_identity_condition_preserves_a_foreign_replacement(
     assert retained_source[0].read_bytes() == b"generated"
 
 
+def test_atomic_unlink_claim_preserves_a_replacement_created_after_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owned = tmp_path / "owned"
+    owned.write_bytes(b"owned bytes")
+    metadata = owned.stat()
+    identity = (metadata.st_dev, metadata.st_ino)
+    real_rename = authority._rename_noreplace
+    replacement_identity: tuple[int, int] | None = None
+
+    def replace_after_claim(
+        first: Path,
+        second: Path,
+        *args: Any,
+        **kwargs: Any,
+    ) -> bool:
+        nonlocal replacement_identity
+        renamed = real_rename(first, second, *args, **kwargs)
+        if first == owned and ".openwrangler-unlink-" in second.name and renamed:
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"foreign replacement")
+            replacement_metadata = replacement.stat()
+            replacement_identity = (
+                replacement_metadata.st_dev,
+                replacement_metadata.st_ino,
+            )
+            os.replace(replacement, owned)
+        return renamed
+
+    monkeypatch.setattr(authority, "_rename_noreplace", replace_after_claim)
+    assert authority._consumer_unlink(owned, None, identity)
+    assert owned.read_bytes() == b"foreign replacement"
+    current = owned.stat()
+    assert (current.st_dev, current.st_ino) == replacement_identity
+    assert not list(tmp_path.glob(".*.openwrangler-unlink-*"))
+
+
 @pytest.mark.parametrize(
     ("replacement_marker", "expected_prefix"),
     ((".openwrangler-source-", "source"), (".openwrangler-recovery-", "recovery")),
 )
-def test_each_final_cleanup_unlink_preserves_a_foreign_replacement(
+def test_paired_final_claims_preserve_a_foreign_replacement_and_exact_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     replacement_marker: str,
@@ -1544,26 +1621,21 @@ def test_each_final_cleanup_unlink_preserves_a_foreign_replacement(
     foreign = tmp_path / f"foreign-{expected_prefix}"
     foreign.write_bytes(f"foreign {expected_prefix} bytes".encode())
     identity = (foreign.stat().st_dev, foreign.stat().st_ino)
-    real_unlink = authority._consumer_unlink
+    real_claim = authority._claim_consumer_for_unlink
     replaced_path: Path | None = None
 
     def replace_selected_leaf(
         path: Path,
         parent_receipt: authority.ConsumerParentReceipt | None,
-        expected_identity: tuple[int, int] | None = None,
-    ) -> bool:
+        expected_identity: tuple[int, int],
+    ) -> authority.ConsumerUnlinkClaim | None:
         nonlocal replaced_path
-        if (
-            replacement_marker in path.name
-            and "-stage-" not in path.name
-            and expected_identity is not None
-            and replaced_path is None
-        ):
+        if replacement_marker in path.name and "-stage-" not in path.name and replaced_path is None:
             os.replace(foreign, path)
             replaced_path = path
-        return real_unlink(path, parent_receipt, expected_identity)
+        return real_claim(path, parent_receipt, expected_identity)
 
-    monkeypatch.setattr(authority, "_consumer_unlink", replace_selected_leaf)
+    monkeypatch.setattr(authority, "_claim_consumer_for_unlink", replace_selected_leaf)
     with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
         authority._remove_staged(iter((staged,)))
 
@@ -1571,6 +1643,10 @@ def test_each_final_cleanup_unlink_preserves_a_foreign_replacement(
     assert replaced_path.read_bytes() == f"foreign {expected_prefix} bytes".encode()
     metadata = replaced_path.stat()
     assert (metadata.st_dev, metadata.st_ino) == identity
+    retained = [
+        path for path in tmp_path.glob(".*.openwrangler-*") if "-stage-" not in path.name and path != replaced_path
+    ]
+    assert any(path.read_bytes() == b"generated" for path in retained)
 
 
 @pytest.mark.parametrize("failure", ("create", "partial_write", "fsync", "reopen", "verify"))
@@ -1723,7 +1799,7 @@ def test_staged_cleanup_retains_a_same_inode_postcheck_unlink_race(
     def edit_through_retained_writer(
         path: Path,
         parent_receipt: authority.ConsumerParentReceipt | None,
-        expected_identity: tuple[int, int] | None = None,
+        expected_identity: tuple[int, int],
     ) -> bool:
         nonlocal raced, raced_identity
         if ".openwrangler-dispose-" not in path.name or raced:
@@ -1762,7 +1838,84 @@ def test_staged_cleanup_retains_a_same_inode_postcheck_unlink_race(
     assert source[0].read_bytes() == b"changed!!"
 
 
-def test_failed_staged_unlink_is_explicit_and_retains_transaction_evidence(
+def test_windows_writer_proof_denies_write_sharing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"owned")
+    metadata = source.stat()
+    shares: list[int] = []
+
+    class CreateFile:
+        argtypes: list[Any] = []
+        restype: Any = None
+
+        def __call__(
+            self,
+            _path: str,
+            _access: int,
+            share: int,
+            *_args: Any,
+        ) -> int:
+            shares.append(share)
+            return 41
+
+    create_file = CreateFile()
+    kernel32 = types.SimpleNamespace(
+        CreateFileW=create_file,
+        CloseHandle=lambda _handle: 1,
+    )
+    fake_msvcrt = types.SimpleNamespace(open_osfhandle=lambda _handle, _flags: os.open(source, os.O_RDONLY))
+    monkeypatch.setattr(authority.os, "name", "nt")
+    monkeypatch.setattr(
+        authority.ctypes,
+        "windll",
+        types.SimpleNamespace(kernel32=kernel32),
+        raising=False,
+    )
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    descriptor = authority._open_windows_writer_proof(
+        source,
+        None,
+        (metadata.st_dev, metadata.st_ino),
+    )
+    try:
+        assert descriptor >= 0
+        assert shares == [0x00000001 | 0x00000004]
+        assert not shares[0] & 0x00000002
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux file leases provide the no-writer proof",
+)
+def test_writer_quiescence_retains_both_copies_while_a_writer_is_open(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "consumer"
+    target.write_text("original", encoding="utf-8")
+    staged = authority._stage_sibling(target, b"generated", 0o644)
+    writer = os.open(staged.path, os.O_RDWR)
+    try:
+        with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+            authority._remove_staged(iter((staged,)))
+        source = list(tmp_path.glob(".*.openwrangler-source-*"))
+        recovery = [path for path in tmp_path.glob(".*.openwrangler-recovery-*") if "-stage-" not in path.name]
+        assert len(source) == 1
+        assert len(recovery) == 1
+        assert source[0].read_bytes() == b"generated"
+        assert recovery[0].read_bytes() == b"generated"
+        os.lseek(writer, 0, os.SEEK_SET)
+        assert os.write(writer, b"changed!!") == len(b"changed!!")
+        os.fsync(writer)
+        assert source[0].read_bytes() == b"changed!!"
+        assert recovery[0].read_bytes() == b"generated"
+    finally:
+        os.close(writer)
+
+
+def test_post_commit_cleanup_fault_has_an_explicit_committed_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pyproject, host = _temporary_consumers(tmp_path, monkeypatch)
@@ -1773,7 +1926,7 @@ def test_failed_staged_unlink_is_explicit_and_retains_transaction_evidence(
     def fail_one_owned_unlink(
         path: Path,
         parent_receipt: authority.ConsumerParentReceipt | None,
-        expected_identity: tuple[int, int] | None = None,
+        expected_identity: tuple[int, int],
     ) -> bool:
         nonlocal failed
         if ".openwrangler-dispose-" in path.name and not failed:
@@ -1782,10 +1935,17 @@ def test_failed_staged_unlink_is_explicit_and_retains_transaction_evidence(
         return real_unlink(path, parent_receipt, expected_identity)
 
     monkeypatch.setattr(authority, "_consumer_unlink", fail_one_owned_unlink)
-    with pytest.raises(authority.AuthorityError, match="^consumer_cleanup_failed$"):
+    with pytest.raises(
+        authority.CommittedWithCleanupFault,
+        match="^consumer_committed_with_cleanup_fault$",
+    ) as captured:
         authority.synchronize(write=True)
 
     assert failed
+    assert captured.value.committed_paths == (pyproject, host)
+    assert captured.value.cleanup_diagnostics == ("staged_cleanup_failed",)
+    assert isinstance(captured.value.__cause__, authority.AuthorityError)
+    assert str(captured.value.__cause__) == "consumer_cleanup_failed"
     assert authority.synchronize(write=False) == ()
     retained = list(tmp_path.glob(".*.openwrangler-dispose-*"))
     assert len(retained) == 2
