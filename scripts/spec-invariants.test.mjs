@@ -963,6 +963,91 @@ test("cleaning-history wording preserves exact latest Undo and native single-inv
   }
 });
 
+test("cleaning-history predicates keep ownership, polarity, cardinality, and exceptions clause-local", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps cannot be edited, while each command handles one request.",
+    "Committed steps cannot be edited, but no command edits more than one step per invocation.",
+    "Users cannot edit committed steps.",
+    "Steps already committed cannot be deleted.",
+    "Prior committed steps cannot be removed.",
+    "Cleaning-plan order may be changed.",
+    "Undo targets the latest committed step and another committed step.",
+    "Undo targets the latest committed step plus an additional committed step.",
+    "Undo targets the latest committed steps.",
+    "Undo targets only the latest committed step and an additional one.",
+    "Undo is available for all committed steps except the latest committed step.",
+    "Undo is available for all committed steps with the exception of the latest committed step.",
+    "With the exception of the latest committed step, Undo is available for all committed steps.",
+    "Undo is supported for all committed steps other than the latest.",
+    "Undo targets the latest two committed steps."
+  ];
+  const truthful = [
+    "Undo targets only the latest committed step, while reports are unavailable except the latest report.",
+    "Undo targets the latest committed step, while two toolbar buttons remain visible.",
+    "Undo removes the latest committed step, while three reports remain visible.",
+    "Committed steps can be edited, while each export command handles one request.",
+    "Undo targets only the latest committed step while offline reports cannot be edited.",
+    "Undo targets only the latest committed step while the display panel cannot be reordered.",
+    "The offline report cannot be edited, while committed steps can be edited.",
+    "Two toolbar buttons remain visible while Undo targets the latest committed step.",
+    "Undo is available from two toolbar buttons only for the latest committed step.",
+    "All reports remain visible, but committed steps can be edited.",
+    "Except for the latest report, Undo targets the latest committed step."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history predicate work is explicitly bounded before clause analysis", () => {
+  const model = cleaningHistoryModel();
+  const atLimit = `Applied ${"edit ".repeat(512)}.`;
+  const overLimit = `Applied ${"edit ".repeat(513)}.`;
+  const reviewedAdversary = `Applied ${"edit ".repeat(20_000)}.`;
+  assert.equal(Buffer.byteLength(reviewedAdversary), 100_009);
+
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents: cleaningHistoryDocumentsWithReadmeClaim(model, atLimit)
+    })
+  );
+  for (const example of [overLimit, reviewedAdversary]) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /exceeds the 512-predicate-token work limit/u
+    );
+  }
+});
+
 test("a code example cannot hide a separate rendered inline contradiction", () => {
   const model = cleaningHistoryModel();
   const documents = cleaningHistoryDocuments(model);
