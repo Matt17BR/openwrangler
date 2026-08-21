@@ -32,6 +32,7 @@ LOCK_NAME = "mutation.lock"
 MAX_FRAME_BYTES = 65_536
 MAX_MARKER_BYTES = 65_536
 MAX_DEPENDENCIES = 64
+VERSION_FIELD_MAX_LENGTH = 64
 INTEGRITY_PROTOCOL = "openwrangler-dependency-integrity-v1"
 INTEGRITY_CHECK_TIMEOUT_SECONDS = 20
 INTEGRITY_HELPER = Path(__file__).with_name("dependency_integrity.py")
@@ -85,6 +86,21 @@ _DEPENDENCY_KEYS = {
     "exactVersion",
     "minimumVersion",
     "maximumVersionExclusive",
+}
+_LEGACY_V1_DEPENDENCY_KEYS = _DEPENDENCY_KEYS - {"exactVersion"}
+_LEGACY_V1_DEPENDENCY_TRANSITIONS: dict[
+    tuple[str, str, str, str | None, str | None],
+    tuple[str | None, str | None, str | None],
+] = {
+    ("polars", "polars", "polars", None, None): (None, None, None),
+    ("duckdb", "duckdb", "duckdb>=1.5.4,<1.6", "1.5.4", "1.6"): (None, "1.5.4", "1.6"),
+    ("fsspec", "fsspec", "fsspec==2026.7.0", None, None): ("2026.7.0", None, None),
+    ("pytz", "pytz", "pytz", None, None): (None, None, None),
+    ("pandas", "pandas", "pandas", None, None): (None, None, None),
+    ("pyarrow", "pyarrow", "pyarrow", None, None): (None, None, None),
+    ("openpyxl", "openpyxl", "openpyxl>=3.1.5", "3.1.5", None): (None, "3.1.5", None),
+    ("xlrd", "xlrd", "xlrd>=2.0.1", "2.0.1", None): (None, "2.0.1", None),
+    ("fastexcel", "fastexcel", "fastexcel>=0.9", "0.9", None): (None, "0.9", None),
 }
 
 
@@ -331,19 +347,19 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
     minimum_version = None
     maximum_version = None
     if exact is not None:
-        exact = _bounded_string(exact, maximum=64, code=code)
+        exact = _bounded_string(exact, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
         try:
             exact_version = _pep440_version(exact)
         except BaseException:
             _fail(code)
     if minimum is not None:
-        minimum = _bounded_string(minimum, maximum=64, code=code)
+        minimum = _bounded_string(minimum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
         try:
             minimum_version = _pep440_version(minimum)
         except BaseException:
             _fail(code)
     if maximum is not None:
-        maximum = _bounded_string(maximum, maximum=64, code=code)
+        maximum = _bounded_string(maximum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
         try:
             maximum_version = _pep440_version(maximum)
         except BaseException:
@@ -381,6 +397,55 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
         "minimumVersion": minimum,
         "maximumVersionExclusive": maximum,
     }
+
+
+def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != _LEGACY_V1_DEPENDENCY_KEYS:
+        _fail(code)
+    import_module = _bounded_string(value["importModule"], maximum=256, code=code)
+    distribution = _bounded_string(value["distribution"], maximum=128, code=code)
+    install_spec = _bounded_string(value["installSpec"], maximum=2048, code=code)
+    minimum = value["minimumVersion"]
+    maximum = value["maximumVersionExclusive"]
+    if minimum is not None:
+        minimum = _bounded_string(minimum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+    if maximum is not None:
+        maximum = _bounded_string(maximum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+    transition_key = (import_module, distribution, install_spec, minimum, maximum)
+    try:
+        exact, normalized_minimum, normalized_maximum = _LEGACY_V1_DEPENDENCY_TRANSITIONS[transition_key]
+    except KeyError:
+        _fail(code)
+    return {
+        "importModule": import_module,
+        "distribution": distribution,
+        "installSpec": install_spec,
+        "exactVersion": exact,
+        "minimumVersion": normalized_minimum,
+        "maximumVersionExclusive": normalized_maximum,
+    }
+
+
+def _normalize_marker_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEPENDENCIES:
+        _fail(code)
+    normalized: list[dict[str, Any]] = []
+    legacy_schema: bool | None = None
+    for dependency in value:
+        is_legacy = isinstance(dependency, dict) and set(dependency) == _LEGACY_V1_DEPENDENCY_KEYS
+        if legacy_schema is None:
+            legacy_schema = is_legacy
+        elif legacy_schema != is_legacy:
+            _fail(code)
+        normalized.append(
+            _normalize_legacy_journal_dependency(dependency, code=code)
+            if is_legacy
+            else _normalize_dependency(dependency, code=code)
+        )
+    modules = {dependency["importModule"] for dependency in normalized}
+    if len(modules) != len(normalized):
+        _fail(code)
+    return normalized
 
 
 def _normalize_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
@@ -2074,7 +2139,7 @@ def _read_marker(
     try:
         token = _canonical_uuid(decoded["token"])
         environment = _normalize_environment(decoded["environment"], compare_actual=False, code=code)
-        dependencies = _normalize_dependencies(decoded["dependencies"], code=code)
+        dependencies = _normalize_marker_dependencies(decoded["dependencies"], code=code)
     except GuardError:
         _fail(code)
     marker = {
@@ -2673,7 +2738,7 @@ def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
             if (
                 not isinstance(observed, str)
                 or not observed
-                or len(observed) > 256
+                or len(observed) > VERSION_FIELD_MAX_LENGTH
                 or "\x00" in observed
                 or any(ord(character) < 0x20 for character in observed)
             ):

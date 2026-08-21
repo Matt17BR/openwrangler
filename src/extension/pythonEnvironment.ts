@@ -21,6 +21,7 @@ const execFileAsync = promisify(execFile);
 export const PYTHON_ENVIRONMENT_RESOLUTION_TIMEOUT_MS = 30_000;
 export const PYTHON_ENVIRONMENT_COMMAND_TIMEOUT_MS = 10_000;
 export const MAX_SYSTEM_PYTHON_CANDIDATES = 16;
+export const PYTHON_DEPENDENCY_VERSION_MAX_LENGTH = 64;
 const RESOLUTION_GUARD_POLL_INTERVAL_MS = 25;
 
 export type PythonEnvironmentResource = Resource;
@@ -639,6 +640,7 @@ export async function probeDependencies(
     " from pip._vendor.packaging.version import Version",
     "except BaseException: SpecifierSet=Version=None",
     `deps=json.loads(${JSON.stringify(JSON.stringify(dependencies))})`,
+    `VERSION_FIELD_MAX_LENGTH=${PYTHON_DEPENDENCY_VERSION_MAX_LENGTH}`,
     "def entry(v): return (v.st_dev,v.st_ino,v.st_mode,v.st_nlink,v.st_size,v.st_mtime_ns,v.st_ctime_ns)",
     "def file_identity(v): return (v.st_dev,v.st_ino,v.st_size,v.st_mtime_ns,v.st_ctime_ns)",
     "def posix_identity(path):",
@@ -678,6 +680,9 @@ export async function probeDependencies(
     "class WinInfo(ctypes.Structure): _fields_=[('attributes',ctypes.c_uint32),('creation',WinTime),('access',WinTime),('write',WinTime),('volume',ctypes.c_uint32),('size_high',ctypes.c_uint32),('size_low',ctypes.c_uint32),('links',ctypes.c_uint32),('index_high',ctypes.c_uint32),('index_low',ctypes.c_uint32)]",
     "def win_value(v): return (v.volume,(v.index_high<<32)|v.index_low,(v.size_high<<32)|v.size_low,(v.write.high<<32)|v.write.low,(v.creation.high<<32)|v.creation.low)",
     "def windows_identity(path):",
+    " normalized=os.path.normpath(path)",
+    " if os.path.normcase(normalized)!=os.path.normcase(path): return None",
+    " path=normalized",
     " handles=[]",
     " try:",
     "  drive,tail=os.path.splitdrive(path); components=[item for item in tail.replace('/',os.path.sep).split(os.path.sep) if item]",
@@ -729,10 +734,12 @@ export async function probeDependencies(
     "out={}",
     "for d in deps:",
     " try:",
+    "  bounds=(d.get('exactVersion'),d.get('minimumVersion'),d.get('maximumVersionExclusive'))",
+    "  if any(v is not None and (not isinstance(v,str) or not 0<len(v)<=VERSION_FIELD_MAX_LENGTH or '\\0' in v or any(ord(c)<32 for c in v)) for v in bounds): raise ValueError()",
     "  dist=importlib.metadata.distribution(d['distribution'])",
     "  module=importlib.import_module(d['importModule'])",
     "  version=dist.version",
-    "  valid=isinstance(version,str) and 0<len(version)<=256 and '\\0' not in version and not any(ord(c)<32 for c in version)",
+    "  valid=isinstance(version,str) and 0<len(version)<=VERSION_FIELD_MAX_LENGTH and '\\0' not in version and not any(ord(c)<32 for c in version)",
     "  exact=d.get('exactVersion')",
     "  constraints=['=='+exact] if exact is not None else []",
     "  if exact is None and d.get('minimumVersion'): constraints.append('>='+d['minimumVersion'])",

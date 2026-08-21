@@ -109,6 +109,60 @@ def test_generated_consumers_match_the_dependency_authority() -> None:
     assert f"{authority.HOST_START}\n{generated_host}\n{authority.HOST_END}" in host
 
 
+def test_supported_minima_are_exactly_executable_qualified() -> None:
+    dependencies = authority.load_authority()
+    assert all(dependency.minimum_status == "qualified" for dependency in dependencies)
+    for dependency in dependencies:
+        if dependency.minimum_version is not None:
+            assert Version(dependency.qualified_versions[0]) == Version(dependency.minimum_version)
+
+
+def test_version_fields_share_the_exact_64_character_boundary(tmp_path: Path) -> None:
+    contract = json.loads((ROOT / "fixtures" / "dependency-version-contract.json").read_text(encoding="utf-8"))
+    assert contract["maximumVersionLength"] == authority.VERSION_FIELD_MAX_LENGTH
+    assert contract["maximumVersionLength"] == dependency_guard.VERSION_FIELD_MAX_LENGTH
+
+    for length, accepted in ((64, True), (65, False)):
+        version = "1+" + "a" * (length - 2)
+        assert len(version) == length
+        value = _authority_json()
+        entry = copy.deepcopy(value["dependencies"][0])
+        entry.update(
+            {
+                "id": "version_boundary",
+                "importModule": "version_boundary",
+                "distribution": "version-boundary",
+                "exactVersion": version,
+                "minimumVersion": None,
+                "maximumVersionExclusive": None,
+                "qualification": {
+                    "cohortKind": "exact",
+                    "minimumStatus": "qualified",
+                    "qualifiedVersions": [version],
+                },
+            }
+        )
+        value["dependencies"] = [entry]
+        path = _write_authority(tmp_path / f"version-{length}.json", value)
+        descriptor = {
+            "importModule": "version_boundary",
+            "distribution": "version-boundary",
+            "installSpec": f"version-boundary=={version}",
+            "exactVersion": version,
+            "minimumVersion": None,
+            "maximumVersionExclusive": None,
+        }
+        if accepted:
+            dependency = authority.load_authority(path)[0]
+            assert dependency_guard._normalize_dependency(descriptor, code="invalid_request") == descriptor
+            assert dependency.install_spec in authority._render_pyproject((dependency,), "runtime")
+        else:
+            with pytest.raises(authority.AuthorityError, match="^invalid_authority_text$"):
+                authority.load_authority(path)
+            with pytest.raises(dependency_guard.GuardError, match="^invalid_request$"):
+                dependency_guard._normalize_dependency(descriptor, code="invalid_request")
+
+
 def test_every_authority_descriptor_uses_the_guard_pep440_contract() -> None:
     for dependency in authority.load_authority():
         guard_descriptor = _guard_descriptor(dependency)
@@ -341,7 +395,7 @@ def test_epoch_and_supported_pandas_cohorts_have_pep440_boundaries(tmp_path: Pat
         assert dependency_guard._dependency_version_supported(descriptor, version) is supported
 
     pandas = next(item for item in authority.load_authority() if item.identifier == "pandas")
-    assert pandas.specifier == ">=2.2,<4"
+    assert pandas.specifier == ">=2.3.3,<4"
     assert tuple(Version(version).major for version in pandas.qualified_versions) == (2, 3)
     assert dependency_guard._dependency_version_supported(_guard_descriptor(pandas), "3.99.0")
     assert not dependency_guard._dependency_version_supported(_guard_descriptor(pandas), "4.0.0")

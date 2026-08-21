@@ -43,6 +43,7 @@ MAX_DEPENDENCIES = 64
 MAX_QUALIFIED_VERSIONS = 16
 MAX_CONSUMER_BYTES = 2_097_152
 MAX_TEXT = 256
+VERSION_FIELD_MAX_LENGTH = 64
 
 # Linux UAPI values not exposed by the Python 3.10 fcntl module.
 _LINUX_F_SETOWN_EX = 15
@@ -192,11 +193,16 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _text(value: Any, *, pattern: re.Pattern[str] | None = None) -> str:
+def _text(
+    value: Any,
+    *,
+    pattern: re.Pattern[str] | None = None,
+    maximum: int = MAX_TEXT,
+) -> str:
     if (
         not isinstance(value, str)
         or not value
-        or len(value) > MAX_TEXT
+        or len(value) > maximum
         or "\x00" in value
     ):
         _fail("invalid_authority_text")
@@ -208,7 +214,7 @@ def _text(value: Any, *, pattern: re.Pattern[str] | None = None) -> str:
 
 
 def _version(value: Any) -> tuple[str, Version]:
-    text = _text(value)
+    text = _text(value, maximum=VERSION_FIELD_MAX_LENGTH)
     try:
         return text, Version(text)
     except (InvalidVersion, MemoryError, RecursionError):
@@ -456,7 +462,7 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
         minimum_status = _text(qualification_raw["minimumStatus"])
         if cohort_kind not in {"exact", "major", "minor"}:
             _fail("invalid_authority_qualification")
-        if minimum_status not in {"qualified", "declared-unqualified"}:
+        if minimum_status != "qualified":
             _fail("invalid_authority_qualification")
         qualified_raw = qualification_raw["qualifiedVersions"]
         if (
@@ -494,11 +500,9 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
             first_qualified = qualified_versions[0]
             if minimum_status == "qualified" and first_qualified != lower:
                 _fail("invalid_authority_qualification")
-            if minimum_status == "declared-unqualified" and not lower < first_qualified:
-                _fail("invalid_authority_qualification")
-            if minimum_status == "qualified" and _cohort_key(
-                lower, cohort_kind
-            ) != _cohort_key(first_qualified, cohort_kind):
+            if _cohort_key(lower, cohort_kind) != _cohort_key(
+                first_qualified, cohort_kind
+            ):
                 _fail("invalid_authority_qualification")
             if not _cohorts_are_contiguous(qualified_versions, cohort_kind):
                 _fail("invalid_authority_qualification")

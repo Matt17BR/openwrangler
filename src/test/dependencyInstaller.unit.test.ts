@@ -23,7 +23,7 @@ import {
   type OwnedDependencyInstall
 } from "../extension/dependencyInstaller";
 import type { PythonEnvironment } from "../extension/pythonEnvironment";
-import type { PythonDependency } from "../extension/pythonEnvironmentModel";
+import { requiredDependencies } from "../extension/pythonEnvironmentModel";
 
 const OWNED_PYTHON_PROCESS_ENVIRONMENT = {
   PYTHON_MANAGER_AUTOMATIC_INSTALL: "0",
@@ -52,21 +52,11 @@ const TEST_ENVIRONMENT: PythonEnvironment = {
   packageRootIdentity: { device: "2049", inode: "887766" },
   source: "configuration"
 };
-const TEST_DEPENDENCIES: readonly PythonDependency[] = [
-  {
-    importModule: "pandas",
-    distribution: "pandas",
-    installSpec: "pandas>=2.2,<4",
-    minimumVersion: "2.2",
-    maximumVersionExclusive: "4"
-  },
-  {
-    importModule: "xlrd",
-    distribution: "xlrd",
-    installSpec: "xlrd>=2.0.1",
-    minimumVersion: "2.0.1"
-  }
-];
+const TEST_DEPENDENCIES = requiredDependencies("pandas", {
+  kind: "file",
+  label: "legacy.xls",
+  path: testPath("/data/legacy.xls")
+});
 
 class DependencyChildProcess extends EventEmitter {
   readonly stdin = Object.assign(new PassThrough(), { unref: vi.fn() });
@@ -132,7 +122,7 @@ describe("owned dependency installation", () => {
     });
     expect(existsSync(privateCwd)).toBe(true);
     if (process.platform !== "win32") expect(statSync(privateCwd).mode & 0o077).toBe(0);
-    expect(operation.requirements).toEqual(["pandas>=2.2,<4", "xlrd>=2.0.1"]);
+    expect(operation.requirements).toEqual(["pandas>=2.3.3,<4", "xlrd>=2.0.2,<3"]);
     expect(operation.didSpawn()).toBe(false);
     expect(operation.didAuthorize()).toBe(false);
 
@@ -160,18 +150,18 @@ describe("owned dependency installation", () => {
           {
             importModule: "pandas",
             distribution: "pandas",
-            installSpec: "pandas>=2.2,<4",
+            installSpec: "pandas>=2.3.3,<4",
             exactVersion: null,
-            minimumVersion: "2.2",
+            minimumVersion: "2.3.3",
             maximumVersionExclusive: "4"
           },
           {
             importModule: "xlrd",
             distribution: "xlrd",
-            installSpec: "xlrd>=2.0.1",
+            installSpec: "xlrd>=2.0.2,<3",
             exactVersion: null,
-            minimumVersion: "2.0.1",
-            maximumVersionExclusive: null
+            minimumVersion: "2.0.2",
+            maximumVersionExclusive: "3"
           }
         ]
       }

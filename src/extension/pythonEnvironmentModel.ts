@@ -48,8 +48,8 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
     pandas: Object.freeze({
       importModule: "pandas",
       distribution: "pandas",
-      installSpec: "pandas>=2.2,<4",
-      minimumVersion: "2.2",
+      installSpec: "pandas>=2.3.3,<4",
+      minimumVersion: "2.3.3",
       maximumVersionExclusive: "4"
     }),
     pyarrow: Object.freeze({
@@ -69,22 +69,22 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
     xlrd: Object.freeze({
       importModule: "xlrd",
       distribution: "xlrd",
-      installSpec: "xlrd>=2.0.1,<3",
-      minimumVersion: "2.0.1",
+      installSpec: "xlrd>=2.0.2,<3",
+      minimumVersion: "2.0.2",
       maximumVersionExclusive: "3"
     }),
     ipython: Object.freeze({
       importModule: "IPython",
       distribution: "ipython",
-      installSpec: "ipython>=8.31,<10",
-      minimumVersion: "8.31",
+      installSpec: "ipython>=9.15.0,<10",
+      minimumVersion: "9.15.0",
       maximumVersionExclusive: "10"
     }),
     fastexcel: Object.freeze({
       importModule: "fastexcel",
       distribution: "fastexcel",
-      installSpec: "fastexcel>=0.9,<1",
-      minimumVersion: "0.9",
+      installSpec: "fastexcel>=0.20.2,<1",
+      minimumVersion: "0.20.2",
       maximumVersionExclusive: "1"
     })
   });

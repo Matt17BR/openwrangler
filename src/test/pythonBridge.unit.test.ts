@@ -34,7 +34,7 @@ import {
 import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
 import { PythonDependencyProbeRegistry } from "../extension/pythonDependencyState";
-import type { PythonDependency } from "../extension/pythonEnvironmentModel";
+import { requiredDependencies, type PythonDependency } from "../extension/pythonEnvironmentModel";
 import { PythonRuntimeScopeRegistry } from "../extension/pythonRuntimeScopeRegistry";
 import { PythonRuntimeTransport } from "../extension/pythonRuntimeTransport";
 import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
@@ -63,6 +63,12 @@ const initializeRequest: OpenWranglerRequest = { kind: "initialize" };
 const TEST_PACKAGE_ROOT_IDENTITY = testPackageRootIdentity("/env");
 const TEST_EXECUTABLE_IDENTITY = testExecutableIdentity("/env/bin/python");
 const TEST_DEPENDENCY_TOKEN = "11111111-1111-4111-8111-111111111111";
+const TEST_DEPENDENCIES: readonly PythonDependency[] = requiredDependencies("pandas", {
+  kind: "file",
+  label: "legacy.xls",
+  path: testPythonExecutablePath("/data/legacy.xls")
+});
+const TEST_DEPENDENCY_REQUIREMENTS = TEST_DEPENDENCIES.map((dependency) => dependency.installSpec);
 
 beforeEach(() => {
   vi.mocked(getDependencyGuardStatus).mockReset().mockResolvedValue({
@@ -1064,7 +1070,7 @@ describe("PythonBridge trusted pickle preflight", () => {
     Object.assign(bridge as object, { spawnProcess });
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas>=2.2,<4", "pyarrow>=25,<26"],
+      missing: ["pandas>=2.3.3,<4", "pyarrow>=25,<26"],
       available: []
     });
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
@@ -1076,14 +1082,14 @@ describe("PythonBridge trusted pickle preflight", () => {
         executable: environment.executable,
         version: environment.version,
         source: environment.source,
-        missing: ["pandas>=2.2,<4", "pyarrow>=25,<26"]
+        missing: ["pandas>=2.3.3,<4", "pyarrow>=25,<26"]
       });
       expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(environment.executable, [
         {
           importModule: "pandas",
           distribution: "pandas",
-          installSpec: "pandas>=2.2,<4",
-          minimumVersion: "2.2",
+          installSpec: "pandas>=2.3.3,<4",
+          minimumVersion: "2.3.3",
           maximumVersionExclusive: "4"
         },
         {
@@ -1105,7 +1111,7 @@ describe("PythonBridge trusted pickle preflight", () => {
 
       await expect(bridge.installTrustedPickleDependencies(preflight)).resolves.toBe(false);
       expect(warning).toHaveBeenCalledWith(
-        `Install pandas>=2.2,<4, pyarrow>=25,<26 into ${environment.executable}?`,
+        `Install pandas>=2.3.3,<4, pyarrow>=25,<26 into ${environment.executable}?`,
         { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
         "Install"
       );
@@ -1165,7 +1171,7 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.installMissingDependencies()).resolves.toBe(false);
 
     expect(warning).toHaveBeenCalledWith(
-      `Install pandas, xlrd>=2.0.1 into ${testPythonExecutablePath("/env/bin/python")}?`,
+      `Install ${TEST_DEPENDENCY_REQUIREMENTS.join(", ")} into ${testPythonExecutablePath("/env/bin/python")}?`,
       { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
       "Install"
     );
@@ -2240,7 +2246,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas>=2.2,<4", "xlrd>=2.0.1,<3"],
+      missing: ["pandas>=2.3.3,<4", "xlrd>=2.0.2,<3"],
       available: []
     });
 
@@ -2255,15 +2261,15 @@ describe("PythonBridge dependency guard recovery", () => {
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<4",
-        minimumVersion: "2.2",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
         maximumVersionExclusive: "4"
       },
       {
         importModule: "xlrd",
         distribution: "xlrd",
-        installSpec: "xlrd>=2.0.1,<3",
-        minimumVersion: "2.0.1",
+        installSpec: "xlrd>=2.0.2,<3",
+        minimumVersion: "2.0.2",
         maximumVersionExclusive: "3"
       }
     ]);
@@ -3181,20 +3187,20 @@ describe("PythonBridge environment resource selection", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["fastexcel>=0.9,<1"], available: ["polars"] })
+      .mockResolvedValueOnce({ missing: ["fastexcel>=0.20.2,<1"], available: ["polars"] })
       .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5,<4"], available: ["pandas"] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toEqual({
       kind: "error",
       code: "missing_dependencies",
       message:
-        "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.9,<1.",
+        "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.20.2,<1.",
       detail:
         "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
       recoverable: true
     });
     expect(internals.lastMissingDependencies).toMatchObject({
-      requirements: ["fastexcel>=0.9,<1"]
+      requirements: ["fastexcel>=0.20.2,<1"]
     });
   });
 
@@ -4772,7 +4778,7 @@ function fakeOwnedDependencyInstall(execute: () => Promise<unknown>): OwnedDepen
   return {
     child: { unref: vi.fn() } as unknown as ChildProcess,
     executable: testPythonExecutablePath("/env/bin/python"),
-    requirements: ["pandas", "xlrd>=2.0.1"],
+    requirements: [...TEST_DEPENDENCY_REQUIREMENTS],
     token: TEST_DEPENDENCY_TOKEN,
     ready: Promise.resolve({
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -4829,7 +4835,7 @@ function controlledDependencyInstall(
     operation: {
       child: child as unknown as ChildProcess,
       executable,
-      requirements: ["pandas", "xlrd>=2.0.1"],
+      requirements: [...TEST_DEPENDENCY_REQUIREMENTS],
       token: TEST_DEPENDENCY_TOKEN,
       ready: ready.promise,
       exit: exit.promise,
@@ -4865,20 +4871,8 @@ function missingDependencies(
 ): TestMissingDependencies {
   return {
     environment: selection.resolvedEnvironment!,
-    dependencies: [
-      {
-        importModule: "pandas",
-        distribution: "pandas",
-        installSpec: "pandas"
-      },
-      {
-        importModule: "xlrd",
-        distribution: "xlrd",
-        installSpec: "xlrd>=2.0.1",
-        minimumVersion: "2.0.1"
-      }
-    ],
-    requirements: ["pandas", "xlrd>=2.0.1"],
+    dependencies: TEST_DEPENDENCIES.map((dependency) => ({ ...dependency })),
+    requirements: [...TEST_DEPENDENCY_REQUIREMENTS],
     selection,
     selectionEpoch: selection.epoch
   };

@@ -46,15 +46,15 @@ describe("Python environment requirements", () => {
       }
     ]);
     expect(requiredDependencies("pandas", parquet).map((item) => item.installSpec)).toEqual([
-      "pandas>=2.2,<4",
+      "pandas>=2.3.3,<4",
       "pyarrow>=25,<26"
     ]);
     expect(requiredDependencies("pandas", xlsx)).toEqual([
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<4",
-        minimumVersion: "2.2",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
         maximumVersionExclusive: "4"
       },
       {
@@ -69,25 +69,25 @@ describe("Python environment requirements", () => {
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<4",
-        minimumVersion: "2.2",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
         maximumVersionExclusive: "4"
       },
       {
         importModule: "xlrd",
         distribution: "xlrd",
-        installSpec: "xlrd>=2.0.1,<3",
-        minimumVersion: "2.0.1",
+        installSpec: "xlrd>=2.0.2,<3",
+        minimumVersion: "2.0.2",
         maximumVersionExclusive: "3"
       }
     ]);
     expect(requiredDependencies("polars", xlsx).map((item) => item.installSpec)).toEqual([
       "polars>=1.35.2,<2",
-      "fastexcel>=0.9,<1"
+      "fastexcel>=0.20.2,<1"
     ]);
     expect(requiredDependencies("polars", xls).map((item) => item.installSpec)).toEqual([
       "polars>=1.35.2,<2",
-      "fastexcel>=0.9,<1"
+      "fastexcel>=0.20.2,<1"
     ]);
   });
 
@@ -96,8 +96,8 @@ describe("Python environment requirements", () => {
       {
         importModule: "pandas",
         distribution: "pandas",
-        installSpec: "pandas>=2.2,<4",
-        minimumVersion: "2.2",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
         maximumVersionExclusive: "4"
       },
       {
@@ -147,7 +147,7 @@ describe("Python environment requirements", () => {
     expect(automaticBackends(utf16Le)).toEqual(["pandas"]);
     expect(automaticBackends(utf16Be)).toEqual(["pandas"]);
     expect(requiredDependencies(automaticBackends(lossyUtf8)[0], lossyUtf8).map((item) => item.installSpec)).toEqual([
-      "pandas>=2.2,<4"
+      "pandas>=2.3.3,<4"
     ]);
     expect(isFileDataBackend("pyspark")).toBe(false);
     expect(automaticBackends(parquet)).not.toContain("pyspark");

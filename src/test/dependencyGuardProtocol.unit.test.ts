@@ -84,16 +84,16 @@ describe("dependency guard protocol", () => {
     const dependency: PythonDependency = {
       importModule: "pandas",
       distribution: "pandas",
-      installSpec: "pandas>=2.2,<4",
-      minimumVersion: "2.2",
+      installSpec: "pandas>=2.3.3,<4",
+      minimumVersion: "2.3.3",
       maximumVersionExclusive: "4"
     };
     expect(dependencyGuardDependencyWire(dependency)).toEqual({
       importModule: "pandas",
       distribution: "pandas",
-      installSpec: "pandas>=2.2,<4",
+      installSpec: "pandas>=2.3.3,<4",
       exactVersion: null,
-      minimumVersion: "2.2",
+      minimumVersion: "2.3.3",
       maximumVersionExclusive: "4"
     });
     expect(

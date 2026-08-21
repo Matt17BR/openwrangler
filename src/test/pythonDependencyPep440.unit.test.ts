@@ -6,12 +6,17 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
-import { classifyDependencyProbe, probeDependencies } from "../extension/pythonEnvironment";
+import {
+  classifyDependencyProbe,
+  probeDependencies,
+  PYTHON_DEPENDENCY_VERSION_MAX_LENGTH
+} from "../extension/pythonEnvironment";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
 
 const execFileAsync = promisify(execFile);
 
 interface VersionContract {
+  maximumVersionLength: number;
   dependency: PythonDependency;
   cases: { name: string; version: string; supported: boolean }[];
 }
@@ -37,6 +42,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
 
   it("matches the post-install PEP 440 contract in a real isolated probe", async () => {
     const fixture = contract();
+    expect(fixture.maximumVersionLength).toBe(PYTHON_DEPENDENCY_VERSION_MAX_LENGTH);
     const root = await mkdtemp(path.join(tmpdir(), "openwrangler-pep440-probe-"));
     try {
       const environment = path.join(root, "venv");
@@ -80,6 +86,35 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       );
       await writeFile(modulePath, "VALUE = 1\n", "utf8");
 
+      if (process.platform === "win32") {
+        await writeFile(
+          modulePath,
+          ["import os", '__file__ = os.path.join(os.path.dirname(__file__), ".", os.path.basename(__file__))', ""].join(
+            "\n"
+          ),
+          "utf8"
+        );
+        await expect(
+          probeDependencies(executable, [fixture.dependency]),
+          "dot-component module origin"
+        ).resolves.toEqual(rejected);
+
+        const redundant = path.join(purelib, "origin-redundant");
+        await mkdir(redundant);
+        await writeFile(
+          modulePath,
+          [
+            "import os",
+            `__file__ = os.path.join(os.path.dirname(__file__), ${JSON.stringify(path.basename(redundant))}, "..", os.path.basename(__file__))`,
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        await expect(probeDependencies(executable, [fixture.dependency]), "redundant module origin").resolves.toEqual(
+          rejected
+        );
+        await writeFile(modulePath, "VALUE = 1\n", "utf8");
+      }
       const hardlinkSource = path.join(purelib, "hardlink-source.py");
       await unlink(modulePath);
       await writeFile(hardlinkSource, "VALUE = 1\n", "utf8");
@@ -149,6 +184,33 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       ).resolves.toEqual(rejected);
 
       await writeFile(recordPath, `${fixture.dependency.importModule}.py,,\n`, "utf8");
+      const exactAtLimit = "1+" + "a".repeat(PYTHON_DEPENDENCY_VERSION_MAX_LENGTH - 2);
+      const exactOverLimit = `${exactAtLimit}a`;
+      for (const [version, supported] of [
+        [exactAtLimit, true],
+        [exactOverLimit, false]
+      ] as const) {
+        await writeFile(
+          metadataPath,
+          ["Metadata-Version: 2.1", `Name: ${fixture.dependency.distribution}`, `Version: ${version}`, ""].join("\n"),
+          "utf8"
+        );
+        const dependency = {
+          ...fixture.dependency,
+          installSpec: `${fixture.dependency.distribution}==${version}`,
+          exactVersion: version,
+          minimumVersion: undefined,
+          maximumVersionExclusive: undefined
+        };
+        await expect(
+          probeDependencies(executable, [dependency]),
+          `descriptor length ${version.length}`
+        ).resolves.toEqual(
+          supported
+            ? { available: [fixture.dependency.importModule], missing: [] }
+            : { available: [], missing: [dependency.installSpec] }
+        );
+      }
       for (const entry of fixture.cases) {
         await writeFile(
           path.join(metadataRoot, "METADATA"),

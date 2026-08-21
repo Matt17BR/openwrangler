@@ -148,6 +148,19 @@ def _write_fake_dependency(site_packages: Path) -> None:
     )
 
 
+def _write_legacy_pandas_distribution(site_packages: Path, version: str) -> None:
+    module = site_packages / "pandas"
+    module.mkdir()
+    (module / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    metadata = site_packages / "pandas-legacy.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: pandas\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+    (metadata / "RECORD").write_text("pandas/__init__.py,,\n", encoding="utf-8")
+
+
 def _write_fake_pip(site_packages: Path) -> None:
     package = create_fake_pip_package(site_packages)
     (package / "__main__.py").write_text(
@@ -377,6 +390,28 @@ def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
     finally:
         os.close(descriptor)
     guard._lstat_private_file(path, code="malformed_state")
+
+
+def _write_legacy_marker(
+    fixture: GuardFixture,
+    token: str,
+    dependency: dict[str, Any],
+) -> Path:
+    _create_manual_journal(fixture)
+    marker = fixture.journal / f"mutation-{token}.json"
+    payload = json.dumps(
+        {
+            "dependencies": [dependency],
+            "environment": fixture.environment,
+            "protocol": PROTOCOL,
+            "token": token,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    _write_manual_journal_leaf(marker, payload)
+    return marker
 
 
 def _run_icacls(path: Path, *arguments: str) -> None:
@@ -1419,6 +1454,78 @@ def test_environment_replacement_between_ready_and_go_never_invokes_pip(guard_fi
     assert stderr == b""
     assert not guard_fixture.pip_sentinel.exists()
     assert _marker_paths(guard_fixture) == []
+
+
+def test_shipped_v1_unbounded_journal_recovers_without_weakening_new_requests(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    legacy_dependency = {
+        "importModule": "pandas",
+        "distribution": "pandas",
+        "installSpec": "pandas",
+        "minimumVersion": None,
+        "maximumVersionExclusive": None,
+    }
+
+    code, frames, stderr = _run(
+        guard_fixture,
+        "install",
+        _install_request(guard_fixture, token, dependency=legacy_dependency),
+    )
+    assert code == 10
+    assert frames == [{"code": "invalid_request", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert not guard_fixture.journal.exists()
+
+    _write_legacy_pandas_distribution(_site_packages(guard_fixture.executable), "2.2.0")
+    marker = _write_legacy_marker(guard_fixture, token, legacy_dependency)
+    retained = marker.read_bytes()
+
+    status_code, status_frames, status_stderr = _run(
+        guard_fixture,
+        "status",
+        _status_request(guard_fixture),
+    )
+    assert status_code == 0
+    assert status_frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
+    assert status_stderr == b""
+    assert marker.read_bytes() == retained
+
+    validate_code, validate_frames, validate_stderr = _run(
+        guard_fixture,
+        "validate",
+        _validate_request(guard_fixture, token),
+    )
+    assert validate_code == 0
+    assert validate_frames == [{"kind": "validated", "protocol": PROTOCOL, "token": token}]
+    assert validate_stderr == b""
+    assert _marker_paths(guard_fixture) == []
+
+
+def test_shipped_v1_journal_transition_is_exact_allowlist_bound(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    marker = _write_legacy_marker(
+        guard_fixture,
+        token,
+        {
+            "importModule": "pandas",
+            "distribution": "pandas",
+            "installSpec": "pandas>=1",
+            "minimumVersion": None,
+            "maximumVersionExclusive": None,
+        },
+    )
+    retained = marker.read_bytes()
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker.read_bytes() == retained
 
 
 def test_abrupt_termination_releases_lock_and_validator_clears_retained_marker(

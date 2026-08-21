@@ -105,7 +105,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "4dad193f568dbbe53ecaf6c0d3f0ee1a85dc80a6ff0f07d13b1790f56115411a";
+const WORKFLOW_USE_INVENTORY_SHA256 = "5233a012766676ecf3ecfa6232544c98b490dfe38fe825213bec93bd1b6f5f3b";
 const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[2].uses", SETUP_PYTHON],
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[3].uses", SETUP_JAVA],
@@ -121,6 +121,7 @@ const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
   ["ci.yml", "$.jobs.visual-accessibility.steps[2].uses", SETUP_PYTHON],
   ["ci.yml", "$.jobs.windows-unique.steps[2].uses", SETUP_PYTHON],
   ["cross-platform.yml", "$.jobs.dependency-guard-windows.steps[1].uses", SETUP_PYTHON],
+  ["cross-platform.yml", "$.jobs.python-runtime-dependency-cohorts.steps[1].uses", SETUP_PYTHON],
   ["cross-platform.yml", "$.jobs.r-4-4-scheduled-qualification.steps[6].uses", CACHE_RESTORE],
   ["cross-platform.yml", "$.jobs.runtime.steps[2].uses", SETUP_PYTHON],
   ["daily-preview.yml", "$.jobs.build.steps[4].uses", SETUP_PYTHON],
@@ -309,7 +310,7 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
     external.push([name, path, uses]);
   }
   if (!exactInventory) return Object.freeze({ external, local });
-  assert.equal(external.length, 146);
+  assert.equal(external.length, 148);
   assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
   const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
   assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
@@ -441,6 +442,7 @@ function assertCrossScheduledOwners(document) {
   assert.deepEqual(Object.keys(document?.jobs ?? {}), [
     "runtime",
     "dependency-guard-windows",
+    "python-runtime-dependency-cohorts",
     "r-4-4-scheduled-qualification"
   ]);
 
@@ -468,6 +470,18 @@ function assertCrossScheduledOwners(document) {
   assert.deepEqual(windows.strategy.matrix.python, ["3.10", "3.12"]);
   assert.ok(windows.steps.every((step) => step.if === undefined));
   assert.ok(stepRunning(windows, "python -m pytest python/tests/test_dependency_guard.py -q"));
+
+  const cohorts = document.jobs["python-runtime-dependency-cohorts"];
+  assert.equal(cohorts.needs, undefined);
+  assert.equal(cohorts.if, undefined);
+  assert.equal(cohorts["runs-on"], "ubuntu-24.04");
+  assert.equal(cohorts["timeout-minutes"], 15);
+  assert.deepEqual(stepsUsing(cohorts, "actions/setup-python@"), [
+    {
+      uses: SETUP_PYTHON,
+      with: { "python-version": "3.12" }
+    }
+  ]);
 
   const scheduled = document.jobs["r-4-4-scheduled-qualification"];
   assert.equal(scheduled.if, "${{ !cancelled() }}");
@@ -1463,7 +1477,7 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
     .sort();
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
-  assert.equal(inventory.external.length, 146);
+  assert.equal(inventory.external.length, 148);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
   assertReviewedDependencyActionCallsites(rows);
 
