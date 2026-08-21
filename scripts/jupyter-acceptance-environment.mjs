@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
-  chmodSync,
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
   fstatSync,
   ftruncateSync,
   fsyncSync,
@@ -16,7 +16,6 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  unlinkSync,
   writeFileSync,
   writeSync
 } from "node:fs";
@@ -128,8 +127,8 @@ def snapshot():
         metadata.st_gid,
         metadata.st_size,
     )
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0 or metadata.st_size != expected_size:
-        raise RuntimeError("Released-Jupyter PySpark pip bootstrap lost its detached artifact identity.")
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size != expected_size:
+        raise RuntimeError("Released-Jupyter PySpark pip bootstrap lost its descriptor-bound artifact identity.")
     return identity
 
 artifact_identity = snapshot()
@@ -917,7 +916,14 @@ function validatePySparkArtifactReceipt(value) {
 export async function acquireVerifiedPySparkArtifact(
   directory,
   distribution,
-  { beforeCleanupLink, fetchImpl = globalThis.fetch, randomBytesImpl = randomBytes, timeoutMs = 300_000 } = {}
+  {
+    beforeArtifactPathSeal,
+    beforeBoundarySeal,
+    beforeCleanupLink,
+    fetchImpl = globalThis.fetch,
+    randomBytesImpl = randomBytes,
+    timeoutMs = 300_000
+  } = {}
 ) {
   const receipt = validatePySparkArtifactReceipt(distribution);
   const resolvedDirectory = resolve(directory);
@@ -934,6 +940,8 @@ export async function acquireVerifiedPySparkArtifact(
     directoryMetadata.isSymbolicLink() ||
     typeof fetchImpl !== "function" ||
     typeof randomBytesImpl !== "function" ||
+    (beforeArtifactPathSeal !== undefined && typeof beforeArtifactPathSeal !== "function") ||
+    (beforeBoundarySeal !== undefined && typeof beforeBoundarySeal !== "function") ||
     (beforeCleanupLink !== undefined && typeof beforeCleanupLink !== "function") ||
     !Number.isSafeInteger(timeoutMs) ||
     timeoutMs < 1 ||
@@ -1037,7 +1045,7 @@ export async function acquireVerifiedPySparkArtifact(
       throw new Error("Released-Jupyter PySpark download path changed after verification.");
     }
     let activeArtifactPath = artifactPath;
-    let artifactDetached = false;
+    let artifactDescriptorBound = false;
     let disposed = false;
     let pipBoundaryDirectoryIdentity;
     let pipBoundaryPrepared = false;
@@ -1058,6 +1066,7 @@ export async function acquireVerifiedPySparkArtifact(
         ) {
           throw new Error("Released-Jupyter PySpark pip launch requires one bounded POSIX invocation.");
         }
+        let boundaryDescriptor;
         let launchDescriptor;
         try {
           launchDescriptor = openSync(
@@ -1074,52 +1083,103 @@ export async function acquireVerifiedPySparkArtifact(
           ) {
             throw new Error("Released-Jupyter PySpark pip boundary is not one new private directory.");
           }
+          boundaryDescriptor = openSync(
+            pipBoundaryDirectory,
+            constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0)
+          );
+          const openedBoundaryMetadata = fstatSync(boundaryDescriptor, { bigint: true });
+          if (
+            !openedBoundaryMetadata.isDirectory() ||
+            !sameDownloadedArtifactIdentity(
+              downloadedArtifactIdentity(boundaryDirectoryMetadata),
+              downloadedArtifactIdentity(openedBoundaryMetadata)
+            )
+          ) {
+            throw new Error("Released-Jupyter PySpark pip boundary changed while its descriptor opened.");
+          }
           renameSync(activeArtifactPath, pipBoundaryPath);
           activeArtifactPath = pipBoundaryPath;
           pipBoundaryPrepared = true;
+          artifactDescriptorBound = true;
           assertVerifiedPySparkArtifact(launchDescriptor, activeArtifactPath, identity, receipt);
-          unlinkSync(activeArtifactPath);
-          artifactDetached = true;
-          const detachedLaunchMetadata = fstatSync(launchDescriptor, { bigint: true });
-          const detachedCleanupMetadata = fstatSync(descriptor, { bigint: true });
           if (
-            detachedLaunchMetadata.nlink !== 0n ||
-            detachedCleanupMetadata.nlink !== 0n ||
-            detachedLaunchMetadata.size !== BigInt(receipt.size) ||
-            detachedCleanupMetadata.size !== BigInt(receipt.size) ||
-            !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(detachedLaunchMetadata)) ||
-            !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(detachedCleanupMetadata))
+            beforeArtifactPathSeal?.(
+              Object.freeze({ artifactPath: activeArtifactPath, descriptor: launchDescriptor })
+            ) !== undefined
           ) {
-            throw new Error("Released-Jupyter PySpark artifact could not detach before pip launch.");
+            throw new Error("Released-Jupyter PySpark artifact path-seal hook must complete without a result.");
           }
-          chmodSync(pipBoundaryDirectory, 0o500);
-          const sealedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
+          assertVerifiedPySparkArtifact(launchDescriptor, activeArtifactPath, identity, receipt);
+          const boundLaunchMetadata = fstatSync(launchDescriptor, { bigint: true });
+          const boundCleanupMetadata = fstatSync(descriptor, { bigint: true });
           if (
+            boundLaunchMetadata.nlink !== 1n ||
+            boundCleanupMetadata.nlink !== 1n ||
+            boundLaunchMetadata.size !== BigInt(receipt.size) ||
+            boundCleanupMetadata.size !== BigInt(receipt.size) ||
+            !sameDownloadedArtifactIdentity(identity, downloadedArtifactIdentity(boundLaunchMetadata)) ||
+            !sameDownloadedArtifactIdentity(identity, downloadedArtifactIdentity(boundCleanupMetadata))
+          ) {
+            throw new Error("Released-Jupyter PySpark artifact lost its descriptor-bound identity before launch.");
+          }
+          if (
+            beforeBoundarySeal?.(
+              Object.freeze({ directoryPath: pipBoundaryDirectory, descriptor: boundaryDescriptor })
+            ) !== undefined
+          ) {
+            throw new Error("Released-Jupyter PySpark boundary-seal hook must complete without a result.");
+          }
+          fchmodSync(boundaryDescriptor, 0o500);
+          const sealedDirectoryMetadata = fstatSync(boundaryDescriptor, { bigint: true });
+          const namedSealedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
+          if (
+            !namedSealedDirectoryMetadata.isDirectory() ||
+            namedSealedDirectoryMetadata.isSymbolicLink() ||
             sealedDirectoryMetadata.dev !== boundaryDirectoryMetadata.dev ||
             sealedDirectoryMetadata.gid !== boundaryDirectoryMetadata.gid ||
             sealedDirectoryMetadata.ino !== boundaryDirectoryMetadata.ino ||
             sealedDirectoryMetadata.nlink !== boundaryDirectoryMetadata.nlink ||
             sealedDirectoryMetadata.uid !== boundaryDirectoryMetadata.uid ||
-            (sealedDirectoryMetadata.mode & 0o777n) !== 0o500n
+            (sealedDirectoryMetadata.mode & 0o777n) !== 0o500n ||
+            !sameDownloadedArtifactIdentity(
+              downloadedArtifactIdentity(sealedDirectoryMetadata),
+              downloadedArtifactIdentity(namedSealedDirectoryMetadata)
+            )
           ) {
             throw new Error("Released-Jupyter PySpark pip boundary could not be sealed before launch.");
           }
           pipBoundaryDirectoryIdentity = downloadedArtifactIdentity(sealedDirectoryMetadata);
         } catch (error) {
+          const closeFailures = [];
+          if (boundaryDescriptor !== undefined) {
+            try {
+              fchmodSync(boundaryDescriptor, 0o700);
+            } catch (reopenError) {
+              closeFailures.push(reopenError);
+            }
+            try {
+              closeSync(boundaryDescriptor);
+            } catch (closeError) {
+              closeFailures.push(closeError);
+            }
+          }
           if (launchDescriptor !== undefined) {
             try {
               closeSync(launchDescriptor);
             } catch (closeError) {
-              throw new AggregateError(
-                [
-                  new Error("Released-Jupyter PySpark artifact identity changed before pip launch.", {
-                    cause: error
-                  }),
-                  closeError
-                ],
-                "Released-Jupyter PySpark launch verification and descriptor release both failed."
-              );
+              closeFailures.push(closeError);
             }
+          }
+          if (closeFailures.length > 0) {
+            throw new AggregateError(
+              [
+                new Error("Released-Jupyter PySpark artifact identity changed before pip launch.", {
+                  cause: error
+                }),
+                ...closeFailures
+              ],
+              "Released-Jupyter PySpark launch verification and descriptor release both failed."
+            );
           }
           throw new Error("Released-Jupyter PySpark artifact identity changed before pip launch.", { cause: error });
         }
@@ -1141,18 +1201,18 @@ export async function acquireVerifiedPySparkArtifact(
             released = true;
             const releaseFailures = [];
             try {
-              lstatSync(activeArtifactPath);
-              releaseFailures.push(
-                new Error("Released-Jupyter PySpark active pip pathname was recreated during consumption.")
-              );
+              assertVerifiedPySparkArtifact(launchDescriptor, activeArtifactPath, identity, receipt);
             } catch (error) {
-              if (error?.code !== "ENOENT") releaseFailures.push(error);
+              releaseFailures.push(
+                new Error("Released-Jupyter PySpark active pip pathname was recreated or changed during consumption.", {
+                  cause: error
+                })
+              );
             }
             try {
-              const sealedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
+              const sealedDirectoryMetadata = fstatSync(boundaryDescriptor, { bigint: true });
               if (
                 !sealedDirectoryMetadata.isDirectory() ||
-                sealedDirectoryMetadata.isSymbolicLink() ||
                 !sameDownloadedArtifactIdentity(
                   pipBoundaryDirectoryIdentity,
                   downloadedArtifactIdentity(sealedDirectoryMetadata)
@@ -1160,18 +1220,30 @@ export async function acquireVerifiedPySparkArtifact(
               ) {
                 throw new Error("Released-Jupyter PySpark pip boundary identity changed before release.");
               }
-              chmodSync(pipBoundaryDirectory, 0o700);
-              const reopenedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
+              fchmodSync(boundaryDescriptor, 0o700);
+              const reopenedDirectoryMetadata = fstatSync(boundaryDescriptor, { bigint: true });
+              const namedReopenedDirectoryMetadata = lstatSync(pipBoundaryDirectory, { bigint: true });
               if (
+                !namedReopenedDirectoryMetadata.isDirectory() ||
+                namedReopenedDirectoryMetadata.isSymbolicLink() ||
                 reopenedDirectoryMetadata.dev !== sealedDirectoryMetadata.dev ||
                 reopenedDirectoryMetadata.gid !== sealedDirectoryMetadata.gid ||
                 reopenedDirectoryMetadata.ino !== sealedDirectoryMetadata.ino ||
                 reopenedDirectoryMetadata.nlink !== sealedDirectoryMetadata.nlink ||
                 reopenedDirectoryMetadata.uid !== sealedDirectoryMetadata.uid ||
-                (reopenedDirectoryMetadata.mode & 0o777n) !== 0o700n
+                (reopenedDirectoryMetadata.mode & 0o777n) !== 0o700n ||
+                !sameDownloadedArtifactIdentity(
+                  downloadedArtifactIdentity(reopenedDirectoryMetadata),
+                  downloadedArtifactIdentity(namedReopenedDirectoryMetadata)
+                )
               ) {
                 throw new Error("Released-Jupyter PySpark pip boundary could not reopen for exact disposal.");
               }
+            } catch (error) {
+              releaseFailures.push(error);
+            }
+            try {
+              closeSync(boundaryDescriptor);
             } catch (error) {
               releaseFailures.push(error);
             }
@@ -1200,8 +1272,8 @@ export async function acquireVerifiedPySparkArtifact(
         disposed = true;
         const cleanupFailures = [];
         try {
-          if (artifactDetached) {
-            scrubDetachedPySparkArtifact({ descriptor, identity });
+          if (artifactDescriptorBound) {
+            scrubDescriptorBoundPySparkArtifact({ descriptor, identity });
           } else {
             scrubIdentifiedPySparkArtifact({
               artifactPath: activeArtifactPath,
@@ -1409,24 +1481,24 @@ function assertVerifiedPySparkArtifact(descriptor, path, identity, receipt) {
   }
 }
 
-function scrubDetachedPySparkArtifact({ descriptor, identity }) {
+function scrubDescriptorBoundPySparkArtifact({ descriptor, identity }) {
   const opened = fstatSync(descriptor, { bigint: true });
   if (
     !opened.isFile() ||
-    opened.nlink !== 0n ||
+    (opened.nlink !== 0n && opened.nlink !== 1n) ||
     !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(opened))
   ) {
-    throw new Error("Released-Jupyter PySpark detached artifact identity changed before cleanup.");
+    throw new Error("Released-Jupyter PySpark descriptor-bound artifact identity changed before cleanup.");
   }
   ftruncateSync(descriptor, 0);
   fsyncSync(descriptor);
   const scrubbed = fstatSync(descriptor, { bigint: true });
   if (
     scrubbed.size !== 0n ||
-    scrubbed.nlink !== 0n ||
+    scrubbed.nlink !== opened.nlink ||
     !sameDownloadedArtifactObject(identity, downloadedArtifactIdentity(scrubbed))
   ) {
-    throw new Error("Released-Jupyter PySpark detached artifact cleanup could not verify its exact scrubbed inode.");
+    throw new Error("Released-Jupyter PySpark descriptor-bound artifact cleanup could not verify its exact inode.");
   }
 }
 

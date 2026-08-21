@@ -422,8 +422,14 @@ __ow_candidate_version = (
 )
 __ow_version_classification = __ow_classify_pyspark_version_v1(__ow_candidate_version)
 __ow_version = __ow_safe_pyspark_version_diagnostic_v1(__ow_candidate_version)
-__ow_is_pyspark = ${expectedBackend === "pyspark" ? "True" : "False"}
-if not __ow_is_pyspark:
+__ow_pinned_pyspark = ${expectedBackend === "pyspark" ? "True" : "False"}
+__ow_is_pyspark = False
+if __ow_pinned_pyspark and __ow_version_classification != "supported-final":
+    __ow_is_pyspark = True
+else:
+    __ow_is_live_handle = None
+    __ow_resolve_live_handle = None
+    __ow_value_is_live = False
     __ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
     if __ow_value is __ow_missing and ${/^__openwrangler_live_result_[0-9a-f]{32}$/.test(variableName) ? "True" : "False"}:
         __ow_notebook_module = __ow_sys.modules.get("openwrangler_runtime.notebook")
@@ -438,6 +444,7 @@ if not __ow_is_pyspark:
             ):
                 try:
                     __ow_value = __ow_resolve_live_handle(${JSON.stringify(variableName)})
+                    __ow_value_is_live = True
                 except Exception:
                     __ow_value = __ow_missing
     __ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
@@ -453,7 +460,21 @@ if not __ow_is_pyspark:
                 __ow_builtins.isinstance(__ow_class_module_dict, dict)
                 and __ow_class_module_dict.get("DataFrame") is __ow_value_type
             ):
-                __ow_is_pyspark = True
+                try:
+                    if __ow_value_is_live:
+                        __ow_target_is_current = (
+                            __ow_notebook_dict.get("is_live_result_handle") is __ow_is_live_handle
+                            and __ow_notebook_dict.get("resolve_live_result") is __ow_resolve_live_handle
+                            and __ow_is_live_handle(${JSON.stringify(variableName)})
+                            and __ow_resolve_live_handle(${JSON.stringify(variableName)}) is __ow_value
+                        )
+                    else:
+                        __ow_target_is_current = (
+                            __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing) is __ow_value
+                        )
+                except Exception:
+                    __ow_target_is_current = False
+                __ow_is_pyspark = __ow_target_is_current
                 break
 print("__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__")
 print(__ow_json.dumps(

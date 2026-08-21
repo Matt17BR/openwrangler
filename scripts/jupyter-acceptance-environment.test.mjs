@@ -8,6 +8,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -15,6 +16,7 @@ import {
   readlinkSync,
   renameSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
@@ -221,8 +223,8 @@ async function assertScrubbedPySparkArtifact(directory, artifactPath) {
   assert.equal(statSync(linkedPath).ino, statSync(artifactPath).ino);
 }
 
-async function assertDetachedPySparkArtifactDisposed(directory, artifactPath) {
-  assert.equal(existsSync(artifactPath), false);
+async function assertDescriptorBoundPySparkArtifactDisposed(directory, artifactPath) {
+  assert.equal(statSync(artifactPath).size, 0);
   const quarantineNames = (await readdir(directory)).filter((name) => name.startsWith(".ow-pyspark-cleanup-"));
   assert.equal(quarantineNames.length, 1);
   assert.deepEqual(await readdir(join(directory, quarantineNames[0])), []);
@@ -1839,15 +1841,108 @@ test("PySpark acquisition streams one exact receipt to a private local artifact 
     ]);
     assert.deepEqual(launch.args.slice(7), ["install"]);
     assert.equal(artifact.path, join(directory, `.ow-pyspark-pip-${"41".repeat(16)}`, distribution.filename));
-    assert.equal(existsSync(artifact.path), false);
+    assert.equal(existsSync(artifact.path), true);
+    assert.deepEqual(await readFile(artifact.path), payload);
     assert.equal(launch.inheritedFileDescriptors.length, 1);
     assert.deepEqual(readFileSync(launch.inheritedFileDescriptors[0]), payload);
     launch.release();
     assert.throws(() => fstatSync(launch.inheritedFileDescriptors[0]), /EBADF/u);
     await artifact.dispose();
-    await assertDetachedPySparkArtifactDisposed(directory, artifact.path);
+    await assertDescriptorBoundPySparkArtifactDisposed(directory, artifact.path);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PySpark pip path sealing never unlinks a replacement or symlink introduced after verification", async () => {
+  for (const mutation of ["replacement", "symlink"]) {
+    const directory = await mkdtemp(join(tmpdir(), `openwrangler-jupyter-pyspark-path-seal-${mutation}-`));
+    const payload = Buffer.from("exact verified artifact");
+    const foreign = join(directory, `foreign-${mutation}.tar.gz`);
+    const retained = join(directory, `retained-${mutation}.tar.gz`);
+    let artifact;
+    try {
+      writeFileSync(foreign, "foreign bytes", { mode: 0o640 });
+      artifact = await acquireVerifiedPySparkArtifact(directory, testPySparkDistribution(payload), {
+        beforeArtifactPathSeal({ artifactPath }) {
+          renameSync(artifactPath, retained);
+          if (mutation === "replacement") writeFileSync(artifactPath, "replacement bytes", { flag: "wx", mode: 0o604 });
+          else symlinkSync(foreign, artifactPath);
+        },
+        fetchImpl: async () => streamedResponse([payload]),
+        randomBytesImpl: () => Buffer.alloc(16, mutation === "replacement" ? 0x51 : 0x52),
+        timeoutMs: 1_000
+      });
+
+      assert.throws(
+        () => artifact.preparePipLaunch(["-I", "-m", "pip", "install"], "linux"),
+        /artifact identity changed before pip launch/u
+      );
+      if (mutation === "replacement") {
+        assert.equal(await readFile(artifact.path, "utf8"), "replacement bytes");
+        assert.equal(statSync(artifact.path).mode & 0o777, 0o604);
+      } else {
+        assert.equal(lstatSync(artifact.path).isSymbolicLink(), true);
+        assert.equal(await readFile(artifact.path, "utf8"), "foreign bytes");
+      }
+      assert.equal(await readFile(foreign, "utf8"), "foreign bytes");
+      assert.equal(statSync(foreign).mode & 0o777, 0o640);
+      assert.deepEqual(await readFile(retained), payload);
+
+      await artifact.dispose();
+      assert.equal(statSync(retained).size, 0);
+      assert.equal(await readFile(foreign, "utf8"), "foreign bytes");
+      if (mutation === "replacement") assert.equal(await readFile(artifact.path, "utf8"), "replacement bytes");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("PySpark pip boundary sealing chmods only its opened directory across replacement and symlink races", async () => {
+  for (const mutation of ["replacement", "symlink"]) {
+    const directory = await mkdtemp(join(tmpdir(), `openwrangler-jupyter-pyspark-boundary-seal-${mutation}-`));
+    const payload = Buffer.from("exact verified artifact");
+    const displacedBoundary = join(directory, `retained-boundary-${mutation}`);
+    const foreignBoundary = join(directory, `foreign-boundary-${mutation}`);
+    let artifact;
+    let originalBoundaryPath;
+    try {
+      mkdirSync(foreignBoundary, { mode: 0o750 });
+      chmodSync(foreignBoundary, 0o750);
+      artifact = await acquireVerifiedPySparkArtifact(directory, testPySparkDistribution(payload), {
+        beforeBoundarySeal({ directoryPath }) {
+          originalBoundaryPath = directoryPath;
+          renameSync(directoryPath, displacedBoundary);
+          if (mutation === "replacement") {
+            mkdirSync(directoryPath, { mode: 0o711 });
+            chmodSync(directoryPath, 0o711);
+          } else {
+            symlinkSync(foreignBoundary, directoryPath);
+          }
+        },
+        fetchImpl: async () => streamedResponse([payload]),
+        randomBytesImpl: () => Buffer.alloc(16, mutation === "replacement" ? 0x53 : 0x54),
+        timeoutMs: 1_000
+      });
+
+      assert.throws(
+        () => artifact.preparePipLaunch(["-I", "-m", "pip", "install"], "linux"),
+        (error) => /pip boundary could not be sealed before launch/u.test(String(error?.cause))
+      );
+      assert.equal(statSync(foreignBoundary).mode & 0o777, 0o750);
+      if (mutation === "replacement") assert.equal(statSync(originalBoundaryPath).mode & 0o777, 0o711);
+      else assert.equal(lstatSync(originalBoundaryPath).isSymbolicLink(), true);
+      assert.equal(statSync(displacedBoundary).mode & 0o777, 0o700);
+      assert.deepEqual(await readFile(join(displacedBoundary, testPySparkDistribution(payload).filename)), payload);
+
+      await artifact.dispose();
+      assert.equal(statSync(join(displacedBoundary, testPySparkDistribution(payload).filename)).size, 0);
+      assert.equal(statSync(foreignBoundary).mode & 0o777, 0o750);
+      if (mutation === "replacement") assert.equal(statSync(originalBoundaryPath).mode & 0o777, 0o711);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1943,6 +2038,7 @@ test(
       ];
       let spawnCalls = 0;
       let activePipPath;
+      const retainedVerifiedPath = join(directory, "retained-verified-pyspark.tar.gz");
       let mutationCompleted = false;
       let mutationError;
       await assert.rejects(
@@ -1955,7 +2051,7 @@ test(
             beforeSpawn() {
               const preparation = artifact.preparePipLaunch(pipArguments, process.platform);
               activePipPath = artifact.path;
-              assert.equal(existsSync(activePipPath), false);
+              assert.equal(existsSync(activePipPath), true);
               return preparation;
             }
           },
@@ -1969,6 +2065,7 @@ test(
               child.once("spawn", () => {
                 try {
                   chmodSync(dirname(activePipPath), 0o700);
+                  renameSync(activePipPath, retainedVerifiedPath);
                   writeFileSync(activePipPath, maliciousPayload, { flag: "wx", mode: 0o600 });
                   chmodSync(dirname(activePipPath), 0o500);
                   mutationCompleted = true;
@@ -2004,6 +2101,7 @@ test(
       );
       await artifact.dispose();
       assert.deepEqual(await readFile(activePipPath), maliciousPayload);
+      assert.equal(statSync(retainedVerifiedPath).size, 0);
       const quarantineNames = (await readdir(directory)).filter((name) => name.startsWith(".ow-pyspark-cleanup-"));
       assert.equal(quarantineNames.length, 1);
       assert.deepEqual(await readdir(join(directory, quarantineNames[0])), []);
@@ -2059,7 +2157,7 @@ test(
           /not available for a new pip launch/u
         );
         await artifact.dispose();
-        await assertDetachedPySparkArtifactDisposed(directory, artifact.path);
+        await assertDescriptorBoundPySparkArtifactDisposed(directory, artifact.path);
       } finally {
         await rm(directory, { recursive: true, force: true });
       }

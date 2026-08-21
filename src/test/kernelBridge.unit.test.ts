@@ -1,4 +1,5 @@
 import type { Kernel } from "@vscode/jupyter-extension";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,6 +34,7 @@ import {
   openRequest,
   resetKernelBridgeTestState,
   setOpenNotebookDocuments,
+  textKernelExecution,
   unpinnedOpenRequest
 } from "./kernelBridge.testFixtures";
 
@@ -55,6 +57,55 @@ const REJECTED_PYSPARK_VERSIONS = [
   ...PYSPARK_VERSION_CONTRACT.acceptancePrereleaseDenial,
   ...Object.values(PYSPARK_VERSION_CONTRACT.rejected).flat()
 ];
+
+function controlledExecutedPySparkPreflightKernel(
+  pythonSetup: string,
+  requests: OpenWranglerRequest[]
+): ReturnType<typeof controllableKernel> & { preflightExecutionCount(): number } {
+  let preflightExecutions = 0;
+  const controller = controllableKernel((code) => {
+    if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) {
+      preflightExecutions += 1;
+      const result = spawnSync(
+        process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3",
+        ["-I", "-c", `${pythonSetup}\n${code}`],
+        {
+          encoding: "utf8",
+          maxBuffer: 128 * 1024,
+          timeout: 30_000,
+          windowsHide: true
+        }
+      );
+      if (result.error || result.signal !== null || result.status !== 0) {
+        throw new Error(`Executed PySpark preflight failed: ${result.error ?? result.signal ?? result.stderr}`);
+      }
+      return textKernelExecution(result.stdout);
+    }
+    return kernelExecution(code, (request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse(request.requestedSessionId!, "pyspark");
+      return initializedResponse;
+    });
+  });
+  return { ...controller, preflightExecutionCount: () => preflightExecutions };
+}
+
+const SUPPORTED_PYSPARK_TYPE_SETUP = `
+import sys
+import types
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__version__"] = "4.2.9+vendor.1"
+classic_module = types.ModuleType("pyspark.sql.classic.dataframe")
+class DataFrame:
+    __module__ = "pyspark.sql.classic.dataframe"
+    def __getattribute__(self, name):
+        if name in ("columns", "isStreaming", "schema", "withColumn"):
+            raise AssertionError("preflight inspected PySpark frame capability " + name)
+        return object.__getattribute__(self, name)
+classic_module.__dict__["DataFrame"] = DataFrame
+sys.modules["pyspark"] = pyspark_module
+sys.modules["pyspark.sql.classic.dataframe"] = classic_module
+`;
 
 describe("kernel retry classification", () => {
   it("reports Spark preparation for pinned and auto-detected PySpark opens", async () => {
@@ -214,12 +265,35 @@ describe("kernel retry classification", () => {
     expect(stages.at(-1)).toBe("openingNotebookVariable");
   });
 
-  it("rejects a pinned PySpark open when the variable is no longer a PySpark DataFrame", async () => {
+  it.each([
+    { targetState: "missing", variableName: "df", setup: SUPPORTED_PYSPARK_TYPE_SETUP },
+    { targetState: "scalar", variableName: "df", setup: `${SUPPORTED_PYSPARK_TYPE_SETUP}\ndf = 42` },
+    {
+      targetState: "non-PySpark",
+      variableName: "df",
+      setup: `${SUPPORTED_PYSPARK_TYPE_SETUP}\ndf = type("DataFrame", (), {"__module__": "example"})()`
+    },
+    {
+      targetState: "replaced",
+      variableName: "__openwrangler_live_result_0123456789abcdef0123456789abcdef",
+      setup: `${SUPPORTED_PYSPARK_TYPE_SETUP}
+notebook_module = types.ModuleType("openwrangler_runtime.notebook")
+live_values = [DataFrame(), 42]
+notebook_module.__dict__["is_live_result_handle"] = lambda name: True
+notebook_module.__dict__["resolve_live_result"] = lambda name: live_values.pop(0)
+sys.modules["openwrangler_runtime.notebook"] = notebook_module`
+    }
+  ] as const)("rejects a supported-final pinned PySpark open when the variable is $targetState", async (scenario) => {
     const requests: OpenWranglerRequest[] = [];
-    const controller = controlledNonPySparkKernel("pandas", requests);
+    const controller = controlledExecutedPySparkPreflightKernel(scenario.setup, requests);
     mockKernel(controller.kernel);
+    const baseRequest = openRequest(`stale-spark-${scenario.targetState}`, "pyspark");
+    const request = {
+      ...baseRequest,
+      source: { ...baseRequest.source, label: scenario.variableName, variableName: scenario.variableName }
+    };
 
-    await expect(createKernelBridge().request(openRequest("stale-spark", "pyspark"))).rejects.toThrow(
+    await expect(createKernelBridge().request(request)).rejects.toThrow(
       "The selected variable is no longer a supported PySpark DataFrame. Rerun the defining cell and try again."
     );
     expect(controller.preflightExecutionCount()).toBe(1);

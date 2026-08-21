@@ -323,6 +323,78 @@ print("__OPEN_WRANGLER_PINNED_PREFLIGHT_FACTS__" + json.dumps(accesses))
     expect(result.stdout).toContain("__OPEN_WRANGLER_PINNED_PREFLIGHT_FACTS__[]");
   });
 
+  it("requires a supported pinned target to remain the exact module-owned PySpark DataFrame", () => {
+    const markers = [
+      DISCOVERY_MARKER,
+      "11111111111111111111111111111111",
+      "22222222222222222222222222222222",
+      "33333333333333333333333333333333",
+      "44444444444444444444444444444444"
+    ] as const;
+    const liveHandle = "__openwrangler_live_result_0123456789abcdef0123456789abcdef";
+    const probes = [
+      buildPySparkNotebookPreflightCode(markers[0], "missing_frame", "pyspark"),
+      buildPySparkNotebookPreflightCode(markers[1], "scalar_frame", "pyspark"),
+      buildPySparkNotebookPreflightCode(markers[2], "non_spark_frame", "pyspark"),
+      buildPySparkNotebookPreflightCode(markers[3], liveHandle, "pyspark"),
+      buildPySparkNotebookPreflightCode(markers[4], "spark_frame", "pyspark")
+    ];
+    const result = spawnSync(
+      testPythonExecutable(),
+      [
+        "-I",
+        "-c",
+        `
+import json
+import sys
+import types
+accesses = []
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__version__"] = "4.2.7+vendor.1"
+classic_module = types.ModuleType("pyspark.sql.classic.dataframe")
+class DataFrame:
+    __module__ = "pyspark.sql.classic.dataframe"
+    def __getattribute__(self, name):
+        if name in ("columns", "isStreaming", "schema", "withColumn"):
+            accesses.append("frame:" + name)
+            raise AssertionError("preflight inspected PySpark frame capability " + name)
+        return object.__getattribute__(self, name)
+classic_module.__dict__["DataFrame"] = DataFrame
+notebook_module = types.ModuleType("openwrangler_runtime.notebook")
+live_values = [DataFrame(), 42]
+notebook_module.__dict__["is_live_result_handle"] = lambda name: accesses.append("live:" + name) or True
+notebook_module.__dict__["resolve_live_result"] = lambda name: accesses.append("resolve:" + name) or live_values.pop(0)
+sys.modules["pyspark"] = pyspark_module
+sys.modules["pyspark.sql.classic.dataframe"] = classic_module
+sys.modules["openwrangler_runtime.notebook"] = notebook_module
+scalar_frame = 42
+non_spark_frame = type("DataFrame", (), {"__module__": "example"})()
+spark_frame = DataFrame()
+${probes.join("\n")}
+print("__OPEN_WRANGLER_PINNED_TARGET_FACTS__" + json.dumps(accesses))
+`
+      ],
+      { encoding: "utf8", maxBuffer: 128 * 1024, timeout: 30_000, windowsHide: true }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
+    for (const marker of markers.slice(0, 4)) {
+      expect(parsePySparkNotebookPreflightOutput(result.stdout, marker)).toEqual({
+        isPySpark: false,
+        version: null
+      });
+    }
+    expect(parsePySparkNotebookPreflightOutput(result.stdout, markers[4])).toEqual({
+      isPySpark: true,
+      version: "4.2.7+vendor.1"
+    });
+    expect(result.stdout).toContain(
+      `__OPEN_WRANGLER_PINNED_TARGET_FACTS__["live:${liveHandle}", "resolve:${liveHandle}", "live:${liveHandle}", "resolve:${liveHandle}"]`
+    );
+  });
+
   it("does not reject non-PySpark or missing automatic targets merely because unsupported PySpark is loaded", () => {
     const secondMarker = "fedcba9876543210fedcba9876543210";
     const pandasProbeCode = buildPySparkNotebookPreflightCode(DISCOVERY_MARKER, "pandas_frame");
