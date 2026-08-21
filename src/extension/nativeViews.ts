@@ -679,7 +679,7 @@ export function registerNativeViews(
         );
       }
     }),
-    vscode.commands.registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
+    vscode.commands.registerCommand("openWrangler.selectStep", async (target?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
         void vscode.window.showInformationMessage(
@@ -687,24 +687,28 @@ export function registerNativeViews(
         );
         return;
       }
+      const handle = target === undefined ? undefined : selectedCleaningStepHandle(target);
+      const stepIndex = handle ? snapshot.metadata.steps.findIndex((step) => step.id === handle.stepId) : -1;
       if (
-        stepId !== undefined &&
-        (typeof stepId !== "string" ||
+        target !== undefined &&
+        (!handle ||
+          handle.sessionId !== snapshot.sessionId ||
+          handle.revision !== snapshot.metadata.revision ||
           !cleaningHistoryActionAvailable("inspect", {
             stepCount: snapshot.metadata.steps.length,
-            stepIndex: snapshot.metadata.steps.findIndex((step) => step.id === stepId)
+            stepIndex
           }))
       ) {
         void vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
         return;
       }
-      if (stepId === undefined) coordinator.clearActiveStepInspection();
+      if (target === undefined) coordinator.clearActiveStepInspection();
       if (
         !(await OpenWranglerPanel.sendEditorActionForSession({
           action: "selectStep",
           expectedSessionId: snapshot.sessionId,
           expectedRevision: snapshot.metadata.revision,
-          ...(stepId ? { stepId } : {})
+          ...(handle ? { stepId: handle.stepId } : {})
         }))
       ) {
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
@@ -1096,6 +1100,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   ];
   nodes.push(
     ...metadata.steps.map((step, index) => {
+      const handle = { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: step.id };
       const operation = operationByKind(step.kind);
       const isLatest = index === metadata.steps.length - 1;
       const selected = stepInspection?.stepId === step.id;
@@ -1127,13 +1132,13 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
           ? {
               command: "openWrangler.selectStep",
               title: `Inspect ${operation.title}`,
-              arguments: [step.id]
+              arguments: [{ cleaningStepHandle: handle }]
             }
           : undefined,
         contextValue,
         inspectAvailable ? undefined : "Inspection is not available for this cleaning step.",
         undefined,
-        { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: step.id }
+        handle
       );
     })
   );
