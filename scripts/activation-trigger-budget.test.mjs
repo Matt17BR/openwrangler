@@ -69,7 +69,7 @@ test("production activation trigger classes stay within their closed runtime-sou
           .replace(/\.cjs$/u, ".cts")
           .replace(/\.js$/u, ".ts")
       : `${unresolvedTarget}.ts`;
-    for (const trigger of classification.triggers.filter((value) => value !== "test-api")) {
+    for (const trigger of classification.triggers) {
       assert.equal(report.measurements[trigger].classifiedDynamicRoots.includes(target), true, `${trigger}: ${target}`);
       assert.equal(report.measurements[trigger].files.includes(target), true, `${trigger}: ${target}`);
     }
@@ -111,6 +111,8 @@ test("one trigger contract owns both activation events and runtime closures", ()
     Object.values(activationTriggerContract).reduce((total, contract) => total + contract.events.length, 0),
     Object.keys(activationEventClassifications).length
   );
+  assert.deepEqual(activationTriggerContract["test-api"].events, []);
+  assert.deepEqual(activationTriggerContract["test-api"].roots, ["src/extension/activate.ts"]);
 });
 
 test("the elapsed activation gate rejects an injected synchronous registration delay", async () => {
@@ -337,6 +339,82 @@ test("the syntax authority rejects loader aliases through arrays, callbacks, ret
       /loader alias escapes through unsupported use/u
     );
   }
+});
+
+test("the syntax authority follows lexical loader origins through quoted bindings, destructuring, and module.require", async () => {
+  await withInventoryFixture(
+    `
+      import { "createRequire" as quotedCreateRequire } from "node:module";
+      const quotedRequire = quotedCreateRequire(import.meta.url);
+      const { "createRequire": commonJsCreateRequire } = require("node:module");
+      const commonJsRequire = commonJsCreateRequire(__filename);
+      const { "require": moduleRequire } = module;
+      const aliasedModuleRequire = module.require;
+      quotedRequire("./quoted-import.js");
+      commonJsRequire("./quoted-commonjs.js");
+      moduleRequire("./destructured-module.js");
+      aliasedModuleRequire("./module-alias.js");
+    `,
+    { activationEvents: [], contributes: { commands: [] } },
+    async (report) => {
+      assert.deepEqual(
+        report.dynamicEdges.discovered.map(({ key }) => key),
+        [
+          "src/extension/fixture.ts|require|./destructured-module.js",
+          "src/extension/fixture.ts|require|./module-alias.js",
+          "src/extension/fixture.ts|require|./quoted-commonjs.js",
+          "src/extension/fixture.ts|require|./quoted-import.js",
+          "src/extension/fixture.ts|require|node:module"
+        ]
+      );
+    }
+  );
+});
+
+test("the syntax authority distinguishes shadowed loader names from global bindings", async () => {
+  await withInventoryFixture(
+    `
+      function shadowRequire(require) { require("./shadowed-require.js"); }
+      function shadowModule(module) { module.require("./shadowed-module.js"); }
+      require("./global-require.js");
+      module.require("./global-module.js");
+    `,
+    { activationEvents: [], contributes: { commands: [] } },
+    async (report) => {
+      assert.deepEqual(
+        report.dynamicEdges.discovered.map(({ key }) => key),
+        ["src/extension/fixture.ts|require|./global-module.js", "src/extension/fixture.ts|require|./global-require.js"]
+      );
+    }
+  );
+});
+
+test("the syntax authority rejects loader reassignment including destructured assignment", async () => {
+  const reassignments = [
+    'let load = require; load = () => undefined; load("./stale-origin.js");',
+    'let load; load = require; load("./late-origin.js");',
+    'let load; ({ "require": load } = module); load("./destructured-assignment.js");'
+  ];
+  for (const source of reassignments) {
+    await withInventoryFixture(
+      source,
+      { activationEvents: [], contributes: { commands: [] } },
+      async () => assert.fail("reassigned loaders must not enter the closed dynamic-edge model"),
+      {},
+      /loader alias escapes through unsupported use/u
+    );
+  }
+});
+
+test("the syntax authority rejects deep operator trees with a controlled bound", async () => {
+  const deepOperatorChain = `export const value = ${Array.from({ length: 600 }, () => "1").join(" + ")};\n`;
+  await withInventoryFixture(
+    deepOperatorChain,
+    { activationEvents: [], contributes: { commands: [] } },
+    async () => assert.fail("a deep operator tree must fail through the explicit AST depth gate"),
+    {},
+    /exceeds syntax tree depth 512/u
+  );
 });
 
 test("transitive source discovery resolves .mjs and .cjs imports to .mts and .cts sources", async () => {

@@ -19,7 +19,7 @@ import {
 describe("native state and presentation commands", () => {
   beforeEach(resetNativeViewMocks);
 
-  it("reverse-disposes every retained native registration after a late command failure", () => {
+  it("serializes context writes and settles rollback after deferred and rejected writes", async () => {
     nativeMocks.registrationFailure = "command:openWrangler.reportIssue";
     const active = snapshotWithDraft();
     active.metadata = {
@@ -30,28 +30,63 @@ describe("native state and presentation commands", () => {
         documentInsert: true
       }
     };
+    const firstWrite = deferred();
+    const finalRollback = deferred();
+    const finalRollbackApplied = deferred();
+    const contextValues = new Map<string, boolean>();
+    let contextWriteCount = 0;
+    const executeContextCommand = async (...args: unknown[]): Promise<undefined> => {
+      const [command, key, value] = args;
+      if (command !== "setContext" || typeof key !== "string" || typeof value !== "boolean") return undefined;
+      contextWriteCount += 1;
+      if (contextWriteCount === 1) await firstWrite.promise;
+      if (contextWriteCount === 8) await finalRollback.promise;
+      if (key === "openWrangler.canInsertNotebookCode" && value) throw new Error("context write rejected");
+      contextValues.set(key, value);
+      if (contextWriteCount === 8) finalRollbackApplied.resolve();
+      return undefined;
+    };
+    nativeMocks.executeCommand.mockImplementation(executeContextCommand as () => Promise<undefined>);
 
-    expect(() => register(active)).toThrow("native registration failed: command:openWrangler.reportIssue");
+    try {
+      expect(() => register(active)).toThrow("native registration failed: command:openWrangler.reportIssue");
 
-    expect(nativeMocks.commands.size).toBe(0);
-    expect(nativeMocks.treeDataProviders.size).toBe(0);
-    expect(nativeMocks.webviewViewProviders.size).toBe(0);
-    expect(nativeMocks.activeRegistrations.size).toBe(0);
-    expect(nativeMocks.coordinatorListeners.size).toBe(0);
-    expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.openSettings");
-    expect(nativeMocks.registrationDisposals.at(-1)).toBe("tree:openWrangler.operations");
-    expect(nativeMocks.executeCommand.mock.calls.slice(0, 4)).toEqual([
-      ["setContext", "openWrangler.hasDraft", true],
-      ["setContext", "openWrangler.canChangePlan", false],
-      ["setContext", "openWrangler.canInsertNotebookCode", true],
-      ["setContext", "openWrangler.canInsertRDocumentCode", true]
-    ]);
-    expect(nativeMocks.executeCommand.mock.calls.slice(-4)).toEqual([
-      ["setContext", "openWrangler.hasDraft", false],
-      ["setContext", "openWrangler.canChangePlan", false],
-      ["setContext", "openWrangler.canInsertNotebookCode", false],
-      ["setContext", "openWrangler.canInsertRDocumentCode", false]
-    ]);
+      expect(nativeMocks.commands.size).toBe(0);
+      expect(nativeMocks.treeDataProviders.size).toBe(0);
+      expect(nativeMocks.webviewViewProviders.size).toBe(0);
+      expect(nativeMocks.activeRegistrations.size).toBe(0);
+      expect(nativeMocks.coordinatorListeners.size).toBe(0);
+      expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.openSettings");
+      expect(nativeMocks.registrationDisposals.at(-1)).toBe("tree:openWrangler.operations");
+      expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(1);
+
+      firstWrite.resolve();
+      await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(8));
+      expect(contextValues.get("openWrangler.canInsertRDocumentCode")).toBe(true);
+      finalRollback.resolve();
+      await finalRollbackApplied.promise;
+
+      expect(nativeMocks.executeCommand.mock.calls).toEqual([
+        ["setContext", "openWrangler.hasDraft", true],
+        ["setContext", "openWrangler.canChangePlan", false],
+        ["setContext", "openWrangler.canInsertNotebookCode", true],
+        ["setContext", "openWrangler.canInsertRDocumentCode", true],
+        ["setContext", "openWrangler.hasDraft", false],
+        ["setContext", "openWrangler.canChangePlan", false],
+        ["setContext", "openWrangler.canInsertNotebookCode", false],
+        ["setContext", "openWrangler.canInsertRDocumentCode", false]
+      ]);
+      expect(Object.fromEntries(contextValues)).toEqual({
+        "openWrangler.hasDraft": false,
+        "openWrangler.canChangePlan": false,
+        "openWrangler.canInsertNotebookCode": false,
+        "openWrangler.canInsertRDocumentCode": false
+      });
+    } finally {
+      firstWrite.resolve();
+      finalRollback.resolve();
+      nativeMocks.executeCommand.mockImplementation(async () => undefined);
+    }
   });
 
   it("rolls back coordinator side effects when a native provider constructor fails", () => {
@@ -989,3 +1024,11 @@ describe("native state and presentation commands", () => {
     ]);
   });
 });
+
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settled) => {
+    resolve = settled;
+  });
+  return { promise, resolve };
+}

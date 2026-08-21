@@ -196,6 +196,13 @@ export const activationTriggerContract = defineActivationTriggerContract({
     maximumModules: 105,
     maximumBytes: 1920 * 1024,
     forbidden: ["pythonBridge.ts", "files/fileOpen.ts"]
+  },
+  "test-api": {
+    events: [],
+    roots: ["src/extension/activate.ts"],
+    maximumModules: 120,
+    maximumBytes: 2 * 1024 * 1024,
+    forbidden: []
   }
 });
 
@@ -609,7 +616,7 @@ async function measureDynamicEdges(repositoryRoot, options = {}) {
       expected: dynamicEdgeClassifications[key].occurrences,
       actual: occurrences
     }));
-  const knownTriggerClasses = new Set([...Object.keys(activationTriggerBudgets), "test-api"]);
+  const knownTriggerClasses = new Set(Object.keys(activationTriggerBudgets));
   const unknownTriggerClasses = [
     ...new Set(Object.values(dynamicEdgeClassifications).flatMap(({ triggers }) => triggers))
   ]
@@ -916,26 +923,29 @@ async function readBoundedRegularFile(
 
 function syntaxRuntimeInventory(source, file, options = {}) {
   preflightTypeScriptSyntax(source, file, options);
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file));
+  let sourceFile;
+  try {
+    sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file));
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new Error(`Activation inventory source exceeds the bounded TypeScript parser depth: ${file}`);
+    }
+    throw error;
+  }
   const parseDiagnostic = sourceFile.parseDiagnostics?.[0];
   if (parseDiagnostic) {
     throw new Error(`Activation inventory source has invalid TypeScript syntax (TS${parseDiagnostic.code}): ${file}`);
   }
+  const syntaxNodes = boundedSyntaxNodes(sourceFile, file, options);
   const variableDeclarations = [];
   const functionDeclarations = [];
   const callExpressions = [];
   const staticSpecifiers = [];
-  const createRequireAliases = new Set();
-  const createRequireNamespaces = new Set();
-  let syntaxNodes = 0;
-  const visit = (node) => {
-    syntaxNodes += 1;
-    if (syntaxNodes > maximumSyntaxNodes) {
-      throw new Error(`Activation inventory source exceeds ${maximumSyntaxNodes} syntax nodes: ${file}`);
-    }
+  const importDeclarations = [];
+  for (const node of syntaxNodes) {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       if (importDeclarationLoadsAtRuntime(node)) staticSpecifiers.push(node.moduleSpecifier.text);
-      collectCreateRequireImport(node, createRequireAliases, createRequireNamespaces);
+      importDeclarations.push(node);
     } else if (
       ts.isExportDeclaration(node) &&
       node.moduleSpecifier &&
@@ -950,65 +960,31 @@ function syntaxRuntimeInventory(source, file, options = {}) {
     if (ts.isVariableDeclaration(node)) variableDeclarations.push(node);
     if (ts.isFunctionDeclaration(node)) functionDeclarations.push(node);
     if (ts.isCallExpression(node)) callExpressions.push(node);
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
+  }
 
-  const importAliases = new Set();
-  const requireAliases = new Set(["require"]);
+  const checker = lexicalBindingChecker(sourceFile, source, file);
+  const origins = new Map();
   const wrapperCalls = new Set();
+  const authority = { checker, origins, wrapperCalls };
+  for (const declaration of importDeclarations) collectCreateRequireImport(declaration, authority);
   let changed = true;
-  while (changed) {
+  let remainingPasses = variableDeclarations.length + functionDeclarations.length + 1;
+  while (changed && remainingPasses > 0) {
     changed = false;
+    remainingPasses -= 1;
     for (const declaration of variableDeclarations) {
-      changed =
-        collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases, createRequireNamespaces) ||
-        changed;
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
-      const localName = declaration.name.text;
-      const initializer = unwrapExpression(declaration.initializer);
-      if (ts.isIdentifier(initializer)) {
-        changed =
-          copyLoaderAlias(
-            localName,
-            initializer.text,
-            importAliases,
-            requireAliases,
-            createRequireAliases,
-            createRequireNamespaces
-          ) || changed;
-      }
-      const wrapper = wrapperLoaderCall(declaration.initializer, importAliases, requireAliases);
-      if (wrapper) {
-        changed = addLoaderAlias(localName, wrapper.kind, importAliases, requireAliases) || changed;
-        wrapperCalls.add(wrapper.call);
-      }
-      if (ts.isCallExpression(initializer)) {
-        if (
-          isCreateRequireCall(initializer, createRequireAliases, createRequireNamespaces) &&
-          !requireAliases.has(localName)
-        ) {
-          requireAliases.add(localName);
-          changed = true;
-        }
-      }
+      changed = collectVariableLoaderOrigin(declaration, authority) || changed;
     }
     for (const declaration of functionDeclarations) {
       if (!declaration.name) continue;
-      const wrapper = functionLoaderCall(declaration, importAliases, requireAliases);
+      const wrapper = functionLoaderCall(declaration, authority);
       if (!wrapper) continue;
-      changed = addLoaderAlias(declaration.name.text, wrapper.kind, importAliases, requireAliases) || changed;
+      changed = addBindingOrigin(declaration.name, wrapper.kind, authority) || changed;
       wrapperCalls.add(wrapper.call);
     }
   }
 
-  const loaderEscapes = unsupportedLoaderAliasUses(
-    sourceFile,
-    importAliases,
-    requireAliases,
-    createRequireAliases,
-    createRequireNamespaces
-  );
+  const loaderEscapes = unsupportedLoaderAliasUses(sourceFile, syntaxNodes, authority);
   if (loaderEscapes.length > 0) {
     throw new Error(
       `Activation inventory loader alias escapes through unsupported use (${loaderEscapes.join(", ")}): ${file}`
@@ -1018,7 +994,7 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   const dynamicEdges = [];
   for (const call of callExpressions) {
     if (wrapperCalls.has(call)) continue;
-    const kind = loaderCallKind(call, importAliases, requireAliases);
+    const kind = loaderCallKind(call, authority);
     if (!kind) continue;
     const argument = call.arguments[0];
     dynamicEdges.push({
@@ -1030,46 +1006,40 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   return { dynamicEdges, staticSpecifiers };
 }
 
-function unsupportedLoaderAliasUses(
-  sourceFile,
-  importAliases,
-  requireAliases,
-  createRequireAliases,
-  createRequireNamespaces
-) {
+function unsupportedLoaderAliasUses(sourceFile, syntaxNodes, authority) {
   const escapes = [];
-  const loaderKind = (identifier) => {
-    if (importAliases.has(identifier.text)) return "import";
-    if (requireAliases.has(identifier.text)) return "require";
-    if (createRequireAliases.has(identifier.text)) return "createRequire";
-    return createRequireNamespaces.has(identifier.text) ? "createRequireNamespace" : undefined;
-  };
-  const visit = (node) => {
+  for (const node of syntaxNodes) {
     if (ts.isIdentifier(node)) {
-      const kind = loaderKind(node);
-      if (kind && !isSupportedLoaderIdentifierUse(node, kind)) {
+      const kind = identifierLoaderOrigin(node, authority);
+      if (kind && !isSupportedLoaderUse(node, kind, authority)) {
         escapes.push(`${node.text}:${kind}@${node.getStart(sourceFile)}`);
       }
+    } else if (isGlobalModuleRequireExpression(node, authority.checker)) {
+      if (!isSupportedLoaderUse(node, "require", authority)) {
+        escapes.push(`module.require:require@${node.getStart(sourceFile)}`);
+      }
+    } else if (isDestructuringLoaderAssignment(node, authority)) {
+      escapes.push(`destructuring:reassignment@${node.getStart(sourceFile)}`);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
+  }
   return escapes.slice(0, 32);
 }
 
-function isSupportedLoaderIdentifierUse(identifier, kind) {
-  const parent = identifier.parent;
+function isSupportedLoaderUse(loaderExpression, kind, authority) {
+  const parent = loaderExpression.parent;
   if (
-    (ts.isVariableDeclaration(parent) && parent.name === identifier) ||
-    (ts.isFunctionDeclaration(parent) && parent.name === identifier) ||
-    (ts.isImportSpecifier(parent) && (parent.name === identifier || parent.propertyName === identifier)) ||
-    (ts.isNamespaceImport(parent) && parent.name === identifier) ||
-    (ts.isBindingElement(parent) && (parent.name === identifier || parent.propertyName === identifier))
+    ts.isIdentifier(loaderExpression) &&
+    ((ts.isVariableDeclaration(parent) && parent.name === loaderExpression) ||
+      (ts.isFunctionDeclaration(parent) && parent.name === loaderExpression) ||
+      (ts.isImportSpecifier(parent) &&
+        (parent.name === loaderExpression || parent.propertyName === loaderExpression)) ||
+      (ts.isNamespaceImport(parent) && parent.name === loaderExpression) ||
+      (ts.isBindingElement(parent) && (parent.name === loaderExpression || parent.propertyName === loaderExpression)))
   ) {
     return true;
   }
 
-  const expression = outerWrappedExpression(identifier);
+  const expression = outerWrappedExpression(loaderExpression);
   if (
     ts.isVariableDeclaration(expression.parent) &&
     expression.parent.initializer === expression &&
@@ -1077,6 +1047,11 @@ function isSupportedLoaderIdentifierUse(identifier, kind) {
   ) {
     return true;
   }
+  if (kind === "createRequireNamespace") {
+    const factory = createRequireMemberExpression(expression, authority);
+    return factory ? isSupportedCreateRequireFactoryUse(factory) : false;
+  }
+  if (kind === "createRequire") return isSupportedCreateRequireFactoryUse(expression);
   if (kind === "import" || kind === "require") {
     if (
       kind === "require" &&
@@ -1088,19 +1063,11 @@ function isSupportedLoaderIdentifierUse(identifier, kind) {
     }
     return ts.isCallExpression(expression.parent) && expression.parent.expression === expression;
   }
+  return false;
+}
 
-  let factoryCallee = expression;
-  if (kind === "createRequireNamespace") {
-    const property = expression.parent;
-    if (
-      !ts.isPropertyAccessExpression(property) ||
-      property.expression !== expression ||
-      property.name.text !== "createRequire"
-    ) {
-      return false;
-    }
-    factoryCallee = outerWrappedExpression(property);
-  }
+function isSupportedCreateRequireFactoryUse(factoryExpression) {
+  const factoryCallee = outerWrappedExpression(factoryExpression);
   const factoryCall = factoryCallee.parent;
   if (!ts.isCallExpression(factoryCall) || factoryCall.expression !== factoryCallee) return false;
   const assignedCall = outerWrappedExpression(factoryCall);
@@ -1109,6 +1076,57 @@ function isSupportedLoaderIdentifierUse(identifier, kind) {
     assignedCall.parent.initializer === assignedCall &&
     ts.isIdentifier(assignedCall.parent.name)
   );
+}
+
+function boundedSyntaxNodes(sourceFile, file, options) {
+  const maximumDepth = boundedUpperLimit(
+    options.maximumSyntaxTreeDepth ?? maximumSyntaxNesting,
+    maximumSyntaxNesting,
+    "syntax tree depth",
+    true
+  );
+  const nodes = [];
+  const pending = [{ node: sourceFile, depth: 0 }];
+  while (pending.length > 0) {
+    const { node, depth } = pending.pop();
+    if (depth > maximumDepth) {
+      throw new Error(`Activation inventory source exceeds syntax tree depth ${maximumDepth}: ${file}`);
+    }
+    nodes.push(node);
+    if (nodes.length > maximumSyntaxNodes) {
+      throw new Error(`Activation inventory source exceeds ${maximumSyntaxNodes} syntax nodes: ${file}`);
+    }
+    const children = [];
+    ts.forEachChild(node, (child) => {
+      children.push(child);
+    });
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push({ node: children[index], depth: depth + 1 });
+    }
+  }
+  return nodes;
+}
+
+function lexicalBindingChecker(sourceFile, source, file) {
+  const compilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.ES2022
+  };
+  const host = {
+    fileExists: (candidate) => candidate === file,
+    getCanonicalFileName: (candidate) => candidate,
+    getCurrentDirectory: () => path.dirname(file),
+    getDefaultLibFileName: () => "",
+    getDirectories: () => [],
+    getNewLine: () => "\n",
+    getSourceFile: (candidate) => (candidate === file ? sourceFile : undefined),
+    readFile: (candidate) => (candidate === file ? source : undefined),
+    useCaseSensitiveFileNames: () => true,
+    writeFile: () => undefined
+  };
+  return ts.createProgram([file], compilerOptions, host).getTypeChecker();
 }
 
 function outerWrappedExpression(expression) {
@@ -1196,7 +1214,7 @@ function exportDeclarationLoadsAtRuntime(declaration) {
   return declaration.exportClause.elements.some((element) => !element.isTypeOnly);
 }
 
-function collectCreateRequireImport(declaration, aliases, namespaces) {
+function collectCreateRequireImport(declaration, authority) {
   if (
     !ts.isStringLiteral(declaration.moduleSpecifier) ||
     !/^(?:node:)?module$/u.test(declaration.moduleSpecifier.text) ||
@@ -1206,99 +1224,97 @@ function collectCreateRequireImport(declaration, aliases, namespaces) {
   }
   const bindings = declaration.importClause.namedBindings;
   if (ts.isNamespaceImport(bindings)) {
-    namespaces.add(bindings.name.text);
+    addBindingOrigin(bindings.name, "createRequireNamespace", authority);
     return;
   }
   for (const element of bindings.elements) {
-    if ((element.propertyName?.text ?? element.name.text) === "createRequire" && !element.isTypeOnly) {
-      aliases.add(element.name.text);
+    if (bindingPropertyName(element) === "createRequire" && !element.isTypeOnly) {
+      addBindingOrigin(element.name, "createRequire", authority);
     }
   }
 }
 
-function collectCommonJsCreateRequire(declaration, requireAliases, createRequireAliases, createRequireNamespaces) {
+function collectVariableLoaderOrigin(declaration, authority) {
   if (!declaration.initializer) return false;
   const initializer = unwrapExpression(declaration.initializer);
-  if (!ts.isCallExpression(initializer) || loaderCallKind(initializer, new Set(), requireAliases) !== "require") {
-    return false;
-  }
-  const argument = initializer.arguments[0];
-  if (initializer.arguments.length !== 1 || !argument || !ts.isStringLiteral(argument)) return false;
-  if (!/^(?:node:)?module$/u.test(argument.text)) return false;
   if (ts.isIdentifier(declaration.name)) {
-    if (createRequireNamespaces.has(declaration.name.text)) return false;
-    createRequireNamespaces.add(declaration.name.text);
-    return true;
+    if (isNodeModuleRequireCall(initializer, authority)) {
+      return addBindingOrigin(declaration.name, "createRequireNamespace", authority);
+    }
+    if (ts.isCallExpression(initializer) && isCreateRequireCall(initializer, authority)) {
+      return addBindingOrigin(declaration.name, "require", authority);
+    }
+    const wrapper = wrapperLoaderCall(initializer, authority);
+    if (wrapper) {
+      authority.wrapperCalls.add(wrapper.call);
+      return addBindingOrigin(declaration.name, wrapper.kind, authority);
+    }
+    const origin = loaderExpressionOrigin(initializer, authority);
+    return origin ? addBindingOrigin(declaration.name, origin, authority) : false;
   }
   if (!ts.isObjectBindingPattern(declaration.name)) return false;
+  let sourceKind;
+  if (isNodeModuleRequireCall(initializer, authority)) sourceKind = "createRequireNamespace";
+  else if (isGlobalModuleIdentifier(initializer, authority.checker)) sourceKind = "commonJsModule";
+  else sourceKind = loaderExpressionOrigin(initializer, authority);
+  if (sourceKind !== "createRequireNamespace" && sourceKind !== "commonJsModule") return false;
   let changed = false;
   for (const element of declaration.name.elements) {
     if (!ts.isIdentifier(element.name)) continue;
-    const importedName =
-      element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : element.name.text;
-    if (importedName === "createRequire" && !createRequireAliases.has(element.name.text)) {
-      createRequireAliases.add(element.name.text);
-      changed = true;
+    const propertyName = bindingPropertyName(element);
+    if (sourceKind === "createRequireNamespace" && propertyName === "createRequire") {
+      changed = addBindingOrigin(element.name, "createRequire", authority) || changed;
+    } else if (sourceKind === "commonJsModule" && propertyName === "require") {
+      changed = addBindingOrigin(element.name, "require", authority) || changed;
     }
   }
   return changed;
 }
 
-function copyLoaderAlias(
-  localName,
-  sourceName,
-  importAliases,
-  requireAliases,
-  createRequireAliases,
-  createRequireNamespaces
-) {
-  let changed = false;
-  if (importAliases.has(sourceName) && !importAliases.has(localName)) {
-    importAliases.add(localName);
-    changed = true;
+function addBindingOrigin(identifier, kind, authority) {
+  const symbol = authority.checker.getSymbolAtLocation(identifier);
+  if (!symbol) throw new Error(`Activation inventory could not bind loader identifier ${identifier.text}.`);
+  const previous = authority.origins.get(symbol);
+  if (previous && previous !== kind) {
+    throw new Error(`Activation inventory loader binding ${identifier.text} has conflicting origins.`);
   }
-  if (requireAliases.has(sourceName) && !requireAliases.has(localName)) {
-    requireAliases.add(localName);
-    changed = true;
-  }
-  if (createRequireAliases.has(sourceName) && !createRequireAliases.has(localName)) {
-    createRequireAliases.add(localName);
-    changed = true;
-  }
-  if (createRequireNamespaces.has(sourceName) && !createRequireNamespaces.has(localName)) {
-    createRequireNamespaces.add(localName);
-    changed = true;
-  }
-  return changed;
-}
-
-function isCreateRequireCall(call, aliases, namespaces) {
-  const callee = unwrapExpression(call.expression);
-  if (ts.isIdentifier(callee)) return aliases.has(callee.text);
-  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "createRequire") return false;
-  const namespace = unwrapExpression(callee.expression);
-  return ts.isIdentifier(namespace) && namespaces.has(namespace.text);
-}
-
-function addLoaderAlias(localName, kind, importAliases, requireAliases) {
-  const aliases = kind === "import" ? importAliases : requireAliases;
-  if (aliases.has(localName)) return false;
-  aliases.add(localName);
+  if (previous === kind) return false;
+  authority.origins.set(symbol, kind);
   return true;
 }
 
-function wrapperLoaderCall(initializer, importAliases, requireAliases) {
+function bindingPropertyName(element) {
+  const property = element.propertyName;
+  return property && (ts.isIdentifier(property) || ts.isStringLiteral(property)) ? property.text : element.name.text;
+}
+
+function isNodeModuleRequireCall(expression, authority) {
+  if (!ts.isCallExpression(expression) || loaderCallKind(expression, authority) !== "require") return false;
+  const argument = expression.arguments[0];
+  return (
+    expression.arguments.length === 1 &&
+    argument !== undefined &&
+    ts.isStringLiteral(argument) &&
+    /^(?:node:)?module$/u.test(argument.text)
+  );
+}
+
+function isCreateRequireCall(call, authority) {
+  return loaderExpressionOrigin(call.expression, authority) === "createRequire";
+}
+
+function wrapperLoaderCall(initializer, authority) {
   const expression = unwrapExpression(initializer);
   if (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression)) return undefined;
-  return callableWrapper(expression.parameters, expression.body, importAliases, requireAliases);
+  return callableWrapper(expression.parameters, expression.body, authority);
 }
 
-function functionLoaderCall(declaration, importAliases, requireAliases) {
+function functionLoaderCall(declaration, authority) {
   if (!declaration.body) return undefined;
-  return callableWrapper(declaration.parameters, declaration.body, importAliases, requireAliases);
+  return callableWrapper(declaration.parameters, declaration.body, authority);
 }
 
-function callableWrapper(parameters, body, importAliases, requireAliases) {
+function callableWrapper(parameters, body, authority) {
   if (parameters.length !== 1 || !ts.isIdentifier(parameters[0].name)) return undefined;
   let expression;
   if (ts.isBlock(body)) {
@@ -1311,17 +1327,119 @@ function callableWrapper(parameters, body, importAliases, requireAliases) {
   expression = unwrapExpression(expression);
   if (!ts.isCallExpression(expression) || expression.arguments.length !== 1) return undefined;
   const argument = unwrapExpression(expression.arguments[0]);
-  if (!ts.isIdentifier(argument) || argument.text !== parameters[0].name.text) return undefined;
-  const kind = loaderCallKind(expression, importAliases, requireAliases);
+  if (
+    !ts.isIdentifier(argument) ||
+    authority.checker.getSymbolAtLocation(argument) !== authority.checker.getSymbolAtLocation(parameters[0].name)
+  ) {
+    return undefined;
+  }
+  const kind = loaderCallKind(expression, authority);
   return kind ? { kind, call: expression } : undefined;
 }
 
-function loaderCallKind(call, importAliases, requireAliases) {
-  const callee = unwrapExpression(call.expression);
-  if (callee.kind === ts.SyntaxKind.ImportKeyword) return "import";
-  if (!ts.isIdentifier(callee)) return undefined;
-  if (importAliases.has(callee.text)) return "import";
-  return requireAliases.has(callee.text) ? "require" : undefined;
+function loaderCallKind(call, authority) {
+  const origin = loaderExpressionOrigin(call.expression, authority);
+  return origin === "import" || origin === "require" ? origin : undefined;
+}
+
+function loaderExpressionOrigin(expression, authority) {
+  const value = unwrapExpression(expression);
+  if (value.kind === ts.SyntaxKind.ImportKeyword) return "import";
+  if (ts.isIdentifier(value)) return identifierLoaderOrigin(value, authority);
+  if (isGlobalModuleRequireExpression(value, authority.checker)) return "require";
+  const namespace = createRequireNamespaceForMember(value, authority);
+  return namespace ? "createRequire" : undefined;
+}
+
+function identifierLoaderOrigin(identifier, authority) {
+  const symbol = authority.checker.getSymbolAtLocation(identifier);
+  if (symbol) return authority.origins.get(symbol);
+  return identifier.text === "require" && isIdentifierExpressionReference(identifier) ? "require" : undefined;
+}
+
+function isIdentifierExpressionReference(identifier) {
+  const parent = identifier.parent;
+  return !(
+    (ts.isPropertyAccessExpression(parent) && parent.name === identifier) ||
+    (ts.isPropertyAssignment(parent) && parent.name === identifier) ||
+    (ts.isMethodDeclaration(parent) && parent.name === identifier) ||
+    (ts.isPropertyDeclaration(parent) && parent.name === identifier) ||
+    (ts.isBindingElement(parent) && parent.propertyName === identifier) ||
+    (ts.isImportSpecifier(parent) && parent.propertyName === identifier)
+  );
+}
+
+function isGlobalModuleIdentifier(expression, checker) {
+  const value = unwrapExpression(expression);
+  return ts.isIdentifier(value) && value.text === "module" && checker.getSymbolAtLocation(value) === undefined;
+}
+
+function isGlobalModuleRequireExpression(expression, checker) {
+  const value = unwrapExpression(expression);
+  if (ts.isPropertyAccessExpression(value)) {
+    return value.name.text === "require" && isGlobalModuleIdentifier(value.expression, checker);
+  }
+  return (
+    ts.isElementAccessExpression(value) &&
+    value.argumentExpression !== undefined &&
+    ts.isStringLiteral(value.argumentExpression) &&
+    value.argumentExpression.text === "require" &&
+    isGlobalModuleIdentifier(value.expression, checker)
+  );
+}
+
+function createRequireNamespaceForMember(expression, authority) {
+  const value = unwrapExpression(expression);
+  let owner;
+  if (ts.isPropertyAccessExpression(value) && value.name.text === "createRequire") owner = value.expression;
+  else if (
+    ts.isElementAccessExpression(value) &&
+    value.argumentExpression !== undefined &&
+    ts.isStringLiteral(value.argumentExpression) &&
+    value.argumentExpression.text === "createRequire"
+  ) {
+    owner = value.expression;
+  }
+  if (!owner) return undefined;
+  const namespace = unwrapExpression(owner);
+  if (!ts.isIdentifier(namespace)) return undefined;
+  const symbol = authority.checker.getSymbolAtLocation(namespace);
+  return symbol && authority.origins.get(symbol) === "createRequireNamespace" ? namespace : undefined;
+}
+
+function createRequireMemberExpression(namespaceExpression, authority) {
+  const namespace = outerWrappedExpression(namespaceExpression);
+  const parent = namespace.parent;
+  return createRequireNamespaceForMember(parent, authority) === namespaceExpression
+    ? outerWrappedExpression(parent)
+    : undefined;
+}
+
+function isDestructuringLoaderAssignment(node, authority) {
+  if (
+    !ts.isBinaryExpression(node) ||
+    node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isObjectLiteralExpression(unwrapExpression(node.left))
+  ) {
+    return false;
+  }
+  const source = unwrapExpression(node.right);
+  const sourceKind = isGlobalModuleIdentifier(source, authority.checker)
+    ? "commonJsModule"
+    : loaderExpressionOrigin(source, authority);
+  if (sourceKind !== "commonJsModule" && sourceKind !== "createRequireNamespace") return false;
+  return unwrapExpression(node.left).properties.some((property) => {
+    if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) return false;
+    const name = propertyNameText(property.name);
+    return (
+      (sourceKind === "commonJsModule" && name === "require") ||
+      (sourceKind === "createRequireNamespace" && name === "createRequire")
+    );
+  });
+}
+
+function propertyNameText(name) {
+  return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
 }
 
 function unwrapExpression(expression) {
