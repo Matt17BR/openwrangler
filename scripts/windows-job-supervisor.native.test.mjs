@@ -1004,6 +1004,43 @@ function fakeWindowsCompiler({ closeOnKill, closeDelayMs = 0, pid }) {
   };
 }
 
+test("the Windows supervisor compiler stays attached while taskkill owns descendant termination", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-compiler-spawn-options-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const spawnFailure = new Error("synthetic compiler spawn failure");
+  let spawnOptions;
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        spawnProcess(_executable, _args, options) {
+          spawnOptions = options;
+          throw spawnFailure;
+        }
+      }),
+      (error) => {
+        assert.equal(error.cause, spawnFailure);
+        return true;
+      }
+    );
+    assert.deepEqual(
+      {
+        detached: spawnOptions.detached,
+        windowsHide: spawnOptions.windowsHide,
+        stdio: spawnOptions.stdio
+      },
+      {
+        detached: false,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("production compiler close preserves a PID-bearing error as authoritative", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-pid-error-close-"));
   const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
