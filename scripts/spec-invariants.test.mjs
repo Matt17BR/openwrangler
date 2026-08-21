@@ -843,6 +843,104 @@ test("cleaning-history claims fail closed on malformed entity shapes before clau
   );
 });
 
+test("cleaning-history structured predicates reject every product-review bypass", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Notebook cells can be edited: committed steps cannot be edited.",
+    "The toolbar supports editing, committed steps cannot be edited.",
+    "Undo is unavailable for every committed step except the latest one or an older committed step.",
+    "Undo is unavailable for every committed step except the latest committed step or another committed step.",
+    "Undo is unavailable for every committed step except the latest one unless another one is selected.",
+    "Committed steps cannot be edited, with no exception.",
+    "Some committed steps aren't editable.",
+    "Undo isn't available for the latest committed step.",
+    "An older committed step remains visible. This can be undone.",
+    "An older committed step remains visible. That step can be undone."
+  ];
+  const truthful = [
+    "Committed steps can be edited with no exception.",
+    "Undo isn't available for older committed steps."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history structured predicates reject every maintainability-review bypass", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps can be inspected but cannot be edited.",
+    "Earlier committed steps remain visible and can be undone.",
+    "Undo can restore the latest committed step and an older one.",
+    "Undo is not supported.",
+    "Undo is not available.",
+    "Undo isn't supported.",
+    "Committed steps aren't editable.",
+    "Committed steps cannot be edited—not even individually.",
+    "Undo can target four committed steps.",
+    "Undo can target five committed steps.",
+    "Undo can target many committed steps.",
+    "The latest committed step remains visible. Undo is supported except for it.",
+    "Committed steps remain visible; Undo is supported except for the latest."
+  ];
+  const truthful = [
+    "The latest committed step remains visible. Undo is unavailable except for it.",
+    "[Unrelated guide](https://example.test/?a=1&b=2;)",
+    "![Unrelated image](https://example.test/?a=1&b=2;)",
+    "Use `literal&1bad;value` as a sample.",
+    "A read-only report lists committed steps.",
+    "A report about committed steps is read-only.",
+    "Troubleshooting steps cannot be edited.",
+    "The release plan cannot be edited.",
+    "Only the latest committed step has alternative documentation."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history wording preserves exact latest Undo and native single-invocation scope", () => {
   const model = cleaningHistoryModel();
   const truthful = [
