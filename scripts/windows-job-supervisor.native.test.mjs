@@ -1038,7 +1038,15 @@ function controlledWindowsBuildDependencies() {
         nextScheduleFailure = undefined;
         throw error;
       }
-      const timer = { callback, cancelled: false, delay };
+      const timer = {
+        callback,
+        cancelled: false,
+        delay,
+        unrefCount: 0,
+        unref() {
+          timer.unrefCount += 1;
+        }
+      };
       timers.push(timer);
       return timer;
     },
@@ -1889,6 +1897,205 @@ test(
     }
   }
 );
+
+test("caller-deadline dependency faults retain sole compiler ownership through settlement", async (t) => {
+  for (const position of ["initial", "rearmed"]) {
+    for (const dependency of ["clock", "schedule", "cancel"]) {
+      await t.test(`${position} ${dependency}`, async () => {
+        const directory = await mkdtemp(
+          join(tmpdir(), `openwrangler-supervisor-caller-${position}-${dependency}-dependency-`)
+        );
+        const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+        configureEditorAcceptanceTempRoot(directory, environment);
+        const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 18_100 + dependency.length });
+        const taskkill = new EventEmitter();
+        taskkill.pid = compiler.child.pid + 1;
+        taskkill.exitCode = null;
+        taskkill.signalCode = null;
+        let taskkillUnrefCount = 0;
+        taskkill.kill = () => true;
+        taskkill.unref = () => {
+          taskkillUnrefCount += 1;
+        };
+        const dependencies = controlledWindowsBuildDependencies();
+        const controller = new AbortController();
+        const injectedError = new Error(`synthetic ${position} caller ${dependency} failure`);
+        let resolveTaskkillStarted;
+        const taskkillStarted = new Promise((resolve) => {
+          resolveTaskkillStarted = resolve;
+        });
+        let outcome = "pending";
+        try {
+          const preparation = prepareWindowsEditorProcessSupervisor(environment, {
+            platform: "win32",
+            buildTimeoutMs: 10,
+            buildSettlementTimeoutMs: 20,
+            buildAbortSignal: controller.signal,
+            buildNow: dependencies.now,
+            buildSchedule: dependencies.schedule,
+            buildCancelSchedule: dependencies.cancel,
+            spawnProcess: () => {
+              if (position === "initial" && dependency === "clock") dependencies.failNextNow(injectedError);
+              if (position === "initial" && dependency === "schedule") dependencies.failNextSchedule(injectedError);
+              return compiler.child;
+            },
+            spawnTaskkillProcess: () => {
+              resolveTaskkillStarted();
+              return taskkill;
+            }
+          });
+          void preparation.then(
+            () => {
+              outcome = "resolved";
+            },
+            () => {
+              outcome = "rejected";
+            }
+          );
+
+          let cancelledCallerTimer;
+          if (dependency === "cancel") {
+            assert.equal(dependencies.timers.length, 1);
+            if (position === "rearmed") {
+              dependencies.setClock(4);
+              dependencies.timers[0].callback();
+              assert.equal(dependencies.timers.length, 2);
+              assert.equal(dependencies.timers[1].delay, 6);
+            }
+            const callerTimer = dependencies.timers.at(-1);
+            dependencies.failCancel(callerTimer, injectedError);
+            controller.abort();
+            cancelledCallerTimer = callerTimer;
+          } else if (position === "rearmed") {
+            assert.equal(dependencies.timers.length, 1);
+            dependencies.setClock(4);
+            if (dependency === "schedule") dependencies.failNextSchedule(injectedError);
+            dependencies.timers[0].callback();
+            if (dependency === "clock") {
+              assert.equal(dependencies.timers.length, 2);
+              assert.equal(dependencies.timers[1].delay, 6);
+              dependencies.failNextNow(injectedError);
+              dependencies.timers[1].callback();
+            }
+          }
+
+          await taskkillStarted;
+          await Promise.resolve();
+          if (cancelledCallerTimer) {
+            assert.equal(cancelledCallerTimer.cancelled, true);
+            assert.equal(cancelledCallerTimer.unrefCount, 1);
+          }
+          assert.equal(outcome, "pending");
+          taskkill.exitCode = 0;
+          taskkill.emit("close", 0, null);
+          compiler.child.signalCode = "SIGKILL";
+          compiler.child.stdout.end();
+          compiler.child.stderr.end();
+          compiler.child.emit("close", null, "SIGKILL");
+
+          await assert.rejects(preparation, (error) => {
+            assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+            assert.equal(error.details?.stage, "windows-supervisor-compilation");
+            assert.equal(error.details?.reason, "dependency-failure");
+            assert.equal(error.details?.window, "caller-deadline");
+            assert.deepEqual(error.details?.dependencies, [dependency]);
+            assert.equal(error.details?.limitMs, 10);
+            assert.equal(error.details?.buildStillOwned, false);
+            assert.equal(error.details?.treeVerifiedStopped, true);
+            assert.equal(error.cause instanceof AggregateError, true);
+            assert.equal(error.cause.errors[0]?.details?.dependency, dependency);
+            assert.equal(error.cause.errors[0]?.cause, injectedError);
+            assert.equal(error.cause.errors[1]?.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+            assert.equal(error.cause.errors[1]?.details?.treeVerifiedStopped, true);
+            return true;
+          });
+          assert.equal(outcome, "rejected");
+          assert.equal(taskkillUnrefCount, 1);
+          assert.equal(compiler.lifecycle().unrefCount, 1);
+          assert.equal(taskkill.listenerCount("error"), 0);
+          assert.equal(taskkill.listenerCount("close"), 0);
+          assert.equal(compiler.child.listenerCount("error"), 0);
+          assert.equal(compiler.child.listenerCount("close"), 0);
+          assert.equal(compiler.child.stdout.destroyed, true);
+          assert.equal(compiler.child.stderr.destroyed, true);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
+test("a caller-deadline dependency fault poisons a compiler root whose settlement remains uncertain", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-caller-dependency-uncertain-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 18120 });
+  const taskkill = new EventEmitter();
+  taskkill.pid = 18121;
+  taskkill.exitCode = null;
+  taskkill.signalCode = null;
+  taskkill.kill = () => true;
+  taskkill.unref = () => undefined;
+  const dependencies = controlledWindowsBuildDependencies();
+  const injectedError = new Error("synthetic initial caller schedule failure before uncertain settlement");
+  try {
+    const preparation = prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      buildTimeoutMs: 10,
+      buildSettlementTimeoutMs: 20,
+      buildNow: dependencies.now,
+      buildSchedule: dependencies.schedule,
+      buildCancelSchedule: dependencies.cancel,
+      spawnProcess: () => {
+        dependencies.failNextSchedule(injectedError);
+        return compiler.child;
+      },
+      spawnTaskkillProcess: () => taskkill
+    });
+    void preparation.catch(() => undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(dependencies.timers.length, 1);
+
+    dependencies.setClock(20);
+    dependencies.timers[0].callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(dependencies.timers.length, 2);
+    dependencies.setClock(40);
+    dependencies.timers[1].callback();
+
+    await assert.rejects(preparation, (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.details?.reason, "dependency-failure");
+      assert.equal(error.details?.treeVerifiedStopped, false);
+      assert.equal(error.cause instanceof AggregateError, true);
+      assert.equal(error.cause.errors[0]?.details?.dependency, "schedule");
+      assert.equal(error.cause.errors[0]?.cause, injectedError);
+      assert.equal(error.cause.errors[1]?.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      return true;
+    });
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        spawnProcess: () => assert.fail("an uncertain caller dependency must poison its private root")
+      }),
+      /previously involved in an unverified process tree/u
+    );
+
+    assert.equal(taskkill.listenerCount("error"), 1);
+    assert.equal(taskkill.listenerCount("close"), 1);
+    assert.equal(compiler.child.listenerCount("error"), 1);
+    assert.equal(compiler.child.listenerCount("close"), 1);
+    taskkill.emit("close", null, "SIGKILL");
+    compiler.child.emit("close", null, "SIGKILL");
+    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 0);
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("a caller deadline includes synchronous compiler spawn and owns its settlement", { timeout: 5_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-spawn-deadline-"));
