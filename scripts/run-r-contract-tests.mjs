@@ -515,7 +515,7 @@ export function createPosixProcessTracker(
     throw new Error("The R contract phase did not expose an owned POSIX process.");
   }
   const observed = new Map();
-  const retiredIdentities = new Set();
+  const retiredIdentities = new Map();
   const releasedSignalHandles = new WeakSet();
   let failure;
   let resolveFailure;
@@ -542,7 +542,7 @@ export function createPosixProcessTracker(
   const retire = (expected) => {
     releaseSignalHandle(expected);
     observed.delete(expected.pid);
-    retiredIdentities.add(processIdentityKey(expected));
+    retiredIdentities.set(processIdentityKey(expected), expected);
   };
   const bindSignalHandle = (identity) => {
     try {
@@ -622,7 +622,19 @@ export function createPosixProcessTracker(
     while (changed) {
       changed = false;
       for (const identity of pending.values()) {
-        if (observed.has(identity.pid) || retiredIdentities.has(processIdentityKey(identity))) continue;
+        if (observed.has(identity.pid)) continue;
+        const retired = retiredIdentities.get(processIdentityKey(identity));
+        if (retired) {
+          if (retired.identityResolution === "second" || identity.identityResolution === "second") {
+            latch(
+              new Error(
+                `retired coarse process ${identity.pid} reappeared with the same ${identity.startIdentity} identity key`
+              )
+            );
+            throw failure;
+          }
+          continue;
+        }
         const belongs =
           sameProcessIdentity(identity, rootIdentity) ||
           identity.ownerMarked === true ||

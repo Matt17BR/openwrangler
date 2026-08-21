@@ -730,6 +730,49 @@ test("a same-timestamp non-Linux PID reuse fails closed instead of settling", as
   tracker.stop();
 });
 
+test("a retired coarse identity that reappears cannot settle or start a later phase", async () => {
+  const ownerCommand = "fixture OPEN_WRANGLER_R_CONTRACT_OWNER=owner";
+  const coarse = processIdentity(62_401, 1, "Fri Aug 21 14:00:00 2026", true, {
+    command: ownerCommand,
+    identityResolution: "second"
+  });
+  const replacement = processIdentity(62_401, 99, coarse.startIdentity, false, {
+    command: "foreign replacement",
+    identityResolution: "second"
+  });
+  let current = coarse;
+  const tracker = createPosixProcessTracker(62_401, "owner", {
+    readProcessIdentity: () => current,
+    listProcessIdentities: () => (current ? [current] : []),
+    observationIntervalMs: 60_000
+  });
+
+  current = undefined;
+  assert.equal(tracker.observe(), 0);
+  current = replacement;
+  assert.throws(
+    () => tracker.isSettled({ isSettled: () => true }),
+    /retired coarse process 62401 reappeared with the same .* identity key/u
+  );
+  const settlementFailure = await tracker.failure;
+  assert.equal(settlementFailure.processTreeUnsettled, true);
+  tracker.stop();
+
+  const [first, second] = phases();
+  const started = [];
+  await assert.rejects(
+    runRContractPhases([first, second], {
+      runPhase: async (phase) => {
+        started.push(phase.id);
+        throw settlementFailure;
+      },
+      writeLine: () => {}
+    }),
+    /stopped after frame:decimal-ordering because its process tree was not verified settled/u
+  );
+  assert.deepEqual(started, [first.id]);
+});
+
 test("POSIX ownership fails closed when an observed descendant becomes unverifiable", async () => {
   const processes = new Map([
     [63_001, processIdentity(63_001, 1, "root")],
