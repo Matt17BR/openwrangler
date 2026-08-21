@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import os
+from base64 import b64encode
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -83,7 +84,18 @@ _PORTABLE_INTEGER_LIMIT = 10**38
 _MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS = 65_536
 _MAX_ROW_AXIS_LEVELS = 64
 _MAX_ROW_AXIS_TEXT_CHARACTERS = 1_024
+_MAX_ROW_AXIS_VALUE_DEPTH = 64
+_MAX_ROW_AXIS_VALUE_NODES = 1_024
 _ROW_AXIS_SEPARATOR = " · "
+_JSON_CHARACTER_ESCAPES = {
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+    '"': '\\"',
+    "\\": "\\\\",
+}
 
 
 class PandasEngine(DataFrameEngine):
@@ -2550,11 +2562,195 @@ def _pandas_row_axis_level_name(value: Any) -> str | None:
 
 
 def _pandas_row_axis_value(value: Any, purpose: str) -> str:
-    cell = normalize_cell(value)
-    display = "null" if cell["isNull"] else cell["display"]
-    if not isinstance(display, str) or len(display) > _MAX_ROW_AXIS_TEXT_CHARACTERS:
-        raise EngineError(f"{purpose} exceeds {_MAX_ROW_AXIS_TEXT_CHARACTERS} characters.")
-    return display
+    return _PandasRowAxisFormatter(purpose).format(value)
+
+
+class _PandasRowAxisFormatter:
+    def __init__(self, purpose: str) -> None:
+        self._purpose = purpose
+        self._remaining_characters = _MAX_ROW_AXIS_TEXT_CHARACTERS
+        self._remaining_nodes = _MAX_ROW_AXIS_VALUE_NODES
+        self._chunks: list[str] = []
+        self._active_compounds: set[int] = set()
+
+    def format(self, value: Any) -> str:
+        self._write_root_value(value)
+        return "".join(self._chunks)
+
+    def format_separated(self, values: tuple[Any, ...], separator: str) -> str:
+        for index in range(len(values)):
+            if index:
+                self._add(separator)
+            self._write_root_value(values[index])
+        return "".join(self._chunks)
+
+    def _write_root_value(self, value: Any) -> None:
+        if type(value) in {dict, list, tuple}:
+            self._write_json_value(value, 1)
+        else:
+            self._charge_node(1)
+            self._write_top_level_scalar(value)
+
+    def _fail_text_bound(self) -> None:
+        raise EngineError(f"{self._purpose} exceeds {_MAX_ROW_AXIS_TEXT_CHARACTERS} characters.")
+
+    def _add(self, text: str) -> None:
+        length = len(text)
+        if length > self._remaining_characters:
+            self._fail_text_bound()
+        self._chunks.append(text)
+        self._remaining_characters -= length
+
+    def _charge_node(self, depth: int) -> None:
+        if depth > _MAX_ROW_AXIS_VALUE_DEPTH:
+            raise EngineError(f"{self._purpose} exceeds {_MAX_ROW_AXIS_VALUE_DEPTH} nested values.")
+        if self._remaining_nodes == 0:
+            raise EngineError(f"{self._purpose} exceeds {_MAX_ROW_AXIS_VALUE_NODES} compound values.")
+        self._remaining_nodes -= 1
+
+    def _write_top_level_scalar(self, value: Any) -> None:
+        if type(value) is str:
+            self._add(value)
+            return
+        if type(value) is bytes:
+            self._write_bytes(value, quoted=False)
+            return
+        if type(value) is int:
+            self._add(self._bounded_integer_text(value))
+            return
+        cell = self._supported_scalar_cell(value)
+        display = "null" if cell["isNull"] else cell["display"]
+        if not isinstance(display, str):
+            raise EngineError(f"{self._purpose} has an unsupported display value.")
+        self._add(display)
+
+    def _write_json_value(self, value: Any, depth: int) -> None:
+        self._charge_node(depth)
+        value_type = type(value)
+        if value_type in {list, tuple}:
+            self._write_json_sequence(value, depth)
+            return
+        if value_type is dict:
+            self._write_json_mapping(value, depth)
+            return
+        if value_type is str:
+            self._write_json_string(value)
+            return
+        if value_type is bytes:
+            self._write_bytes(value, quoted=True)
+            return
+        if value_type is int:
+            self._add(self._bounded_integer_text(value))
+            return
+        cell = self._supported_scalar_cell(value)
+        kind = cell["kind"]
+        if kind == "null":
+            self._add("null")
+        elif kind == "boolean":
+            self._add("true" if cell["raw"] else "false")
+        elif kind in {"integer", "number"}:
+            self._add(cell["display"])
+        elif kind == "duration" and isinstance(cell["raw"], int | float):
+            self._add(str(cell["raw"]))
+        elif kind in {"decimal", "datetime", "date", "duration", "nan", "infinity"}:
+            self._write_json_string(str(cell["display"] if kind != "duration" else cell["raw"]))
+        else:
+            raise EngineError(f"{self._purpose} has an unsupported compound value.")
+
+    def _write_json_sequence(self, value: list[Any] | tuple[Any, ...], depth: int) -> None:
+        identity = id(value)
+        if identity in self._active_compounds:
+            raise EngineError(f"{self._purpose} contains a cyclic compound value.")
+        self._active_compounds.add(identity)
+        try:
+            self._add("[")
+            for index in range(len(value)):
+                if index:
+                    self._add(",")
+                self._write_json_value(value[index], depth + 1)
+            self._add("]")
+        finally:
+            self._active_compounds.remove(identity)
+
+    def _write_json_mapping(self, value: dict[Any, Any], depth: int) -> None:
+        identity = id(value)
+        if identity in self._active_compounds:
+            raise EngineError(f"{self._purpose} contains a cyclic compound value.")
+        self._active_compounds.add(identity)
+        try:
+            self._add("{")
+            for index, key in enumerate(value):
+                if index:
+                    self._add(",")
+                self._charge_node(depth + 1)
+                self._write_json_string(self._mapping_key(key))
+                self._add(":")
+                self._write_json_value(value[key], depth + 1)
+            self._add("}")
+        finally:
+            self._active_compounds.remove(identity)
+
+    def _mapping_key(self, value: Any) -> str:
+        if type(value) is str:
+            return value
+        if type(value) is int:
+            return self._bounded_integer_text(value, reserved_characters=2)
+        if value is None or type(value) in {bool, float}:
+            return str(value)
+        if isinstance(value, Decimal):
+            return str(value)
+        raise EngineError(f"{self._purpose} has an unsupported mapping key.")
+
+    def _write_json_string(self, value: str) -> None:
+        self._add('"')
+        for character in value:
+            escaped = _JSON_CHARACTER_ESCAPES.get(character)
+            if escaped is not None:
+                self._add(escaped)
+            elif ord(character) < 0x20:
+                self._add(f"\\u{ord(character):04x}")
+            else:
+                self._add(character)
+        self._add('"')
+
+    def _write_bytes(self, value: bytes, *, quoted: bool) -> None:
+        encoded_length = ((len(value) + 2) // 3) * 4
+        required_characters = encoded_length + (2 if quoted else 0)
+        if required_characters > self._remaining_characters:
+            self._fail_text_bound()
+        if quoted:
+            self._add('"')
+        self._add(b64encode(value).decode("ascii"))
+        if quoted:
+            self._add('"')
+
+    def _bounded_integer_text(self, value: int, *, reserved_characters: int = 0) -> str:
+        available_digits = self._remaining_characters - reserved_characters - (1 if value < 0 else 0)
+        if available_digits < 1 or abs(value) >= 10**available_digits:
+            self._fail_text_bound()
+        return str(value)
+
+    def _supported_scalar_cell(self, value: Any) -> dict[str, Any]:
+        value_type = type(value)
+        type_name = value_type.__name__
+        is_numpy_scalar = any(base.__module__ == "numpy" and base.__name__ == "generic" for base in value_type.__mro__)
+        is_known_pandas_scalar = value_type.__module__.startswith("pandas.") and type_name in {
+            "NAType",
+            "NaTType",
+            "Timedelta",
+        }
+        if not (
+            value is None
+            or value_type in {bool, int, float}
+            or isinstance(value, Decimal | date | datetime | timedelta)
+            or is_numpy_scalar
+            or is_known_pandas_scalar
+        ):
+            raise EngineError(f"{self._purpose} has an unsupported display value.")
+        cell = normalize_cell(value)
+        if cell["kind"] == "unknown":
+            raise EngineError(f"{self._purpose} has an unsupported display value.")
+        return cell
 
 
 def _pandas_row_axis_label(value: Any, row_axis: RowAxis, *, one_level_multi_index: bool = False) -> str:
@@ -2565,8 +2761,7 @@ def _pandas_row_axis_label(value: Any, row_axis: RowAxis, *, one_level_multi_ind
     elif row_axis["kind"] == "multiIndex":
         if not isinstance(value, tuple) or len(value) != len(row_axis["levelNames"]):
             raise EngineError("Pandas returned a malformed MultiIndex row label.")
-        parts = [_pandas_row_axis_value(part, "Pandas row-index label") for part in value]
-        label = _ROW_AXIS_SEPARATOR.join(parts)
+        label = _PandasRowAxisFormatter("Pandas row-index label").format_separated(value, _ROW_AXIS_SEPARATOR)
     else:
         label = _pandas_row_axis_value(value, "Pandas row-index label")
     if len(label) > _MAX_ROW_AXIS_TEXT_CHARACTERS:

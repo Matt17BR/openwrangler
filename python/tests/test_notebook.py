@@ -9,8 +9,10 @@ import pandas as pd
 import polars as pl
 import pytest
 
+import openwrangler_runtime.engines.pandas_engine as pandas_engine
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineError, EngineRegistry
+from openwrangler_runtime.engines.base import normalize_cell
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 
@@ -19,6 +21,15 @@ ROW_AXIS_CONTRACT = json.loads(
         encoding="utf-8"
     )
 )
+
+
+def _assert_shared_row_labels(rows, expected_rows):
+    assert len(rows) == len(expected_rows)
+    for row, expected in zip(rows, expected_rows, strict=True):
+        expects_label = "rowLabel" in expected
+        assert ("rowLabel" in row) is expects_label
+        if expects_label:
+            assert row["rowLabel"] == expected["rowLabel"]
 
 
 @pytest.mark.parametrize(
@@ -87,7 +98,145 @@ def test_pandas_snapshot_matches_the_shared_row_axis_contract():
         payload = notebook.build_payload(frames[case["name"]], backend="pandas", page_size=2)
 
         assert payload["metadata"]["rowAxis"] == case["rowAxis"]
-        assert [row.get("rowLabel") for row in payload["page"]["rows"]] == case["expectedRowLabels"]
+        _assert_shared_row_labels(payload["page"]["rows"], case["expectedRows"])
+        if case["rowAxis"]["kind"] == "positional":
+            explicit_null_rows = [{**row, "rowLabel": None} for row in payload["page"]["rows"]]
+            with pytest.raises(AssertionError):
+                _assert_shared_row_labels(explicit_null_rows, case["expectedRows"])
+
+
+def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
+    values = [
+        None,
+        True,
+        42,
+        1.25,
+        b"\x00\xff",
+        "line\nvalue",
+        ["north", 1, None, True],
+        ['quote"\n\\', b"\x00"],
+        ("north", 1),
+        {"region": "north", "sequence": 1, "missing": None},
+    ]
+    for value in values:
+        cell = normalize_cell(value)
+        expected = "null" if cell["isNull"] else cell["display"]
+        assert pandas_engine._pandas_row_axis_value(value, "Pandas row-index label") == expected
+
+    assert pandas_engine._pandas_row_axis_value("x" * 1_024, "Pandas row-index label") == "x" * 1_024
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value("x" * 1_025, "Pandas row-index label")
+
+    multi_index_axis = {"kind": "multiIndex", "levelNames": [None, None]}
+    assert len(pandas_engine._pandas_row_axis_label(("x" * 512, "y" * 509), multi_index_axis)) == 1_024
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_label(("x" * 512, "y" * 510), multi_index_axis)
+
+
+def test_pandas_row_axis_formatter_stops_before_oversized_allocations(monkeypatch):
+    normalized = []
+    encoded = []
+    original_normalize_cell = pandas_engine.normalize_cell
+    original_b64encode = pandas_engine.b64encode
+
+    def observe_normalize_cell(value):
+        normalized.append(value)
+        return original_normalize_cell(value)
+
+    def observe_b64encode(value):
+        encoded.append(value)
+        return original_b64encode(value)
+
+    monkeypatch.setattr(pandas_engine, "normalize_cell", observe_normalize_cell)
+    monkeypatch.setattr(pandas_engine, "b64encode", observe_b64encode)
+
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value(b"x" * 769, "Pandas row-index label")
+    assert encoded == []
+    assert normalized == []
+
+    assert len(pandas_engine._pandas_row_axis_value(b"x" * 768, "Pandas row-index label")) == 1_024
+    assert len(encoded) == 1
+    assert len(pandas_engine._pandas_row_axis_value([b"x" * 765], "Pandas row-index label")) == 1_024
+    assert len(encoded) == 2
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value([b"x" * 766], "Pandas row-index label")
+    assert len(encoded) == 2
+
+    assert len(pandas_engine._pandas_row_axis_value(["x" * 1_020], "Pandas row-index label")) == 1_024
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value(["x" * 1_021], "Pandas row-index label")
+
+    assert len(pandas_engine._pandas_row_axis_value(10**1_023, "Pandas row-index label")) == 1_024
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value(10**1_024, "Pandas row-index label")
+
+    compounds = [
+        [""] * 400 + [7],
+        tuple([""] * 400 + [7]),
+        {**{f"key-{index}": "" for index in range(200)}, "probe": 7},
+    ]
+    for compound in compounds:
+        normalized.clear()
+        with pytest.raises(EngineError, match="exceeds 1024 characters"):
+            pandas_engine._pandas_row_axis_value(compound, "Pandas row-index label")
+        assert normalized == []
+
+    nested = "leaf"
+    for _ in range(65):
+        nested = [nested]
+    with pytest.raises(EngineError, match="exceeds 64 nested values"):
+        pandas_engine._pandas_row_axis_value(nested, "Pandas row-index label")
+
+    recursive = []
+    recursive.append(recursive)
+    with pytest.raises(EngineError, match="cyclic compound value"):
+        pandas_engine._pandas_row_axis_value(recursive, "Pandas row-index label")
+
+
+def test_pandas_row_axis_formatter_enforces_the_graph_node_budget_before_reading_the_next_value(monkeypatch):
+    normalized = []
+    original_normalize_cell = pandas_engine.normalize_cell
+
+    def observe_normalize_cell(value):
+        normalized.append(value)
+        return original_normalize_cell(value)
+
+    monkeypatch.setattr(pandas_engine, "normalize_cell", observe_normalize_cell)
+    monkeypatch.setattr(pandas_engine, "_MAX_ROW_AXIS_TEXT_CHARACTERS", 10_000)
+    with pytest.raises(EngineError, match="exceeds 1024 compound values"):
+        pandas_engine._pandas_row_axis_value([None] * 1_024, "Pandas row-index label")
+    assert len(normalized) == 1_023
+
+
+def test_pandas_row_axis_formatter_rejects_unknown_displays_without_stringifying_them():
+    class HostileDisplay:
+        def __str__(self):
+            raise AssertionError("Unknown row-axis values must not be stringified")
+
+    with pytest.raises(EngineError, match="unsupported display value"):
+        pandas_engine._pandas_row_axis_value(HostileDisplay(), "Pandas row-index label")
+
+    with pytest.raises(EngineError, match="unsupported mapping key"):
+        pandas_engine._pandas_row_axis_value({HostileDisplay(): "value"}, "Pandas row-index label")
+
+
+def test_pandas_snapshot_rejects_an_oversized_binary_index_before_base64_allocation(monkeypatch):
+    encoded = []
+    original_b64encode = pandas_engine.b64encode
+
+    def observe_b64encode(value):
+        encoded.append(value)
+        return original_b64encode(value)
+
+    monkeypatch.setattr(pandas_engine, "b64encode", observe_b64encode)
+    frame = pd.DataFrame(
+        {"value": [1]},
+        index=pd.Index(pd.Series([b"x" * 769], dtype="object"), name="binary_key"),
+    )
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        notebook.build_payload(frame, backend="pandas", page_size=1)
+    assert encoded == []
 
 
 def test_ordinary_tuple_valued_index_keeps_its_tuple_label_representation():

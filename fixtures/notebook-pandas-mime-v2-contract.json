@@ -7,7 +7,7 @@
         "kind": "positional",
         "levelNames": []
       },
-      "expectedRowLabels": [null, null]
+      "expectedRows": [{}, {}]
     },
     {
       "name": "named-index",
@@ -15,7 +15,7 @@
         "kind": "index",
         "levelNames": ["record_id"]
       },
-      "expectedRowLabels": ["10", "20"]
+      "expectedRows": [{ "rowLabel": "10" }, { "rowLabel": "20" }]
     },
     {
       "name": "one-level-multi-index",
@@ -23,7 +23,7 @@
         "kind": "index",
         "levelNames": ["region"]
       },
-      "expectedRowLabels": ["north", "south"]
+      "expectedRows": [{ "rowLabel": "north" }, { "rowLabel": "south" }]
     },
     {
       "name": "named-multi-index",
@@ -31,7 +31,7 @@
         "kind": "multiIndex",
         "levelNames": ["region", "sequence"]
       },
-      "expectedRowLabels": ["north · 1", "south · 2"]
+      "expectedRows": [{ "rowLabel": "north · 1" }, { "rowLabel": "south · 2" }]
     }
   ],
   "nonPandasBackends": ["polars", "duckdb"]

@@ -114,34 +114,36 @@ describe("notebook output", () => {
         {
           name: "positional-range-index",
           rowAxis: { kind: "positional", levelNames: [] },
-          expectedRowLabels: [null, null]
+          expectedRows: [{}, {}]
         },
         {
           name: "named-index",
           rowAxis: { kind: "index", levelNames: ["record_id"] },
-          expectedRowLabels: ["10", "20"]
+          expectedRows: [{ rowLabel: "10" }, { rowLabel: "20" }]
         },
         {
           name: "one-level-multi-index",
           rowAxis: { kind: "index", levelNames: ["region"] },
-          expectedRowLabels: ["north", "south"]
+          expectedRows: [{ rowLabel: "north" }, { rowLabel: "south" }]
         },
         {
           name: "named-multi-index",
           rowAxis: { kind: "multiIndex", levelNames: ["region", "sequence"] },
-          expectedRowLabels: ["north · 1", "south · 2"]
+          expectedRows: [{ rowLabel: "north · 1" }, { rowLabel: "south · 2" }]
         }
       ],
       nonPandasBackends: ["polars", "duckdb"]
     });
 
-    for (const { name, rowAxis, expectedRowLabels } of pandasMimeV2Contract.pandasRowAxisCases) {
-      const rows = expectedRowLabels.map((rowLabel, rowNumber) => ({
+    for (const { name, rowAxis, expectedRows } of pandasMimeV2Contract.pandasRowAxisCases) {
+      const rows = expectedRows.map((expectedRow, rowNumber) => ({
         ...page.rows[0],
         id: `r:${rowNumber}`,
         rowNumber,
         values: page.rows[0].values.map((value) => ({ ...value })),
-        ...(rowLabel === null ? {} : { rowLabel })
+        ...(Object.prototype.hasOwnProperty.call(expectedRow, "rowLabel")
+          ? { rowLabel: (expectedRow as { rowLabel: string }).rowLabel }
+          : {})
       }));
       const normalized = normalizeNotebookOutputPayload({
         mimeVersion: 2,
@@ -158,9 +160,39 @@ describe("notebook output", () => {
 
       expect(normalized?.metadata.rowAxis, name).toEqual(rowAxis);
       expect(
-        normalized?.page.rows.map((row) => row.rowLabel ?? null),
+        normalized?.page.rows.map((row) => Object.prototype.hasOwnProperty.call(row, "rowLabel")),
         name
-      ).toEqual(expectedRowLabels);
+      ).toEqual(expectedRows.map((row) => Object.prototype.hasOwnProperty.call(row, "rowLabel")));
+      expect(
+        normalized?.page.rows.map((row) => row.rowLabel),
+        name
+      ).toEqual(
+        expectedRows.map((row) =>
+          Object.prototype.hasOwnProperty.call(row, "rowLabel") ? (row as { rowLabel: string }).rowLabel : undefined
+        )
+      );
+
+      if (rowAxis.kind === "positional") {
+        expect(
+          normalizeNotebookOutputPayload({
+            mimeVersion: 2,
+            metadata: {
+              ...metadata,
+              backend: "pandas",
+              rowAxis,
+              shape: { rows: 1, columns: 1 },
+              filteredShape: { rows: 1, columns: 1 }
+            },
+            page: {
+              ...page,
+              limit: 1,
+              totalRows: 1,
+              rows: [{ ...page.rows[0], rowLabel: null }]
+            },
+            summaries: []
+          })
+        ).toBeUndefined();
+      }
     }
 
     expect(
