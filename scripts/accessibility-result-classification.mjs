@@ -25,23 +25,8 @@ export const AXE_RESULT_LIMITS = Object.freeze({
   machineResultGraphNodes: 100_000
 });
 
-const IMPACT_ORDER = Object.freeze(["critical", "serious", "moderate", "minor", "unknown"]);
-const KNOWN_IMPACTS = new Set(IMPACT_ORDER.slice(0, -1));
-const CLASSIFICATION_ERROR_CODES = new Set([
-  "duplicate_harness",
-  "invalid_findings",
-  "invalid_harness",
-  "invalid_machine_result",
-  "machine_result_too_large",
-  "too_many_machine_result_nodes",
-  "too_many_finding_nodes",
-  "too_many_run_findings",
-  "too_many_run_nodes",
-  "too_many_scan_findings",
-  "too_many_scan_nodes",
-  "too_many_scans"
-]);
 const { isProxy } = utilTypes;
+const classificationErrorBrand = Symbol("AxeResultClassificationError");
 
 function defineOwnDataProperty(target, property, value) {
   Object.defineProperty(target, property, {
@@ -71,15 +56,17 @@ function sortOwnArray(values, compare) {
 export class AxeResultClassificationError extends Error {
   constructor(code, message, details = {}) {
     super(message);
+    Object.defineProperty(this, classificationErrorBrand, { value: true });
     defineOwnDataProperty(this, "name", "AxeResultClassificationError");
     defineOwnDataProperty(this, "code", code);
-    defineOwnDataProperty(this, "actual", details.actual);
-    defineOwnDataProperty(this, "limit", details.limit);
+    defineOwnDataProperty(this, "actual", readOwnSafeIntegerDetail(details, "actual"));
+    defineOwnDataProperty(this, "limit", readOwnSafeIntegerDetail(details, "limit"));
   }
 }
 
 export function createAxeResultCollector() {
   const scans = new Map();
+  const recordedScans = [];
   let findingCount = 0;
   let nodeCount = 0;
 
@@ -106,6 +93,7 @@ export function createAxeResultCollector() {
       const prepared = prepareAxeScanInput(envelope, nodeCount);
       const scan = classifyPreparedAxeScan(prepared);
       scans.set(scan.harness, scan);
+      appendOwnArrayEntry(recordedScans, scan);
       findingCount += scan.findingCount;
       nodeCount += prepared.nodeCount;
       return scan;
@@ -113,7 +101,9 @@ export function createAxeResultCollector() {
 
     report() {
       const orderedScans = [];
-      for (const scan of scans.values()) appendOwnArrayEntry(orderedScans, scan);
+      for (let index = 0; index < recordedScans.length; index += 1) {
+        appendOwnArrayEntry(orderedScans, recordedScans[index]);
+      }
       sortOwnArray(orderedScans, (left, right) => compareText(left.harness, right.harness));
       return Object.freeze({
         protocol: AXE_RUN_RESULT_PROTOCOL,
@@ -125,6 +115,39 @@ export function createAxeResultCollector() {
       });
     }
   });
+}
+
+export function createAxeResultPublication(writeResult, writeClassificationError) {
+  if (typeof writeResult !== "function" || typeof writeClassificationError !== "function") {
+    throw new TypeError("Axe result publication requires explicit result and classification-error writers.");
+  }
+  const collector = createAxeResultCollector();
+  const publication = Object.create(null);
+  const printClassificationError = (error) => {
+    const receipt = serializeAxeClassificationError(error);
+    writeClassificationError(receipt);
+    return error;
+  };
+
+  defineOwnDataProperty(publication, "record", (input) => {
+    let result;
+    try {
+      result = collector.record(input);
+    } catch (error) {
+      printClassificationError(error);
+      throw error;
+    }
+    publishAxeMachineResult(result, writeResult, writeClassificationError);
+    return result;
+  });
+  defineOwnDataProperty(publication, "report", () => collector.report());
+  defineOwnDataProperty(publication, "print", (result) => {
+    publishAxeMachineResult(result, writeResult, writeClassificationError);
+    return result;
+  });
+  defineOwnDataProperty(publication, "printClassificationError", printClassificationError);
+
+  return Object.freeze(publication);
 }
 
 export function classifyAxeScanResult(input) {
@@ -229,7 +252,8 @@ function prepareAxeScanInput(envelope, existingRunNodeCount) {
 
   const sourceFindings = [];
   const sourceNodes = [];
-  for (const preflight of preflightFindings) {
+  for (let index = 0; index < preflightFindings.length; index += 1) {
+    const preflight = preflightFindings[index];
     appendOwnArrayEntry(sourceFindings, snapshotFinding(preflight.sourceFinding));
     appendOwnArrayEntry(sourceNodes, snapshotFindingNodes(preflight.findingNodes, preflight.findingNodeCount));
   }
@@ -297,7 +321,7 @@ export function formatAxeFailureDetail(report) {
 
 function normalizeFinding(violation, preparedNodes) {
   const finding = violation;
-  const impact = KNOWN_IMPACTS.has(finding.impact) ? finding.impact : "unknown";
+  const impact = isKnownImpact(finding.impact) ? finding.impact : "unknown";
   const rawImpact =
     impact === "unknown" && typeof finding.impact === "string"
       ? boundedText(finding.impact, "unknown", AXE_RESULT_LIMITS.rawImpactCodePoints)
@@ -446,13 +470,41 @@ function boundedText(value, fallback, maxCodePoints) {
 
 function compareFindings(left, right) {
   return (
-    IMPACT_ORDER.indexOf(left.impact) - IMPACT_ORDER.indexOf(right.impact) ||
+    impactRank(left.impact) - impactRank(right.impact) ||
     compareText(left.id, right.id) ||
     compareText(left.help, right.help) ||
     compareText(left.rawImpact ?? "", right.rawImpact ?? "") ||
     left.nodeCount - right.nodeCount ||
-    compareText(JSON.stringify(left.nodes), JSON.stringify(right.nodes))
+    compareNodeLists(left.nodes, right.nodes)
   );
+}
+
+function isKnownImpact(impact) {
+  return impact === "critical" || impact === "serious" || impact === "moderate" || impact === "minor";
+}
+
+function impactRank(impact) {
+  switch (impact) {
+    case "critical":
+      return 0;
+    case "serious":
+      return 1;
+    case "moderate":
+      return 2;
+    case "minor":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function compareNodeLists(left, right) {
+  const sharedLength = Math.min(left.length, right.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    const comparison = compareNodes(left[index], right[index]);
+    if (comparison !== 0) return comparison;
+  }
+  return left.length - right.length;
 }
 
 function compareNodes(left, right) {
@@ -633,12 +685,7 @@ function visibleDiagnosticCodePoint(codePoint) {
 }
 
 function classificationErrorResult(error) {
-  if (
-    error === null ||
-    typeof error !== "object" ||
-    isProxy(error) ||
-    !(error instanceof AxeResultClassificationError)
-  ) {
+  if (error === null || typeof error !== "object" || isProxy(error) || !hasClassificationErrorBrand(error)) {
     return createClassificationErrorResult("classification_failed");
   }
   try {
@@ -648,7 +695,7 @@ function classificationErrorResult(error) {
       "invalid_machine_result",
       "Axe classification errors must use own data properties."
     );
-    if (!CLASSIFICATION_ERROR_CODES.has(code)) return createClassificationErrorResult("classification_failed");
+    if (!isClassificationErrorCode(code)) return createClassificationErrorResult("classification_failed");
     const actual = readOwnDataProperty(
       error,
       "actual",
@@ -664,6 +711,31 @@ function classificationErrorResult(error) {
     return createClassificationErrorResult(code, actual, limit);
   } catch {
     return createClassificationErrorResult("classification_failed");
+  }
+}
+
+function hasClassificationErrorBrand(error) {
+  const descriptor = Object.getOwnPropertyDescriptor(error, classificationErrorBrand);
+  return descriptor !== undefined && "value" in descriptor && descriptor.value === true;
+}
+
+function isClassificationErrorCode(code) {
+  switch (code) {
+    case "duplicate_harness":
+    case "invalid_findings":
+    case "invalid_harness":
+    case "invalid_machine_result":
+    case "machine_result_too_large":
+    case "too_many_machine_result_nodes":
+    case "too_many_finding_nodes":
+    case "too_many_run_findings":
+    case "too_many_run_nodes":
+    case "too_many_scan_findings":
+    case "too_many_scan_nodes":
+    case "too_many_scans":
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -757,6 +829,26 @@ function readOwnDataProperty(value, property, code, message) {
   if (descriptor === undefined) return undefined;
   if (!("value" in descriptor)) throw new AxeResultClassificationError(code, message);
   return descriptor.value;
+}
+
+function readOwnSafeIntegerDetail(details, property) {
+  if (details === null || typeof details !== "object" || isProxy(details)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(details, property);
+  if (descriptor === undefined || !("value" in descriptor) || !Number.isSafeInteger(descriptor.value)) {
+    return undefined;
+  }
+  return descriptor.value;
+}
+
+function publishAxeMachineResult(result, writeResult, writeClassificationError) {
+  let receipt;
+  try {
+    receipt = serializeAxeMachineResult(result);
+  } catch (error) {
+    writeClassificationError(serializeAxeClassificationError(error));
+    throw error;
+  }
+  writeResult(receipt);
 }
 
 function classificationLimitError(code, label, actual, limit) {

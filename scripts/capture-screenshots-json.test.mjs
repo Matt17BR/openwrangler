@@ -22,6 +22,7 @@ import {
   AxeResultClassificationError,
   classifyAxeScanResult,
   createAxeResultCollector,
+  createAxeResultPublication,
   formatAxeFailureDetail,
   serializeAxeClassificationError,
   serializeAxeMachineResult
@@ -291,6 +292,78 @@ test("Axe classification never writes intermediate entries through an Array prot
   assert.equal(prototypeSetCalls, 0);
   assert.equal(scan.status, "failed");
   assert.equal(scan.findings[0].id, "prototype-set-trap");
+});
+
+test("Axe classification does not invoke Array iteration, impact ranking, or toJSON prototypes", () => {
+  const input = {
+    harness: "prototype-independent-order.html",
+    violations: [
+      axeViolation({
+        id: "same-rule",
+        impact: "minor",
+        help: "same help",
+        nodes: [{ target: [".second"], failureSummary: "failed" }]
+      }),
+      axeViolation({
+        id: "same-rule",
+        impact: "minor",
+        help: "same help",
+        nodes: [{ target: [".first"], failureSummary: "failed" }]
+      }),
+      axeViolation({ id: "critical-rule", impact: "critical" })
+    ]
+  };
+  const iteratorDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator);
+  const indexOfDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "indexOf");
+  const toJsonDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "toJSON");
+  let iteratorCalls = 0;
+  let indexOfCalls = 0;
+  let toJsonCalls = 0;
+  let scan;
+  Object.defineProperty(Array.prototype, Symbol.iterator, {
+    value() {
+      iteratorCalls += 1;
+      throw new Error("Axe classification invoked Array iteration.");
+    },
+    configurable: true,
+    writable: true
+  });
+  Object.defineProperty(Array.prototype, "indexOf", {
+    value() {
+      indexOfCalls += 1;
+      throw new Error("Axe classification invoked Array impact ranking.");
+    },
+    configurable: true,
+    writable: true
+  });
+  Object.defineProperty(Array.prototype, "toJSON", {
+    value() {
+      toJsonCalls += 1;
+      throw new Error("Axe classification invoked inherited toJSON.");
+    },
+    configurable: true,
+    writable: true
+  });
+  try {
+    scan = classifyAxeScanResult(input);
+  } finally {
+    Object.defineProperty(Array.prototype, Symbol.iterator, iteratorDescriptor);
+    Object.defineProperty(Array.prototype, "indexOf", indexOfDescriptor);
+    if (toJsonDescriptor === undefined) delete Array.prototype.toJSON;
+    else Object.defineProperty(Array.prototype, "toJSON", toJsonDescriptor);
+  }
+
+  assert.equal(iteratorCalls, 0);
+  assert.equal(indexOfCalls, 0);
+  assert.equal(toJsonCalls, 0);
+  assert.deepEqual(
+    scan.findings.map((finding) => [finding.impact, finding.nodes[0]?.target ?? ""]),
+    [
+      ["critical", ""],
+      ["minor", ".first"],
+      ["minor", ".second"]
+    ]
+  );
 });
 
 test("Axe aggregate node budgets preflight 512 maximum-node findings and rejected run overflow", () => {
@@ -797,6 +870,199 @@ test("Axe classification error receipts bypass inherited setters without leaking
     limit: AXE_RESULT_LIMITS.findingsPerScan
   });
   assert.doesNotMatch(serialized, /private diagnostic/u);
+});
+
+test("Axe classification error details and brands do not traverse hostile objects or prototypes", () => {
+  let detailTrapCalls = 0;
+  const detailProxy = new Proxy(
+    { actual: AXE_RESULT_LIMITS.findingsPerScan + 1, limit: AXE_RESULT_LIMITS.findingsPerScan },
+    {
+      get() {
+        detailTrapCalls += 1;
+        throw new Error("Axe error details invoked a get trap.");
+      },
+      getOwnPropertyDescriptor() {
+        detailTrapCalls += 1;
+        throw new Error("Axe error details invoked a descriptor trap.");
+      }
+    }
+  );
+  const error = new AxeResultClassificationError(
+    "too_many_scan_findings",
+    "private diagnostic must not escape",
+    detailProxy
+  );
+  assert.equal(detailTrapCalls, 0);
+  assert.equal(error.actual, undefined);
+  assert.equal(error.limit, undefined);
+
+  let prototypeTrapCalls = 0;
+  const proxyPrototype = new Proxy(AxeResultClassificationError.prototype, {
+    get() {
+      prototypeTrapCalls += 1;
+      throw new Error("Axe error branding traversed a proxy prototype.");
+    },
+    getPrototypeOf() {
+      prototypeTrapCalls += 1;
+      throw new Error("Axe error branding traversed a proxy prototype.");
+    }
+  });
+  Object.setPrototypeOf(error, proxyPrototype);
+  const serialized = serializeAxeClassificationError(error);
+
+  assert.equal(prototypeTrapCalls, 0);
+  assert.deepEqual(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "too_many_scan_findings"
+  });
+  assert.doesNotMatch(serialized, /private diagnostic/u);
+});
+
+test("Axe production record and print publication write one bounded receipt per outcome without hostile traps", () => {
+  const resultReceipts = Object.create(null);
+  const errorReceipts = Object.create(null);
+  let resultReceiptCount = 0;
+  let errorReceiptCount = 0;
+  const publication = createAxeResultPublication(
+    (receipt) => {
+      Object.defineProperty(resultReceipts, String(resultReceiptCount), { value: receipt, enumerable: true });
+      resultReceiptCount += 1;
+    },
+    (receipt) => {
+      Object.defineProperty(errorReceipts, String(errorReceiptCount), { value: receipt, enumerable: true });
+      errorReceiptCount += 1;
+    }
+  );
+  const successInput = { harness: "prototype-publication.html", violations: [] };
+  const inheritedDataDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, "inheritedAxeData");
+  const inheritedGetterDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, "inheritedAxeGetter");
+  const iteratorDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator);
+  const toJsonDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "toJSON");
+  let inheritedGetterCalls = 0;
+  let iteratorCalls = 0;
+  let toJsonCalls = 0;
+  Object.defineProperty(Object.prototype, "inheritedAxeData", {
+    value: "must be ignored",
+    enumerable: true,
+    configurable: true
+  });
+  Object.defineProperty(Object.prototype, "inheritedAxeGetter", {
+    get() {
+      inheritedGetterCalls += 1;
+      throw new Error("Axe publication invoked an inherited getter.");
+    },
+    enumerable: true,
+    configurable: true
+  });
+  Object.defineProperty(Array.prototype, Symbol.iterator, {
+    value() {
+      iteratorCalls += 1;
+      throw new Error("Axe publication invoked Array iteration.");
+    },
+    configurable: true,
+    writable: true
+  });
+  Object.defineProperty(Array.prototype, "toJSON", {
+    value() {
+      toJsonCalls += 1;
+      throw new Error("Axe publication invoked inherited toJSON.");
+    },
+    configurable: true,
+    writable: true
+  });
+  try {
+    publication.record(successInput);
+    assert.equal(resultReceiptCount, 1);
+    assert.equal(errorReceiptCount, 0);
+    publication.print(publication.report());
+    assert.equal(resultReceiptCount, 2);
+    assert.equal(errorReceiptCount, 0);
+  } finally {
+    if (inheritedDataDescriptor === undefined) delete Object.prototype.inheritedAxeData;
+    else Object.defineProperty(Object.prototype, "inheritedAxeData", inheritedDataDescriptor);
+    if (inheritedGetterDescriptor === undefined) delete Object.prototype.inheritedAxeGetter;
+    else Object.defineProperty(Object.prototype, "inheritedAxeGetter", inheritedGetterDescriptor);
+    Object.defineProperty(Array.prototype, Symbol.iterator, iteratorDescriptor);
+    if (toJsonDescriptor === undefined) delete Array.prototype.toJSON;
+    else Object.defineProperty(Array.prototype, "toJSON", toJsonDescriptor);
+  }
+
+  assert.equal(inheritedGetterCalls, 0);
+  assert.equal(iteratorCalls, 0);
+  assert.equal(toJsonCalls, 0);
+  assert.equal(resultReceiptCount, 2);
+  assert.equal(errorReceiptCount, 0);
+  for (let index = 0; index < resultReceiptCount; index += 1) {
+    assert.ok(Buffer.byteLength(resultReceipts[index], "utf8") <= AXE_RESULT_LIMITS.machineResultUtf8Bytes);
+    assert.equal(resultReceipts[index].startsWith(AXE_MACHINE_RESULT_PREFIX), true);
+  }
+
+  let invalidResultAccessorCalls = 0;
+  const invalidResult = Object.create(null);
+  Object.defineProperty(invalidResult, "toJSON", {
+    get() {
+      invalidResultAccessorCalls += 1;
+      throw new Error("Axe publication invoked an invalid result accessor.");
+    },
+    enumerable: true
+  });
+  assert.throws(
+    () => publication.print(invalidResult),
+    (error) => error instanceof AxeResultClassificationError && error.code === "invalid_machine_result"
+  );
+  assert.equal(invalidResultAccessorCalls, 0);
+  assert.equal(resultReceiptCount, 2);
+  assert.equal(errorReceiptCount, 1);
+  assert.deepEqual(JSON.parse(errorReceipts[0].slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "invalid_machine_result"
+  });
+
+  let detailTrapCalls = 0;
+  const privateError = new AxeResultClassificationError(
+    "invalid_findings",
+    "private writer diagnostic",
+    new Proxy(
+      { actual: 1, limit: 0 },
+      {
+        get() {
+          detailTrapCalls += 1;
+          throw new Error("Axe publication invoked a Proxy error-detail get trap.");
+        },
+        getOwnPropertyDescriptor() {
+          detailTrapCalls += 1;
+          throw new Error("Axe publication invoked a Proxy error-detail descriptor trap.");
+        }
+      }
+    )
+  );
+  let prototypeTrapCalls = 0;
+  Object.setPrototypeOf(
+    privateError,
+    new Proxy(AxeResultClassificationError.prototype, {
+      get() {
+        prototypeTrapCalls += 1;
+        throw new Error("Axe publication traversed a proxy error prototype.");
+      },
+      getPrototypeOf() {
+        prototypeTrapCalls += 1;
+        throw new Error("Axe publication traversed a proxy error prototype.");
+      }
+    })
+  );
+  publication.printClassificationError(privateError);
+  assert.equal(detailTrapCalls, 0);
+  assert.equal(prototypeTrapCalls, 0);
+  assert.equal(errorReceiptCount, 2);
+  assert.deepEqual(JSON.parse(errorReceipts[1].slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "invalid_findings"
+  });
+  assert.doesNotMatch(errorReceipts[1], /private writer diagnostic/u);
+  assert.ok(Buffer.byteLength(errorReceipts[1], "utf8") <= AXE_RESULT_LIMITS.machineResultUtf8Bytes);
 });
 
 test("Axe human diagnostics visibly escape unsafe control and bidi code points", () => {
@@ -1494,15 +1760,17 @@ test("screenshot and accessibility consumers preserve browser isolation ordering
   assert.match(accessibility, /finally \{[\s\S]*browserIsolation\.cleanup\(\)/u);
   assert.doesNotMatch(accessibility, /process\.env\.(?:HOME|XDG_[A-Z_]+|TMPDIR?)\s*=/u);
   assert.equal((accessibility.match(/recordAxeScanResult\(harness, result\.violations\);/gu) ?? []).length, 2);
-  assert.equal(
-    (accessibility.match(/process\.stdout\.write\(serializeAxeMachineResult\(result\)\);/gu) ?? []).length,
-    2
+  assert.match(
+    accessibility,
+    /createAxeResultPublication\([\s\S]*process\.stdout\.write\(receipt\)[\s\S]*process\.stderr\.write\(receipt\)/u
   );
+  assert.match(accessibility, /const result = axePublication\.record\(\{ harness, violations \}\);/u);
+  assert.match(accessibility, /axePublication\.print\(result\);/u);
   assert.doesNotMatch(accessibility, /console\.log\(serializeAxeMachineResult/u);
   assert.doesNotMatch(accessibility, /violations\.filter|impact\s*!==\s*["']minor["']/u);
   assert.match(
     accessibility,
-    /const axeReport = axeResults\.report\(\);[\s\S]*if \(axeReport\.unapprovedFindingCount > 0\) \{[\s\S]*throw new Error\(`Webview accessibility scan failed:/u
+    /const axeReport = axePublication\.report\(\);[\s\S]*if \(axeReport\.unapprovedFindingCount > 0\) \{[\s\S]*throw new Error\(`Webview accessibility scan failed:/u
   );
 
   for (const file of ["generate-brand-assets.mjs", "verify-readme-responsive-render.mjs"]) {

@@ -3,12 +3,7 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
-import {
-  createAxeResultCollector,
-  formatAxeFailureDetail,
-  serializeAxeClassificationError,
-  serializeAxeMachineResult
-} from "./accessibility-result-classification.mjs";
+import { createAxeResultPublication, formatAxeFailureDetail } from "./accessibility-result-classification.mjs";
 import { verifyGridClipboardBrowserAcceptance } from "./grid-clipboard-browser-acceptance.mjs";
 import { createWebviewBrowserIsolation, resolveWebviewBrowserExecutable } from "./webview-browser.mjs";
 
@@ -32,7 +27,10 @@ const browserIsolation = createWebviewBrowserIsolation({
   aliasPrefix: "ow-a11y-"
 });
 let browser;
-const axeResults = createAxeResultCollector();
+const axePublication = createAxeResultPublication(
+  (receipt) => process.stdout.write(receipt),
+  (receipt) => process.stderr.write(receipt)
+);
 
 try {
   browser = await chromium.launchPersistentContext(browserIsolation.createProfile("accessibility"), {
@@ -1624,7 +1622,7 @@ function isActiveTab(element) {
   return element === document.activeElement;
 }
 
-const axeReport = axeResults.report();
+const axeReport = axePublication.report();
 printAxeMachineResult(axeReport);
 if (axeReport.unapprovedFindingCount > 0) {
   throw new Error(`Webview accessibility scan failed:\n${formatAxeFailureDetail(axeReport)}`);
@@ -1635,25 +1633,14 @@ console.log(
 );
 
 function recordAxeScanResult(harness, violations) {
-  try {
-    const result = axeResults.record({ harness, violations });
-    process.stdout.write(serializeAxeMachineResult(result));
-    if (result.unapprovedFindingCount === 0) {
-      console.log(`Accessibility verified: ${harness}`);
-    }
-  } catch (error) {
-    process.stderr.write(serializeAxeClassificationError(error));
-    throw error;
+  const result = axePublication.record({ harness, violations });
+  if (result.unapprovedFindingCount === 0) {
+    console.log(`Accessibility verified: ${harness}`);
   }
 }
 
 function printAxeMachineResult(result) {
-  try {
-    process.stdout.write(serializeAxeMachineResult(result));
-  } catch (error) {
-    process.stderr.write(serializeAxeClassificationError(error));
-    throw error;
-  }
+  axePublication.print(result);
 }
 
 async function withTimeout(promise, timeoutMs, label) {
