@@ -256,7 +256,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private displayedCode = "# Open a dataframe to preview generated code.";
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
+    private readonly context: NativeRegistrationContext,
     coordinator: SessionCoordinator
   ) {
     this.snapshot = coordinator.activeSession();
@@ -326,7 +326,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "codePreview.js"))
     );
     const nonce = createSecureNonce();
-    return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0;overflow:hidden;background:var(--vscode-editor-background)}</style></head><body><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}' ${webview.cspSource}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0;overflow:hidden;background:var(--vscode-editor-background)}</style></head><body><div id="root"></div><script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
   }
 }
 
@@ -351,6 +351,7 @@ type RegisterNativeCommand = <T extends unknown[]>(
   callback: (...args: T) => unknown,
   thisArg?: unknown
 ) => vscode.Disposable;
+type NativeRegistrationContext = Pick<vscode.ExtensionContext, "extensionPath" | "subscriptions">;
 
 const NATIVE_PLAN_CONTEXT_KEYS = [
   "openWrangler.hasDraft",
@@ -440,10 +441,10 @@ export function registerNativeViews(
       return registrations.length;
     }
   } as vscode.Disposable[];
-  const context = new Proxy(extensionContext, {
-    get: (target, property, receiver) =>
-      property === "subscriptions" ? transactionalSubscriptions : Reflect.get(target, property, receiver)
-  });
+  const context: NativeRegistrationContext = {
+    extensionPath: extensionContext.extensionPath,
+    subscriptions: transactionalSubscriptions
+  };
   const registerCommand = <T extends unknown[]>(
     command: string,
     callback: (...args: T) => unknown,
@@ -470,7 +471,7 @@ export function registerNativeViews(
 }
 
 function registerNativeViewsTransactional(
-  context: vscode.ExtensionContext,
+  context: NativeRegistrationContext,
   coordinator: SessionCoordinator,
   notebookVariables: NotebookLiveVariableProvider | undefined,
   rVariables: RLiveVariableProvider | undefined,

@@ -931,6 +931,7 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   const callExpressions = [];
   const staticSpecifiers = [];
   const importDeclarations = [];
+  const importEqualsDeclarations = [];
   for (const node of syntaxNodes) {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       if (importDeclarationLoadsAtRuntime(node)) staticSpecifiers.push(node.moduleSpecifier.text);
@@ -946,6 +947,7 @@ function syntaxRuntimeInventory(source, file, options = {}) {
       const expression = node.moduleReference.expression;
       if (!node.isTypeOnly && expression && ts.isStringLiteral(expression)) staticSpecifiers.push(expression.text);
     }
+    if (ts.isImportEqualsDeclaration(node)) importEqualsDeclarations.push(node);
     if (ts.isVariableDeclaration(node)) variableDeclarations.push(node);
     if (ts.isFunctionDeclaration(node)) functionDeclarations.push(node);
     if (ts.isCallExpression(node)) callExpressions.push(node);
@@ -969,6 +971,13 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   );
   for (const declaration of importDeclarations) collectCreateRequireImport(declaration, authority);
   propagateLoaderOrigins(authority);
+
+  const importEqualsEscapes = unsupportedImportEqualsLoaderAliases(sourceFile, importEqualsDeclarations, authority);
+  if (importEqualsEscapes.length > 0) {
+    throw new Error(
+      `Activation inventory rejects TypeScript import-equals loader aliases (${importEqualsEscapes.join(", ")}): ${file}`
+    );
+  }
 
   const exportedLoaderEscapes = exportedLoaderBindings(sourceFile, syntaxNodes, authority);
   if (exportedLoaderEscapes.length > 0) {
@@ -1076,6 +1085,32 @@ function exportedLoaderBindings(sourceFile, syntaxNodes, authority) {
 
 function hasExportModifier(node) {
   return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+}
+
+function unsupportedImportEqualsLoaderAliases(sourceFile, declarations, authority) {
+  const escapes = [];
+  for (const declaration of declarations) {
+    if (declaration.isTypeOnly) continue;
+    const kind = importEqualsLoaderOrigin(declaration.moduleReference, authority);
+    if (kind) escapes.push(`${declaration.name.text}:${kind}@${declaration.getStart(sourceFile)}`);
+  }
+  return escapes.slice(0, 32);
+}
+
+function importEqualsLoaderOrigin(moduleReference, authority) {
+  if (ts.isExternalModuleReference(moduleReference)) {
+    const expression = moduleReference.expression;
+    return expression && ts.isStringLiteral(expression) && /^(?:node:)?module$/u.test(expression.text)
+      ? "createRequireNamespace"
+      : undefined;
+  }
+  return importEqualsEntityLoaderOrigin(moduleReference, authority);
+}
+
+function importEqualsEntityLoaderOrigin(entityName, authority) {
+  if (ts.isIdentifier(entityName)) return identifierLoaderOrigin(entityName, authority);
+  const owner = importEqualsEntityLoaderOrigin(entityName.left, authority);
+  return owner === "createRequireNamespace" && entityName.right.text === "createRequire" ? "createRequire" : undefined;
 }
 
 function loaderDependencySymbols(declaration, checker) {
