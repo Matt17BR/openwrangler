@@ -9,10 +9,12 @@ import test from "node:test";
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironmentForPlatform,
+  EDITOR_HARNESS_ERROR_MAX_CHARACTERS,
   editorProcessTreeMayBeLive,
   prepareWindowsEditorProcessSupervisor,
   prepareWindowsEditorProcessSupervisorWithSignals,
   runBoundedEditorCommand,
+  sanitizeEditorAcceptanceDiagnostic,
   spawnOwnedEditorProcess
 } from "./editor-acceptance.mjs";
 
@@ -30,6 +32,18 @@ const WINDOWS_NATIVE_COMMAND_CLEANUP = Object.freeze({
 const WINDOWS_NATIVE_TEST_TIMEOUT_MS = 600_000;
 const WINDOWS_NATIVE_SYNC_STAGE_TIMEOUT_MS = 15_000;
 const WINDOWS_NATIVE_STAGE_SETTLEMENT_TIMEOUT_MS = 20_000;
+
+function reporterSafeNativeStageCause(error) {
+  const detail = sanitizeEditorAcceptanceDiagnostic(error);
+  const cause = new Error(detail);
+  cause.name = "NativeStageDiagnostic";
+  cause.stack = `${cause.name}: ${detail}`;
+  if (editorProcessTreeMayBeLive(error)) {
+    cause.code = "EDITOR_PROCESS_TREE_UNVERIFIED";
+    cause.details = Object.freeze({ treeVerifiedStopped: false });
+  }
+  return Object.freeze(cause);
+}
 
 async function runWindowsNativeStage(
   stage,
@@ -79,12 +93,19 @@ async function runWindowsNativeStage(
     const observations = [
       observed,
       new Promise((resolveDeadline) => {
-        stageTimer = setTimeout(() => {
+        const deadlineAt = stageStartedAt + timeoutMs;
+        const observeDeadline = () => {
+          const remainingMs = Math.max(0, Math.ceil(deadlineAt - performance.now()));
+          if (remainingMs > 0) {
+            stageTimer = setTimeout(observeDeadline, remainingMs);
+            return;
+          }
           if (!controller.signal.aborted) {
             controller.abort(Object.freeze({ reason: "deadline", timeoutMs }));
           }
           resolveDeadline({ kind: "deadline" });
-        }, timeoutMs);
+        };
+        stageTimer = setTimeout(observeDeadline, timeoutMs);
       })
     ];
     if (outerAbortObservation) observations.push(outerAbortObservation);
@@ -95,9 +116,8 @@ async function runWindowsNativeStage(
   }
   if (observation.kind === "result") return observation.value;
   if (observation.kind === "error") {
-    const detail =
-      observation.error instanceof Error ? observation.error.message : "The operation threw a non-Error value.";
-    throw new Error(`The native Windows supervisor ${stage} stage failed: ${detail}`, { cause: observation.error });
+    const cause = reporterSafeNativeStageCause(observation.error);
+    throw new Error(`The native Windows supervisor ${stage} stage failed: ${cause.message}`, { cause });
   }
 
   if (!controller.signal.aborted) controller.abort();
@@ -108,10 +128,16 @@ async function runWindowsNativeStage(
     settlement = await Promise.race([
       observed,
       new Promise((resolveSettlementDeadline) => {
-        settlementTimer = setTimeout(
-          () => resolveSettlementDeadline({ kind: "settlement-deadline" }),
-          settlementTimeoutMs
-        );
+        const deadlineAt = settlementStartedAt + settlementTimeoutMs;
+        const observeSettlementDeadline = () => {
+          const remainingMs = Math.max(0, Math.ceil(deadlineAt - performance.now()));
+          if (remainingMs > 0) {
+            settlementTimer = setTimeout(observeSettlementDeadline, remainingMs);
+            return;
+          }
+          resolveSettlementDeadline({ kind: "settlement-deadline" });
+        };
+        settlementTimer = setTimeout(observeSettlementDeadline, settlementTimeoutMs);
       })
     ]);
   } finally {
@@ -342,18 +368,73 @@ test("native stage deadlines cancel and settle their operation before reporting"
   assert.equal(operationSettled, true);
 });
 
-test("native stage failures retain the complete underlying compiler cause", async () => {
+test("native stage failures retain only a bounded reporter-safe compiler cause", async () => {
   const compilerCause = new Error("synthetic underlying compiler cause");
   const compilerFailure = new Error("synthetic bounded compiler diagnostic", { cause: compilerCause });
   await assert.rejects(
     runWindowsNativeStage("compilation", { timeoutMs: 1_000 }, () => Promise.reject(compilerFailure)),
     (error) => {
       assert.match(error.message, /synthetic bounded compiler diagnostic/u);
-      assert.equal(error.cause, compilerFailure);
-      assert.equal(error.cause.cause, compilerCause);
+      assert.notEqual(error.cause, compilerFailure);
+      assert.equal(error.cause?.name, "NativeStageDiagnostic");
+      assert.match(error.cause?.message, /synthetic bounded compiler diagnostic/u);
+      assert.equal(error.cause?.cause, undefined);
+      assert.doesNotMatch(error.cause?.stack, /windows-job-supervisor\.native\.test\.mjs:\d+/u);
       return true;
     }
   );
+});
+
+test("native stage diagnostics suppress oversized, credential, private-path, and malformed errors", async () => {
+  const token = `ghp_${"c".repeat(32)}`;
+  const privatePath = join(process.cwd(), "private-native-stage", "compiler.log");
+  const malformedSentinel = "OW_MALFORMED_NATIVE_STAGE_SENTINEL";
+  const malformed = new Error("unreachable malformed error detail");
+  Object.defineProperty(malformed, "message", {
+    configurable: true,
+    get() {
+      throw new Error(malformedSentinel);
+    }
+  });
+  const cases = [
+    {
+      error: new Error("x".repeat(EDITOR_HARNESS_ERROR_MAX_CHARACTERS + 1)),
+      absent: /x{32}/u,
+      present: /complete value exceeded the fixed safety limit/u
+    },
+    {
+      error: new Error(`Authorization: Bearer ${token} https://example.invalid/a?sig=${token}`),
+      absent: new RegExp(token, "u"),
+      present: /Authorization: <redacted>/u
+    },
+    {
+      error: new Error(`compiler failed at ${privatePath}`),
+      absent: new RegExp(privatePath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"),
+      present: /<repository>/u
+    },
+    {
+      error: malformed,
+      absent: new RegExp(malformedSentinel, "u"),
+      present: /unreadable/iu
+    }
+  ];
+  for (const [index, diagnosticCase] of cases.entries()) {
+    await assert.rejects(
+      runWindowsNativeStage(`diagnostic probe ${index}`, { timeoutMs: 1_000 }, () =>
+        Promise.reject(diagnosticCase.error)
+      ),
+      (error) => {
+        assert.match(error.message, diagnosticCase.present);
+        assert.doesNotMatch(error.message, diagnosticCase.absent);
+        assert.equal(error.cause?.name, "NativeStageDiagnostic");
+        assert.match(error.cause?.message, diagnosticCase.present);
+        assert.doesNotMatch(error.cause?.message, diagnosticCase.absent);
+        assert.doesNotMatch(error.cause?.stack, diagnosticCase.absent);
+        assert.equal(error.cause?.cause, undefined);
+        return true;
+      }
+    );
+  }
 });
 
 test("native stage failures surface the bounded production compiler diagnostic", async () => {
@@ -382,8 +463,9 @@ test("native stage failures surface the bounded production compiler diagnostic",
     await assert.rejects(stage, (error) => {
       assert.match(error.message, /compilation stage failed \(nonzero-exit; code 125; signal none\)/u);
       assert.match(error.message, /OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap/u);
-      assert.equal(error.cause?.details?.stage, "windows-supervisor-compilation");
-      assert.equal(error.cause?.details?.reason, "nonzero-exit");
+      assert.equal(error.cause?.name, "NativeStageDiagnostic");
+      assert.match(error.cause?.message, /compilation stage failed/u);
+      assert.equal(error.cause?.cause, undefined);
       return true;
     });
   } finally {
@@ -1255,6 +1337,7 @@ test("verified taskkill settlement returns the correlated compiler deadline with
   taskkill.exitCode = null;
   taskkill.signalCode = null;
   let taskkillUnrefCount = 0;
+  let compilerRunningWhenTaskkillSettled = false;
   taskkill.kill = () => assert.fail("a promptly verified taskkill must not require cancellation");
   taskkill.unref = () => {
     taskkillUnrefCount += 1;
@@ -1270,10 +1353,13 @@ test("verified taskkill settlement returns the correlated compiler deadline with
           queueMicrotask(() => {
             taskkill.exitCode = 0;
             taskkill.emit("close", 0, null);
-            compiler.child.signalCode = "SIGKILL";
-            compiler.child.stdout.end();
-            compiler.child.stderr.end();
-            compiler.child.emit("close", null, "SIGKILL");
+            compilerRunningWhenTaskkillSettled = compiler.child.exitCode === null && compiler.child.signalCode === null;
+            setImmediate(() => {
+              compiler.child.signalCode = "SIGKILL";
+              compiler.child.stdout.end();
+              compiler.child.stderr.end();
+              compiler.child.emit("close", null, "SIGKILL");
+            });
           });
           return taskkill;
         }
@@ -1288,6 +1374,7 @@ test("verified taskkill settlement returns the correlated compiler deadline with
         return true;
       }
     );
+    assert.equal(compilerRunningWhenTaskkillSettled, true);
     assert.deepEqual(compiler.state(), { killCount: 0, closeCount: 0, closeTimerActive: false });
     assert.equal(taskkillUnrefCount, 1);
     assert.equal(taskkill.listenerCount("error"), 0);
@@ -1472,6 +1559,76 @@ test("a caller deadline starts before synchronous private-root preparation", { t
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  "an early caller-deadline wake re-observes the clock and rearms deterministically",
+  { timeout: 5_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-rearmed-deadline-"));
+    const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+    configureEditorAcceptanceTempRoot(directory, environment);
+    const compiler = fakeWindowsCompiler({ closeOnKill: true, pid: 17940 });
+    const scheduled = [];
+    let clock = 0;
+    let outcome = "pending";
+    const buildSchedule = (callback, delay) => {
+      const timer = { callback, cancelled: false, delay };
+      scheduled.push(timer);
+      return timer;
+    };
+    const buildCancelSchedule = (timer) => {
+      timer.cancelled = true;
+    };
+    try {
+      const preparation = prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 10,
+        buildSettlementTimeoutMs: 100,
+        buildNow: () => clock,
+        buildSchedule,
+        buildCancelSchedule,
+        spawnProcess: () => compiler.child,
+        terminateBuildProcessTree(child) {
+          child.kill("SIGKILL");
+          return { treeVerifiedStopped: true };
+        }
+      });
+      void preparation.then(
+        () => {
+          outcome = "resolved";
+        },
+        () => {
+          outcome = "rejected";
+        }
+      );
+      assert.equal(scheduled.length, 1);
+      assert.equal(scheduled[0].delay, 10);
+
+      clock = 4;
+      scheduled[0].callback();
+      await Promise.resolve();
+      assert.equal(outcome, "pending");
+      assert.equal(scheduled.length, 2);
+      assert.equal(scheduled[1].delay, 6);
+
+      clock = 10;
+      scheduled[1].callback();
+      await assert.rejects(preparation, (error) => {
+        assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+        assert.equal(error.details?.stage, "windows-supervisor-compilation");
+        assert.equal(error.details?.reason, "deadline");
+        assert.equal(error.details?.limitMs, 10);
+        assert.equal(error.details?.treeVerifiedStopped, true);
+        return true;
+      });
+      assert.equal(outcome, "rejected");
+      assert.equal(scheduled[1].cancelled, true);
+      assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 1, closeTimerActive: false });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+);
 
 test("a caller deadline includes synchronous compiler spawn and owns its settlement", { timeout: 5_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-spawn-deadline-"));
