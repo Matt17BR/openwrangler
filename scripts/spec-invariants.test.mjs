@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { checkWebviewStyles, WEBVIEW_STYLE_IMPORTS } from "./check-webview-styles.mjs";
+import { checkWebviewStyles, WEBVIEW_STYLE_IMPORTS, WEBVIEW_STYLE_LIMITS } from "./check-webview-styles.mjs";
 import {
   assertGeneratedFilesCurrent,
   buildCrosswalk,
@@ -154,4 +154,161 @@ test("the webview style check enforces the remaining global-style ratchet", asyn
   const { root, styleRoot } = await webviewStyleFixture(t);
   await writeFile(resolve(styleRoot, "foundations.css"), `${Array(101).fill(":root {}").join("\n")}\n`, "utf8");
   await assert.rejects(checkWebviewStyles(root), /foundations\.css has 101 lines, above its 100-line ownership limit/u);
+});
+
+test("the webview style parser understands CSS grammar and only TypeScript class sinks prove ownership", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  const imports = WEBVIEW_STYLE_IMPORTS.map((file, index) => {
+    const target = file === "foundations.css" ? "./styles/foundations.\\63ss" : `./styles/${file}`;
+    return `${index % 2 === 0 ? "@\\69mport" : "@IMPORT"} /* owner */ "${target}";`;
+  }).join("\n");
+  await writeFile(resolve(webviewRoot, "styles.css"), `/* canonical owners */\n${imports}\n`, "utf8");
+  await writeFile(
+    resolve(styleRoot, "foundations.css"),
+    [
+      "/* .commentOnly must not become a selector. */",
+      "@MEDIA screen {",
+      '  .\\75 sed, .café, [data-proof=".attributeOnly"] {',
+      '    content: ".stringOnly";',
+      '    background-image: url("https://example.invalid/.urlOnly");',
+      '    --custom-proof: ".customPropertyOnly";',
+      "  }",
+      "  @supports selector(.atRuleOnly) {",
+      '    :root { --nested-proof: ".nestedDeclarationOnly"; }',
+      "  }",
+      "}",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    [
+      'const unrelated = "commentOnly attributeOnly stringOnly urlOnly customPropertyOnly atRuleOnly nestedDeclarationOnly";',
+      'export const app = <div className="used café" data-unrelated={unrelated} />;',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+
+  const receipt = await checkWebviewStyles(root);
+  assert.equal(receipt.selectorClasses, 2);
+});
+
+test("the webview style parser rejects unrelated TypeScript strings as selector evidence", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(resolve(styleRoot, "application.css"), ".orphan { display: block; }\n", "utf8");
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    [
+      'export const unrelated = "orphan";',
+      'export const url = "https://example.invalid/.orphan";',
+      'export const commaJoined = <div className={["orphan", "other"].join()} />;',
+      'export const app = <div title="orphan" data-proof="orphan" className="used" />;',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+
+  await assert.rejects(checkWebviewStyles(root), /orphan \(application\.css\)/u);
+});
+
+test("the webview style parser recognizes escaped and case-insensitive forbidden grammar", async (t) => {
+  const { root, styleRoot } = await webviewStyleFixture(t);
+  await writeFile(resolve(styleRoot, "application.css"), '@\\69MPORT "./unexpected.css";\n', "utf8");
+  await assert.rejects(checkWebviewStyles(root), /must not contain nested imports/u);
+
+  await writeFile(resolve(styleRoot, "application.css"), ".\\6diniBar { display: block; }\n", "utf8");
+  await assert.rejects(checkWebviewStyles(root), /Removed selector\(s\) must stay absent: miniBar/u);
+});
+
+test("the webview style check rejects symbolic leaves and descriptor-visible leaf replacement", async (t) => {
+  const symbolicFixture = await webviewStyleFixture(t);
+  const entryPath = resolve(symbolicFixture.webviewRoot, "styles.css");
+  await unlink(entryPath);
+  await symlink("styles/foundations.css", entryPath);
+  await assert.rejects(checkWebviewStyles(symbolicFixture.root), /no-follow regular file/u);
+
+  const racedFixture = await webviewStyleFixture(t);
+  const target = resolve(racedFixture.styleRoot, "application.css");
+  const original = `${target}.original`;
+  const replacement = `${target}.replacement`;
+  await writeFile(replacement, ".used { display: block; }\n", "utf8");
+  let replaced = false;
+  await assert.rejects(
+    checkWebviewStyles(racedFixture.root, {
+      filesystem: {
+        async open(path, flags) {
+          const handle = await open(path, flags);
+          if (path === target && !replaced) {
+            replaced = true;
+            await rename(target, original);
+            await rename(replacement, target);
+          }
+          return handle;
+        }
+      }
+    }),
+    /application\.css changed while its (?:no-follow descriptor was opened|descriptor-bound snapshot was read)/u
+  );
+  assert.equal(replaced, true);
+});
+
+test("the webview style check rejects a replaced ancestor after opening its no-follow descriptor", async (t) => {
+  const { root, styleRoot } = await webviewStyleFixture(t);
+  const original = `${styleRoot}.original`;
+  let replaced = false;
+  await assert.rejects(
+    checkWebviewStyles(root, {
+      filesystem: {
+        async open(path, flags) {
+          const handle = await open(path, flags);
+          if (path === styleRoot && !replaced) {
+            replaced = true;
+            await rename(styleRoot, original);
+            await mkdir(styleRoot);
+          }
+          return handle;
+        }
+      }
+    }),
+    /src\/webviews\/styles ancestor changed while its (?:no-follow descriptor was opened|descriptor-bound operation ran)/u
+  );
+  assert.equal(replaced, true);
+});
+
+test("the webview style check enforces selector count and length budgets", async (t) => {
+  await t.test("class selector occurrences", async (t_) => {
+    const { root, styleRoot } = await webviewStyleFixture(t_);
+    const selectors = Array.from(
+      { length: WEBVIEW_STYLE_LIMITS.selectorOccurrences + 1 },
+      (_, index) => `.bounded${index}{}`
+    ).join("");
+    await writeFile(resolve(styleRoot, "application.css"), selectors, "utf8");
+    await assert.rejects(checkWebviewStyles(root), /class-selector budget/u);
+  });
+
+  await t.test("class name length", async (t_) => {
+    const { root, styleRoot } = await webviewStyleFixture(t_);
+    const className = "x".repeat(WEBVIEW_STYLE_LIMITS.classNameCodePoints + 1);
+    await writeFile(resolve(styleRoot, "application.css"), `.${className} { display: block; }\n`, "utf8");
+    await assert.rejects(checkWebviewStyles(root), /class selector above the 256-code-point limit/u);
+  });
+
+  await t.test("selector prelude length", async (t_) => {
+    const { root, styleRoot } = await webviewStyleFixture(t_);
+    const selector = Array.from({ length: 2_000 }, () => ".used").join(",");
+    assert.ok(selector.length > WEBVIEW_STYLE_LIMITS.selectorCodeUnits);
+    await writeFile(resolve(styleRoot, "application.css"), `${selector} { display: block; }\n`, "utf8");
+    await assert.rejects(checkWebviewStyles(root), /selector prelude above the 8192-code-unit limit/u);
+  });
+});
+
+test("the webview style check enforces one explicit total-work budget", async (t) => {
+  const { root, webviewRoot } = await webviewStyleFixture(t);
+  const largeComment = `/*${"x".repeat(450_000)}*/\n`;
+  await Promise.all(
+    Array.from({ length: 5 }, (_, index) => writeFile(resolve(webviewRoot, `Large${index}.ts`), largeComment, "utf8"))
+  );
+  await assert.rejects(checkWebviewStyles(root), /total-work budget/u);
 });
