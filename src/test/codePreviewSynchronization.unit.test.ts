@@ -3,10 +3,13 @@ import { EditorState, StateEffect, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import {
+  CODE_PREVIEW_DISPOSED_ACTION_MESSAGE,
+  CODE_PREVIEW_EDIT_COALESCE_MS,
   CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS,
   CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES,
   CODE_PREVIEW_HISTORY_MAX_VALID_EDIT_TRANSIENT_UTF8_BYTES,
   CODE_PREVIEW_INVALID_PLACEHOLDER,
+  CODE_PREVIEW_INVALID_EXPORT_MESSAGE,
   CODE_PREVIEW_MAX_CODE_POINTS,
   CODE_PREVIEW_MAX_UTF8_BYTES,
   collectCodePreviewText,
@@ -16,6 +19,7 @@ import {
   CodePreviewEditCoalescer,
   CodePreviewHistoryBudget,
   type CodePreviewEditScheduler,
+  type CodePreviewHostMessage,
   type CodePreviewWebviewMessage,
   isCodePreviewHostMessage,
   isCodePreviewWebviewMessage,
@@ -567,7 +571,222 @@ async function startProductionCodePreview(
   };
 }
 
+interface RegisteredCodePreviewBridge {
+  readonly view: unknown;
+  readonly toHost: CodePreviewWebviewMessage[];
+  readonly toWebview: CodePreviewHostMessage[];
+  publishToHost(message: CodePreviewWebviewMessage): void;
+  publishLateToHost(message: CodePreviewWebviewMessage): void;
+  disposeView(): void;
+}
+
+function createRegisteredCodePreviewBridge(): RegisteredCodePreviewBridge {
+  const toHost: CodePreviewWebviewMessage[] = [];
+  const toWebview: CodePreviewHostMessage[] = [];
+  let currentHostListener: ((message: unknown) => void) | undefined;
+  let capturedHostListener: ((message: unknown) => void) | undefined;
+  let currentDisposeListener: (() => unknown) | undefined;
+  const publishToHost = (message: CodePreviewWebviewMessage): void => {
+    toHost.push(message);
+    currentHostListener?.(message);
+  };
+  return {
+    view: {
+      description: undefined,
+      onDidDispose(listener: () => unknown) {
+        currentDisposeListener = listener;
+        return {
+          dispose() {
+            if (currentDisposeListener === listener) currentDisposeListener = undefined;
+          }
+        };
+      },
+      webview: {
+        html: "",
+        options: {},
+        cspSource: "test-csp",
+        asWebviewUri: (uri: unknown) => uri,
+        async postMessage(message: CodePreviewHostMessage) {
+          toWebview.push(message);
+          window.dispatchEvent(new MessageEvent("message", { data: message, origin: window.location.origin }));
+          return true;
+        },
+        onDidReceiveMessage(listener: (message: unknown) => void) {
+          currentHostListener = listener;
+          capturedHostListener = listener;
+          return {
+            dispose() {
+              if (currentHostListener === listener) currentHostListener = undefined;
+            }
+          };
+        }
+      }
+    },
+    toHost,
+    toWebview,
+    publishToHost,
+    publishLateToHost(message) {
+      toHost.push(message);
+      capturedHostListener?.(message);
+    },
+    disposeView() {
+      currentDisposeListener?.();
+    }
+  };
+}
+
+async function startRegisteredCodePreviewPage(bridge: RegisteredCodePreviewBridge): Promise<EditorView> {
+  document.body.innerHTML = '<div id="root"></div>';
+  vi.stubGlobal("acquireVsCodeApi", () => ({ postMessage: bridge.publishToHost }));
+  vi.resetModules();
+  await import("../webviews/codePreviewMain");
+  const element = document.querySelector<HTMLElement>(".cm-editor");
+  if (!element) throw new Error("Expected the registered production Code Preview editor.");
+  const view = EditorView.findFromDOM(element);
+  if (!view) throw new Error("Expected the registered production CodeMirror view.");
+  return view;
+}
+
 describe("production Code Preview lifecycle wiring", () => {
+  it("bridges real coalesced CodeMirror edits through provider actions, fencing, replacement, and disposal", async () => {
+    vi.useFakeTimers();
+    const fixtures = await import("./nativeViews.testFixtures");
+    fixtures.resetNativeViewMocks();
+    const notebook = fixtures.notebookDocument("file:///workspace/shared.ipynb", 3);
+    fixtures.nativeMocks.notebookDocuments.push(notebook);
+    const initial = fixtures.noDraftSnapshot();
+    const registered = fixtures.register(initial, notebook);
+    const provider = fixtures.nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the registered Code Preview provider.");
+    const firstBridge = createRegisteredCodePreviewBridge();
+    provider.resolveWebviewView(firstBridge.view);
+    const firstView = await startRegisteredCodePreviewPage(firstBridge);
+    try {
+      const exportEdit = "def clean_data(df):\n    return df.dropna()\n";
+      firstView.dispatch({ changes: { from: 0, to: firstView.state.doc.length, insert: exportEdit } });
+      expect(firstBridge.toHost.at(-1)).toEqual({ kind: "codePending", generation: 1, sequence: 1 });
+
+      const hostRenderCount = firstBridge.toWebview.length;
+      registered.setActiveSession(initial);
+      expect(firstBridge.toWebview.slice(hostRenderCount)).toContainEqual(
+        expect.objectContaining({ kind: "codePreview", generation: 1, acknowledgedSequence: 0 })
+      );
+      expect(firstView.state.doc.toString()).toBe(exportEdit);
+      expect(firstBridge.toHost.some(({ kind }) => kind === "codeChanged")).toBe(false);
+
+      await expect(fixtures.command("openWrangler.exportCode")()).resolves.toBe(false);
+      expect(fixtures.nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+      expect(firstBridge.toHost).toContainEqual({
+        kind: "codeSnapshot",
+        generation: 1,
+        sequence: 1,
+        requestId: expect.any(String),
+        code: exportEdit
+      });
+      await vi.advanceTimersByTimeAsync(CODE_PREVIEW_EDIT_COALESCE_MS);
+      expect(firstBridge.toHost.some(({ kind }) => kind === "codeChanged")).toBe(false);
+
+      const copiedEdit = "def clean_data(df):\n    return df.fillna(0)\n";
+      firstView.dispatch({ changes: { from: 0, to: firstView.state.doc.length, insert: copiedEdit } });
+      await fixtures.command("openWrangler.copyCode")();
+      expect(fixtures.nativeMocks.clipboardWriteText).toHaveBeenLastCalledWith(copiedEdit);
+
+      fixtures.nativeMocks.clipboardWriteText.mockClear();
+      firstView.dispatch({ changes: { from: 0, to: firstView.state.doc.length, insert: "\ud83d" } });
+      await fixtures.command("openWrangler.copyCode")();
+      expect(fixtures.nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+      expect(fixtures.nativeMocks.showErrorMessage).toHaveBeenLastCalledWith(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+      expect(firstBridge.toHost.at(-1)).toEqual(
+        expect.objectContaining({ kind: "codeSnapshotInvalid", generation: 1, reason: "invalidUnicode" })
+      );
+
+      fixtures.nativeMocks.showSaveDialog.mockClear();
+      firstView.dispatch({
+        changes: {
+          from: 0,
+          to: firstView.state.doc.length,
+          insert: "é".repeat(CODE_PREVIEW_MAX_UTF8_BYTES / 2 + 1)
+        }
+      });
+      await expect(fixtures.command("openWrangler.exportCode")()).resolves.toBeUndefined();
+      expect(fixtures.nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+      expect(firstBridge.toHost.at(-1)).toEqual(
+        expect.objectContaining({ kind: "codeSnapshotInvalid", generation: 1, reason: "utf8Bytes" })
+      );
+
+      const recoveredEdit = "def clean_data(df):\n    return df.sort_values('value')\n";
+      firstView.dispatch({ changes: { from: 0, to: firstView.state.doc.length, insert: recoveredEdit } });
+      await fixtures.command("openWrangler.copyCode")();
+      expect(fixtures.nativeMocks.clipboardWriteText).toHaveBeenLastCalledWith(recoveredEdit);
+      firstBridge.publishToHost({ kind: "codeChanged", generation: 1, sequence: 1, code: "stale sequence" });
+      fixtures.nativeMocks.clipboardWriteText.mockClear();
+      await fixtures.command("openWrangler.copyCode")();
+      expect(fixtures.nativeMocks.clipboardWriteText).toHaveBeenCalledWith(recoveredEdit);
+
+      window.dispatchEvent(new Event("pagehide"));
+      const replacementSnapshot = fixtures.notebookVariableSnapshot();
+      replacementSnapshot.sessionId = "replacement-session";
+      replacementSnapshot.metadata = { ...replacementSnapshot.metadata, sessionId: "replacement-session" };
+      registered.setActiveSession(replacementSnapshot);
+      const replacementBridge = createRegisteredCodePreviewBridge();
+      provider.resolveWebviewView(replacementBridge.view);
+      const replacementView = await startRegisteredCodePreviewPage(replacementBridge);
+      expect(replacementView.state.doc.toString()).toBe(replacementSnapshot.code);
+
+      firstBridge.publishLateToHost({
+        kind: "codeChanged",
+        generation: 2,
+        sequence: Number.MAX_SAFE_INTEGER,
+        code: "replaced view listener"
+      });
+      replacementBridge.publishToHost({
+        kind: "codeChanged",
+        generation: 1,
+        sequence: Number.MAX_SAFE_INTEGER,
+        code: "stale generation"
+      });
+      expect(replacementView.state.doc.toString()).toBe(replacementSnapshot.code);
+
+      const insertedEdit = "def clean_data(df):\n    return df.reset_index(drop=True)\n";
+      replacementView.dispatch({
+        changes: { from: 0, to: replacementView.state.doc.length, insert: insertedEdit }
+      });
+      await expect(fixtures.command("openWrangler.insertNotebookCode")()).resolves.toBe(true);
+      expect(fixtures.nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledWith(notebook, 3, insertedEdit, {
+        source: "frame",
+        backend: "pandas",
+        languageId: "python"
+      });
+
+      replacementView.dispatch({ changes: { from: replacementView.state.doc.length, insert: "# final" } });
+      window.dispatchEvent(new Event("pagehide"));
+      expect(replacementBridge.toHost).toContainEqual({
+        kind: "codeChanged",
+        generation: 2,
+        sequence: 2,
+        code: `${insertedEdit}# final`
+      });
+      expect(replacementBridge.toHost.at(-1)).toEqual({
+        kind: "codePreviewUnavailable",
+        generation: 2,
+        reason: "disposed"
+      });
+      replacementBridge.disposeView();
+      const publicationCount = replacementBridge.toHost.length;
+      fixtures.nativeMocks.clipboardWriteText.mockClear();
+      await fixtures.command("openWrangler.copyCode")();
+      expect(fixtures.nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
+      expect(fixtures.nativeMocks.showErrorMessage).toHaveBeenLastCalledWith(CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+      await vi.advanceTimersByTimeAsync(CODE_PREVIEW_EDIT_COALESCE_MS * 2);
+      expect(replacementBridge.toHost).toHaveLength(publicationCount);
+    } finally {
+      window.dispatchEvent(new Event("pagehide"));
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+      document.body.replaceChildren();
+    }
+  });
+
   it("clears actual CodeMirror undo through generation, edit-count, and byte-budget reset paths", async () => {
     vi.useFakeTimers();
     let documentScans = 0;
