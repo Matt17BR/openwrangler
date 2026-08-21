@@ -29,6 +29,7 @@ import { performance as nodePerformance } from "node:perf_hooks";
 import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { TextDecoder } from "node:util";
 import {
   CORE_SCHEMA,
   EVENT_ALIAS,
@@ -65,6 +66,9 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const CAPABILITY_JSON_DEPTH_LIMIT = 64;
+const CAPABILITY_JSON_NODE_LIMIT = 20_000;
+const CAPABILITY_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const BOUNDED_WORKFLOW_FILE_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const WORKFLOW_FIFO_PROBE_ARGUMENT = "--open-bounded-workflow-fifo";
 const WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT = "--open-legacy-workflow-fifo";
@@ -676,7 +680,116 @@ function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } 
 
 function readBoundedCapabilityFile(relativePath, options = {}) {
   assert.equal(CAPABILITY_FILES.has(relativePath), true, `${relativePath} is not an allowlisted capability file`);
-  return readBoundedNoFollowFile(relativePath, { ...options, allowedPaths: CAPABILITY_FILES }).bytes.toString("utf8");
+  const bytes = readBoundedNoFollowFile(relativePath, { ...options, allowedPaths: CAPABILITY_FILES }).bytes;
+  try {
+    return CAPABILITY_UTF8_DECODER.decode(bytes);
+  } catch (cause) {
+    throw new Error(`${relativePath} is not valid UTF-8`, { cause });
+  }
+}
+
+function assertNoDuplicateJsonObjectKeys(source) {
+  let cursor = 0;
+  let nodes = 0;
+  const skipWhitespace = () => {
+    while (cursor < source.length && /[\t\n\r ]/u.test(source[cursor])) cursor += 1;
+  };
+  const scanString = () => {
+    const start = cursor;
+    assert.equal(source[cursor], '"', `expected a JSON string at offset ${cursor}`);
+    cursor += 1;
+    while (cursor < source.length) {
+      const character = source[cursor];
+      if (character === '"') {
+        cursor += 1;
+        return JSON.parse(source.slice(start, cursor));
+      }
+      if (character === "\\") {
+        cursor += 1;
+        assert.ok(cursor < source.length, "JSON string ends after an escape prefix");
+        if (source[cursor] === "u") {
+          assert.match(source.slice(cursor + 1, cursor + 5), /^[0-9a-f]{4}$/iu, "invalid JSON Unicode escape");
+          cursor += 5;
+          continue;
+        }
+        assert.match(source[cursor], /^["\\/bfnrt]$/u, "invalid JSON string escape");
+        cursor += 1;
+        continue;
+      }
+      assert.ok(character.codePointAt(0) >= 0x20, "JSON strings must not contain control characters");
+      cursor += 1;
+    }
+    throw new SyntaxError("unterminated JSON string");
+  };
+  const scanValue = (depth) => {
+    assert.ok(depth <= CAPABILITY_JSON_DEPTH_LIMIT, "capability JSON exceeds its depth limit");
+    nodes += 1;
+    assert.ok(nodes <= CAPABILITY_JSON_NODE_LIMIT, "capability JSON exceeds its node limit");
+    skipWhitespace();
+    if (source[cursor] === '"') {
+      scanString();
+      return;
+    }
+    if (source[cursor] === "{") {
+      cursor += 1;
+      skipWhitespace();
+      const keys = new Set();
+      if (source[cursor] === "}") {
+        cursor += 1;
+        return;
+      }
+      while (cursor < source.length) {
+        const key = scanString();
+        assert.equal(keys.has(key), false, `duplicate JSON object key ${key}`);
+        keys.add(key);
+        skipWhitespace();
+        assert.equal(source[cursor], ":", `expected ':' after JSON object key at offset ${cursor}`);
+        cursor += 1;
+        scanValue(depth + 1);
+        skipWhitespace();
+        if (source[cursor] === "}") {
+          cursor += 1;
+          return;
+        }
+        assert.equal(source[cursor], ",", `expected ',' in JSON object at offset ${cursor}`);
+        cursor += 1;
+        skipWhitespace();
+      }
+      throw new SyntaxError("unterminated JSON object");
+    }
+    if (source[cursor] === "[") {
+      cursor += 1;
+      skipWhitespace();
+      if (source[cursor] === "]") {
+        cursor += 1;
+        return;
+      }
+      while (cursor < source.length) {
+        scanValue(depth + 1);
+        skipWhitespace();
+        if (source[cursor] === "]") {
+          cursor += 1;
+          return;
+        }
+        assert.equal(source[cursor], ",", `expected ',' in JSON array at offset ${cursor}`);
+        cursor += 1;
+      }
+      throw new SyntaxError("unterminated JSON array");
+    }
+    const start = cursor;
+    while (cursor < source.length && !/[\t\n\r ,\]}]/u.test(source[cursor])) cursor += 1;
+    assert.ok(cursor > start, `expected a JSON value at offset ${cursor}`);
+  };
+
+  scanValue(0);
+  skipWhitespace();
+  assert.equal(cursor, source.length, `unexpected JSON content at offset ${cursor}`);
+}
+
+function parseBoundedCapabilityJson(relativePath, options = {}) {
+  const source = readBoundedCapabilityFile(relativePath, options);
+  assertNoDuplicateJsonObjectKeys(source);
+  return JSON.parse(source);
 }
 
 function loadCapabilityDocuments(graph, workflowInventory = repositoryWorkflowInventory) {
@@ -691,7 +804,7 @@ function loadCapabilityDocuments(graph, workflowInventory = repositoryWorkflowIn
   );
 }
 
-const capabilityGraph = JSON.parse(readBoundedCapabilityFile(CAPABILITY_GRAPH_PATH));
+const capabilityGraph = parseBoundedCapabilityJson(CAPABILITY_GRAPH_PATH);
 const repositoryWorkflowInventory = loadRepositoryWorkflowInventory();
 const repositoryWorkflowNames = Object.keys(repositoryWorkflowInventory)
   .map((path) => posix.basename(path))
@@ -1109,14 +1222,34 @@ function jobNeeds(job) {
   return Array.isArray(job.needs) ? job.needs : [job.needs];
 }
 
+function ownCapabilityJob(document, jobId) {
+  assert.equal(
+    document !== null && typeof document === "object" && Object.hasOwn(document, "jobs"),
+    true,
+    "capability workflow must own its jobs mapping"
+  );
+  const jobs = document.jobs;
+  assert.equal(
+    jobs !== null && typeof jobs === "object" && Object.hasOwn(jobs, jobId),
+    true,
+    `missing capability job ${jobId}`
+  );
+  const job = jobs[jobId];
+  assert.equal(
+    job !== null && typeof job === "object" && !Array.isArray(job),
+    true,
+    `capability job ${jobId} must be an object`
+  );
+  return job;
+}
+
 function dependencyClosure(document, terminalJob) {
   const visited = new Set();
   const active = new Set();
   const visit = (jobId) => {
     if (visited.has(jobId)) return;
     assert.equal(active.has(jobId), false, `capability dependency cycle includes ${jobId}`);
-    const job = document?.jobs?.[jobId];
-    assert.ok(job, `missing capability job ${jobId}`);
+    const job = ownCapabilityJob(document, jobId);
     active.add(jobId);
     for (const dependency of jobNeeds(job)) visit(dependency);
     active.delete(jobId);
@@ -1273,7 +1406,7 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
       `${workflowId} changed its terminal job`
     );
     assert.ok(Object.hasOwn(document.on ?? {}, owner.event), `${owner.file} must retain ${owner.event}`);
-    assert.ok(document.jobs?.[owner.terminalJob], `${owner.file} must retain ${owner.terminalJob}`);
+    ownCapabilityJob(document, owner.terminalJob);
     if (workflowId === "pull_request" || workflowId === "codeql") {
       assert.deepEqual(owner.activityTypes, PULL_REQUEST_ACTIVITY_TYPES);
       assert.deepEqual(document.on[owner.event]?.types, owner.activityTypes);
@@ -1312,11 +1445,11 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
       `${capabilityName} must declare the exact provider dependency closure`
     );
     for (const jobId of capability.requiredJobs) {
-      assertRequiredCapabilityJob(providerDocument.jobs?.[jobId], capability.providerWorkflow, jobId);
+      assertRequiredCapabilityJob(ownCapabilityJob(providerDocument, jobId), capability.providerWorkflow, jobId);
       assert.equal(providerClosure.has(jobId), true, `${capabilityName} disconnects ${jobId} from its provider`);
     }
     assertRequiredCapabilityJob(
-      fanInDocument.jobs?.[capability.fanInJob],
+      ownCapabilityJob(fanInDocument, capability.fanInJob),
       capability.fanInWorkflow,
       capability.fanInJob
     );
@@ -1329,7 +1462,7 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
         `${capabilityName} provider must feed its final fan-in`
       );
     } else {
-      const bridge = fanInDocument.jobs?.[capability.bridgeJob];
+      const bridge = ownCapabilityJob(fanInDocument, capability.bridgeJob);
       assertRequiredCapabilityJob(bridge, capability.fanInWorkflow, capability.bridgeJob);
       assert.equal(bridge.uses, `./${providerOwner.file}`);
       assert.equal(providerOwner.terminalJob, capability.providerJob);
@@ -1364,9 +1497,9 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
     assert.equal(owners.length, 1, `${checkName} must name exactly one declared job`);
     assertCapabilityJobFatal(owners[0].job, `${owners[0].path}:${owners[0].jobId}`);
   }
-  assert.equal(requiredCheckName("validate", documents.pull_request.jobs.validate).exact, "validate");
+  assert.equal(requiredCheckName("validate", ownCapabilityJob(documents.pull_request, "validate")).exact, "validate");
   assert.ok(Object.hasOwn(documents.codeql.on ?? {}, "pull_request"));
-  assert.equal(documents.codeql.jobs["codeql-gate"].name, "CodeQL gate");
+  assert.equal(ownCapabilityJob(documents.codeql, "codeql-gate").name, "CodeQL gate");
   assert.deepEqual(release.requires, ["artifact_provenance", "installed_candidate"]);
   for (const requiredCapability of release.requires) {
     const required = graph.capabilities[requiredCapability];
@@ -1945,6 +2078,59 @@ test("capability workflow sources stay on the fixed bounded no-follow allowlist"
     const graph = structuredClone(capabilityGraph);
     graph.workflows.release.file = file;
     assert.throws(() => loadCapabilityDocuments(graph), /fixed workflow file/u);
+  }
+});
+
+test("capability JSON rejects invalid UTF-8 and duplicate object keys", (context) => {
+  const createGraphFixture = (contents) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-json-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    mkdirSync(join(root, "scripts", "fixtures"), { recursive: true });
+    writeFileSync(join(root, CAPABILITY_GRAPH_PATH), contents);
+    return root;
+  };
+  const parseFixture = (root) => parseBoundedCapabilityJson(CAPABILITY_GRAPH_PATH, { root });
+
+  const invalidUtf8 = createGraphFixture(
+    Buffer.concat([Buffer.from('{"value":"', "utf8"), Buffer.from([0xc3, 0x28]), Buffer.from('"}', "utf8")])
+  );
+  assert.throws(() => parseFixture(invalidUtf8), /valid UTF-8/u);
+
+  for (const source of ['{"version":1,"version":2}\n', '{"version":1,"\\u0076ersion":2}\n']) {
+    const duplicateKey = createGraphFixture(source);
+    assert.throws(() => parseFixture(duplicateKey), /duplicate JSON object key version/u);
+  }
+
+  const duplicateAuthoritySource = readFileSync(CAPABILITY_GRAPH_PATH, "utf8").replace(
+    '"providerJob": "package"',
+    '"providerJob": "constructor", "providerJob": "package"'
+  );
+  assert.match(duplicateAuthoritySource, /"providerJob": "constructor", "providerJob": "package"/u);
+  assert.throws(
+    () => parseFixture(createGraphFixture(duplicateAuthoritySource)),
+    /duplicate JSON object key providerJob/u
+  );
+
+  const excessiveDepth = `${"[".repeat(CAPABILITY_JSON_DEPTH_LIMIT + 1)}0${"]".repeat(
+    CAPABILITY_JSON_DEPTH_LIMIT + 1
+  )}`;
+  assert.throws(() => parseFixture(createGraphFixture(excessiveDepth)), /depth limit/u);
+  const excessiveNodes = `[${"0,".repeat(CAPABILITY_JSON_NODE_LIMIT)}0]`;
+  assert.throws(() => parseFixture(createGraphFixture(excessiveNodes)), /node limit/u);
+});
+
+test("capability job closure rejects inherited object property names", () => {
+  for (const inheritedJobId of ["constructor", "toString", "__proto__"]) {
+    const graph = structuredClone(capabilityGraph);
+    graph.capabilities.artifact_provenance.providerJob = inheritedJobId;
+    graph.capabilities.artifact_provenance.requiredJobs = [inheritedJobId];
+    graph.capabilities.release_fan_in.requiredJobs.push(inheritedJobId);
+    const documents = structuredClone(capabilityDocuments);
+    documents.release.jobs.qualify.needs.push(inheritedJobId);
+    assert.throws(
+      () => assertCapabilityGraph(graph, documents),
+      new RegExp(`missing capability job ${inheritedJobId}`, "u")
+    );
   }
 });
 
@@ -2604,23 +2790,43 @@ test(
 );
 
 test("capability mutations reject remove, skip, nonfatal, and disconnected evidence", () => {
-  const mutations = [
-    (documents) => {
-      delete documents.pull_request.jobs["invariant-core"];
-    },
-    (documents) => {
-      documents.candidate.jobs.acceptance.if = "${{ false }}";
-    },
-    (documents) => {
-      documents.release.jobs.qualify.needs = documents.release.jobs.qualify.needs.filter(
-        (jobId) => jobId !== "candidate-acceptance"
+  const capabilityMutationMatrix = {
+    source_coverage: [
+      (documents) => {
+        delete documents.pull_request.jobs["invariant-core"];
+      }
+    ],
+    installed_candidate: [
+      (documents) => {
+        documents.candidate.jobs.acceptance.if = "${{ false }}";
+      }
+    ],
+    artifact_provenance: [
+      (documents) => {
+        delete documents.release.jobs.package;
+      },
+      (documents) => {
+        documents.release.jobs.package["continue-on-error"] = true;
+      }
+    ],
+    release_fan_in: [
+      (documents) => {
+        documents.release.jobs.qualify.needs = documents.release.jobs.qualify.needs.filter(
+          (jobId) => jobId !== "candidate-acceptance"
+        );
+      }
+    ]
+  };
+  assert.deepEqual(Object.keys(capabilityMutationMatrix), CAPABILITY_NAMES);
+  for (const [capabilityName, mutations] of Object.entries(capabilityMutationMatrix)) {
+    for (const mutate of mutations) {
+      const documents = structuredClone(capabilityDocuments);
+      mutate(documents);
+      assert.throws(
+        () => assertCapabilityGraph(capabilityGraph, documents),
+        `${capabilityName} mutation must fail closed`
       );
     }
-  ];
-  for (const mutate of mutations) {
-    const documents = structuredClone(capabilityDocuments);
-    mutate(documents);
-    assert.throws(() => assertCapabilityGraph(capabilityGraph, documents));
   }
 
   for (const value of [true, "false", 0, null]) {
