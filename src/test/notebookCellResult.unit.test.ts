@@ -79,6 +79,27 @@ describe("executed notebook cell result action", () => {
     expect(await trackedStatusItem(codeCell(document, 4, [output("DataFrame[id: bigint]")]))).toBeDefined();
   });
 
+  it("rejects an over-limit output-container cell before reading a trailing output", async () => {
+    const document = notebook("file:///status-output-container-cap.ipynb");
+    const matchedOutput = output("DataFrame[id: bigint]");
+    const cell = codeCell(document, 4, [matchedOutput]);
+    setCells(document, [cell]);
+    let trailingItemsRead = 0;
+    const trailingOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        trailingItemsRead += 1;
+        return [{ mime: "text/html", data: new Uint8Array(1) }];
+      }
+    });
+    Object.defineProperty(cell, "outputs", {
+      configurable: true,
+      value: [matchedOutput, ...Array.from({ length: 100_000 }, () => ({ items: [] })), trailingOutput]
+    });
+
+    expect(await trackedStatusItem(cell)).toBeUndefined();
+    expect(trailingItemsRead).toBe(0);
+  });
+
   it("publishes an eligible status item without waiting for another kernel lookup", async () => {
     const document = notebook("file:///synchronous-status-item.ipynb");
     const cell = codeCell(document, 4);

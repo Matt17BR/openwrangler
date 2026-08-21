@@ -22,7 +22,8 @@ const NOTEBOOK_RESULT_OUTPUT_GRACE_MS = 10_000;
 const NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS = 10_000;
 const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
 const INLINE_UPGRADE_MAX_SCAN_BYTES = 16 * 1024 * 1024;
-const INLINE_UPGRADE_MAX_CELLS = 10_000;
+export const INLINE_UPGRADE_MAX_CELLS = 10_000;
+export const INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS = 100_000;
 const INLINE_UPGRADE_MAX_OUTPUT_ITEMS = 100_000;
 
 export interface InlineNotebookOutputCandidate {
@@ -486,7 +487,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     const invalidated = new vscode.EventEmitter<void>();
     const subscriptions: vscode.Disposable[] = [];
     const isCurrent = (): boolean =>
-      active && this.current(rawMatch.cell) === eligibility && matchesInlineRawOutput(editor, candidate, rawMatch);
+      active && matchesInlineRawOutput(editor, candidate, rawMatch) && this.current(rawMatch.cell) === eligibility;
     const stop = (notify: boolean): void => {
       if (!active) return;
       active = false;
@@ -842,10 +843,14 @@ function findInlineRawOutputMatch(
   if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
 
   let visitedItems = 0;
+  let visitedOutputs = 0;
   let scannedBytes = 0;
   let match: InlineRawOutputMatch | undefined;
   for (const cell of cells) {
-    for (const output of cell.outputs) {
+    const outputs = cell.outputs;
+    if (outputs.length > INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs) return undefined;
+    visitedOutputs += outputs.length;
+    for (const output of outputs) {
       visitedItems += output.items.length;
       if (visitedItems > INLINE_UPGRADE_MAX_OUTPUT_ITEMS) return undefined;
       for (const item of output.items) {
@@ -973,11 +978,18 @@ function isPositiveExecutionOrder(value: number | undefined): value is number {
 }
 
 function hasOpenWranglerOutput(cell: vscode.NotebookCell): boolean {
-  return cell.outputs.some((output) => output.items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2));
+  const outputs = boundedNotebookCellOutputs(cell);
+  return outputs?.some((output) => output.items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2)) === true;
 }
 
 function hasExecuteResultOutput(cell: vscode.NotebookCell): boolean {
-  return cell.outputs.some((output) => output.metadata?.outputType === "execute_result");
+  const outputs = boundedNotebookCellOutputs(cell);
+  return outputs?.some((output) => output.metadata?.outputType === "execute_result") === true;
+}
+
+function boundedNotebookCellOutputs(cell: vscode.NotebookCell): readonly vscode.NotebookCellOutput[] | undefined {
+  const outputs = cell.outputs;
+  return outputs.length <= INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS ? outputs : undefined;
 }
 
 function registerAtomically(subscriptions: vscode.Disposable[], register: () => void): void {

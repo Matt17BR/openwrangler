@@ -718,6 +718,134 @@ describe("notebook renderer messaging", () => {
     for (const subscription of context.subscriptions) subscription.dispose();
   });
 
+  it("retains expired never-settling actions in the global ownership cap until their work settles", async () => {
+    const documents = Array.from({ length: 24 }, (_, index) =>
+      notebook(`file:///workspace/detached-action-cap-${index}.ipynb`)
+    );
+    const editors = documents.map((document) => editor(document));
+    const bindings = new Map(
+      editors.map((candidateEditor) => [candidateEditor, inlineBinding(candidateEditor.notebook, candidateEditor)])
+    );
+    rendererMocks.notebookDocuments.push(...documents);
+    rendererMocks.visibleNotebookEditors.push(...editors);
+    const { context } = register({
+      bindInlineUpgrade: vi.fn(async (candidateEditor: NotebookEditor) => bindings.get(candidateEditor))
+    });
+    const payloads: unknown[] = [];
+    for (let index = 0; index < editors.length; index += 1) {
+      const candidate = indexedInlineCandidate(index);
+      installCanonicalRuntimeResponses(documents[index]!, candidate.token);
+      rendererMocks.inlineListener?.({
+        editor: editors[index]!,
+        message: candidate
+      });
+      await settleMessages();
+      payloads.push((rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown }).payload);
+    }
+    const checksBeforeActions = [...bindings.values()].map((binding) => binding.hasCurrentKernel.mock.calls.length);
+    const actionChecks = [...bindings.values()].map(() => deferred<boolean>());
+    let liveActionFrames = 0;
+    let peakLiveActionFrames = 0;
+    [...bindings.values()].forEach((binding, index) => {
+      binding.hasCurrentKernel.mockImplementation(() => {
+        liveActionFrames += 1;
+        peakLiveActionFrames = Math.max(peakLiveActionFrames, liveActionFrames);
+        return actionChecks[index]!.promise.finally(() => {
+          liveActionFrames -= 1;
+        });
+      });
+    });
+
+    vi.useFakeTimers();
+    try {
+      for (let generation = 0; generation < 3; generation += 1) {
+        for (let offset = 0; offset < 8; offset += 1) {
+          const index = generation * 8 + offset;
+          rendererMocks.inlineListener?.({
+            editor: editors[index]!,
+            message: { kind: "openInOpenWrangler", payload: payloads[index] }
+          });
+        }
+        await settleMicrotasks();
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+
+      const totalActionChecks = [...bindings.values()].reduce(
+        (total, binding, index) => total + binding.hasCurrentKernel.mock.calls.length - checksBeforeActions[index]!,
+        0
+      );
+      expect(totalActionChecks).toBe(8);
+      expect(peakLiveActionFrames).toBe(8);
+      expect(liveActionFrames).toBe(8);
+
+      for (const subscription of context.subscriptions) subscription.dispose();
+      const postsAtDisposal = rendererMocks.inlinePosts.length;
+      for (const check of actionChecks.slice(0, 8)) check.resolve(true);
+      await settleMicrotasks();
+
+      expect(liveActionFrames).toBe(0);
+      expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+      expect(rendererMocks.inlinePosts).toHaveLength(postsAtDisposal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a fresh replacement current when an expired action settles late", async () => {
+    const document = notebook("file:///workspace/late-action-replacement.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const originalBinding = inlineBinding(document, exactEditor);
+    const replacementBinding = inlineBinding(document, exactEditor);
+    const tracker = {
+      bindInlineUpgrade: vi
+        .fn()
+        .mockImplementationOnce(async () => originalBinding)
+        .mockImplementationOnce(async () => replacementBinding)
+    };
+    register(tracker);
+    const original = inlineCandidate("a");
+    installCanonicalRuntimeResponses(document, original.token);
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
+    await settleMessages();
+    const originalPayload = (rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown }).payload;
+    const lateKernelCheck = deferred<boolean>();
+    originalBinding.hasCurrentKernel.mockReturnValue(lateKernelCheck.promise);
+
+    vi.useFakeTimers();
+    try {
+      rendererMocks.inlineListener?.({
+        editor: exactEditor,
+        message: { kind: "openInOpenWrangler", payload: originalPayload }
+      });
+      await settleMicrotasks();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(originalBinding.dispose).toHaveBeenCalledOnce();
+
+      const replacement = { ...inlineCandidate("b"), outputItemId: original.outputItemId };
+      installCanonicalRuntimeResponses(document, replacement.token);
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: replacement });
+      await settleMicrotasks();
+      const replacementUpgrade = rendererMocks.inlinePosts.at(-1)?.message as { kind?: string; payload?: unknown };
+      expect(replacementUpgrade.kind).toBe("openWrangler.inlineUpgrade");
+
+      lateKernelCheck.resolve(true);
+      await settleMicrotasks();
+      expect(rendererMocks.inlinePosts.at(-1)?.message).toBe(replacementUpgrade);
+      expect(replacementBinding.dispose).not.toHaveBeenCalled();
+
+      rendererMocks.inlineListener?.({
+        editor: exactEditor,
+        message: { kind: "openInOpenWrangler", payload: replacementUpgrade.payload }
+      });
+      await settleMicrotasks();
+      expect(rendererMocks.createPanel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("single-flights repeated retired-token terminals and ignores disposal and late settlement", async () => {
     const document = notebook("file:///workspace/hanging-retired-terminal.ipynb");
     const exactEditor = editor(document);
@@ -1706,12 +1834,13 @@ function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) 
 
 function installCanonicalRuntimeResponses(
   document: NotebookDocument,
-  tokenDigit: string,
+  tokenValue: string,
   mismatch?: "source" | "requested session" | "mode" | "open page",
   totalRows = 1,
   columnCount = 1,
   stopAfterPageRequest = false
 ): void {
+  const token = tokenValue.length === 1 ? tokenValue.repeat(32) : tokenValue;
   rendererMocks.request.mockImplementation(async (request) => {
     const schema = Array.from({ length: columnCount }, (_, position) => ({
       id: `c:${position}`,
@@ -1767,7 +1896,7 @@ function installCanonicalRuntimeResponses(
       return {
         kind: "page",
         revision: request.revision,
-        viewRequestId: `inline-${tokenDigit.repeat(32)}`,
+        viewRequestId: `inline-${token}`,
         metadata,
         page: {
           offset: 0,

@@ -95,6 +95,77 @@ describe("executed notebook cell result tracker", () => {
     tracker.dispose();
   });
 
+  it("rejects a pending inline candidate when outputs expand beyond the container budget", async () => {
+    const document = notebook("file:///inline-upgrade-pending-output-expansion.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>pending</td></tr></table>");
+    const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+    const cell = codeCell(document, 1, [matchedOutput]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    const queued = tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+    let trailingItemsRead = 0;
+    const trailingOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        trailingItemsRead += 1;
+        return [{ mime: "text/html", data: new Uint8Array(bytes.byteLength) }];
+      }
+    });
+    Object.defineProperty(cell, "outputs", {
+      configurable: true,
+      value: [matchedOutput, ...Array.from({ length: 100_000 }, () => ({ items: [] })), trailingOutput]
+    });
+
+    await recordExecutionAndWait(cell);
+
+    expect(await queued).toBeUndefined();
+    expect(trailingItemsRead).toBe(0);
+    tracker.dispose();
+  });
+
+  it("rejects a published inline binding when outputs expand beyond the container budget", async () => {
+    const document = notebook("file:///inline-upgrade-published-output-expansion.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>published</td></tr></table>");
+    const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+    const cell = codeCell(document, 1, [matchedOutput]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+    const binding = await tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+    expect(binding?.isCurrent()).toBe(true);
+
+    let trailingItemsRead = 0;
+    const trailingOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        trailingItemsRead += 1;
+        return [{ mime: "text/html", data: new Uint8Array(bytes.byteLength) }];
+      }
+    });
+    Object.defineProperty(cell, "outputs", {
+      configurable: true,
+      value: [matchedOutput, ...Array.from({ length: 100_000 }, () => ({ items: [] })), trailingOutput]
+    });
+
+    expect(binding?.isCurrent()).toBe(false);
+    expect(trailingItemsRead).toBe(0);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
   it("rejects a byte-identical raw HTML output that is ineligible for a live result", async () => {
     const document = notebook("file:///inline-upgrade-ineligible-duplicate.ipynb");
     const bytes = new TextEncoder().encode("<table><tr><td>same</td></tr></table>");

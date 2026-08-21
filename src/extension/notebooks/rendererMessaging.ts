@@ -12,7 +12,12 @@ import { SessionCoordinator } from "../sessionCoordinator";
 import { responseMismatch, sessionOpenedResponseMismatch } from "../sessionResponseValidation";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters, type ExecutedNotebookCellResultBinding } from "./kernelBridge";
-import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from "./notebookCellResult";
+import {
+  INLINE_UPGRADE_MAX_CELLS,
+  INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS,
+  type InlineNotebookCellResultBinding,
+  NotebookCellResultTracker
+} from "./notebookCellResult";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 interface OpenInOpenWranglerMessage {
@@ -27,8 +32,6 @@ const INLINE_UPGRADE_MAX_OPERATIONS = 8;
 const INLINE_UPGRADE_MAX_OPERATIONS_PER_EDITOR = INLINE_UPGRADE_MAX_OPERATIONS - 1;
 const INLINE_UPGRADE_MAX_RETAINED = 128;
 const INLINE_UPGRADE_MAX_RETIRED_RECEIPTS = 128;
-const INLINE_UPGRADE_MAX_CELLS = 10_000;
-const INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS = 100_000;
 const INLINE_UPGRADE_MAX_ACTIONS = INLINE_UPGRADE_MAX_OPERATIONS;
 const INLINE_UPGRADE_MAX_TERMINAL_SENDS = INLINE_UPGRADE_MAX_OPERATIONS;
 const INLINE_UPGRADE_PREPUBLICATION_DEADLINE_MS = 10_000;
@@ -158,7 +161,6 @@ export function registerNotebookRendererMessaging(
         state.workQueue.length = 0;
         state.settlingWork.clear();
         state.retiredTokens.clear();
-        state.actions.clear();
         state.terminalSends.clear();
       }
     });
@@ -200,10 +202,7 @@ function openOwnedInlineUpgrade(
   const action: InlineUpgradeAction = { operation, active: true };
   operation.action = action;
   state.actions.add(action);
-  action.deadline = setTimeout(
-    () => terminateInlineUpgradeOperation(state, operation),
-    INLINE_UPGRADE_ACTION_DEADLINE_MS
-  );
+  action.deadline = setTimeout(() => expireInlineUpgradeAction(state, action), INLINE_UPGRADE_ACTION_DEADLINE_MS);
   action.deadline.unref?.();
 
   let payloadMatches = false;
@@ -214,6 +213,7 @@ function openOwnedInlineUpgrade(
     payloadMatches = false;
   }
   if (!payloadMatches) {
+    settleInlineUpgradeAction(state, action);
     terminateInlineUpgradeOperation(state, operation);
     return;
   }
@@ -228,18 +228,21 @@ async function completeOwnedInlineUpgradeAction(
   source: InlineUpgradePublishedReceipt["source"]
 ): Promise<void> {
   const operation = action.operation;
-  if (!(await hasCurrentInlineUpgradeKernel(operation)) || !isInlineUpgradeActionCurrent(state, action)) {
-    terminateInlineUpgradeOperation(state, operation);
-    return;
+  try {
+    if (!(await hasCurrentInlineUpgradeKernel(operation)) || !isInlineUpgradeActionCurrent(state, action)) {
+      terminateInlineUpgradeOperation(state, operation);
+      return;
+    }
+    const binding = operation.binding;
+    const editor = operation.editor;
+    if (!binding || !editor) {
+      terminateInlineUpgradeOperation(state, operation);
+      return;
+    }
+    openLinkedNotebookSource(context, coordinator, editor, source, binding.kernelBinding);
+  } finally {
+    settleInlineUpgradeAction(state, action);
   }
-  const binding = operation.binding;
-  const editor = operation.editor;
-  if (!binding || !editor) {
-    terminateInlineUpgradeOperation(state, operation);
-    return;
-  }
-  finishInlineUpgradeAction(state, action);
-  openLinkedNotebookSource(context, coordinator, editor, source, binding.kernelBinding);
 }
 
 function openLinkedNotebookResult(
@@ -754,13 +757,22 @@ function isInlineUpgradeActionCurrent(state: InlineUpgradeState, action: InlineU
   );
 }
 
-function finishInlineUpgradeAction(state: InlineUpgradeState, action: InlineUpgradeAction): void {
-  if (!action.active) return;
+function cancelInlineUpgradeAction(action: InlineUpgradeAction): void {
   action.active = false;
   if (action.deadline) clearTimeout(action.deadline);
   action.deadline = undefined;
+}
+
+function settleInlineUpgradeAction(state: InlineUpgradeState, action: InlineUpgradeAction): void {
+  cancelInlineUpgradeAction(action);
   state.actions.delete(action);
   if (action.operation.action === action) action.operation.action = undefined;
+}
+
+function expireInlineUpgradeAction(state: InlineUpgradeState, action: InlineUpgradeAction): void {
+  if (!action.active) return;
+  cancelInlineUpgradeAction(action);
+  terminateInlineUpgradeOperation(state, action.operation);
 }
 
 function settleInlineUpgradeTerminalSend(state: InlineUpgradeState, send: InlineUpgradeTerminalSend): void {
@@ -772,7 +784,7 @@ function terminateInlineUpgradeOperation(state: InlineUpgradeState, operation: I
   const editor = operation.editor;
   const messaging = operation.messaging;
   operation.active = false;
-  if (operation.action) finishInlineUpgradeAction(state, operation.action);
+  if (operation.action) cancelInlineUpgradeAction(operation.action);
   if (state.operations.get(operation.candidate.token) === operation) state.operations.delete(operation.candidate.token);
   rememberRetiredInlineUpgradeToken(state, operation.candidate.token);
   const queuedIndex = state.workQueue.indexOf(operation);
