@@ -399,7 +399,7 @@ function parseLinuxProcessIdentity(pid, contents) {
     groupId: Number(fields[2]),
     state: fields[0],
     startIdentity: fields[19],
-    signalIdentityBound: true
+    identityResolution: "kernel-start-tick"
   });
 }
 
@@ -422,7 +422,7 @@ function linuxProcessHasOwner(pid, ownerToken) {
   }
 }
 
-function parsePsProcessIdentity(line) {
+function parsePsProcessIdentity(line, ownerToken) {
   const match =
     /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
       line
@@ -435,14 +435,15 @@ function parsePsProcessIdentity(line) {
     state: "?",
     startIdentity: match[4],
     command: match[5],
-    signalIdentityBound: false
+    ownerMarked: typeof ownerToken === "string" && match[5].includes(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`),
+    identityResolution: "second"
   });
 }
 
-export function readPsProcessIdentity(pid, { execute = execFileSync } = {}) {
+export function readPsProcessIdentity(pid, { execute = execFileSync, ownerToken } = {}) {
   let output;
   try {
-    output = execute("ps", ["-ww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
+    output = execute("ps", ["eww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 64 * 1024,
       timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
@@ -453,13 +454,13 @@ export function readPsProcessIdentity(pid, { execute = execFileSync } = {}) {
     if (error?.status === 1) return undefined;
     throw new Error(`The observed POSIX process ${pid} could not be verified: ${error.message}`, { cause: error });
   }
-  const identity = parsePsProcessIdentity(output.trimEnd());
+  const identity = parsePsProcessIdentity(output.trimEnd(), ownerToken);
   if (!identity) throw new Error(`The observed POSIX process identity for PID ${pid} was malformed.`);
   return identity;
 }
 
-function readPosixProcessIdentity(pid) {
-  return process.platform === "linux" ? readLinuxProcessIdentity(pid) : readPsProcessIdentity(pid);
+function readPosixProcessIdentity(pid, ownerToken) {
+  return process.platform === "linux" ? readLinuxProcessIdentity(pid) : readPsProcessIdentity(pid, { ownerToken });
 }
 
 function listPosixProcessIdentities(ownerToken) {
@@ -474,7 +475,7 @@ function listPosixProcessIdentities(ownerToken) {
     const marker = `${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`;
     return output
       .split("\n")
-      .map(parsePsProcessIdentity)
+      .map((line) => parsePsProcessIdentity(line, ownerToken))
       .filter(Boolean)
       .map((identity) => Object.freeze({ ...identity, ownerMarked: identity.command.includes(marker) }));
   }
@@ -506,7 +507,7 @@ export function createPosixProcessTracker(
   {
     readProcessIdentity = readPosixProcessIdentity,
     listProcessIdentities = listPosixProcessIdentities,
-    signalProcess = process.kill,
+    acquireSignalHandle = () => undefined,
     observationIntervalMs = POSIX_PROCESS_OBSERVATION_INTERVAL_MS
   } = {}
 ) {
@@ -515,6 +516,7 @@ export function createPosixProcessTracker(
   }
   const observed = new Map();
   const retiredIdentities = new Set();
+  const releasedSignalHandles = new WeakSet();
   let failure;
   let resolveFailure;
   const failurePromise = new Promise((resolveValue) => {
@@ -526,20 +528,71 @@ export function createPosixProcessTracker(
     failure.processTreeUnsettled = true;
     resolveFailure(failure);
   };
+  const releaseSignalHandle = (expected) => {
+    const handle = expected.signalHandle;
+    if (handle === undefined || releasedSignalHandles.has(handle)) return;
+    releasedSignalHandles.add(handle);
+    try {
+      if (typeof handle.close === "function") handle.close();
+    } catch (error) {
+      latch(error);
+      throw failure;
+    }
+  };
   const retire = (expected) => {
+    releaseSignalHandle(expected);
     observed.delete(expected.pid);
     retiredIdentities.add(processIdentityKey(expected));
+  };
+  const bindSignalHandle = (identity) => {
+    try {
+      const signalHandle = acquireSignalHandle(identity);
+      if (
+        signalHandle !== undefined &&
+        (typeof signalHandle !== "object" || signalHandle === null || typeof signalHandle.signal !== "function")
+      ) {
+        throw new TypeError(`The held POSIX process identity for ${identity.pid} did not expose signal().`);
+      }
+      return Object.freeze({ ...identity, signalHandle });
+    } catch (error) {
+      latch(error);
+      throw failure;
+    }
+  };
+  const coarseIdentityStillOwned = (expected, current) => {
+    if (expected.identityResolution !== "second" && current.identityResolution !== "second") return true;
+    const markerOwned = expected.ownerMarked === true && current.ownerMarked === true;
+    const lineageOwned =
+      expected.parentPid === current.parentPid &&
+      observed.has(expected.parentPid) &&
+      current.parentPid !== expected.pid;
+    return (
+      expected.identityResolution === "second" &&
+      current.identityResolution === "second" &&
+      expected.parentPid === current.parentPid &&
+      expected.groupId === current.groupId &&
+      expected.command === current.command &&
+      (markerOwned || lineageOwned)
+    );
   };
   const verifiedIdentity = (expected) => {
     let current;
     try {
-      current = readProcessIdentity(expected.pid);
+      current = readProcessIdentity(expected.pid, ownerToken);
     } catch (error) {
       latch(error);
       throw failure;
     }
     if (!current || current.state === "Z") return undefined;
     if (!sameProcessIdentity(expected, current)) return undefined;
+    if (!coarseIdentityStillOwned(expected, current)) {
+      latch(
+        new Error(
+          `process ${expected.pid} retained only an ambiguous second-resolution identity without its exact owned marker or lineage`
+        )
+      );
+      throw failure;
+    }
     return current;
   };
   const observe = () => {
@@ -559,7 +612,7 @@ export function createPosixProcessTracker(
     const pending = new Map(snapshot.map((identity) => [identity.pid, identity]));
     let root;
     try {
-      root = readProcessIdentity(rootPid);
+      root = readProcessIdentity(rootPid, ownerToken);
     } catch (error) {
       latch(error);
       throw failure;
@@ -577,13 +630,13 @@ export function createPosixProcessTracker(
         if (!belongs) continue;
         let verified;
         try {
-          verified = readProcessIdentity(identity.pid);
+          verified = readProcessIdentity(identity.pid, ownerToken);
         } catch (error) {
           latch(error);
           throw failure;
         }
         if (!verified || verified.state === "Z" || !sameProcessIdentity(identity, verified)) continue;
-        observed.set(identity.pid, verified);
+        observed.set(identity.pid, bindSignalHandle(verified));
         changed = true;
       }
     }
@@ -591,10 +644,11 @@ export function createPosixProcessTracker(
   };
   let rootIdentity;
   try {
-    rootIdentity = readProcessIdentity(rootPid);
+    rootIdentity = readProcessIdentity(rootPid, ownerToken);
     if (!rootIdentity || rootIdentity.state === "Z") {
       throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
     }
+    rootIdentity = bindSignalHandle(rootIdentity);
     observed.set(rootPid, rootIdentity);
     observe();
   } catch (error) {
@@ -622,21 +676,20 @@ export function createPosixProcessTracker(
     signal: (signal) => {
       observe();
       for (const expected of [...observed.values()].sort((left, right) => left.pid - right.pid)) {
-        const verified = verifiedIdentity(expected);
-        if (!verified) {
+        if (!verifiedIdentity(expected)) {
           retire(expected);
           continue;
         }
-        if (expected.signalIdentityBound !== true || verified.signalIdentityBound !== true) {
+        if (expected.signalHandle === undefined) {
           latch(
             new Error(
-              `process ${expected.pid} has no signal-bound identity on this POSIX platform; refusing to signal it`
+              `process ${expected.pid} has no OS-held signal identity on this POSIX platform; refusing numeric PID signaling`
             )
           );
           throw failure;
         }
         try {
-          signalProcess(expected.pid, signal);
+          expected.signalHandle.signal(signal);
         } catch (error) {
           if (error?.code !== "ESRCH") {
             latch(error);
@@ -646,7 +699,11 @@ export function createPosixProcessTracker(
         }
       }
     },
-    stop: () => clearInterval(interval)
+    stop: () => {
+      clearInterval(interval);
+      for (const expected of observed.values()) releaseSignalHandle(expected);
+      observed.clear();
+    }
   });
 }
 
@@ -955,7 +1012,7 @@ async function runRContractPhaseAsync(
       : createProcessTracker(launch.child.pid, ownerToken, {
           readProcessIdentity: settlementOptions.readProcessIdentity,
           listProcessIdentities: settlementOptions.listProcessIdentities,
-          signalProcess: settlementOptions.signalProcess,
+          acquireSignalHandle: settlementOptions.acquireSignalHandle,
           observationIntervalMs: settlementOptions.observationIntervalMs
         });
   const failurePromise = tracker ? Promise.race([outputBudget.failure, tracker.failure]) : outputBudget.failure;

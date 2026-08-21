@@ -601,8 +601,26 @@ test("a Windows post-spawn control failure terminates and latches before a later
   assert.match(failure.errors[0].errors[1].message, /did not provide one exact empty-tree attestation/u);
 });
 
-function processIdentity(pid, parentPid, startIdentity, ownerMarked = false, signalIdentityBound = true) {
-  return { pid, parentPid, groupId: pid, state: "S", startIdentity, ownerMarked, signalIdentityBound };
+function processIdentity(pid, parentPid, startIdentity, ownerMarked = false, overrides = {}) {
+  return {
+    pid,
+    parentPid,
+    groupId: pid,
+    state: "S",
+    startIdentity,
+    ownerMarked,
+    identityResolution: "exact-test-identity",
+    ...overrides
+  };
+}
+
+function heldSignalHandle(identity, signals, beforeSignal = () => {}) {
+  return {
+    signal: (signal) => {
+      beforeSignal(identity, signal);
+      signals.push([identity.pid, identity.startIdentity, signal]);
+    }
+  };
 }
 
 test("POSIX ownership follows marker-free descendants and binds every signal to a stable identity", () => {
@@ -614,14 +632,14 @@ test("POSIX ownership follows marker-free descendants and binds every signal to 
   const tracker = createPosixProcessTracker(61_001, "owner", {
     readProcessIdentity: (pid) => processes.get(pid),
     listProcessIdentities: () => [...processes.values()],
-    signalProcess: (pid, signal) => signals.push([pid, signal]),
+    acquireSignalHandle: (identity) => heldSignalHandle(identity, signals),
     observationIntervalMs: 60_000
   });
   tracker.signal("SIGTERM");
   tracker.stop();
   assert.deepEqual(signals, [
-    [61_001, "SIGTERM"],
-    [61_002, "SIGTERM"]
+    [61_001, "root", "SIGTERM"],
+    [61_002, "child", "SIGTERM"]
   ]);
 });
 
@@ -634,7 +652,7 @@ test("POSIX ownership retires one identity and tracks an owned reuse of the same
   const tracker = createPosixProcessTracker(62_001, "owner", {
     readProcessIdentity: (pid) => processes.get(pid),
     listProcessIdentities: () => [...processes.values()],
-    signalProcess: (pid, signal) => signals.push([pid, signal]),
+    acquireSignalHandle: (identity) => heldSignalHandle(identity, signals),
     observationIntervalMs: 60_000
   });
   processes.delete(62_002);
@@ -643,8 +661,8 @@ test("POSIX ownership retires one identity and tracks an owned reuse of the same
   tracker.signal("SIGKILL");
   tracker.stop();
   assert.deepEqual(signals, [
-    [62_001, "SIGKILL"],
-    [62_002, "SIGKILL"]
+    [62_001, "root", "SIGKILL"],
+    [62_002, "owned-reuse", "SIGKILL"]
   ]);
 });
 
@@ -657,7 +675,7 @@ test("POSIX ownership does not adopt a foreign reuse of a retired PID", () => {
   const tracker = createPosixProcessTracker(62_101, "owner", {
     readProcessIdentity: (pid) => processes.get(pid),
     listProcessIdentities: () => [...processes.values()],
-    signalProcess: (pid, signal) => signals.push([pid, signal]),
+    acquireSignalHandle: (identity) => heldSignalHandle(identity, signals),
     observationIntervalMs: 60_000
   });
   processes.delete(62_102);
@@ -665,7 +683,51 @@ test("POSIX ownership does not adopt a foreign reuse of a retired PID", () => {
   processes.set(62_102, processIdentity(62_102, 99, "foreign-reuse"));
   tracker.signal("SIGKILL");
   tracker.stop();
-  assert.deepEqual(signals, [[62_101, "SIGKILL"]]);
+  assert.deepEqual(signals, [[62_101, "root", "SIGKILL"]]);
+});
+
+test("POSIX signaling stays bound to the held identity across replacement after verification", () => {
+  const owned = processIdentity(62_201, 1, "owned-root", true);
+  const foreign = processIdentity(62_201, 99, "foreign-reuse", false);
+  const processes = new Map([[62_201, owned]]);
+  const signals = [];
+  const tracker = createPosixProcessTracker(62_201, "owner", {
+    readProcessIdentity: (pid) => processes.get(pid),
+    listProcessIdentities: () => [...processes.values()],
+    acquireSignalHandle: (identity) =>
+      heldSignalHandle(identity, signals, () => {
+        processes.set(62_201, foreign);
+      }),
+    observationIntervalMs: 60_000
+  });
+  tracker.signal("SIGTERM");
+  tracker.stop();
+  assert.deepEqual(signals, [[62_201, "owned-root", "SIGTERM"]]);
+  assert.equal(processes.get(62_201), foreign);
+});
+
+test("a same-timestamp non-Linux PID reuse fails closed instead of settling", async () => {
+  const ownerCommand = "fixture OPEN_WRANGLER_R_CONTRACT_OWNER=owner";
+  const owned = processIdentity(62_301, 1, "Fri Aug 21 13:00:00 2026", true, {
+    command: ownerCommand,
+    identityResolution: "second"
+  });
+  const foreign = processIdentity(62_301, 99, owned.startIdentity, false, {
+    command: "unrelated fixture",
+    identityResolution: "second"
+  });
+  const processes = new Map([[62_301, owned]]);
+  const tracker = createPosixProcessTracker(62_301, "owner", {
+    readProcessIdentity: (pid) => processes.get(pid),
+    listProcessIdentities: () => [...processes.values()],
+    observationIntervalMs: 60_000
+  });
+  processes.set(62_301, foreign);
+  assert.throws(() => tracker.observe(), /ambiguous second-resolution identity/u);
+  const failure = await tracker.failure;
+  assert.equal(failure.processTreeUnsettled, true);
+  assert.throws(() => tracker.isSettled({ isSettled: () => true }), /ambiguous second-resolution identity/u);
+  tracker.stop();
 });
 
 test("POSIX ownership fails closed when an observed descendant becomes unverifiable", async () => {
@@ -702,7 +764,7 @@ test("POSIX ownership fails closed on a stalled observer or weak signal identity
       if (observerStalled) throw new Error("process observation exceeded its fixed deadline");
       return [stable];
     },
-    signalProcess: (pid, signal) => stalledSignals.push([pid, signal]),
+    acquireSignalHandle: (identity) => heldSignalHandle(identity, stalledSignals),
     observationIntervalMs: 60_000
   });
   observerStalled = true;
@@ -711,15 +773,17 @@ test("POSIX ownership fails closed on a stalled observer or weak signal identity
   assert.deepEqual(stalledSignals, []);
   stalledTracker.stop();
 
-  const weak = processIdentity(63_201, 1, "coarse-ps-time", true, false);
+  const weak = processIdentity(63_201, 1, "coarse-ps-time", true, {
+    command: "fixture OPEN_WRANGLER_R_CONTRACT_OWNER=owner",
+    identityResolution: "second"
+  });
   const weakSignals = [];
   const weakTracker = createPosixProcessTracker(63_201, "owner", {
     readProcessIdentity: () => weak,
     listProcessIdentities: () => [weak],
-    signalProcess: (pid, signal) => weakSignals.push([pid, signal]),
     observationIntervalMs: 60_000
   });
-  assert.throws(() => weakTracker.signal("SIGTERM"), /has no signal-bound identity/u);
+  assert.throws(() => weakTracker.signal("SIGTERM"), /has no OS-held signal identity/u);
   assert.equal((await weakTracker.failure).processTreeUnsettled, true);
   assert.deepEqual(weakSignals, []);
   weakTracker.stop();
@@ -740,6 +804,7 @@ test("non-Linux POSIX process observation owns a fixed deadline and weak signal 
     /process 63301 could not be verified.*ETIMEDOUT/u
   );
   assert.equal(invocation.command, "ps");
+  assert.deepEqual(invocation.args, ["eww", "-p", "63301", "-o", "pid=,ppid=,pgid=,lstart=,command="]);
   assert.deepEqual(invocation.options, {
     encoding: "utf8",
     maxBuffer: 64 * 1024,
@@ -749,10 +814,44 @@ test("non-Linux POSIX process observation owns a fixed deadline and weak signal 
   });
 
   const identity = readPsProcessIdentity(63_302, {
-    execute: () => "63302 1 63302 Fri Aug 21 12:00:00 2026 fixture\n"
+    ownerToken: "owner",
+    execute: () => "63302 1 63302 Fri Aug 21 12:00:00 2026 fixture OPEN_WRANGLER_R_CONTRACT_OWNER=owner\n"
   });
   assert.equal(identity.startIdentity, "Fri Aug 21 12:00:00 2026");
-  assert.equal(identity.signalIdentityBound, false);
+  assert.equal(identity.identityResolution, "second");
+  assert.equal(identity.ownerMarked, true);
+});
+
+test("a phase without an OS-held identity fails closed without numeric signaling or a later phase", async () => {
+  const [first, second] = phases();
+  const identity = processIdentity(63_401, 1, "root", true);
+  let starts = 0;
+  let numericSignals = 0;
+  let failure;
+  try {
+    await runRContractPhases([{ ...first, timeoutMs: 2 }, second], {
+      spawnProcess: () => {
+        starts += 1;
+        return fixtureChild(63_401);
+      },
+      readProcessIdentity: () => identity,
+      listProcessIdentities: () => [identity],
+      signalProcess: () => {
+        numericSignals += 1;
+      },
+      terminationGraceMs: 1,
+      killGraceMs: 1,
+      writeLine: () => {}
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure instanceof AggregateError);
+  assert.equal(starts, 1);
+  assert.equal(numericSignals, 0);
+  assert.match(failure.message, /stopped after frame:decimal-ordering/u);
+  assert.ok(failure.errors[0] instanceof AggregateError);
+  assert.match(failure.errors[0].errors[1].message, /no OS-held signal identity/u);
 });
 
 test("phase output is byte-bounded and settles before suppressing every later phase", async () => {
@@ -792,23 +891,17 @@ test("phase output is byte-bounded and settles before suppressing every later ph
 });
 
 test(
-  "a timed-out SIGTERM-ignoring phase and descendant settle before the next phase starts",
+  "a timed-out phase settles through its held direct-child identity before the next phase starts",
   { skip: process.platform === "win32" },
   async () => {
-    const stubborn = {
-      id: "stubborn",
-      label: "stubborn process tree",
+    const held = {
+      id: "held",
+      label: "held process",
       command: process.execPath,
       args: [
         "-e",
         [
-          'const { spawn } = require("node:child_process");',
-          "const descendantEnvironment = { ...process.env };",
-          "delete descendantEnvironment.OPEN_WRANGLER_R_CONTRACT_OWNER;",
-          'const descendant = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { detached: true, env: descendantEnvironment, stdio: "ignore" });',
-          "process.stdout.write(`DETACHED:${descendant.pid}\\n`);",
-          "descendant.unref();",
-          'process.on("SIGTERM", () => {});',
+          'process.on("SIGTERM", () => { process.stdout.write("HELD-SIGTERM\\n"); process.exit(0); });',
           "setInterval(() => {}, 1000);"
         ].join("\n")
       ],
@@ -824,39 +917,27 @@ test(
       timeoutMs: 2_000
     };
     let firstPid;
-    let detachedPid;
     let spawnCount = 0;
+    const heldChildren = new Map();
     const lines = [];
     await assert.rejects(
-      runRContractPhases([stubborn, next], {
+      runRContractPhases([held, next], {
         spawnProcess: (...arguments_) => {
-          const [command, args, options] = arguments_;
-          const child = spawn(
-            command,
-            args,
-            spawnCount === 0 ? { ...options, stdio: ["ignore", "pipe", "ignore"] } : options
-          );
-          if (spawnCount++ === 0) {
-            firstPid = child.pid;
-            child.stdout.setEncoding("utf8");
-            child.stdout.on("data", (chunk) => {
-              const match = /DETACHED:([1-9][0-9]*)/u.exec(chunk);
-              if (match) detachedPid = Number(match[1]);
-            });
-          }
+          const child = spawn(...arguments_);
+          heldChildren.set(child.pid, child);
+          if (spawnCount++ === 0) firstPid = child.pid;
           return child;
+        },
+        acquireSignalHandle: (identity) => {
+          const child = heldChildren.get(identity.pid);
+          return child === undefined ? undefined : { signal: (signal) => child.kill(signal) };
         },
         terminationGraceMs: 100,
         killGraceMs: 2_000,
         writeLine: (line) => {
           if (line.startsWith("[r-contract] START next phase")) {
-            assert.ok(Number.isSafeInteger(detachedPid));
             assert.throws(
               () => process.kill(-firstPid, 0),
-              (error) => error?.code === "ESRCH"
-            );
-            assert.throws(
-              () => process.kill(detachedPid, 0),
               (error) => error?.code === "ESRCH"
             );
           }
@@ -870,15 +951,11 @@ test(
       () => process.kill(-firstPid, 0),
       (error) => error?.code === "ESRCH"
     );
-    assert.throws(
-      () => process.kill(detachedPid, 0),
-      (error) => error?.code === "ESRCH"
-    );
   }
 );
 
 test(
-  "external SIGINT and SIGTERM are forwarded and no detached phase survives runner termination",
+  "external SIGINT and SIGTERM use the held direct-child identity",
   { skip: process.platform === "win32" },
   async () => {
     const runnerUrl = new URL("./run-r-contract-tests.mjs", import.meta.url).href;
@@ -898,16 +975,13 @@ test(
 
     for (const signal of ["SIGINT", "SIGTERM"]) {
       const phaseProgram = [
-        'const { spawn } = require("node:child_process");',
         `const signal = ${JSON.stringify(signal)};`,
-        "const childProgram = `process.on(${JSON.stringify(signal)}, () => process.stdout.write('DESCENDANT-FORWARDED:${signal}\\\\n')); process.stdout.write('DESCENDANT-READY:' + process.pid + '\\\\n'); setInterval(() => {}, 1000);`;",
-        'const descendant = spawn(process.execPath, ["-e", childProgram], { detached: true, stdio: ["ignore", "inherit", "inherit"] });',
-        "descendant.unref();",
-        "process.stdout.write(`PHASE:${process.pid}\\nDETACHED:${descendant.pid}\\n`);",
-        "process.on(signal, () => process.stdout.write(`PHASE-FORWARDED:${signal}\\n`));",
+        "process.stdout.write(`PHASE:${process.pid}\\n`);",
+        "process.on(signal, () => { process.stdout.write(`PHASE-FORWARDED:${signal}\\n`); process.exit(0); });",
         "setInterval(() => {}, 1000);"
       ].join("\n");
       const outerProgram = [
+        'import { spawn } from "node:child_process";',
         `import { runRContractPhasesWithSignalForwarding } from ${JSON.stringify(runnerUrl)};`,
         `const phase = ${JSON.stringify({
           id: "external-signal",
@@ -917,7 +991,10 @@ test(
           environment: process.env,
           timeoutMs: 30_000
         })};`,
-        "runRContractPhasesWithSignalForwarding([phase]).catch(() => { process.exitCode = 1; });"
+        "let heldChild;",
+        "const spawnProcess = (...args) => { heldChild = spawn(...args); return heldChild; };",
+        "const acquireSignalHandle = (identity) => identity.pid === heldChild?.pid ? { signal: (signal) => heldChild.kill(signal) } : undefined;",
+        "runRContractPhasesWithSignalForwarding([phase], { spawnProcess, acquireSignalHandle }).catch(() => { process.exitCode = 1; });"
       ].join("\n");
       const outer = spawn(process.execPath, ["--input-type=module", "-e", outerProgram], {
         stdio: ["ignore", "pipe", "pipe"]
@@ -925,7 +1002,6 @@ test(
       outer.stdout.setEncoding("utf8");
       let output = "";
       let phasePid;
-      let detachedPid;
       const ready = new Promise((resolveReady, rejectReady) => {
         outer.once("error", rejectReady);
         outer.once("close", (code, exitSignal) => {
@@ -934,16 +1010,8 @@ test(
         outer.stdout.on("data", (chunk) => {
           output += chunk;
           const phaseMatch = /PHASE:([1-9][0-9]*)/u.exec(output);
-          const detachedMatch = /DETACHED:([1-9][0-9]*)/u.exec(output);
-          const descendantReady = /DESCENDANT-READY:([1-9][0-9]*)/u.exec(output);
           if (phaseMatch) phasePid = Number(phaseMatch[1]);
-          if (detachedMatch) detachedPid = Number(detachedMatch[1]);
-          if (
-            Number.isSafeInteger(phasePid) &&
-            Number.isSafeInteger(detachedPid) &&
-            Number(descendantReady?.[1]) === detachedPid
-          )
-            resolveReady();
+          if (Number.isSafeInteger(phasePid)) resolveReady();
         });
       });
       await ready;
@@ -954,9 +1022,7 @@ test(
       });
       assert.deepEqual(exit, { code: 1, signal: null });
       assert.match(output, new RegExp(`PHASE-FORWARDED:${signal}`, "u"));
-      assert.match(output, new RegExp(`DESCENDANT-FORWARDED:${signal}`, "u"));
       await waitForAbsent(phasePid);
-      await waitForAbsent(detachedPid);
     }
   }
 );
