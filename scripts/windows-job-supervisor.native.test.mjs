@@ -746,6 +746,40 @@ test("production compiler close preserves a PID-bearing error as authoritative",
   }
 });
 
+test("an asynchronous compiler error without a PID remains a spawn failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-no-pid-error-close-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: undefined });
+  const compilerError = new Error("synthetic asynchronous compiler spawn failure");
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 1_000,
+        spawnProcess: () => {
+          setTimeout(() => {
+            compiler.child.emit("error", compilerError);
+            compiler.child.stdout.end();
+            compiler.child.stderr.end();
+            compiler.child.emit("close", null, null);
+          }, 0);
+          return compiler.child;
+        }
+      }),
+      (error) => {
+        assert.equal(error.details?.stage, "windows-supervisor-compilation");
+        assert.equal(error.details?.reason, "spawn-error");
+        assert.equal(error.details?.treeVerifiedStopped, true);
+        assert.equal(error.cause, compilerError);
+        return true;
+      }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("forced compiler settlement preserves a PID-bearing error after successful close", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-pid-error-forced-close-"));
   const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
@@ -768,11 +802,11 @@ test("forced compiler settlement preserves a PID-bearing error after successful 
         }
       }),
       (error) => {
-        assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+        assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
         assert.equal(error.details?.stage, "windows-supervisor-compilation");
         assert.equal(error.details?.compilerClosed, true);
         assert.equal(error.details?.compilerTreeTerminated, true);
-        assert.equal(error.details?.treeVerifiedStopped, false);
+        assert.equal(error.details?.treeVerifiedStopped, true);
         assert.equal(error.cause, compilerError);
         return true;
       }
@@ -1159,92 +1193,105 @@ test(
   }
 );
 
-test("a Windows supervisor settlement deadline reports before a late compiler close", { timeout: 5_000 }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-stuck-"));
-  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
-  configureEditorAcceptanceTempRoot(directory, environment);
-  const compiler = fakeWindowsCompiler({ closeOnKill: true, closeDelayMs: 50, pid: 17912 });
-  let reportedBeforeClose = false;
-  try {
-    const preparation = prepareWindowsEditorProcessSupervisor(environment, {
-      platform: "win32",
-      buildTimeoutMs: 10,
-      buildSettlementTimeoutMs: 20,
-      spawnProcess: () => compiler.child,
-      async terminateBuildProcessTree(child) {
-        child.kill("SIGKILL");
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        throw new Error("synthetic late compiler-tree settlement failure");
-      }
-    });
-    await assert.rejects(
-      preparation.catch((error) => {
-        reportedBeforeClose = compiler.state().closeCount === 0;
-        throw error;
-      }),
-      (error) => {
-        assert.equal(editorProcessTreeMayBeLive(error), true);
-        assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
-        assert.equal(error.details?.stage, "windows-supervisor-compilation");
-        assert.equal(error.details?.reason, "deadline");
-        assert.equal(error.details?.limitMs, 10);
-        assert.equal(error.details?.elapsedMs >= 28, true);
-        assert.equal(error.details?.elapsedMs < 1_000, true);
-        assert.equal(error.details?.compilerClosed, false);
-        assert.equal(error.details?.buildSettlementTimeoutMs, 20);
-        assert.deepEqual(
-          {
-            code: error.details?.settlementDeadline?.code,
-            stage: error.details?.settlementDeadline?.stage,
-            reason: error.details?.settlementDeadline?.reason,
-            limitMs: error.details?.settlementDeadline?.limitMs,
-            treeVerifiedStopped: error.details?.settlementDeadline?.treeVerifiedStopped
-          },
-          {
-            code: "EDITOR_ACCEPTANCE_DEADLINE",
-            stage: "windows-supervisor-compilation-settlement",
-            reason: "settlement-deadline",
-            limitMs: 20,
-            treeVerifiedStopped: false
-          }
-        );
-        assert.equal(error.details?.settlementDeadline?.elapsedMs >= 20, true);
-        assert.equal(error.details?.settlementDeadline?.elapsedMs < 1_000, true);
-        assert.match(String(error.cause), /settlement exceeded 20 ms/u);
-        return true;
-      }
-    );
-    assert.equal(reportedBeforeClose, true);
-    assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 0, closeTimerActive: true });
-    assert.deepEqual(compiler.lifecycle(), {
-      closeListeners: 1,
-      errorListeners: 1,
-      stderrDataListeners: 0,
-      stdoutDataListeners: 0,
-      unrefCount: 1
-    });
-    assert.equal(compiler.child.stdout.destroyed, true);
-    assert.equal(compiler.child.stderr.destroyed, true);
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 1, closeTimerActive: false });
-    assert.deepEqual(compiler.lifecycle(), {
-      closeListeners: 0,
-      errorListeners: 0,
-      stderrDataListeners: 0,
-      stdoutDataListeners: 0,
-      unrefCount: 1
-    });
-    await assert.rejects(
-      prepareWindowsEditorProcessSupervisor(environment, {
+test(
+  "abort settlement retains a finite delayed terminator rejection before bounded release",
+  { timeout: 5_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-stuck-"));
+    const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+    configureEditorAcceptanceTempRoot(directory, environment);
+    const compiler = fakeWindowsCompiler({ closeOnKill: true, closeDelayMs: 100, pid: 17912 });
+    const terminatorError = new Error("synthetic post-abort compiler-tree settlement failure");
+    let reportedBeforeClose = false;
+    try {
+      const preparation = prepareWindowsEditorProcessSupervisor(environment, {
         platform: "win32",
-        spawnProcess: () => assert.fail("an unsettled compiler root must never be reused")
-      }),
-      /previously involved in an unverified process tree/u
-    );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+        buildTimeoutMs: 10,
+        buildSettlementTimeoutMs: 20,
+        spawnProcess: () => compiler.child,
+        terminateBuildProcessTree(child, { abortSignal }) {
+          child.kill("SIGKILL");
+          return new Promise((_resolve, reject) => {
+            const rejectAfterAbort = () => setTimeout(() => reject(terminatorError), 5);
+            abortSignal.addEventListener("abort", rejectAfterAbort, { once: true });
+            if (abortSignal.aborted) rejectAfterAbort();
+          });
+        }
+      });
+      await assert.rejects(
+        preparation.catch((error) => {
+          reportedBeforeClose = compiler.state().closeCount === 0;
+          throw error;
+        }),
+        (error) => {
+          assert.equal(editorProcessTreeMayBeLive(error), true);
+          assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+          assert.equal(error.details?.stage, "windows-supervisor-compilation");
+          assert.equal(error.details?.reason, "deadline");
+          assert.equal(error.details?.limitMs, 10);
+          assert.equal(error.details?.elapsedMs >= 28, true);
+          assert.equal(error.details?.elapsedMs < 1_000, true);
+          assert.equal(error.details?.compilerClosed, false);
+          assert.equal(error.details?.buildSettlementTimeoutMs, 20);
+          assert.deepEqual(
+            {
+              code: error.details?.settlementDeadline?.code,
+              stage: error.details?.settlementDeadline?.stage,
+              reason: error.details?.settlementDeadline?.reason,
+              limitMs: error.details?.settlementDeadline?.limitMs,
+              treeVerifiedStopped: error.details?.settlementDeadline?.treeVerifiedStopped
+            },
+            {
+              code: "EDITOR_ACCEPTANCE_DEADLINE",
+              stage: "windows-supervisor-compilation-settlement",
+              reason: "settlement-deadline",
+              limitMs: 20,
+              treeVerifiedStopped: false
+            }
+          );
+          assert.equal(error.details?.settlementDeadline?.elapsedMs >= 15, true);
+          assert.equal(error.details?.settlementDeadline?.elapsedMs < 1_000, true);
+          assert.equal(error.details?.settlementDeadline?.abortSettlementLimitMs, 20);
+          assert.equal(error.details?.settlementDeadline?.abortSettlementElapsedMs >= 15, true);
+          assert.equal(error.details?.settlementDeadline?.abortSettlementElapsedMs < 1_000, true);
+          assert.equal(error.cause instanceof AggregateError, true);
+          assert.equal(error.cause.errors[0]?.code, "EDITOR_ACCEPTANCE_DEADLINE");
+          assert.equal(error.cause.errors[1], terminatorError);
+          return true;
+        }
+      );
+      assert.equal(reportedBeforeClose, true);
+      assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 0, closeTimerActive: true });
+      assert.deepEqual(compiler.lifecycle(), {
+        closeListeners: 1,
+        errorListeners: 1,
+        stderrDataListeners: 0,
+        stdoutDataListeners: 0,
+        unrefCount: 1
+      });
+      assert.equal(compiler.child.stdout.destroyed, true);
+      assert.equal(compiler.child.stderr.destroyed, true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.deepEqual(compiler.state(), { killCount: 1, closeCount: 1, closeTimerActive: false });
+      assert.deepEqual(compiler.lifecycle(), {
+        closeListeners: 0,
+        errorListeners: 0,
+        stderrDataListeners: 0,
+        stdoutDataListeners: 0,
+        unrefCount: 1
+      });
+      await assert.rejects(
+        prepareWindowsEditorProcessSupervisor(environment, {
+          platform: "win32",
+          spawnProcess: () => assert.fail("an unsettled compiler root must never be reused")
+        }),
+        /previously involved in an unverified process tree/u
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
-});
+);
 
 test("Windows supervisor compilation cancellation waits for child settlement", { timeout: 5_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-cancelled-"));
@@ -1559,6 +1606,106 @@ test("taskkill error without close survives the compiler settlement deadline", {
     assert.equal(compiler.child.listenerCount("error"), 1);
     assert.equal(compiler.child.listenerCount("close"), 1);
     assert.doesNotThrow(() => taskkill.emit("error", new Error("synthetic late taskkill error")));
+    taskkill.emit("close", null, "SIGKILL");
+    compiler.child.emit("close", null, "SIGKILL");
+    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 0);
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a false taskkill cancellation result is retained as tree uncertainty", { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-taskkill-false-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: true, pid: 17933 });
+  const taskkill = new EventEmitter();
+  taskkill.pid = 17934;
+  taskkill.exitCode = null;
+  taskkill.signalCode = null;
+  taskkill.kill = () => false;
+  taskkill.unref = () => undefined;
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 10,
+        buildSettlementTimeoutMs: 20,
+        spawnProcess: () => compiler.child,
+        spawnTaskkillProcess: () => taskkill
+      }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+        assert.equal(error.details?.compilerClosed, true);
+        assert.equal(error.details?.treeVerifiedStopped, false);
+        assert.equal(error.cause instanceof AggregateError, true);
+        assert.equal(error.cause.errors[0]?.code, "EDITOR_ACCEPTANCE_DEADLINE");
+        assert.match(error.cause.errors[1]?.message, /taskkill process rejected forced termination/u);
+        return true;
+      }
+    );
+    assert.equal(taskkill.listenerCount("error"), 1);
+    assert.equal(taskkill.listenerCount("close"), 1);
+    taskkill.emit("close", null, "SIGKILL");
+    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("taskkill, compiler, and unref failures retain deterministic settlement order", { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-error-order-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17935 });
+  const taskkill = new EventEmitter();
+  taskkill.pid = 17936;
+  taskkill.exitCode = null;
+  taskkill.signalCode = null;
+  const taskkillError = new Error("synthetic taskkill cancellation error");
+  const compilerError = new Error("synthetic simultaneous compiler error");
+  const unrefError = new Error("synthetic compiler unref error");
+  taskkill.kill = () => {
+    taskkill.emit("error", taskkillError);
+    return true;
+  };
+  taskkill.unref = () => undefined;
+  compiler.child.unref = () => {
+    throw unrefError;
+  };
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 10,
+        buildSettlementTimeoutMs: 20,
+        spawnProcess: () => {
+          queueMicrotask(() => compiler.child.emit("error", compilerError));
+          return compiler.child;
+        },
+        spawnTaskkillProcess: () => taskkill
+      }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+        assert.equal(error.details?.compilerClosed, false);
+        assert.equal(error.details?.treeVerifiedStopped, false);
+        assert.equal(error.cause instanceof AggregateError, true);
+        assert.equal(error.cause.errors.length, 4);
+        assert.equal(error.cause.errors[0]?.code, "EDITOR_ACCEPTANCE_DEADLINE");
+        assert.equal(error.cause.errors[1], taskkillError);
+        assert.equal(error.cause.errors[2], compilerError);
+        assert.equal(error.cause.errors[3], unrefError);
+        return true;
+      }
+    );
+    assert.equal(taskkill.listenerCount("error"), 1);
+    assert.equal(taskkill.listenerCount("close"), 1);
+    assert.equal(compiler.child.listenerCount("error"), 1);
+    assert.equal(compiler.child.listenerCount("close"), 1);
     taskkill.emit("close", null, "SIGKILL");
     compiler.child.emit("close", null, "SIGKILL");
     assert.equal(taskkill.listenerCount("error"), 0);
