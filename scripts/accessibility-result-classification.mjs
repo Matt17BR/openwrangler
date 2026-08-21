@@ -43,13 +43,38 @@ const CLASSIFICATION_ERROR_CODES = new Set([
 ]);
 const { isProxy } = utilTypes;
 
+function defineOwnDataProperty(target, property, value) {
+  Object.defineProperty(target, property, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true
+  });
+}
+
+function appendOwnArrayEntry(values, value) {
+  defineOwnDataProperty(values, String(values.length), value);
+}
+
+function sortOwnArray(values, compare) {
+  for (let index = 1; index < values.length; index += 1) {
+    const value = values[index];
+    let destination = index;
+    while (destination > 0 && compare(values[destination - 1], value) > 0) {
+      defineOwnDataProperty(values, String(destination), values[destination - 1]);
+      destination -= 1;
+    }
+    defineOwnDataProperty(values, String(destination), value);
+  }
+}
+
 export class AxeResultClassificationError extends Error {
   constructor(code, message, details = {}) {
     super(message);
-    this.name = "AxeResultClassificationError";
-    this.code = code;
-    this.actual = details.actual;
-    this.limit = details.limit;
+    defineOwnDataProperty(this, "name", "AxeResultClassificationError");
+    defineOwnDataProperty(this, "code", code);
+    defineOwnDataProperty(this, "actual", details.actual);
+    defineOwnDataProperty(this, "limit", details.limit);
   }
 }
 
@@ -87,7 +112,9 @@ export function createAxeResultCollector() {
     },
 
     report() {
-      const orderedScans = [...scans.values()].sort((left, right) => compareText(left.harness, right.harness));
+      const orderedScans = [];
+      for (const scan of scans.values()) appendOwnArrayEntry(orderedScans, scan);
+      sortOwnArray(orderedScans, (left, right) => compareText(left.harness, right.harness));
       return Object.freeze({
         protocol: AXE_RUN_RESULT_PROTOCOL,
         status: findingCount === 0 ? "passed" : "failed",
@@ -197,14 +224,14 @@ function prepareAxeScanInput(envelope, existingRunNodeCount) {
       );
     }
     nodeCount += findingNodeCount;
-    preflightFindings.push(Object.freeze({ sourceFinding, findingNodes, findingNodeCount }));
+    appendOwnArrayEntry(preflightFindings, Object.freeze({ sourceFinding, findingNodes, findingNodeCount }));
   }
 
   const sourceFindings = [];
   const sourceNodes = [];
   for (const preflight of preflightFindings) {
-    sourceFindings.push(snapshotFinding(preflight.sourceFinding));
-    sourceNodes.push(snapshotFindingNodes(preflight.findingNodes, preflight.findingNodeCount));
+    appendOwnArrayEntry(sourceFindings, snapshotFinding(preflight.sourceFinding));
+    appendOwnArrayEntry(sourceNodes, snapshotFindingNodes(preflight.findingNodes, preflight.findingNodeCount));
   }
 
   return Object.freeze({
@@ -217,9 +244,11 @@ function prepareAxeScanInput(envelope, existingRunNodeCount) {
 }
 
 function classifyPreparedAxeScan(prepared) {
-  const findings = prepared.sourceFindings
-    .map((finding, index) => normalizeFinding(finding, prepared.sourceNodes[index]))
-    .sort(compareFindings);
+  const findings = [];
+  for (let index = 0; index < prepared.sourceFindings.length; index += 1) {
+    appendOwnArrayEntry(findings, normalizeFinding(prepared.sourceFindings[index], prepared.sourceNodes[index]));
+  }
+  sortOwnArray(findings, compareFindings);
   return Object.freeze({
     protocol: AXE_SCAN_RESULT_PROTOCOL,
     harness: prepared.harness,
@@ -242,20 +271,28 @@ export function serializeAxeClassificationError(error) {
 }
 
 export function formatAxeFailureDetail(report) {
-  return report.scans
-    .flatMap((scan) =>
-      scan.findings.map((finding) => {
-        const rawImpact = finding.impact === "unknown" ? `:${finding.rawImpact ?? "null"}` : "";
-        const nodes = finding.nodes.map((node) => `  ${node.target}: ${node.failureSummary}`);
-        if (finding.omittedNodeCount > 0) {
-          nodes.push(`  … ${finding.omittedNodeCount} additional affected nodes omitted from bounded diagnostics`);
-        }
-        return `${scan.harness}: [${finding.impact}${rawImpact}] ${finding.id}: ${finding.help}${
-          nodes.length > 0 ? `\n${nodes.join("\n")}` : ""
-        }`;
-      })
-    )
-    .join("\n");
+  let detail = "";
+  for (let scanIndex = 0; scanIndex < report.scans.length; scanIndex += 1) {
+    const scan = report.scans[scanIndex];
+    for (let findingIndex = 0; findingIndex < scan.findings.length; findingIndex += 1) {
+      const finding = scan.findings[findingIndex];
+      const rawImpact = finding.impact === "unknown" ? `:${finding.rawImpact ?? "null"}` : "";
+      let nodes = "";
+      for (let nodeIndex = 0; nodeIndex < finding.nodes.length; nodeIndex += 1) {
+        const node = finding.nodes[nodeIndex];
+        nodes += `${nodes.length > 0 ? "\n" : ""}  ${node.target}: ${node.failureSummary}`;
+      }
+      if (finding.omittedNodeCount > 0) {
+        nodes += `${nodes.length > 0 ? "\n" : ""}  … ${
+          finding.omittedNodeCount
+        } additional affected nodes omitted from bounded diagnostics`;
+      }
+      detail += `${detail.length > 0 ? "\n" : ""}${scan.harness}: [${finding.impact}${rawImpact}] ${finding.id}: ${
+        finding.help
+      }${nodes.length > 0 ? `\n${nodes}` : ""}`;
+    }
+  }
+  return detail;
 }
 
 function normalizeFinding(violation, preparedNodes) {
@@ -383,10 +420,11 @@ function boundedTarget(target) {
 }
 
 function insertDiagnosticNode(nodes, node) {
-  let index = 0;
-  while (index < nodes.length && compareNodes(nodes[index], node) <= 0) index += 1;
-  nodes.splice(index, 0, node);
-  if (nodes.length > AXE_RESULT_LIMITS.diagnosticNodesPerFinding) nodes.pop();
+  appendOwnArrayEntry(nodes, node);
+  sortOwnArray(nodes, compareNodes);
+  if (nodes.length > AXE_RESULT_LIMITS.diagnosticNodesPerFinding) {
+    nodes.length = AXE_RESULT_LIMITS.diagnosticNodesPerFinding;
+  }
 }
 
 function boundedText(value, fallback, maxCodePoints) {
@@ -595,14 +633,13 @@ function visibleDiagnosticCodePoint(codePoint) {
 }
 
 function classificationErrorResult(error) {
-  const result = { protocol: AXE_RUN_RESULT_PROTOCOL, status: "invalid", code: "classification_failed" };
   if (
     error === null ||
     typeof error !== "object" ||
     isProxy(error) ||
     !(error instanceof AxeResultClassificationError)
   ) {
-    return result;
+    return createClassificationErrorResult("classification_failed");
   }
   try {
     const code = readOwnDataProperty(
@@ -611,8 +648,7 @@ function classificationErrorResult(error) {
       "invalid_machine_result",
       "Axe classification errors must use own data properties."
     );
-    if (!CLASSIFICATION_ERROR_CODES.has(code)) return result;
-    result.code = code;
+    if (!CLASSIFICATION_ERROR_CODES.has(code)) return createClassificationErrorResult("classification_failed");
     const actual = readOwnDataProperty(
       error,
       "actual",
@@ -625,12 +661,20 @@ function classificationErrorResult(error) {
       "invalid_machine_result",
       "Axe classification errors must use own data properties."
     );
-    if (Number.isSafeInteger(actual)) result.actual = actual;
-    if (Number.isSafeInteger(limit)) result.limit = limit;
-    return result;
+    return createClassificationErrorResult(code, actual, limit);
   } catch {
-    return { protocol: AXE_RUN_RESULT_PROTOCOL, status: "invalid", code: "classification_failed" };
+    return createClassificationErrorResult("classification_failed");
   }
+}
+
+function createClassificationErrorResult(code, actual, limit) {
+  const result = Object.create(null);
+  defineOwnDataProperty(result, "protocol", AXE_RUN_RESULT_PROTOCOL);
+  defineOwnDataProperty(result, "status", "invalid");
+  defineOwnDataProperty(result, "code", code);
+  if (Number.isSafeInteger(actual)) defineOwnDataProperty(result, "actual", actual);
+  if (Number.isSafeInteger(limit)) defineOwnDataProperty(result, "limit", limit);
+  return Object.freeze(result);
 }
 
 function snapshotFinding(finding) {
@@ -655,7 +699,8 @@ function snapshotFindingNodes(nodes, count) {
       "invalid_findings",
       "Axe nodes must contain plain objects."
     );
-    values.push(
+    appendOwnArrayEntry(
+      values,
       Object.freeze({
         target: readOwnDataProperty(node, "target", "invalid_findings", "Axe node fields must be own data properties."),
         failureSummary: readOwnDataProperty(
