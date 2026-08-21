@@ -9,6 +9,7 @@ import {
   type GridCellCoordinate,
   type GridClipboardMode,
   type GridClipboardResult,
+  type GridClipboardSelection,
   writeGridClipboardText
 } from "./gridClipboard";
 import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
@@ -32,6 +33,14 @@ export interface GridClipboardController {
 
 const wholeColumnOwnsCopyReason = "A whole column is selected. Use Copy column.";
 
+interface ExpectedResultRefreshReceipt {
+  contextId: string;
+  page: LiveGridPage;
+  schema: readonly ColumnSchema[];
+  selection: GridClipboardSelection;
+  wholeColumnSelectedColumnId: undefined;
+}
+
 export function useGridClipboard({
   contextId,
   metadata,
@@ -54,16 +63,16 @@ export function useGridClipboard({
   const [selection, setSelection] = useState(() => collapsedGridClipboardSelection(contextId, initialCoordinate));
   const [announcement, setAnnouncement] = useState("");
   const contextIdRef = useRef(contextId);
-  const accountedResultRefreshRef = useRef(false);
+  const expectedResultRefreshRef = useRef<ExpectedResultRefreshReceipt | undefined>(undefined);
   const copyActionGenerationRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const mountedRef = useRef(true);
   const invalidateSelectionOwner = useCallback(
-    (accountForResultRefresh = false): void => {
+    (expectedResultRefresh?: ExpectedResultRefreshReceipt): void => {
       onSelectionWillChange?.();
       selectionGenerationRef.current += 1;
       copyActionGenerationRef.current += 1;
-      if (accountForResultRefresh) accountedResultRefreshRef.current = true;
+      expectedResultRefreshRef.current = expectedResultRefresh;
     },
     [onSelectionWillChange]
   );
@@ -93,23 +102,38 @@ export function useGridClipboard({
   const resultsRef = useRef(results);
   useLayoutEffect(() => {
     if (resultsRef.current !== results) {
-      if (accountedResultRefreshRef.current) accountedResultRefreshRef.current = false;
-      else invalidateSelectionOwner();
+      const receipt = expectedResultRefreshRef.current;
+      expectedResultRefreshRef.current = undefined;
+      const expectedRefresh =
+        receipt !== undefined &&
+        receipt.contextId === contextId &&
+        receipt.page === page &&
+        receipt.schema === schema &&
+        receipt.selection === selection &&
+        receipt.wholeColumnSelectedColumnId === wholeColumn.selectedColumnId;
+      if (!expectedRefresh) invalidateSelectionOwner();
     }
     resultsRef.current = results;
-  }, [invalidateSelectionOwner, results]);
+  }, [contextId, invalidateSelectionOwner, page, results, schema, selection, wholeColumn.selectedColumnId]);
   const resetSelection = useCallback(
     (coordinate: GridCellCoordinate): void => {
-      invalidateSelectionOwner(true);
+      const nextSelection = collapsedGridClipboardSelection(contextIdRef.current, coordinate);
+      invalidateSelectionOwner({
+        contextId: contextIdRef.current,
+        page,
+        schema,
+        selection: nextSelection,
+        wholeColumnSelectedColumnId: undefined
+      });
       resetWholeColumn();
-      setSelection(collapsedGridClipboardSelection(contextIdRef.current, coordinate));
+      setSelection(nextSelection);
       setAnnouncement("");
     },
-    [invalidateSelectionOwner, resetWholeColumn]
+    [invalidateSelectionOwner, page, resetWholeColumn, schema]
   );
   const selectCell = useCallback(
     (coordinate: GridCellCoordinate, extend: boolean): void => {
-      invalidateSelectionOwner(true);
+      invalidateSelectionOwner();
       resetWholeColumn();
       setSelection((current) =>
         extend
@@ -130,7 +154,7 @@ export function useGridClipboard({
       ) {
         return;
       }
-      invalidateSelectionOwner(true);
+      invalidateSelectionOwner();
       resetWholeColumn();
       setSelection((current) =>
         current.contextId === contextId &&
@@ -184,7 +208,7 @@ export function useGridClipboard({
   );
   const selectColumn = useCallback(
     (column: ColumnSchema): void => {
-      invalidateSelectionOwner(true);
+      invalidateSelectionOwner();
       setAnnouncement("");
       selectWholeColumn(column);
     },

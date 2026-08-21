@@ -19,6 +19,14 @@ const keyboardPendingClipboard = "open-wrangler-grid-range-copy-keyboard-pending
 const menuPendingClipboard = "open-wrangler-grid-range-copy-menu-pending";
 const clipboardWaitMs = 10_000;
 const maximumPriorClipboardBytes = 4 * 1024 * 1024;
+export const packagedGridClipboardOperationTimeoutMs = 2_000;
+
+class PackagedGridClipboardOperationFailure extends Error {
+  constructor() {
+    super("The packaged grid range-copy clipboard operation did not complete safely.");
+    this.name = "PackagedGridClipboardOperationFailure";
+  }
+}
 
 class PackagedGridClipboardInterference extends Error {
   constructor() {
@@ -80,24 +88,28 @@ export async function runWithPackagedGridClipboardRestoration(
   testOwnedClipboardValues: readonly string[] = []
 ): Promise<void> {
   let priorClipboard: string | undefined;
+  let normalizedTestOwnedClipboardValues: readonly string[] = [];
   await runPackagedGridRangeCopyLifecycle(
     async () => {
-      priorClipboard = validatePriorPackagedClipboard(await hostClipboard.readText());
+      normalizedTestOwnedClipboardValues = testOwnedClipboardValues.map((value) =>
+        normalizeClipboardText(validatePriorPackagedClipboard(value))
+      );
+      priorClipboard = await readPackagedGridClipboard(hostClipboard);
       await exercise();
     },
     async () => {
       if (priorClipboard === undefined) return;
       let currentClipboard: string;
       try {
-        currentClipboard = validatePriorPackagedClipboard(await hostClipboard.readText());
+        currentClipboard = await readPackagedGridClipboard(hostClipboard);
       } catch {
         throw new PackagedGridClipboardInterference();
       }
       if (currentClipboard === priorClipboard) return;
-      if (!testOwnedClipboardValues.some((ownedValue) => currentClipboard === ownedValue)) {
+      if (!normalizedTestOwnedClipboardValues.includes(normalizeClipboardText(currentClipboard))) {
         throw new PackagedGridClipboardInterference();
       }
-      await hostClipboard.writeText(priorClipboard);
+      await writePackagedGridClipboard(hostClipboard, priorClipboard);
     }
   );
 }
@@ -122,10 +134,16 @@ export async function waitForPackagedGridClipboard(
   expected: string
 ): Promise<void> {
   try {
+    const normalizedExpected = normalizeClipboardText(validatePriorPackagedClipboard(expected));
     const deadline = Date.now() + clipboardWaitMs;
     do {
-      const observed = validatePriorPackagedClipboard(await hostClipboard.readText());
-      if (normalizeClipboardText(observed) === expected) return;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      const observed = await readPackagedGridClipboard(
+        hostClipboard,
+        Math.min(packagedGridClipboardOperationTimeoutMs, remainingMs)
+      );
+      if (normalizeClipboardText(observed) === normalizedExpected) return;
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     } while (Date.now() < deadline);
   } catch {
@@ -167,13 +185,13 @@ export async function exercisePackagedGridRangeCopyJourney({
 
   await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
     recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
-    await hostClipboard.writeText(keyboardPendingClipboard);
+    await writePackagedGridClipboard(hostClipboard, keyboardPendingClipboard);
     await endpoint.press(packagedGridCopyShortcut(platform));
     await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
     await frame.getByText("Copied 2 by 2 cell range.", { exact: true }).waitFor({ timeout: 5_000 });
 
     recordProgress("platform-smoke:grid-range-copy:context-menu");
-    await hostClipboard.writeText(menuPendingClipboard);
+    await writePackagedGridClipboard(hostClipboard, menuPendingClipboard);
     await start.click({ button: "right" });
     const menu = frame.getByRole("menu", { name: "Cell and range actions for order_id", exact: true });
     await menu.waitFor({ state: "visible", timeout: 5_000 });
@@ -190,4 +208,49 @@ export async function exercisePackagedGridRangeCopyJourney({
       .waitFor({ state: "visible", timeout: 5_000 });
     assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
   }, [keyboardPendingClipboard, menuPendingClipboard, expectedRangeText]);
+}
+
+async function readPackagedGridClipboard(
+  hostClipboard: PackagedGridRangeCopyHostClipboard,
+  timeoutMs = packagedGridClipboardOperationTimeoutMs
+): Promise<string> {
+  return validatePriorPackagedClipboard(
+    await runPackagedGridClipboardOperation(() => hostClipboard.readText(), timeoutMs)
+  );
+}
+
+export async function writePackagedGridClipboard(
+  hostClipboard: PackagedGridRangeCopyHostClipboard,
+  value: string,
+  timeoutMs = packagedGridClipboardOperationTimeoutMs
+): Promise<void> {
+  const boundedValue = validatePriorPackagedClipboard(value);
+  await runPackagedGridClipboardOperation(() => hostClipboard.writeText(boundedValue), timeoutMs);
+}
+
+function runPackagedGridClipboardOperation<T>(operation: () => Thenable<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let active = true;
+    const finish = (complete: () => void): void => {
+      if (!active) return;
+      active = false;
+      clearTimeout(timeout);
+      complete();
+    };
+    const timeout = setTimeout(
+      () => finish(() => reject(new PackagedGridClipboardOperationFailure())),
+      Math.max(1, timeoutMs)
+    );
+    let pending: PromiseLike<T>;
+    try {
+      pending = operation();
+    } catch {
+      finish(() => reject(new PackagedGridClipboardOperationFailure()));
+      return;
+    }
+    void Promise.resolve(pending).then(
+      (value) => finish(() => resolve(value)),
+      () => finish(() => reject(new PackagedGridClipboardOperationFailure()))
+    );
+  });
 }

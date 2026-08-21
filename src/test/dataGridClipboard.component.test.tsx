@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { StrictMode } from "react";
+import { StrictMode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -334,6 +334,47 @@ describe("DataGrid clipboard interactions", () => {
     expect(menu).toBeInTheDocument();
     expect(document.activeElement).toBe(menu);
     expect(screen.getByText(status)).toBeTruthy();
+  });
+
+  it("invalidates a menu when its selection reset coalesces with a result replacement", async () => {
+    let replaceResults = false;
+    const replacementPage: GridPage = {
+      ...page,
+      rows: [{ ...page.rows[0], values: [cell("Rome"), numberCell(11.5)] }, page.rows[1]]
+    };
+    function CoalescedResultReplacement() {
+      const [activePage, setActivePage] = useState(page);
+      return (
+        <DataGrid
+          metadata={metadata}
+          page={activePage}
+          summaries={[]}
+          pageSize={2}
+          defaultColumnWidth={190}
+          insightsOnOpen={false}
+          viewContextId="view-a"
+          onPage={() => undefined}
+          onSortColumn={() => undefined}
+          onOpenFilter={() => undefined}
+          onViewStateChange={() => {
+            if (replaceResults) setActivePage(replacementPage);
+          }}
+          onVisibleSummaryColumnsChange={() => undefined}
+        />
+      );
+    }
+    render(<CoalescedResultReplacement />);
+    replaceResults = true;
+
+    fireEvent.click(
+      within(screen.getByRole("cell", { name: "Milan" })).getByRole("button", {
+        name: "Filter city by this cell"
+      })
+    );
+    await act(async () => Promise.resolve());
+
+    expect(screen.getByRole("cell", { name: "Rome" })).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it.each(["success", "fallback"] as const)(

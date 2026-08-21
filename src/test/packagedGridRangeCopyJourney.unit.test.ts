@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   packagedGridCopyShortcut,
+  packagedGridClipboardOperationTimeoutMs,
   runPackagedGridRangeCopyLifecycle,
   runWithPackagedGridClipboardRestoration,
-  waitForPackagedGridClipboard
+  waitForPackagedGridClipboard,
+  writePackagedGridClipboard
 } from "./extensionHost/packagedGridRangeCopyJourney";
 
 describe("packaged grid range-copy journey", () => {
@@ -218,6 +220,159 @@ describe("packaged grid range-copy journey", () => {
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
 
+  it("classifies CRLF-normalized test output as owned while restoring exact prior bytes", async () => {
+    const priorClipboard = "prior\nclipboard\r\nbytes";
+    const hostClipboard = {
+      readText: vi.fn().mockResolvedValueOnce(priorClipboard).mockResolvedValueOnce("owned\r\nclipboard"),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    await runWithPackagedGridClipboardRestoration(hostClipboard, async () => undefined, ["owned\nclipboard"]);
+
+    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
+    expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith(priorClipboard);
+  });
+
+  it("bounds a never-settling initial read and ignores its late secret-bearing settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      const lateRead = deferred<string>();
+      const exercise = vi.fn(async () => undefined);
+      const hostClipboard = {
+        readText: vi.fn(() => lateRead.promise),
+        writeText: vi.fn(async () => undefined)
+      };
+      const outcome = runWithPackagedGridClipboardRestoration(hostClipboard, exercise).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
+      const failure = await outcome;
+      const lateSecret = "private-late-read-clipboard-sentinel";
+      lateRead.resolve(lateSecret);
+      await Promise.resolve();
+
+      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
+      expect(diagnosticRetainsAny(failure, [lateSecret])).toBe(false);
+      expect(exercise).not.toHaveBeenCalled();
+      expect(hostClipboard.writeText).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a never-settling product write and ignores its late settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      const lateWrite = deferred<void>();
+      const hostClipboard = {
+        readText: vi.fn(async () => "unused"),
+        writeText: vi.fn(() => lateWrite.promise)
+      };
+      const outcome = writePackagedGridClipboard(hostClipboard, "test-owned clipboard").then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
+      const failure = await outcome;
+      lateWrite.resolve();
+      await Promise.resolve();
+
+      expect(failure).toMatchObject({ name: "PackagedGridClipboardOperationFailure" });
+      expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("test-owned clipboard");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a never-settling cleanup restoration and reports one fixed structural outcome", async () => {
+    vi.useFakeTimers();
+    try {
+      const lateCleanupWrite = deferred<void>();
+      const hostClipboard = {
+        readText: vi.fn().mockResolvedValueOnce("prior clipboard").mockResolvedValueOnce("test-owned clipboard"),
+        writeText: vi.fn(() => lateCleanupWrite.promise)
+      };
+      const outcome = runWithPackagedGridClipboardRestoration(hostClipboard, async () => undefined, [
+        "test-owned clipboard"
+      ]).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
+      const failure = await outcome;
+      lateCleanupWrite.resolve();
+      await Promise.resolve();
+
+      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true));
+      expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a never-settling cleanup read and preserves its late foreign value", async () => {
+    vi.useFakeTimers();
+    try {
+      const lateCleanupRead = deferred<string>();
+      const foreignClipboard = "private-late-cleanup-foreign-clipboard";
+      const hostClipboard = {
+        readText: vi
+          .fn()
+          .mockResolvedValueOnce("prior clipboard")
+          .mockImplementationOnce(() => lateCleanupRead.promise),
+        writeText: vi.fn(async () => undefined)
+      };
+      const outcome = runWithPackagedGridClipboardRestoration(hostClipboard, async () => undefined, [
+        "test-owned clipboard"
+      ]).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
+      const failure = await outcome;
+      lateCleanupRead.resolve(foreignClipboard);
+      await Promise.resolve();
+
+      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true, true));
+      expect(diagnosticRetainsAny(failure, [foreignClipboard])).toBe(false);
+      expect(hostClipboard.writeText).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a never-settling polling read without retaining a late value", async () => {
+    vi.useFakeTimers();
+    try {
+      const lateRead = deferred<string>();
+      const hostClipboard = {
+        readText: vi.fn(() => lateRead.promise),
+        writeText: vi.fn(async () => undefined)
+      };
+      const outcome = waitForPackagedGridClipboard(hostClipboard, "expected range").then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
+      const failure = await outcome;
+      const lateSecret = "private-late-polling-clipboard-sentinel";
+      lateRead.resolve(lateSecret);
+      await Promise.resolve();
+
+      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
+      expect(diagnosticRetainsAny(failure, [lateSecret])).toBe(false);
+      expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a concurrent foreign clipboard value and reports only structural interference", async () => {
     const foreignClipboard = "private-concurrent-foreign-clipboard-sentinel";
     let currentClipboard = "prior clipboard";
@@ -357,4 +512,14 @@ function expectedPackagedFailureShape(productFailed: boolean, cleanupFailed: boo
     name: "PackagedGridRangeCopyFailure",
     productFailed
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
