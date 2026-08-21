@@ -2096,6 +2096,125 @@ test("taskkill error without close survives the compiler settlement deadline", {
   }
 });
 
+test("early compiler-settlement wakes retain taskkill and close ownership through both absolute bounds", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-absolute-settlement-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  const compiler = fakeWindowsCompiler({ closeOnKill: false, pid: 17941 });
+  const taskkill = new EventEmitter();
+  taskkill.pid = 17942;
+  taskkill.exitCode = null;
+  taskkill.signalCode = null;
+  let taskkillKillCount = 0;
+  let taskkillUnrefCount = 0;
+  taskkill.kill = () => {
+    taskkillKillCount += 1;
+    return true;
+  };
+  taskkill.unref = () => {
+    taskkillUnrefCount += 1;
+  };
+  const scheduled = [];
+  let clock = 0;
+  let outcome = "pending";
+  const buildSchedule = (callback, delay) => {
+    const timer = { callback, cancelled: false, delay };
+    scheduled.push(timer);
+    return timer;
+  };
+  const buildCancelSchedule = (timer) => {
+    timer.cancelled = true;
+  };
+  try {
+    const preparation = prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      buildTimeoutMs: 10,
+      buildSettlementTimeoutMs: 20,
+      buildNow: () => clock,
+      buildSchedule,
+      buildCancelSchedule,
+      spawnProcess: () => compiler.child,
+      spawnTaskkillProcess: () => taskkill
+    });
+    void preparation.then(
+      () => {
+        outcome = "resolved";
+      },
+      () => {
+        outcome = "rejected";
+      }
+    );
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].delay, 10);
+
+    clock = 10;
+    scheduled[0].callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled.length, 2);
+    assert.equal(scheduled[1].delay, 20);
+
+    clock = 14;
+    scheduled[1].callback();
+    await Promise.resolve();
+    assert.equal(scheduled.length, 3);
+    assert.equal(scheduled[2].delay, 16);
+    assert.equal(taskkillKillCount, 0);
+    assert.equal(compiler.state().killCount, 0);
+    assert.equal(outcome, "pending");
+
+    clock = 30;
+    scheduled[2].callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled.length, 4);
+    assert.equal(scheduled[3].delay, 20);
+    assert.equal(taskkillKillCount, 1);
+    assert.equal(compiler.state().killCount, 1);
+
+    clock = 35;
+    scheduled[3].callback();
+    await Promise.resolve();
+    assert.equal(scheduled.length, 5);
+    assert.equal(scheduled[4].delay, 15);
+    assert.equal(outcome, "pending");
+    assert.equal(taskkillUnrefCount, 0);
+    assert.equal(taskkill.listenerCount("error"), 1);
+    assert.equal(taskkill.listenerCount("close"), 1);
+    assert.equal(compiler.child.listenerCount("error"), 1);
+    assert.equal(compiler.child.listenerCount("close"), 1);
+
+    clock = 50;
+    scheduled[4].callback();
+    await assert.rejects(preparation, (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      assert.equal(error.details?.treeVerifiedStopped, false);
+      assert.equal(error.details?.settlementDeadline?.elapsedMs, 20);
+      assert.equal(error.details?.settlementDeadline?.abortSettlementElapsedMs, 20);
+      return true;
+    });
+    assert.equal(outcome, "rejected");
+    assert.equal(taskkillUnrefCount, 1);
+    assert.equal(taskkill.listenerCount("error"), 1);
+    assert.equal(taskkill.listenerCount("close"), 1);
+    assert.equal(compiler.child.listenerCount("error"), 1);
+    assert.equal(compiler.child.listenerCount("close"), 1);
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        spawnProcess: () => assert.fail("an early-wakeup settlement failure must poison its private root")
+      }),
+      /previously involved in an unverified process tree/u
+    );
+    taskkill.emit("close", null, "SIGKILL");
+    compiler.child.emit("close", null, "SIGKILL");
+    assert.equal(taskkill.listenerCount("error"), 0);
+    assert.equal(taskkill.listenerCount("close"), 0);
+    assert.equal(compiler.child.listenerCount("error"), 0);
+    assert.equal(compiler.child.listenerCount("close"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a false taskkill cancellation result is retained as tree uncertainty", { timeout: 5_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-taskkill-false-"));
   const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
