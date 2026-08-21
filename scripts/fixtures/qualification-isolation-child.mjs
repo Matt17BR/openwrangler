@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { access, appendFile, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile
+} from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
@@ -466,8 +478,11 @@ if (mode === "hold") {
     { encoding: "utf8", env: process.env, windowsHide: true }
   ).trim();
   const original = await readFile(target);
+  const originalMode = Number((await lstat(target, { bigint: true })).mode & 0o777n);
+  await chmod(target, 0o600);
   await writeFile(target, Buffer.concat([original, Buffer.from("# temporary mutation\n", "utf8")]));
   await writeFile(target, original);
+  await chmod(target, originalMode);
 } else if (mode === "swap-python-payload") {
   const target = execFileSync(
     process.env.OPEN_WRANGLER_PYTHON,

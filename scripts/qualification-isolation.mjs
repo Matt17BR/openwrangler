@@ -29,6 +29,8 @@ const MAX_PYTHON_PAYLOAD_FILES = 100_000;
 const MAX_PYTHON_PAYLOAD_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_PATH_BYTES = 16 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_DIRECTORIES = MAX_PYTHON_PAYLOAD_FILES * 8;
+const MIN_SUPPORTED_CPYTHON_MINOR = 10;
+const MAX_SUPPORTED_CPYTHON_MINOR = 14;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
@@ -117,6 +119,7 @@ const PRIVATE_DIRECTORY_ENVIRONMENT = Object.freeze({
   NPM_CONFIG_PREFIX: "npmPrefix",
   OPEN_WRANGLER_ARTIFACTS_DIR: "artifacts",
   OPEN_WRANGLER_BROWSER_PROFILE_ROOT: "browserProfile",
+  OPEN_WRANGLER_PYTHON_PACKAGE_SNAPSHOT: "pythonPackageSnapshot",
   PIP_CACHE_DIR: "pipCache",
   PLAYWRIGHT_BROWSERS_PATH: "playwrightBrowsers",
   PYTHONPYCACHEPREFIX: "pythonBytecode",
@@ -1075,6 +1078,7 @@ async function createStateLayout(assignment, assignmentDigest) {
     pythonBytecode: join(assignment.stateRoot, "python", "bytecode"),
     pythonExecutable,
     pythonExecutableSnapshots: join(assignment.stateRoot, "python", "venv", "executable-snapshots"),
+    pythonPackageSnapshot: join(assignment.stateRoot, "python", "package-snapshot"),
     pythonToolExecutable: pythonExecutable,
     pythonUserBase: join(assignment.stateRoot, "python", "user-base"),
     rCache: join(assignment.stateRoot, "r", "cache"),
@@ -3324,6 +3328,20 @@ async function verifyPinnedPythonPayload(value) {
   }
 }
 
+async function verifyPinnedPythonSourceRoot(value, label) {
+  const opened = await value.handle.stat({ bigint: true });
+  const named = await lstat(value.path, { bigint: true });
+  if (
+    !opened.isDirectory() ||
+    named.isSymbolicLink() ||
+    !sameImmutableSnapshot(value.snapshot, opened) ||
+    !sameImmutableSnapshot(opened, named) ||
+    (await realpath(value.path)) !== value.path
+  ) {
+    fail(`${label} identity changed`);
+  }
+}
+
 function validatePythonPayloadSelection(payloads, phase) {
   if (!Array.isArray(payloads) || payloads.length === 0 || payloads.length > MAX_PYTHON_PAYLOAD_FILES) {
     fail(`Python ${phase} payload selection is invalid`);
@@ -3335,6 +3353,7 @@ function validatePythonPayloadSelection(payloads, phase) {
     "entry-point",
     "import-archive",
     "native-extension",
+    "package-metadata",
     "path-configuration",
     "python-bytecode",
     "python-source",
@@ -3366,6 +3385,30 @@ function validatePythonPayloadSelection(payloads, phase) {
     result.push(payload);
   }
   return { pathBytes, values: result };
+}
+
+async function openPythonPayloadSet(payloads, discoverySnapshots, phase) {
+  const selection = validatePythonPayloadSelection(payloads, phase);
+  const pins = [];
+  try {
+    let bytes = 0;
+    for (const payload of selection.values) {
+      const pin = await openPinnedPythonPayload(payload, discoverySnapshots?.get(payload.path));
+      pins.push(pin);
+      bytes += pin.size;
+      if (bytes > MAX_PYTHON_PAYLOAD_BYTES) fail("Python payload inventory exceeds its byte bound");
+    }
+  } catch (error) {
+    await finishWithOwnedCleanup(
+      error,
+      pins.map((pin, index) => ({ label: `Python ${phase} payload ${String(index)}`, run: () => pin.handle.close() }))
+    );
+  }
+  return {
+    pins,
+    selection,
+    summary: pythonPayloadSummary(pins, selection.pathBytes)
+  };
 }
 
 function pythonPayloadSummary(pins, pathBytes) {
@@ -3414,38 +3457,28 @@ async function bindPythonPayloads(layoutState, payloads, phase) {
     return layoutState.pythonPayloadSummary;
   }
   if (phase !== "preload") fail("Python payloads were not bound before interpreter startup");
-  const pins = [];
-  try {
-    let bytes = 0;
-    for (const payload of selection.values) {
-      const pin = await openPinnedPythonPayload(
-        payload,
-        layoutState.pythonPayloadDiscoverySnapshots?.get(payload.path)
-      );
-      pins.push(pin);
-      bytes += pin.size;
-      if (bytes > MAX_PYTHON_PAYLOAD_BYTES) fail("Python payload inventory exceeds its byte bound");
-    }
-  } catch (error) {
-    await finishWithOwnedCleanup(
-      error,
-      pins.map((pin, index) => ({ label: `Python payload ${String(index)}`, run: () => pin.handle.close() }))
-    );
-  }
-  layoutState.pythonPayloadPins = pins;
+  const opened = await openPythonPayloadSet(selection.values, layoutState.pythonPayloadDiscoverySnapshots, phase);
+  layoutState.pythonPayloadPins = opened.pins;
   layoutState.pythonPayloadSelection = serialized;
-  layoutState.pythonPayloadSummary = pythonPayloadSummary(pins, selection.pathBytes);
+  layoutState.pythonPayloadSummary = opened.summary;
   return layoutState.pythonPayloadSummary;
 }
 
 async function closePythonPayloadPins(layoutState) {
-  await finishWithOwnedCleanup(
-    null,
-    (layoutState?.pythonPayloadPins ?? []).map((pin, index) => ({
+  await finishWithOwnedCleanup(null, [
+    ...(layoutState?.pythonPayloadPins ?? []).map((pin, index) => ({
       label: `Python payload ${String(index)}`,
       run: () => pin.handle.close()
+    })),
+    ...(layoutState?.pythonSourcePayloadPins ?? []).map((pin, index) => ({
+      label: `Python source payload ${String(index)}`,
+      run: () => pin.handle.close()
+    })),
+    ...(layoutState?.pythonSourceRootPins ?? []).map((pin, index) => ({
+      label: `Python source root ${String(index)}`,
+      run: () => pin.handle.close()
     }))
-  );
+  ]);
 }
 
 class OwnedProcessTreeError extends Error {}
@@ -3474,6 +3507,7 @@ const PYTHON_INVENTORY_SCRIPT = [
   "    folded = name.casefold()",
   "    if folded == 'record': return 'record'",
   "    if folded == 'entry_points.txt': return 'entry-point'",
+  "    if folded in ('dependency_links.txt', 'direct_url.json', 'installer', 'metadata', 'namespace_packages.txt', 'pkg-info', 'requires.txt', 'top_level.txt', 'wheel'): return 'package-metadata'",
   "    if folded.endswith('.pth'): return 'path-configuration'",
   "    if folded.endswith(('.so', '.pyd', '.dll', '.dylib')): return 'native-extension'",
   "    if folded.endswith(('.py', '.pyw')): return 'python-source'",
@@ -3604,6 +3638,7 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
       inventory.cacheTag.length === 0 ||
       !Array.isArray(inventory.sysPath) ||
       !inventory.sysPath.every((value) => typeof value === "string" && isAbsolute(value)) ||
+      JSON.stringify(inventory.sysPath) !== JSON.stringify(layoutState.pythonExpectedSysPath) ||
       !Array.isArray(inventory.packages) ||
       !Array.isArray(inventory.payloads)
     ) {
@@ -3643,7 +3678,14 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
     executable: layoutState.layout.pythonExecutable,
     executableRealpath: layoutState.pythonEntry.target,
     executableSha256: result.executable.sha256,
-    packageInventorySha256: sha256(Buffer.from(JSON.stringify(inventory.packages), "utf8")),
+    packageInventorySha256: sha256(
+      Buffer.from(
+        JSON.stringify(
+          inventory.packages.map(({ metadataSha256, name, version }) => ({ metadataSha256, name, version }))
+        ),
+        "utf8"
+      )
+    ),
     payloadManifest
   };
   delete normalized.payloads;
@@ -3666,9 +3708,64 @@ function resultFailure(result, label) {
   return null;
 }
 
+function isSupportedCpythonVersion(major, minor) {
+  return (
+    Number.isSafeInteger(major) &&
+    Number.isSafeInteger(minor) &&
+    major === 3 &&
+    minor >= MIN_SUPPORTED_CPYTHON_MINOR &&
+    minor <= MAX_SUPPORTED_CPYTHON_MINOR
+  );
+}
+
+async function captureVenvConfiguration(layoutState, bootstrapPython) {
+  const path = join(layoutState.layout.venv, "pyvenv.cfg");
+  const pin = await openPinnedRegularFile(path, 16 * 1024, "task Python venv configuration");
+  try {
+    const text = decodeStrictUtf8(pin.bytes, "task Python venv configuration");
+    const values = {};
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      const separator = line.indexOf("=");
+      if (separator <= 0) fail("task Python venv configuration is malformed");
+      const key = line.slice(0, separator).trim().toLocaleLowerCase("en-US");
+      const value = line.slice(separator + 1).trim();
+      if (!/^[a-z][a-z0-9_-]*$/u.test(key) || value.length === 0 || Object.hasOwn(values, key)) {
+        fail("task Python venv configuration is malformed");
+      }
+      values[key] = value;
+    }
+    if (
+      values["include-system-site-packages"] !== "false" ||
+      typeof values.home !== "string" ||
+      !isAbsolute(values.home) ||
+      typeof values.version !== "string" ||
+      !/^3\.(?:10|11|12|13|14)\.[0-9]+$/u.test(values.version)
+    ) {
+      fail("task Python venv configuration is unsupported");
+    }
+    const home = await realpath(values.home);
+    if (home !== dirname(bootstrapPython)) {
+      fail(`task Python venv home ${home} does not bind bootstrap directory ${dirname(bootstrapPython)}`);
+    }
+    if (values.executable !== undefined && (await realpath(values.executable)) !== bootstrapPython) {
+      fail("task Python venv executable does not bind the bootstrap interpreter");
+    }
+    layoutState.runnerFilePins.push({ label: "task Python venv configuration", maximumBytes: 16 * 1024, pin });
+    return {
+      home,
+      includeSystemSitePackages: false,
+      keys: Object.keys(values).sort(),
+      version: values.version
+    };
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [{ label: "task Python venv configuration", run: () => pin.handle.close() }]);
+  }
+}
+
 const PYTHON_RUNTIME_LAYOUT_SCRIPT = [
   "import sys",
-  "values = (sys.base_prefix, sys.prefix, sys.platlibdir, str(sys.version_info[0]), str(sys.version_info[1]), '--sys-path--', *sys.path)",
+  "values = (sys.base_prefix, sys.prefix, sys.platlibdir, sys.implementation.name, sys.implementation.cache_tag or '', str(sys.version_info[0]), str(sys.version_info[1]), str(sys.version_info[2]), str(sys.flags.isolated), str(sys.flags.no_site), '--sys-path--', *sys.path)",
   "if any(('\\n' in value or '\\r' in value) for value in values): raise RuntimeError('Python runtime layout contains a line break')",
   "with open(sys.argv[1], 'x', encoding='utf-8', newline='\\n') as handle:",
   "    handle.write('\\n'.join(values) + '\\n')"
@@ -3680,7 +3777,8 @@ async function capturePythonRuntimeLayout(
   layoutState,
   hostEnvironment,
   bootstrapPython,
-  options
+  options,
+  venvConfiguration
 ) {
   const path = join(layoutState.layout.run, "python-runtime-layout.txt");
   await requireAbsentPath(path, "Python runtime layout");
@@ -3710,31 +3808,62 @@ async function capturePythonRuntimeLayout(
   try {
     const values = decodeStrictUtf8(pin.bytes, "Python runtime layout").split("\n");
     if (
-      values.length < 8 ||
-      values[5] !== "--sys-path--" ||
+      values.length < 13 ||
+      values[10] !== "--sys-path--" ||
       values.at(-1) !== "" ||
       !isAbsolute(values[0]) ||
       !isAbsolute(values[1]) ||
       !/^[A-Za-z0-9._-]+$/u.test(values[2]) ||
-      !/^[1-9][0-9]*$/u.test(values[3]) ||
-      !/^[0-9]+$/u.test(values[4]) ||
-      !values.slice(6, -1).every((value) => isAbsolute(value))
+      values[3] !== "cpython" ||
+      !/^cpython-[0-9]+$/u.test(values[4]) ||
+      !/^[1-9][0-9]*$/u.test(values[5]) ||
+      !/^[0-9]+$/u.test(values[6]) ||
+      !/^[0-9]+$/u.test(values[7]) ||
+      values[8] !== "1" ||
+      values[9] !== "1" ||
+      !values.slice(11, -1).every((value) => isAbsolute(value))
     ) {
       fail("Python runtime layout is malformed");
     }
     const basePrefix = await realpath(values[0]);
     const prefix = await realpath(values[1]);
-    if (prefix !== (await realpath(layoutState.layout.venv))) {
+    const major = Number(values[5]);
+    const minor = Number(values[6]);
+    const micro = Number(values[7]);
+    const version = `python${String(major)}.${String(minor)}`;
+    const standardLibrary =
+      process.platform === "win32" ? join(basePrefix, "Lib") : join(basePrefix, values[2], version);
+    const expectedSysPath =
+      process.platform === "win32"
+        ? [join(basePrefix, `python${String(major)}${String(minor)}.zip`), join(basePrefix, "DLLs"), standardLibrary]
+        : [
+            join(basePrefix, values[2], `python${String(major)}${String(minor)}.zip`),
+            standardLibrary,
+            join(standardLibrary, "lib-dynload")
+          ];
+    const sysPath = values.slice(11, -1);
+    if (
+      !isSupportedCpythonVersion(major, minor) ||
+      values[4] !== `cpython-${String(major)}${String(minor)}` ||
+      prefix === basePrefix ||
+      prefix !== (await realpath(layoutState.layout.venv)) ||
+      JSON.stringify(sysPath) !== JSON.stringify(expectedSysPath)
+    ) {
       fail("Python runtime layout does not bind the private venv");
+    }
+    if (venvConfiguration.version !== `${String(major)}.${String(minor)}.${String(micro)}`) {
+      fail("Python runtime layout and venv configuration versions differ");
     }
     layoutState.runnerFilePins.push({ label: "Python runtime layout", maximumBytes: 16 * 1024, pin });
     return {
       basePrefix,
-      major: Number(values[3]),
-      minor: Number(values[4]),
+      cacheTag: values[4],
+      major,
+      micro,
+      minor,
       platlibdir: values[2],
       prefix,
-      sysPath: values.slice(6, -1)
+      sysPath
     };
   } catch (error) {
     await finishWithOwnedCleanup(error, [{ label: "Python runtime layout", run: () => pin.handle.close() }]);
@@ -3765,6 +3894,21 @@ function pythonPayloadKind(name) {
   const folded = name.toLocaleLowerCase("en-US");
   if (folded === "record") return "record";
   if (folded === "entry_points.txt") return "entry-point";
+  if (
+    [
+      "dependency_links.txt",
+      "direct_url.json",
+      "installer",
+      "metadata",
+      "namespace_packages.txt",
+      "pkg-info",
+      "requires.txt",
+      "top_level.txt",
+      "wheel"
+    ].includes(folded)
+  ) {
+    return "package-metadata";
+  }
   if (folded.endsWith(".pth")) return "path-configuration";
   if ([".so", ".pyd", ".dll", ".dylib"].some((suffix) => folded.endsWith(suffix))) {
     return "native-extension";
@@ -3787,7 +3931,7 @@ function pythonDirectoryRecord(path, value) {
   };
 }
 
-async function discoverPythonPayloads(searchPaths, venv) {
+async function discoverPythonPayloads(searchPaths, venv, { includeVenv = true } = {}) {
   const directories = new Map();
   const payloads = new Map();
   const snapshots = new Map();
@@ -3877,9 +4021,11 @@ async function discoverPythonPayloads(searchPaths, venv) {
     else if (value.isFile() || value.isSymbolicLink()) await addPayload(candidate, "import-archive");
     else fail(`Python import search path is unsupported: ${candidate}`);
   }
-  const scriptsRoot = join(venv, process.platform === "win32" ? "Scripts" : "bin");
-  await scanDirectory(await realpath(scriptsRoot), true);
-  await addPayload(join(venv, "pyvenv.cfg"), "venv-configuration");
+  if (includeVenv) {
+    const scriptsRoot = join(venv, process.platform === "win32" ? "Scripts" : "bin");
+    await scanDirectory(await realpath(scriptsRoot), true);
+    await addPayload(join(venv, "pyvenv.cfg"), "venv-configuration");
+  }
   const byPath = (left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8"));
   return {
     directories: [...directories.values()].sort(byPath),
@@ -3888,13 +4034,119 @@ async function discoverPythonPayloads(searchPaths, venv) {
   };
 }
 
+async function writePinnedPythonSnapshotFile(pin, destination, snapshotRoot) {
+  const parent = dirname(destination);
+  await mkdir(parent, { mode: 0o700, recursive: true });
+  const canonicalParent = await realpath(parent);
+  if (canonicalParent !== parent || (parent !== snapshotRoot && !isInside(parent, snapshotRoot))) {
+    fail("Python package snapshot destination escaped its private root");
+  }
+  await verifyPinnedPythonPayload(pin);
+  let output;
+  try {
+    output = await open(
+      destination,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(64 * 1024);
+    let offset = 0;
+    while (offset < pin.size) {
+      const { bytesRead } = await pin.handle.read(buffer, 0, Math.min(buffer.length, pin.size - offset), offset);
+      if (bytesRead === 0) fail(`Python source payload ${pin.path} ended while it was snapshotted`);
+      let written = 0;
+      while (written < bytesRead) {
+        const result = await output.write(buffer, written, bytesRead - written, offset + written);
+        if (result.bytesWritten === 0) fail("Python package snapshot write made no progress");
+        written += result.bytesWritten;
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    await output.sync();
+    const value = await output.stat({ bigint: true });
+    if (!value.isFile() || value.nlink !== 1n || value.size !== BigInt(pin.size) || hash.digest("hex") !== pin.digest) {
+      fail(`Python package snapshot ${destination} does not match its pinned source`);
+    }
+    await output.close();
+    output = undefined;
+    await chmod(destination, 0o400);
+    const named = await lstat(destination, { bigint: true });
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== 1n ||
+      (await realpath(destination)) !== destination
+    ) {
+      fail(`Python package snapshot ${destination} is not one private regular file`);
+    }
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [
+      { label: `Python package snapshot ${destination}`, run: () => output?.close() }
+    ]);
+  }
+}
+
+async function createPythonPackageSnapshot(layoutState, externalRoots, options) {
+  const rootPins = [];
+  try {
+    for (const root of externalRoots) {
+      rootPins.push(await openPinnedDirectory(root, `Python package source root ${root}`));
+    }
+  } catch (error) {
+    await finishWithOwnedCleanup(
+      error,
+      rootPins.map((pin, index) => ({
+        label: `Python package source root ${String(index)}`,
+        run: () => pin.handle.close()
+      }))
+    );
+  }
+  layoutState.pythonSourceRootPins = rootPins;
+  const source = await discoverPythonPayloads(externalRoots, layoutState.layout.venv, { includeVenv: false });
+  const opened = await openPythonPayloadSet(source.payloads, source.snapshots, "source");
+  layoutState.pythonSourcePayloadPins = opened.pins;
+  layoutState.pythonSourcePayloadSummary = opened.summary;
+  await options.afterPythonSourceDiscoveryForTest?.({
+    payloads: source.payloads,
+    roots: externalRoots
+  });
+  for (const [index, pin] of rootPins.entries()) {
+    await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)}`);
+  }
+  for (const pin of opened.pins) await verifyPinnedPythonPayload(pin);
+
+  const snapshotRoots = [];
+  for (const [index, root] of externalRoots.entries()) {
+    const snapshotRoot = join(layoutState.layout.pythonPackageSnapshot, `root-${String(index).padStart(4, "0")}`);
+    await mkdir(snapshotRoot, { mode: 0o700 });
+    snapshotRoots.push(snapshotRoot);
+    for (const pin of opened.pins) {
+      if (!isInside(pin.path, root)) continue;
+      const suffix = relative(root, pin.path);
+      if (suffix.length === 0 || suffix.startsWith("..") || isAbsolute(suffix)) {
+        fail(`Python source payload ${pin.path} escaped its package root`);
+      }
+      const destination = join(snapshotRoot, suffix);
+      await writePinnedPythonSnapshotFile(pin, destination, snapshotRoot);
+    }
+  }
+  for (const [index, pin] of rootPins.entries()) {
+    await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)} after snapshot`);
+  }
+  for (const pin of opened.pins) await verifyPinnedPythonPayload(pin);
+  return { snapshotRoots, sourceManifest: opened.summary };
+}
+
 async function preparePythonImportBoundary(
   assignmentPath,
   assignment,
   layoutState,
   hostEnvironment,
   bootstrapPython,
-  options
+  options,
+  venvConfiguration
 ) {
   const runtime = await capturePythonRuntimeLayout(
     assignmentPath,
@@ -3902,7 +4154,8 @@ async function preparePythonImportBoundary(
     layoutState,
     hostEnvironment,
     bootstrapPython,
-    options
+    options,
+    venvConfiguration
   );
   const version = `python${String(runtime.major)}.${String(runtime.minor)}`;
   const privateSite =
@@ -3928,12 +4181,18 @@ async function preparePythonImportBoundary(
   for (const root of externalRoots) {
     if (root.includes("\n") || root.includes("\r")) fail("Python package root contains a line break");
   }
+  const snapshot = await createPythonPackageSnapshot(layoutState, externalRoots, options);
   const pathConfiguration = join(privateSite, "openwrangler-pinned-packages.pth");
-  await writeFile(pathConfiguration, `${externalRoots.join("\n")}\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(
+    pathConfiguration,
+    `import sys; sys.dont_write_bytecode=True; sys.modules['sitecustomize']=sys; sys.modules['usercustomize']=sys\n${snapshot.snapshotRoots.join("\n")}\n`,
+    { flag: "wx", mode: 0o400 }
+  );
   const preload = await discoverPythonPayloads(
-    [...runtime.sysPath, privateSite, ...externalRoots],
+    [...runtime.sysPath, privateSite, ...snapshot.snapshotRoots],
     layoutState.layout.venv
   );
+  layoutState.pythonExpectedSysPath = [...runtime.sysPath, privateSite, ...snapshot.snapshotRoots];
   layoutState.pythonPayloadDiscoverySnapshots = preload.snapshots;
   await bindPythonDirectories(layoutState, preload.directories, "preload");
   const preloadManifest = await bindPythonPayloads(layoutState, preload.payloads, "preload");
@@ -3941,11 +4200,19 @@ async function preparePythonImportBoundary(
     externalRoots,
     pathConfiguration,
     payloads: JSON.parse(layoutState.pythonPayloadSelection),
-    privateSite
+    privateSite,
+    snapshotRoots: snapshot.snapshotRoots
   });
   await bindPythonDirectories(layoutState, JSON.parse(layoutState.pythonDirectorySelection), "prelaunch");
   await bindPythonPayloads(layoutState, JSON.parse(layoutState.pythonPayloadSelection), "prelaunch");
-  return { externalRoots, preloadManifest, privateSite };
+  return {
+    externalRoots,
+    preloadManifest,
+    privateSite,
+    snapshotRoots: snapshot.snapshotRoots,
+    sourceManifest: snapshot.sourceManifest,
+    venvConfiguration
+  };
 }
 
 async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, hostEnvironment, options) {
@@ -3998,6 +4265,7 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     layoutState.layout.pythonExecutable,
     layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined
   );
+  const venvConfiguration = await captureVenvConfiguration(layoutState, creation.executable.snapshot.path);
   layoutState.layout.pythonToolExecutable = layoutState.layout.pythonExecutable;
   const importBoundary = await preparePythonImportBoundary(
     assignmentPath,
@@ -4005,7 +4273,8 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     layoutState,
     hostEnvironment,
     bootstrapPython,
-    options
+    options,
+    venvConfiguration
   );
   const verificationEnvironment = isolatedEnvironment(assignmentPath, assignment, layoutState.layout, hostEnvironment);
   const verification = await runOwnedCommand(
@@ -4046,7 +4315,10 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     importBoundary: {
       externalRoots: importBoundary.externalRoots,
       privateSite: importBoundary.privateSite,
-      preloadManifest: importBoundary.preloadManifest
+      preloadManifest: importBoundary.preloadManifest,
+      snapshotRoots: importBoundary.snapshotRoots,
+      sourceManifest: importBoundary.sourceManifest,
+      venvConfiguration: importBoundary.venvConfiguration
     },
     inventory: inventory.identity,
     inventoryResult: inventory.result,
@@ -4083,6 +4355,12 @@ async function verifyLayout(layoutState) {
   }
   for (const pin of layoutState.pythonPayloadPins ?? []) {
     await verifyPinnedPythonPayload(pin);
+  }
+  for (const pin of layoutState.pythonSourcePayloadPins ?? []) {
+    await verifyPinnedPythonPayload(pin);
+  }
+  for (const [index, pin] of (layoutState.pythonSourceRootPins ?? []).entries()) {
+    await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)} final`);
   }
   if (layoutState.pythonDirectories) {
     await verifyPythonDirectorySelection(layoutState.pythonDirectories, "final");
@@ -4222,6 +4500,7 @@ async function runQualification({
   afterGitExecutableSnapshotWriteForTest,
   afterGitWrapperPreparedForTest,
   afterPythonPreinventoryForTest,
+  afterPythonSourceDiscoveryForTest,
   additionalPythonPackageRootsForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
@@ -4292,6 +4571,7 @@ async function runQualification({
         ownedRunnerForTest: bootstrapCommandRunnerForTest,
         additionalPackageRootsForTest: additionalPythonPackageRootsForTest,
         afterPythonPreinventoryForTest,
+        afterPythonSourceDiscoveryForTest,
         platformForTest: bootstrapCommandPlatformForTest,
         terminationGraceMs,
         timeoutMs,
@@ -4502,6 +4782,7 @@ function parseCommandLine(arguments_) {
 
 const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   finishWithOwnedCleanup,
+  isSupportedCpythonVersion,
   parseGitConfigManifestBytes,
   openDirectory(path, afterOpenForTest) {
     return openPinnedDirectory(path, "test directory", { afterOpenForTest });
