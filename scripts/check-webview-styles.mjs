@@ -925,6 +925,7 @@ function functionScopeNode(node) {
 function nestedScopeNode(node) {
   return (
     functionScopeNode(node) ||
+    ts.isClassExpression(node) ||
     ts.isBlock(node) ||
     ts.isCatchClause(node) ||
     ts.isForStatement(node) ||
@@ -1056,7 +1057,7 @@ function buildLexicalDomAnalysis(document, budget, label) {
     } else if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) {
       if (node.name !== undefined)
         declareIdentifier(incomingScope, node.name, bindings, declarationBindings, undefined);
-    } else if (ts.isFunctionExpression(node) && node.name !== undefined) {
+    } else if ((ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name !== undefined) {
       declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
     } else if (ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node) || ts.isImportEqualsDeclaration(node)) {
       if (ts.isIdentifier(node.name)) declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
@@ -1290,7 +1291,18 @@ function runtimeModuleSpecifier(node) {
 function classReferences(source, path, budget, state) {
   budget.consume(source.length, path);
   const scriptKind = extname(path) === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  const document = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKind);
+  let document;
+  try {
+    document = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKind);
+  } catch (error) {
+    if (
+      !(error instanceof RangeError) ||
+      !["Maximum call stack size exceeded", "too much recursion"].includes(error.message)
+    ) {
+      throw error;
+    }
+    throw new Error(`${path} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstDepth}-level TypeScript AST limit.`);
+  }
   if (document.parseDiagnostics.length > 0) {
     throw new Error(`${path} must parse before its class references can prove selector ownership.`);
   }
