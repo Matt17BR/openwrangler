@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  opendirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, test } from "node:test";
@@ -10,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import {
   CONTEXT_LIMIT_BYTES,
   EXPECTED_INSTRUCTION_FILES,
+  INSTRUCTION_MANIFEST,
   REPRESENTATIVE_CONTEXTS,
   discoverAgentInstructionPaths,
   loadAgentInstructionContext,
@@ -115,9 +125,9 @@ test("actual ancestors and explicit src/test routes load every applicable owner 
     REPRESENTATIVE_CONTEXTS.filter((entry) => entry.target.startsWith("src/test/")).map((entry) => entry.instructions),
     [
       ["AGENTS.md", "src/shared/AGENTS.md"],
-      ["AGENTS.md", "src/extension/AGENTS.md"],
-      ["AGENTS.md", "src/webviews/AGENTS.md"],
-      ["AGENTS.md", "scripts/AGENTS.md"]
+      ["AGENTS.md", "src/shared/AGENTS.md", "src/extension/AGENTS.md"],
+      ["AGENTS.md", "src/shared/AGENTS.md", "src/webviews/AGENTS.md"],
+      ["AGENTS.md", "src/shared/AGENTS.md", "src/extension/AGENTS.md", "src/webviews/AGENTS.md", "scripts/AGENTS.md"]
     ]
   );
 });
@@ -146,6 +156,24 @@ test("file and directory targets are exact and path aliases fail closed", () => 
       () => discoverAgentInstructionPaths(repositoryRoot, alias, { targetKind: "file" }),
       /exact normalized/u
     );
+
+  const aliasRoot = temporaryInstructionTree();
+  writeFileSync(join(aliasRoot, "alias-�.txt"), "fixture\n", "utf8");
+  for (const alias of ["alias-\ud800.txt", "alias-\udc00.txt", "alias-e\u0301.txt"]) {
+    assert.throws(
+      () => discoverAgentInstructionPaths(aliasRoot, alias, { targetKind: "file" }),
+      /valid Unicode|exact normalized/u
+    );
+  }
+});
+
+test("the canonical root policy is mandatory and first for every scoped context", () => {
+  const root = temporaryInstructionTree();
+  rmSync(join(root, "AGENTS.md"));
+  assert.throws(
+    () => discoverAgentInstructionPaths(root, "src/shared/protocol.ts", { targetKind: "file" }),
+    /root AGENTS\.md/u
+  );
 });
 
 test("delivered context rejects truncation and reversed ancestor order", () => {
@@ -174,15 +202,29 @@ test("missing markers and checksum drift fail closed", () => {
   assert.throws(() => validateAgentInstructionContext(secondRoot), /completion checksum/u);
 });
 
-test("resealing a changed invariant cannot replace the independent canonical body seal", () => {
-  const root = temporaryInstructionTree();
-  const rootPath = join(root, "AGENTS.md");
-  const changed = readFileSync(rootPath, "utf8").replace(
-    "never alter the source",
-    "may alter the source after inspection"
+test("resealing any changed I01-I58 invariant cannot replace its independent canonical body seal", () => {
+  const observed = [];
+  for (const entry of INSTRUCTION_MANIFEST) {
+    for (const rule of entry.rules) {
+      const root = temporaryInstructionTree();
+      const instructionPath = join(root, entry.path);
+      const number = Number.parseInt(rule.slice(1), 10);
+      const markerAndPrefix = `<!-- OW-RULE:${rule} -->\n${number}. `;
+      const original = readFileSync(instructionPath, "utf8");
+      assert.equal(original.includes(markerAndPrefix), true, `${rule} must expose its canonical numbered prefix.`);
+      const changed = original.replace(markerAndPrefix, `${markerAndPrefix}mutated `);
+      writeFileSync(instructionPath, reseal(entry.path, changed), "utf8");
+      assert.throws(
+        () => validateAgentInstructionContext(root),
+        new RegExp(`independently sealed canonical body for ${rule}`, "u")
+      );
+      observed.push(rule);
+    }
+  }
+  assert.deepEqual(
+    observed.sort(),
+    Array.from({ length: 58 }, (_, index) => `I${String(index + 1).padStart(2, "0")}`)
   );
-  writeFileSync(rootPath, reseal("AGENTS.md", changed), "utf8");
-  assert.throws(() => validateAgentInstructionContext(root), /independently sealed canonical body for I02/u);
 });
 
 test("duplicated and missing invariant ownership fail even with a renewed checksum", () => {
@@ -227,6 +269,63 @@ test("streamed directory-entry limits are charged before a tracked path is retai
   );
 });
 
+test("tracked ancestor prefix count, depth, and bytes reject before retention or directory opening", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-prefix-bound-"));
+  temporaryRoots.add(root);
+  const cases = [
+    {
+      paths: [`${"a/".repeat(33)}AGENTS.md`],
+      options: { maxDirectories: 4_096 },
+      pattern: /depth.*before retention/iu
+    },
+    { paths: ["a/b/AGENTS.md"], options: { maxDirectories: 2 }, pattern: /directory.*before retention/iu },
+    {
+      paths: Array.from(
+        { length: 16 },
+        (_, pathIndex) =>
+          `${Array.from({ length: 32 }, (_, partIndex) => `${pathIndex}-${partIndex}-${"x".repeat(96)}`).join("/")}/AGENTS.md`
+      ),
+      options: { maxDirectories: 4_096 },
+      pattern: /prefix byte.*before retention/iu
+    }
+  ];
+  for (const { paths, options, pattern } of cases) {
+    let opened = false;
+    assert.throws(
+      () =>
+        scanTrackedAgentInstructionPaths(root, paths, {
+          ...options,
+          openDirectory() {
+            opened = true;
+            throw new Error("must not open before prefix admission");
+          }
+        }),
+      pattern
+    );
+    assert.equal(opened, false);
+  }
+});
+
+test("queued tracked-scope directory replacement fails before pathname reopening", () => {
+  const root = temporaryInstructionTree();
+  let opens = 0;
+  assert.throws(
+    () =>
+      scanTrackedAgentInstructionPaths(root, ["src/shared/AGENTS.md"], {
+        openDirectory(path) {
+          opens += 1;
+          if (opens === 2) {
+            replaceAncestor(root, "src");
+            mkdirSync(join(root, "src/shared"), { recursive: true });
+            writeFileSync(join(root, "src/shared/AGENTS.md"), "replacement\n", "utf8");
+          }
+          return opendirSync(path);
+        }
+      }),
+    /changed identity before pathname reopen/u
+  );
+});
+
 test("ancestor replacement fails descriptor-bound discovery and instruction reads", () => {
   const discoveryRoot = temporaryInstructionTree();
   assert.throws(
@@ -259,7 +358,23 @@ test("issue, review, run, and tracker sludge rejects outside headings", () => {
     "Run ID: 123456",
     "Tracker: state:review",
     "Owner: task-704",
-    "HEAD: deadbee"
+    "HEAD: deadbee",
+    "# Migration notes",
+    "## Migration history notes",
+    "# Prompt history",
+    "### Prompt notes",
+    "# Review notes",
+    "## Review evidence",
+    "# Run evidence",
+    "## Run notes",
+    "# Evidence",
+    "## Evidence receipts",
+    "# MIGRATION NOTES: archived",
+    "## Prompt histories",
+    "### Review note — prior",
+    "# Run Evidence (local)",
+    "## EVIDENCE: terminal",
+    "### Workflow receipts"
   ]) {
     const root = temporaryInstructionTree();
     const docsPath = join(root, "docs/AGENTS.md");

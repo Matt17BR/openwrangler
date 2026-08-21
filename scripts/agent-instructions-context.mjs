@@ -8,13 +8,14 @@ import { TextDecoder } from "node:util";
 const ROOT_FILE_LIMIT_BYTES = 12 * 1_024;
 const SCOPED_FILE_LIMIT_BYTES = 24 * 1_024;
 const TOTAL_INSTRUCTION_LIMIT_BYTES = 96 * 1_024;
-export const CONTEXT_LIMIT_BYTES = 32 * 1_024;
+export const CONTEXT_LIMIT_BYTES = 64 * 1_024;
 const MAX_INSTRUCTION_FILES = 16;
 const MAX_ANCESTOR_DEPTH = 32;
 const MAX_SCAN_DIRECTORIES = 4_096;
 const MAX_SCAN_ENTRIES = 65_536;
 const MAX_TRACKED_PATH_BYTES = 4_096;
 const MAX_TRACKED_PATH_OUTPUT_BYTES = 128 * 1_024;
+const MAX_TRACKED_PREFIX_BYTES = MAX_TRACKED_PATH_OUTPUT_BYTES;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 function invariantIds(...numbers) {
@@ -169,20 +170,31 @@ export const REPRESENTATIVE_CONTEXTS = Object.freeze([
   Object.freeze({
     target: "src/test/sessionCoordinator.unit.test.ts",
     targetKind: "file",
-    routedInstructions: Object.freeze(["src/extension/AGENTS.md"]),
-    instructions: Object.freeze(["AGENTS.md", "src/extension/AGENTS.md"])
+    routedInstructions: Object.freeze(["src/shared/AGENTS.md", "src/extension/AGENTS.md"]),
+    instructions: Object.freeze(["AGENTS.md", "src/shared/AGENTS.md", "src/extension/AGENTS.md"])
   }),
   Object.freeze({
     target: "src/test/operationBuilder.component.test.tsx",
     targetKind: "file",
-    routedInstructions: Object.freeze(["src/webviews/AGENTS.md"]),
-    instructions: Object.freeze(["AGENTS.md", "src/webviews/AGENTS.md"])
+    routedInstructions: Object.freeze(["src/shared/AGENTS.md", "src/webviews/AGENTS.md"]),
+    instructions: Object.freeze(["AGENTS.md", "src/shared/AGENTS.md", "src/webviews/AGENTS.md"])
   }),
   Object.freeze({
     target: "src/test/extensionHost/index.ts",
     targetKind: "file",
-    routedInstructions: Object.freeze(["scripts/AGENTS.md"]),
-    instructions: Object.freeze(["AGENTS.md", "scripts/AGENTS.md"])
+    routedInstructions: Object.freeze([
+      "src/shared/AGENTS.md",
+      "src/extension/AGENTS.md",
+      "src/webviews/AGENTS.md",
+      "scripts/AGENTS.md"
+    ]),
+    instructions: Object.freeze([
+      "AGENTS.md",
+      "src/shared/AGENTS.md",
+      "src/extension/AGENTS.md",
+      "src/webviews/AGENTS.md",
+      "scripts/AGENTS.md"
+    ])
   })
 ]);
 
@@ -196,10 +208,25 @@ function portableRelativePath(path) {
   return path.split(sep).join("/");
 }
 
+function isExactNormalizedUnicode(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return value.normalize("NFC") === value;
+}
+
 function normalizedRepositoryPath(value, label) {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
+    !isExactNormalizedUnicode(value) ||
     Buffer.byteLength(value, "utf8") > MAX_TRACKED_PATH_BYTES ||
     value.includes("\0") ||
     value.includes("\\") ||
@@ -209,7 +236,7 @@ function normalizedRepositoryPath(value, label) {
     value.endsWith("/") ||
     value.split("/").some((part) => part.length === 0 || part === "." || part === "..")
   ) {
-    throw instructionError(`${label} must be one exact normalized repository-relative path.`);
+    throw instructionError(`${label} must be one exact normalized valid-Unicode repository-relative path.`);
   }
   return value;
 }
@@ -441,6 +468,7 @@ function validateCanonicalInvariantBodies(path, body, expectedRules) {
 }
 
 const ACTIVE_PROMPT_SLUDGE = Object.freeze([
+  /^#{1,6}[\t ]+(?:(?:migration|prompt|review|run|workflow|delivery|publication|test)(?:[\t ]+(?:notes?|histor(?:y|ies)|logs?|evidence|receipts?|status(?:es)?|trackers?)){1,3}|evidence(?:[\t ]+(?:notes?|histor(?:y|ies)|logs?|receipts?|status(?:es)?|trackers?)){0,3})\b[^\r\n]*$/imu,
   /^#{1,6}\s+(?:migration|delivery|issue|review|run|workflow|evidence|receipt|tracker)\s+(?:history|log|receipts?|tracker|status)\b/imu,
   /^(?:[-*]\s*)?(?:issue|pull request|pr)\s*#?\d+\b/imu,
   /^(?:[-*]\s*)?(?:issue|pr|pull request|review(?:er)?(?:\s+verdict)?|verdict|run(?:\s+(?:id|number|url|receipt))?|workflow(?:\s+(?:run|id|number|url|receipt))?|job(?:\s+(?:id|number|url|receipt))?|tracker|status|state|owner|assignee|blocker|next action|evidence|receipt|head|tree|commit)\s*(?:#\d+)?\s*:/imu,
@@ -509,6 +537,9 @@ export function discoverAgentInstructionPaths(
       }
       if (discovered.length === 0 || discovered.length > MAX_INSTRUCTION_FILES) {
         throw instructionError("The context target has an invalid instruction-file count.");
+      }
+      if (discovered[0] !== "AGENTS.md") {
+        throw instructionError("The canonical root AGENTS.md policy is mandatory and must load first.");
       }
       return Object.freeze(discovered);
     },
@@ -614,7 +645,24 @@ export function scanTrackedAgentInstructionPaths(
   }
   const root = realpathSync(repositoryRoot);
   const tracked = new Set();
-  const directoryPrefixes = new Set([""]);
+  const directoryPrefixes = new Set();
+  let prefixBytes = 0;
+  const retainDirectoryPrefix = (prefix, depth) => {
+    if (directoryPrefixes.has(prefix)) return;
+    if (depth > MAX_ANCESTOR_DEPTH) {
+      throw instructionError("The tracked instruction ancestor depth exceeded its bound before retention.");
+    }
+    if (directoryPrefixes.size >= maxDirectories) {
+      throw instructionError("The tracked instruction directory count exceeded its bound before retention.");
+    }
+    const bytes = Buffer.byteLength(prefix, "utf8");
+    if (bytes > MAX_TRACKED_PATH_BYTES || prefixBytes + bytes > MAX_TRACKED_PREFIX_BYTES) {
+      throw instructionError("The tracked instruction prefix byte bound was exceeded before retention.");
+    }
+    prefixBytes += bytes;
+    directoryPrefixes.add(prefix);
+  };
+  retainDirectoryPrefix("", 0);
   for (const rawPath of trackedPaths) {
     const path = normalizedRepositoryPath(rawPath, "Tracked AGENTS.md path");
     if (posix.basename(path) !== "AGENTS.md" || tracked.has(path)) {
@@ -623,21 +671,47 @@ export function scanTrackedAgentInstructionPaths(
     if (tracked.size >= MAX_INSTRUCTION_FILES)
       throw instructionError("Too many tracked AGENTS.md files were discovered.");
     tracked.add(path);
-    let directory = posix.dirname(path);
-    while (directory !== ".") {
-      directoryPrefixes.add(directory);
-      directory = posix.dirname(directory);
+    const directory = posix.dirname(path);
+    const depth = directory === "." ? 0 : 1 + [...directory].filter((character) => character === "/").length;
+    if (depth > MAX_ANCESTOR_DEPTH) {
+      throw instructionError("The tracked instruction ancestor depth exceeded its bound before retention.");
+    }
+    if (directory !== ".") {
+      let prefix = "";
+      let prefixDepth = 0;
+      for (const part of directory.split("/")) {
+        prefixDepth += 1;
+        prefix = prefix === "" ? part : `${prefix}/${part}`;
+        retainDirectoryPrefix(prefix, prefixDepth);
+      }
     }
   }
-  const pending = [{ path: root, relativePath: "", depth: 0 }];
+  const rootSnapshot = lstatSync(root, { bigint: true });
+  if (!rootSnapshot.isDirectory() || rootSnapshot.isSymbolicLink()) {
+    throw instructionError("The instruction scope root is not one real directory.");
+  }
+  const pending = [{ path: root, relativePath: "", depth: 0, snapshot: rootSnapshot }];
   const found = [];
   let directoryCount = 1;
   let entryCount = 0;
   while (pending.length > 0) {
     const current = pending.pop();
+    let beforeOpen;
+    try {
+      beforeOpen = lstatSync(current.path, { bigint: true });
+    } catch {
+      throw instructionError("A queued tracked-scope directory disappeared before pathname reopen.");
+    }
+    if (!beforeOpen.isDirectory() || beforeOpen.isSymbolicLink() || !exactStatIdentity(current.snapshot, beforeOpen)) {
+      throw instructionError("A queued tracked-scope directory changed identity before pathname reopen.");
+    }
     const directory = openDirectory(current.path);
     let failure;
     try {
+      const afterOpen = lstatSync(current.path, { bigint: true });
+      if (!afterOpen.isDirectory() || afterOpen.isSymbolicLink() || !exactStatIdentity(current.snapshot, afterOpen)) {
+        throw instructionError("A queued tracked-scope directory changed identity before pathname reopen.");
+      }
       for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
         entryCount += 1;
         if (entryCount > maxEntries) {
@@ -661,8 +735,12 @@ export function scanTrackedAgentInstructionPaths(
           if (directoryCount > maxDirectories || nextDepth > MAX_ANCESTOR_DEPTH) {
             throw instructionError("The instruction scope scan exceeded its directory bound before retention.");
           }
-          pending.push({ path: absolutePath, relativePath, depth: nextDepth });
+          pending.push({ path: absolutePath, relativePath, depth: nextDepth, snapshot });
         }
+      }
+      const afterScan = lstatSync(current.path, { bigint: true });
+      if (!afterScan.isDirectory() || afterScan.isSymbolicLink() || !exactStatIdentity(current.snapshot, afterScan)) {
+        throw instructionError("A queued tracked-scope directory changed during its bounded scan.");
       }
     } catch (error) {
       failure = error;
