@@ -17,6 +17,7 @@ import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  APPLICATION_DELIVERY_EVIDENCE,
   CONTEXT_LIMIT_BYTES,
   EXPECTED_INSTRUCTION_FILES,
   INSTRUCTION_MANIFEST,
@@ -26,7 +27,7 @@ import {
   readBoundedInstructionFile,
   scanTrackedAgentInstructionPaths,
   validateAgentInstructionContext,
-  validateDeliveredInstructionContext
+  validateConstructedInstructionContext
 } from "./agent-instructions-context.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +101,13 @@ test("the repository instruction set has one bounded canonical owner for every i
   assert.equal(result.rules, 58);
   assert.equal(result.totalBytes <= 96 * 1_024, true);
   assert.equal(result.maximumContextBytes <= CONTEXT_LIMIT_BYTES, true);
+  assert.deepEqual(result.applicationDeliveryEvidence, APPLICATION_DELIVERY_EVIDENCE);
+  assert.deepEqual(APPLICATION_DELIVERY_EVIDENCE, {
+    actualCodexApplicationPathObserved: false,
+    actualTruncationBehaviorObserved: false,
+    publicationBlocked: true,
+    requiredCanary: "a real application-path completion-marker canary"
+  });
 });
 
 test("actual ancestors and explicit src/test routes load every applicable owner in order", () => {
@@ -127,9 +135,21 @@ test("actual ancestors and explicit src/test routes load every applicable owner 
       ["AGENTS.md", "src/shared/AGENTS.md"],
       ["AGENTS.md", "src/shared/AGENTS.md", "src/extension/AGENTS.md"],
       ["AGENTS.md", "src/shared/AGENTS.md", "src/webviews/AGENTS.md"],
-      ["AGENTS.md", "src/shared/AGENTS.md", "src/extension/AGENTS.md", "src/webviews/AGENTS.md", "scripts/AGENTS.md"]
+      [
+        "AGENTS.md",
+        "src/shared/AGENTS.md",
+        "src/extension/AGENTS.md",
+        "src/webviews/AGENTS.md",
+        "python/AGENTS.md",
+        "r/AGENTS.md",
+        "scripts/AGENTS.md"
+      ]
     ]
   );
+  assert.deepEqual(REPRESENTATIVE_CONTEXTS.find((entry) => entry.target === "README.md")?.instructions, [
+    "AGENTS.md",
+    "docs/AGENTS.md"
+  ]);
 });
 
 test("file and directory targets are exact and path aliases fail closed", () => {
@@ -159,7 +179,8 @@ test("file and directory targets are exact and path aliases fail closed", () => 
 
   const aliasRoot = temporaryInstructionTree();
   writeFileSync(join(aliasRoot, "alias-�.txt"), "fixture\n", "utf8");
-  for (const alias of ["alias-\ud800.txt", "alias-\udc00.txt", "alias-e\u0301.txt"]) {
+  writeFileSync(join(aliasRoot, "terminal-�"), "fixture\n", "utf8");
+  for (const alias of ["alias-\ud800.txt", "alias-\udc00.txt", "alias-e\u0301.txt", "terminal-\ud800"]) {
     assert.throws(
       () => discoverAgentInstructionPaths(aliasRoot, alias, { targetKind: "file" }),
       /valid Unicode|exact normalized/u
@@ -176,15 +197,16 @@ test("the canonical root policy is mandatory and first for every scoped context"
   );
 });
 
-test("delivered context rejects truncation and reversed ancestor order", () => {
+test("local context construction rejects byte truncation and reversed ancestor order without claiming application delivery", () => {
   const context = loadAgentInstructionContext(repositoryRoot, "src/extension/nativeViews.ts", { targetKind: "file" });
   assert.throws(
-    () => validateDeliveredInstructionContext(context.delivery.slice(0, -1), context.documents),
+    () => validateConstructedInstructionContext(context.contextText.slice(0, -1), context.documents),
     /changed content or order|completion marker/u
   );
   const reversed = [...context.documents].reverse();
   assert.throws(
-    () => validateDeliveredInstructionContext(reversed.map((document) => document.text).join("\n"), context.documents),
+    () =>
+      validateConstructedInstructionContext(reversed.map((document) => document.text).join("\n"), context.documents),
     /changed content or order/u
   );
 });
@@ -322,7 +344,25 @@ test("queued tracked-scope directory replacement fails before pathname reopening
           return opendirSync(path);
         }
       }),
-    /changed identity before pathname reopen/u
+    /changed identity before pathname reopen|handle belongs to another directory identity/u
+  );
+});
+
+test("every instruction-scan directory handle is bound to its queued directory identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-owned-directory-"));
+  const foreignRoot = mkdtempSync(join(tmpdir(), "openwrangler-agent-foreign-directory-"));
+  temporaryRoots.add(root);
+  temporaryRoots.add(foreignRoot);
+  writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+  writeFileSync(join(foreignRoot, "AGENTS.md"), "foreign\n", "utf8");
+  assert.throws(
+    () =>
+      scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+        openDirectory() {
+          return opendirSync(foreignRoot);
+        }
+      }),
+    /handle belongs to another directory identity/u
   );
 });
 
@@ -351,30 +391,20 @@ test("ancestor replacement fails descriptor-bound discovery and instruction read
   );
 });
 
-test("issue, review, run, and tracker sludge rejects outside headings", () => {
+test("only the positive canonical active-policy structure survives resealing", () => {
   for (const line of [
-    "Issue #704: implementation history",
-    "Review verdict: GREEN",
-    "Run ID: 123456",
-    "Tracker: state:review",
-    "Owner: task-704",
-    "HEAD: deadbee",
     "# Migration notes",
-    "## Migration history notes",
-    "# Prompt history",
-    "### Prompt notes",
-    "# Review notes",
-    "## Review evidence",
-    "# Run evidence",
-    "## Run notes",
-    "# Evidence",
-    "## Evidence receipts",
-    "# MIGRATION NOTES: archived",
-    "## Prompt histories",
-    "### Review note — prior",
-    "# Run Evidence (local)",
-    "## EVIDENCE: terminal",
-    "### Workflow receipts"
+    "## Archived operator guidance",
+    "## Prior implementation summary",
+    "## Assessment findings",
+    "## Validation outcomes",
+    "## Execution journal",
+    "## Handoff summary",
+    "## Transfer acknowledgements",
+    "Archived migration guidance from the prior prompt.",
+    "Assessment finding: accepted for delivery.",
+    "Execution result: all checks passed.",
+    "Handoff acknowledgement: received."
   ]) {
     const root = temporaryInstructionTree();
     const docsPath = join(root, "docs/AGENTS.md");
@@ -382,7 +412,7 @@ test("issue, review, run, and tracker sludge rejects outside headings", () => {
     const markerStart = text.lastIndexOf("<!-- OW-INSTRUCTIONS:EOF");
     const changed = `${text.slice(0, markerStart)}${line}\n\n${text.slice(markerStart)}`;
     writeFileSync(docsPath, reseal("docs/AGENTS.md", changed), "utf8");
-    assert.throws(() => validateAgentInstructionContext(root), /sludge in an active prompt/u);
+    assert.throws(() => validateAgentInstructionContext(root), /canonical active-policy structure/u);
   }
 });
 
@@ -413,7 +443,7 @@ test("oversized instruction files reject before the descriptor is opened", () =>
 
 test("aggregate context overflow fails before marker inspection", () => {
   assert.throws(
-    () => validateDeliveredInstructionContext("x".repeat(CONTEXT_LIMIT_BYTES + 1), []),
+    () => validateConstructedInstructionContext("x".repeat(CONTEXT_LIMIT_BYTES + 1), []),
     /aggregate byte bound/u
   );
 });

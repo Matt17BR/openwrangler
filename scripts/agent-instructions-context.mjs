@@ -58,6 +58,13 @@ export const EXPECTED_INSTRUCTION_FILES = Object.freeze(INSTRUCTION_MANIFEST.map
 const MANIFEST_BY_PATH = new Map(INSTRUCTION_MANIFEST.map((entry) => [entry.path, entry]));
 const EXPECTED_RULE_IDS = Object.freeze(invariantIds(...Array.from({ length: 58 }, (_, index) => index + 1)));
 
+export const APPLICATION_DELIVERY_EVIDENCE = Object.freeze({
+  actualCodexApplicationPathObserved: false,
+  actualTruncationBehaviorObserved: false,
+  publicationBlocked: true,
+  requiredCanary: "a real application-path completion-marker canary"
+});
+
 const CANONICAL_INVARIANT_DIGESTS = Object.freeze({
   I01: "8e72528721db4ab1e22e105887e21d8dbfb2aab1b0c804e975f2ddb694f547a9",
   I02: "45cd3d7d851c6e0fe759e29bca461a6f01d8d62fd52ab7d04a19c4c45e38fb34",
@@ -119,8 +126,25 @@ const CANONICAL_INVARIANT_DIGESTS = Object.freeze({
   I58: "a0781a6b1974ac92c12bd5bb9eef3598187a5f229558a3a90496887fe411cb86"
 });
 
+const CANONICAL_ACTIVE_POLICY_STRUCTURE_DIGESTS = Object.freeze({
+  "AGENTS.md": "51b2877cf3711937bda36c384ec24e8c48c96b90798e0977c208fb40e7e9e9b0",
+  ".github/AGENTS.md": "28a1066d9e914b3960795a0e554fa3d3b3bc9dc48539bff0d08ccdaf6d717631",
+  "docs/AGENTS.md": "32ced510ade556374b0179716e5d19d6e0ab84b43fb54e5dc608d641da03aef9",
+  "python/AGENTS.md": "cc2e9df594fc301d6505c88e596f94d93cc081e884408fe7382c872980a141db",
+  "r/AGENTS.md": "8465f58fb453216c9d3f37081b8591c196a8e6a08f18d3a6d7e090b853901635",
+  "scripts/AGENTS.md": "10ff5aebdb33164b67f14c7789c2bff137d06d66c097c36dd1d4bf4689a36002",
+  "src/extension/AGENTS.md": "e725a3b44db0cfe002ed82461bcc8757539270daaf1a2df5fc34e724dfb1cfd4",
+  "src/shared/AGENTS.md": "0863648107d71994284fd95615bf82624a6c98a0b4b8d2142e10c2311df6af5c",
+  "src/webviews/AGENTS.md": "e8086d06779a811dc1705aa06de4f9c251bbf7541fcdce3a11a803fb681242d6"
+});
+
 export const REPRESENTATIVE_CONTEXTS = Object.freeze([
-  Object.freeze({ target: "README.md", targetKind: "file", instructions: Object.freeze(["AGENTS.md"]) }),
+  Object.freeze({
+    target: "README.md",
+    targetKind: "file",
+    routedInstructions: Object.freeze(["docs/AGENTS.md"]),
+    instructions: Object.freeze(["AGENTS.md", "docs/AGENTS.md"])
+  }),
   Object.freeze({
     target: ".github/workflows/ci.yml",
     targetKind: "file",
@@ -186,6 +210,8 @@ export const REPRESENTATIVE_CONTEXTS = Object.freeze([
       "src/shared/AGENTS.md",
       "src/extension/AGENTS.md",
       "src/webviews/AGENTS.md",
+      "python/AGENTS.md",
+      "r/AGENTS.md",
       "scripts/AGENTS.md"
     ]),
     instructions: Object.freeze([
@@ -193,6 +219,8 @@ export const REPRESENTATIVE_CONTEXTS = Object.freeze([
       "src/shared/AGENTS.md",
       "src/extension/AGENTS.md",
       "src/webviews/AGENTS.md",
+      "python/AGENTS.md",
+      "r/AGENTS.md",
       "scripts/AGENTS.md"
     ])
   })
@@ -212,6 +240,7 @@ function isExactNormalizedUnicode(value) {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
       const next = value.charCodeAt(index + 1);
       if (next < 0xdc00 || next > 0xdfff) return false;
       index += 1;
@@ -467,16 +496,13 @@ function validateCanonicalInvariantBodies(path, body, expectedRules) {
   return Object.freeze(rules);
 }
 
-const ACTIVE_PROMPT_SLUDGE = Object.freeze([
-  /^#{1,6}[\t ]+(?:(?:migration|prompt|review|run|workflow|delivery|publication|test)(?:[\t ]+(?:notes?|histor(?:y|ies)|logs?|evidence|receipts?|status(?:es)?|trackers?)){1,3}|evidence(?:[\t ]+(?:notes?|histor(?:y|ies)|logs?|receipts?|status(?:es)?|trackers?)){0,3})\b[^\r\n]*$/imu,
-  /^#{1,6}\s+(?:migration|delivery|issue|review|run|workflow|evidence|receipt|tracker)\s+(?:history|log|receipts?|tracker|status)\b/imu,
-  /^(?:[-*]\s*)?(?:issue|pull request|pr)\s*#?\d+\b/imu,
-  /^(?:[-*]\s*)?(?:issue|pr|pull request|review(?:er)?(?:\s+verdict)?|verdict|run(?:\s+(?:id|number|url|receipt))?|workflow(?:\s+(?:run|id|number|url|receipt))?|job(?:\s+(?:id|number|url|receipt))?|tracker|status|state|owner|assignee|blocker|next action|evidence|receipt|head|tree|commit)\s*(?:#\d+)?\s*:/imu,
-  /(?:github\.com\/[^\s)]+\/(?:issues|pull|actions\/runs)\/\d+)/iu,
-  /<\/?(?:codex_delegation|source_thread_id)>/iu,
-  /^(?:[-*]\s*)?(?:exact\s+)?(?:head|tree|commit)\s*=\s*[0-9a-f]{7,40}\b/imu,
-  /^(?:[-*]\s*)?(?:review|evidence|test|publication)\s+receipt\s*:/imu
-]);
+function activePolicyStructureDigest(body) {
+  const structure = body.replace(
+    /<!-- OW-RULE:(I\d{2}) -->\n([\s\S]*?)(?=\n<!-- OW-RULE:|\n## |\n<!-- OW-INSTRUCTIONS:EOF|$)/gu,
+    (_block, rule) => `<!-- OW-RULE:${rule} -->\n<canonical-active-rule>`
+  );
+  return createHash("sha256").update(structure, "utf8").digest("hex");
+}
 
 export function validateInstructionDocument(repositoryRoot, manifestEntry) {
   const document = readBoundedInstructionFile(repositoryRoot, manifestEntry.path, {
@@ -498,8 +524,8 @@ export function validateInstructionDocument(repositoryRoot, manifestEntry) {
     throw instructionError(`${manifestEntry.path} does not match its completion checksum.`);
   }
   const rules = validateCanonicalInvariantBodies(manifestEntry.path, body, manifestEntry.rules);
-  if (ACTIVE_PROMPT_SLUDGE.some((pattern) => pattern.test(body))) {
-    throw instructionError(`${manifestEntry.path} contains issue, review, run, or tracker sludge in an active prompt.`);
+  if (activePolicyStructureDigest(body) !== CANONICAL_ACTIVE_POLICY_STRUCTURE_DIGESTS[manifestEntry.path]) {
+    throw instructionError(`${manifestEntry.path} changed its independently sealed canonical active-policy structure.`);
   }
   return Object.freeze({ ...document, digest, marker, rules: Object.freeze(rules) });
 }
@@ -708,6 +734,21 @@ export function scanTrackedAgentInstructionPaths(
     const directory = openDirectory(current.path);
     let failure;
     try {
+      let handleSnapshot;
+      try {
+        if (typeof directory?.path !== "string") throw new Error("missing native directory path");
+        const handlePath = realpathSync(directory.path);
+        handleSnapshot = lstatSync(handlePath, { bigint: true });
+      } catch {
+        throw instructionError("An opened instruction-scan directory handle could not be identity-bound.");
+      }
+      if (
+        !handleSnapshot.isDirectory() ||
+        handleSnapshot.isSymbolicLink() ||
+        !exactStatIdentity(current.snapshot, handleSnapshot)
+      ) {
+        throw instructionError("An opened instruction-scan directory handle belongs to another directory identity.");
+      }
       const afterOpen = lstatSync(current.path, { bigint: true });
       if (!afterOpen.isDirectory() || afterOpen.isSymbolicLink() || !exactStatIdentity(current.snapshot, afterOpen)) {
         throw instructionError("A queued tracked-scope directory changed identity before pathname reopen.");
@@ -739,7 +780,18 @@ export function scanTrackedAgentInstructionPaths(
         }
       }
       const afterScan = lstatSync(current.path, { bigint: true });
-      if (!afterScan.isDirectory() || afterScan.isSymbolicLink() || !exactStatIdentity(current.snapshot, afterScan)) {
+      let handleAfterScan;
+      try {
+        handleAfterScan = lstatSync(realpathSync(directory.path), { bigint: true });
+      } catch {
+        throw instructionError("An opened instruction-scan directory handle lost its bound identity during scanning.");
+      }
+      if (
+        !afterScan.isDirectory() ||
+        afterScan.isSymbolicLink() ||
+        !exactStatIdentity(current.snapshot, afterScan) ||
+        !exactStatIdentity(current.snapshot, handleAfterScan)
+      ) {
         throw instructionError("A queued tracked-scope directory changed during its bounded scan.");
       }
     } catch (error) {
@@ -760,18 +812,19 @@ export function scanTrackedAgentInstructionPaths(
   return Object.freeze(found);
 }
 
-export function validateDeliveredInstructionContext(delivery, documents, maxBytes = CONTEXT_LIMIT_BYTES) {
-  if (Buffer.byteLength(delivery, "utf8") > maxBytes) {
-    throw instructionError("The delivered instruction context exceeds its aggregate byte bound.");
+export function validateConstructedInstructionContext(contextText, documents, maxBytes = CONTEXT_LIMIT_BYTES) {
+  if (Buffer.byteLength(contextText, "utf8") > maxBytes) {
+    throw instructionError("The locally constructed instruction context exceeds its aggregate byte bound.");
   }
   const expected = documents.map((document) => document.text).join("\n");
-  if (delivery !== expected) throw instructionError("The delivered instruction context changed content or order.");
+  if (contextText !== expected)
+    throw instructionError("The locally constructed instruction context changed content or order.");
   let previousMarker = -1;
   for (const document of documents) {
-    const index = delivery.indexOf(document.marker);
-    if (index <= previousMarker || delivery.indexOf(document.marker, index + 1) !== -1) {
+    const index = contextText.indexOf(document.marker);
+    if (index <= previousMarker || contextText.indexOf(document.marker, index + 1) !== -1) {
       throw instructionError(
-        "The delivered instruction context has a missing, duplicate, or reordered completion marker."
+        "The locally constructed instruction context has a missing, duplicate, or reordered completion marker."
       );
     }
     previousMarker = index;
@@ -803,14 +856,14 @@ export function loadAgentInstructionContext(
   if (totalBytes > CONTEXT_LIMIT_BYTES) {
     throw instructionError(`The ${targetPath} instruction context exceeds its aggregate byte bound.`);
   }
-  const delivery = documents.map((document) => document.text).join("\n");
-  validateDeliveredInstructionContext(delivery, documents);
+  const contextText = documents.map((document) => document.text).join("\n");
+  validateConstructedInstructionContext(contextText, documents);
   return Object.freeze({
     target: targetPath,
     paths,
     documents: Object.freeze(documents),
-    delivery,
-    bytes: Buffer.byteLength(delivery, "utf8")
+    contextText,
+    bytes: Buffer.byteLength(contextText, "utf8")
   });
 }
 
@@ -860,7 +913,8 @@ export function validateAgentInstructionContext(repositoryRoot) {
     rules: owners.size,
     totalBytes,
     maximumContextBytes: Math.max(...contexts.map((context) => context.bytes)),
-    contexts: Object.freeze(contexts)
+    contexts: Object.freeze(contexts),
+    applicationDeliveryEvidence: APPLICATION_DELIVERY_EVIDENCE
   });
 }
 
