@@ -1180,6 +1180,10 @@ async function createStateLayout(assignment, assignmentDigest) {
     ownerPins.artifacts = await openPinnedDirectory(layout.artifacts, "artifact owner");
     ownerPins.executableSnapshots = await openPinnedDirectory(layout.executableSnapshots, "executable-snapshot owner");
     ownerPins.gitMetadata = await openPinnedDirectory(layout.gitMetadata, "private Git metadata owner");
+    ownerPins.pythonPackageSnapshot = await openPinnedDirectory(
+      layout.pythonPackageSnapshot,
+      "Python package-snapshot owner"
+    );
     ownerPins.pytestTempParent = await openPinnedDirectory(layout.pytestTempParent, "pytest-temp parent owner");
     for (const [key, pin] of Object.entries(ownerPins)) {
       const identity = key === "stateRoot" ? stateRootIdentity : identities[key];
@@ -3481,10 +3485,7 @@ async function closePythonPayloadPins(layoutState) {
   await finishWithOwnedCleanup(null, [
     ...(layoutState?.pythonNamespaceDirectoryPins ?? []).map((pin, index) => ({
       label: `Python execution namespace directory ${String(index)}`,
-      run: async () => {
-        if (process.platform !== "win32") await pin.handle.chmod(0o700);
-        await pin.handle.close();
-      }
+      run: () => restoreAndClosePythonDirectory(pin, `Python execution namespace directory ${String(index)}`)
     })),
     ...(layoutState?.pythonPayloadPins ?? []).map((pin, index) => ({
       label: `Python payload ${String(index)}`,
@@ -3498,6 +3499,21 @@ async function closePythonPayloadPins(layoutState) {
       label: `Python source root ${String(index)}`,
       run: () => pin.handle.close()
     }))
+  ]);
+}
+
+async function restoreAndClosePythonDirectory(pin, label) {
+  if (!pin?.handle) return;
+  await finishWithOwnedCleanup(null, [
+    ...(process.platform === "win32" || !Number.isInteger(pin.restoreMode)
+      ? []
+      : [
+          {
+            label: `${label} mode restoration`,
+            run: () => pin.handle.chmod(pin.restoreMode ?? 0o700)
+          }
+        ]),
+    { label: `${label} descriptor`, run: () => pin.handle.close() }
   ]);
 }
 
@@ -3996,7 +4012,14 @@ function pythonDirectoryRecord(path, value) {
 async function discoverPythonPayloads(
   searchPaths,
   venv,
-  { completeRoots = [], followDirectoryLinks = false, includeVenv = true } = {}
+  {
+    afterEntryRetainedForTest,
+    completeRoots = [],
+    followDirectoryLinks = false,
+    includeVenv = true,
+    retainedEntryLimit = MAX_PYTHON_PAYLOAD_DIRECTORIES,
+    retainedPathByteLimit = MAX_PYTHON_PAYLOAD_PATH_BYTES
+  } = {}
 ) {
   const directories = new Map();
   const linkedDirectories = [];
@@ -4005,6 +4028,7 @@ async function discoverPythonPayloads(
   const complete = new Set(completeRoots);
   let entries = 0;
   let pathBytes = 0;
+  let retainedPathBytes = 0;
   const decodeName = (value) => {
     const bytes = Buffer.isBuffer(value) ? Buffer.from(value) : Buffer.from(value, "utf8");
     let name;
@@ -4062,11 +4086,19 @@ async function discoverPythonPayloads(
     try {
       for await (const entry of stream) {
         entries += 1;
-        if (entries > MAX_PYTHON_PAYLOAD_DIRECTORIES) {
+        if (entries > retainedEntryLimit) {
           fail("Python payload discovery exceeded its entry bound");
         }
         const decoded = decodeName(entry.name);
+        retainedPathBytes +=
+          decoded.bytes.length +
+          Buffer.byteLength(join(logicalPath, decoded.name), "utf8") +
+          (logicalPath === physicalPath ? 0 : Buffer.byteLength(join(physicalPath, decoded.name), "utf8"));
+        if (retainedPathBytes > retainedPathByteLimit) {
+          fail("Python payload discovery exceeded its retained path-byte bound");
+        }
         values.push({ bytes: decoded.bytes, name: decoded.name });
+        await afterEntryRetainedForTest?.({ entries, retainedPathBytes });
       }
     } finally {
       await stream.close().catch((error) => {
@@ -4087,7 +4119,8 @@ async function discoverPythonPayloads(
         try {
           target = await realpath(child);
         } catch (error) {
-          if (error?.code === "ENOENT") continue;
+          if (error?.code === "ENOENT" && !includePackageData) continue;
+          if (error?.code === "ENOENT") fail(`unsupported Python package-root entry: ${child}`);
           throw error;
         }
         const targetValue = await lstat(target, { bigint: true });
@@ -4104,7 +4137,11 @@ async function discoverPythonPayloads(
         }
       }
       const kind = scripts ? "script" : pythonPayloadKind(entry.name, includePackageData);
-      if (kind !== null && (value.isFile() || value.isSymbolicLink())) await addPayload(child, kind);
+      if (kind !== null && (value.isFile() || value.isSymbolicLink())) {
+        await addPayload(child, kind);
+      } else if (includePackageData && !value.isDirectory()) {
+        fail(`unsupported Python package-root entry: ${child}`);
+      }
     }
     const after = await lstat(physicalPath, { bigint: true });
     if (!sameImmutableSnapshot(before, after)) {
@@ -4140,27 +4177,83 @@ async function discoverPythonPayloads(
   };
 }
 
-async function writePinnedPythonSnapshotFile(pin, destination, snapshotRoot, options) {
-  const parent = dirname(destination);
-  await mkdir(parent, { mode: 0o700, recursive: true });
-  const canonicalParent = await realpath(parent);
-  if (canonicalParent !== parent || (parent !== snapshotRoot && !isInside(parent, snapshotRoot))) {
-    fail("Python package snapshot destination escaped its private root");
+function requireSnapshotChildName(name) {
+  if (
+    typeof name !== "string" ||
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    parse(name).base !== name ||
+    name.includes("/") ||
+    name.includes("\\")
+  ) {
+    fail("Python package snapshot child name is invalid");
   }
+}
+
+async function descriptorOwnedChildPath(parentPin, name) {
+  requireSnapshotChildName(name);
+  if (process.platform === "win32") return join(parentPin.path, name);
+  const descriptorRoot =
+    process.platform === "linux"
+      ? `/proc/self/fd/${String(parentPin.handle.fd)}`
+      : `/dev/fd/${String(parentPin.handle.fd)}`;
+  if ((await realpath(descriptorRoot)) !== parentPin.path) {
+    fail(`Python package snapshot parent ${parentPin.path} changed before child creation`);
+  }
+  return join(descriptorRoot, name);
+}
+
+async function createPinnedPythonSnapshotDirectory(parentPin, name, destination, options) {
+  await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
+  await options.beforePythonSnapshotChildCreateForTest?.({ destination, kind: "directory", source: null });
+  await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
+  const ownedDestination = await descriptorOwnedChildPath(parentPin, name);
+  await mkdir(ownedDestination, { mode: 0o700 });
+  let handle;
+  try {
+    handle = await open(
+      ownedDestination,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+    );
+    const opened = await handle.stat({ bigint: true });
+    const named = await lstat(destination, { bigint: true });
+    if (
+      !opened.isDirectory() ||
+      named.isSymbolicLink() ||
+      !sameDirectorySnapshot(opened, named) ||
+      (await realpath(destination)) !== destination
+    ) {
+      fail(`Python package snapshot directory ${destination} was not created through its pinned parent`);
+    }
+    await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
+    return { handle, path: destination, snapshot: opened };
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [
+      { label: `Python package snapshot directory ${destination}`, run: () => handle?.close() }
+    ]);
+  }
+}
+
+async function writePinnedPythonSnapshotFile(pin, parentPin, name, destination, options) {
+  await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
+  await options.beforePythonSnapshotChildCreateForTest?.({ destination, kind: "file", source: pin.path });
+  await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
+  const ownedDestination = await descriptorOwnedChildPath(parentPin, name);
   await verifyPinnedPythonPayload(pin);
   let output;
   try {
     if (process.platform === "linux") {
       await copyFile(
         `/proc/self/fd/${String(pin.handle.fd)}`,
-        destination,
+        ownedDestination,
         constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE
       );
       await options.afterPythonSnapshotCopyForTest?.({ destination, source: pin.path });
-      output = await open(destination, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+      output = await open(ownedDestination, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
     } else {
       output = await open(
-        destination,
+        ownedDestination,
         constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
         0o600
       );
@@ -4209,6 +4302,7 @@ async function writePinnedPythonSnapshotFile(pin, destination, snapshotRoot, opt
     ) {
       fail(`Python package snapshot ${destination} is not one private regular file`);
     }
+    await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
     await output.close();
     output = undefined;
   } catch (error) {
@@ -4235,9 +4329,12 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
   }
   layoutState.pythonSourceRootPins = rootPins;
   const source = await discoverPythonPayloads(externalRoots, layoutState.layout.venv, {
+    afterEntryRetainedForTest: options.afterPythonPayloadEntryRetainedForTest,
     completeRoots: externalRoots,
     followDirectoryLinks: true,
-    includeVenv: false
+    includeVenv: false,
+    retainedEntryLimit: options.pythonPayloadEntryLimitForTest ?? MAX_PYTHON_PAYLOAD_DIRECTORIES,
+    retainedPathByteLimit: options.pythonPayloadPathByteLimitForTest ?? MAX_PYTHON_PAYLOAD_PATH_BYTES
   });
   layoutState.pythonSourceDirectories = source.directories;
   layoutState.pythonSourceLinkedDirectories = source.linkedDirectories;
@@ -4257,26 +4354,58 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
 
   const snapshotRoots = [];
   const digestMappings = [];
-  for (const [index, root] of externalRoots.entries()) {
-    const snapshotRoot = join(layoutState.layout.pythonPackageSnapshot, `root-${String(index).padStart(4, "0")}`);
-    await mkdir(snapshotRoot, { mode: 0o700 });
-    snapshotRoots.push(snapshotRoot);
-    for (const pin of opened.pins) {
-      if (!isInside(pin.path, root)) continue;
-      const suffix = relative(root, pin.path);
-      if (suffix.length === 0 || suffix.startsWith("..") || isAbsolute(suffix)) {
-        fail(`Python source payload ${pin.path} escaped its package root`);
+  const snapshotDirectoryPins = [];
+  let snapshotError;
+  try {
+    const snapshotOwner = layoutState.ownerPins.pythonPackageSnapshot;
+    for (const [index, root] of externalRoots.entries()) {
+      const rootName = `root-${String(index).padStart(4, "0")}`;
+      const snapshotRoot = join(layoutState.layout.pythonPackageSnapshot, rootName);
+      const rootPin = await createPinnedPythonSnapshotDirectory(snapshotOwner, rootName, snapshotRoot, options);
+      snapshotDirectoryPins.push(rootPin);
+      snapshotRoots.push(snapshotRoot);
+      const directoryPins = new Map([[snapshotRoot, rootPin]]);
+      for (const pin of opened.pins) {
+        if (!isInside(pin.path, root)) continue;
+        const suffix = relative(root, pin.path);
+        if (suffix.length === 0 || suffix.startsWith("..") || isAbsolute(suffix)) {
+          fail(`Python source payload ${pin.path} escaped its package root`);
+        }
+        const components = suffix.split(/[/\\]/u);
+        const name = components.pop();
+        let parentPin = rootPin;
+        let parentPath = snapshotRoot;
+        for (const component of components) {
+          const childPath = join(parentPath, component);
+          let childPin = directoryPins.get(childPath);
+          if (!childPin) {
+            childPin = await createPinnedPythonSnapshotDirectory(parentPin, component, childPath, options);
+            directoryPins.set(childPath, childPin);
+            snapshotDirectoryPins.push(childPin);
+          }
+          parentPin = childPin;
+          parentPath = childPath;
+        }
+        const destination = join(parentPath, name);
+        await writePinnedPythonSnapshotFile(pin, parentPin, name, destination, options);
+        digestMappings.push({
+          destination,
+          sha256: pin.digest,
+          size: pin.size,
+          source: pin.path
+        });
       }
-      const destination = join(snapshotRoot, suffix);
-      await writePinnedPythonSnapshotFile(pin, destination, snapshotRoot, options);
-      digestMappings.push({
-        destination,
-        sha256: pin.digest,
-        size: pin.size,
-        source: pin.path
-      });
     }
+  } catch (error) {
+    snapshotError = error;
   }
+  await finishWithOwnedCleanup(
+    snapshotError,
+    [...snapshotDirectoryPins].reverse().map((pin, index) => ({
+      label: `Python package snapshot directory ${String(index)}`,
+      run: () => pin.handle.close()
+    }))
+  );
   for (const [index, pin] of rootPins.entries()) {
     await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)} after snapshot`);
   }
@@ -4298,9 +4427,11 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
 
 async function pinSealedPythonDirectory(path) {
   let handle;
+  let pin;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
     const opened = await handle.stat({ bigint: true });
+    pin = { handle, path, restoreMode: Number(opened.mode & 0o777n), snapshot: opened };
     const named = await lstat(path, { bigint: true });
     if (
       !opened.isDirectory() ||
@@ -4321,10 +4452,13 @@ async function pinSealedPythonDirectory(path) {
     ) {
       fail(`Python execution namespace directory ${path} was not sealed through its descriptor`);
     }
-    return { handle, path, snapshot: sealed };
+    return { ...pin, snapshot: sealed };
   } catch (error) {
     await finishWithOwnedCleanup(error, [
-      { label: `Python execution namespace directory ${path}`, run: () => handle?.close() }
+      {
+        label: `Python execution namespace directory ${path}`,
+        run: () => restoreAndClosePythonDirectory(pin ?? { handle }, path)
+      }
     ]);
   }
 }
@@ -4343,7 +4477,7 @@ async function sealPythonExecutionNamespace(layoutState, snapshotRoots) {
       error,
       pins.map((pin, index) => ({
         label: `Python execution namespace directory ${String(index)}`,
-        run: () => pin.handle.close()
+        run: () => restoreAndClosePythonDirectory(pin, `Python execution namespace directory ${String(index)}`)
       }))
     );
   }
@@ -4738,6 +4872,7 @@ async function runQualification({
   afterGitExecutableSnapshotWriteForTest,
   afterGitWrapperPreparedForTest,
   afterPythonNamespaceVerificationForTest,
+  afterPythonPayloadEntryRetainedForTest,
   afterPythonPreinventoryForTest,
   afterPythonSnapshotCopyForTest,
   afterPythonSnapshotDescriptorWriteForTest,
@@ -4745,6 +4880,7 @@ async function runQualification({
   additionalPythonPackageRootsForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
+  beforePythonSnapshotChildCreateForTest,
   beforeWindowsLoaderReleaseForTest,
   bootstrapCommandPlatformForTest,
   bootstrapCommandRunnerForTest,
@@ -4760,6 +4896,8 @@ async function runQualification({
   pytestTempLimitsForTest,
   pytestTempMountIdentityForTest,
   pythonInventoryAfterRunnerForTest,
+  pythonPayloadEntryLimitForTest,
+  pythonPayloadPathByteLimitForTest,
   posixMissingControlPipeForTest,
   posixOuterSettlementMsForTest,
   posixSupervisorSourceForTest,
@@ -4814,11 +4952,15 @@ async function runQualification({
         additionalPackageRootsForTest: additionalPythonPackageRootsForTest,
         onlyAdditionalPackageRootsForTest: onlyAdditionalPythonPackageRootsForTest,
         afterPythonNamespaceVerificationForTest,
+        afterPythonPayloadEntryRetainedForTest,
         afterPythonPreinventoryForTest,
         afterPythonSnapshotCopyForTest,
         afterPythonSnapshotDescriptorWriteForTest,
         afterPythonSourceDiscoveryForTest,
+        beforePythonSnapshotChildCreateForTest,
         platformForTest: bootstrapCommandPlatformForTest,
+        pythonPayloadEntryLimitForTest,
+        pythonPayloadPathByteLimitForTest,
         terminationGraceMs,
         timeoutMs,
         windowsJobSupervisorScript: bootstrapWindowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
@@ -5046,6 +5188,7 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
       outer: posixOuterSettlementBound(timeoutMilliseconds, graceMilliseconds)
     };
   },
+  restoreAndClosePythonDirectory,
   terminateAndAwaitProcess,
   windowsSupervisorLoader,
   windowsSupervisorSignals,

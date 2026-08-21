@@ -19,7 +19,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, extname, isAbsolute, join, relative } from "node:path";
+import { delimiter, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
@@ -1072,6 +1072,191 @@ test("snapshots package data, linked package directories, and versioned native l
   });
   assert.ok(valueReceipt.bootstrap.importBoundary.sourceManifest.kinds["package-data"] > 0);
   assert.ok(valueReceipt.bootstrap.importBoundary.sourceManifest.kinds["native-extension"] > 0);
+});
+
+test("rejects a FIFO anywhere in a complete Python package root", async (context) => {
+  if (process.platform === "win32") return context.skip("FIFO fixture requires POSIX mkfifo");
+  const value = await fixture(context, "python-package-fifo");
+  const task = await addTask(value, "python-package-fifo");
+  const shared = join(value.root, "fifo-python-packages");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "ordinary.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  const fifo = join(shared, "unsupported.fifo");
+  const created = spawnSync("mkfifo", [fifo], { env: cleanGitEnvironment(), windowsHide: true });
+  assert.equal(created.status, 0, created.stderr?.toString() || created.stdout?.toString());
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /unsupported Python package-root entry/u
+  );
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("never creates a snapshot child through a replaced ancestor", async (context) => {
+  if (process.platform !== "linux") return context.skip("descriptor-relative adversary is Linux-specific");
+  const value = await fixture(context, "python-snapshot-parent-swap");
+  const task = await addTask(value, "python-snapshot-parent-swap");
+  const shared = join(value.root, "parent-swap-python-packages");
+  const escaped = join(value.root, "snapshot-escape");
+  await mkdir(shared, { mode: 0o700 });
+  await mkdir(escaped, { mode: 0o700 });
+  await writeFile(join(shared, "ordinary.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  let swapped = false;
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      assignmentPath: task.assignmentPath,
+      beforePythonSnapshotChildCreateForTest: async ({ destination }) => {
+        if (swapped || !destination.endsWith("ordinary.py")) return;
+        swapped = true;
+        const parent = dirname(destination);
+        await rename(parent, `${parent}.retained`);
+        await symlink(escaped, parent, "dir");
+      },
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    })
+  );
+  assert.equal(swapped, true);
+  assert.equal(existsSync(join(escaped, "ordinary.py")), false);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("charges Python payload path bytes before retaining a near-limit listing for sorting", async (context) => {
+  const value = await fixture(context, "python-payload-preallocation-budget");
+  const task = await addTask(value, "python-payload-preallocation-budget");
+  const shared = join(value.root, "bounded-python-packages");
+  const names = Array.from({ length: 8 }, (_, index) => `entry-${String(index).padStart(2, "0")}-${"b".repeat(96)}.py`);
+  await mkdir(shared, { mode: 0o700 });
+  for (const name of names) await writeFile(join(shared, name), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  let retained = 0;
+  const oneEntryBytes = Buffer.byteLength(names[0]) + Buffer.byteLength(join(shared, names[0]));
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      afterPythonPayloadEntryRetainedForTest: async () => {
+        retained += 1;
+      },
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      pythonPayloadEntryLimitForTest: names.length,
+      pythonPayloadPathByteLimitForTest: oneEntryBytes * (names.length - 1),
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /retained path-byte bound/u
+  );
+  assert.equal(retained, names.length - 1);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("restores and closes a sealed Python directory when chmod fails", async (context) => {
+  if (process.platform === "win32") return context.skip("descriptor chmod is POSIX-only");
+  const calls = [];
+  let error;
+  try {
+    await QUALIFICATION_ISOLATION_TEST_BOUNDARY.restoreAndClosePythonDirectory(
+      {
+        handle: {
+          async chmod() {
+            calls.push("chmod");
+            throw new Error("chmod-fault");
+          },
+          async close() {
+            calls.push("close");
+          }
+        },
+        restoreMode: 0o700
+      },
+      "test Python directory"
+    );
+  } catch (value) {
+    error = value;
+  }
+  assert.ok(error instanceof AggregateError);
+  assert.deepEqual(calls, ["chmod", "close"]);
+  assert.deepEqual(
+    error.errors.map((value) => value.message),
+    ["chmod-fault"]
+  );
+});
+
+test("reports a sealed Python directory close failure after mode restoration", async (context) => {
+  if (process.platform === "win32") return context.skip("descriptor chmod is POSIX-only");
+  const calls = [];
+  let error;
+  try {
+    await QUALIFICATION_ISOLATION_TEST_BOUNDARY.restoreAndClosePythonDirectory(
+      {
+        handle: {
+          async chmod(mode) {
+            calls.push(`chmod:${mode.toString(8)}`);
+          },
+          async close() {
+            calls.push("close");
+            throw new Error("close-fault");
+          }
+        },
+        restoreMode: 0o750
+      },
+      "test Python directory"
+    );
+  } catch (value) {
+    error = value;
+  }
+  assert.ok(error instanceof AggregateError);
+  assert.deepEqual(calls, ["chmod:750", "close"]);
+  assert.deepEqual(
+    error.errors.map((value) => value.message),
+    ["close-fault"]
+  );
+});
+
+test("aggregates Python directory restore and close failures in operation order", async (context) => {
+  if (process.platform === "win32") return context.skip("descriptor chmod is POSIX-only");
+  const calls = [];
+  let error;
+  try {
+    await QUALIFICATION_ISOLATION_TEST_BOUNDARY.restoreAndClosePythonDirectory(
+      {
+        handle: {
+          async chmod() {
+            calls.push("chmod");
+            throw new Error("chmod-fault");
+          },
+          async close() {
+            calls.push("close");
+            throw new Error("close-fault");
+          }
+        },
+        restoreMode: 0o700
+      },
+      "test Python directory"
+    );
+  } catch (value) {
+    error = value;
+  }
+  assert.ok(error instanceof AggregateError);
+  assert.deepEqual(calls, ["chmod", "close"]);
+  assert.deepEqual(
+    error.errors.map((value) => value.message),
+    ["chmod-fault", "close-fault"]
+  );
 });
 
 test("rejects a package-root A-to-B-to-A restoration before site startup", async (context) => {
