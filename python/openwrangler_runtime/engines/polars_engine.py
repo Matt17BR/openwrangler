@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..custom_code_scope import (
+    custom_code_definition_lines,
+    custom_code_prelude_lines,
+    custom_code_step_lines,
+    execute_custom_code,
+)
 from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -1453,13 +1459,12 @@ class PolarsEngine(DataFrameEngine):
             )
         if kind == "customCode":
             row_id = self._row_id_column(df)
-            namespace = {"df": df.drop(row_id) if row_id is not None else df, "pl": pl}
+            custom_frame = df.drop(row_id) if row_id is not None else df
             with capture_custom_code_output() as output:
                 try:
-                    exec(params["code"], namespace, namespace)
+                    result = execute_custom_code(str(params["code"]), custom_frame, {"pl": pl})
                 except Exception as error:
                     raise EngineError(custom_code_error_message("Polars", error, output)) from error
-                result = namespace.get("result")
                 if not self.detect(result):
                     raise EngineError(
                         append_custom_code_output(
@@ -1507,7 +1512,10 @@ class PolarsEngine(DataFrameEngine):
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"} for step in plan)
-        lines = ["from collections import Counter"] if needs_counter else []
+        has_custom_code = any(step["kind"] == "customCode" for step in plan)
+        lines = custom_code_prelude_lines() if has_custom_code else []
+        if needs_counter:
+            lines.append("from collections import Counter")
         if needs_filter_helpers or needs_fill_helpers:
             decimal_import = (
                 "from decimal import Decimal, InvalidOperation, localcontext"
@@ -1752,6 +1760,9 @@ class PolarsEngine(DataFrameEngine):
                     "    )",
                 ]
             )
+        for index, step in enumerate(plan):
+            if step["kind"] == "customCode":
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
         lines.extend(["", "", "def clean_data(df):"])
         for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
@@ -2402,14 +2413,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
             ]
         if kind == "customCode":
-            function_name = f"_custom_step_{index}"
-            code_lines = str(params["code"]).splitlines()
-            return [
-                f"{prefix}def {function_name}(df):",
-                *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
-                f"{prefix}    return result",
-                f"{prefix}df = {function_name}(df)",
-            ]
+            return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
         raise EngineError(f"Polars cannot compile transformation: {kind}")
 
 

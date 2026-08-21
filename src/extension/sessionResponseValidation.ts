@@ -7,7 +7,8 @@ import type {
   OpenWranglerResponse,
   SessionBoundRequest,
   SessionMetadata,
-  SessionOpenedResponse
+  SessionOpenedResponse,
+  SessionSource
 } from "../shared/protocol";
 import { requestViewId } from "./sessionRequestScheduler";
 
@@ -137,7 +138,9 @@ export function sessionOpenedResponseMismatch(
   if (strictIdentity && request.mode && response.metadata.mode !== request.mode) {
     return `metadata reported mode ${response.metadata.mode} instead of requested mode ${request.mode}`;
   }
-  if (strictIdentity && !isDeepStrictEqual(response.metadata.source, request.source)) {
+  if (
+    !isDeepStrictEqual(canonicalImmutableSource(response.metadata.source), canonicalImmutableSource(request.source))
+  ) {
     return "metadata reported a different immutable source";
   }
   if (response.metadata.revision < 0 || !Number.isSafeInteger(response.metadata.revision)) {
@@ -153,6 +156,23 @@ export function sessionOpenedResponseMismatch(
     columnOffset: request.columnOffset,
     columnLimit: request.columnLimit
   });
+}
+
+function canonicalImmutableSource(source: SessionSource): SessionSource {
+  const canonical = { ...source };
+  for (const key of ["path", "uri", "variableName"] as const) {
+    if (canonical[key] === undefined) delete canonical[key];
+  }
+  if (canonical.importOptions === undefined) {
+    delete canonical.importOptions;
+  } else {
+    const importOptions = { ...canonical.importOptions };
+    for (const key of ["delimiter", "encoding", "quoteChar", "hasHeader", "sheetName", "sheetIndex"] as const) {
+      if (importOptions[key] === undefined) delete importOptions[key];
+    }
+    canonical.importOptions = importOptions;
+  }
+  return canonical;
 }
 
 function summaryProjectionMismatch(

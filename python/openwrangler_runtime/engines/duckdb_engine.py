@@ -14,6 +14,12 @@ from typing import Any
 from uuid import uuid4
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
+from ..custom_code_scope import (
+    custom_code_definition_lines,
+    custom_code_prelude_lines,
+    custom_code_step_lines,
+    execute_custom_code,
+)
 from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -1108,12 +1114,17 @@ class DuckDBEngine(DataFrameEngine):
         generated_helpers = _GENERATED_HELPERS.rstrip()
         if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
             generated_helpers = f"from collections import Counter\n\n{generated_helpers}"
+        has_custom_code = any(step["kind"] == "customCode" for step in plan)
         lines = [
+            *(custom_code_prelude_lines() if has_custom_code else []),
             generated_helpers,
             "",
             *generated_view_value_helper_lines(),
-            "def clean_data(df):",
         ]
+        for index, step in enumerate(plan):
+            if step["kind"] == "customCode":
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
+        lines.append("def clean_data(df):")
         for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
@@ -1345,17 +1356,7 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {_by_example_expression(params['program'])!r})"
             ]
         if kind == "customCode":
-            function_name = f"_custom_step_{index}"
-            code_lines = str(params["code"]).splitlines()
-            return [
-                f"{prefix}df = _ow_visible_relation(df)",
-                f"{prefix}def {function_name}(df):",
-                *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
-                f"{prefix}    return result",
-                f"{prefix}df = {function_name}(df)",
-                f"{prefix}if not isinstance(df, duckdb.DuckDBPyRelation):",
-                f"{prefix}    raise ValueError('Custom DuckDB code must assign a DuckDBPyRelation to result.')",
-            ]
+            return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
         raise EngineError(f"DuckDB cannot compile transformation: {kind}")
 
     @contextmanager
@@ -2386,15 +2387,11 @@ def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
 
     import duckdb
 
-    namespace: dict[str, Any] = {
-        "df": connection.sql(source_sql),
-        "duckdb": duckdb,
-    }
+    namespace: dict[str, Any] = {"duckdb": duckdb}
     result: Any | None = None
     with capture_custom_code_output() as output:
         try:
-            exec(code, namespace, namespace)
-            result = namespace.get("result")
+            result = execute_custom_code(code, connection.sql(source_sql), namespace)
             if not isinstance(result, duckdb.DuckDBPyRelation):
                 raise EngineError(
                     append_custom_code_output("Custom DuckDB code must assign a DuckDBPyRelation to result.", output)

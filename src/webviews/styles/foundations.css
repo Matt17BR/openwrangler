@@ -1,0 +1,98 @@
+:root {
+  color-scheme: light dark;
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+body {
+  margin: 0;
+}
+
+* {
+  scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4)) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background-color: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, 0.4));
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: 0;
+  border-radius: 3px;
+  padding: 4px 8px;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:not(:disabled):hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="gridcell"]:focus-visible,
+td:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+
+input,
+select,
+textarea {
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+
+select option:checked {
+  color: var(--vscode-list-activeSelectionForeground, #ffffff);
+  background: var(--vscode-list-activeSelectionBackground, #04395e);
+}
+
+textarea {
+  resize: vertical;
+}

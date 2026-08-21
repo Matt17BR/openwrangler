@@ -1032,6 +1032,42 @@ def test_cancel_pending_future_only_cancels_work_that_has_not_started() -> None:
     assert running.result() == {"kind": "initialized"}
 
 
+def test_cancel_request_rejects_malformed_targets_before_standalone_pending_lookup(monkeypatch) -> None:
+    malformed_targets: list[object] = [[], {}, 7, "", "a" * 257, ("\u00e9" * 128) + "a", "\ud800"]
+    requests = [
+        {
+            "protocolVersion": 2,
+            "requestId": f"cancel-malformed-{index}",
+            "priority": "interactive",
+            "request": {"kind": "cancelRequest", "targetRequestId": target},
+        }
+        for index, target in enumerate(malformed_targets)
+    ]
+
+    def reject_pending_lookup(*_args: object) -> bool:
+        raise AssertionError("Malformed cancellation inspected standalone pending work.")
+
+    output = StringIO()
+    monkeypatch.setattr(server, "_cancel_pending_future", reject_pending_lookup)
+    monkeypatch.setattr(server.sys, "stdin", (f"{json.dumps(request)}\n" for request in requests))
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    assert server.main() == 0
+
+    responses = list(map(json.loads, output.getvalue().splitlines()))
+    assert [response["requestId"] for response in responses] == [request["requestId"] for request in requests]
+    assert all(
+        response["response"]
+        == {
+            "kind": "error",
+            "code": "invalid_request",
+            "message": "targetRequestId must be a non-empty string of at most 256 UTF-8 bytes.",
+            "recoverable": False,
+        }
+        for response in responses
+    )
+
+
 def test_cancel_request_does_not_suppress_an_already_running_result(monkeypatch) -> None:
     class RunningManager(_PassthroughRequestScope):
         def __init__(self) -> None:

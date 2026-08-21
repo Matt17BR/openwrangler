@@ -41,6 +41,10 @@ interface CodePreviewTestHarness {
 
 const nativeMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
+  activeRegistrations: new Set<string>(),
+  registrationDisposals: [] as string[],
+  registrationFailure: undefined as string | undefined,
+  coordinatorListeners: new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>(),
   executeCommand: vi.fn(async () => undefined),
   treeDataProviders: new Map<string, TestTreeProvider>(),
   webviewViewProviders: new Map<string, { resolveWebviewView(view: unknown): void }>(),
@@ -117,7 +121,21 @@ vi.mock("vscode", () => {
     }
   }
 
-  const disposable = () => ({ dispose: () => undefined });
+  const registration = (key: string, install: () => void, uninstall: () => void) => {
+    if (nativeMocks.registrationFailure === key) throw new Error(`native registration failed: ${key}`);
+    install();
+    nativeMocks.activeRegistrations.add(key);
+    let disposed = false;
+    return {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        uninstall();
+        nativeMocks.activeRegistrations.delete(key);
+        nativeMocks.registrationDisposals.push(key);
+      }
+    };
+  };
   return {
     EventEmitter,
     TreeItem,
@@ -130,8 +148,13 @@ vi.mock("vscode", () => {
     commands: {
       executeCommand: nativeMocks.executeCommand,
       registerCommand: (id: string, handler: CommandHandler) => {
-        nativeMocks.commands.set(id, handler);
-        return disposable();
+        return registration(
+          `command:${id}`,
+          () => nativeMocks.commands.set(id, handler),
+          () => {
+            if (nativeMocks.commands.get(id) === handler) nativeMocks.commands.delete(id);
+          }
+        );
       }
     },
     window: {
@@ -139,12 +162,24 @@ vi.mock("vscode", () => {
         return nativeMocks.activeNotebookEditor;
       },
       registerTreeDataProvider: (id: string, provider: TestTreeProvider) => {
-        nativeMocks.treeDataProviders.set(id, provider);
-        return disposable();
+        return registration(
+          `tree:${id}`,
+          () => nativeMocks.treeDataProviders.set(id, provider),
+          () => {
+            if (nativeMocks.treeDataProviders.get(id) === provider) nativeMocks.treeDataProviders.delete(id);
+          }
+        );
       },
       registerWebviewViewProvider: (id: string, provider: { resolveWebviewView(view: unknown): void }) => {
-        nativeMocks.webviewViewProviders.set(id, provider);
-        return disposable();
+        return registration(
+          `webview:${id}`,
+          () => nativeMocks.webviewViewProviders.set(id, provider),
+          () => {
+            if (nativeMocks.webviewViewProviders.get(id) === provider) {
+              nativeMocks.webviewViewProviders.delete(id);
+            }
+          }
+        );
       },
       showInformationMessage: nativeMocks.showInformationMessage,
       showWarningMessage: nativeMocks.showWarningMessage,
@@ -201,6 +236,10 @@ const appliedStep: TransformStep = {
 
 function resetNativeViewMocks(): void {
   nativeMocks.commands.clear();
+  nativeMocks.activeRegistrations.clear();
+  nativeMocks.registrationDisposals.length = 0;
+  nativeMocks.registrationFailure = undefined;
+  nativeMocks.coordinatorListeners.clear();
   nativeMocks.treeDataProviders.clear();
   nativeMocks.webviewViewProviders.clear();
   nativeMocks.executeCommand.mockClear();
@@ -293,7 +332,13 @@ function register(
     clearActiveStepInspection,
     onDidChangeActiveSession: (listener: (snapshot: ActiveSessionSnapshot | undefined) => unknown) => {
       activeSessionListeners.add(listener);
-      return { dispose: () => activeSessionListeners.delete(listener) };
+      nativeMocks.coordinatorListeners.add(listener);
+      return {
+        dispose: () => {
+          activeSessionListeners.delete(listener);
+          nativeMocks.coordinatorListeners.delete(listener);
+        }
+      };
     }
   } as unknown as SessionCoordinator;
   const context = {

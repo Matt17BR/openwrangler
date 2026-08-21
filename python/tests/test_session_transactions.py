@@ -190,25 +190,97 @@ def test_retained_plan_budget_accepts_exact_limit_and_rejects_one_byte_over() ->
         SessionManager._preflight_retained_plan(exact)
 
 
-def test_newline_heavy_custom_plan_is_rejected_before_compile_allocates_split_lines() -> None:
-    code = "\n" * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len("result=df")) + "result=df"
-    plan = [custom_step(f"custom-{index}", code) for index in range(8)]
+@pytest.mark.parametrize("separator", ["\n", "\f"], ids=["line-feed", "form-feed"])
+def test_splitline_heavy_custom_plan_is_rejected_before_compile_allocates_lines(separator: str) -> None:
+    code = separator * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len("result=df")) + "result=df"
+    plan = [custom_step(f"custom-{index}", code) for index in range(16)]
     compile_calls = 0
 
     class CompileMustNotRun:
+        name = "pandas"
+
         def compile_plan(self, _steps: Iterable[Mapping[str, Any]]) -> str:
             nonlocal compile_calls
             compile_calls += 1
-            raise AssertionError("compile_plan allocated newline-expanded custom code")
+            raise AssertionError("compile_plan allocated splitline-expanded custom code")
 
     with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
         SessionManager._compile_plan_with_limits(CompileMustNotRun(), plan)  # type: ignore[arg-type]
     assert compile_calls == 0
 
 
+@pytest.mark.parametrize("separator", ["\n", "\f"], ids=["terminal-lf", "terminal-form-feed"])
+def test_terminal_splitline_separator_preserves_preallocation_limit(separator: str) -> None:
+    code = ("x" * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len(separator.encode("utf-8")))) + separator
+    plan = [custom_step(f"custom-{index}", code) for index in range(64)]
+    compile_calls = 0
+
+    class CompileMustNotRun:
+        name = "pandas"
+
+        def compile_plan(self, _steps: Iterable[Mapping[str, Any]]) -> str:
+            nonlocal compile_calls
+            compile_calls += 1
+            raise AssertionError("compile_plan allocated terminal-separator custom code")
+
+    with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
+        SessionManager._compile_plan_with_limits(CompileMustNotRun(), plan)  # type: ignore[arg-type]
+    assert compile_calls == 0
+
+
+@pytest.mark.parametrize("engine_name", ["pandas", "polars", "duckdb"])
+def test_many_small_custom_steps_are_rejected_before_generation(engine_name: str) -> None:
+    plan = [custom_step(f"custom-{index}", "result=df") for index in range(5_000)]
+    compile_calls = 0
+
+    class CompileMustNotRun:
+        name = engine_name
+
+        def compile_plan(self, _steps: Iterable[Mapping[str, Any]]) -> str:
+            nonlocal compile_calls
+            compile_calls += 1
+            raise AssertionError("compile_plan allocated many-step Custom Code")
+
+    with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
+        SessionManager._compile_plan_with_limits(CompileMustNotRun(), plan)  # type: ignore[arg-type]
+    assert compile_calls == 0
+
+
+def test_many_small_custom_steps_fail_before_preview_mutation(tmp_path: Path, monkeypatch) -> None:
+    manager, session_id = open_pandas_session(tmp_path)
+    session = manager.sessions[session_id]
+    retained = [custom_step(f"custom-{index}", "result=df") for index in range(4_999)]
+    session.plan = deepcopy(retained)
+    session.bound_plan = deepcopy(retained)
+    session.plan_input_schemas = [[] for _step in retained]
+    before = session_state(session)
+    compile_calls = 0
+    transform_calls = 0
+
+    def reject_compile(_steps: Iterable[Mapping[str, Any]]) -> str:
+        nonlocal compile_calls
+        compile_calls += 1
+        raise AssertionError("compile_plan allocated many-step Custom Code")
+
+    def reject_transform(_frame: Any, _step: Mapping[str, Any]) -> Any:
+        nonlocal transform_calls
+        transform_calls += 1
+        raise AssertionError("Custom Code executed after failed generation preflight")
+
+    monkeypatch.setattr(session.engine, "compile_plan", reject_compile)
+    monkeypatch.setattr(session.engine, "apply_transform", reject_transform)
+
+    with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
+        manager.preview_step(session_id, 0, custom_step("custom-4999", "result=df"), 0, 2)
+    assert compile_calls == 0
+    assert transform_calls == 0
+    assert_unchanged_and_closable(manager, session_id, 0, before)
+
+
 def test_generated_code_limit_is_exact_and_precedes_transform_execution(tmp_path: Path, monkeypatch) -> None:
     manager, session_id = open_pandas_session(tmp_path)
     session = manager.sessions[session_id]
+
     monkeypatch.setattr(session.engine, "compile_plan", lambda _steps: "x" * MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
 
     accepted = manager.preview_step(session_id, 0, formula_step("exact-code"), 0, 2)

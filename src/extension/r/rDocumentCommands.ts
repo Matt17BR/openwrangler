@@ -41,187 +41,191 @@ export function registerRDocumentCommands(
   coordinator: SessionCoordinator,
   literateProviders?: LiterateDocumentVariableProviders
 ): void {
-  context.subscriptions.push(
-    vscode.commands.registerCommand(OPEN_R_DOCUMENT_COMMAND, async (resource?: unknown) => {
-      if (!vscode.workspace.isTrusted) {
-        void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
-        return false;
-      }
-      if (!supportsRDocumentExecution()) {
-        void vscode.window.showWarningMessage(
-          "Running R documents in Open Wrangler currently requires macOS or Linux. Open the dataframe from an IRkernel notebook instead."
-        );
-        return false;
-      }
-
-      const document = await resolveRDocument(resource);
-      if (!document) return false;
-      const origin = captureRDocumentOrigin(document);
-      if (!origin) {
-        void vscode.window.showWarningMessage("The R document changed or closed before Open Wrangler could run it.");
-        return false;
-      }
-
-      const documentText = document.getText();
-      let prepared;
-      try {
-        prepared = prepareRDocumentSource(document.uri.fsPath, documentText);
-      } catch (error) {
-        void vscode.window.showErrorMessage(
-          `Could not prepare ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}`
-        );
-        return false;
-      }
-      if (prepared.kind !== "r" && prepared.runnableRChunkCount === 0) {
-        const filename = path.basename(document.uri.fsPath);
-        void vscode.window.showInformationMessage(
-          prepared.rChunkCount > 0
-            ? `${filename} does not contain an R code chunk enabled for evaluation.`
-            : `${filename} does not contain an R code chunk.`
-        );
-        return false;
-      }
-      const documentLabel = rDocumentLabel(prepared.kind);
-      const rscriptPath = configuredRscriptPath(document.uri);
-      if (!rscriptPath) {
-        void vscode.window.showErrorMessage(
-          "Open Wrangler could not find Rscript. Install R or set openWrangler.rscriptPath to its absolute path."
-        );
-        return false;
-      }
-      let transport: RProcessSessionTransport;
-      try {
-        transport = new RProcessSessionTransport({
-          runtimeRoot: path.join(context.extensionPath, "r", "openwrangler_runtime"),
-          documentText: prepared.executableUnits,
-          rscriptPath,
-          workingDirectory: path.dirname(document.uri.fsPath)
-        });
-      } catch (error) {
-        void vscode.window.showErrorMessage(
-          `Could not prepare ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}`
-        );
-        return false;
-      }
-
-      let discovery;
-      try {
-        discovery = await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Running ${path.basename(document.uri.fsPath)} and finding dataframes`,
-            cancellable: true
-          },
-          (_progress, cancellation) =>
-            transport.discoverVariables({
-              cancellation,
-              timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000, document.uri)
-            })
-        );
-      } catch (error) {
-        const cleanupError = await disposeTransport(transport);
-        if (error instanceof DetachedBridgeRequestError && error.reason === "cancellation" && !cleanupError)
-          return false;
-        void vscode.window.showErrorMessage(
-          `Could not run ${documentLabel.toLowerCase()} ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
-        );
-        return false;
-      }
-
-      if (!isCurrentRDocumentOrigin(origin)) {
-        const cleanupError = await disposeTransport(transport);
-        if (cleanupError) {
-          showCleanupError(cleanupError);
+  registerAtomically(context.subscriptions, () => {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_R_DOCUMENT_COMMAND, async (resource?: unknown) => {
+        if (!vscode.workspace.isTrusted) {
+          void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
           return false;
         }
-        void vscode.window.showWarningMessage(
-          "The R document changed while it was running. Run it again before opening a dataframe."
-        );
-        return false;
-      }
-      if (discovery.variables.length === 0) {
-        const cleanupError = await disposeTransport(transport);
-        if (cleanupError) {
-          showCleanupError(cleanupError);
+        if (!supportsRDocumentExecution()) {
+          void vscode.window.showWarningMessage(
+            "Running R documents in Open Wrangler currently requires macOS or Linux. Open the dataframe from an IRkernel notebook instead."
+          );
           return false;
         }
-        void vscode.window.showInformationMessage(
-          `${path.basename(document.uri.fsPath)} ran successfully, but it did not create a data.frame, tibble, or data.table.`
-        );
-        return false;
-      }
 
-      const fileName = path.basename(document.uri.fsPath);
-      const items = discovery.variables.map((variable) => rDocumentQuickPickItem(variable, fileName));
-      let selected: RDocumentQuickPickItem | undefined;
-      try {
-        selected = await vscode.window.showQuickPick(items, {
-          title: `Open Wrangler: Choose a dataframe from ${fileName}`,
-          placeHolder: discovery.truncated
-            ? "Select a data.frame, tibble, or data.table (the variable list was truncated)"
-            : "Select a data.frame, tibble, or data.table",
-          matchOnDescription: true,
-          matchOnDetail: true,
-          ignoreFocusOut: true
-        });
-      } catch (error) {
-        const cleanupError = await disposeTransport(transport);
-        void vscode.window.showErrorMessage(
-          `Could not choose an R dataframe from ${fileName}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
-        );
-        return false;
-      }
-      if (!selected || !items.includes(selected)) {
-        const cleanupError = await disposeTransport(transport);
-        if (cleanupError) showCleanupError(cleanupError);
-        return false;
-      }
-      await restoreEditorGroupAfterQuickPick();
-      if (!isCurrentRDocumentOrigin(origin)) {
-        const cleanupError = await disposeTransport(transport);
-        if (cleanupError) {
-          showCleanupError(cleanupError);
+        const document = await resolveRDocument(resource);
+        if (!document) return false;
+        const origin = captureRDocumentOrigin(document);
+        if (!origin) {
+          void vscode.window.showWarningMessage("The R document changed or closed before Open Wrangler could run it.");
           return false;
         }
-        void vscode.window.showWarningMessage(
-          "The R document changed while the dataframe picker was open. Run it again before opening a dataframe."
-        );
-        return false;
-      }
 
-      const source: SessionSource = {
-        kind: "documentVariable",
-        label: selected.variable.name,
-        variableName: selected.variable.name,
-        uri: document.uri.toString()
-      };
-      const delegate = new RKernelBridge(context, transport);
-      try {
-        const bridge = coordinator.createBridge(delegate, origin);
-        OpenWranglerPanel.create(context, bridge, source, "r");
-        return true;
-      } catch (error) {
-        let cleanupError: unknown;
+        const documentText = document.getText();
+        let prepared;
         try {
-          await delegate.dispose();
-        } catch (disposeError) {
-          cleanupError = disposeError;
+          prepared = prepareRDocumentSource(document.uri.fsPath, documentText);
+        } catch (error) {
+          void vscode.window.showErrorMessage(
+            `Could not prepare ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}`
+          );
+          return false;
         }
-        void vscode.window.showErrorMessage(
-          `Could not open the selected R dataframe: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
-        );
-        return false;
-      }
-    }),
-    vscode.commands.registerCommand(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND, async () => {
-      if (!vscode.workspace.isTrusted) {
-        void vscode.window.showWarningMessage("Trust this workspace before running a code chunk in Open Wrangler.");
-        return false;
-      }
-      if (!literateProviders) return false;
-      return (await routeActiveLiterateDocument(literateProviders)) ?? false;
-    })
-  );
+        if (prepared.kind !== "r" && prepared.runnableRChunkCount === 0) {
+          const filename = path.basename(document.uri.fsPath);
+          void vscode.window.showInformationMessage(
+            prepared.rChunkCount > 0
+              ? `${filename} does not contain an R code chunk enabled for evaluation.`
+              : `${filename} does not contain an R code chunk.`
+          );
+          return false;
+        }
+        const documentLabel = rDocumentLabel(prepared.kind);
+        const rscriptPath = configuredRscriptPath(document.uri);
+        if (!rscriptPath) {
+          void vscode.window.showErrorMessage(
+            "Open Wrangler could not find Rscript. Install R or set openWrangler.rscriptPath to its absolute path."
+          );
+          return false;
+        }
+        let transport: RProcessSessionTransport;
+        try {
+          transport = new RProcessSessionTransport({
+            runtimeRoot: path.join(context.extensionPath, "r", "openwrangler_runtime"),
+            documentText: prepared.executableUnits,
+            rscriptPath,
+            workingDirectory: path.dirname(document.uri.fsPath)
+          });
+        } catch (error) {
+          void vscode.window.showErrorMessage(
+            `Could not prepare ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}`
+          );
+          return false;
+        }
+
+        let discovery;
+        try {
+          discovery = await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `Running ${path.basename(document.uri.fsPath)} and finding dataframes`,
+              cancellable: true
+            },
+            (_progress, cancellation) =>
+              transport.discoverVariables({
+                cancellation,
+                timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000, document.uri)
+              })
+          );
+        } catch (error) {
+          const cleanupError = await disposeTransport(transport);
+          if (error instanceof DetachedBridgeRequestError && error.reason === "cancellation" && !cleanupError)
+            return false;
+          void vscode.window.showErrorMessage(
+            `Could not run ${documentLabel.toLowerCase()} ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
+          );
+          return false;
+        }
+
+        if (!isCurrentRDocumentOrigin(origin)) {
+          const cleanupError = await disposeTransport(transport);
+          if (cleanupError) {
+            showCleanupError(cleanupError);
+            return false;
+          }
+          void vscode.window.showWarningMessage(
+            "The R document changed while it was running. Run it again before opening a dataframe."
+          );
+          return false;
+        }
+        if (discovery.variables.length === 0) {
+          const cleanupError = await disposeTransport(transport);
+          if (cleanupError) {
+            showCleanupError(cleanupError);
+            return false;
+          }
+          void vscode.window.showInformationMessage(
+            `${path.basename(document.uri.fsPath)} ran successfully, but it did not create a data.frame, tibble, or data.table.`
+          );
+          return false;
+        }
+
+        const fileName = path.basename(document.uri.fsPath);
+        const items = discovery.variables.map((variable) => rDocumentQuickPickItem(variable, fileName));
+        let selected: RDocumentQuickPickItem | undefined;
+        try {
+          selected = await vscode.window.showQuickPick(items, {
+            title: `Open Wrangler: Choose a dataframe from ${fileName}`,
+            placeHolder: discovery.truncated
+              ? "Select a data.frame, tibble, or data.table (the variable list was truncated)"
+              : "Select a data.frame, tibble, or data.table",
+            matchOnDescription: true,
+            matchOnDetail: true,
+            ignoreFocusOut: true
+          });
+        } catch (error) {
+          const cleanupError = await disposeTransport(transport);
+          void vscode.window.showErrorMessage(
+            `Could not choose an R dataframe from ${fileName}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
+          );
+          return false;
+        }
+        if (!selected || !items.includes(selected)) {
+          const cleanupError = await disposeTransport(transport);
+          if (cleanupError) showCleanupError(cleanupError);
+          return false;
+        }
+        await restoreEditorGroupAfterQuickPick();
+        if (!isCurrentRDocumentOrigin(origin)) {
+          const cleanupError = await disposeTransport(transport);
+          if (cleanupError) {
+            showCleanupError(cleanupError);
+            return false;
+          }
+          void vscode.window.showWarningMessage(
+            "The R document changed while the dataframe picker was open. Run it again before opening a dataframe."
+          );
+          return false;
+        }
+
+        const source: SessionSource = {
+          kind: "documentVariable",
+          label: selected.variable.name,
+          variableName: selected.variable.name,
+          uri: document.uri.toString()
+        };
+        const delegate = new RKernelBridge(context, transport);
+        try {
+          const bridge = coordinator.createBridge(delegate, origin);
+          OpenWranglerPanel.create(context, bridge, source, "r");
+          return true;
+        } catch (error) {
+          let cleanupError: unknown;
+          try {
+            await delegate.dispose();
+          } catch (disposeError) {
+            cleanupError = disposeError;
+          }
+          void vscode.window.showErrorMessage(
+            `Could not open the selected R dataframe: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
+          );
+          return false;
+        }
+      })
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND, async () => {
+        if (!vscode.workspace.isTrusted) {
+          void vscode.window.showWarningMessage("Trust this workspace before running a code chunk in Open Wrangler.");
+          return false;
+        }
+        if (!literateProviders) return false;
+        return (await routeActiveLiterateDocument(literateProviders)) ?? false;
+      })
+    );
+  });
 }
 
 async function routeActiveLiterateDocument(providers: LiterateDocumentVariableProviders): Promise<boolean | undefined> {
@@ -526,4 +530,22 @@ function showCleanupError(error: unknown): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function registerAtomically(subscriptions: vscode.Disposable[], register: () => void): void {
+  const start = subscriptions.length;
+  try {
+    register();
+  } catch (error) {
+    const failures: unknown[] = [error];
+    for (const disposable of subscriptions.splice(start).reverse()) {
+      try {
+        disposable.dispose();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    if (failures.length === 1) throw error;
+    throw new AggregateError(failures, "Open Wrangler R document registration failed during rollback.");
+  }
 }

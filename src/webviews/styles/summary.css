@@ -1,0 +1,337 @@
+.summaryPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.summaryPanel[data-active-view="filters"] {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.filtersViewContent {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.filtersViewContent > .filterSortPanel {
+  border-bottom: 0;
+}
+
+.summaryViewTabs {
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 5px 8px 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.summaryViewTab {
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 2px 2px 0 0;
+  color: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
+  min-width: 0;
+  padding: 6px 8px 5px;
+}
+
+.summaryViewTab:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+}
+
+.summaryViewTab[aria-selected="true"] {
+  background: var(--vscode-tab-activeBackground, var(--vscode-sideBar-background));
+  border-bottom-color: var(--vscode-focusBorder);
+  color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+}
+
+.summaryViewContent {
+  padding: 12px;
+}
+
+.summaryColumnHeader,
+.summaryDatasetHeader {
+  margin-bottom: 10px;
+}
+
+.summaryColumnHeader {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.summaryColumnHeader > div {
+  min-width: 0;
+}
+
+.summaryColumnHeader h2,
+.summaryDatasetHeader h2 {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.summaryEyebrow {
+  color: var(--vscode-descriptionForeground);
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.summaryTypeBadge {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  flex: 0 1 auto;
+  font-size: 10px;
+  max-width: 48%;
+  overflow: hidden;
+  padding: 2px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summarySampleNotice {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  margin: 0 0 8px;
+}
+
+.profileFilterStatus {
+  align-items: center;
+  background: var(--vscode-editorWidget-background, transparent);
+  border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+  border-radius: 999px;
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 0 0 8px;
+  padding: 2px 3px 2px 8px;
+}
+
+.profileFilterStatus > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profileFilterClear {
+  align-items: center;
+  background: transparent;
+  color: var(--vscode-foreground);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.profileFilterClear:hover,
+.profileFilterClear:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.summaryStatGrid {
+  background: var(--vscode-editorWidget-background, transparent);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  gap: 5px 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.summaryStatGrid + .summaryStatGrid {
+  margin-top: 8px;
+}
+
+.summaryStatGrid dd {
+  font-variant-numeric: tabular-nums;
+  max-width: 180px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.summaryStatGrid dd.exactNumericExtremum {
+  max-width: min(180px, 48vw);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.summaryPanel h3 {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  margin: 14px 0 7px;
+  text-transform: uppercase;
+}
+
+.summaryDistributionChart .numericHistogram {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
+.distributionValueControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.segmentedControl {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  display: inline-flex;
+  overflow: hidden;
+}
+
+.segmentedControl button {
+  background: transparent;
+  border-radius: 0;
+  color: var(--vscode-foreground);
+  min-width: 38px;
+  padding: 2px 7px;
+}
+
+.segmentedControl button + button {
+  border-left: 1px solid var(--vscode-panel-border);
+}
+
+.segmentedControl button:hover,
+.segmentedControl button:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.segmentedControl button[aria-pressed="true"] {
+  background: var(--vscode-button-secondaryBackground, var(--vscode-list-activeSelectionBackground));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-list-activeSelectionForeground));
+}
+
+.summaryTopValues .barRow,
+.summaryPanel .missingList .barRow {
+  grid-template-columns: minmax(0, 1fr) minmax(48px, 80px) auto;
+}
+
+.summaryTopValues small,
+.summaryPanel .missingList small {
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryMoreValues {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  margin-top: 6px;
+  padding: 3px 4px;
+}
+
+.summaryMoreValues:hover,
+.summaryMoreValues:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
+.profileDistributionRow {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  padding: 3px 4px;
+  text-align: left;
+  width: 100%;
+}
+
+.profileDistributionRow:hover,
+.profileDistributionRow:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+}
+
+.profileStatFilter {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--vscode-textLink-foreground);
+  font: inherit;
+  min-width: 42px;
+  padding: 1px 4px;
+  text-align: right;
+}
+
+.profileStatFilter:hover,
+.profileStatFilter:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
+.summaryPlaceholder {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.summaryGroup {
+  border-top: 1px solid var(--vscode-panel-border);
+  margin-top: 12px;
+  padding: 9px 0 0;
+}
+
+.summaryPanel summary {
+  cursor: pointer;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 8px;
+}
+
+.dataSummaryStats {
+  margin: 0 0 8px;
+}
+
+dt {
+  color: var(--vscode-descriptionForeground);
+}
+
+dd {
+  margin: 0;
+}
+
+.barRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.barRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mutedText {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.missingList {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}

@@ -1,12 +1,56 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { posix } from "node:path";
+import { EventEmitter } from "node:events";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  opendirSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, posix, relative, resolve } from "node:path";
+import { performance as nodePerformance } from "node:perf_hooks";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { load as parseYaml } from "js-yaml";
+import { TextDecoder } from "node:util";
+import {
+  CORE_SCHEMA,
+  EVENT_ALIAS,
+  EVENT_DOCUMENT,
+  EVENT_MAPPING,
+  EVENT_POP,
+  EVENT_SCALAR,
+  EVENT_SEQUENCE,
+  SCALAR_STYLE_PLAIN,
+  load as parseYaml,
+  mergeTag,
+  parseEvents as parseYamlEvents
+} from "js-yaml";
 import { loadConfigFromFile } from "vite";
-import { CI_CLASSIFIER_OUTPUTS, classifyCiChange, parseChangedPathBuffer } from "./ci-path-classification.mjs";
+import {
+  CI_CLASSIFIER_OUTPUTS,
+  classifyCiChange,
+  parseChangedPathBuffer,
+  resolvePullRequestClassificationRange,
+  sanitizedGitEnvironment
+} from "./ci-path-classification.mjs";
 import {
   ALWAYS_REQUIRED_CI_JOBS,
   CONDITIONAL_CI_JOBS,
@@ -15,18 +59,774 @@ import {
   requireCiResults,
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
-import { readLock, sha256 } from "./r-dependency-lock.mjs";
+import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
-const workflow = (name) => parseYaml(readFileSync(workflowPath(name), "utf8"));
-const ci = workflow("ci.yml");
-const cross = workflow("cross-platform.yml");
-const codeql = workflow("codeql.yml");
-const performance = workflow("performance.yml");
-const releasedJupyter = workflow("released-jupyter.yml");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
+const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const CAPABILITY_JSON_DEPTH_LIMIT = 64;
+const CAPABILITY_JSON_NODE_LIMIT = 20_000;
+const CAPABILITY_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const BOUNDED_WORKFLOW_FILE_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+const WORKFLOW_FIFO_PROBE_ARGUMENT = "--open-bounded-workflow-fifo";
+const WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT = "--open-legacy-workflow-fifo";
+const WORKFLOW_FIFO_READY_MARKER = Buffer.from("open-wrangler-fifo-ready-v1\n", "utf8");
+const WORKFLOW_FIFO_READINESS_TIMEOUT_MS = 2_000;
+const WORKFLOW_FIFO_LEGACY_BLOCK_MS = 250;
+const WORKFLOW_FIFO_PROBE_TIMEOUT_MS = 2_000;
+const WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS = 2_000;
+const WORKFLOW_FIFO_TERM_GRACE_MS = 100;
+const WORKFLOW_FIFO_FINAL_DISPOSITION_MS = 100;
+const WORKFLOW_YAML_NODE_LIMIT = 20_000;
+const WORKFLOW_YAML_DEPTH_LIMIT = 64;
+const WORKFLOW_YAML_ALIAS_LIMIT = 0;
+const WORKFLOW_YAML_MERGE_KEY_LIMIT = 0;
+const REQUIRED_CHECK_EXPRESSION_LIMIT = 64;
+const REQUIRED_CHECK_MATCH_WORK_LIMIT = 16 * 1024;
+const REQUIRED_CHECK_EXPRESSION_PATTERN = /\$\{\{[^{}]{1,1024}\}\}/gu;
+const WORKFLOW_YAML_SCHEMA = CORE_SCHEMA.withTags(mergeTag);
+const WORKFLOW_YAML_LOAD_OPTIONS = Object.freeze({
+  maxAliases: WORKFLOW_YAML_ALIAS_LIMIT,
+  maxDepth: WORKFLOW_YAML_DEPTH_LIMIT,
+  maxTotalMergeKeys: WORKFLOW_YAML_MERGE_KEY_LIMIT,
+  schema: WORKFLOW_YAML_SCHEMA
+});
+const WORKFLOW_INVENTORY_LIMIT = 128;
+const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
+const CAPABILITY_GRAPH_PATH = "scripts/fixtures/ci-capabilities.json";
+const WORKFLOW_DIRECTORY = ".github/workflows";
+const CAPABILITY_WORKFLOW_FILES = Object.freeze({
+  pull_request: ".github/workflows/ci.yml",
+  codeql: ".github/workflows/codeql.yml",
+  candidate: ".github/workflows/candidate-acceptance.yml",
+  release: ".github/workflows/release-candidate.yml"
+});
+const CAPABILITY_WORKFLOW_EVENTS = Object.freeze({
+  pull_request: "pull_request",
+  codeql: "pull_request",
+  candidate: "workflow_call",
+  release: "workflow_dispatch"
+});
+const CAPABILITY_WORKFLOW_TERMINALS = Object.freeze({
+  pull_request: "validate",
+  codeql: "codeql-gate",
+  candidate: "acceptance",
+  release: "qualify"
+});
+const CAPABILITY_FILES = new Set([CAPABILITY_GRAPH_PATH, ...Object.values(CAPABILITY_WORKFLOW_FILES)]);
+
+function fileIdentity(status) {
+  return Object.freeze({
+    ctimeNs: status.ctimeNs,
+    dev: status.dev,
+    gid: status.gid,
+    ino: status.ino,
+    mode: status.mode,
+    mtimeNs: status.mtimeNs,
+    nlink: status.nlink,
+    size: status.size,
+    uid: status.uid
+  });
+}
+
+function sameFileIdentity(left, right) {
+  return Object.keys(left).every((key) => left[key] === right[key]);
+}
+
+function closeDescriptor(descriptor, primaryError) {
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    return primaryError ?? error;
+  }
+  return primaryError;
+}
+
+function canonicalContainedPath(root, relativePath, allowedPaths) {
+  assert.equal(typeof relativePath, "string", "bounded repository paths must be strings");
+  assert.doesNotMatch(relativePath, /[\\\0]/u, `${relativePath} must use a canonical repository-relative path`);
+  assert.equal(posix.normalize(relativePath), relativePath, `${relativePath} must be normalized`);
+  assert.equal(
+    relativePath.startsWith("../") || relativePath.startsWith("/"),
+    false,
+    `${relativePath} escapes the root`
+  );
+  if (allowedPaths !== undefined) {
+    assert.equal(allowedPaths.has(relativePath), true, `${relativePath} is not an allowlisted repository file`);
+  }
+  const canonicalRoot = realpathSync.native(resolve(root));
+  assert.equal(canonicalRoot, resolve(root), "the repository root must be one canonical directory");
+  const absolutePath = resolve(canonicalRoot, ...relativePath.split("/"));
+  const containedPath = relative(canonicalRoot, absolutePath);
+  assert.equal(isAbsolute(containedPath), false, `${relativePath} must stay below the repository root`);
+  assert.doesNotMatch(containedPath, /^(?:\.\.(?:[/\\]|$))/u, `${relativePath} escapes the repository root`);
+  return { absolutePath, canonicalRoot };
+}
+
+function openDirectoryChain(root, components, hooks = {}) {
+  const receipts = [];
+  let currentPath = root;
+  try {
+    for (const component of [undefined, ...components]) {
+      if (component !== undefined) currentPath = resolve(currentPath, component);
+      let descriptor;
+      try {
+        descriptor = openSync(
+          currentPath,
+          constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+        );
+        const opened = fstatSync(descriptor, { bigint: true });
+        assert.equal(opened.isDirectory(), true, `${currentPath} must open as a directory`);
+        hooks.afterDirectoryDescriptorOpen?.({ descriptor, path: currentPath });
+        const pathStatus = lstatSync(currentPath, { bigint: true });
+        assert.equal(pathStatus.isDirectory(), true, `${currentPath} must remain a directory`);
+        assert.equal(pathStatus.isSymbolicLink(), false, `${currentPath} must not be a symbolic link`);
+        assert.equal(
+          sameFileIdentity(fileIdentity(pathStatus), fileIdentity(opened)),
+          true,
+          `${currentPath} directory identity changed before use`
+        );
+        receipts.push({ descriptor, identity: fileIdentity(opened), path: currentPath });
+        descriptor = undefined;
+      } catch (error) {
+        if (descriptor !== undefined) throw closeDescriptor(descriptor, error);
+        throw error;
+      }
+    }
+    return receipts;
+  } catch (error) {
+    throw closeDirectoryChain(receipts, error);
+  }
+}
+
+function revalidateDirectoryChain(receipts) {
+  for (const receipt of receipts) {
+    const descriptorStatus = fstatSync(receipt.descriptor, { bigint: true });
+    const pathStatus = lstatSync(receipt.path, { bigint: true });
+    assert.equal(descriptorStatus.isDirectory(), true, `${receipt.path} descriptor must remain a directory`);
+    assert.equal(pathStatus.isDirectory(), true, `${receipt.path} path must remain a directory`);
+    assert.equal(pathStatus.isSymbolicLink(), false, `${receipt.path} path must not become a symbolic link`);
+    assert.equal(
+      sameFileIdentity(fileIdentity(descriptorStatus), receipt.identity) &&
+        sameFileIdentity(fileIdentity(pathStatus), receipt.identity),
+      true,
+      `${receipt.path} directory identity changed while reading`
+    );
+  }
+}
+
+function closeDirectoryChain(receipts, primaryError) {
+  let failure = primaryError;
+  for (const receipt of [...receipts].reverse()) failure = closeDescriptor(receipt.descriptor, failure);
+  return failure;
+}
+
+function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root = REPOSITORY_ROOT } = {}) {
+  const { absolutePath, canonicalRoot } = canonicalContainedPath(root, relativePath, allowedPaths);
+  const components = relativePath.split("/");
+  const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1), hooks);
+  let descriptor;
+  let failure;
+  let result;
+  try {
+    hooks.afterDirectoryOpen?.({ directories, relativePath });
+    descriptor = openSync(absolutePath, BOUNDED_WORKFLOW_FILE_OPEN_FLAGS);
+    const opened = fstatSync(descriptor, { bigint: true });
+    assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
+    assert.equal(opened.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
+    assert.ok(opened.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+    hooks.afterFileDescriptorOpen?.({ descriptor, relativePath });
+    const pathOpened = lstatSync(absolutePath, { bigint: true });
+    assert.equal(pathOpened.isFile(), true, `${relativePath} path must remain a regular file`);
+    assert.equal(pathOpened.isSymbolicLink(), false, `${relativePath} path must not be a symbolic link`);
+    assert.equal(pathOpened.nlink, 1n, `${relativePath} path must not have hard-linked aliases`);
+    assert.ok(pathOpened.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+    assert.equal(
+      sameFileIdentity(fileIdentity(opened), fileIdentity(pathOpened)),
+      true,
+      `${relativePath} path identity changed before use`
+    );
+    revalidateDirectoryChain(directories);
+    hooks.afterFileOpen?.({ descriptor, relativePath });
+
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const remaining = CAPABILITY_FILE_LIMIT + 1 - total;
+      if (remaining <= 0) throw new Error(`${relativePath} exceeds the capability file limit`);
+      const chunk = Buffer.allocUnsafe(Math.min(16 * 1024, remaining));
+      const read = readSync(descriptor, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      chunks.push(chunk.subarray(0, read));
+      total += read;
+      hooks.afterChunk?.({ descriptor, relativePath, total });
+    }
+    assert.ok(total <= CAPABILITY_FILE_LIMIT, `${relativePath} exceeds the capability file limit`);
+    hooks.afterRead?.({ descriptor, relativePath });
+
+    const bytes = Buffer.concat(chunks, total);
+    const verification = Buffer.allocUnsafe(total);
+    let verificationOffset = 0;
+    while (verificationOffset < total) {
+      const read = readSync(
+        descriptor,
+        verification,
+        verificationOffset,
+        total - verificationOffset,
+        verificationOffset
+      );
+      if (read === 0) throw new Error(`${relativePath} changed while its bytes were revalidated`);
+      verificationOffset += read;
+    }
+    assert.equal(bytes.equals(verification), true, `${relativePath} content changed while reading`);
+    const after = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(absolutePath, { bigint: true });
+    assert.equal(
+      sameFileIdentity(fileIdentity(after), fileIdentity(opened)),
+      true,
+      `${relativePath} changed while reading`
+    );
+    assert.equal(pathAfter.isFile() && !pathAfter.isSymbolicLink() && pathAfter.nlink === 1n, true);
+    assert.equal(
+      sameFileIdentity(fileIdentity(pathAfter), fileIdentity(after)),
+      true,
+      `${relativePath} path identity changed while reading`
+    );
+    assert.equal(BigInt(total), after.size, `${relativePath} returned incomplete bytes`);
+    revalidateDirectoryChain(directories);
+    result = Object.freeze({ bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
+  } catch (error) {
+    failure = error;
+  } finally {
+    if (descriptor !== undefined) failure = closeDescriptor(descriptor, failure);
+    failure = closeDirectoryChain(directories, failure);
+  }
+  if (failure !== undefined) throw failure;
+  return result;
+}
+
+function readExactChildReadinessMarker(
+  stream,
+  {
+    cancelDeadline = clearTimeout,
+    expected = WORKFLOW_FIFO_READY_MARKER,
+    scheduleDeadline = setTimeout,
+    timeoutMs = WORKFLOW_FIFO_READINESS_TIMEOUT_MS
+  } = {}
+) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const chunks = [];
+    let deadline;
+    let settled = false;
+    let total = 0;
+    const cleanup = () => {
+      if (deadline !== undefined) cancelDeadline(deadline);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onError);
+    };
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error === undefined) resolvePromise();
+      else rejectPromise(error);
+    };
+    const onData = (chunk) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.length;
+      if (total > expected.length) {
+        settle(new Error("FIFO child emitted duplicate or extra readiness marker data"));
+        return;
+      }
+      chunks.push(bytes);
+    };
+    const onEnd = () => {
+      if (total === 0) {
+        settle(new Error("FIFO child emitted no readiness marker"));
+        return;
+      }
+      const actual = Buffer.concat(chunks, total);
+      if (!actual.equals(expected)) {
+        settle(new Error("FIFO child emitted a malformed readiness marker"));
+        return;
+      }
+      settle();
+    };
+    const onError = (error) => settle(error);
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+    deadline = scheduleDeadline(
+      () => settle(new Error("FIFO child readiness marker arrived after its deadline")),
+      timeoutMs
+    );
+  });
+}
+
+function observeChildSettlement(child) {
+  const state = {
+    closed: false,
+    errors: [],
+    exit: undefined,
+    exited: false,
+    settled: false,
+    terminalReleaseAttested: false,
+    termination: undefined
+  };
+  let resolveExit;
+  const exited = new Promise((resolvePromise) => {
+    resolveExit = resolvePromise;
+  });
+  let onClose;
+  let onError;
+  let onExit;
+  let resolveResult;
+  const result = new Promise((resolvePromise) => {
+    resolveResult = resolvePromise;
+  });
+  const settle = (close, terminalReleaseAttested) => {
+    if (state.settled) return;
+    state.settled = true;
+    state.terminalReleaseAttested = terminalReleaseAttested;
+    child.off("error", onError);
+    child.off("exit", onExit);
+    child.off("close", onClose);
+    resolveResult({ close, exit: state.exit, terminalReleaseAttested });
+  };
+  onError = (error) => state.errors.push(error);
+  onExit = (code, signal) => {
+    state.exit = { code, signal };
+    state.exited = true;
+    resolveExit();
+  };
+  onClose = (code, signal) => {
+    state.closed = true;
+    settle({ code, signal }, false);
+  };
+  child.on("error", onError);
+  child.once("exit", onExit);
+  child.once("close", onClose);
+  return {
+    attestTerminalRelease() {
+      assert.equal(state.exited, true, "terminal release requires the exact child exit");
+      assert.notEqual(state.exit, undefined, "terminal release requires an exact child exit receipt");
+      settle(state.exit, true);
+    },
+    exited,
+    failUnverifiedTerminalRelease() {
+      settle(undefined, false);
+    },
+    result,
+    state
+  };
+}
+
+function terminateObservedChild(
+  child,
+  observation,
+  control,
+  {
+    cancelDeadline = clearTimeout,
+    finalDispositionMs = WORKFLOW_FIFO_FINAL_DISPOSITION_MS,
+    scheduleDeadline = setTimeout,
+    settlementTimeoutMs = WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS,
+    termGraceMs = WORKFLOW_FIFO_TERM_GRACE_MS,
+    terminalOwnership
+  } = {}
+) {
+  if (observation.state.termination !== undefined) return observation.state.termination;
+  let resolveTermination;
+  const termination = new Promise((resolvePromise) => {
+    resolveTermination = resolvePromise;
+  });
+  observation.state.termination = termination;
+  const faults = [];
+  const signal = (name) => {
+    try {
+      if (!child.kill(name)) faults.push(new Error(`${name} returned false`));
+    } catch (error) {
+      faults.push(error);
+    }
+  };
+  const escalation = scheduleDeadline(() => {
+    if (!observation.state.exited) signal("SIGKILL");
+  }, termGraceMs);
+  let finalDisposition;
+  let onControlClose;
+  const terminalDeadline = scheduleDeadline(() => {
+    if (!observation.state.closed) {
+      faults.push(new Error("FIFO child did not close before its settlement deadline"));
+      try {
+        terminalOwnership({ control, state: observation.state });
+      } catch (error) {
+        faults.push(error);
+      }
+      if (!observation.state.settled && !observation.state.exited) signal("SIGKILL");
+      const controlClosed = control.closed
+        ? Promise.resolve()
+        : new Promise((resolvePromise) => {
+            onControlClose = () => {
+              onControlClose = undefined;
+              resolvePromise();
+            };
+            control.once("close", onControlClose);
+          });
+      if (!observation.state.settled && !control.closed) {
+        try {
+          control.destroy();
+        } catch (error) {
+          faults.push(error);
+        }
+      }
+      const attestTerminalRelease = () => {
+        if (!observation.state.settled && observation.state.exited && control.closed) {
+          observation.attestTerminalRelease();
+        }
+      };
+      attestTerminalRelease();
+      if (!observation.state.settled) {
+        void Promise.all([observation.exited, controlClosed]).then(attestTerminalRelease);
+        finalDisposition = scheduleDeadline(() => {
+          attestTerminalRelease();
+          if (observation.state.settled) return;
+          if (onControlClose !== undefined) {
+            try {
+              control.off("close", onControlClose);
+              onControlClose = undefined;
+            } catch (error) {
+              faults.push(error);
+            }
+          }
+          if (!(control.closed || control.destroyed)) {
+            try {
+              control.destroy();
+            } catch (error) {
+              faults.push(error);
+            }
+          }
+          if (typeof control.unref === "function") {
+            try {
+              control.unref();
+            } catch (error) {
+              faults.push(error);
+            }
+          }
+          if (typeof child.unref === "function") {
+            try {
+              child.unref();
+            } catch (error) {
+              faults.push(error);
+            }
+          } else {
+            faults.push(new Error("FIFO child did not expose its owned unref boundary"));
+          }
+          faults.push(new Error("FIFO child release remained unverified after its final disposition deadline"));
+          observation.failUnverifiedTerminalRelease();
+        }, finalDispositionMs);
+      }
+    }
+  }, settlementTimeoutMs);
+  if (!observation.state.exited) signal("SIGTERM");
+  void observation.result.then(({ close, exit, terminalReleaseAttested }) => {
+    if (onControlClose !== undefined) {
+      try {
+        control.off("close", onControlClose);
+        onControlClose = undefined;
+      } catch (error) {
+        faults.push(error);
+      }
+    }
+    for (const deadline of [escalation, terminalDeadline, finalDisposition]) {
+      if (deadline === undefined) continue;
+      try {
+        cancelDeadline(deadline);
+      } catch (error) {
+        faults.push(error);
+      }
+    }
+    faults.unshift(...observation.state.errors);
+    if (!(control.readableEnded || control.destroyed)) {
+      faults.push(new Error("FIFO child control pipe remained live after close"));
+    }
+    resolveTermination({ close, exit, faults, terminalReleaseAttested });
+  });
+  return termination;
+}
+
+async function waitForMonotonicDelay(delayMs) {
+  const deadline = nodePerformance.now() + delayMs;
+  while (true) {
+    const remaining = deadline - nodePerformance.now();
+    if (remaining <= 0) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, remaining));
+  }
+}
+
+if (process.argv[2] === WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT) {
+  assert.equal(process.argv.length, 4, "the legacy FIFO probe requires one path");
+  writeSync(3, WORKFLOW_FIFO_READY_MARKER);
+  closeSync(3);
+  openSync(process.argv[3], constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  throw new Error(`${process.argv[3]} unexpectedly passed the legacy workflow reader`);
+}
+
+if (process.argv[2] === WORKFLOW_FIFO_PROBE_ARGUMENT) {
+  assert.equal(process.argv.length, 5, "the FIFO probe requires one root and one relative path");
+  const root = process.argv[3];
+  const relativePath = process.argv[4];
+  readBoundedNoFollowFile(relativePath, {
+    allowedPaths: new Set([relativePath]),
+    root
+  });
+  throw new Error(`${relativePath} unexpectedly passed the bounded workflow reader`);
+}
+
+function readDirectoryInventory(directoryPath) {
+  const directory = opendirSync(directoryPath);
+  const entries = [];
+  let failure;
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      assert.ok(entries.length < WORKFLOW_INVENTORY_LIMIT, "workflow inventory exceeds its file-count limit");
+      assert.ok(Buffer.byteLength(entry.name, "utf8") <= 255, "workflow inventory contains an oversized name");
+      entries.push(entry.name);
+    }
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      directory.closeSync();
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure !== undefined) throw failure;
+  return entries.filter((name) => /\.ya?ml$/u.test(name)).sort();
+}
+
+function parseBoundedWorkflowYaml(bytes) {
+  let source = bytes;
+  if (Buffer.isBuffer(bytes)) {
+    try {
+      source = CAPABILITY_UTF8_DECODER.decode(bytes);
+    } catch (cause) {
+      throw new Error("workflow YAML is not valid UTF-8", { cause });
+    }
+  }
+  assert.equal(typeof source, "string", "workflow YAML must be text");
+  assert.ok(Buffer.byteLength(source, "utf8") <= CAPABILITY_FILE_LIMIT, "workflow YAML exceeds its byte limit");
+  const stack = [];
+  let depth = 0;
+  let nodes = 0;
+  for (const event of parseYamlEvents(source, { maxDepth: WORKFLOW_YAML_DEPTH_LIMIT })) {
+    assert.notEqual(event.type, EVENT_ALIAS, "workflow YAML aliases are forbidden");
+    assert.equal(event.anchorStart ?? -1, -1, "workflow YAML anchors are forbidden");
+    assert.equal(event.tagStart ?? -1, -1, "workflow YAML explicit tags are forbidden");
+    if ([EVENT_DOCUMENT, EVENT_MAPPING, EVENT_SEQUENCE].includes(event.type)) {
+      stack.push(event.type);
+      if (event.type !== EVENT_DOCUMENT) {
+        depth += 1;
+        nodes += 1;
+      }
+    } else if (event.type === EVENT_SCALAR) {
+      nodes += 1;
+      const scalar = source.slice(event.valueStart, event.valueEnd);
+      assert.equal(
+        event.style === SCALAR_STYLE_PLAIN && scalar === "<<",
+        false,
+        "workflow YAML merge keys are forbidden"
+      );
+    } else if (event.type === EVENT_POP) {
+      const opened = stack.pop();
+      assert.notEqual(opened, undefined, "workflow YAML structure is unbalanced");
+      if (opened !== EVENT_DOCUMENT) depth -= 1;
+    }
+    assert.ok(depth <= WORKFLOW_YAML_DEPTH_LIMIT, "workflow YAML exceeds its depth limit");
+    assert.ok(nodes <= WORKFLOW_YAML_NODE_LIMIT, "workflow YAML exceeds its node limit");
+  }
+  assert.deepEqual(stack, [], "workflow YAML structure is incomplete");
+  return parseYaml(source, WORKFLOW_YAML_LOAD_OPTIONS);
+}
+
+function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } = {}) {
+  const { absolutePath: directoryPath, canonicalRoot } = canonicalContainedPath(root, WORKFLOW_DIRECTORY);
+  const directories = openDirectoryChain(canonicalRoot, WORKFLOW_DIRECTORY.split("/"));
+  let failure;
+  let result;
+  try {
+    const firstNames = readDirectoryInventory(directoryPath);
+    hooks.afterFirstInventory?.({ directoryPath, firstNames });
+    const secondNames = readDirectoryInventory(directoryPath);
+    assert.deepEqual(secondNames, firstNames, "workflow inventory changed while it was enumerated");
+    revalidateDirectoryChain(directories);
+    const paths = firstNames.map((name) => workflowPath(name));
+    const allowedPaths = new Set(paths);
+    const snapshots = Object.fromEntries(
+      paths.map((path) => {
+        const snapshot = readBoundedNoFollowFile(path, { allowedPaths, hooks: hooks.file, root: canonicalRoot });
+        return [path, Object.freeze({ ...snapshot, document: parseBoundedWorkflowYaml(snapshot.bytes) })];
+      })
+    );
+    hooks.afterFiles?.({ directoryPath, paths, snapshots });
+    assert.deepEqual(readDirectoryInventory(directoryPath), firstNames, "workflow inventory changed after reading");
+    revalidateDirectoryChain(directories);
+    result = Object.freeze(snapshots);
+  } catch (error) {
+    failure = error;
+  } finally {
+    failure = closeDirectoryChain(directories, failure);
+  }
+  if (failure !== undefined) throw failure;
+  return result;
+}
+
+function readBoundedCapabilityFile(relativePath, options = {}) {
+  assert.equal(CAPABILITY_FILES.has(relativePath), true, `${relativePath} is not an allowlisted capability file`);
+  const bytes = readBoundedNoFollowFile(relativePath, { ...options, allowedPaths: CAPABILITY_FILES }).bytes;
+  try {
+    return CAPABILITY_UTF8_DECODER.decode(bytes);
+  } catch (cause) {
+    throw new Error(`${relativePath} is not valid UTF-8`, { cause });
+  }
+}
+
+function assertNoDuplicateJsonObjectKeys(source) {
+  let cursor = 0;
+  let nodes = 0;
+  const skipWhitespace = () => {
+    while (cursor < source.length && /[\t\n\r ]/u.test(source[cursor])) cursor += 1;
+  };
+  const scanString = () => {
+    const start = cursor;
+    assert.equal(source[cursor], '"', `expected a JSON string at offset ${cursor}`);
+    cursor += 1;
+    while (cursor < source.length) {
+      const character = source[cursor];
+      if (character === '"') {
+        cursor += 1;
+        return JSON.parse(source.slice(start, cursor));
+      }
+      if (character === "\\") {
+        cursor += 1;
+        assert.ok(cursor < source.length, "JSON string ends after an escape prefix");
+        if (source[cursor] === "u") {
+          assert.match(source.slice(cursor + 1, cursor + 5), /^[0-9a-f]{4}$/iu, "invalid JSON Unicode escape");
+          cursor += 5;
+          continue;
+        }
+        assert.match(source[cursor], /^["\\/bfnrt]$/u, "invalid JSON string escape");
+        cursor += 1;
+        continue;
+      }
+      assert.ok(character.codePointAt(0) >= 0x20, "JSON strings must not contain control characters");
+      cursor += 1;
+    }
+    throw new SyntaxError("unterminated JSON string");
+  };
+  const scanValue = (depth) => {
+    assert.ok(depth <= CAPABILITY_JSON_DEPTH_LIMIT, "capability JSON exceeds its depth limit");
+    nodes += 1;
+    assert.ok(nodes <= CAPABILITY_JSON_NODE_LIMIT, "capability JSON exceeds its node limit");
+    skipWhitespace();
+    if (source[cursor] === '"') {
+      scanString();
+      return;
+    }
+    if (source[cursor] === "{") {
+      cursor += 1;
+      skipWhitespace();
+      const keys = new Set();
+      if (source[cursor] === "}") {
+        cursor += 1;
+        return;
+      }
+      while (cursor < source.length) {
+        const key = scanString();
+        assert.equal(keys.has(key), false, `duplicate JSON object key ${key}`);
+        keys.add(key);
+        skipWhitespace();
+        assert.equal(source[cursor], ":", `expected ':' after JSON object key at offset ${cursor}`);
+        cursor += 1;
+        scanValue(depth + 1);
+        skipWhitespace();
+        if (source[cursor] === "}") {
+          cursor += 1;
+          return;
+        }
+        assert.equal(source[cursor], ",", `expected ',' in JSON object at offset ${cursor}`);
+        cursor += 1;
+        skipWhitespace();
+      }
+      throw new SyntaxError("unterminated JSON object");
+    }
+    if (source[cursor] === "[") {
+      cursor += 1;
+      skipWhitespace();
+      if (source[cursor] === "]") {
+        cursor += 1;
+        return;
+      }
+      while (cursor < source.length) {
+        scanValue(depth + 1);
+        skipWhitespace();
+        if (source[cursor] === "]") {
+          cursor += 1;
+          return;
+        }
+        assert.equal(source[cursor], ",", `expected ',' in JSON array at offset ${cursor}`);
+        cursor += 1;
+      }
+      throw new SyntaxError("unterminated JSON array");
+    }
+    const start = cursor;
+    while (cursor < source.length && !/[\t\n\r ,\]}]/u.test(source[cursor])) cursor += 1;
+    assert.ok(cursor > start, `expected a JSON value at offset ${cursor}`);
+  };
+
+  scanValue(0);
+  skipWhitespace();
+  assert.equal(cursor, source.length, `unexpected JSON content at offset ${cursor}`);
+}
+
+function parseBoundedCapabilityJson(relativePath, options = {}) {
+  const source = readBoundedCapabilityFile(relativePath, options);
+  assertNoDuplicateJsonObjectKeys(source);
+  return JSON.parse(source);
+}
+
+function loadCapabilityDocuments(graph, workflowInventory = repositoryWorkflowInventory) {
+  assert.deepEqual(Object.keys(graph.workflows).sort(), Object.keys(CAPABILITY_WORKFLOW_FILES).sort());
+  return Object.fromEntries(
+    Object.entries(CAPABILITY_WORKFLOW_FILES).map(([id, file]) => {
+      assert.equal(graph.workflows[id]?.file, file, `${id} must use its fixed workflow file`);
+      const document = workflowInventory[file]?.document;
+      assert.ok(document, `${file} must exist in the bounded workflow inventory`);
+      return [id, document];
+    })
+  );
+}
+
+const capabilityGraph = parseBoundedCapabilityJson(CAPABILITY_GRAPH_PATH);
+const repositoryWorkflowInventory = loadRepositoryWorkflowInventory();
+const repositoryWorkflowNames = Object.keys(repositoryWorkflowInventory)
+  .map((path) => posix.basename(path))
+  .sort();
+const workflow = (name) => {
+  const snapshot = repositoryWorkflowInventory[workflowPath(name)];
+  assert.ok(snapshot, `${name} is absent from the bounded workflow inventory`);
+  return snapshot.document;
+};
+const capabilityDocuments = loadCapabilityDocuments(capabilityGraph);
+const ci = capabilityDocuments.pull_request;
+const cross = workflow("cross-platform.yml");
+const codeql = capabilityDocuments.codeql;
+const performance = workflow("performance.yml");
+const releasedJupyter = workflow("released-jupyter.yml");
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
@@ -49,7 +849,9 @@ const BOOLEAN_OUTPUTS = Object.freeze({
   windowsUniqueRequired: true
 });
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
-const VALIDATE_CONDITION = "${{ always() && github.event_name == 'pull_request' }}";
+const PULL_OR_MERGE_GROUP_CONDITION = "github.event_name == 'pull_request' || github.event_name == 'merge_group'";
+const GROUPED_PULL_OR_MERGE_GROUP_CONDITION = `(${PULL_OR_MERGE_GROUP_CONDITION})`;
+const VALIDATE_CONDITION = `\${{ always() && ${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} }}`;
 const VALIDATE_NEEDS = Object.freeze([
   "classify",
   "invariant-core",
@@ -83,6 +885,16 @@ const REPLACEABLE_PULL_REQUEST_WORKFLOWS = Object.freeze([
   ["ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
   ["codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ]);
+const CAPABILITY_NAMES = Object.freeze([
+  "source_coverage",
+  "installed_candidate",
+  "artifact_provenance",
+  "release_fan_in"
+]);
+const PULL_REQUEST_ACTIVITY_TYPES = Object.freeze(["opened", "synchronize", "reopened", "edited", "stacked"]);
+const MERGE_GROUP_ACTIVITY_TYPES = Object.freeze(["checks_requested"]);
+const CAPABILITY_DOCS_START = "<!-- BEGIN GENERATED CI CAPABILITIES -->";
+const CAPABILITY_DOCS_END = "<!-- END GENERATED CI CAPABILITIES -->";
 const APPROVED_EXTERNAL_ACTIONS = new Set([
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809",
@@ -415,20 +1227,367 @@ function normalizeWorkflowExpression(value) {
   return typeof value === "string" ? value.replaceAll(/\s+/gu, " ").trim() : value;
 }
 
+function jobNeeds(job) {
+  if (job?.needs === undefined) return [];
+  return Array.isArray(job.needs) ? job.needs : [job.needs];
+}
+
+function ownCapabilityJob(document, jobId) {
+  assert.equal(
+    document !== null && typeof document === "object" && Object.hasOwn(document, "jobs"),
+    true,
+    "capability workflow must own its jobs mapping"
+  );
+  const jobs = document.jobs;
+  assert.equal(
+    jobs !== null && typeof jobs === "object" && Object.hasOwn(jobs, jobId),
+    true,
+    `missing capability job ${jobId}`
+  );
+  const job = jobs[jobId];
+  assert.equal(
+    job !== null && typeof job === "object" && !Array.isArray(job),
+    true,
+    `capability job ${jobId} must be an object`
+  );
+  return job;
+}
+
+function dependencyClosure(document, terminalJob) {
+  const visited = new Set();
+  const active = new Set();
+  const visit = (jobId) => {
+    if (visited.has(jobId)) return;
+    assert.equal(active.has(jobId), false, `capability dependency cycle includes ${jobId}`);
+    const job = ownCapabilityJob(document, jobId);
+    active.add(jobId);
+    for (const dependency of jobNeeds(job)) visit(dependency);
+    active.delete(jobId);
+    visited.add(jobId);
+  };
+  visit(terminalJob);
+  return visited;
+}
+
+function strategyMultiplicityIsUnevaluable(job) {
+  if (!Object.hasOwn(job ?? {}, "strategy")) return false;
+  const strategy = job.strategy;
+  if (strategy === null || Array.isArray(strategy) || typeof strategy !== "object") return true;
+  const entries = Object.entries(strategy);
+  if (entries.length === 0 || Object.hasOwn(strategy, "matrix")) return true;
+  return entries.some(([key, value]) => {
+    if (key === "fail-fast") return typeof value !== "boolean";
+    if (key === "max-parallel") return !Number.isSafeInteger(value) || value <= 0;
+    return true;
+  });
+}
+
+function fixedCheckNamePartsMayEqual(required, parts, fixedTextLength) {
+  if (
+    typeof required !== "string" ||
+    required.length + fixedTextLength + parts.length > REQUIRED_CHECK_MATCH_WORK_LIMIT
+  ) {
+    return true;
+  }
+  const first = parts[0];
+  const last = parts.at(-1);
+  if (!required.startsWith(first) || !required.endsWith(last)) return false;
+  let cursor = first.length;
+  const suffixStart = required.length - last.length;
+  if (cursor > suffixStart) return false;
+  for (let index = 1; index < parts.length - 1; index += 1) {
+    const part = parts[index];
+    const next = required.indexOf(part, cursor);
+    if (next === -1 || next + part.length > suffixStart) return false;
+    cursor = next + part.length;
+  }
+  return cursor <= suffixStart;
+}
+
+function parseDynamicCheckNameParts(name, suppliedMatches) {
+  if (name.length > REQUIRED_CHECK_MATCH_WORK_LIMIT) return undefined;
+  const parts = [];
+  let cursor = 0;
+  let expressionCount = 0;
+  let fixedTextLength = 0;
+  let work = 0;
+  const matches = suppliedMatches ?? name.matchAll(REQUIRED_CHECK_EXPRESSION_PATTERN);
+  for (const match of matches) {
+    expressionCount += 1;
+    if (expressionCount > REQUIRED_CHECK_EXPRESSION_LIMIT) return undefined;
+    const text = match?.[0];
+    const index = match?.index;
+    if (
+      typeof text !== "string" ||
+      text.length === 0 ||
+      !Number.isSafeInteger(index) ||
+      index < cursor ||
+      index + text.length > name.length
+    ) {
+      return undefined;
+    }
+    const literalLength = index - cursor;
+    const nextWork = work + literalLength + text.length;
+    if (nextWork > REQUIRED_CHECK_MATCH_WORK_LIMIT) return undefined;
+    parts.push(name.slice(cursor, index));
+    fixedTextLength += literalLength;
+    work = nextWork;
+    cursor = index + text.length;
+  }
+  const trailingLength = name.length - cursor;
+  if (expressionCount === 0 || work + trailingLength > REQUIRED_CHECK_MATCH_WORK_LIMIT) return undefined;
+  parts.push(name.slice(cursor));
+  fixedTextLength += trailingLength;
+  if (parts.some((part) => part.includes("${{") || part.includes("}}"))) return undefined;
+  return Object.freeze({ fixedTextLength, parts: Object.freeze(parts) });
+}
+
+function requiredCheckName(jobId, job) {
+  const multiplicityIsUnevaluable = strategyMultiplicityIsUnevaluable(job);
+  const name = job?.name;
+  if (name === undefined) {
+    return Object.freeze({
+      exact: multiplicityIsUnevaluable ? undefined : jobId,
+      mayEqual: (required) => required === jobId
+    });
+  }
+  assert.equal(typeof name, "string", `${jobId} check name must be text when present`);
+  assert.notEqual(name, "", `${jobId} check name must not be empty`);
+  if (!name.includes("${{")) {
+    return Object.freeze({
+      exact: multiplicityIsUnevaluable ? undefined : name,
+      mayEqual: (required) => required === name
+    });
+  }
+  const parsed = parseDynamicCheckNameParts(name);
+  if (parsed === undefined) return Object.freeze({ exact: undefined, mayEqual: () => true });
+  return Object.freeze({
+    exact: undefined,
+    mayEqual: (required) => fixedCheckNamePartsMayEqual(required, parsed.parts, parsed.fixedTextLength)
+  });
+}
+
+function expectedCapabilityJobCondition(workflowId, jobId) {
+  if (workflowId === "pull_request" && jobId === "validate") return normalizeWorkflowExpression(VALIDATE_CONDITION);
+  if (workflowId === "pull_request" && Object.hasOwn(CHANGED_AREA_OWNER_OUTPUTS, jobId)) {
+    const output = CHANGED_AREA_OWNER_OUTPUTS[jobId];
+    return (
+      `\${{ !cancelled() && ${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} && ` +
+      `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`
+    );
+  }
+  if ((workflowId === "candidate" && jobId === "acceptance") || (workflowId === "release" && jobId === "qualify")) {
+    return "${{ always() }}";
+  }
+  return undefined;
+}
+
+function assertCapabilityJobFatal(job, owner) {
+  assert.ok(job, `missing required capability job ${owner}`);
+  assert.equal(
+    job["continue-on-error"] === undefined || job["continue-on-error"] === false,
+    true,
+    `${owner} continue-on-error must be absent or literal false`
+  );
+}
+
+function assertRequiredCapabilityJob(job, workflowId, jobId) {
+  const owner = `${workflowId}:${jobId}`;
+  assertCapabilityJobFatal(job, owner);
+  assert.equal(
+    normalizeWorkflowExpression(job.if),
+    normalizeWorkflowExpression(expectedCapabilityJobCondition(workflowId, jobId)),
+    `${owner} changed its qualification condition`
+  );
+}
+
+function assertCapabilityGraph(graph, documents, workflowInventory = repositoryWorkflowInventory) {
+  assert.equal(graph.version, 1);
+  assert.deepEqual(Object.keys(graph.workflows).sort(), Object.keys(CAPABILITY_WORKFLOW_FILES).sort());
+  assert.deepEqual(Object.keys(graph.capabilities), CAPABILITY_NAMES);
+  for (const [workflowId, owner] of Object.entries(graph.workflows)) {
+    const document = documents[workflowId];
+    assert.ok(document, `missing parsed workflow ${workflowId}`);
+    assert.equal(owner.file, CAPABILITY_WORKFLOW_FILES[workflowId], `${workflowId} changed its fixed workflow file`);
+    assert.equal(owner.event, CAPABILITY_WORKFLOW_EVENTS[workflowId], `${workflowId} changed its exact event`);
+    assert.equal(
+      owner.terminalJob,
+      CAPABILITY_WORKFLOW_TERMINALS[workflowId],
+      `${workflowId} changed its terminal job`
+    );
+    assert.ok(Object.hasOwn(document.on ?? {}, owner.event), `${owner.file} must retain ${owner.event}`);
+    ownCapabilityJob(document, owner.terminalJob);
+    if (workflowId === "pull_request" || workflowId === "codeql") {
+      assert.deepEqual(owner.activityTypes, PULL_REQUEST_ACTIVITY_TYPES);
+      assert.deepEqual(document.on[owner.event]?.types, owner.activityTypes);
+      assert.deepEqual(owner.mergeGroupActivityTypes, MERGE_GROUP_ACTIVITY_TYPES);
+      assert.deepEqual(document.on.merge_group?.types, owner.mergeGroupActivityTypes);
+    } else {
+      assert.equal(owner.activityTypes, undefined, `${workflowId} must not declare pull-request activity types`);
+      assert.equal(
+        owner.mergeGroupActivityTypes,
+        undefined,
+        `${workflowId} must not declare merge-group activity types`
+      );
+    }
+  }
+
+  for (const [capabilityName, capability] of Object.entries(graph.capabilities)) {
+    const entry = graph.workflows[capability.entryWorkflow];
+    const providerOwner = graph.workflows[capability.providerWorkflow];
+    const fanInOwner = graph.workflows[capability.fanInWorkflow];
+    assert.ok(entry, `${capabilityName} has an unknown entry workflow`);
+    assert.ok(providerOwner, `${capabilityName} has an unknown provider workflow`);
+    assert.ok(fanInOwner, `${capabilityName} has an unknown fan-in workflow`);
+    assert.equal(
+      capability.entryWorkflow,
+      capability.fanInWorkflow,
+      `${capabilityName} entry workflow must own its final fan-in`
+    );
+
+    const providerDocument = documents[capability.providerWorkflow];
+    const fanInDocument = documents[capability.fanInWorkflow];
+    assert.equal(fanInOwner.terminalJob, capability.fanInJob, `${capabilityName} must reach the final fan-in`);
+    assert.equal(Array.isArray(capability.requiredJobs), true, `${capabilityName} must declare its required jobs`);
+    assert.equal(
+      new Set(capability.requiredJobs).size,
+      capability.requiredJobs.length,
+      `${capabilityName} must not declare a required job twice`
+    );
+    assert.ok(capability.requiredJobs.includes(capability.providerJob));
+    const providerClosure = dependencyClosure(providerDocument, capability.providerJob);
+    assert.deepEqual(
+      [...providerClosure].sort(),
+      [...capability.requiredJobs].sort(),
+      `${capabilityName} must declare the exact provider dependency closure`
+    );
+    for (const jobId of capability.requiredJobs) {
+      assertRequiredCapabilityJob(ownCapabilityJob(providerDocument, jobId), capability.providerWorkflow, jobId);
+      assert.equal(providerClosure.has(jobId), true, `${capabilityName} disconnects ${jobId} from its provider`);
+    }
+    assertRequiredCapabilityJob(
+      ownCapabilityJob(fanInDocument, capability.fanInJob),
+      capability.fanInWorkflow,
+      capability.fanInJob
+    );
+
+    const fanInClosure = dependencyClosure(fanInDocument, capability.fanInJob);
+    if (capability.providerWorkflow === capability.fanInWorkflow) {
+      assert.equal(
+        fanInClosure.has(capability.providerJob),
+        true,
+        `${capabilityName} provider must feed its final fan-in`
+      );
+    } else {
+      const bridge = ownCapabilityJob(fanInDocument, capability.bridgeJob);
+      assertRequiredCapabilityJob(bridge, capability.fanInWorkflow, capability.bridgeJob);
+      assert.equal(bridge.uses, `./${providerOwner.file}`);
+      assert.equal(providerOwner.terminalJob, capability.providerJob);
+      assert.equal(fanInClosure.has(capability.bridgeJob), true, `${capabilityName} bridge must feed its final fan-in`);
+    }
+  }
+
+  const release = graph.capabilities.release_fan_in;
+  const requiredChecks = graph.capabilities.source_coverage.requiredChecks;
+  assert.deepEqual(requiredChecks, ["validate", "CodeQL gate"]);
+  assert.equal(new Set(requiredChecks).size, requiredChecks.length, "required check names must be unique");
+  const completeDocuments = Object.fromEntries(
+    Object.entries(workflowInventory).map(([path, snapshot]) => [path, snapshot.document ?? snapshot])
+  );
+  for (const [workflowId, document] of Object.entries(documents)) {
+    completeDocuments[graph.workflows[workflowId].file] = document;
+  }
+  const declaredChecks = Object.entries(completeDocuments).flatMap(([path, document]) =>
+    Object.entries(document.jobs ?? {}).map(([jobId, job]) => ({
+      checkName: requiredCheckName(jobId, job),
+      job,
+      jobId,
+      path
+    }))
+  );
+  for (const checkName of requiredChecks) {
+    const ambiguous = declaredChecks.filter(
+      ({ checkName: candidate }) => candidate.exact === undefined && candidate.mayEqual(checkName)
+    );
+    assert.deepEqual(ambiguous, [], `${checkName} has an unevaluable possible check-name collision`);
+    const owners = declaredChecks.filter(({ checkName: candidate }) => candidate.exact === checkName);
+    assert.equal(owners.length, 1, `${checkName} must name exactly one declared job`);
+    assertCapabilityJobFatal(owners[0].job, `${owners[0].path}:${owners[0].jobId}`);
+  }
+  assert.equal(requiredCheckName("validate", ownCapabilityJob(documents.pull_request, "validate")).exact, "validate");
+  assert.ok(Object.hasOwn(documents.codeql.on ?? {}, "pull_request"));
+  assert.equal(ownCapabilityJob(documents.codeql, "codeql-gate").name, "CodeQL gate");
+  assert.deepEqual(release.requires, ["artifact_provenance", "installed_candidate"]);
+  for (const requiredCapability of release.requires) {
+    const required = graph.capabilities[requiredCapability];
+    assert.equal(required.entryWorkflow, release.entryWorkflow);
+    assert.equal(required.fanInWorkflow, release.fanInWorkflow);
+    assert.equal(required.fanInJob, release.fanInJob);
+  }
+}
+
+function renderCapabilityDocs(graph) {
+  const heading = [
+    CAPABILITY_DOCS_START,
+    "",
+    "### Enforced workflow capabilities",
+    "",
+    "This section is generated from `scripts/fixtures/ci-capabilities.json` and checked against the workflow graph.",
+    "Job display names and YAML ordering are not part of the contract; job IDs, events, fatality, reachability, and final fan-in are.",
+    ""
+  ];
+  const rows = CAPABILITY_NAMES.map((name) => {
+    const capability = graph.capabilities[name];
+    const entry = graph.workflows[capability.entryWorkflow];
+    const provider = graph.workflows[capability.providerWorkflow];
+    const fanIn = graph.workflows[capability.fanInWorkflow];
+    const requiredChecks = capability.requiredChecks
+      ? `; required checks ${capability.requiredChecks.map((check) => `\`${check}\``).join(", ")}`
+      : "";
+    const mergeGroup = entry.mergeGroupActivityTypes
+      ? `; merge queue trigger \`merge_group:${entry.mergeGroupActivityTypes.join(",")}\``
+      : "";
+    return `- \`${name}\`: trigger \`${entry.event}\`${mergeGroup}; provider \`${provider.file}:${capability.providerJob}\`; mandatory final fan-in \`${fanIn.file}:${capability.fanInJob}\`${requiredChecks}.`;
+  });
+  return [...heading, ...rows, "", CAPABILITY_DOCS_END].join("\n");
+}
+
 function assertChangedAreaOwnersStartAfterClassification(document) {
   for (const [jobId, output] of Object.entries(CHANGED_AREA_OWNER_OUTPUTS)) {
     const job = document?.jobs?.[jobId];
     assert.deepEqual(job?.needs, ["classify"], `${jobId} must start after classification only`);
     assert.equal(
       normalizeWorkflowExpression(job?.if),
-      "${{ !cancelled() && github.event_name == 'pull_request' && " +
+      `\${{ !cancelled() && ${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} && ` +
         `(needs.classify.result != 'success' || needs.classify.outputs.${output} != 'false') }}`,
-      `${jobId} must retain its exact PR-only fail-open selection condition`
+      `${jobId} must retain its exact pull-request and merge-group fail-open selection condition`
     );
     assert.doesNotMatch(
       JSON.stringify(job),
       /needs\.invariant-core/u,
       `${jobId} must not wait for or inspect invariant-core before starting`
+    );
+  }
+}
+
+function assertPullRequestActivityContract(primaryDocument, codeqlDocument) {
+  for (const [name, document] of [
+    ["CI", primaryDocument],
+    ["CodeQL", codeqlDocument]
+  ]) {
+    assert.deepEqual(document.on.pull_request.types, PULL_REQUEST_ACTIVITY_TYPES, `${name} activity types drifted`);
+    assert.deepEqual(document.on.merge_group.types, MERGE_GROUP_ACTIVITY_TYPES, `${name} merge-group activity drifted`);
+    assert.equal(document.on.pull_request.types.includes("edited"), true, `${name} must qualify base edits`);
+    assert.equal(document.on.pull_request.types.includes("stacked"), true, `${name} must qualify stack joins`);
+    assert.equal(
+      document.on.pull_request.types.includes("ready_for_review"),
+      false,
+      `${name} readiness must remain SHA-idempotent`
+    );
+    assert.equal(
+      document.on.pull_request.types.includes("converted_to_draft"),
+      false,
+      `${name} draft conversion must remain SHA-idempotent`
     );
   }
 }
@@ -653,6 +1812,7 @@ test("classifier self-selects and fails open for control-plane, malformed, empty
     [".github/workflows/ci.yml"],
     ["scripts/ci-path-classification.mjs"],
     ["scripts/ci-workflow.test.mjs"],
+    ["scripts/fixtures/ci-capabilities.json"],
     ["package.json"],
     ["r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json"],
     ["unknown/substantive.owner"],
@@ -661,7 +1821,7 @@ test("classifier self-selects and fails open for control-plane, malformed, empty
   ]) {
     assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths }), BOOLEAN_OUTPUTS);
   }
-  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+  for (const eventName of ["merge_group", "push", "schedule", "workflow_dispatch"]) {
     assert.deepEqual(classifyCiChange({ eventName, changedPaths: [] }), BOOLEAN_OUTPUTS);
   }
   assert.throws(() => classifyCiChange({ eventName: "pull_request", changedPaths: "not-an-array" }), /array/u);
@@ -674,6 +1834,213 @@ test("changed path transport remains NUL-safe and fatal UTF-8", () => {
   assert.throws(() => parseChangedPathBuffer(Buffer.from("missing terminator")), /NUL terminated/u);
   assert.throws(() => parseChangedPathBuffer(Buffer.from("a\0\0")), /empty path/u);
   assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
+});
+
+test("stack classification uses the cumulative stack base and exposes exact prefix metadata", () => {
+  const pullRequestBaseSha = "1".repeat(40);
+  const pullRequestHeadSha = "2".repeat(40);
+  const stackBaseSha = "3".repeat(40);
+  assert.deepEqual(
+    resolvePullRequestClassificationRange({
+      pullRequestBaseSha,
+      pullRequestHeadSha,
+      stackBaseSha,
+      stackPosition: "2",
+      stackSize: "4"
+    }),
+    {
+      baseSha: stackBaseSha,
+      headSha: pullRequestHeadSha,
+      stackedEvent: true,
+      stackPosition: 2,
+      stackSize: 4,
+      partialPrefix: true
+    }
+  );
+  assert.deepEqual(
+    resolvePullRequestClassificationRange({
+      pullRequestBaseSha,
+      pullRequestHeadSha,
+      stackBaseSha,
+      stackPosition: "4",
+      stackSize: "4"
+    }),
+    {
+      baseSha: stackBaseSha,
+      headSha: pullRequestHeadSha,
+      stackedEvent: true,
+      stackPosition: 4,
+      stackSize: 4,
+      partialPrefix: false
+    }
+  );
+});
+
+test("every stack layer classifies its complete cumulative prefix without dropping prior owners", () => {
+  const pullRequestBaseSha = "1".repeat(40);
+  const pullRequestHeadSha = "2".repeat(40);
+  const stackBaseSha = "3".repeat(40);
+  const prefixes = [
+    ["python/openwrangler_runtime/export_target.py"],
+    ["python/openwrangler_runtime/export_target.py", "r/openwrangler_runtime/kernel_agent.R"],
+    ["python/openwrangler_runtime/export_target.py", "r/openwrangler_runtime/kernel_agent.R", "src/webviews/App.tsx"]
+  ];
+  const expected = [
+    {
+      rContractRequired: false,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: true
+    },
+    {
+      rContractRequired: true,
+      canonicalEditorRequired: true,
+      visualAccessibilityRequired: false,
+      windowsUniqueRequired: true
+    },
+    BOOLEAN_OUTPUTS
+  ];
+  for (const [index, changedPaths] of prefixes.entries()) {
+    const position = index + 1;
+    const range = resolvePullRequestClassificationRange({
+      pullRequestBaseSha,
+      pullRequestHeadSha,
+      stackBaseSha,
+      stackPosition: String(position),
+      stackSize: String(prefixes.length)
+    });
+    assert.equal(range.baseSha, stackBaseSha);
+    assert.equal(range.stackPosition, position);
+    assert.equal(range.partialPrefix, position < prefixes.length);
+    assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths }), expected[index]);
+    assert.deepEqual(capabilityGraph.capabilities.source_coverage.requiredChecks, ["validate", "CodeQL gate"]);
+  }
+});
+
+test("classifier CLI reads the real cumulative stack graph instead of the direct pull-request base", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-stack-graph-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const runGit = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      env: sanitizedGitEnvironment(process.env),
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+  const commit = (message) => {
+    runGit("add", "-A");
+    runGit(
+      "-c",
+      "user.name=Open Wrangler Tests",
+      "-c",
+      "user.email=tests@openwrangler.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      message
+    );
+    return runGit("rev-parse", "HEAD");
+  };
+  runGit("init", "--quiet");
+  const stackBaseSha = commit("stack base");
+  mkdirSync(join(root, "python", "openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "python", "openwrangler_runtime", "export_target.py"), "# first stack owner\n");
+  const pullRequestBaseSha = commit("first stack owner");
+  mkdirSync(join(root, "r", "openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "r", "openwrangler_runtime", "kernel_agent.R"), "# second stack owner\n");
+  const pullRequestHeadSha = commit("second stack owner");
+  const outputPath = join(root, "classifier-output.txt");
+  const runClassifier = (stacked) => {
+    writeFileSync(outputPath, "");
+    const stdout = execFileSync(process.execPath, [resolve(REPOSITORY_ROOT, "scripts/ci-path-classification.mjs")], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...sanitizedGitEnvironment(process.env),
+        CI_BASE_SHA: pullRequestBaseSha,
+        CI_EVENT_NAME: "pull_request",
+        CI_HEAD_SHA: pullRequestHeadSha,
+        CI_STACK_BASE_SHA: stacked ? stackBaseSha : "",
+        CI_STACK_POSITION: stacked ? "2" : "",
+        CI_STACK_SIZE: stacked ? "2" : "",
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: join(root, "hostile-alternates"),
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.fsmonitor",
+        GIT_CONFIG_VALUE_0: "!exit 97",
+        GIT_DIR: join(root, "hostile-git-dir"),
+        GIT_OBJECT_DIRECTORY: join(root, "hostile-objects"),
+        GIT_REPLACE_REF_BASE: "refs/hostile/",
+        GIT_WORK_TREE: join(root, "hostile-work-tree"),
+        GITHUB_OUTPUT: outputPath
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return {
+      outputs: Object.fromEntries(
+        readFileSync(outputPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split("="))
+      ),
+      stdout
+    };
+  };
+
+  const ordinary = runClassifier(false);
+  assert.equal(ordinary.outputs.windows_unique_required, "false");
+  assert.match(ordinary.stdout, new RegExp(`base=${pullRequestBaseSha}`, "u"));
+  const stacked = runClassifier(true);
+  assert.deepEqual(stacked.outputs, {
+    r_contract_required: "true",
+    canonical_editor_required: "true",
+    visual_accessibility_required: "false",
+    windows_unique_required: "true"
+  });
+  assert.match(stacked.stdout, new RegExp(`base=${stackBaseSha} head=${pullRequestHeadSha} stacked=true`, "u"));
+});
+
+test("Git classification scrubs every ambient Git routing and configuration override", () => {
+  const clean = sanitizedGitEnvironment({
+    GIT_CONFIG_COUNT: "1",
+    GIT_DIR: "/hostile/git-dir",
+    Git_Work_Tree: "/hostile/work-tree",
+    HOME: "/safe/home",
+    PATH: "/safe/bin"
+  });
+  assert.equal(clean.HOME, "/safe/home");
+  assert.equal(clean.PATH, "/safe/bin");
+  assert.equal(clean.GIT_DIR, undefined);
+  assert.equal(clean.Git_Work_Tree, undefined);
+  assert.equal(clean.GIT_CONFIG_COUNT, undefined);
+  assert.equal(clean.GIT_CONFIG_NOSYSTEM, "1");
+  assert.equal(clean.GIT_NO_REPLACE_OBJECTS, "1");
+  assert.equal(clean.GIT_OPTIONAL_LOCKS, "0");
+  assert.throws(() => sanitizedGitEnvironment(null), /environment mapping/u);
+});
+
+test("ordinary pull requests fall back to their exact base while partial stack metadata fails closed", () => {
+  const pullRequestBaseSha = "1".repeat(40);
+  const pullRequestHeadSha = "2".repeat(40);
+  assert.deepEqual(resolvePullRequestClassificationRange({ pullRequestBaseSha, pullRequestHeadSha }), {
+    baseSha: pullRequestBaseSha,
+    headSha: pullRequestHeadSha,
+    stackedEvent: false,
+    stackPosition: null,
+    stackSize: null,
+    partialPrefix: false
+  });
+  for (const metadata of [
+    { stackBaseSha: "3".repeat(40) },
+    { stackBaseSha: "3".repeat(40), stackPosition: "1" },
+    { stackBaseSha: "3".repeat(40), stackPosition: "0", stackSize: "1" },
+    { stackBaseSha: "3".repeat(40), stackPosition: "2", stackSize: "1" },
+    { stackBaseSha: "invalid", stackPosition: "1", stackSize: "1" }
+  ]) {
+    assert.throws(() => resolvePullRequestClassificationRange({ pullRequestBaseSha, pullRequestHeadSha, ...metadata }));
+  }
 });
 
 test("CI exposes only the current pull-request owners", () => {
@@ -693,6 +2060,1025 @@ test("CI exposes only the current pull-request owners", () => {
   assert.equal(ci.jobs["r-contract-protocol"].name, "R 4.5 protocol contracts");
   assert.equal(ci.jobs["canonical-editor"].name, "Canonical package and editor");
   assert.equal(ci.jobs["windows-unique"].name, "Windows unique-risk contracts");
+});
+
+test("machine-readable capabilities bind correct events, fatal providers, and mandatory final fan-in", () => {
+  assert.equal(ci.env.OPEN_WRANGLER_CI_CAPABILITY_GRAPH, "scripts/fixtures/ci-capabilities.json");
+  assert.deepEqual(repositoryWorkflowNames, [
+    "candidate-acceptance.yml",
+    "ci.yml",
+    "codeql.yml",
+    "cross-platform.yml",
+    "daily-preview.yml",
+    "open-vsx-promotion.yml",
+    "performance.yml",
+    "release-candidate.yml",
+    "released-jupyter.yml",
+    "stable-release.yml"
+  ]);
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, capabilityDocuments));
+});
+
+test("capability entry workflows own their declared final fan-in", () => {
+  const wrongSourceCoverageEntry = structuredClone(capabilityGraph);
+  wrongSourceCoverageEntry.capabilities.source_coverage.entryWorkflow = "candidate";
+  assert.throws(
+    () => assertCapabilityGraph(wrongSourceCoverageEntry, capabilityDocuments),
+    /source_coverage entry workflow must own its final fan-in/u
+  );
+});
+
+test("capability workflow sources stay on the fixed bounded no-follow allowlist", () => {
+  for (const [workflowId, file] of Object.entries(CAPABILITY_WORKFLOW_FILES)) {
+    assert.equal(capabilityGraph.workflows[workflowId].file, file);
+    const source = readBoundedCapabilityFile(file);
+    assert.ok(Buffer.byteLength(source, "utf8") <= CAPABILITY_FILE_LIMIT);
+    assert.equal(source, repositoryWorkflowInventory[file].bytes.toString("utf8"));
+  }
+  for (const file of ["package.json", "../outside.yml", ".github/workflows/unknown.yml"]) {
+    const graph = structuredClone(capabilityGraph);
+    graph.workflows.release.file = file;
+    assert.throws(() => loadCapabilityDocuments(graph), /fixed workflow file/u);
+  }
+});
+
+test("capability JSON rejects invalid UTF-8 and duplicate object keys", (context) => {
+  const createGraphFixture = (contents) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-json-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    mkdirSync(join(root, "scripts", "fixtures"), { recursive: true });
+    writeFileSync(join(root, CAPABILITY_GRAPH_PATH), contents);
+    return root;
+  };
+  const parseFixture = (root) => parseBoundedCapabilityJson(CAPABILITY_GRAPH_PATH, { root });
+
+  const invalidUtf8 = createGraphFixture(
+    Buffer.concat([Buffer.from('{"value":"', "utf8"), Buffer.from([0xc3, 0x28]), Buffer.from('"}', "utf8")])
+  );
+  assert.throws(() => parseFixture(invalidUtf8), /valid UTF-8/u);
+
+  for (const source of ['{"version":1,"version":2}\n', '{"version":1,"\\u0076ersion":2}\n']) {
+    const duplicateKey = createGraphFixture(source);
+    assert.throws(() => parseFixture(duplicateKey), /duplicate JSON object key version/u);
+  }
+
+  const duplicateAuthoritySource = readFileSync(CAPABILITY_GRAPH_PATH, "utf8").replace(
+    '"providerJob": "package"',
+    '"providerJob": "constructor", "providerJob": "package"'
+  );
+  assert.match(duplicateAuthoritySource, /"providerJob": "constructor", "providerJob": "package"/u);
+  assert.throws(
+    () => parseFixture(createGraphFixture(duplicateAuthoritySource)),
+    /duplicate JSON object key providerJob/u
+  );
+
+  const excessiveDepth = `${"[".repeat(CAPABILITY_JSON_DEPTH_LIMIT + 1)}0${"]".repeat(
+    CAPABILITY_JSON_DEPTH_LIMIT + 1
+  )}`;
+  assert.throws(() => parseFixture(createGraphFixture(excessiveDepth)), /depth limit/u);
+  const excessiveNodes = `[${"0,".repeat(CAPABILITY_JSON_NODE_LIMIT)}0]`;
+  assert.throws(() => parseFixture(createGraphFixture(excessiveNodes)), /node limit/u);
+});
+
+test("capability job closure rejects inherited object property names", () => {
+  for (const inheritedJobId of ["constructor", "toString", "__proto__"]) {
+    const graph = structuredClone(capabilityGraph);
+    graph.capabilities.artifact_provenance.providerJob = inheritedJobId;
+    graph.capabilities.artifact_provenance.requiredJobs = [inheritedJobId];
+    graph.capabilities.release_fan_in.requiredJobs.push(inheritedJobId);
+    const documents = structuredClone(capabilityDocuments);
+    documents.release.jobs.qualify.needs.push(inheritedJobId);
+    assert.throws(
+      () => assertCapabilityGraph(graph, documents),
+      new RegExp(`missing capability job ${inheritedJobId}`, "u")
+    );
+  }
+});
+
+test("bounded workflow leaf opens retain no-follow and request nonblocking semantics when available", () => {
+  assert.equal(
+    BOUNDED_WORKFLOW_FILE_OPEN_FLAGS,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+  );
+});
+
+test("FIFO child readiness accepts exactly one bounded marker before its deadline", async () => {
+  await readExactChildReadinessMarker(Readable.from([WORKFLOW_FIFO_READY_MARKER]));
+  await assert.rejects(readExactChildReadinessMarker(Readable.from([])), /no readiness marker/u);
+  await assert.rejects(
+    readExactChildReadinessMarker(Readable.from([Buffer.alloc(WORKFLOW_FIFO_READY_MARKER.length, 0x78)])),
+    /malformed readiness marker/u
+  );
+  await assert.rejects(
+    readExactChildReadinessMarker(Readable.from([WORKFLOW_FIFO_READY_MARKER, WORKFLOW_FIFO_READY_MARKER])),
+    /duplicate or extra readiness marker data/u
+  );
+  await assert.rejects(
+    readExactChildReadinessMarker(Readable.from([WORKFLOW_FIFO_READY_MARKER, Buffer.from("extra", "utf8")])),
+    /duplicate or extra readiness marker data/u
+  );
+
+  const late = new PassThrough();
+  const lateResult = readExactChildReadinessMarker(late, {
+    cancelDeadline() {},
+    scheduleDeadline(onDeadline) {
+      onDeadline();
+    }
+  });
+  late.end(WORKFLOW_FIFO_READY_MARKER);
+  await assert.rejects(lateResult, /arrived after its deadline/u);
+});
+
+test("FIFO child settlement retains ownership through errors, failed signals, timeouts, and late close", async () => {
+  class SyntheticChild extends EventEmitter {
+    constructor(signalOutcomes) {
+      super();
+      this.exitCode = null;
+      this.killCalls = [];
+      this.signalCode = null;
+      this.signalOutcomes = [...signalOutcomes];
+      this.stdio = [null, null, null, new PassThrough()];
+      this.syntheticExited = false;
+      this.unrefCalls = 0;
+    }
+
+    kill(signal) {
+      this.killCalls.push(signal);
+      const outcome = this.signalOutcomes.shift() ?? true;
+      if (outcome instanceof Error) throw outcome;
+      if (outcome === "exit") {
+        this.exit(null, signal);
+        return true;
+      }
+      return outcome;
+    }
+
+    exit(code, signal) {
+      if (this.syntheticExited) return;
+      this.syntheticExited = true;
+      this.exitCode = code;
+      this.signalCode = signal;
+      this.emit("exit", code, signal);
+    }
+
+    close(code, signal) {
+      this.exit(code, signal);
+      this.stdio[3].destroy();
+      this.emit("close", code, signal);
+    }
+
+    unref() {
+      this.unrefCalls += 1;
+    }
+  }
+
+  const createDeadlines = () => {
+    const timers = [];
+    return {
+      cancelDeadline(timer) {
+        timer.cancelled = true;
+      },
+      run(delayMs) {
+        for (const timer of timers) {
+          if (!timer.cancelled && !timer.fired && timer.delayMs === delayMs) {
+            timer.fired = true;
+            timer.callback();
+          }
+        }
+      },
+      scheduleDeadline(callback, delayMs) {
+        const timer = { callback, cancelled: false, delayMs, fired: false };
+        timers.push(timer);
+        return timer;
+      },
+      timers
+    };
+  };
+  const startSettlement = (child, deadlines, terminalOwnership = () => child.close(1, null)) => {
+    const observation = observeChildSettlement(child);
+    return {
+      observation,
+      result: terminateObservedChild(child, observation, child.stdio[3], {
+        cancelDeadline: deadlines.cancelDeadline,
+        finalDispositionMs: 3,
+        scheduleDeadline: deadlines.scheduleDeadline,
+        settlementTimeoutMs: 2,
+        termGraceMs: 1,
+        terminalOwnership
+      })
+    };
+  };
+  const assertPending = async (promise) => {
+    const state = await Promise.race([promise.then(() => "settled"), Promise.resolve("pending")]);
+    assert.equal(state, "pending");
+  };
+  const assertReleased = (child, deadlines) => {
+    assert.equal(child.stdio[3].destroyed, true, "the synthetic fd3 pipe must be released before settlement");
+    for (const event of ["error", "exit", "close"]) {
+      assert.equal(child.listenerCount(event), 0, `the child ${event} observer must be released after settlement`);
+    }
+    assert.ok(deadlines.timers.every((timer) => timer.fired || timer.cancelled));
+  };
+
+  const errorChild = new SyntheticChild([true]);
+  const errorDeadlines = createDeadlines();
+  const errorObservation = observeChildSettlement(errorChild);
+  const childError = new Error("synthetic child error before close");
+  errorChild.emit("error", childError);
+  const errorResult = terminateObservedChild(errorChild, errorObservation, errorChild.stdio[3], {
+    cancelDeadline: errorDeadlines.cancelDeadline,
+    scheduleDeadline: errorDeadlines.scheduleDeadline,
+    settlementTimeoutMs: 2,
+    termGraceMs: 1,
+    terminalOwnership() {
+      errorChild.close(1, null);
+    }
+  });
+  await assertPending(errorResult);
+  errorChild.close(null, "SIGTERM");
+  assert.deepEqual((await errorResult).faults, [childError]);
+  assertReleased(errorChild, errorDeadlines);
+
+  const singleFlightChild = new SyntheticChild([true]);
+  const singleFlightDeadlines = createDeadlines();
+  const singleFlightObservation = observeChildSettlement(singleFlightChild);
+  const singleFlightOptions = {
+    cancelDeadline: singleFlightDeadlines.cancelDeadline,
+    scheduleDeadline: singleFlightDeadlines.scheduleDeadline,
+    settlementTimeoutMs: 2,
+    termGraceMs: 1,
+    terminalOwnership() {
+      singleFlightChild.close(1, null);
+    }
+  };
+  const firstTermination = terminateObservedChild(
+    singleFlightChild,
+    singleFlightObservation,
+    singleFlightChild.stdio[3],
+    singleFlightOptions
+  );
+  const secondTermination = terminateObservedChild(
+    singleFlightChild,
+    singleFlightObservation,
+    singleFlightChild.stdio[3],
+    singleFlightOptions
+  );
+  assert.equal(firstTermination, secondTermination);
+  assert.deepEqual(singleFlightChild.killCalls, ["SIGTERM"]);
+  assert.equal(singleFlightDeadlines.timers.length, 2);
+  singleFlightChild.close(null, "SIGTERM");
+  await firstTermination;
+  assertReleased(singleFlightChild, singleFlightDeadlines);
+
+  const drainingChild = new SyntheticChild([]);
+  const drainingDeadlines = createDeadlines();
+  const drainingObservation = observeChildSettlement(drainingChild);
+  drainingChild.exit(0, null);
+  const drainingResult = terminateObservedChild(drainingChild, drainingObservation, drainingChild.stdio[3], {
+    cancelDeadline: drainingDeadlines.cancelDeadline,
+    scheduleDeadline: drainingDeadlines.scheduleDeadline,
+    settlementTimeoutMs: 2,
+    termGraceMs: 1,
+    terminalOwnership() {
+      drainingChild.stdio[3].destroy();
+      drainingChild.emit("close", 0, null);
+    }
+  });
+  drainingDeadlines.run(1);
+  assert.deepEqual(drainingChild.killCalls, [], "an exited child must not receive a cleanup signal while fd3 drains");
+  assert.equal(drainingChild.stdio[3].destroyed, false);
+  drainingChild.close(0, null);
+  const drained = await drainingResult;
+  assert.deepEqual(drained.exit, { code: 0, signal: null });
+  assert.deepEqual(drained.close, { code: 0, signal: null });
+  assert.deepEqual(drained.faults, []);
+  assertReleased(drainingChild, drainingDeadlines);
+
+  for (const termOutcome of [false, new Error("synthetic SIGTERM failure")]) {
+    const child = new SyntheticChild([termOutcome, true]);
+    const deadlines = createDeadlines();
+    const settlement = startSettlement(child, deadlines);
+    assert.deepEqual(child.killCalls, ["SIGTERM"]);
+    deadlines.run(1);
+    assert.deepEqual(child.killCalls, ["SIGTERM", "SIGKILL"]);
+    await assertPending(settlement.result);
+    child.close(null, "SIGKILL");
+    const result = await settlement.result;
+    assert.equal(result.faults.length, 1);
+    assert.match(result.faults[0].message, /SIGTERM/u);
+    assertReleased(child, deadlines);
+  }
+
+  for (const signalOutcomes of [
+    [false, false],
+    [new Error("synthetic TERM throw"), new Error("synthetic KILL throw")]
+  ]) {
+    const terminalChild = new SyntheticChild(signalOutcomes);
+    const terminalDeadlines = createDeadlines();
+    let terminalOwnerCalls = 0;
+    const terminalSettlement = startSettlement(terminalChild, terminalDeadlines, () => {
+      terminalOwnerCalls += 1;
+      terminalChild.close(1, null);
+    });
+    terminalDeadlines.run(1);
+    terminalDeadlines.run(2);
+    const terminalResult = await terminalSettlement.result;
+    assert.equal(terminalOwnerCalls, 1);
+    assert.deepEqual(terminalChild.killCalls, ["SIGTERM", "SIGKILL"]);
+    assert.equal(terminalResult.faults.length, 3);
+    assert.match(terminalResult.faults[2].message, /settlement deadline/u);
+    assertReleased(terminalChild, terminalDeadlines);
+  }
+
+  for (const terminalFailure of [undefined, new Error("synthetic terminal ownership failure")]) {
+    const terminalChild = new SyntheticChild([false, false, "exit"]);
+    const terminalDeadlines = createDeadlines();
+    let terminalBoundaryEntered = false;
+    const terminalSettlement = startSettlement(terminalChild, terminalDeadlines, () => {
+      terminalBoundaryEntered = true;
+      if (terminalFailure !== undefined) throw terminalFailure;
+    });
+    terminalDeadlines.run(1);
+    terminalDeadlines.run(2);
+    assert.equal(terminalBoundaryEntered, true);
+    const boundedResult = await Promise.race([
+      terminalSettlement.result,
+      waitForMonotonicDelay(25).then(() => undefined)
+    ]);
+    assert.notEqual(boundedResult, undefined, "terminal ownership must settle without a manual close event");
+    assert.deepEqual(terminalChild.killCalls, ["SIGTERM", "SIGKILL", "SIGKILL"]);
+    assert.equal(terminalChild.syntheticExited, true, "the exact synthetic child must not survive terminal ownership");
+    assert.equal(terminalChild.stdio[3].closed, true, "the synthetic fd3 pipe must close before terminal ownership");
+    assert.equal(terminalSettlement.observation.state.closed, false, "the proof must not invent a child close event");
+    assert.equal(boundedResult.terminalReleaseAttested, true);
+    assert.deepEqual(boundedResult.close, boundedResult.exit);
+    assert.equal(boundedResult.faults.length, terminalFailure === undefined ? 3 : 4);
+    assert.equal(boundedResult.faults.includes(terminalFailure), terminalFailure !== undefined);
+    assertReleased(terminalChild, terminalDeadlines);
+  }
+
+  const noExitResults = [];
+  for (const [description, finalKillOutcome] of [
+    ["false", false],
+    ["thrown", new Error("synthetic final SIGKILL throw")],
+    ["success without exit", true]
+  ]) {
+    const terminalChild = new SyntheticChild([false, false, finalKillOutcome]);
+    const terminalDeadlines = createDeadlines();
+    const terminalFailure = new Error(`synthetic terminal ownership failure before ${description}`);
+    const terminalSettlement = startSettlement(terminalChild, terminalDeadlines, () => {
+      throw terminalFailure;
+    });
+    terminalDeadlines.run(1);
+    terminalDeadlines.run(2);
+    await assertPending(terminalSettlement.result);
+    terminalDeadlines.run(3);
+    const boundedResult = await Promise.race([
+      terminalSettlement.result,
+      waitForMonotonicDelay(25).then(() => undefined)
+    ]);
+    noExitResults.push({
+      boundedResult,
+      description,
+      finalKillOutcome,
+      terminalChild,
+      terminalDeadlines,
+      terminalFailure,
+      terminalSettlement
+    });
+  }
+  assert.deepEqual(
+    noExitResults.map(({ boundedResult }) => boundedResult !== undefined),
+    [true, true, true],
+    "false, thrown, and successful-without-exit final kills must all reach a bounded disposition"
+  );
+  for (const {
+    boundedResult,
+    description,
+    finalKillOutcome,
+    terminalChild,
+    terminalDeadlines,
+    terminalFailure,
+    terminalSettlement
+  } of noExitResults) {
+    assert.notEqual(boundedResult, undefined, `a ${description} final kill must reach a bounded disposition`);
+    assert.equal(boundedResult.terminalReleaseAttested, false);
+    assert.equal(boundedResult.close, undefined);
+    assert.equal(boundedResult.exit, undefined);
+    assert.equal(terminalSettlement.observation.state.settled, true);
+    assert.equal(terminalSettlement.observation.state.exited, false);
+    assert.equal(terminalChild.syntheticExited, false);
+    assert.equal(terminalChild.stdio[3].destroyed, true);
+    assert.equal(terminalChild.unrefCalls, 1);
+    assert.deepEqual(terminalChild.killCalls, ["SIGTERM", "SIGKILL", "SIGKILL"]);
+    assert.equal(boundedResult.faults.includes(terminalFailure), true);
+    assert.match(boundedResult.faults.at(-1).message, /release remained unverified/u);
+    if (finalKillOutcome === false) {
+      assert.equal(
+        boundedResult.faults.filter((fault) => fault.message === "SIGKILL returned false").length,
+        2,
+        "a false final kill must retain both failed SIGKILL receipts"
+      );
+    } else if (finalKillOutcome instanceof Error) {
+      assert.equal(boundedResult.faults.includes(finalKillOutcome), true);
+    } else {
+      assert.equal(
+        boundedResult.faults.filter((fault) => fault.message === "SIGKILL returned false").length,
+        1,
+        "a successful final kill without exit must retain only the earlier failed SIGKILL receipt"
+      );
+    }
+    assert.equal(
+      boundedResult.faults.length,
+      finalKillOutcome === true ? 5 : 6,
+      `a ${description} final kill must retain every ordered fault`
+    );
+    assertReleased(terminalChild, terminalDeadlines);
+  }
+});
+
+test(
+  "bounded workflow reads reject a FIFO promptly instead of blocking before type validation",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-fifo-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const relativePath = ".github/workflows/fixture.yml";
+    const fifoPath = join(root, relativePath);
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    execFileSync("mkfifo", [fifoPath]);
+    assert.equal(lstatSync(fifoPath).isFIFO(), true);
+
+    const legacy = spawn(
+      process.execPath,
+      [fileURLToPath(import.meta.url), WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT, fifoPath],
+      { stdio: ["ignore", "ignore", "ignore", "pipe"] }
+    );
+    const observation = observeChildSettlement(legacy);
+    const control = legacy.stdio[3];
+    assert.notEqual(control, null, "the legacy FIFO probe requires its private readiness channel");
+    const faults = [];
+    try {
+      await readExactChildReadinessMarker(control);
+      const blockStartedAt = nodePerformance.now();
+      await waitForMonotonicDelay(WORKFLOW_FIFO_LEGACY_BLOCK_MS);
+      assert.ok(
+        nodePerformance.now() - blockStartedAt >= WORKFLOW_FIFO_LEGACY_BLOCK_MS,
+        "the legacy FIFO observation must span its complete monotonic deadline"
+      );
+      assert.equal(legacy.exitCode, null, "the preimage child must remain blocked after its readiness marker");
+      assert.equal(legacy.signalCode, null, "the preimage child must remain unsignalled until its deadline");
+    } catch (error) {
+      faults.push(error);
+    }
+    const settlement = await terminateObservedChild(legacy, observation, control, {
+      settlementTimeoutMs:
+        WORKFLOW_FIFO_READINESS_TIMEOUT_MS + WORKFLOW_FIFO_LEGACY_BLOCK_MS + WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS,
+      terminalOwnership({ state }) {
+        if (state.exited) {
+          control.destroy();
+          return;
+        }
+        let writer;
+        try {
+          writer = openSync(fifoPath, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+          assert.equal(
+            fstatSync(writer).isFIFO(),
+            true,
+            "the terminal FIFO writer must retain exact special-file type"
+          );
+        } finally {
+          if (writer !== undefined) closeSync(writer);
+        }
+      }
+    });
+    faults.push(...settlement.faults);
+    if (settlement.close === undefined) {
+      faults.push(new Error("the legacy FIFO child produced no verified close receipt"));
+    } else {
+      if (settlement.close.code !== null) {
+        faults.push(new Error(`the legacy FIFO child exited with code ${settlement.close.code}`));
+      }
+      if (settlement.close.signal !== "SIGTERM" && settlement.close.signal !== "SIGKILL") {
+        faults.push(new Error(`the legacy FIFO child settled with unexpected signal ${settlement.close.signal}`));
+      }
+      if (legacy.signalCode !== settlement.close.signal) {
+        faults.push(
+          new Error(
+            `the legacy FIFO child's signal ${legacy.signalCode} did not match close ${settlement.close.signal}`
+          )
+        );
+      }
+    }
+    if (!control.readableEnded) {
+      faults.push(new Error("the private readiness channel did not end before child close"));
+    }
+    if (faults.length > 0) {
+      throw new AggregateError(
+        faults,
+        `the legacy FIFO child failed settlement: ${faults.map((fault) => fault.message).join("; ")}`
+      );
+    }
+
+    const startedAt = nodePerformance.now();
+    const corrected = spawnSync(
+      process.execPath,
+      [fileURLToPath(import.meta.url), WORKFLOW_FIFO_PROBE_ARGUMENT, root, relativePath],
+      {
+        encoding: "utf8",
+        killSignal: "SIGTERM",
+        maxBuffer: 64 * 1024,
+        timeout: WORKFLOW_FIFO_PROBE_TIMEOUT_MS
+      }
+    );
+    const elapsedMs = nodePerformance.now() - startedAt;
+    assert.notEqual(corrected.error?.code, "ETIMEDOUT", "the bounded reader must not block on a FIFO");
+    assert.equal(corrected.signal, null);
+    assert.notEqual(corrected.status, 0);
+    assert.match(corrected.stderr, /must open as a regular file/u);
+    assert.ok(elapsedMs < WORKFLOW_FIFO_PROBE_TIMEOUT_MS, `the bounded reader took ${elapsedMs} ms to reject a FIFO`);
+  }
+);
+
+test("bounded workflow reads reject aliasing, oversize, and in-place content drift", (context) => {
+  const createFixture = (contents = "name: fixture\n") => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-read-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    const relativePath = ".github/workflows/fixture.yml";
+    const path = join(root, relativePath);
+    writeFileSync(path, contents);
+    return { path, relativePath, root };
+  };
+  const readFixture = (fixture, hooks) =>
+    readBoundedNoFollowFile(fixture.relativePath, {
+      allowedPaths: new Set([fixture.relativePath]),
+      hooks,
+      root: fixture.root
+    });
+
+  const valid = createFixture();
+  const snapshot = readFixture(valid);
+  assert.equal(snapshot.bytes.toString("utf8"), "name: fixture\n");
+  assert.equal(snapshot.sha256, createHash("sha256").update(snapshot.bytes).digest("hex"));
+
+  const oversized = createFixture("x".repeat(CAPABILITY_FILE_LIMIT + 1));
+  assert.throws(() => readFixture(oversized), /exceeds the capability file limit/u);
+
+  const hardLinked = createFixture();
+  linkSync(hardLinked.path, join(hardLinked.root, "alias.yml"));
+  assert.throws(() => readFixture(hardLinked), /hard-linked aliases/u);
+
+  const sameSize = createFixture("a".repeat(4096));
+  assert.throws(
+    () =>
+      readFixture(sameSize, {
+        afterRead() {
+          writeFileSync(sameSize.path, "b".repeat(4096));
+        }
+      }),
+    /content changed|changed while reading/u
+  );
+
+  const torn = createFixture("a".repeat(32 * 1024));
+  let changed = false;
+  assert.throws(
+    () =>
+      readFixture(torn, {
+        afterChunk({ total }) {
+          if (!changed && total >= 16 * 1024) {
+            changed = true;
+            writeFileSync(torn.path, "b".repeat(32 * 1024));
+          }
+        }
+      }),
+    /content changed|changed while reading/u
+  );
+
+  if (process.platform !== "win32") {
+    const symbolic = createFixture();
+    const target = join(symbolic.root, "target.yml");
+    writeFileSync(target, "name: target\n");
+    rmSync(symbolic.path);
+    symlinkSync(target, symbolic.path);
+    assert.throws(() => readFixture(symbolic), /regular file|symbolic link/u);
+  }
+});
+
+test(
+  "bounded workflow reads bind descriptors before rejecting directory and file replacement",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const createFixtureRoot = (prefix) => {
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
+      context.after(() => rmSync(root, { force: true, recursive: true }));
+      mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+      writeFileSync(join(root, ".github", "workflows", "fixture.yml"), "name: owned\n");
+      return root;
+    };
+    const relativePath = ".github/workflows/fixture.yml";
+    const allowedPaths = new Set([relativePath]);
+
+    const directoryRoot = createFixtureRoot("ow-ci-capability-directory-race-");
+    mkdirSync(join(directoryRoot, ".github-replacement", "workflows"), { recursive: true });
+    writeFileSync(join(directoryRoot, ".github-replacement", "workflows", "fixture.yml"), "name: replacement\n");
+    let directoryReplaced = false;
+    let directoryReplacementReads = 0;
+    assert.throws(
+      () =>
+        readBoundedNoFollowFile(relativePath, {
+          allowedPaths,
+          hooks: {
+            afterChunk() {
+              directoryReplacementReads += 1;
+            },
+            afterDirectoryDescriptorOpen({ path }) {
+              if (directoryReplaced || path !== join(directoryRoot, ".github")) return;
+              directoryReplaced = true;
+              renameSync(join(directoryRoot, ".github"), join(directoryRoot, ".github-owned"));
+              renameSync(join(directoryRoot, ".github-replacement"), join(directoryRoot, ".github"));
+            }
+          },
+          root: directoryRoot
+        }),
+      /directory identity changed before use/u
+    );
+    assert.equal(directoryReplaced, true);
+    assert.equal(directoryReplacementReads, 0, "A replaced directory must reject before file bytes are read.");
+
+    const fileRoot = createFixtureRoot("ow-ci-capability-file-race-");
+    const filePath = join(fileRoot, relativePath);
+    const replacementPath = join(fileRoot, ".github", "workflows", "replacement.yml");
+    writeFileSync(replacementPath, "name: other\n");
+    let fileReplaced = false;
+    let fileReplacementReads = 0;
+    assert.throws(
+      () =>
+        readBoundedNoFollowFile(relativePath, {
+          allowedPaths,
+          hooks: {
+            afterChunk() {
+              fileReplacementReads += 1;
+            },
+            afterFileDescriptorOpen() {
+              fileReplaced = true;
+              renameSync(filePath, join(fileRoot, ".github", "workflows", "owned.yml"));
+              renameSync(replacementPath, filePath);
+            }
+          },
+          root: fileRoot
+        }),
+      /path identity changed before use/u
+    );
+    assert.equal(fileReplaced, true);
+    assert.equal(fileReplacementReads, 0, "A replaced file must reject before replacement bytes are read.");
+  }
+);
+
+test("workflow YAML enforces parser bounds and rejects aliases, merges, tags, depth, and nodes", () => {
+  assert.deepEqual(parseBoundedWorkflowYaml("name: fixture\njobs: {}\n"), { name: "fixture", jobs: {} });
+  assert.throws(() => parseBoundedWorkflowYaml("base: &base\n  name: fixture\ncopy: *base\n"), /anchors|aliases/u);
+  assert.throws(() => parseBoundedWorkflowYaml("job:\n  <<: { name: fixture }\n"), /merge keys/u);
+  assert.throws(() => parseBoundedWorkflowYaml("name: !!str fixture\n"), /explicit tags/u);
+  assert.throws(() => parseBoundedWorkflowYaml("job:\n  !!merge '<<': { name: fixture }\n"), /explicit tags/u);
+
+  let deeplyNested = "leaf: value\n";
+  for (let index = 0; index <= WORKFLOW_YAML_DEPTH_LIMIT; index += 1) {
+    deeplyNested = `level_${index}:\n${deeplyNested.replace(/^/gmu, "  ")}`;
+  }
+  assert.throws(() => parseBoundedWorkflowYaml(deeplyNested), /depth limit|maxDepth/u);
+  const excessiveNodes = `items: [${"x,".repeat(WORKFLOW_YAML_NODE_LIMIT)}x]\n`;
+  assert.throws(() => parseBoundedWorkflowYaml(excessiveNodes), /node limit/u);
+});
+
+test("complete workflow inventory rejects invalid UTF-8 before YAML parsing", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-workflow-utf8-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  mkdirSync(join(root, WORKFLOW_DIRECTORY), { recursive: true });
+  const invalidWorkflow = Buffer.concat([
+    Buffer.from('name: "fixture ', "utf8"),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('"\njobs: {}\n', "utf8")
+  ]);
+  assert.doesNotThrow(() => parseYaml(invalidWorkflow.toString("utf8"), WORKFLOW_YAML_LOAD_OPTIONS));
+  writeFileSync(join(root, WORKFLOW_DIRECTORY, "invalid.yml"), invalidWorkflow);
+  assert.throws(() => loadRepositoryWorkflowInventory({ root }), /workflow YAML is not valid UTF-8/u);
+});
+
+test("bounded workflow reads close every descriptor while preserving the primary failure", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-close-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const relativePath = ".github/workflows/fixture.yml";
+  mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(root, relativePath), "name: fixture\n");
+  let directoryDescriptors = [];
+  const primary = new Error("primary workflow read failure");
+  assert.throws(
+    () =>
+      readBoundedNoFollowFile(relativePath, {
+        allowedPaths: new Set([relativePath]),
+        hooks: {
+          afterDirectoryOpen({ directories }) {
+            directoryDescriptors = directories.map(({ descriptor }) => descriptor);
+          },
+          afterRead({ descriptor }) {
+            closeSync(descriptor);
+            closeSync(directoryDescriptors[1]);
+            throw primary;
+          }
+        },
+        root
+      }),
+    (error) => error === primary
+  );
+  for (const descriptor of directoryDescriptors) {
+    assert.throws(() => fstatSync(descriptor), { code: "EBADF" });
+  }
+});
+
+test(
+  "bounded workflow reads reject intermediate ancestor replacement",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-ancestor-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const relativePath = ".github/workflows/fixture.yml";
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    mkdirSync(join(root, ".github-replacement", "workflows"), { recursive: true });
+    writeFileSync(join(root, relativePath), "name: owned\n");
+    writeFileSync(join(root, ".github-replacement", "workflows", "fixture.yml"), "name: replacement\n");
+    assert.throws(
+      () =>
+        readBoundedNoFollowFile(relativePath, {
+          allowedPaths: new Set([relativePath]),
+          hooks: {
+            afterFileOpen() {
+              renameSync(join(root, ".github"), join(root, ".github-owned"));
+              renameSync(join(root, ".github-replacement"), join(root, ".github"));
+            }
+          },
+          root
+        }),
+      /identity changed/u
+    );
+  }
+);
+
+test("capability mutations reject remove, skip, nonfatal, and disconnected evidence", () => {
+  const capabilityMutationMatrix = {
+    source_coverage: [
+      (documents) => {
+        delete documents.pull_request.jobs["invariant-core"];
+      }
+    ],
+    installed_candidate: [
+      (documents) => {
+        documents.candidate.jobs.acceptance.if = "${{ false }}";
+      }
+    ],
+    artifact_provenance: [
+      (documents) => {
+        delete documents.release.jobs.package;
+      },
+      (documents) => {
+        documents.release.jobs.package["continue-on-error"] = true;
+      }
+    ],
+    release_fan_in: [
+      (documents) => {
+        documents.release.jobs.qualify.needs = documents.release.jobs.qualify.needs.filter(
+          (jobId) => jobId !== "candidate-acceptance"
+        );
+      }
+    ]
+  };
+  assert.deepEqual(Object.keys(capabilityMutationMatrix), CAPABILITY_NAMES);
+  for (const [capabilityName, mutations] of Object.entries(capabilityMutationMatrix)) {
+    for (const mutate of mutations) {
+      const documents = structuredClone(capabilityDocuments);
+      mutate(documents);
+      assert.throws(
+        () => assertCapabilityGraph(capabilityGraph, documents),
+        `${capabilityName} mutation must fail closed`
+      );
+    }
+  }
+
+  for (const value of [true, "false", 0, null]) {
+    const documents = structuredClone(capabilityDocuments);
+    documents.candidate.jobs.platform["continue-on-error"] = value;
+    assert.throws(() => assertCapabilityGraph(capabilityGraph, documents), /absent or literal false/u);
+    const requiredCheckDocuments = structuredClone(capabilityDocuments);
+    requiredCheckDocuments.codeql.jobs["codeql-gate"]["continue-on-error"] = value;
+    assert.throws(() => assertCapabilityGraph(capabilityGraph, requiredCheckDocuments), /absent or literal false/u);
+  }
+  const explicitFatal = structuredClone(capabilityDocuments);
+  explicitFatal.candidate.jobs.platform["continue-on-error"] = false;
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, explicitFatal));
+
+  const incompleteClosure = structuredClone(capabilityGraph);
+  incompleteClosure.capabilities.installed_candidate.requiredJobs =
+    incompleteClosure.capabilities.installed_candidate.requiredJobs.filter((jobId) => jobId !== "platform");
+  assert.throws(
+    () => assertCapabilityGraph(incompleteClosure, capabilityDocuments),
+    /exact provider dependency closure/u
+  );
+  const duplicateRequiredJob = structuredClone(capabilityGraph);
+  duplicateRequiredJob.capabilities.installed_candidate.requiredJobs.push("platform");
+  assert.throws(() => assertCapabilityGraph(duplicateRequiredJob, capabilityDocuments), /required job twice/u);
+
+  const selfCycle = structuredClone(capabilityDocuments);
+  selfCycle.pull_request.jobs.validate.needs.push("validate");
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, selfCycle), /dependency cycle/u);
+  const multiNodeCycle = structuredClone(capabilityDocuments);
+  multiNodeCycle.candidate.jobs.contract.needs = "platform";
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, multiNodeCycle), /dependency cycle/u);
+
+  const duplicateRequiredCheck = structuredClone(capabilityGraph);
+  duplicateRequiredCheck.capabilities.source_coverage.requiredChecks = ["validate", "validate"];
+  assert.throws(() => assertCapabilityGraph(duplicateRequiredCheck, capabilityDocuments));
+  const duplicateCheckOwner = structuredClone(capabilityDocuments);
+  duplicateCheckOwner.codeql.jobs["analyze-python"].name = "validate";
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, duplicateCheckOwner), /exactly one declared job/u);
+  const duplicateOutsideCapabilities = Object.fromEntries(
+    Object.entries(repositoryWorkflowInventory).map(([path, snapshot]) => [
+      path,
+      { document: structuredClone(snapshot.document) }
+    ])
+  );
+  duplicateOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.duplicate = {
+    name: "CodeQL gate",
+    runs_on: "ubuntu-latest"
+  };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, duplicateOutsideCapabilities),
+    /exactly one declared job/u
+  );
+  const fallbackRequiredCheck = structuredClone(capabilityDocuments);
+  delete fallbackRequiredCheck.pull_request.jobs.validate.name;
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, fallbackRequiredCheck));
+  const matrixFallbackRequiredCheck = structuredClone(capabilityDocuments);
+  delete matrixFallbackRequiredCheck.pull_request.jobs.validate.name;
+  matrixFallbackRequiredCheck.pull_request.jobs.validate.strategy = { matrix: { os: ["ubuntu-latest"] } };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, matrixFallbackRequiredCheck),
+    /unevaluable possible check-name collision/u
+  );
+  const namedMatrixRequiredCheck = structuredClone(matrixFallbackRequiredCheck);
+  namedMatrixRequiredCheck.pull_request.jobs.validate.name = "validate";
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, namedMatrixRequiredCheck),
+    /unevaluable possible check-name collision/u
+  );
+  for (const strategy of [{}, [], 0, null, "literal", "${{ needs.setup.outputs.strategy }}"]) {
+    const unknownStrategyRequiredCheck = structuredClone(capabilityDocuments);
+    unknownStrategyRequiredCheck.pull_request.jobs.validate.strategy = strategy;
+    assert.throws(
+      () => assertCapabilityGraph(capabilityGraph, unknownStrategyRequiredCheck),
+      /unevaluable possible check-name collision/u
+    );
+  }
+  const provenNonMatrixStrategy = structuredClone(capabilityDocuments);
+  provenNonMatrixStrategy.pull_request.jobs.validate.strategy = { "fail-fast": false, "max-parallel": 1 };
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, provenNonMatrixStrategy));
+  const wrongFallbackRequiredCheck = structuredClone(capabilityDocuments);
+  delete wrongFallbackRequiredCheck.codeql.jobs["codeql-gate"].name;
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, wrongFallbackRequiredCheck), /exactly one declared job/u);
+  const duplicateFallbackOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+  duplicateFallbackOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.validate = {
+    "runs-on": "ubuntu-latest"
+  };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, duplicateFallbackOutsideCapabilities),
+    /exactly one declared job/u
+  );
+  const ambiguousOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+  ambiguousOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.ambiguous = {
+    name: "${{ matrix.required_check }}",
+    "runs-on": "ubuntu-latest"
+  };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, ambiguousOutsideCapabilities),
+    /unevaluable possible check-name collision/u
+  );
+  for (const name of [
+    "${{ format('{0}', matrix.required_check) }}",
+    "${{ " + "x".repeat(1025) + " }}",
+    "prefix ${{ matrix.os }} ${{ format('{0}', matrix.required_check) }}"
+  ]) {
+    const unparsedExpressionOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+    unparsedExpressionOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.unparsed = {
+      name,
+      "runs-on": "ubuntu-latest"
+    };
+    assert.throws(
+      () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, unparsedExpressionOutsideCapabilities),
+      /unevaluable possible check-name collision/u
+    );
+  }
+  const expression = "${{ matrix.value }}";
+  const dense64 = Array.from({ length: REQUIRED_CHECK_EXPRESSION_LIMIT }, () => expression).join("-");
+  const dense65 = dense64 + "-" + expression;
+  const dense66 = dense65 + "-" + expression;
+  assert.equal(requiredCheckName("fixture", { name: dense64 }).mayEqual("validate"), false);
+  assert.equal(requiredCheckName("fixture", { name: dense65 }).mayEqual("validate"), true);
+  let yieldedMatches = 0;
+  function* countedDenseMatches() {
+    for (const match of dense66.matchAll(REQUIRED_CHECK_EXPRESSION_PATTERN)) {
+      yieldedMatches += 1;
+      if (yieldedMatches === REQUIRED_CHECK_EXPRESSION_LIMIT + 2) {
+        throw new Error("the 66th expression must not be consumed");
+      }
+      yield match;
+    }
+  }
+  assert.equal(parseDynamicCheckNameParts(dense66, countedDenseMatches()), undefined);
+  assert.equal(yieldedMatches, REQUIRED_CHECK_EXPRESSION_LIMIT + 1);
+
+  const exactWorkName = "x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT - expression.length) + expression;
+  const overWorkName = exactWorkName + "x";
+  assert.equal(exactWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.equal(overWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT + 1);
+  assert.equal(requiredCheckName("fixture", { name: exactWorkName }).mayEqual("validate"), false);
+  assert.equal(requiredCheckName("fixture", { name: overWorkName }).mayEqual("validate"), true);
+  let openedOverWorkIterator = 0;
+  const overWorkMatches = {
+    [Symbol.iterator]() {
+      openedOverWorkIterator += 1;
+      return [][Symbol.iterator]();
+    }
+  };
+  assert.equal(parseDynamicCheckNameParts(overWorkName, overWorkMatches), undefined);
+  assert.equal(openedOverWorkIterator, 0);
+
+  const astral = "\u{1f9ea}";
+  const astralFillUnits = REQUIRED_CHECK_MATCH_WORK_LIMIT - expression.length;
+  const exactAstralWorkName =
+    astral.repeat(Math.floor(astralFillUnits / astral.length)) +
+    "x".repeat(astralFillUnits % astral.length) +
+    expression;
+  const overAstralWorkName = exactAstralWorkName + "x";
+  assert.equal(astral.length, 2);
+  assert.equal(exactAstralWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.equal(overAstralWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT + 1);
+  assert.ok(Array.from(exactAstralWorkName).length < REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.ok(Buffer.byteLength(exactAstralWorkName, "utf8") > REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.equal(requiredCheckName("fixture", { name: exactAstralWorkName }).mayEqual("validate"), false);
+  assert.equal(requiredCheckName("fixture", { name: overAstralWorkName }).mayEqual("validate"), true);
+
+  for (const name of [dense65, overWorkName]) {
+    const overBudgetNameOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+    overBudgetNameOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.overBudget = {
+      name,
+      "runs-on": "ubuntu-latest"
+    };
+    assert.throws(
+      () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, overBudgetNameOutsideCapabilities),
+      /unevaluable possible check-name collision/u
+    );
+  }
+  const fixedPartCandidate = requiredCheckName("fixture", {
+    name: "val${{ matrix.first }}id${{ matrix.second }}ate"
+  });
+  assert.equal(fixedPartCandidate.mayEqual("validate"), true);
+  assert.equal(fixedPartCandidate.mayEqual("valixate"), false);
+  assert.equal(fixedPartCandidate.mayEqual("x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT + 1)), true);
+  const orderedPartsCandidate = requiredCheckName("fixture", {
+    name: "${{ matrix.first }}alpha${{ matrix.second }}beta${{ matrix.third }}"
+  });
+  assert.equal(orderedPartsCandidate.mayEqual("prefix-alpha-middle-beta-suffix"), true);
+  assert.equal(orderedPartsCandidate.mayEqual("prefix-beta-middle-alpha-suffix"), false);
+
+  const missingStackTrigger = structuredClone(capabilityGraph);
+  missingStackTrigger.workflows.codeql.activityTypes = missingStackTrigger.workflows.codeql.activityTypes.filter(
+    (activity) => activity !== "stacked"
+  );
+  assert.throws(() => assertCapabilityGraph(missingStackTrigger, capabilityDocuments));
+});
+
+test("capability validation tolerates harmless names and workflow ordering", () => {
+  const documents = structuredClone(capabilityDocuments);
+  for (const document of Object.values(documents)) {
+    for (const [jobId, job] of Object.entries(document.jobs)) {
+      if (!new Set(capabilityGraph.capabilities.source_coverage.requiredChecks).has(job.name)) {
+        job.name = `Display label for ${jobId}`;
+      }
+      if (Array.isArray(job.needs)) job.needs.reverse();
+    }
+    document.jobs = Object.fromEntries(Object.entries(document.jobs).reverse());
+  }
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, documents));
+});
+
+test("CI capability documentation is generated exactly from the machine-readable graph", () => {
+  const source = readFileSync("docs/ci.md", "utf8");
+  const start = source.indexOf(CAPABILITY_DOCS_START);
+  const end = source.indexOf(CAPABILITY_DOCS_END);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  assert.equal(source.indexOf(CAPABILITY_DOCS_START, start + 1), -1);
+  assert.equal(source.indexOf(CAPABILITY_DOCS_END, end + 1), -1);
+  assert.equal(source.slice(start, end + CAPABILITY_DOCS_END.length), renderCapabilityDocs(capabilityGraph));
 });
 
 function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
@@ -733,7 +3119,7 @@ function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   assert.equal(python[0].uses, SETUP_PYTHON);
   assert.equal(python[0].with["python-version"], "3.10");
   assert.ok(stepRunning(job, 'python -m pip install -e "python[dev]"'));
-  assert.equal(stepRunning(job, pullRequestCommand).if, "${{ github.event_name == 'pull_request' }}");
+  assert.equal(stepRunning(job, pullRequestCommand).if, `\${{ ${PULL_OR_MERGE_GROUP_CONDITION} }}`);
   assert.equal(
     stepRunning(job, pullRequestCommand).env.OPEN_WRANGLER_PYTHON,
     "${{ steps.reference_python.outputs.python-path }}"
@@ -1273,8 +3659,8 @@ test("changed-area owners start beside the invariant core and reject a restored 
 
     const serialCondition = structuredClone(ci);
     serialCondition.jobs[jobId].if = serialCondition.jobs[jobId].if.replace(
-      "github.event_name == 'pull_request' &&",
-      "github.event_name == 'pull_request' && needs.invariant-core.result == 'success' &&"
+      `${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} &&`,
+      `${GROUPED_PULL_OR_MERGE_GROUP_CONDITION} && needs.invariant-core.result == 'success' &&`
     );
     assert.throws(() => assertChangedAreaOwnersStartAfterClassification(serialCondition));
 
@@ -1288,7 +3674,7 @@ test("changed-area owners start beside the invariant core and reject a restored 
   }
 });
 
-test("validate always evaluates the exact PR-only result fan-in", () => {
+test("validate always evaluates the exact pull-request and merge-group result fan-in", () => {
   for (const condition of [
     "${{ !cancelled() && github.event_name == 'pull_request' }}",
     "${{ success() && github.event_name == 'pull_request' }}",
@@ -1458,9 +3844,7 @@ test("CodeQL has two always-on explicit analyzers, preserves required names, and
 });
 
 test("workflow action inventory is exact, immutable, recursive, and fail closed", () => {
-  const names = readdirSync(".github/workflows")
-    .filter((entry) => /\.ya?ml$/u.test(entry))
-    .sort();
+  const names = repositoryWorkflowNames;
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
   assert.equal(inventory.external.length, 146);
@@ -1492,7 +3876,9 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
   movedReviewedCallsite[movedIndex][1] = "$.jobs.jupyter.steps[99].uses";
   assert.throws(() => assertReviewedDependencyActionCallsites(movedReviewedCallsite));
 
-  const sources = names.map((entry) => readFileSync(workflowPath(entry), "utf8")).join("\n");
+  const sources = names
+    .map((entry) => repositoryWorkflowInventory[workflowPath(entry)].bytes.toString("utf8"))
+    .join("\n");
   assert.doesNotMatch(sources, /@(v[0-9]+|main|master)(?:\s|$)/u);
   const rejectedSetupJava = ["f2beeba1d6a0d932", "cac8325f70a8ce911775ff96"].join("");
   assert.equal(sources.includes(rejectedSetupJava), false);
@@ -1548,7 +3934,19 @@ test("dated R locks are distinct, canonical, complete 31-package binary graphs",
   for (const [index, record] of records.entries()) {
     assert.equal(record.lock.qualification.rMinor, index === 0 ? "4.4" : "4.5");
     assert.equal(record.lock.packages.length, 31);
-    assert.equal(record.lock.roots.length, 8);
+    assert.deepEqual(record.lock.roots.runtime, LOCK_ROOTS.runtime);
+    assert.deepEqual(record.lock.roots.fixtures, LOCK_ROOTS.fixtures);
+    const roots = [...record.lock.roots.runtime, ...record.lock.roots.fixtures];
+    assert.equal(new Set(roots).size, roots.length);
+    const packagesByName = new Map(record.lock.packages.map((entry) => [entry.name, entry]));
+    assert.deepEqual(
+      roots.map((name) => packagesByName.get(name)?.name),
+      roots
+    );
+    assert.deepEqual(
+      record.lock.packages.filter((entry) => entry.direct).map((entry) => entry.name),
+      [...LOCK_ROOTS.runtime].sort()
+    );
     assert.deepEqual(record.lock.systemRequirements.packages, ["libx11-dev"]);
     assert.ok(record.lock.packages.every((entry) => entry.source.kind === "binary"));
     assert.ok(record.lock.packages.every((entry) => entry.source.repositorySnapshotUrl.includes("/2026-08-14/")));
@@ -1715,7 +4113,8 @@ test("performance and standalone released-Jupyter retain triggers and semantics 
 test("protected branch triggers and obsolete classifier vocabulary are absent from current PR workflow owners", () => {
   for (const document of [ci, codeql]) {
     assert.deepEqual(document.on.pull_request.branches ?? ["main"], ["main"]);
-    assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+    assert.deepEqual(document.on.merge_group.types, MERGE_GROUP_ACTIVITY_TYPES);
+    assert.equal(document.concurrency["cancel-in-progress"], `\${{ ${PULL_OR_MERGE_GROUP_CONDITION} }}`);
   }
   assert.equal(cross.on.pull_request, undefined);
   assert.ok(Object.hasOwn(cross.on, "workflow_dispatch"));
@@ -1738,13 +4137,39 @@ test("protected branch triggers and obsolete classifier vocabulary are absent fr
   }
 });
 
+test("CI and CodeQL align edited, stacked, readiness, and draft activity semantics", () => {
+  assertPullRequestActivityContract(ci, codeql);
+  for (const mutate of [
+    (document) => document.on.pull_request.types.splice(document.on.pull_request.types.indexOf("edited"), 1),
+    (document) => document.on.pull_request.types.splice(document.on.pull_request.types.indexOf("stacked"), 1),
+    (document) => document.on.pull_request.types.push("ready_for_review"),
+    (document) => document.on.pull_request.types.push("converted_to_draft")
+  ]) {
+    const changedCi = structuredClone(ci);
+    mutate(changedCi);
+    assert.throws(() => assertPullRequestActivityContract(changedCi, codeql));
+    const changedCodeql = structuredClone(codeql);
+    mutate(changedCodeql);
+    assert.throws(() => assertPullRequestActivityContract(ci, changedCodeql));
+  }
+  const classify = stepRunning(ci.jobs.classify, "node scripts/ci-path-classification.mjs");
+  assert.deepEqual(classify.env, {
+    CI_EVENT_NAME: "${{ github.event_name }}",
+    CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+    CI_STACK_BASE_SHA: "${{ github.event.pull_request.stack.base.sha }}",
+    CI_STACK_POSITION: "${{ github.event.pull_request.stack.position }}",
+    CI_STACK_SIZE: "${{ github.event.pull_request.stack.size }}"
+  });
+});
+
 test("automation retains the exact Node and npm toolchain authority", () => {
   const nodeVersion = readFileSync(".node-version", "utf8").trim();
   assert.equal(nodeVersion, "22.22.0");
   assert.equal(packageJson.engines.node, ">=22.22.0 <23");
   assert.equal(packageJson.packageManager, "npm@10.9.4");
   let setupNodeCount = 0;
-  for (const name of readdirSync(".github/workflows").filter((entry) => entry.endsWith(".yml"))) {
+  for (const name of repositoryWorkflowNames.filter((entry) => entry.endsWith(".yml"))) {
     const document = workflow(name);
     for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
       for (const [stepIndex, step] of (job.steps ?? []).entries()) {
@@ -1821,13 +4246,14 @@ test("every Vitest entry point retains an effective worker ceiling", async () =>
   assert.equal(smoke.config.test?.fileParallelism, false);
 });
 
-test("pull-request workflows cancel only obsolete heads while both required result gates remain fail-complete", () => {
+test("pull-request and merge-group workflows cancel only obsolete candidates while required gates remain fail-complete", () => {
   const alwaysEvaluatedJobs = [];
   for (const [name, group] of REPLACEABLE_PULL_REQUEST_WORKFLOWS) {
     const document = workflow(name);
     assert.equal(document.concurrency.group, group);
-    assert.equal(document.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
+    assert.equal(document.concurrency["cancel-in-progress"], `\${{ ${PULL_OR_MERGE_GROUP_CONDITION} }}`);
     assert.ok(document.on.pull_request);
+    assert.deepEqual(document.on.merge_group.types, MERGE_GROUP_ACTIVITY_TYPES);
     assert.ok(Object.keys(document.on).some((eventName) => eventName !== "pull_request"));
     for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
       if (String(job.if ?? "").includes("always()")) alwaysEvaluatedJobs.push(`${name}:${jobId}`);
@@ -1882,7 +4308,7 @@ test("repository-only roots remain excluded from the VSIX inventory", () => {
 });
 
 test("routine Dependabot updates remain grouped, bounded, staggered, and security-independent", () => {
-  const dependabot = parseYaml(readFileSync(".github/dependabot.yml", "utf8"));
+  const dependabot = parseBoundedWorkflowYaml(readFileSync(".github/dependabot.yml"));
   assert.equal(dependabot.version, 2);
   assert.deepEqual(
     dependabot.updates.map((entry) => [

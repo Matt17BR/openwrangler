@@ -18,6 +18,11 @@ type Listener<T> = (value: T) => unknown;
 
 const pythonMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
+  commandRegistrationAttempt: 0,
+  failCommandRegistrationAttempt: undefined as number | undefined,
+  listenerRegistrationAttempt: 0,
+  failListenerRegistrationAttempt: undefined as number | undefined,
+  lastContext: undefined as ExtensionContext | undefined,
   executeCommand: vi.fn<(id: string, ...args: never[]) => Promise<unknown>>(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
   showWarningMessage: vi.fn(async () => undefined),
@@ -79,6 +84,10 @@ vi.mock("vscode", () => {
   const subscribe =
     <T>(listeners: Set<Listener<T>>) =>
     (listener: Listener<T>) => {
+      pythonMocks.listenerRegistrationAttempt += 1;
+      if (pythonMocks.listenerRegistrationAttempt === pythonMocks.failListenerRegistrationAttempt) {
+        throw new Error("Python listener registration failed");
+      }
       listeners.add(listener);
       return { dispose: () => listeners.delete(listener) };
     };
@@ -89,6 +98,10 @@ vi.mock("vscode", () => {
     ViewColumn: { Active: -1, Beside: -2, One: 1 },
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
+        pythonMocks.commandRegistrationAttempt += 1;
+        if (pythonMocks.commandRegistrationAttempt === pythonMocks.failCommandRegistrationAttempt) {
+          throw new Error(`Python registration failed at ${id}`);
+        }
         pythonMocks.commands.set(id, handler);
         return { dispose: () => pythonMocks.commands.delete(id) };
       },
@@ -174,7 +187,10 @@ export function vscodeApi(): typeof vscode {
   return vscode;
 }
 
-export function setupPythonInteractiveTest(): PythonInteractiveTestContext {
+export function setupPythonInteractiveTest(
+  failCommandRegistrationAttempt?: number,
+  failListenerRegistrationAttempt?: number
+): PythonInteractiveTestContext {
   for (const listenerSet of [
     pythonMocks.activeTextListeners,
     pythonMocks.activeNotebookListeners,
@@ -186,6 +202,10 @@ export function setupPythonInteractiveTest(): PythonInteractiveTestContext {
     listenerSet.clear();
   }
   pythonMocks.commands.clear();
+  pythonMocks.commandRegistrationAttempt = 0;
+  pythonMocks.failCommandRegistrationAttempt = failCommandRegistrationAttempt;
+  pythonMocks.listenerRegistrationAttempt = 0;
+  pythonMocks.failListenerRegistrationAttempt = failListenerRegistrationAttempt;
   pythonMocks.textDocuments.length = 0;
   pythonMocks.notebookDocuments.length = 0;
   pythonMocks.activeTextEditor = undefined;
@@ -221,6 +241,7 @@ export function setupPythonInteractiveTest(): PythonInteractiveTestContext {
   pythonMocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
   const coordinator = {} as SessionCoordinator;
   const context = { subscriptions: [], extensionPath: "/extension" } as unknown as ExtensionContext;
+  pythonMocks.lastContext = context;
   const provider = registerPythonInteractiveCommands(context, coordinator);
   return { context, provider, coordinator };
 }

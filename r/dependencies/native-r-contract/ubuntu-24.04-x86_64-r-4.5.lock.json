@@ -1,5 +1,5 @@
 {
-  "protocol": "openwrangler-native-r-dependency-lock-v1",
+  "protocol": "openwrangler-native-r-dependency-lock-v2",
   "purpose": "native-r-contract",
   "qualification": {
     "rMinor": "4.5",
@@ -12,20 +12,25 @@
   },
   "resolver": {
     "name": "openwrangler-r-dependency-lock",
-    "exactVersion": "1",
+    "exactVersion": "2",
     "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
     "snapshotDate": "2026-08-14"
   },
-  "roots": [
-    "jsonlite",
-    "tibble",
-    "readr",
-    "dplyr",
-    "data.table",
-    "bit64",
-    "collapse",
-    "nanoparquet"
-  ],
+  "roots": {
+    "runtime": [
+      "jsonlite",
+      "tibble",
+      "readr",
+      "dplyr",
+      "data.table",
+      "bit64",
+      "rlang",
+      "nanoparquet"
+    ],
+    "fixtures": [
+      "collapse"
+    ]
+  },
   "packages": [
     {
       "name": "R6",
@@ -146,7 +151,7 @@
     {
       "name": "collapse",
       "version": "2.1.7",
-      "direct": true,
+      "direct": false,
       "needsCompilation": true,
       "license": "GPL (>= 2) | file LICENSE",
       "dependencies": {
@@ -521,7 +526,7 @@
     {
       "name": "rlang",
       "version": "1.3.0",
-      "direct": false,
+      "direct": true,
       "needsCompilation": true,
       "license": "MIT + file LICENSE",
       "dependencies": {

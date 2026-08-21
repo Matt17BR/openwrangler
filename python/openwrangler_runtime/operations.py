@@ -7,6 +7,7 @@ from math import isfinite
 from typing import Any
 
 from .by_example import SynthesisError, normalize_by_example
+from .custom_code_scope import CustomCodeScopeError, validate_custom_code_scope
 from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operation_catalog_generated import OPERATION_DEFINITIONS
@@ -329,6 +330,10 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError(
                 f"customCode.code may contain at most {MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES:,} UTF-8 bytes."
             )
+        try:
+            validate_custom_code_scope(code)
+        except CustomCodeScopeError as error:
+            raise OperationError(str(error)) from error
 
 
 def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:

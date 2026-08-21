@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ._column_binding import ColumnBindingError, bind_step
+from .custom_code_scope import custom_code_generated_utf8_bytes
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
 from .engines.base import (
     ExportOptions,
@@ -1589,7 +1590,7 @@ class SessionManager:
     ) -> str:
         if not bound_plan:
             return ""
-        cls._preflight_custom_code_generation(bound_plan)
+        cls._preflight_custom_code_generation(engine, bound_plan)
         generated_code = engine.compile_plan(bound_plan)
         if not isinstance(generated_code, str):
             raise EngineError("The dataframe engine returned malformed generated Python code.")
@@ -1613,11 +1614,16 @@ class SessionManager:
         return total
 
     @classmethod
-    def _preflight_custom_code_generation(cls, bound_plan: Sequence[Mapping[str, Any]]) -> None:
-        """Reject line expansion before an adapter can allocate split custom-code lines."""
+    def _preflight_custom_code_generation(
+        cls,
+        engine: DataFrameEngine,
+        bound_plan: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Reject complete Custom Code expansion before an adapter allocates it."""
 
         generated_bytes = 0
-        for step in bound_plan:
+        prelude_pending = True
+        for index, step in enumerate(bound_plan):
             if step.get("kind") != "customCode":
                 continue
             params = step.get("params")
@@ -1626,11 +1632,18 @@ class SessionManager:
                 raise EngineError("The bound Custom Code step is malformed.")
             code_bytes = cls._bounded_utf8_size(code, MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
             line_count, separator_bytes = cls._splitlines_shape(code)
-            # Every adapter prefixes each custom-code line with eight spaces
-            # and joins it with one LF. This exact custom-line contribution is
-            # a lower bound for the final program, so crossing the public code
-            # budget here proves rejection without constructing splitlines().
-            generated_bytes += code_bytes - separator_bytes + (line_count * 9)
+            try:
+                generated_bytes += custom_code_generated_utf8_bytes(
+                    code_utf8_bytes=code_bytes,
+                    separator_utf8_bytes=separator_bytes,
+                    line_count=line_count,
+                    engine_name=engine.name,
+                    index=index,
+                    include_prelude=prelude_pending,
+                )
+            except ValueError as error:
+                raise EngineError("The dataframe engine cannot generate Custom Code.") from error
+            prelude_pending = False
             if generated_bytes > MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:
                 raise EngineError(
                     f"Generated Python code may contain at most {MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:,} UTF-8 bytes."
