@@ -45,15 +45,37 @@ function reporterSafeNativeStageCause(error) {
   return Object.freeze(cause);
 }
 
+function nativeStageClockValue(now) {
+  const value = now();
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("The native Windows supervisor stage clock returned an invalid value.");
+  }
+  return value;
+}
+
+function nativeStageRemainingMs(deadlineAt, now) {
+  return Math.max(0, Math.ceil(deadlineAt - nativeStageClockValue(now)));
+}
+
 async function runWindowsNativeStage(
   stage,
-  { timeoutMs, settlementTimeoutMs = WINDOWS_NATIVE_STAGE_SETTLEMENT_TIMEOUT_MS, outerAbortSignal },
+  {
+    timeoutMs,
+    settlementTimeoutMs = WINDOWS_NATIVE_STAGE_SETTLEMENT_TIMEOUT_MS,
+    outerAbortSignal,
+    now = () => performance.now(),
+    schedule = setTimeout,
+    cancelSchedule = clearTimeout
+  },
   operation
 ) {
   if (outerAbortSignal !== undefined && !(outerAbortSignal instanceof AbortSignal)) {
     throw new Error(`The native Windows supervisor ${stage} outer abort signal must be an AbortSignal.`);
   }
-  const stageStartedAt = performance.now();
+  if (typeof now !== "function" || typeof schedule !== "function" || typeof cancelSchedule !== "function") {
+    throw new Error("The native Windows supervisor stage clock and scheduler must be functions.");
+  }
+  const stageStartedAt = nativeStageClockValue(now);
   const controller = new AbortController();
   let resolveOuterAbort;
   const outerAbortObservation = outerAbortSignal
@@ -95,9 +117,9 @@ async function runWindowsNativeStage(
       new Promise((resolveDeadline) => {
         const deadlineAt = stageStartedAt + timeoutMs;
         const observeDeadline = () => {
-          const remainingMs = Math.max(0, Math.ceil(deadlineAt - performance.now()));
+          const remainingMs = nativeStageRemainingMs(deadlineAt, now);
           if (remainingMs > 0) {
-            stageTimer = setTimeout(observeDeadline, remainingMs);
+            stageTimer = schedule(observeDeadline, remainingMs);
             return;
           }
           if (!controller.signal.aborted) {
@@ -105,13 +127,13 @@ async function runWindowsNativeStage(
           }
           resolveDeadline({ kind: "deadline" });
         };
-        stageTimer = setTimeout(observeDeadline, timeoutMs);
+        stageTimer = schedule(observeDeadline, timeoutMs);
       })
     ];
     if (outerAbortObservation) observations.push(outerAbortObservation);
     observation = await Promise.race(observations);
   } finally {
-    clearTimeout(stageTimer);
+    if (stageTimer !== undefined) cancelSchedule(stageTimer);
     if (outerAbortSignal) outerAbortSignal.removeEventListener("abort", onOuterAbort);
   }
   if (observation.kind === "result") return observation.value;
@@ -121,7 +143,7 @@ async function runWindowsNativeStage(
   }
 
   if (!controller.signal.aborted) controller.abort();
-  const settlementStartedAt = performance.now();
+  const settlementStartedAt = nativeStageClockValue(now);
   let settlementTimer;
   let settlement;
   try {
@@ -130,18 +152,18 @@ async function runWindowsNativeStage(
       new Promise((resolveSettlementDeadline) => {
         const deadlineAt = settlementStartedAt + settlementTimeoutMs;
         const observeSettlementDeadline = () => {
-          const remainingMs = Math.max(0, Math.ceil(deadlineAt - performance.now()));
+          const remainingMs = nativeStageRemainingMs(deadlineAt, now);
           if (remainingMs > 0) {
-            settlementTimer = setTimeout(observeSettlementDeadline, remainingMs);
+            settlementTimer = schedule(observeSettlementDeadline, remainingMs);
             return;
           }
           resolveSettlementDeadline({ kind: "settlement-deadline" });
         };
-        settlementTimer = setTimeout(observeSettlementDeadline, settlementTimeoutMs);
+        settlementTimer = schedule(observeSettlementDeadline, settlementTimeoutMs);
       })
     ]);
   } finally {
-    clearTimeout(settlementTimer);
+    if (settlementTimer !== undefined) cancelSchedule(settlementTimer);
   }
   if (settlement.kind === "settlement-deadline") {
     let releaseCause;
@@ -150,50 +172,52 @@ async function runWindowsNativeStage(
     } catch (error) {
       releaseCause = error;
     }
+    const reporterCause = releaseCause === undefined ? undefined : reporterSafeNativeStageCause(releaseCause);
     const failure = new Error(
       `The native Windows supervisor ${stage} stage exceeded ${timeoutMs} ms and did not settle within ${settlementTimeoutMs} ms after cancellation.`,
-      releaseCause ? { cause: releaseCause } : undefined
+      reporterCause ? { cause: reporterCause } : undefined
     );
     failure.code = "EDITOR_PROCESS_TREE_UNVERIFIED";
     failure.details = {
       stage,
       reason: "settlement-deadline",
-      elapsedMs: Math.max(0, performance.now() - settlementStartedAt),
+      elapsedMs: Math.max(0, nativeStageClockValue(now) - settlementStartedAt),
       limitMs: settlementTimeoutMs,
-      stageElapsedMs: Math.max(0, performance.now() - stageStartedAt),
+      stageElapsedMs: Math.max(0, nativeStageClockValue(now) - stageStartedAt),
       triggerReason: observation.kind === "outer-abort" ? "outer-abort" : "deadline",
       treeVerifiedStopped: false
     };
     throw failure;
   }
-  const cause = settlement.kind === "error" ? settlement.error : undefined;
+  const rawCause = settlement.kind === "error" ? settlement.error : undefined;
+  const reporterCause = rawCause === undefined ? undefined : reporterSafeNativeStageCause(rawCause);
   if (observation.kind === "outer-abort") {
     const failure = new Error(`The native Windows supervisor ${stage} stage was cancelled by its enclosing test.`, {
-      cause
+      cause: reporterCause
     });
     failure.code = "EDITOR_ACCEPTANCE_STAGE_ABORTED";
     failure.details = {
       stage,
       reason: "outer-abort",
-      elapsedMs: Math.max(0, performance.now() - stageStartedAt),
+      elapsedMs: Math.max(0, nativeStageClockValue(now) - stageStartedAt),
       limitMs: timeoutMs,
-      treeVerifiedStopped: !editorProcessTreeMayBeLive(cause)
+      treeVerifiedStopped: !editorProcessTreeMayBeLive(rawCause)
     };
     throw failure;
   }
   const failure = new Error(
     `The native Windows supervisor ${stage} stage exceeded its ${timeoutMs} ms correctness bound.`,
     {
-      cause
+      cause: reporterCause
     }
   );
   failure.code = "EDITOR_ACCEPTANCE_STAGE_DEADLINE";
   failure.details = {
     stage,
     reason: "deadline",
-    elapsedMs: Math.max(0, performance.now() - stageStartedAt),
+    elapsedMs: Math.max(0, nativeStageClockValue(now) - stageStartedAt),
     limitMs: timeoutMs,
-    treeVerifiedStopped: !editorProcessTreeMayBeLive(cause)
+    treeVerifiedStopped: !editorProcessTreeMayBeLive(rawCause)
   };
   throw failure;
 }
@@ -368,6 +392,63 @@ test("native stage deadlines cancel and settle their operation before reporting"
   assert.equal(operationSettled, true);
 });
 
+test("early native-stage wakes preserve the active and settlement absolute deadlines", async () => {
+  const scheduled = [];
+  let clock = 0;
+  let released = false;
+  const schedule = (callback, delay) => {
+    const timer = { callback, cancelled: false, delay };
+    scheduled.push(timer);
+    return timer;
+  };
+  const cancelSchedule = (timer) => {
+    timer.cancelled = true;
+  };
+  const stage = runWindowsNativeStage(
+    "absolute deadline probe",
+    { timeoutMs: 10, settlementTimeoutMs: 8, now: () => clock, schedule, cancelSchedule },
+    () => ({
+      promise: new Promise(() => undefined),
+      releaseAfterSettlementDeadline() {
+        released = true;
+      }
+    })
+  );
+  void stage.catch(() => undefined);
+  await Promise.resolve();
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 10);
+
+  clock = 4;
+  scheduled[0].callback();
+  assert.equal(scheduled.length, 2);
+  assert.equal(scheduled[1].delay, 6);
+
+  clock = 10;
+  scheduled[1].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scheduled[1].cancelled, true);
+  assert.equal(scheduled.length, 3);
+  assert.equal(scheduled[2].delay, 8);
+
+  clock = 13;
+  scheduled[2].callback();
+  assert.equal(scheduled.length, 4);
+  assert.equal(scheduled[3].delay, 5);
+
+  clock = 18;
+  scheduled[3].callback();
+  await assert.rejects(stage, (error) => {
+    assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+    assert.equal(error.details?.reason, "settlement-deadline");
+    assert.equal(error.details?.elapsedMs, 8);
+    assert.equal(error.details?.stageElapsedMs, 18);
+    return true;
+  });
+  assert.equal(released, true);
+  assert.equal(scheduled[3].cancelled, true);
+});
+
 test("native stage failures retain only a bounded reporter-safe compiler cause", async () => {
   const compilerCause = new Error("synthetic underlying compiler cause");
   const compilerFailure = new Error("synthetic bounded compiler diagnostic", { cause: compilerCause });
@@ -435,6 +516,86 @@ test("native stage diagnostics suppress oversized, credential, private-path, and
       }
     );
   }
+});
+
+test("native stage cancellation and release failures publish only reporter-safe causes", async () => {
+  const token = `ghp_${"r".repeat(32)}`;
+  const privatePath = join(process.cwd(), "private-native-stage", "settlement.log");
+  const stdoutSecret = "OW_HOSTILE_NATIVE_STDOUT";
+  const stderrSecret = "OW_HOSTILE_NATIVE_STDERR";
+  const nestedCauseSecret = "OW_HOSTILE_NATIVE_NESTED_CAUSE";
+  const forbidden = [token, privatePath, stdoutSecret, stderrSecret, nestedCauseSecret];
+  const hostileFailure = (label) => {
+    const error = new AggregateError(
+      [new Error(`Authorization: Bearer ${token}`), new Error(`native stage ${label} failed at ${privatePath}`)],
+      `hostile ${label} failure`,
+      { cause: new Error(nestedCauseSecret) }
+    );
+    error.stdout = stdoutSecret;
+    error.stderr = stderrSecret;
+    return error;
+  };
+  const assertSafeCause = (error, rawCause, label) => {
+    assert.notEqual(error.cause, rawCause);
+    assert.equal(error.cause?.name, "NativeStageDiagnostic");
+    assert.equal(error.cause?.cause, undefined);
+    assert.match(error.cause?.message, new RegExp(`hostile ${label} failure`, "u"));
+    assert.match(error.cause?.message, /Authorization: <redacted>/u);
+    assert.match(error.cause?.message, /<repository>/u);
+    const published = [error.message, error.cause?.message, error.cause?.stack].join("\n");
+    for (const secret of forbidden) assert.equal(published.includes(secret), false);
+    return true;
+  };
+
+  const deadlineCause = hostileFailure("deadline settlement");
+  await assert.rejects(
+    runWindowsNativeStage(
+      "deadline redaction probe",
+      { timeoutMs: 5, settlementTimeoutMs: 100 },
+      (abortSignal) =>
+        new Promise((_resolve, reject) => {
+          const rejectAfterAbort = () => queueMicrotask(() => reject(deadlineCause));
+          abortSignal.addEventListener("abort", rejectAfterAbort, { once: true });
+          if (abortSignal.aborted) rejectAfterAbort();
+        })
+    ),
+    (error) => {
+      assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_DEADLINE");
+      return assertSafeCause(error, deadlineCause, "deadline settlement");
+    }
+  );
+
+  const outerCause = hostileFailure("outer abort settlement");
+  const outerController = new AbortController();
+  const outerStage = runWindowsNativeStage(
+    "outer abort redaction probe",
+    { timeoutMs: 1_000, settlementTimeoutMs: 100, outerAbortSignal: outerController.signal },
+    (abortSignal) =>
+      new Promise((_resolve, reject) => {
+        const rejectAfterAbort = () => setImmediate(() => reject(outerCause));
+        abortSignal.addEventListener("abort", rejectAfterAbort, { once: true });
+        if (abortSignal.aborted) rejectAfterAbort();
+      })
+  );
+  setImmediate(() => outerController.abort(new Error("synthetic enclosing abort")));
+  await assert.rejects(outerStage, (error) => {
+    assert.equal(error.code, "EDITOR_ACCEPTANCE_STAGE_ABORTED");
+    return assertSafeCause(error, outerCause, "outer abort settlement");
+  });
+
+  const releaseCause = hostileFailure("bounded release");
+  await assert.rejects(
+    runWindowsNativeStage("release redaction probe", { timeoutMs: 5, settlementTimeoutMs: 5 }, () => ({
+      promise: new Promise(() => undefined),
+      releaseAfterSettlementDeadline() {
+        throw releaseCause;
+      }
+    })),
+    (error) => {
+      assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      return assertSafeCause(error, releaseCause, "bounded release");
+    }
+  );
 });
 
 test("native stage failures surface the bounded production compiler diagnostic", async () => {
@@ -610,7 +771,10 @@ test("a PID-bearing filesystem worker error retains close ownership until bounde
     ),
     (error) => {
       assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
-      assert.equal(error.cause, workerError);
+      assert.notEqual(error.cause, workerError);
+      assert.equal(error.cause?.name, "NativeStageDiagnostic");
+      assert.match(error.cause?.message, /synthetic started-worker failure before close/u);
+      assert.equal(error.cause?.cause, undefined);
       assert.deepEqual(
         {
           stage: error.details?.stage,
@@ -676,7 +840,8 @@ test("a never-closing filesystem worker preserves its sole kill failure", async 
       assert.equal(error.details?.reason, "settlement-deadline");
       assert.equal(error.details?.treeVerifiedStopped, false);
       assert.equal(error.cause?.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
-      assert.equal(error.cause?.cause, killError);
+      assert.match(error.cause?.message, /worker could not be cancelled/u);
+      assert.equal(error.cause?.cause, undefined);
       return true;
     }
   );
@@ -724,12 +889,15 @@ test("filesystem worker release aggregates worker, kill, and unref failures in o
     (error) => {
       assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
       assert.equal(error.details?.treeVerifiedStopped, false);
-      assert.equal(error.cause instanceof AggregateError, true);
-      assert.equal(error.cause.errors.length, 3);
-      assert.equal(error.cause.errors[0], workerError);
-      assert.equal(error.cause.errors[1]?.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
-      assert.equal(error.cause.errors[1]?.cause, killError);
-      assert.equal(error.cause.errors[2], unrefError);
+      assert.equal(error.cause?.name, "NativeStageDiagnostic");
+      assert.equal(error.cause?.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+      const workerIndex = error.cause.message.indexOf(workerError.message);
+      const killIndex = error.cause.message.indexOf("worker could not be cancelled");
+      const unrefIndex = error.cause.message.indexOf(unrefError.message);
+      assert.equal(workerIndex >= 0, true);
+      assert.equal(killIndex > workerIndex, true);
+      assert.equal(unrefIndex > killIndex, true);
+      assert.equal(error.cause?.cause, undefined);
       return true;
     }
   );
