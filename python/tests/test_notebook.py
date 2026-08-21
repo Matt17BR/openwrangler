@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import duckdb
 import pandas as pd
@@ -12,6 +13,12 @@ import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineError, EngineRegistry
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
+
+ROW_AXIS_CONTRACT = json.loads(
+    (Path(__file__).resolve().parents[2] / "fixtures" / "notebook-pandas-mime-v2-contract.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 @pytest.mark.parametrize(
@@ -49,6 +56,47 @@ def test_show_emits_complete_mime_v2_snapshot(value, backend, monkeypatch):
     assert "stats" not in snapshot["metadata"]
     assert snapshot["summaries"] == []
     assert snapshot["page"]["rows"][1]["values"][0]["display"] == "2"
+
+
+def test_pandas_snapshot_matches_the_shared_row_axis_contract():
+    frames = {
+        "positional-range-index": pd.DataFrame({"value": [1, 2]}),
+        "named-index": pd.DataFrame(
+            {"value": [1, 2]},
+            index=pd.Index([10, 20], name="record_id"),
+        ),
+        "named-multi-index": pd.DataFrame(
+            {"value": [1, 2]},
+            index=pd.MultiIndex.from_tuples(
+                [("north", 1), ("south", 2)],
+                names=["region", "sequence"],
+            ),
+        ),
+    }
+
+    assert ROW_AXIS_CONTRACT["schemaVersion"] == 1
+    assert [case["name"] for case in ROW_AXIS_CONTRACT["pandasRowAxisCases"]] == list(frames)
+    for case in ROW_AXIS_CONTRACT["pandasRowAxisCases"]:
+        payload = notebook.build_payload(frames[case["name"]], backend="pandas", page_size=2)
+
+        assert payload["metadata"]["rowAxis"] == case["rowAxis"]
+        if case["rowAxis"]["kind"] == "positional":
+            assert all("rowLabel" not in row for row in payload["page"]["rows"])
+        else:
+            assert all(isinstance(row.get("rowLabel"), str) for row in payload["page"]["rows"])
+
+
+def test_non_pandas_snapshots_match_the_shared_row_axis_omission_contract():
+    frames = {
+        "polars": pl.DataFrame({"value": [1, 2]}),
+        "duckdb": duckdb.sql("SELECT * FROM (VALUES (1), (2)) AS source(value)"),
+    }
+
+    assert ROW_AXIS_CONTRACT["nonPandasBackends"] == list(frames)
+    for backend in ROW_AXIS_CONTRACT["nonPandasBackends"]:
+        payload = notebook.build_payload(frames[backend], backend=backend, page_size=2)
+
+        assert "rowAxis" not in payload["metadata"]
 
 
 def test_duckdb_snapshot_uses_the_originating_connection_without_conversion(monkeypatch):
