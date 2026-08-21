@@ -771,7 +771,7 @@ VS Code owns the one full generic packaged journey. Linux Cursor and the generic
 the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate
 `r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then
 `kernel-restart`. The candidate `r_platform` matrix runs installed-artifact VS Code journeys with R 4.4.3 on Ubuntu, R 4.5.2 on macOS, and R 4.5.2 on Windows.
-Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts.
+Enabled scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI's required `validate` fan-in owns the direct R 4.5 source contracts.
 <!-- open-wrangler-current-compatibility-owners:end -->
 
 Candidate acceptance consumes installed-artifact or live external evidence. Linux local R uses exactly two non-cancelling shard cells: lifecycle

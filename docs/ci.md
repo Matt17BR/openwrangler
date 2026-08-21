@@ -126,8 +126,9 @@ The release tier adds the expensive product checks that no longer run on every p
 - released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs uses VS Code only for complete
   local and remote Python and R coverage; Cursor owns no Jupyter or R phase, and the complete value and categorical
   catalogs are owned once by Linux VS Code;
-- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI owns the R 4.5
-  source contracts, while scheduled/manual Cross owns the R 4.4 source qualification;
+- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI's required
+  `validate` fan-in owns the R 4.5 source contracts, while enabled scheduled/manual Cross owns the R 4.4 source
+  qualification;
 - Remote SSH;
 - installed performance in pinned VS Code, gated on first-grid timing, cache residency, scrolling, outstanding-work
   responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling; Cursor performance remains

@@ -210,6 +210,12 @@ test("shell ownership normalizes split, quoted, escaped, and env-prefixed editor
   );
   assert.match(inspect({ candidateWorkflowSource: exported }).join(" "), /effective editor version/u);
 
+  const editorSelectionOverride = sources.candidateWorkflowSource.replace(
+    original,
+    "run: OPEN_WRANGLER_PACKAGED_EDITORS=cursor node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+  );
+  assert.match(inspect({ candidateWorkflowSource: editorSelectionOverride }).join(" "), /VS Code platform owner/u);
+
   const unsetOverride = sources.candidateWorkflowSource.replace(
     original,
     "run: env --unset=VSCODE_TEST_VERSION node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
@@ -265,6 +271,23 @@ test("runner commands and success ownership must be executable and active", () =
     '          test "$PERFORMANCE_RESULT" = "success" || true'
   );
   assert.match(inspect({ candidateWorkflowSource: bypassedFanIn }).join(" "), /qualification fan-in/u);
+
+  for (const [marker, diagnostic] of [
+    ["PERFORMANCE_RESULT", /qualification fan-in/u],
+    ["CORE_OUTCOME", /executable success owner/u]
+  ]) {
+    const assignmentOnlyMarker = sources.candidateWorkflowSource.replace(
+      `          test "$${marker}" = "success"`,
+      `          ${marker}=success\n          test "$${marker}" = "success"`
+    );
+    assert.match(inspect({ candidateWorkflowSource: assignmentOnlyMarker }).join(" "), diagnostic);
+
+    const commandPrefixOverride = sources.candidateWorkflowSource.replace(
+      `          test "$${marker}" = "success"`,
+      `          ${marker}=success test "$${marker}" = "success"`
+    );
+    assert.match(inspect({ candidateWorkflowSource: commandPrefixOverride }).join(" "), diagnostic);
+  }
 
   const nonFailingOutcomeOwner = sources.candidateWorkflowSource
     .replace(
@@ -417,6 +440,8 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
   for (const hiddenBlock of [
     `\`\`\`markdown\n${architectureBlock}\n\`\`\``,
     `<pre>\n${architectureBlock}\n</pre>`,
+    `<script type="text/plain">\n${architectureBlock}\n</script>`,
+    `<style>\n${architectureBlock}\n</style>`,
     `<section hidden>\n${architectureBlock}\n</section>`
   ]) {
     assert.match(
@@ -447,9 +472,23 @@ test("synonym and passive compatibility claims cannot escape the canonical recor
   );
 });
 
+test("named product and editor claims require canonical case", () => {
+  for (const outsideClaim of [
+    "cursor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "CURSOR certifies the pinned Linux platform smoke.",
+    "Moving stable vs code owns installed performance.",
+    "open wrangler certifies the editor compatibility matrix."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /exact canonical case/u
+    );
+  }
+});
+
 test("Native R source and installed-artifact ownership are independently exact", () => {
   const wrongArchitectureOwnership = sources.architectureSource.replace(
-    "Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts.",
+    "Enabled scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI's required `validate` fan-in owns the direct R 4.5 source contracts.",
     "Protected pull-request CI solely owns the direct R 4.4/4.5 contract."
   );
   assert.match(
@@ -465,6 +504,30 @@ test("Native R source and installed-artifact ownership are independently exact",
   assert.match(
     inspect({ candidateWorkflowSource: sources.candidateWorkflowSource.replace('r: "4.4.3"', 'r: "4.5.2"') }).join(" "),
     /installed-artifact matrix|Native R platform owner/u
+  );
+  assert.match(
+    inspect({
+      crossWorkflowSource: sources.crossWorkflowSource.replace("    if: ${{ !cancelled() }}", "    if: false")
+    }).join(" "),
+    /enabled owners/u
+  );
+  assert.match(
+    inspect({
+      crossWorkflowSource: sources.crossWorkflowSource.replace(
+        "      - run: npm run test:r-contract\n",
+        '      - run: "true"\n'
+      )
+    }).join(" "),
+    /enabled owners/u
+  );
+  assert.match(
+    inspect({
+      ciWorkflowSource: sources.ciWorkflowSource.replace(
+        "      - r-contract-kernel\n      - r-contract-protocol",
+        "      - r-contract-protocol"
+      )
+    }).join(" "),
+    /required CI success fan-in/u
   );
 });
 

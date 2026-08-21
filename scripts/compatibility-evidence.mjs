@@ -43,6 +43,19 @@ const MAX_SHELL_COMMANDS = 512;
 const MAX_VISIBLE_HTML_TAGS = 4_096;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
+const NON_VISIBLE_HTML_CONTAINERS = new Set([
+  "details",
+  "head",
+  "iframe",
+  "noscript",
+  "object",
+  "pre",
+  "script",
+  "style",
+  "template",
+  "textarea",
+  "title"
+]);
 const EXPECTED_EDITOR_OWNERS = new Map([
   [
     "vscode",
@@ -88,6 +101,22 @@ const EXPECTED_OWNER_JOB_CONDITIONS = new Map([
     "ci.yml#canonical-editor",
     "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.canonical_editor_required != 'false') }}"
   ]
+]);
+const EXPECTED_NATIVE_R_SOURCE_JOB_CONDITIONS = new Map([
+  [
+    "ci.yml#r-contract-kernel",
+    "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false') }}"
+  ],
+  [
+    "ci.yml#r-contract-protocol",
+    "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false') }}"
+  ],
+  ["cross-platform.yml#r-4-4-scheduled-qualification", "${{ !cancelled() }}"]
+]);
+const EXPECTED_NATIVE_R_SOURCE_COMMANDS = new Map([
+  ["ci.yml#r-contract-kernel", "npm run test:r-contract -- --shard kernel-agent"],
+  ["ci.yml#r-contract-protocol", "npm run test:r-contract:protocol"],
+  ["cross-platform.yml#r-4-4-scheduled-qualification", "npm run test:r-contract"]
 ]);
 const EXPECTED_RUNNER_CONDITIONS = new Map([
   ["platform#packaged_editor", undefined],
@@ -207,7 +236,7 @@ const STRUCTURED_PUBLIC_RECORDS = Object.freeze([
       "the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate",
       "`r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then",
       "`kernel-restart`. The candidate `r_platform` matrix runs installed-artifact VS Code journeys with R 4.4.3 on Ubuntu, R 4.5.2 on macOS, and R 4.5.2 on Windows.",
-      "Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts."
+      "Enabled scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI's required `validate` fan-in owns the direct R 4.5 source contracts."
     ].join("\n"),
     label: "docs/architecture.md current compatibility ownership record"
   },
@@ -223,8 +252,9 @@ const STRUCTURED_PUBLIC_RECORDS = Object.freeze([
       "- released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs uses VS Code only for complete",
       "  local and remote Python and R coverage; Cursor owns no Jupyter or R phase, and the complete value and categorical",
       "  catalogs are owned once by Linux VS Code;",
-      "- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI owns the R 4.5",
-      "  source contracts, while scheduled/manual Cross owns the R 4.4 source qualification;",
+      "- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI's required",
+      "  `validate` fan-in owns the R 4.5 source contracts, while enabled scheduled/manual Cross owns the R 4.4 source",
+      "  qualification;",
       "- Remote SSH;",
       "- installed performance in pinned VS Code, gated on first-grid timing, cache residency, scrolling, outstanding-work",
       "  responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling; Cursor performance remains",
@@ -367,7 +397,7 @@ const VISIBLE_PUBLIC_RECORDS = Object.freeze([
   },
   {
     source: "ciDocumentationSource",
-    text: "protected pull-request CI owns the R 4.5 source contracts, while scheduled/manual Cross owns the R 4.4 source qualification",
+    text: "protected pull-request CI's required\n  `validate` fan-in owns the R 4.5 source contracts, while enabled scheduled/manual Cross owns the R 4.4 source\n  qualification",
     label: "docs/ci.md Native R source ownership record"
   },
   {
@@ -397,7 +427,7 @@ const VISIBLE_PUBLIC_RECORDS = Object.freeze([
   },
   {
     source: "architectureSource",
-    text: "Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts.",
+    text: "Enabled scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI's required `validate` fan-in owns the direct R 4.5 source contracts.",
     label: "docs/architecture.md Native R source ownership record"
   },
   {
@@ -790,6 +820,45 @@ function ownsRVersion(job, version) {
   );
 }
 
+function inspectNativeRSourceOwnerReachability(ciJobs, crossJobs, problems) {
+  const owners = new Map([
+    ["ci.yml#r-contract-kernel", ciJobs["r-contract-kernel"]],
+    ["ci.yml#r-contract-protocol", ciJobs["r-contract-protocol"]],
+    ["cross-platform.yml#r-4-4-scheduled-qualification", crossJobs["r-4-4-scheduled-qualification"]]
+  ]);
+  const ownersReachable = [...owners].every(
+    ([owner, job]) =>
+      record(job) &&
+      job["continue-on-error"] !== true &&
+      normalizedCondition(job.if) === EXPECTED_NATIVE_R_SOURCE_JOB_CONDITIONS.get(owner) &&
+      Array.isArray(job.steps) &&
+      job.steps.some(
+        (step) =>
+          normalizedCondition(step.if) === undefined && step.run === EXPECTED_NATIVE_R_SOURCE_COMMANDS.get(owner)
+      )
+  );
+  const validate = ciJobs.validate;
+  const resultOwner = validate?.steps?.find(
+    (step) => normalizedCondition(step.if) === undefined && step.run === "node scripts/require-ci-results.mjs"
+  );
+  const requiredResults = {
+    R_CONTRACT_REQUIRED: "${{ needs.classify.outputs.r_contract_required }}",
+    R_CONTRACT_KERNEL_RESULT: "${{ needs.r-contract-kernel.result }}",
+    R_CONTRACT_PROTOCOL_RESULT: "${{ needs.r-contract-protocol.result }}"
+  };
+  const hasRequiredFanIn =
+    record(validate) &&
+    validate["continue-on-error"] !== true &&
+    normalizedCondition(validate.if) === "${{ always() && github.event_name == 'pull_request' }}" &&
+    Array.isArray(validate.needs) &&
+    ["classify", "r-contract-kernel", "r-contract-protocol"].every((owner) => validate.needs.includes(owner)) &&
+    record(resultOwner?.env) &&
+    Object.entries(requiredResults).every(([key, value]) => resultOwner.env[key] === value);
+  if (!ownersReachable || !hasRequiredFanIn) {
+    problems.push("Native R source ownership must retain enabled owners and the required CI success fan-in.");
+  }
+}
+
 function normalizedCondition(condition) {
   return typeof condition === "string" ? condition.trim().replace(/\s+/gu, " ") : condition;
 }
@@ -847,7 +916,12 @@ function runnerSteps(job) {
 }
 
 function runnerEnvironment(step, expected) {
-  return record(step?.env) && Object.entries(expected).every(([key, value]) => step.env[key] === value);
+  const runner = analyzedRunner(step);
+  if (!runner || !record(step?.env)) return false;
+  return Object.entries(expected).every(([key, value]) => {
+    const effective = runner.environment.has(key) ? runner.environment.get(key) : step.env[key];
+    return effective === value;
+  });
 }
 
 function orderedRunnerEnvironmentValues(job, key) {
@@ -872,6 +946,7 @@ function executableSuccessTest(step, environmentKey) {
   const analysis = executableShellCommands(step?.run);
   return (
     !analysis.error &&
+    !analysis.assignments.some(({ key }) => key === environmentKey) &&
     !analysis.controls.some((control) => ["|", "||", "&", "&&"].includes(control)) &&
     analysis.commands.some(({ tokens }) => sameArray(tokens, ["test", `$${environmentKey}`, "=", "success"]))
   );
@@ -884,8 +959,10 @@ function strictShellFailureMode(step) {
 
 function exactSuccessFanIn(step, environmentKeys) {
   const analysis = executableShellCommands(step?.run);
+  const evidenceKeys = new Set(environmentKeys);
   return (
     !analysis.error &&
+    !analysis.assignments.some(({ key }) => evidenceKeys.has(key)) &&
     analysis.controls.every((control) => control === ";") &&
     analysis.commands.length === environmentKeys.length + 1 &&
     sameArray(analysis.commands[0]?.tokens, ["set", "-euo", "pipefail"]) &&
@@ -1131,7 +1208,7 @@ function visibleMarkdown(source, label, problems) {
         const tag = candidate.groups.tag.toLowerCase();
         const attributes = candidate.groups.attributes;
         if (
-          ["pre", "template", "details"].includes(tag) ||
+          NON_VISIBLE_HTML_CONTAINERS.has(tag) ||
           /(?:^|\s)hidden(?:\s|=|$)/iu.test(attributes) ||
           /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?:\s|$)/iu.test(attributes) ||
           /(?:^|\s)style\s*=\s*(?:"[^"]*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"]*"|'[^']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^']*')/iu.test(
@@ -1229,6 +1306,10 @@ function hasTokenStem(tokens, stems) {
   return [...tokens].some((token) => stems.some((stem) => token.startsWith(stem)));
 }
 
+function hasNonCanonicalName(claim, canonical, pattern) {
+  return [...claim.replace(/\s+/gu, " ").matchAll(pattern)].some((match) => match[0] !== canonical);
+}
+
 function structuredOwnershipViolation(claim) {
   const tokens = claimTokens(claim);
   const has = (...values) => values.every((value) => tokens.has(value));
@@ -1256,6 +1337,27 @@ function structuredOwnershipViolation(claim) {
     has("native", "r") ||
     has("installed", "performance") ||
     (tokens.has("r") && ["phase", "journey", "coverage", "catalog"].some((value) => tokens.has(value)));
+  const cursorProductContext =
+    (ownsEvidence &&
+      ((tokens.has("released") && tokens.has("jupyter")) ||
+        has("native", "r") ||
+        has("installed", "performance") ||
+        tokens.has("fork"))) ||
+    (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
+  if (cursorProductContext && hasNonCanonicalName(claim, "Cursor", /(?<![./_-])\bcursor\b(?![./_-])/giu)) {
+    return "named product and editor claims must retain exact canonical case";
+  }
+  if (
+    ownsEvidence &&
+    [
+      ["VS Code", /\bvs code\b/giu],
+      ["Open Wrangler", /\bopen wrangler\b/giu],
+      ["Antigravity", /(?<![./_?=&-])\bantigravity\b(?![./_?=&-])/giu],
+      ["Open VSX", /\bopen vsx\b/giu]
+    ].some(([canonical, pattern]) => hasNonCanonicalName(claim, canonical, pattern))
+  ) {
+    return "named product and editor claims must retain exact canonical case";
+  }
   if (/\bCursor\b/u.test(claim) && cursorRestrictedTarget && ownsEvidence) {
     return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
   }
@@ -1733,6 +1835,7 @@ export function inspectCompatibilityEvidence(inputs) {
   ) {
     problems.push("Native R source ownership must retain the two protected R 4.5 jobs and scheduled R 4.4 job.");
   }
+  inspectNativeRSourceOwnerReachability(ciJobs, crossJobs, problems);
   inspectVisiblePublicRecords(inputs, authority, problems);
 
   inspectExactBlock(
