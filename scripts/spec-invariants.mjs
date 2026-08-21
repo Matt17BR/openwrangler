@@ -711,7 +711,7 @@ export function renderCleaningHistoryClaims(model) {
 const cleaningHistoryMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
 const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const markdownClauseBoundary = /(?:[.!?;,\n]|\b(?:and|or|but|however|whereas|while|although|though|yet)\b)/iu;
-const cleaningHistoryStatementBoundary = /[.!?;\n]+/u;
+const cleaningHistoryStatementBoundary = /([.!?;\n]+)/gu;
 const cleaningHistorySemanticClauseBoundary = /\b(and|or|but|however|whereas|while|although|though|yet)\b/giu;
 
 function maskMarkdownComments(source) {
@@ -917,26 +917,31 @@ function cleaningHistoryClaimClauses(rendered) {
       .split(/\s+/u)
       .filter(Boolean);
 
-  return rendered.split(cleaningHistoryStatementBoundary).flatMap((statement) => {
-    const contextTokens = tokenize(statement);
+  const statements = rendered.split(cleaningHistoryStatementBoundary);
+  const clauses = [];
+  let boundaryBefore;
+  for (let statementIndex = 0; statementIndex < statements.length; statementIndex += 2) {
+    const statement = statements[statementIndex] ?? "";
     const parts = statement.split(cleaningHistorySemanticClauseBoundary);
-    const clauses = [];
+    const statementClauses = [];
     for (let index = 0; index < parts.length; index += 2) {
       const tokens = tokenize(parts[index] ?? "");
       if (tokens.length === 0) continue;
-      clauses.push({
+      statementClauses.push({
         tokens,
-        contextTokens,
         connectorBefore: index > 0 ? parts[index - 1]?.toLowerCase() : undefined,
-        connectorAfter: index + 1 < parts.length ? parts[index + 1]?.toLowerCase() : undefined
+        connectorAfter: index + 1 < parts.length ? parts[index + 1]?.toLowerCase() : undefined,
+        boundaryBefore: statementClauses.length === 0 ? boundaryBefore : undefined
       });
     }
-    return clauses.map((clause, index) => ({
-      ...clause,
-      previousTokens: clauses[index - 1]?.tokens ?? [],
-      nextTokens: clauses[index + 1]?.tokens ?? []
-    }));
-  });
+    clauses.push(...statementClauses);
+    boundaryBefore = statements[statementIndex + 1];
+  }
+  return clauses.map((clause, index) => ({
+    ...clause,
+    previousTokens: clauses[index - 1]?.tokens ?? [],
+    nextTokens: clauses[index + 1]?.tokens ?? []
+  }));
 }
 
 function containsContradictoryCleaningHistoryClaim(source) {
@@ -980,25 +985,109 @@ function containsContradictoryCleaningHistoryClaim(source) {
     "readonly"
   ];
 
-  return clauses.some(({ tokens, contextTokens, connectorBefore, connectorAfter, previousTokens, nextTokens }) => {
+  return clauses.some(({ tokens, connectorBefore, connectorAfter, boundaryBefore, previousTokens, nextTokens }) => {
     const hasExplicitCleaningContext = has(tokens, ["applied", "cleaning", "committed"]);
-    const hasLocalSubject =
-      has(tokens, directSubjectWords) ||
-      (has(tokens, ambiguousSubjectWords) && hasExplicitCleaningContext) ||
-      (tokens.includes("workflow") && hasExplicitCleaningContext);
-    const hasContextCleaning = has(contextTokens, ["applied", "cleaning", "committed"]);
-    const hasContextSubject =
-      has(contextTokens, directSubjectWords) ||
-      (has(contextTokens, ambiguousSubjectWords) && hasContextCleaning) ||
-      (contextTokens.includes("workflow") && hasContextCleaning);
-    const inheritsSubject = !hasLocalSubject && hasContextSubject;
-    const hasAnaphoricTarget = has(tokens, ["it", "one", "ones", "they", "them", "these", "those"]);
-    const hasAnaphoricSetSubject =
-      hasAnaphoricTarget && has(tokens, ["all", "both", "some", "several", "few", "one", "none", "neither"]);
-    const hasSubject = hasLocalSubject || inheritsSubject || hasAnaphoricSetSubject;
-    const hasCleaningContext =
-      hasStem(tokens, ["cleaning"]) || (inheritsSubject && hasStem(contextTokens, ["cleaning"]));
+    const hasExplicitCleaningSubject = (candidate) => {
+      const cleaningContext = has(candidate, ["applied", "cleaning", "committed"]);
+      return (
+        has(candidate, directSubjectWords) ||
+        (has(candidate, ambiguousSubjectWords) && cleaningContext) ||
+        (candidate.includes("workflow") && cleaningContext)
+      );
+    };
+    const hasExplicitCleaningSetSubject = (candidate) =>
+      hasExplicitCleaningSubject(candidate) &&
+      (has(candidate, ["steps", "transformations", "operations", "entries"]) ||
+        has(candidate, ["all", "both", "multiple", "every", "each", "several", "some", "none", "neither"]) ||
+        candidate.some((token) => /^(?:[2-9]|[1-9][0-9]+)$/u.test(token)));
+    const unrelatedSubjectWords = [
+      "button",
+      "buttons",
+      "command",
+      "commands",
+      "field",
+      "fields",
+      "input",
+      "inputs",
+      "menu",
+      "menus",
+      "renderer",
+      "renderers",
+      "report",
+      "reports",
+      "shortcut",
+      "shortcuts",
+      "surface",
+      "surfaces",
+      "toolbar",
+      "toolbars"
+    ];
+    const cleaningSubjectIndex = tokens.findIndex(
+      (token) =>
+        directSubjectWords.includes(token) ||
+        (ambiguousSubjectWords.includes(token) && hasExplicitCleaningContext) ||
+        (token === "workflow" && hasExplicitCleaningContext)
+    );
+    const unrelatedSubjectIndex = tokens.findIndex((token) => unrelatedSubjectWords.includes(token));
+    const actionIndex = tokens.findIndex(
+      (token) =>
+        !["editor", "editors"].includes(token) &&
+        tokenMatches(token, [
+          "inspect",
+          "edit",
+          "delet",
+          "modif",
+          "revis",
+          "amend",
+          "alter",
+          "remov",
+          "eras",
+          "undo",
+          "rollback",
+          "revert",
+          "revers",
+          "restor",
+          "reorder",
+          "rearrang",
+          "shuffl",
+          "permut",
+          "readonly",
+          "unable"
+        ])
+    );
+    const unrelatedSubjectLeadsClause =
+      unrelatedSubjectIndex >= 0 &&
+      (actionIndex < 0 || unrelatedSubjectIndex < actionIndex) &&
+      (cleaningSubjectIndex < 0 || unrelatedSubjectIndex < cleaningSubjectIndex);
+    const hasAnaphoricTarget = has(tokens, ["it", "one", "ones", "other", "others", "they", "them", "these", "those"]);
+    const hasBareSetAnaphor =
+      has(tokens, ["all", "both", "some", "several", "few", "none", "neither"]) ||
+      (hasAnaphoricTarget && has(tokens, ["all", "both", "some", "several", "few", "one", "none", "neither"]));
+    const hasImmediateAntecedentBoundary =
+      connectorBefore !== undefined || (boundaryBefore !== undefined && !boundaryBefore.includes("\n\n"));
+    const inheritsCleaningSetSubject =
+      !unrelatedSubjectLeadsClause &&
+      hasBareSetAnaphor &&
+      hasImmediateAntecedentBoundary &&
+      hasExplicitCleaningSetSubject(previousTokens);
+    const inheritsLatestSubject =
+      !unrelatedSubjectLeadsClause &&
+      hasImmediateAntecedentBoundary &&
+      ((hasAnaphoricTarget &&
+        hasExplicitCleaningSubject(previousTokens) &&
+        (has(previousTokens, ["latest", "newest", "last", "final"]) ||
+          (previousTokens.includes("most") && has(previousTokens, ["recent", "recently"])))) ||
+        (connectorBefore === "but" &&
+          has(previousTokens, ["all", "every"]) &&
+          hasExplicitCleaningSetSubject(previousTokens) &&
+          (has(tokens, ["latest", "newest", "last", "final"]) ||
+            (tokens.includes("most") && has(tokens, ["recent", "recently"])))));
+    const hasLocalSubject = hasExplicitCleaningSubject(tokens) && !unrelatedSubjectLeadsClause;
+    const hasSubject = hasLocalSubject || inheritsCleaningSetSubject || inheritsLatestSubject;
+    const hasCleaningContext = hasStem(tokens, ["cleaning"]) || inheritsCleaningSetSubject || inheritsLatestSubject;
     const undo = hasStem(tokens, ["undo", "rollback", "revert", "revers", "restor"]);
+    const readOnlyDenial = tokens.includes("readonly") || (tokens.includes("read") && tokens.includes("only"));
+    const unableEditDenial = tokens.includes("unable") && hasStem(tokens, ["edit", "modif", "revis", "amend", "alter"]);
     const intrinsicallyDeniedAction = hasStem(tokens, [
       "uninspect",
       "noninspect",
@@ -1011,28 +1100,30 @@ function containsContradictoryCleaningHistoryClaim(source) {
     ]);
     const inspectEditDelete =
       !undo &&
-      hasStem(tokens, [
-        "inspect",
-        "edit",
-        "delet",
-        "modif",
-        "revis",
-        "amend",
-        "alter",
-        "remov",
-        "eras",
-        "uninspect",
-        "noninspect",
-        "unedit",
-        "nonedit",
-        "undelet",
-        "nondelet",
-        "unmodif",
-        "nonmodif"
-      ]);
+      (readOnlyDenial ||
+        unableEditDenial ||
+        hasStem(tokens, [
+          "inspect",
+          "edit",
+          "delet",
+          "modif",
+          "revis",
+          "amend",
+          "alter",
+          "remov",
+          "eras",
+          "uninspect",
+          "noninspect",
+          "unedit",
+          "nonedit",
+          "undelet",
+          "nondelet",
+          "unmodif",
+          "nonmodif"
+        ]));
     const hasLatest = (candidate) =>
       has(candidate, ["latest", "newest", "last", "final"]) ||
-      (candidate.includes("most") && candidate.includes("recent"));
+      (candidate.includes("most") && has(candidate, ["recent", "recently"]));
     const hasExclusivity = (candidate) =>
       has(candidate, [
         "only",
@@ -1047,13 +1138,15 @@ function containsContradictoryCleaningHistoryClaim(source) {
       ]);
     const hasPrior = (candidate) =>
       has(candidate, ["earlier", "older", "prior", "previous", "preceding", "nonlatest", "noncurrent"]);
-    const latest = hasLatest(tokens) || (inheritsSubject && hasLatest(contextTokens));
-    const exclusivity = hasExclusivity(tokens) || (inheritsSubject && hasExclusivity(contextTokens));
-    const prior = hasPrior(tokens) || (inheritsSubject && hasPrior(contextTokens));
-    const negative = has(tokens, negativeWords) || intrinsicallyDeniedAction;
+    const latest = hasLatest(tokens) || inheritsLatestSubject;
+    const exclusivity = hasExclusivity(tokens) || (inheritsLatestSubject && hasExclusivity(previousTokens));
+    const prior = hasPrior(tokens);
+    const negative = has(tokens, negativeWords) || intrinsicallyDeniedAction || readOnlyDenial || unableEditDenial;
     const unavailable =
       has(tokens, unavailableWords) ||
       intrinsicallyDeniedAction ||
+      readOnlyDenial ||
+      unableEditDenial ||
       (tokens.includes("not") && has(tokens, ["supported", "available", "implemented", "enabled", "allowed"]));
     const latestOnly = hasSubject && inspectEditDelete && latest && exclusivity && !tokens.includes("not");
     const priorDenied = hasSubject && inspectEditDelete && prior && negative;
@@ -1117,7 +1210,8 @@ function containsContradictoryCleaningHistoryClaim(source) {
         (tokens.includes("no") &&
           tokens.includes("single") &&
           has(tokens, ["action", "command", "invocation", "request"])) ||
-        (tokens.includes("no") && tokens.includes("other") && tokens.includes("same")));
+        (tokens.includes("no") && tokens.includes("other") && tokens.includes("same")) ||
+        (tokens.includes("no") && tokens.includes("more") && tokens.includes("one")));
     const partiallyDeniedImplementedAction =
       hasSubject &&
       inspectEditDelete &&
@@ -1133,6 +1227,10 @@ function containsContradictoryCleaningHistoryClaim(source) {
         "all",
         "both",
         "multiple",
+        "two",
+        "three",
+        "several",
+        "few",
         "every",
         "each",
         "earlier",
@@ -1150,18 +1248,6 @@ function containsContradictoryCleaningHistoryClaim(source) {
         "individual",
         "whichever"
       ]) || hasStem(tokens, ["choos", "pick", "select", "specif"]);
-    const latestException =
-      (latest && has(tokens, ["except", "unless", "than"])) ||
-      (connectorAfter === "but" && tokens.includes("all") && hasLatest(nextTokens));
-    const deniesOtherThanLatest = latest && tokens.includes("no") && has(tokens, ["other", "others"]);
-    const exactLatestUndoScope =
-      undo && ((latest && exclusivity && !negative) || (latestException && negative) || deniesOtherThanLatest);
-    const arbitraryUndo =
-      (hasSubject || hasAnaphoricTarget) &&
-      undo &&
-      (arbitraryTarget || excludesPartOfSet) &&
-      !negative &&
-      !exactLatestUndoScope;
     const unrelatedUndoSurface = has(tokens, [
       "button",
       "buttons",
@@ -1173,6 +1259,47 @@ function containsContradictoryCleaningHistoryClaim(source) {
       "shortcut",
       "shortcuts"
     ]);
+    const exceptionIndex = tokens.findIndex(
+      (token, index) =>
+        token === "except" ||
+        token === "unless" ||
+        token === "apart" ||
+        token === "save" ||
+        (token === "than" && has(tokens.slice(Math.max(0, index - 2), index), ["other", "others"]))
+    );
+    const exceptionLeft = exceptionIndex < 0 ? [] : tokens.slice(0, exceptionIndex);
+    const exceptionRight = exceptionIndex < 0 ? [] : tokens.slice(exceptionIndex + 1);
+    const exceptionIdentifiesLatest = hasLatest(exceptionRight) && !hasPrior(exceptionRight);
+    const deniedSetBeforeException =
+      has(exceptionLeft, ["all", "any", "both", "each", "every", "no", "none", "neither", "other", "others"]) ||
+      hasPrior(exceptionLeft) ||
+      has(exceptionLeft, unavailableWords) ||
+      exceptionLeft.includes("cannot");
+    const validInlineLatestException =
+      exceptionIndex >= 0 &&
+      negative &&
+      exceptionIdentifiesLatest &&
+      (exceptionIndex === 0 || (deniedSetBeforeException && !hasLatest(exceptionLeft)));
+    const validButLatestException =
+      negative &&
+      connectorAfter === "but" &&
+      has(tokens, ["all", "any", "every"]) &&
+      hasLatest(nextTokens) &&
+      !hasPrior(nextTokens);
+    const deniesOtherThanLatest = latest && tokens.includes("no") && has(tokens, ["other", "others"]);
+    const priorOnlyUndoRestriction = undo && negative && prior && !latest && exceptionIndex < 0;
+    const exactLatestUndoScope =
+      undo &&
+      ((latest && exclusivity && !negative) ||
+        validInlineLatestException ||
+        validButLatestException ||
+        deniesOtherThanLatest ||
+        priorOnlyUndoRestriction);
+    const invalidUndoException =
+      undo && negative && exceptionIndex >= 0 && !validInlineLatestException && !unrelatedUndoSurface;
+    const deniesLatestUndo = undo && negative && latest && !exactLatestUndoScope;
+    const arbitraryUndo =
+      hasSubject && undo && (arbitraryTarget || excludesPartOfSet) && !negative && !exactLatestUndoScope;
     const standaloneUndoClaim = undo && tokens.length <= 5 && !unrelatedUndoSurface;
     const undoDenied =
       undo &&
@@ -1221,6 +1348,8 @@ function containsContradictoryCleaningHistoryClaim(source) {
       implementedActionDenied ||
       partiallyDeniedImplementedAction ||
       arbitraryUndo ||
+      invalidUndoException ||
+      deniesLatestUndo ||
       undoDenied ||
       undoLatestDenied ||
       undoSetDenied ||
