@@ -655,6 +655,13 @@ test("screenshot and accessibility consumers preserve browser isolation ordering
   assert.match(capture, /await screenshotQueue;/u);
   assert.equal((capture.match(/readiness: byExamplePreviewReadiness/gu) ?? []).length, 3);
   assert.equal((capture.match(/readiness: filterPanelReadiness/gu) ?? []).length, 1);
+  assert.equal((capture.match(/readiness: codePreviewReadiness/gu) ?? []).length, 1);
+  assert.match(capture, /<script type="module" src="\.\.\/\.\.\/media\/codePreview\.js"><\/script>/u);
+  assert.match(capture, /kind: "codePreview",\s+generation: 1,\s+acknowledgedSequence: 0,/u);
+  assert.match(
+    capture,
+    /description: "the generated CodeMirror code preview",[\s\S]*\.cm-content\[aria-label=[\s\S]*contenteditable/u
+  );
   assert.match(
     capture,
     /const observer = new MutationObserver\(commitOpenColumnFilter\);[\s\S]*observer\.observe\(document\.body, \{ childList: true, subtree: true \}\);[\s\S]*commitOpenColumnFilter\(\);/u
@@ -689,6 +696,11 @@ test("screenshot and accessibility consumers preserve browser isolation ordering
   assert.match(
     accessibility,
     /browserExecutable\.explicitOverride \? \{ executablePath: browserExecutable\.executablePath \} : \{\}/u
+  );
+  assert.equal((accessibility.match(/acknowledgedSequence: 0/gu) ?? []).length, 6);
+  assert.match(
+    accessibility,
+    /data-code-dialect[\s\S]*Editable generated Python code preview[\s\S]*contenteditable[\s\S]*def clean_data/u
   );
   assert.match(accessibility, /env: browserIsolation\.childEnvironment/u);
   assert.match(accessibility, /finally \{[\s\S]*browserIsolation\.cleanup\(\)/u);

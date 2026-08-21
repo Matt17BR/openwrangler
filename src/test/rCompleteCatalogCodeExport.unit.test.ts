@@ -17,6 +17,7 @@ const nativeMocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
   showSaveDialog: vi.fn(async () => undefined as unknown),
+  webviewViewProviders: new Map<string, { resolveWebviewView(view: unknown): void }>(),
   workspaceTrusted: true
 }));
 
@@ -97,7 +98,10 @@ vi.mock("vscode", () => {
     window: {
       activeNotebookEditor: undefined,
       registerTreeDataProvider: vi.fn(() => disposable()),
-      registerWebviewViewProvider: vi.fn(() => disposable()),
+      registerWebviewViewProvider: vi.fn((id: string, provider: { resolveWebviewView(view: unknown): void }) => {
+        nativeMocks.webviewViewProviders.set(id, provider);
+        return disposable();
+      }),
       showErrorMessage: nativeMocks.showErrorMessage,
       showInformationMessage: nativeMocks.showInformationMessage,
       showQuickPick: vi.fn(async () => undefined),
@@ -148,6 +152,7 @@ describe("complete native R generated-code export catalog", () => {
     nativeMocks.showErrorMessage.mockClear();
     nativeMocks.showInformationMessage.mockClear();
     nativeMocks.showSaveDialog.mockReset();
+    nativeMocks.webviewViewProviders.clear();
     nativeMocks.workspaceTrusted = true;
     await Promise.all(
       temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))
@@ -176,6 +181,63 @@ describe("complete native R generated-code export catalog", () => {
     await writeFile(sourcePath, "catalog <- base::data.frame(value = 1L)\n", "utf8");
     const snapshot = rSnapshot(sourcePath, operations);
     const controller = registerNativeViews(extensionContext(), coordinatorFor(snapshot));
+    const codePreviewProvider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!codePreviewProvider) throw new Error("Expected the Code Preview provider to be registered.");
+    let receiveCodePreviewMessage: ((message: unknown) => void) | undefined;
+    let currentCodePreview:
+      { readonly generation: number; readonly acknowledgedSequence: number; readonly code: string } | undefined;
+    let snapshotRequests = 0;
+    codePreviewProvider.resolveWebviewView({
+      description: undefined,
+      webview: {
+        html: "",
+        options: {},
+        cspSource: "test-csp",
+        asWebviewUri: (uri: unknown) => uri,
+        postMessage: vi.fn(async (message: unknown) => {
+          if (typeof message !== "object" || message === null || !("kind" in message)) return true;
+          if (
+            message.kind === "codePreview" &&
+            "generation" in message &&
+            typeof message.generation === "number" &&
+            "acknowledgedSequence" in message &&
+            typeof message.acknowledgedSequence === "number" &&
+            "code" in message &&
+            typeof message.code === "string"
+          ) {
+            currentCodePreview = {
+              generation: message.generation,
+              acknowledgedSequence: message.acknowledgedSequence,
+              code: message.code
+            };
+          } else if (
+            message.kind === "codePreviewSnapshotRequest" &&
+            "generation" in message &&
+            typeof message.generation === "number" &&
+            "requestId" in message &&
+            typeof message.requestId === "string" &&
+            currentCodePreview
+          ) {
+            snapshotRequests += 1;
+            queueMicrotask(() =>
+              receiveCodePreviewMessage?.({
+                kind: "codeSnapshot",
+                generation: message.generation,
+                sequence: currentCodePreview?.acknowledgedSequence ?? 0,
+                requestId: message.requestId,
+                code: currentCodePreview?.code ?? ""
+              })
+            );
+          }
+          return true;
+        }),
+        onDidReceiveMessage: (listener: (message: unknown) => void) => {
+          receiveCodePreviewMessage = listener;
+          return { dispose: () => undefined };
+        }
+      }
+    });
+    receiveCodePreviewMessage?.({ kind: "ready" });
     const copyCode = command("openWrangler.copyCode");
     const exportCode = command("openWrangler.exportCode");
     const exportedFiles: string[] = [];
@@ -200,6 +262,7 @@ describe("complete native R generated-code export catalog", () => {
     );
     expect(nativeMocks.clipboardWriteText).toHaveBeenCalledTimes(32);
     expect(nativeMocks.showSaveDialog).toHaveBeenCalledTimes(32);
+    expect(snapshotRequests).toBe(64);
     const saveDialogCalls = nativeMocks.showSaveDialog.mock.calls as unknown[][];
     for (const [options] of saveDialogCalls) {
       expect(options).toEqual({

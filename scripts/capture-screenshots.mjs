@@ -1239,6 +1239,8 @@ function writeCodePreviewHarness(fileName, code, outputName) {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
             data: {
               kind: "codePreview",
+              generation: 1,
+              acknowledgedSequence: 0,
               code: ${stringifyForInlineScript(code)},
               editable: true,
               runtimeIdentity: {
@@ -1256,11 +1258,27 @@ function writeCodePreviewHarness(fileName, code, outputName) {
 </head>
 <body>
   <div id="root"></div>
-  <script src="../../media/codePreview.js"></script>
+  <script type="module" src="../../media/codePreview.js"></script>
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  screenshot(htmlPath, outputPath, 1280, 420);
+  const codePreviewReadiness = createWebviewSelectorReadiness({
+    description: "the generated CodeMirror code preview",
+    selectors: [
+      {
+        selector:
+          '#root[data-runtime-language="python"][data-dataframe-flavor="polars"][data-code-dialect="python.polars"]',
+        count: 1
+      },
+      {
+        selector: '.cm-content[aria-label="Editable generated Python code preview"][contenteditable="true"]',
+        count: 1
+      },
+      { selector: ".cm-content .cm-line", count: code.split("\n").length }
+    ],
+    absentText: [{ selector: ".cm-content", text: "# Open a dataframe to preview generated code." }]
+  });
+  screenshot(htmlPath, outputPath, 1280, 420, 1, { readiness: codePreviewReadiness });
 }
 
 function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio = 1, { readiness } = {}) {

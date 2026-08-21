@@ -216,6 +216,15 @@ describe("VSIX production entry allowlist", () => {
     ]);
   });
 
+  it("requires and narrowly allows the generated Code Preview protocol-limit chunk", () => {
+    const entries = requiredVsixEntries.filter((entry) => entry !== "extension/media/protocolLimits.generated.js");
+    const result = inspectVsixEntries([...entries, "extension/media/protocolLimits.js"]);
+
+    expect(result.forbidden).toEqual(["extension/media/protocolLimits.js"]);
+    expect(result.missing).toEqual(["extension/media/protocolLimits.generated.js"]);
+    expect(result.duplicates).toEqual([]);
+  });
+
   it("requires the dependency mutation guard helper", () => {
     const entries = requiredVsixEntries.filter(
       (entry) => entry !== "extension/python/openwrangler_runtime/dependency_guard.py"

@@ -127,13 +127,26 @@ async function verifyNotebookPreviewDisclosure(browser) {
 async function verifyCodePreviewOrigin(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 420 } });
   await page.goto(pathToFileURL(resolve(harnessDir, "code-preview.html")).href, { waitUntil: "load" });
-  await page.waitForFunction(() => document.querySelector(".cm-content")?.textContent?.includes("def clean_data"));
+  await page.waitForFunction(() => {
+    const root = document.querySelector("#root");
+    const content = document.querySelector(".cm-content");
+    return (
+      root?.getAttribute("data-runtime-language") === "python" &&
+      root.getAttribute("data-dataframe-flavor") === "polars" &&
+      root.getAttribute("data-code-dialect") === "python.polars" &&
+      content?.getAttribute("aria-label") === "Editable generated Python code preview" &&
+      content.getAttribute("contenteditable") === "true" &&
+      content.textContent?.includes("def clean_data")
+    );
+  });
   const before = await page.locator(".cm-content").textContent();
   await page.evaluate(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          generation: 2,
+          acknowledgedSequence: 0,
           code: "# untrusted replacement",
           editable: true,
           runtimeIdentity: {
@@ -156,6 +169,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          generation: 2,
+          acknowledgedSequence: 0,
           code: "# malformed private identity",
           editable: true,
           runtimeIdentity: {
@@ -177,6 +192,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          generation: 2,
+          acknowledgedSequence: 0,
           code: "# unexpected private field",
           editable: true,
           runtimeIdentity: {
@@ -200,6 +217,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          generation: 2,
+          acknowledgedSequence: 0,
           code,
           editable: false,
           runtimeIdentity: {
@@ -232,6 +251,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          generation: 3,
+          acknowledgedSequence: 0,
           code,
           editable: false,
           runtimeIdentity: {
@@ -271,6 +292,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          generation: 4,
+          acknowledgedSequence: 0,
           code,
           editable: true,
           runtimeIdentity: {
