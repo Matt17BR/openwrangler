@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "tiers": [
+    {
+      "id": "api-compatible",
+      "label": "API-compatible",
+      "meaning": "The extension manifest accepts the host API. This does not prove installation, activation, or product behavior."
+    },
+    {
+      "id": "smoke-tested",
+      "label": "Smoke-tested",
+      "meaning": "One bounded installed-host journey proves installation, activation, a representative open, source immutability, and cleanup."
+    },
+    {
+      "id": "focused-release-seam",
+      "label": "Focused release seam",
+      "meaning": "The exact candidate artifact passes a named release-blocking seam without claiming the complete product or platform matrix."
+    },
+    {
+      "id": "fully-qualified",
+      "label": "Fully qualified",
+      "meaning": "The exact candidate artifact passes every required source, installed, platform, security, and release owner for the claim."
+    }
+  ],
+  "editors": [
+    {
+      "id": "vscode",
+      "name": "VS Code",
+      "apiVersion": "^1.106.0",
+      "releaseVersion": "1.130.0",
+      "platforms": ["linux", "macos", "windows"],
+      "tier": "fully-qualified",
+      "support": "Release-tested",
+      "workflowOwners": [
+        ".github/workflows/candidate-acceptance.yml#platform",
+        ".github/workflows/candidate-acceptance.yml#linux",
+        ".github/workflows/candidate-acceptance.yml#r_platform"
+      ]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "apiVersion": "^1.106.0",
+      "releaseVersion": "3.13.10",
+      "platforms": ["linux"],
+      "tier": "focused-release-seam",
+      "support": "Release-tested",
+      "workflowOwners": [".github/workflows/candidate-acceptance.yml#linux"]
+    },
+    {
+      "id": "other-vscode-desktop-forks",
+      "name": "Other VS Code desktop forks",
+      "apiVersion": "^1.106.0",
+      "releaseVersion": null,
+      "platforms": ["distribution-specific"],
+      "tier": "api-compatible",
+      "support": "Experimental",
+      "workflowOwners": [".github/workflows/ci.yml#canonical-editor"]
+    },
+    {
+      "id": "vscode-dev",
+      "name": "Browser-hosted `vscode.dev`",
+      "apiVersion": null,
+      "releaseVersion": null,
+      "platforms": ["browser"],
+      "tier": null,
+      "support": "Unsupported",
+      "workflowOwners": []
+    }
+  ],
+  "nativeR": {
+    "name": "Native R preview",
+    "status": "Partial",
+    "tier": "focused-release-seam",
+    "versions": [
+      { "version": "4.4.3", "platforms": ["linux"] },
+      { "version": "4.5.2", "platforms": ["linux", "macos", "windows"] }
+    ],
+    "workflowOwners": [
+      ".github/workflows/candidate-acceptance.yml#r_platform",
+      ".github/workflows/candidate-acceptance.yml#r_local"
+    ],
+    "promotionIssue": "https://github.com/Matt17BR/openwrangler/issues/87"
+  }
+}

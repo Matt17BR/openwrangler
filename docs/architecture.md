@@ -780,6 +780,11 @@ to exact clipboard and atomic-save bytes for distinct executable operation-label
 evidence is not hosted installed/performance evidence. The unhosted addition changes no candidate selector, job,
 phase, shard, deadline, or retry policy.
 
+<!-- open-wrangler-compatibility-owners:start -->
+
+Compatibility vocabulary, versions, platforms, and workflow ownership come from `fixtures/compatibility-evidence.json` and are checked by `scripts/compatibility-evidence.mjs`. The current workflow owners are VS Code: `.github/workflows/candidate-acceptance.yml#platform`, `.github/workflows/candidate-acceptance.yml#linux`, `.github/workflows/candidate-acceptance.yml#r_platform`; Cursor: `.github/workflows/candidate-acceptance.yml#linux`; Native R: `.github/workflows/candidate-acceptance.yml#r_platform`, `.github/workflows/candidate-acceptance.yml#r_local`. API compatibility is a source contract; it never inherits installed or release qualification from a higher tier.
+<!-- open-wrangler-compatibility-owners:end -->
+
 Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
 fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own
 private roots, and is followed immediately by its sealed failure-evidence upload. The cell reports failure only after

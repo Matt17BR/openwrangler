@@ -67,6 +67,18 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
+<!-- open-wrangler-compatibility-evidence:start -->
+
+| Target                      | Current version evidence                           | Platforms             | Evidence tier        | Support        |
+| --------------------------- | -------------------------------------------------- | --------------------- | -------------------- | -------------- |
+| VS Code                     | API `^1.106.0`; pinned release target `1.130.0`    | Linux, macOS, Windows | Fully qualified      | Release-tested |
+| Cursor                      | API `^1.106.0`; pinned release target `3.13.10`    | Linux                 | Focused release seam | Release-tested |
+| Other VS Code desktop forks | API `^1.106.0`; no release target                  | Distribution-specific | API-compatible       | Experimental   |
+| Browser-hosted `vscode.dev` | None                                               | Browser               | —                    | Unsupported    |
+| Native R preview            | R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows | Linux, macOS, Windows | Focused release seam | Partial        |
+
+<!-- open-wrangler-compatibility-evidence:end -->
+
 The unpublished 1.99.7 candidate contains all 28 native-R cleaning operations, adding **Transform by Example** and
 **Custom Code**. Disposable nonpublishing previews may exercise its packaging path; any future release
 candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.

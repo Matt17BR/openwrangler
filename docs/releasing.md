@@ -29,6 +29,22 @@ candidate at all; after a tag or registry write, recovery is verification-first 
 overwrite conflicting public bytes. The retired 1.99.x preview inspectors remain only for historical recovery tests;
 they are not a current publication entry point.
 
+<!-- open-wrangler-compatibility-tiers:start -->
+
+## Compatibility evidence tiers
+
+Compatibility claims use one ordered evidence vocabulary from `fixtures/compatibility-evidence.json`:
+
+- **API-compatible:** The extension manifest accepts the host API. This does not prove installation, activation, or product behavior.
+- **Smoke-tested:** One bounded installed-host journey proves installation, activation, a representative open, source immutability, and cleanup.
+- **Focused release seam:** The exact candidate artifact passes a named release-blocking seam without claiming the complete product or platform matrix.
+- **Fully qualified:** The exact candidate artifact passes every required source, installed, platform, security, and release owner for the claim.
+
+The current release targets are VS Code 1.130.0 on Linux, macOS, Windows at the **Fully qualified** tier and Cursor 3.13.10 on Linux at the **Focused release seam** tier. Native R records R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows at the **Focused release seam** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.
+
+Native R remains **Partial**. Promotion to fully qualified support is tracked by [issue #87](https://github.com/Matt17BR/openwrangler/issues/87); local implementation evidence cannot replace installed or cross-platform release qualification.
+<!-- open-wrangler-compatibility-tiers:end -->
+
 ## Release copy
 
 Write `docs/release-notes/<version>.md` in the release pull request and review it with

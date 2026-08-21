@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
+import { inspectCompatibilityEvidence } from "./compatibility-evidence.mjs";
 import { inspectStablePublicCopy } from "./release-documents.mjs";
 import {
   inspectPerformanceSummary,
@@ -139,6 +140,21 @@ const candidateAcceptanceProblems = inspectCandidateAcceptanceWorkflow(
 );
 if (candidateAcceptanceProblems.length > 0) {
   throw new Error(`Candidate acceptance workflow contract is stale:\n- ${candidateAcceptanceProblems.join("\n- ")}`);
+}
+const compatibilityEvidenceProblems = inspectCompatibilityEvidence({
+  authoritySource: readFileSync(resolve(root, "fixtures/compatibility-evidence.json"), "utf8"),
+  packageSource: packageJsonSource,
+  remoteWorkspaceContractSource: readFileSync(resolve(root, "scripts/remote-workspace-contract.mjs"), "utf8"),
+  cursorAcquisitionSource: readFileSync(resolve(root, "scripts/cursor-acquisition.mjs"), "utf8"),
+  candidateWorkflowSource: readFileSync(resolve(root, ".github/workflows/candidate-acceptance.yml"), "utf8"),
+  ciWorkflowSource: readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"),
+  readmeSource: readme,
+  releasingSource: readFileSync(resolve(root, "docs/releasing.md"), "utf8"),
+  architectureSource: readFileSync(resolve(root, "docs/architecture.md"), "utf8"),
+  featureParitySource: featureParity
+});
+if (compatibilityEvidenceProblems.length > 0) {
+  throw new Error(`Compatibility evidence is stale:\n- ${compatibilityEvidenceProblems.join("\n- ")}`);
 }
 const marketplacePromotionProblems = inspectMarketplacePromotionPipeline(
   readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8")
