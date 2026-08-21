@@ -2078,7 +2078,7 @@ async function compileWindowsEditorProcessSupervisor(
         executable
       ],
       {
-        detached: true,
+        detached: false,
         env: compilerEnvironment,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"]
