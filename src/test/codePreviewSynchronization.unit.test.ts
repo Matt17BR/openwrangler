@@ -574,21 +574,27 @@ async function startProductionCodePreview(
 interface RegisteredCodePreviewBridge {
   readonly view: unknown;
   readonly toHost: CodePreviewWebviewMessage[];
+  readonly deliveredToHost: CodePreviewWebviewMessage[];
   readonly toWebview: CodePreviewHostMessage[];
   publishToHost(message: CodePreviewWebviewMessage): void;
   publishLateToHost(message: CodePreviewWebviewMessage): void;
+  hasReceiveListener(): boolean;
   disposeView(): void;
 }
 
 function createRegisteredCodePreviewBridge(): RegisteredCodePreviewBridge {
   const toHost: CodePreviewWebviewMessage[] = [];
+  const deliveredToHost: CodePreviewWebviewMessage[] = [];
   const toWebview: CodePreviewHostMessage[] = [];
   let currentHostListener: ((message: unknown) => void) | undefined;
   let capturedHostListener: ((message: unknown) => void) | undefined;
   let currentDisposeListener: (() => unknown) | undefined;
   const publishToHost = (message: CodePreviewWebviewMessage): void => {
     toHost.push(message);
-    currentHostListener?.(message);
+    if (currentHostListener) {
+      deliveredToHost.push(message);
+      currentHostListener(message);
+    }
   };
   return {
     view: {
@@ -623,11 +629,18 @@ function createRegisteredCodePreviewBridge(): RegisteredCodePreviewBridge {
       }
     },
     toHost,
+    deliveredToHost,
     toWebview,
     publishToHost,
     publishLateToHost(message) {
       toHost.push(message);
-      capturedHostListener?.(message);
+      if (capturedHostListener) {
+        deliveredToHost.push(message);
+        capturedHostListener(message);
+      }
+    },
+    hasReceiveListener() {
+      return currentHostListener !== undefined;
     },
     disposeView() {
       currentDisposeListener?.();
@@ -650,6 +663,12 @@ async function startRegisteredCodePreviewPage(bridge: RegisteredCodePreviewBridg
 describe("production Code Preview lifecycle wiring", () => {
   it("bridges real coalesced CodeMirror edits through provider actions, fencing, replacement, and disposal", async () => {
     vi.useFakeTimers();
+    const exported: Array<{ readonly destination: unknown; readonly contents: Buffer }> = [];
+    vi.doMock("../extension/files/safeFileExport", () => ({
+      exportFileSafely: vi.fn(async ({ destination, contents }: { destination: unknown; contents: Uint8Array }) => {
+        exported.push({ destination, contents: Buffer.from(contents) });
+      })
+    }));
     const fixtures = await import("./nativeViews.testFixtures");
     fixtures.resetNativeViewMocks();
     const notebook = fixtures.notebookDocument("file:///workspace/shared.ipynb", 3);
@@ -674,8 +693,11 @@ describe("production Code Preview lifecycle wiring", () => {
       expect(firstView.state.doc.toString()).toBe(exportEdit);
       expect(firstBridge.toHost.some(({ kind }) => kind === "codeChanged")).toBe(false);
 
-      await expect(fixtures.command("openWrangler.exportCode")()).resolves.toBe(false);
+      const destination = fixtures.resourceUri("file", "/workspace/code-preview-bridge.clean.py");
+      fixtures.nativeMocks.showSaveDialog.mockResolvedValue(destination);
+      await expect(fixtures.command("openWrangler.exportCode")()).resolves.toBe(true);
       expect(fixtures.nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+      expect(exported).toEqual([{ destination, contents: Buffer.from(exportEdit, "utf8") }]);
       expect(firstBridge.toHost).toContainEqual({
         kind: "codeSnapshot",
         generation: 1,
@@ -718,7 +740,19 @@ describe("production Code Preview lifecycle wiring", () => {
       firstView.dispatch({ changes: { from: 0, to: firstView.state.doc.length, insert: recoveredEdit } });
       await fixtures.command("openWrangler.copyCode")();
       expect(fixtures.nativeMocks.clipboardWriteText).toHaveBeenLastCalledWith(recoveredEdit);
+      const staleSequenceRenderCount = firstBridge.toWebview.length;
       firstBridge.publishToHost({ kind: "codeChanged", generation: 1, sequence: 1, code: "stale sequence" });
+      expect(firstBridge.toWebview).toHaveLength(staleSequenceRenderCount);
+      registered.setActiveSession(initial);
+      expect(firstBridge.toWebview.at(-1)).toEqual(
+        expect.objectContaining({
+          kind: "codePreview",
+          generation: 1,
+          acknowledgedSequence: 5,
+          code: recoveredEdit
+        })
+      );
+      expect(firstView.state.doc.toString()).toBe(recoveredEdit);
       fixtures.nativeMocks.clipboardWriteText.mockClear();
       await fixtures.command("openWrangler.copyCode")();
       expect(fixtures.nativeMocks.clipboardWriteText).toHaveBeenCalledWith(recoveredEdit);
@@ -759,28 +793,31 @@ describe("production Code Preview lifecycle wiring", () => {
       });
 
       replacementView.dispatch({ changes: { from: replacementView.state.doc.length, insert: "# final" } });
-      window.dispatchEvent(new Event("pagehide"));
-      expect(replacementBridge.toHost).toContainEqual({
-        kind: "codeChanged",
-        generation: 2,
-        sequence: 2,
-        code: `${insertedEdit}# final`
-      });
-      expect(replacementBridge.toHost.at(-1)).toEqual({
-        kind: "codePreviewUnavailable",
-        generation: 2,
-        reason: "disposed"
-      });
       replacementBridge.disposeView();
-      const publicationCount = replacementBridge.toHost.length;
+      expect(replacementBridge.hasReceiveListener()).toBe(false);
+      const deliveredBeforePagehide = replacementBridge.deliveredToHost.length;
       fixtures.nativeMocks.clipboardWriteText.mockClear();
       await fixtures.command("openWrangler.copyCode")();
       expect(fixtures.nativeMocks.clipboardWriteText).not.toHaveBeenCalled();
       expect(fixtures.nativeMocks.showErrorMessage).toHaveBeenLastCalledWith(CODE_PREVIEW_DISPOSED_ACTION_MESSAGE);
+      const outboundBeforePagehide = replacementBridge.toHost.length;
+      window.dispatchEvent(new Event("pagehide"));
+      expect(replacementBridge.deliveredToHost).toHaveLength(deliveredBeforePagehide);
+      expect(replacementBridge.toHost.slice(outboundBeforePagehide)).toEqual([
+        {
+          kind: "codeChanged",
+          generation: 2,
+          sequence: 2,
+          code: `${insertedEdit}# final`
+        },
+        { kind: "codePreviewUnavailable", generation: 2, reason: "disposed" }
+      ]);
+      const publicationCount = replacementBridge.toHost.length;
       await vi.advanceTimersByTimeAsync(CODE_PREVIEW_EDIT_COALESCE_MS * 2);
       expect(replacementBridge.toHost).toHaveLength(publicationCount);
     } finally {
       window.dispatchEvent(new Event("pagehide"));
+      vi.doUnmock("../extension/files/safeFileExport");
       vi.unstubAllGlobals();
       vi.useRealTimers();
       document.body.replaceChildren();
