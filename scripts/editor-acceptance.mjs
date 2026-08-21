@@ -1769,7 +1769,9 @@ export async function prepareWindowsEditorProcessSupervisor(
     buildSettlementTimeoutMs = WINDOWS_JOB_BUILD_SETTLEMENT_TIMEOUT_MS,
     buildAbortSignal,
     terminateBuildProcessTree = terminateWindowsCompilerProcessTree,
-    buildNow = () => performance.now()
+    buildNow = () => performance.now(),
+    buildSchedule = setTimeout,
+    buildCancelSchedule = clearTimeout
   } = {}
 ) {
   if (platform !== "win32") return undefined;
@@ -1798,6 +1800,9 @@ export async function prepareWindowsEditorProcessSupervisor(
   }
   if (typeof buildNow !== "function") {
     throw new Error("The Windows editor Job Object supervisor build clock must be a function.");
+  }
+  if (typeof buildSchedule !== "function" || typeof buildCancelSchedule !== "function") {
+    throw new Error("The Windows editor Job Object supervisor build timer must support scheduling and cancellation.");
   }
   const callerStartedAt = windowsSupervisorBuildClockValue(buildNow);
   if (buildAbortSignal?.aborted) {
@@ -1897,13 +1902,24 @@ export async function prepareWindowsEditorProcessSupervisor(
     buildAbortSignal,
     callerStartedAt,
     callerDeadline,
-    buildNow
+    buildNow,
+    buildSchedule,
+    buildCancelSchedule
   });
 }
 
 async function awaitWindowsEditorProcessSupervisorBuild(
   build,
-  { buildTimeoutMs, buildSettlementTimeoutMs, buildAbortSignal, callerStartedAt, callerDeadline, buildNow }
+  {
+    buildTimeoutMs,
+    buildSettlementTimeoutMs,
+    buildAbortSignal,
+    callerStartedAt,
+    callerDeadline,
+    buildNow,
+    buildSchedule,
+    buildCancelSchedule
+  }
 ) {
   const waiter = { buildSettlementTimeoutMs };
   build.waiters.add(waiter);
@@ -1935,9 +1951,9 @@ async function awaitWindowsEditorProcessSupervisorBuild(
               resolveDeadline({ kind: "deadline" });
               return;
             }
-            deadlineTimer = setTimeout(observeDeadline, remaining);
+            deadlineTimer = buildSchedule(observeDeadline, remaining);
           };
-          deadlineTimer = setTimeout(observeDeadline, remainingMs);
+          deadlineTimer = buildSchedule(observeDeadline, remainingMs);
         })
       ];
       if (buildAbortSignal) {
@@ -1952,7 +1968,7 @@ async function awaitWindowsEditorProcessSupervisorBuild(
       observation = await Promise.race(observations);
     }
   } finally {
-    clearTimeout(deadlineTimer);
+    if (deadlineTimer !== undefined) buildCancelSchedule(deadlineTimer);
     if (onAbort) buildAbortSignal.removeEventListener("abort", onAbort);
     build.waiters.delete(waiter);
   }
