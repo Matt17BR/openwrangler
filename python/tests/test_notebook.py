@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
+import pytz
+from dateutil import tz as dateutil_tz
 
 import openwrangler_runtime.engines.pandas_engine as pandas_engine
 import openwrangler_runtime.notebook as notebook
@@ -109,6 +111,9 @@ def test_pandas_snapshot_matches_the_shared_row_axis_contract():
 
 
 def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
+    pytz_zone = pytz.timezone("Europe/Berlin")
+    dateutil_zone = dateutil_tz.gettz("Europe/Berlin")
+    assert dateutil_zone is not None
     values = [
         None,
         True,
@@ -122,6 +127,8 @@ def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
         Decimal("Infinity"),
         date(2026, 8, 21),
         datetime(2026, 8, 21, 12, 30),
+        pytz_zone.localize(datetime(2026, 8, 21, 12, 30)),
+        datetime(2026, 8, 21, 12, 30, tzinfo=dateutil_zone),
         timedelta(days=1, seconds=2),
         np.int64(7),
         np.float32(1.5),
@@ -130,6 +137,8 @@ def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
         pd.NA,
         pd.NaT,
         pd.Timestamp("2026-08-21T12:30:00+02:00"),
+        pd.Timestamp("2026-08-21T12:30:00", tz=pytz_zone),
+        pd.Timestamp("2026-08-21T12:30:00", tz=dateutil_zone),
         pd.Timedelta(1, unit="ns"),
         b"\x00\xff",
         np.bytes_(b"\x00\xff"),
@@ -193,6 +202,18 @@ def test_pandas_row_axis_formatter_stops_before_oversized_allocations(monkeypatc
     assert len(pandas_engine._pandas_row_axis_value(10**1_023, "Pandas row-index label")) == 1_024
     with pytest.raises(EngineError, match="exceeds 1024 characters"):
         pandas_engine._pandas_row_axis_value(10**1_024, "Pandas row-index label")
+    assert len(pandas_engine._pandas_row_axis_value(-(10**1_022), "Pandas row-index label")) == 1_024
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value(-(10**1_023), "Pandas row-index label")
+
+    monkeypatch.setattr(
+        pandas_engine,
+        "abs",
+        lambda _value: (_ for _ in ()).throw(AssertionError("Oversized negative integers must not be copied")),
+        raising=False,
+    )
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value(-(1 << 100_000), "Pandas row-index label")
 
     compounds = [
         [""] * 400 + [7],
@@ -235,7 +256,12 @@ def test_pandas_row_axis_formatter_enforces_the_graph_node_budget_before_reading
 def test_pandas_row_axis_formatter_rejects_unknown_displays_without_stringifying_them():
     conversions = []
 
-    class HostileDisplay:
+    class HostileType(type):
+        def __hash__(cls):
+            conversions.append("type-hash")
+            raise AssertionError("Rejected scalar types must not be hashed")
+
+    class HostileDisplay(metaclass=HostileType):
         def __str__(self):
             conversions.append("unknown")
             raise AssertionError("Unknown row-axis values must not be stringified")
@@ -270,7 +296,7 @@ def test_pandas_row_axis_formatter_rejects_unknown_displays_without_stringifying
             conversions.append("date-subclass")
             raise AssertionError("Date subclasses must not be formatted")
 
-    class HostileTimezone(tzinfo):
+    class HostileTimezone(tzinfo, metaclass=HostileType):
         def utcoffset(self, _value):
             conversions.append("timezone")
             raise AssertionError("Untrusted timezone implementations must not be formatted")
@@ -292,6 +318,22 @@ def test_pandas_row_axis_formatter_rejects_unknown_displays_without_stringifying
         with pytest.raises(EngineError, match="unsupported mapping key"):
             pandas_engine._pandas_row_axis_value({value: "value"}, "Pandas row-index label")
     assert conversions == []
+
+    class HostileHashKey:
+        def __init__(self):
+            self.hash_calls = 0
+
+        def __hash__(self):
+            self.hash_calls += 1
+            if self.hash_calls > 1:
+                raise AssertionError("Unsupported mapping keys must not be hashed twice")
+            return 7
+
+    hostile_key = HostileHashKey()
+    hostile_mapping = {hostile_key: "value"}
+    with pytest.raises(EngineError, match="unsupported mapping key"):
+        pandas_engine._pandas_row_axis_value(hostile_mapping, "Pandas row-index label")
+    assert hostile_key.hash_calls == 1
 
 
 def test_pandas_row_axis_formatter_bounds_decimal_text_before_canonical_allocation(monkeypatch):

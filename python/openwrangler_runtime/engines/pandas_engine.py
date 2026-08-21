@@ -103,37 +103,43 @@ _JSON_CHARACTER_ESCAPES = {
 
 
 @lru_cache(maxsize=1)
-def _pandas_row_axis_trusted_scalar_types() -> tuple[frozenset[type[Any]], type[Any], type[Any]]:
+def _pandas_row_axis_trusted_scalar_types() -> tuple[tuple[type[Any], ...], type[Any], type[Any]]:
     import numpy as np
     import pandas as pd
 
-    cell_types = frozenset(
-        {
-            date,
-            datetime,
-            timedelta,
-            type(pd.NA),
-            type(pd.NaT),
-            pd.Timestamp,
-            pd.Timedelta,
-            np.bool_,
-            np.int8,
-            np.int16,
-            np.int32,
-            np.int64,
-            np.uint8,
-            np.uint16,
-            np.uint32,
-            np.uint64,
-            np.float16,
-            np.float32,
-            np.float64,
-            np.longdouble,
-            np.datetime64,
-            np.timedelta64,
-        }
+    cell_types = (
+        date,
+        datetime,
+        timedelta,
+        type(pd.NA),
+        type(pd.NaT),
+        pd.Timestamp,
+        pd.Timedelta,
+        np.bool_,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.float16,
+        np.float32,
+        np.float64,
+        np.longdouble,
+        np.datetime64,
+        np.timedelta64,
     )
     return cell_types, np.str_, np.bytes_
+
+
+@lru_cache(maxsize=1)
+def _pandas_row_axis_trusted_timezone_types() -> tuple[type[Any], ...]:
+    import pytz
+    from dateutil.tz.tz import tzfile
+
+    return (timezone, ZoneInfo, tzfile, type(pytz.UTC))
 
 
 def _pandas_row_axis_decimal_text(value: Decimal) -> str:
@@ -2627,7 +2633,8 @@ class _PandasRowAxisFormatter:
         return "".join(self._chunks)
 
     def _write_root_value(self, value: Any) -> None:
-        if type(value) in {dict, list, tuple}:
+        value_type = type(value)
+        if value_type is dict or value_type is list or value_type is tuple:
             self._write_json_value(value, 1)
         else:
             self._charge_node(1)
@@ -2678,7 +2685,7 @@ class _PandasRowAxisFormatter:
         self._charge_node(depth)
         value_type = type(value)
         trusted_cell_types, trusted_string_type, trusted_bytes_type = _pandas_row_axis_trusted_scalar_types()
-        if value_type in {list, tuple}:
+        if value_type is list or value_type is tuple:
             self._write_json_sequence(value, depth)
             return
         if value_type is dict:
@@ -2736,9 +2743,9 @@ class _PandasRowAxisFormatter:
         self._active_compounds.add(identity)
         try:
             normalized_items: dict[str, Any] = {}
-            for key in value:
+            for key, item in dict.items(value):
                 self._charge_node(depth + 1)
-                normalized_items[self._mapping_key(key)] = value[key]
+                normalized_items[self._mapping_key(key)] = item
             self._add("{")
             for index, (key, item) in enumerate(normalized_items.items()):
                 if index:
@@ -2759,9 +2766,9 @@ class _PandasRowAxisFormatter:
             return self._bounded_integer_text(value, reserved_characters=2)
         if value_type is Decimal:
             return self._bounded_decimal_text(value, reserved_characters=2)
-        if value is None or value_type in {bool, float}:
+        if value is None or value_type is bool or value_type is float:
             return str(value)
-        if value_type in trusted_cell_types:
+        if any(value_type is trusted_type for trusted_type in trusted_cell_types):
             self._validate_trusted_scalar_internals(value)
             return str(value)
         raise EngineError(f"{self._purpose} has an unsupported mapping key.")
@@ -2791,7 +2798,10 @@ class _PandasRowAxisFormatter:
 
     def _bounded_integer_text(self, value: int, *, reserved_characters: int = 0) -> str:
         available_digits = self._remaining_characters - reserved_characters - (1 if value < 0 else 0)
-        if available_digits < 1 or abs(value) >= 10**available_digits:
+        if available_digits < 1:
+            self._fail_text_bound()
+        limit = 10**available_digits
+        if value >= limit or value <= -limit:
             self._fail_text_bound()
         return str(value)
 
@@ -2839,10 +2849,15 @@ class _PandasRowAxisFormatter:
     def _supported_scalar_cell(
         self,
         value: Any,
-        trusted_cell_types: frozenset[type[Any]],
+        trusted_cell_types: tuple[type[Any], ...],
     ) -> dict[str, Any]:
         value_type = type(value)
-        if not (value is None or value_type in {bool, float} or value_type in trusted_cell_types):
+        if not (
+            value is None
+            or value_type is bool
+            or value_type is float
+            or any(value_type is trusted_type for trusted_type in trusted_cell_types)
+        ):
             raise EngineError(f"{self._purpose} has an unsupported display value.")
         self._validate_trusted_scalar_internals(value)
         cell = normalize_cell(value)
@@ -2851,8 +2866,21 @@ class _PandasRowAxisFormatter:
         return cell
 
     def _validate_trusted_scalar_internals(self, value: Any) -> None:
-        if isinstance(value, datetime) and value.tzinfo is not None and type(value.tzinfo) not in {timezone, ZoneInfo}:
-            raise EngineError(f"{self._purpose} has an unsupported display value.")
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            return
+        timezone_value = value.tzinfo
+        timezone_type = type(timezone_value)
+        if any(timezone_type is trusted_type for trusted_type in _pandas_row_axis_trusted_timezone_types()):
+            return
+
+        timezone_namespace = type.__getattribute__(timezone_type, "__dict__")
+        zone = timezone_namespace.get("zone")
+        if type(zone) is str and 0 < len(zone) <= 255:
+            import pytz
+
+            if zone in pytz.all_timezones_set and type(pytz.timezone(zone)) is timezone_type:
+                return
+        raise EngineError(f"{self._purpose} has an unsupported display value.")
 
 
 def _pandas_row_axis_label(value: Any, row_axis: RowAxis, *, one_level_multi_index: bool = False) -> str:
