@@ -15,7 +15,7 @@ import {
   requireCiResults,
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
-import { readLock, sha256 } from "./r-dependency-lock.mjs";
+import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
 const workflow = (name) => parseYaml(readFileSync(workflowPath(name), "utf8"));
@@ -1548,7 +1548,19 @@ test("dated R locks are distinct, canonical, complete 31-package binary graphs",
   for (const [index, record] of records.entries()) {
     assert.equal(record.lock.qualification.rMinor, index === 0 ? "4.4" : "4.5");
     assert.equal(record.lock.packages.length, 31);
-    assert.equal(record.lock.roots.length, 8);
+    assert.deepEqual(record.lock.roots.runtime, LOCK_ROOTS.runtime);
+    assert.deepEqual(record.lock.roots.fixtures, LOCK_ROOTS.fixtures);
+    const roots = [...record.lock.roots.runtime, ...record.lock.roots.fixtures];
+    assert.equal(new Set(roots).size, roots.length);
+    const packagesByName = new Map(record.lock.packages.map((entry) => [entry.name, entry]));
+    assert.deepEqual(
+      roots.map((name) => packagesByName.get(name)?.name),
+      roots
+    );
+    assert.deepEqual(
+      record.lock.packages.filter((entry) => entry.direct).map((entry) => entry.name),
+      [...LOCK_ROOTS.runtime].sort()
+    );
     assert.deepEqual(record.lock.systemRequirements.packages, ["libx11-dev"]);
     assert.ok(record.lock.packages.every((entry) => entry.source.kind === "binary"));
     assert.ok(record.lock.packages.every((entry) => entry.source.repositorySnapshotUrl.includes("/2026-08-14/")));

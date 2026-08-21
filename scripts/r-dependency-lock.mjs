@@ -36,6 +36,7 @@ export const SNAPSHOT_HOST = "packagemanager.posit.co";
 export const LOCK_LIMITS = Object.freeze({
   archiveBytes: 64 * 1024 * 1024,
   aggregateArchiveBytes: 512 * 1024 * 1024,
+  packagesMetadataBytes: 32 * 1024 * 1024,
   installedFileBytes: 128 * 1024 * 1024,
   installedTreeBytes: 1024 * 1024 * 1024,
   installedTreeEntries: 100_000,
@@ -362,6 +363,28 @@ function parseDcf(text) {
   return entries;
 }
 
+export function parsePackagesMetadataArchive(bytes, { maximumBytes = LOCK_LIMITS.packagesMetadataBytes } = {}) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    throw new Error("PACKAGES metadata archive must be a non-empty buffer.");
+  }
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0 || maximumBytes > LOCK_LIMITS.packagesMetadataBytes) {
+    throw new Error("PACKAGES metadata decompression limit is invalid.");
+  }
+  let metadataBytes;
+  try {
+    metadataBytes = gunzipSync(bytes, { maxOutputLength: maximumBytes });
+  } catch (error) {
+    if (error instanceof Error && error.code === "ERR_BUFFER_TOO_LARGE") {
+      throw new Error("Decompressed PACKAGES metadata exceeds the byte bound.", { cause: error });
+    }
+    throw new Error("PACKAGES metadata archive is not valid gzip.", { cause: error });
+  }
+  if (metadataBytes.length === 0 || metadataBytes.length > maximumBytes) {
+    throw new Error("Decompressed PACKAGES metadata size is invalid.");
+  }
+  return parseDcf(metadataBytes.toString("utf8"));
+}
+
 function dependencyNames(value = "") {
   return [
     ...new Set(
@@ -466,7 +489,7 @@ export async function generateLock({ rMinor, generatedWithRVersion }) {
     maximumBytes: 16 * 1024 * 1024,
     requireContentLength: false
   });
-  const metadata = parseDcf(gunzipSync(packagesResponse.bytes).toString("utf8"));
+  const metadata = parsePackagesMetadataArchive(packagesResponse.bytes);
   const selected = new Map();
   const queue = [...LOCK_ROOTS.runtime, ...LOCK_ROOTS.fixtures];
   while (queue.length > 0) {

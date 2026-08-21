@@ -20,7 +20,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import {
+  LOCK_LIMITS,
   LOCK_PROTOCOL,
   LOCK_PURPOSE,
   LOCK_RESOLVER_VERSION,
@@ -28,6 +30,7 @@ import {
   SNAPSHOT_DATE,
   canonicalLockBytes,
   installFromArchiveCache,
+  parsePackagesMetadataArchive,
   readOwnedRegularFile,
   readLock,
   sha256,
@@ -35,6 +38,30 @@ import {
   validateLock,
   verifyArchiveCache
 } from "./r-dependency-lock.mjs";
+
+test("PACKAGES metadata decompression enforces its byte ceiling before parsing", () => {
+  const maximumBytes = 256;
+  const prefix = "Package: bounded\nVersion: 1.2.3\nDescription: ";
+  const exactText = `${prefix}${"a".repeat(maximumBytes - Buffer.byteLength(prefix))}`;
+  const exactArchive = gzipSync(Buffer.from(exactText, "utf8"));
+  const exact = parsePackagesMetadataArchive(exactArchive, { maximumBytes });
+  assert.equal(exact.get("bounded").Version, "1.2.3");
+
+  const expandedText = `${exactText}a`;
+  const expandedArchive = gzipSync(Buffer.from(expandedText, "utf8"));
+  assert.ok(expandedArchive.length < Buffer.byteLength(expandedText));
+  assert.throws(
+    () => parsePackagesMetadataArchive(expandedArchive, { maximumBytes }),
+    /Decompressed PACKAGES metadata exceeds the byte bound/u
+  );
+  assert.throws(
+    () =>
+      parsePackagesMetadataArchive(exactArchive, {
+        maximumBytes: LOCK_LIMITS.packagesMetadataBytes + 1
+      }),
+    /decompression limit is invalid/u
+  );
+});
 
 function packageEntry(name, rMinor = "4.5") {
   const repositorySnapshotUrl = `https://packagemanager.posit.co/cran/${SNAPSHOT_DATE}/bin/linux/noble-x86_64/${rMinor}/src/contrib`;
