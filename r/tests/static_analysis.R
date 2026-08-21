@@ -25,9 +25,13 @@ local({
     diagnostics = 16L,
     suppressions = 16L
   )
-  rules <- function(source) {
-    diagnostics <- analyzer$test$analyze_text(source, "r/openwrangler_runtime/frame_contract.R", fixture_limits)
-    vapply(diagnostics, `[[`, character(1L), "rule")
+  diagnostics <- function(source) {
+    analyzer$test$analyze_text(source, "r/openwrangler_runtime/frame_contract.R", fixture_limits)
+  }
+  rules <- function(source) vapply(diagnostics(source), `[[`, character(1L), "rule")
+  diagnostic_symbols <- function(source, rule) {
+    selected <- Filter(function(item) identical(item$rule, rule), diagnostics(source))
+    vapply(selected, `[[`, character(1L), "symbol")
   }
 
   result <- analyzer$run(".")
@@ -40,12 +44,83 @@ local({
     "partial-argument" %in% rules("local_call <- function(alpha, beta) alpha + beta\nlocal_call(al = 1, beta = 2)"),
     "Partial argument matching was not detected"
   )
+  assert_true(
+    "runif:ma" %in% diagnostic_symbols("stats::runif(n = 1, ma = 2)", "partial-argument"),
+    "Namespaced partial argument matching was not detected"
+  )
+  assert_true(
+    !("partial-argument" %in% rules("stats::runif(n = 1, max = 2)")),
+    "An exact namespaced argument was reported as partial"
+  )
   assert_true("global-assignment" %in% rules("function() unsafe_target <<- 1"), "Unsafe global assignment was not detected")
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols("base::assign('unsafe_target', 1, envir = .GlobalEnv)", "global-assignment"),
+    "Explicit base::assign mutation of .GlobalEnv was not detected"
+  )
+  assert_true(
+    ".GlobalEnv$unsafe_target" %in% diagnostic_symbols(".GlobalEnv$unsafe_target <- 1", "global-assignment"),
+    "Direct .GlobalEnv member assignment was not detected"
+  )
+  assert_true(
+    ".GlobalEnv$unsafe_target" %in% diagnostic_symbols(".GlobalEnv[['unsafe_target']] <- 1", "global-assignment"),
+    "Direct indexed .GlobalEnv member assignment was not detected"
+  )
+  assert_true(
+    !("global-assignment" %in% rules("on.exit({ if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv) }, add = TRUE)")),
+    "The exact bounded random-seed restoration was reported as an unsafe global mutation"
+  )
+  assert_true(
+    "global-assignment" %in% rules("on.exit({ if (had_random_seed) base::assign('.Random.seed', replacement_seed, envir = .GlobalEnv) }, add = TRUE)"),
+    "An arbitrary random-seed mutation bypassed global assignment analysis"
+  )
+  assert_true(
+    !("global-assignment" %in% rules("function() { local_environment <- new.env(); local_environment$target <- 1; base::assign('target', 1, envir = local_environment) }")),
+    "Local environment assignment was reported as global"
+  )
   assert_true("unqualified-call" %in% rules("function() unowned_package_call()"), "Unqualified calls were not detected")
   assert_true("namespace-attachment" %in% rules("library(stats)"), "Namespace attachment was not detected")
   assert_true("namespace-attachment" %in% rules("base::library(stats)"), "Qualified namespace attachment was not detected")
   assert_true("unreachable-expression" %in% rules("function() { return(1); 2 }"), "Unreachable expressions were not detected")
   assert_true("unreachable-expression" %in% rules("function() { while (TRUE) { break; 2 } }"), "Unreachable loop expressions were not detected")
+  assert_true(
+    "unreachable-expression" %in% rules("function(flag) { if (flag) { return(1) } else { stop('failed') }; 2 }"),
+    "Expressions after an all-branch terminal conditional were not detected"
+  )
+  assert_true(
+    !("unreachable-expression" %in% rules("function(flag) { if (flag) return(1); 2 }")),
+    "A conditional without a terminal alternative was reported as unconditional"
+  )
+
+  lexical_false_negative <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  inner <- function() {",
+    "    target <- function(gamma, delta) gamma + delta",
+    "    target(gamma = 1, delta = 2)",
+    "  }",
+    "  target(al = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(lexical_false_negative, "partial-argument"),
+    "The outer lexical function binding was not resolved"
+  )
+  lexical_false_positive <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  inner <- function() {",
+    "    target <- function(apple, pear) apple + pear",
+    "    target(apple = 1, pear = 2)",
+    "  }",
+    "  target(ap = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    !("target:ap" %in% diagnostic_symbols(lexical_false_positive, "partial-argument")),
+    "A nested same-name function leaked into its outer lexical scope"
+  )
 
   expect_error(
     analyzer$test$ast_budget(quote(a(b(c()))), 128L, 2L),

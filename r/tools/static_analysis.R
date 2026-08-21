@@ -209,6 +209,10 @@ openwrangler_r_static_analysis <- local({
           (identical(current[[1L]], as.name("<-")) || identical(current[[1L]], as.name("="))) &&
           is.symbol(current[[2L]]) && is.call(current[[3L]]) && identical(current[[3L]][[1L]], as.name("function"))) {
         definitions[[as.character(current[[2L]])]] <<- names(current[[3L]][[2L]])
+        return(invisible(NULL))
+      }
+      if (is.call(current) && identical(current[[1L]], as.name("function"))) {
+        return(invisible(NULL))
       }
       if (is.call(current) || is.expression(current) || is.pairlist(current)) {
         for (index in seq_along(current)) {
@@ -221,8 +225,18 @@ openwrangler_r_static_analysis <- local({
     definitions
   }
 
-  callable_formals <- function(symbol, definitions) {
-    if (!is.null(definitions[[symbol]])) return(definitions[[symbol]])
+  callable_formals <- function(symbol, scopes, namespace = NULL, internal = FALSE) {
+    if (!is.null(namespace)) {
+      callable <- tryCatch(
+        if (internal) getFromNamespace(symbol, namespace) else getExportedValue(namespace, symbol),
+        error = function(condition) NULL
+      )
+      if (is.function(callable)) return(names(formals(callable)))
+      return(NULL)
+    }
+    for (scope in scopes) {
+      if (symbol %in% names(scope)) return(scope[[symbol]])
+    }
     if (exists(symbol, envir = baseenv(), mode = "function", inherits = FALSE)) {
       return(names(formals(get(symbol, envir = baseenv(), mode = "function", inherits = FALSE))))
     }
@@ -231,7 +245,7 @@ openwrangler_r_static_analysis <- local({
 
   source_locator <- function(source_file) {
     data <- utils::getParseData(source_file, includeText = TRUE)
-    selected <- data[data$token %in% c("SYMBOL_FUNCTION_CALL", "SYMBOL_SUB"), , drop = FALSE]
+    selected <- data[data$token %in% c("LEFT_ASSIGN", "EQ_ASSIGN", "SYMBOL_FUNCTION_CALL", "SYMBOL_SUB"), , drop = FALSE]
     keys <- paste(selected$token, selected$text, sep = "\034")
     positions <- split(selected$line1, keys)
     counts <- new.env(hash = TRUE, parent = emptyenv())
@@ -246,11 +260,15 @@ openwrangler_r_static_analysis <- local({
     }
     list(
       call = function(symbol, fallback) take("SYMBOL_FUNCTION_CALL", symbol, fallback),
-      argument = function(symbol, fallback) take("SYMBOL_SUB", symbol, fallback)
+      argument = function(symbol, fallback) take("SYMBOL_SUB", symbol, fallback),
+      assignment = function(operator, fallback) {
+        token <- if (identical(operator, "<-")) "LEFT_ASSIGN" else "EQ_ASSIGN"
+        take(token, operator, fallback)
+      }
     )
   }
 
-  terminal_symbol <- function(statement) {
+  direct_terminal_symbol <- function(statement) {
     if (is.symbol(statement) && as.character(statement) %in% c("break", "next")) {
       return(as.character(statement))
     }
@@ -261,23 +279,119 @@ openwrangler_r_static_analysis <- local({
     NULL
   }
 
-  inspect_calls <- function(node, path, collector, definitions, locator) {
+  terminal_expression <- function(statement) {
+    direct <- direct_terminal_symbol(statement)
+    if (!is.null(direct)) return(direct)
+    if (!is.call(statement) || !is.symbol(statement[[1L]])) return(NULL)
+    head <- as.character(statement[[1L]])
+    if (identical(head, "{")) {
+      for (child in as.list(statement)[-1L]) {
+        terminal <- terminal_expression(child)
+        if (!is.null(terminal)) return(terminal)
+      }
+      return(NULL)
+    }
+    if (identical(head, "if") && length(statement) == 4L) {
+      consequent <- terminal_expression(statement[[3L]])
+      alternative <- terminal_expression(statement[[4L]])
+      if (!is.null(consequent) && !is.null(alternative)) return("if")
+    }
+    NULL
+  }
+
+  call_identity <- function(head) {
+    if (is.symbol(head)) {
+      return(list(symbol = as.character(head), namespace = NULL, internal = FALSE))
+    }
+    if (is.call(head) && length(head) == 3L && is.symbol(head[[1L]]) &&
+        as.character(head[[1L]]) %in% c("::", ":::") && is.symbol(head[[2L]]) && is.symbol(head[[3L]])) {
+      return(list(
+        symbol = as.character(head[[3L]]),
+        namespace = as.character(head[[2L]]),
+        internal = identical(as.character(head[[1L]]), ":::")
+      ))
+    }
+    NULL
+  }
+
+  global_environment_expression <- function(node) {
+    if (is.symbol(node) && identical(as.character(node), ".GlobalEnv")) return(TRUE)
+    if (!is.call(node)) return(FALSE)
+    identity <- call_identity(node[[1L]])
+    !is.null(identity) && identical(identity$symbol, "globalenv") &&
+      (is.null(identity$namespace) || identical(identity$namespace, "base")) && length(node) == 1L
+  }
+
+  global_member_symbol <- function(node) {
+    if (!is.call(node) || length(node) != 3L || !is.symbol(node[[1L]]) ||
+        !(as.character(node[[1L]]) %in% c("$", "[[")) || !global_environment_expression(node[[2L]])) {
+      return(NULL)
+    }
+    member <- node[[3L]]
+    if (is.symbol(member) || (is.character(member) && length(member) == 1L && !is.na(member))) {
+      return(paste0(".GlobalEnv$", as.character(member)))
+    }
+    ".GlobalEnv$<dynamic>"
+  }
+
+  assign_global_environment <- function(node, identity, ancestors) {
+    if (is.null(identity) || !identical(identity$symbol, "assign") ||
+        !identical(identity$namespace, "base")) {
+      return(FALSE)
+    }
+    arguments <- as.list(node)[-1L]
+    argument_names <- names(arguments)
+    restores_random_seed <- length(arguments) >= 2L &&
+      is.character(arguments[[1L]]) && identical(arguments[[1L]], ".Random.seed") &&
+      is.symbol(arguments[[2L]]) && identical(as.character(arguments[[2L]]), "previous_random_seed") &&
+      all(c("if", "on.exit") %in% ancestors) &&
+      !is.null(argument_names) && any(argument_names == "envir" & vapply(
+        arguments,
+        global_environment_expression,
+        logical(1L)
+      ))
+    if (restores_random_seed) return(FALSE)
+    if (!is.null(argument_names)) {
+      for (index in seq_along(arguments)) {
+        if (argument_names[[index]] %in% c("envir", "pos") &&
+            global_environment_expression(arguments[[index]])) return(TRUE)
+      }
+    }
+    (length(arguments) >= 3L && global_environment_expression(arguments[[3L]])) ||
+      (length(arguments) >= 4L && global_environment_expression(arguments[[4L]]))
+  }
+
+  inspect_calls <- function(node, path, collector, scopes, locator, ancestors = character()) {
     if (!is.call(node)) return(invisible(NULL))
     head <- node[[1L]]
     line <- source_line(node)
-    symbol <- NULL
-    if (is.symbol(head)) {
-      symbol <- as.character(head)
-    } else if (is.call(head) && length(head) == 3L && is.symbol(head[[1L]]) &&
-               as.character(head[[1L]]) %in% c("::", ":::") && is.symbol(head[[3L]])) {
-      symbol <- as.character(head[[3L]])
+    if (is.symbol(head) && identical(as.character(head), "function")) {
+      child_scopes <- c(list(function_definitions(node[[3L]])), scopes)
+      for (index in seq_along(node)[-1L]) {
+        if (!identical(node[[index]], quote(expr = ))) {
+          inspect_calls(node[[index]], path, collector, child_scopes, locator, c(ancestors, "function"))
+        }
+      }
+      return(invisible(line))
     }
-    if (!is.null(symbol)) {
-      line <- locator$call(symbol, line)
+    identity <- call_identity(head)
+    if (is.symbol(head) && as.character(head) %in% c("<-", "=") && length(node) == 3L) {
+      line <- locator$assignment(as.character(head), line)
+      member <- global_member_symbol(node[[2L]])
+      if (!is.null(member)) {
+        collector$add(path, line, "global-assignment", member, "direct assignment mutates .GlobalEnv")
+      }
+    }
+    if (!is.null(identity)) line <- locator$call(identity$symbol, line)
+    if (assign_global_environment(node, identity, ancestors)) {
+      collector$add(path, line, "global-assignment", "assign:.GlobalEnv", "base::assign mutates .GlobalEnv")
+    }
+    if (!is.null(identity)) {
+      symbol <- identity$symbol
       if (symbol %in% c("library", "require", "attach", "attachNamespace")) {
         collector$add(path, line, "namespace-attachment", symbol, "namespace attachment is forbidden")
       }
-      formals <- callable_formals(symbol, definitions)
+      formals <- callable_formals(symbol, scopes, identity$namespace, identity$internal)
       arguments <- as.list(node)[-1L]
       argument_names <- names(arguments)
       if (!is.null(formals) && length(arguments) > 0L && !is.null(argument_names)) {
@@ -312,15 +426,18 @@ openwrangler_r_static_analysis <- local({
               "expression follows an unconditional terminal expression"
             )
           }
-          statement_line <- inspect_calls(statement, path, collector, definitions, locator)
-          pending_terminal <- terminal_symbol(statement)
+          statement_line <- inspect_calls(statement, path, collector, scopes, locator, c(ancestors, symbol))
+          pending_terminal <- terminal_expression(statement)
           pending_line <- if (is.null(statement_line)) line else statement_line
         }
         return(invisible(line))
       }
     }
+    child_ancestors <- if (is.null(identity)) ancestors else c(ancestors, identity$symbol)
     for (index in seq_along(node)) {
-      if (!identical(node[[index]], quote(expr = ))) inspect_calls(node[[index]], path, collector, definitions, locator)
+      if (!identical(node[[index]], quote(expr = ))) {
+        inspect_calls(node[[index]], path, collector, scopes, locator, child_ancestors)
+      }
     }
     invisible(line)
   }
@@ -376,9 +493,9 @@ openwrangler_r_static_analysis <- local({
     )
     ast_budget(expressions, limits$ast_nodes, limits$ast_depth)
     collector <- diagnostic_collector(limits$diagnostics)
-    definitions <- function_definitions(expressions)
+    scopes <- list(function_definitions(expressions))
     locator <- source_locator(source_file)
-    for (expression in expressions) inspect_calls(expression, path, collector, definitions, locator)
+    for (expression in expressions) inspect_calls(expression, path, collector, scopes, locator)
     inspect_codetools(text, path, collector, limits$diagnostics)
     collector$values()
   }
