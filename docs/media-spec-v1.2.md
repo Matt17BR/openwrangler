@@ -158,7 +158,8 @@ documented capability, comes from another VSIX, contains internal setup content,
 After GitHub and both registries have rendered a release README, install the lockfile-pinned Chromium and run
 `npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
 exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
-`v`. Starting with `1.2.1`, the verifier byte-compares the exact source README and package version; rejects an
+`v`. Releases governed by the `public-media-render-verification` cutover in
+`fixtures/release-cutovers.v1.json` byte-compare the exact source README and package version; reject an
 undeclared media series; pre-stats a bounded inventory before any full file read; checks all 48 PNGs in the current
 contract (and every asset declared by an exact historical release inventory) for chunk CRC,
 ordered structure, complete decode, reviewed natural dimensions, standard sRGB, per-file and total budgets, and
@@ -179,9 +180,10 @@ also terminal. On Marketplace and Open VSX, retries are limited to an explicitly
 content, or immutable image source; an initially missing or incomplete exact-alt image; or an actual non-OK HTTP
 response. Those observations may use up to forty fresh registry contexts at thirty-second intervals. The one source
 check and registry attempts share the existing thirty-minute global deadline.
-Starting with `1.99.4`, recovery publishers independently restore the exact release source's lockfile and run that
-source's browser-free `--prepublish` inventory, ancestry, exact-source, and immutable-byte checks before their
-authentication boundary. Earlier releases predate this capability and retain their existing exact-tag recovery path.
+Recovery publishers governed by the `public-media-prepublication` cutover independently restore the exact release
+source's lockfile and run that source's browser-free `--prepublish` inventory, ancestry, exact-source, and
+immutable-byte checks before their authentication boundary. Earlier releases predate this capability and retain their
+existing exact-tag recovery path.
 The check can fail workflow success but cannot undo the public writes it observes. The same reviewed `main` contract
 covers stable and preview releases.
 

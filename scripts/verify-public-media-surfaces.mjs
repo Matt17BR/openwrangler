@@ -50,6 +50,7 @@ import {
   publicMediaVerificationRequired,
   publicSurfaceDefinitions
 } from "./public-media-surface-contract.mjs";
+import { releaseCutoverVersion } from "./release-cutovers.mjs";
 
 const automationRoot = resolve(import.meta.dirname, "..");
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -95,7 +96,8 @@ export async function runPublicMediaVerification(options, overrides = {}) {
     }
   }
   if (!publicMediaVerificationRequired(version)) {
-    report(`Public README media verification starts with v1.2.1; historical ${version} recovery is unchanged.`);
+    const boundary = releaseCutoverVersion("public-media-render-verification");
+    report(`Public README media verification starts with v${boundary}; historical ${version} recovery is unchanged.`);
     return "historical";
   }
   const root = resolveSourceRoot(sourceRoot);

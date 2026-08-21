@@ -118,6 +118,7 @@ stages:
                     RELEASE_COMMIT: $(releaseCommit)
                 - script: |
                     set -euo pipefail
+                    boundary="$(node --input-type=module -e 'import { releaseCutoverVersion } from "./scripts/release-cutovers.mjs"; process.stdout.write(releaseCutoverVersion("public-media-prepublication"));')"
                     required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
                     case "$required" in
                       true)
@@ -125,7 +126,7 @@ stages:
                         node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
                         ;;
                       false)
-                        printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\n' "$RELEASE_VERSION"
+                        printf 'Prepublication public-media verification starts with v%s; historical %s recovery is unchanged.\n' "$boundary" "$RELEASE_VERSION"
                         ;;
                       *) exit 64 ;;
                     esac

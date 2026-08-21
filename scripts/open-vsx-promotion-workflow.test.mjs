@@ -67,12 +67,13 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     ),
     source.replace('printf \'required=%s\\n\' "$required" >> "$GITHUB_OUTPUT"', "echo output-skipped"),
     source.replace("publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)", "false"),
+    source.replace('releaseCutoverVersion("public-media-prepublication")', 'releaseCutoverVersion("missing-cutover")'),
     source.replace("npm ci --ignore-scripts --prefix release-source", "npm ci --ignore-scripts"),
     source.replace(
       "node release-source/scripts/verify-public-media-surfaces.mjs",
       "node scripts/verify-public-media-surfaces.mjs"
     ),
-    source.replace("Prepublication public-media verification starts with v1.99.4", "starts whenever"),
+    source.replace("Prepublication public-media verification starts with v%s", "starts whenever"),
     source.replace(" --prepublish", ""),
     source.replace(
       "        name: Preflight immutable public README media\n",
@@ -80,8 +81,12 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     ),
     source.replace("steps.public_media_contract.outputs.required == 'true'", "always()"),
     source.replace(
+      'releaseCutoverVersion("public-media-render-verification")',
+      'releaseCutoverVersion("missing-cutover")'
+    ),
+    source.replace(
       "publicMediaVerificationRequired(process.env.RELEASE_VERSION)",
-      "publicMediaVerificationRequired('1.2.1')"
+      'publicMediaVerificationRequired("not-a-version")'
     ),
     source.replace(" --wait-for-propagation", ""),
     source.replace(

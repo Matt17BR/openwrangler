@@ -367,10 +367,11 @@ the matching report can publish one canonical triple and that a different candid
 directory.
 
 Marketplace intake exports the exact release commit, version, and channel. Its deployment must materialize that
-commit as a clean, contained, detached `release-source` worktree from the full-history automation checkout. For
-`1.99.4` and later it restores that exact checkout's lockfile and runs its browser-free immutable-media verifier only
-after canonical artifact verification and before the AzureCLI authentication boundary; older releases predate the
-mode and retain their historical recovery path. The pipeline inspector pins the complete command and environment contract;
+commit as a clean, contained, detached `release-source` worktree from the full-history automation checkout. Releases
+governed by the `public-media-prepublication` cutover in `fixtures/release-cutovers.v1.json` restore that exact
+checkout's lockfile and run its browser-free immutable-media verifier only after canonical artifact verification and
+before the AzureCLI authentication boundary; older releases predate the mode and retain their historical recovery
+path. The pipeline inspector pins the complete command and environment contract;
 mutation tests reject a moving source, missing root/identity/cleanliness checks, output drift, and every reordering
 across canonical verification, source materialization, media preflight, existing-public probing, authentication, and
 public verification.
@@ -925,17 +926,18 @@ Before any preview or stable tag, GitHub Release, or registry write, the package
 `--prepublish`. That mode performs local inventory, exact-source, version, and all 48 immutable remote-byte checks,
 requires the README media commit to be a reachable ancestor of the exact release source in the selected full-history
 checkout, then exits without launching Chromium or reading registry pages. The Open VSX recovery workflow applies
-the same mode starting with `1.99.4`, restoring and executing the exact release checkout's lockfile and verifier before
-token authentication or registry mutation. Older releases predate this capability and do not inherit a future
-inventory. A README commit
+the same mode under the `public-media-prepublication` cutover, restoring and executing the exact release checkout's
+lockfile and verifier before token authentication or registry mutation. Older releases predate this capability and do
+not inherit a future inventory. A README commit
 pin that lags any checked-in media change, names a missing object, or comes from a divergent branch is therefore a
 deterministic prepublication failure.
 
-Rendered versioned verification begins with `1.2.1`; older recovery runs skip browser installation and public-media
-verification. Browser-free recovery prepublication begins independently with `1.99.4`; those releases install the
-browser through the restored release-local Playwright, while earlier exact releases retain their historical
-current-automation browser pairing. For protected versions, the workflow runs the verifier from the exact release checkout with
-`--wait-for-propagation`, so each release uses its own reviewed media inventory.
+The `public-media-render-verification` cutover begins rendered versioned verification; older recovery runs skip
+browser installation and public-media verification. The `public-media-prepublication` cutover independently begins
+browser-free recovery prepublication. Those releases install the browser through the restored release-local
+Playwright, while earlier exact releases retain their historical current-automation browser pairing. For protected
+versions, the workflow runs the verifier from the exact release checkout with `--wait-for-propagation`, so each
+release uses its own reviewed media inventory.
 The registry retry controller is injected and directly tested: a deterministic error stops after one attempt, each
 eligible typed registry observation exhausts the exact attempt/delay count, and every retry owns and closes a distinct
 context. GitHub exact-source rendering owns one context and runs once outside that retry loop. Each image is scrolled

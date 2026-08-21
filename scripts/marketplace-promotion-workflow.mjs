@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "6b96a4cf7f7126512f25745255f2095a61c7412318f23862f4c02da99f3b2c83";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "051fb9cde1cf70fea060deb8ed45ff4e177a4b398eeb5a331f7fa196c74560d4";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -22,6 +22,7 @@ const PROBE_PUBLICATION_COMMAND = "node scripts/verify-marketplace-publication.m
 const SKIP_EXISTING_PUBLIC_CONDITION = "and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))";
 const VERIFY_PUBLIC_MEDIA_LINES = Object.freeze([
   "set -euo pipefail",
+  `boundary="$(node --input-type=module -e 'import { releaseCutoverVersion } from "./scripts/release-cutovers.mjs"; process.stdout.write(releaseCutoverVersion("public-media-prepublication"));')"`,
   `required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"`,
   'case "$required" in',
   "true)",
@@ -29,7 +30,7 @@ const VERIFY_PUBLIC_MEDIA_LINES = Object.freeze([
   'node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish',
   ";;",
   "false)",
-  "printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\\n' \"$RELEASE_VERSION\"",
+  'printf \'Prepublication public-media verification starts with v%s; historical %s recovery is unchanged.\\n\' "$boundary" "$RELEASE_VERSION"',
   ";;",
   "*) exit 64 ;;",
   "esac"

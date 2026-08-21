@@ -1,6 +1,8 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TextDecoder } from "node:util";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -9,15 +11,22 @@ const DOCUMENTATION_PATH = "docs/releasing.md";
 const DOCUMENTATION_START = "<!-- release-cutovers:start -->";
 const DOCUMENTATION_END = "<!-- release-cutovers:end -->";
 const MAX_MANIFEST_BYTES = 32 * 1024;
+const MAX_CONSUMER_BYTES = 2 * 1024 * 1024;
 const MAX_CUTOVERS = 16;
+const MAX_CONSUMERS_PER_CUTOVER = 16;
 const MAX_TEXT_BYTES = 1_024;
 const STABLE_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const SEMANTIC_VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const EXECUTABLE_OWNER = /^scripts\/[a-z0-9][a-z0-9.-]*\.mjs$/u;
+const CONSUMER_PATH =
+  /^(?:\.github\/workflows\/[a-z0-9][a-z0-9.-]*\.yml|azure-pipelines-marketplace\.yml|docs\/[a-z0-9][a-z0-9./-]*\.md|scripts\/[a-z0-9][a-z0-9.-]*\.mjs)$/u;
+const UNSAFE_PLAIN_TEXT = /[\\`*_{}()<>&#!|~]|\[|\]/u;
+const UNSAFE_UNICODE = /[\p{Cc}\p{Cs}\p{Co}\p{Zl}\p{Zp}\p{Bidi_Control}\p{Default_Ignorable_Code_Point}]/u;
 const ENTRY_KEYS = Object.freeze([
   "affectedCapability",
+  "consumers",
   "executableOwner",
   "firstApplicableVersion",
   "id",
@@ -29,6 +38,8 @@ export const RELEASE_CUTOVER_BOUNDARY_TEST_PATHS = Object.freeze([
   "scripts/public-media-surfaces.test.mjs",
   "scripts/release-cutovers.test.mjs"
 ]);
+
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function exactKeys(value, expected) {
   return (
@@ -46,17 +57,23 @@ function boundedText(value, label) {
   if (Buffer.byteLength(value, "utf8") > MAX_TEXT_BYTES) {
     throw new Error(`${label} exceeds its ${MAX_TEXT_BYTES}-byte bound.`);
   }
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) {
-      throw new Error(`${label} must not contain control characters.`);
-    }
+  if (value.normalize("NFC") !== value) {
+    throw new Error(`${label} must use NFC Unicode.`);
+  }
+  if (UNSAFE_UNICODE.test(value)) {
+    throw new Error(`${label} must not contain control, private, surrogate, or default-ignorable characters.`);
+  }
+  if (UNSAFE_PLAIN_TEXT.test(value)) {
+    throw new Error(`${label} must contain plain text without Markdown or HTML metacharacters.`);
   }
   return value;
 }
 
 function freezeManifest(manifest) {
-  for (const cutover of manifest.cutovers) Object.freeze(cutover);
+  for (const cutover of manifest.cutovers) {
+    Object.freeze(cutover.consumers);
+    Object.freeze(cutover);
+  }
   Object.freeze(manifest.cutovers);
   return Object.freeze(manifest);
 }
@@ -97,9 +114,33 @@ export function validateReleaseCutoverManifest(value) {
     if (!EXECUTABLE_OWNER.test(executableOwner)) {
       throw new Error(`${label} executableOwner must be one canonical scripts/*.mjs path.`);
     }
+    if (
+      !Array.isArray(candidate.consumers) ||
+      candidate.consumers.length === 0 ||
+      candidate.consumers.length > MAX_CONSUMERS_PER_CUTOVER
+    ) {
+      throw new Error(`${label} consumers must contain 1..${MAX_CONSUMERS_PER_CUTOVER} paths.`);
+    }
+    const consumers = candidate.consumers.map((value, consumerIndex) => {
+      const consumer = boundedText(value, `${label} consumer ${consumerIndex + 1}`);
+      if (!CONSUMER_PATH.test(consumer)) {
+        throw new Error(`${label} consumer ${consumerIndex + 1} must be one canonical repository path.`);
+      }
+      return consumer;
+    });
+    if (
+      new Set(consumers).size !== consumers.length ||
+      JSON.stringify(consumers) !== JSON.stringify([...consumers].sort())
+    ) {
+      throw new Error(`${label} consumers must be unique and bytewise sorted.`);
+    }
+    if (!consumers.includes(executableOwner)) {
+      throw new Error(`${label} consumers must include its executable owner.`);
+    }
     return {
       id,
       affectedCapability: boundedText(candidate.affectedCapability, `${label} affectedCapability`),
+      consumers,
       firstApplicableVersion,
       rationale: boundedText(candidate.rationale, `${label} rationale`),
       recoveryBehavior: boundedText(candidate.recoveryBehavior, `${label} recoveryBehavior`),
@@ -121,7 +162,33 @@ export function renderReleaseCutoverManifest(manifest) {
   return `${JSON.stringify(validateReleaseCutoverManifest(manifest), null, 2)}\n`;
 }
 
-const manifestSource = readFileSync(resolve(ROOT, MANIFEST_PATH), "utf8");
+export function readReleaseCutoverUtf8File(path, maximumBytes, options = {}) {
+  const label = options.label ?? "Release-cutover file";
+  let bytes;
+  try {
+    bytes = readBoundedRegularFile(path, maximumBytes, options);
+  } catch (error) {
+    throw new Error(`${label} could not be read through one stable file identity.`, { cause: error });
+  }
+  try {
+    return UTF8_DECODER.decode(bytes);
+  } catch (error) {
+    throw new Error(`${label} must contain valid UTF-8.`, { cause: error });
+  }
+}
+
+function readRepositoryText(path, maximumBytes = MAX_CONSUMER_BYTES, options = {}) {
+  if (!CONSUMER_PATH.test(path) && path !== MANIFEST_PATH) {
+    throw new Error(`Release-cutover repository path ${JSON.stringify(path)} is not canonical.`);
+  }
+  return readReleaseCutoverUtf8File(resolve(ROOT, path), maximumBytes, {
+    ...options,
+    containedBy: ROOT,
+    label: options.label ?? path
+  });
+}
+
+const manifestSource = readRepositoryText(MANIFEST_PATH, MAX_MANIFEST_BYTES);
 export const RELEASE_CUTOVER_MANIFEST = parseReleaseCutoverManifest(manifestSource);
 
 export function releaseCutover(id, manifest = RELEASE_CUTOVER_MANIFEST) {
@@ -139,16 +206,13 @@ export function releaseCutoverApplies(id, version, manifest = RELEASE_CUTOVER_MA
   if (typeof version !== "string" || !SEMANTIC_VERSION.test(version)) {
     throw new TypeError("A release cutover version must be semantic.");
   }
-  const actual = version.split(/[+-]/u, 1)[0].split(".").map(Number);
+  const coreAndPrerelease = version.split("+", 1)[0];
+  const actual = coreAndPrerelease.split("-", 1)[0].split(".").map(Number);
   const required = releaseCutoverVersion(id, manifest).split(".").map(Number);
   for (let index = 0; index < required.length; index += 1) {
     if (actual[index] !== required[index]) return actual[index] > required[index];
   }
-  return true;
-}
-
-function markdownText(value) {
-  return value.replaceAll("`", "\\`");
+  return !coreAndPrerelease.includes("-");
 }
 
 export function renderReleaseCutoverDocumentation(manifest = RELEASE_CUTOVER_MANIFEST) {
@@ -163,9 +227,9 @@ export function renderReleaseCutoverDocumentation(manifest = RELEASE_CUTOVER_MAN
   ];
   for (const cutover of validated.cutovers) {
     lines.push(
-      `- \`${cutover.id}\` starts at \`${cutover.firstApplicableVersion}\` and affects ${markdownText(cutover.affectedCapability)}.`,
-      `  Executable owner: \`${cutover.executableOwner}\`. Rationale: ${markdownText(cutover.rationale)}`,
-      `  Recovery: ${markdownText(cutover.recoveryBehavior)}`
+      `- \`${cutover.id}\` starts at \`${cutover.firstApplicableVersion}\` and affects ${cutover.affectedCapability}.`,
+      `  Executable owner: \`${cutover.executableOwner}\`. Rationale: ${cutover.rationale}`,
+      `  Recovery: ${cutover.recoveryBehavior}`
     );
   }
   lines.push("", DOCUMENTATION_END);
@@ -201,13 +265,19 @@ function rawOccurrences(source, version) {
   return [...source.matchAll(new RegExp(`(?<![0-9])${escaped}(?![0-9])`, "gu"))].map((match) => match.index);
 }
 
-function allowedDocumentationOccurrence(source, offset, version) {
-  const range = documentationRange(source);
-  if (offset >= range.start && offset < range.end) return true;
+function allowedDocumentationOccurrence(path, source, offset, version) {
   const lineStart = source.lastIndexOf("\n", offset) + 1;
   const lineEnd = source.indexOf("\n", offset);
   const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
-  return line === `RELEASE_VERSION="${version}" # replace with the released semantic version, without v`;
+  if (line === `RELEASE_VERSION="${version}" # replace with the released semantic version, without v`) return true;
+  if (path === "docs/testing.md") {
+    const performanceStart = source.indexOf("\n## Data Wrangler comparison\n");
+    if (performanceStart >= 0 && offset > performanceStart) return true;
+    return false;
+  }
+  if (path !== DOCUMENTATION_PATH) return false;
+  const range = documentationRange(source);
+  return offset >= range.start && offset < range.end;
 }
 
 export function assertNoRawReleaseCutoverVersions(
@@ -230,10 +300,7 @@ export function assertNoRawReleaseCutoverVersions(
       const occurrences = rawOccurrences(source, cutover.firstApplicableVersion);
       for (const offset of occurrences) {
         if (allowedTests.has(path)) continue;
-        if (
-          path === DOCUMENTATION_PATH &&
-          allowedDocumentationOccurrence(source, offset, cutover.firstApplicableVersion)
-        ) {
+        if (allowedDocumentationOccurrence(path, source, offset, cutover.firstApplicableVersion)) {
           continue;
         }
         throw new Error(
@@ -244,24 +311,50 @@ export function assertNoRawReleaseCutoverVersions(
   }
 }
 
+export function releaseCutoverConsumerPaths(manifest = RELEASE_CUTOVER_MANIFEST) {
+  const validated = validateReleaseCutoverManifest(manifest);
+  return Object.freeze([...new Set(validated.cutovers.flatMap(({ consumers }) => consumers))].sort());
+}
+
+export function assertReleaseCutoverConsumerInventory(sources, manifest = RELEASE_CUTOVER_MANIFEST) {
+  if (!(sources instanceof Map)) throw new TypeError("Release-cutover consumers must be supplied as a Map.");
+  const validated = validateReleaseCutoverManifest(manifest);
+  const expectedPaths = releaseCutoverConsumerPaths(validated);
+  const actualPaths = [...sources.keys()].sort();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+    throw new Error("Release-cutover consumer sources must exactly match the manifest inventory.");
+  }
+  for (const cutover of validated.cutovers) {
+    for (const path of cutover.consumers) {
+      const source = sources.get(path);
+      if (typeof source !== "string" || !source.includes(cutover.id)) {
+        throw new Error(`${path} must consume release cutover ${cutover.id}.`);
+      }
+    }
+  }
+}
+
 export function checkReleaseCutoverRepository() {
-  const currentManifestSource = readFileSync(resolve(ROOT, MANIFEST_PATH), "utf8");
+  const currentManifestSource = readRepositoryText(MANIFEST_PATH, MAX_MANIFEST_BYTES);
   const manifest = parseReleaseCutoverManifest(currentManifestSource);
   if (currentManifestSource !== renderReleaseCutoverManifest(manifest)) {
     throw new Error(`${MANIFEST_PATH} is not in canonical generated form.`);
   }
-  const documentation = readFileSync(resolve(ROOT, DOCUMENTATION_PATH), "utf8");
+  const documentation = readRepositoryText(DOCUMENTATION_PATH);
   assertReleaseCutoverDocumentationCurrent(documentation, manifest);
-  const sources = new Map([
-    [DOCUMENTATION_PATH, documentation],
-    ...[...new Set(manifest.cutovers.map(({ executableOwner }) => executableOwner))].map((path) => [
+  const consumers = new Map(
+    releaseCutoverConsumerPaths(manifest).map((path) => [
       path,
-      readFileSync(resolve(ROOT, path), "utf8")
-    ]),
-    ...RELEASE_CUTOVER_BOUNDARY_TEST_PATHS.map((path) => [path, readFileSync(resolve(ROOT, path), "utf8")])
-  ]);
-  assertNoRawReleaseCutoverVersions(sources, manifest);
-  return Object.freeze({ cutovers: manifest.cutovers.length, checkedPaths: sources.size });
+      path === DOCUMENTATION_PATH ? documentation : readRepositoryText(path)
+    ])
+  );
+  assertReleaseCutoverConsumerInventory(consumers, manifest);
+  const auditedSources = new Map(consumers);
+  for (const path of RELEASE_CUTOVER_BOUNDARY_TEST_PATHS) {
+    if (!auditedSources.has(path)) auditedSources.set(path, readRepositoryText(path));
+  }
+  assertNoRawReleaseCutoverVersions(auditedSources, manifest);
+  return Object.freeze({ cutovers: manifest.cutovers.length, checkedPaths: auditedSources.size });
 }
 
 function main() {
@@ -271,7 +364,7 @@ function main() {
   }
   if (arguments_[0] === "--write") {
     const path = resolve(ROOT, DOCUMENTATION_PATH);
-    writeFileSync(path, replaceReleaseCutoverDocumentation(readFileSync(path, "utf8")), "utf8");
+    writeFileSync(path, replaceReleaseCutoverDocumentation(readRepositoryText(DOCUMENTATION_PATH)), "utf8");
   }
   checkReleaseCutoverRepository();
 }

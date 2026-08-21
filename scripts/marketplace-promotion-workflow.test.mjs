@@ -30,6 +30,7 @@ const materializeStep = `                - script: |
 `;
 const publicMediaStep = `                - script: |
                     set -euo pipefail
+                    boundary="$(node --input-type=module -e 'import { releaseCutoverVersion } from "./scripts/release-cutovers.mjs"; process.stdout.write(releaseCutoverVersion("public-media-prepublication"));')"
                     required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
                     case "$required" in
                       true)
@@ -37,7 +38,7 @@ const publicMediaStep = `                - script: |
                         node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
                         ;;
                       false)
-                        printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\\n' "$RELEASE_VERSION"
+                        printf 'Prepublication public-media verification starts with v%s; historical %s recovery is unchanged.\\n' "$boundary" "$RELEASE_VERSION"
                         ;;
                       *) exit 64 ;;
                     esac
@@ -127,12 +128,13 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
       ""
     ),
     source.replace("publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)", "false"),
+    source.replace('releaseCutoverVersion("public-media-prepublication")', 'releaseCutoverVersion("missing-cutover")'),
     source.replace("npm ci --ignore-scripts --prefix release-source", "npm ci --ignore-scripts"),
     source.replace(
       "node release-source/scripts/verify-public-media-surfaces.mjs",
       "node scripts/verify-public-media-surfaces.mjs"
     ),
-    source.replace("Prepublication public-media verification starts with v1.99.4", "starts whenever"),
+    source.replace("Prepublication public-media verification starts with v%s", "starts whenever"),
     source.replace("RELEASE_VERSION: $(releaseVersion)", "RELEASE_VERSION: $(releaseTag)"),
     source.replace(
       "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing",

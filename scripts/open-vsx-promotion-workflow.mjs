@@ -56,12 +56,15 @@ echo "ovsx did not confirm publication or an exact duplicate." >&2
 exit 1
 fi
 `;
-export const PUBLIC_MEDIA_CONTRACT_RUN = `required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
+export const PUBLIC_MEDIA_CONTRACT_RUN = `boundary="$(node --input-type=module -e 'import { releaseCutoverVersion } from "./scripts/release-cutovers.mjs"; process.stdout.write(releaseCutoverVersion("public-media-render-verification"));')"
+required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
+printf 'boundary=%s\\n' "$boundary" >> "$GITHUB_OUTPUT"
 printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
 `;
 export const PUBLIC_MEDIA_PREFLIGHT_RUN =
   'node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish';
-export const PUBLIC_MEDIA_RECOVERY_PREFLIGHT_RUN = `required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
+export const PUBLIC_MEDIA_RECOVERY_PREFLIGHT_RUN = `boundary="$(node --input-type=module -e 'import { releaseCutoverVersion } from "./scripts/release-cutovers.mjs"; process.stdout.write(releaseCutoverVersion("public-media-prepublication"));')"
+required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
 printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
 case "$required" in
 true)
@@ -69,7 +72,7 @@ npm ci --ignore-scripts --prefix release-source
 node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
 ;;
 false)
-printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\\n' "$RELEASE_VERSION"
+printf 'Prepublication public-media verification starts with v%s; historical %s recovery is unchanged.\\n' "$boundary" "$RELEASE_VERSION"
 ;;
 *) exit 64 ;;
 esac

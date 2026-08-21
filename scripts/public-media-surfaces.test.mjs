@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { PUBLIC_MEDIA_MAX_FILE_BYTES } from "./public-media-contract.mjs";
-import { checkReleaseCutoverRepository } from "./release-cutovers.mjs";
+import { checkReleaseCutoverRepository, releaseCutover } from "./release-cutovers.mjs";
 import {
   PUBLIC_MEDIA_ASSETS,
   PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH,
@@ -75,6 +75,8 @@ import {
 
 const sourceSha = "a".repeat(40);
 const version = "1.2.1";
+const renderCutoverId = "public-media-render-verification";
+const prepublicationCutoverId = "public-media-prepublication";
 const reviewedMediaSha = "9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22";
 const staleMediaSha = "5acf731e8b44e9ff82c4ac48fdc151210636da95";
 const productPrefix = `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/docs/images/readme/v1.2/`;
@@ -191,7 +193,9 @@ test("public media inventory declares one exact bounded series", () => {
 });
 
 test("public media release cutovers match their manifest and generated recovery documentation", () => {
-  assert.deepEqual(checkReleaseCutoverRepository(), { cutovers: 2, checkedPaths: 4 });
+  assert.deepEqual(checkReleaseCutoverRepository(), { cutovers: 2, checkedPaths: 13 });
+  assert.ok(releaseCutover(renderCutoverId).consumers.includes("scripts/public-media-surfaces.test.mjs"));
+  assert.ok(releaseCutover(prepublicationCutoverId).consumers.includes("scripts/public-media-surfaces.test.mjs"));
 });
 
 test("the complete checked-in public media inventory satisfies the release-surface contract", () => {
@@ -655,7 +659,7 @@ test("media ancestry launches Git with fixed time and output bounds", () => {
 });
 
 test("public media verification starts at v1.2.1 without changing historical recovery", () => {
-  for (const historical of ["0.9.0", "1.1.1", "1.2.0", "1.2.0-preview.1"]) {
+  for (const historical of ["0.9.0", "1.1.1", "1.2.0", "1.2.0-preview.1", "1.2.1-preview.1"]) {
     assert.equal(publicMediaVerificationRequired(historical), false);
   }
   for (const protectedVersion of ["1.2.1", "1.2.2", "1.99.0", "2.0.0-preview.1"]) {
@@ -666,10 +670,10 @@ test("public media verification starts at v1.2.1 without changing historical rec
 
 test("prepublication recovery uses the exact release-source contract starting with v1.99.4", () => {
   assert.equal(PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION, "1.99.4");
-  for (const historical of ["1.2.1", "1.2.2", "1.99.0", "1.99.1", "1.99.2", "1.99.3"]) {
+  for (const historical of ["1.2.1", "1.2.2", "1.99.0", "1.99.1", "1.99.2", "1.99.3", "1.99.4-preview.1"]) {
     assert.equal(publicMediaPrepublicationRequired(historical), false);
   }
-  for (const protectedVersion of ["1.99.4", "1.99.4-preview.1", "1.100.0", "2.0.0"]) {
+  for (const protectedVersion of ["1.99.4", "1.99.4+recovery.1", "1.100.0-preview.1", "2.0.0"]) {
     assert.equal(publicMediaPrepublicationRequired(protectedVersion), true);
   }
   assert.throws(() => publicMediaPrepublicationRequired("v1.99.4"), /must be semantic/u);
