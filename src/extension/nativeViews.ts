@@ -355,6 +355,13 @@ type RegisterNativeCommand = <T extends unknown[]>(
   thisArg?: unknown
 ) => vscode.Disposable;
 
+const NATIVE_PLAN_CONTEXT_KEYS = [
+  "openWrangler.hasDraft",
+  "openWrangler.canChangePlan",
+  "openWrangler.canInsertNotebookCode",
+  "openWrangler.canInsertRDocumentCode"
+] as const;
+
 export function registerNativeViews(
   extensionContext: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
@@ -414,21 +421,17 @@ function registerNativeViewsTransactional(
   registerCommand: RegisterNativeCommand
 ): NativeViewsOwner {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
-    const hasDraft = Boolean(snapshot?.metadata.draftStep);
-    const canChangePlan = canEditLatestStep(snapshot?.metadata);
-    void vscode.commands.executeCommand("setContext", "openWrangler.hasDraft", hasDraft);
-    void vscode.commands.executeCommand("setContext", "openWrangler.canChangePlan", canChangePlan);
-    void vscode.commands.executeCommand(
-      "setContext",
-      "openWrangler.canInsertNotebookCode",
-      snapshot?.metadata.capabilities?.notebookInsert === true
-    );
-    void vscode.commands.executeCommand(
-      "setContext",
-      "openWrangler.canInsertRDocumentCode",
+    const values = [
+      Boolean(snapshot?.metadata.draftStep),
+      canEditLatestStep(snapshot?.metadata),
+      snapshot?.metadata.capabilities?.notebookInsert === true,
       snapshot?.metadata.capabilities?.documentInsert === true
-    );
+    ] as const;
+    for (let index = 0; index < NATIVE_PLAN_CONTEXT_KEYS.length; index += 1) {
+      void vscode.commands.executeCommand("setContext", NATIVE_PLAN_CONTEXT_KEYS[index], values[index]);
+    }
   };
+  retain(nativePlanContextRollback());
   updatePlanContexts(coordinator.activeSession());
   const contextSubscription = retain(coordinator.onDidChangeActiveSession(updatePlanContexts));
   const filterProvider = retain(new OpenWranglerTreeProvider("filters", coordinator));
@@ -921,6 +924,19 @@ function registerNativeViewsTransactional(
     }
   };
   return owner;
+}
+
+function nativePlanContextRollback(): vscode.Disposable {
+  let disposed = false;
+  return {
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      for (const key of NATIVE_PLAN_CONTEXT_KEYS) {
+        void vscode.commands.executeCommand("setContext", key, false);
+      }
+    }
+  };
 }
 
 function disposeNativeDisposables(disposables: readonly vscode.Disposable[]): unknown[] {

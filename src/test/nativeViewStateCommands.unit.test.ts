@@ -21,8 +21,17 @@ describe("native state and presentation commands", () => {
 
   it("reverse-disposes every retained native registration after a late command failure", () => {
     nativeMocks.registrationFailure = "command:openWrangler.reportIssue";
+    const active = snapshotWithDraft();
+    active.metadata = {
+      ...active.metadata,
+      capabilities: {
+        ...active.metadata.capabilities,
+        notebookInsert: true,
+        documentInsert: true
+      }
+    };
 
-    expect(() => register(noDraftSnapshot())).toThrow("native registration failed: command:openWrangler.reportIssue");
+    expect(() => register(active)).toThrow("native registration failed: command:openWrangler.reportIssue");
 
     expect(nativeMocks.commands.size).toBe(0);
     expect(nativeMocks.treeDataProviders.size).toBe(0);
@@ -31,6 +40,18 @@ describe("native state and presentation commands", () => {
     expect(nativeMocks.coordinatorListeners.size).toBe(0);
     expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.openSettings");
     expect(nativeMocks.registrationDisposals.at(-1)).toBe("tree:openWrangler.operations");
+    expect(nativeMocks.executeCommand.mock.calls.slice(0, 4)).toEqual([
+      ["setContext", "openWrangler.hasDraft", true],
+      ["setContext", "openWrangler.canChangePlan", false],
+      ["setContext", "openWrangler.canInsertNotebookCode", true],
+      ["setContext", "openWrangler.canInsertRDocumentCode", true]
+    ]);
+    expect(nativeMocks.executeCommand.mock.calls.slice(-4)).toEqual([
+      ["setContext", "openWrangler.hasDraft", false],
+      ["setContext", "openWrangler.canChangePlan", false],
+      ["setContext", "openWrangler.canInsertNotebookCode", false],
+      ["setContext", "openWrangler.canInsertRDocumentCode", false]
+    ]);
   });
 
   it("rolls back coordinator side effects when a native provider constructor fails", () => {

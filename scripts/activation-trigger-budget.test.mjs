@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   activationEventClassifications,
   activationBudgetFailures,
+  activationTriggerContract,
   activationTriggerBudgets,
   dynamicEdgeClassifications,
   maximumDependencyFreeActivationMs,
@@ -95,17 +96,75 @@ test("production activation trigger classes stay within their closed runtime-sou
   assert.deepEqual(report.activationEvents.contributedCustomEditorOccurrenceMismatches, []);
 });
 
+test("one trigger contract owns both activation events and runtime closures", () => {
+  assert.deepEqual(Object.keys(activationTriggerBudgets), Object.keys(activationTriggerContract));
+  for (const [trigger, contract] of Object.entries(activationTriggerContract)) {
+    assert.deepEqual(activationTriggerBudgets[trigger], {
+      roots: contract.roots,
+      maximumModules: contract.maximumModules,
+      maximumBytes: contract.maximumBytes,
+      forbidden: contract.forbidden
+    });
+    for (const event of contract.events) assert.equal(activationEventClassifications[event], trigger);
+  }
+  assert.equal(
+    Object.values(activationTriggerContract).reduce((total, contract) => total + contract.events.length, 0),
+    Object.keys(activationEventClassifications).length
+  );
+});
+
 test("the elapsed activation gate rejects an injected synchronous registration delay", async () => {
   const measurement = await measureDependencyFreeActivation(undefined, {
     synchronousRegistrationDelayMs: maximumDependencyFreeActivationMs + 1
   });
 
-  assert.equal(measurement.elapsedMs, maximumDependencyFreeActivationMs + 1);
+  assert.equal(measurement.elapsedMs >= maximumDependencyFreeActivationMs + 1, true);
   assert.equal(measurement.withinBudget, false);
   assert.match(measurement.failure, /synchronous activation exceeded/u);
   const failures = activationBudgetFailures(completeInventoryReport({ elapsedActivation: measurement }), {});
   assert.equal(failures.length, 1);
   assert.match(failures[0], /elapsed activation/u);
+});
+
+test("the elapsed activation boundary includes cold module evaluation", async () => {
+  await withSourceFixture(async (root) => {
+    const sourceRoot = path.join(root, "src/extension");
+    await writeFile(
+      path.join(sourceRoot, "lazyActivationOwners.ts"),
+      `
+        export class LazyActivationOwners {
+          constructor(_context: unknown) {}
+          startBeforeFirstYield(): void {}
+          async extensionApiForCurrentEnvironment(): Promise<undefined> { return undefined; }
+          async shutdown(): Promise<void> {}
+        }
+      `,
+      "utf8"
+    );
+    await writeFile(
+      path.join(sourceRoot, "activate.ts"),
+      `
+        import { LazyActivationOwners } from "./lazyActivationOwners";
+        const coldStartedAt = performance.now();
+        while (performance.now() - coldStartedAt <= ${maximumDependencyFreeActivationMs + 1}) {}
+        export const MAX_SYNCHRONOUS_ACTIVATION_MS = ${maximumDependencyFreeActivationMs};
+        let owner: LazyActivationOwners | undefined;
+        export async function activate(context: unknown): Promise<undefined> {
+          owner = new LazyActivationOwners(context);
+          owner.startBeforeFirstYield();
+          return owner.extensionApiForCurrentEnvironment();
+        }
+        export async function deactivate(): Promise<void> { await owner?.shutdown(); }
+      `,
+      "utf8"
+    );
+
+    const measurement = await measureDependencyFreeActivation(root);
+
+    assert.equal(measurement.elapsedMs > maximumDependencyFreeActivationMs, true);
+    assert.equal(measurement.withinBudget, false);
+    assert.match(measurement.failure, /Cold dependency-free activation exceeded/u);
+  });
 });
 
 test("the gate rejects byte, module, and owner-isolation regressions", () => {
@@ -239,7 +298,7 @@ test("the syntax authority recognizes namespace and CommonJS createRequire loade
   );
 });
 
-test("the syntax authority rejects loader aliases that escape through object properties", async () => {
+test("the syntax authority rejects loader aliases that escape through unsupported storage", async () => {
   await withInventoryFixture(
     `
       import { createRequire as makeRequire } from "node:module";
@@ -251,8 +310,33 @@ test("the syntax authority rejects loader aliases that escape through object pro
     { activationEvents: [], contributes: { commands: [] } },
     async () => assert.fail("a property-held loader must not escape the closed dynamic-edge model"),
     {},
-    /loader alias escapes through an object property/u
+    /loader alias escapes through unsupported use/u
   );
+});
+
+test("the syntax authority rejects loader aliases through arrays, callbacks, returns, class fields, and invocation helpers", async () => {
+  const escapes = [
+    ["array", "const loaders = [require];"],
+    ["callback", "declare function consume(value: unknown): void; consume(require);"],
+    ["return", "function escapedLoader(): unknown { return require; }"],
+    ["class-field", "class LoaderOwner { readonly load = require; }"],
+    [
+      "direct-create-require",
+      'import { createRequire } from "node:module"; createRequire(import.meta.url)("./escaped.js");'
+    ],
+    ["call", 'require.call(undefined, "./escaped.js");'],
+    ["apply", 'require.apply(undefined, ["./escaped.js"]);'],
+    ["bind", "const escapedLoader = require.bind(undefined);"]
+  ];
+  for (const [name, source] of escapes) {
+    await withInventoryFixture(
+      source,
+      { activationEvents: [], contributes: { commands: [] } },
+      async () => assert.fail(`${name} must not escape the closed dynamic-edge model`),
+      {},
+      /loader alias escapes through unsupported use/u
+    );
+  }
 });
 
 test("transitive source discovery resolves .mjs and .cjs imports to .mts and .cts sources", async () => {
