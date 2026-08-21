@@ -431,6 +431,25 @@ if (mode === "hold") {
       mode: 0o600
     }
   );
+} else if (mode === "complete-python-payload") {
+  const probe = [
+    "import importlib.resources as resources",
+    "import json",
+    "import os",
+    "import pathlib",
+    "import qualification_linked_package as package",
+    "root = pathlib.Path(os.environ['OPEN_WRANGLER_PYTHON_PACKAGE_SNAPSHOT'])",
+    "matches = list(root.rglob('libqualification_payload.so.1.2'))",
+    "if len(matches) != 1: raise RuntimeError('versioned native payload was not uniquely snapshotted')",
+    "payload = {'data': json.loads(resources.files(package).joinpath('data/payload.json').read_text(encoding='utf-8')), 'native': matches[0].read_text(encoding='utf-8').strip(), 'value': package.VALUE}",
+    "pathlib.Path(__import__('sys').argv[1]).write_text(json.dumps(payload, sort_keys=True) + '\\n', encoding='utf-8')"
+  ].join("\n");
+  execFileSync(process.env.OPEN_WRANGLER_PYTHON, ["-I", "-c", probe, argument("--result")], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "ignore",
+    windowsHide: true
+  });
 } else if (mode === "mutate-python-inventory") {
   const kind = argument("--kind");
   const purelib = execFileSync(
@@ -438,6 +457,7 @@ if (mode === "hold") {
     ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
     { encoding: "utf8", env: process.env, windowsHide: true }
   ).trim();
+  await chmod(purelib, 0o700);
   const mutations = {
     "entry-point": [
       join(purelib, "qualification_escape-1.0.dist-info", "entry_points.txt"),
@@ -479,6 +499,7 @@ if (mode === "hold") {
   ).trim();
   const original = await readFile(target);
   const originalMode = Number((await lstat(target, { bigint: true })).mode & 0o777n);
+  await chmod(dirname(target), 0o700);
   await chmod(target, 0o600);
   await writeFile(target, Buffer.concat([original, Buffer.from("# temporary mutation\n", "utf8")]));
   await writeFile(target, original);
@@ -495,6 +516,7 @@ if (mode === "hold") {
   ).trim();
   const retained = `${target}.qualification-retained`;
   const original = await readFile(target);
+  await chmod(dirname(target), 0o700);
   await rename(target, retained);
   await writeFile(target, Buffer.concat([original, Buffer.from("# transient replacement\n", "utf8")]), {
     flag: "wx",

@@ -1,7 +1,18 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, opendir, readFile, realpath, readlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  readFile,
+  realpath,
+  readlink,
+  writeFile
+} from "node:fs/promises";
 import {
   delimiter,
   dirname,
@@ -3314,7 +3325,7 @@ async function bindPythonDirectories(layoutState, directories, phase) {
   await verifyPythonDirectorySelection(layoutState.pythonDirectories, phase);
 }
 
-async function verifyPinnedPythonPayload(value) {
+async function verifyPinnedPythonPayload(value, { rehash = false } = {}) {
   const source = await lstat(value.path, { bigint: true });
   const target = await lstat(value.target, { bigint: true });
   if (
@@ -3322,7 +3333,8 @@ async function verifyPinnedPythonPayload(value) {
     !sameImmutableSnapshot(value.snapshot, target) ||
     (await realpath(value.path)) !== value.target ||
     (await realpath(value.target)) !== value.target ||
-    (await digestPinnedPayload(value.handle, value.snapshot, `Python payload ${value.path}`)) !== value.digest
+    (rehash &&
+      (await digestPinnedPayload(value.handle, value.snapshot, `Python payload ${value.path}`)) !== value.digest)
   ) {
     fail(`Python payload ${value.path} changed during qualification`);
   }
@@ -3353,6 +3365,7 @@ function validatePythonPayloadSelection(payloads, phase) {
     "entry-point",
     "import-archive",
     "native-extension",
+    "package-data",
     "package-metadata",
     "path-configuration",
     "python-bytecode",
@@ -3466,6 +3479,13 @@ async function bindPythonPayloads(layoutState, payloads, phase) {
 
 async function closePythonPayloadPins(layoutState) {
   await finishWithOwnedCleanup(null, [
+    ...(layoutState?.pythonNamespaceDirectoryPins ?? []).map((pin, index) => ({
+      label: `Python execution namespace directory ${String(index)}`,
+      run: async () => {
+        if (process.platform !== "win32") await pin.handle.chmod(0o700);
+        await pin.handle.close();
+      }
+    })),
     ...(layoutState?.pythonPayloadPins ?? []).map((pin, index) => ({
       label: `Python payload ${String(index)}`,
       run: () => pin.handle.close()
@@ -3481,6 +3501,24 @@ async function closePythonPayloadPins(layoutState) {
   ]);
 }
 
+async function verifyPythonLinkedDirectories(directories, phase) {
+  for (const directory of directories ?? []) {
+    const source = await lstat(directory.path, { bigint: true });
+    const target = await lstat(directory.target, { bigint: true });
+    if (
+      !source.isSymbolicLink() ||
+      !target.isDirectory() ||
+      target.isSymbolicLink() ||
+      !sameImmutableSnapshot(directory.sourceSnapshot, source) ||
+      !sameImmutableSnapshot(directory.targetSnapshot, target) ||
+      (await realpath(directory.path)) !== directory.target ||
+      (await realpath(directory.target)) !== directory.target
+    ) {
+      fail(`Python ${phase} linked package directory ${directory.path} changed during qualification`);
+    }
+  }
+}
+
 class OwnedProcessTreeError extends Error {}
 
 function requireOwnedProcessTree(result, label) {
@@ -3494,6 +3532,7 @@ const PYTHON_INVENTORY_SCRIPT = [
   "import hashlib",
   "import json",
   "import os",
+  "import re",
   "import site",
   "import sys",
   "import sysconfig",
@@ -3502,27 +3541,29 @@ const PYTHON_INVENTORY_SCRIPT = [
   "payloads = {}",
   "walked_entries = 0",
   "walked_path_bytes = 0",
-  "def payload_kind(name, scripts=False):",
+  "snapshot_roots = {os.path.realpath(value) for value in sys.argv[2:]}",
+  "def payload_kind(name, scripts=False, complete=False):",
   "    if scripts: return 'script'",
   "    folded = name.casefold()",
   "    if folded == 'record': return 'record'",
   "    if folded == 'entry_points.txt': return 'entry-point'",
   "    if folded in ('dependency_links.txt', 'direct_url.json', 'installer', 'metadata', 'namespace_packages.txt', 'pkg-info', 'requires.txt', 'top_level.txt', 'wheel'): return 'package-metadata'",
   "    if folded.endswith('.pth'): return 'path-configuration'",
-  "    if folded.endswith(('.so', '.pyd', '.dll', '.dylib')): return 'native-extension'",
+  "    if folded.endswith(('.so', '.pyd', '.dll', '.dylib')) or re.search(r'(?:\\.so(?:\\.[0-9]+)+|\\.dylib(?:\\.[0-9]+)+|(?:\\.[0-9]+)+\\.dylib)$', folded): return 'native-extension'",
   "    if folded.endswith(('.py', '.pyw')): return 'python-source'",
   "    if folded.endswith(('.pyc', '.pyo')): return 'python-bytecode'",
-  "    return None",
+  "    return 'package-data' if complete else None",
   "def add_payload(path, kind):",
   "    global walked_path_bytes",
   "    absolute = os.path.abspath(path)",
   "    target = os.path.realpath(absolute)",
+  "    if os.path.islink(absolute) and not os.path.exists(target): return",
   "    if not os.path.isfile(target): raise RuntimeError('Python payload is not a regular file: ' + absolute)",
   "    walked_path_bytes += len(os.fsencode(absolute)) + len(os.fsencode(target))",
   "    if walked_path_bytes > MAX_PATH_BYTES: raise RuntimeError('Python payload path inventory exceeded its bound')",
   "    payloads[absolute] = {'kind': kind, 'path': absolute, 'target': target}",
   "    if len(payloads) > MAX_FILES: raise RuntimeError('Python payload inventory exceeded its file bound')",
-  "def scan_root(root, scripts=False):",
+  "def scan_root(root, scripts=False, complete=False):",
   "    global walked_entries, walked_path_bytes",
   "    for current, directories, files in os.walk(root, topdown=True, followlinks=False):",
   "        directories.sort(key=os.fsencode)",
@@ -3532,16 +3573,16 @@ const PYTHON_INVENTORY_SCRIPT = [
   "        if walked_entries > MAX_FILES * 8 or walked_path_bytes > MAX_PATH_BYTES:",
   "            raise RuntimeError('Python payload discovery exceeded its bound')",
   "        for name in files:",
-  "            kind = payload_kind(name, scripts)",
+  "            kind = payload_kind(name, scripts, complete)",
   "            if kind is not None: add_payload(os.path.join(current, name), kind)",
   "roots = []",
   "for value in sys.path:",
   "    if not value: continue",
   "    absolute = os.path.abspath(value)",
-  "    if os.path.isdir(absolute): roots.append((absolute, False))",
+  "    if os.path.isdir(absolute): roots.append((absolute, False, os.path.realpath(absolute) in snapshot_roots))",
   "    elif os.path.isfile(absolute): add_payload(absolute, 'import-archive')",
-  "for root, scripts in sorted(set(roots)):",
-  "    scan_root(root, scripts)",
+  "for root, scripts, complete in sorted(set(roots)):",
+  "    scan_root(root, scripts, complete)",
   "venv_configuration = os.path.join(os.path.realpath(sys.prefix), 'pyvenv.cfg')",
   "if os.path.isfile(venv_configuration): add_payload(venv_configuration, 'venv-configuration')",
   "packages = []",
@@ -3557,7 +3598,7 @@ const PYTHON_INVENTORY_SCRIPT = [
   "    packages.append({'location': os.path.realpath(str(distribution.locate_file(''))), 'metadataPath': metadata_path, 'metadataSha256': metadata_digest, 'name': name or '', 'version': version or ''})",
   "packages.sort(key=lambda value: (value['name'].casefold(), value['name'], value['version'], value['metadataPath']))",
   "scripts_root = os.path.abspath(sysconfig.get_path('scripts'))",
-  "if os.path.isdir(scripts_root): scan_root(scripts_root, True)",
+  "if os.path.isdir(scripts_root): scan_root(scripts_root, True, False)",
   "payload = {",
   "    'basePrefix': os.path.realpath(sys.base_prefix),",
   "    'cacheTag': sys.implementation.cache_tag,",
@@ -3583,7 +3624,7 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
   await verifyPythonDirectorySelection(layoutState.pythonDirectories, `${phase} prelaunch`);
   const result = await runOwnedCommand(
     layoutState.layout.pythonExecutable,
-    ["-I", "-c", PYTHON_INVENTORY_SCRIPT, inventoryPath],
+    ["-I", "-c", PYTHON_INVENTORY_SCRIPT, inventoryPath, ...layoutState.pythonSnapshotRoots],
     {
       allowedSymbolicLinkTarget:
         layoutState.pythonEntry.type === "symbolic-link" ? layoutState.pythonEntry.target : undefined,
@@ -3718,6 +3759,11 @@ function isSupportedCpythonVersion(major, minor) {
   );
 }
 
+function cpythonPreSitePrefixMode(major, minor) {
+  if (!isSupportedCpythonVersion(major, minor)) fail("task Python version is unsupported");
+  return minor >= 14 ? "venv" : "base";
+}
+
 async function captureVenvConfiguration(layoutState, bootstrapPython) {
   const path = join(layoutState.layout.venv, "pyvenv.cfg");
   const pin = await openPinnedRegularFile(path, 16 * 1024, "task Python venv configuration");
@@ -3752,10 +3798,20 @@ async function captureVenvConfiguration(layoutState, bootstrapPython) {
       fail("task Python venv executable does not bind the bootstrap interpreter");
     }
     layoutState.runnerFilePins.push({ label: "task Python venv configuration", maximumBytes: 16 * 1024, pin });
+    const [majorText, minorText, microText] = values.version.split(".");
+    const major = Number(majorText);
+    const minor = Number(minorText);
+    const micro = Number(microText);
+    if (!isSupportedCpythonVersion(major, minor) || !Number.isSafeInteger(micro)) {
+      fail("task Python venv configuration is unsupported");
+    }
     return {
       home,
       includeSystemSitePackages: false,
       keys: Object.keys(values).sort(),
+      major,
+      micro,
+      minor,
       version: values.version
     };
   } catch (error) {
@@ -3842,11 +3898,12 @@ async function capturePythonRuntimeLayout(
             join(standardLibrary, "lib-dynload")
           ];
     const sysPath = values.slice(11, -1);
+    const preSitePrefixMode = cpythonPreSitePrefixMode(major, minor);
+    const expectedPreSitePrefix = preSitePrefixMode === "venv" ? await realpath(layoutState.layout.venv) : basePrefix;
     if (
       !isSupportedCpythonVersion(major, minor) ||
       values[4] !== `cpython-${String(major)}${String(minor)}` ||
-      prefix === basePrefix ||
-      prefix !== (await realpath(layoutState.layout.venv)) ||
+      prefix !== expectedPreSitePrefix ||
       JSON.stringify(sysPath) !== JSON.stringify(expectedSysPath)
     ) {
       fail("Python runtime layout does not bind the private venv");
@@ -3862,7 +3919,9 @@ async function capturePythonRuntimeLayout(
       micro,
       minor,
       platlibdir: values[2],
-      prefix,
+      prefix: await realpath(layoutState.layout.venv),
+      preSitePrefix: prefix,
+      preSitePrefixMode,
       sysPath
     };
   } catch (error) {
@@ -3890,7 +3949,7 @@ async function canonicalExistingPythonRoots(candidates) {
   return roots;
 }
 
-function pythonPayloadKind(name) {
+function pythonPayloadKind(name, includePackageData = false) {
   const folded = name.toLocaleLowerCase("en-US");
   if (folded === "record") return "record";
   if (folded === "entry_points.txt") return "entry-point";
@@ -3910,12 +3969,15 @@ function pythonPayloadKind(name) {
     return "package-metadata";
   }
   if (folded.endsWith(".pth")) return "path-configuration";
-  if ([".so", ".pyd", ".dll", ".dylib"].some((suffix) => folded.endsWith(suffix))) {
+  if (
+    [".so", ".pyd", ".dll", ".dylib"].some((suffix) => folded.endsWith(suffix)) ||
+    /(?:\.so(?:\.[0-9]+)+|\.dylib(?:\.[0-9]+)+|(?:\.[0-9]+)+\.dylib)$/u.test(folded)
+  ) {
     return "native-extension";
   }
   if (folded.endsWith(".py") || folded.endsWith(".pyw")) return "python-source";
   if (folded.endsWith(".pyc") || folded.endsWith(".pyo")) return "python-bytecode";
-  return null;
+  return includePackageData ? "package-data" : null;
 }
 
 function pythonDirectoryRecord(path, value) {
@@ -3931,10 +3993,16 @@ function pythonDirectoryRecord(path, value) {
   };
 }
 
-async function discoverPythonPayloads(searchPaths, venv, { includeVenv = true } = {}) {
+async function discoverPythonPayloads(
+  searchPaths,
+  venv,
+  { completeRoots = [], followDirectoryLinks = false, includeVenv = true } = {}
+) {
   const directories = new Map();
+  const linkedDirectories = [];
   const payloads = new Map();
   const snapshots = new Map();
+  const complete = new Set(completeRoots);
   let entries = 0;
   let pathBytes = 0;
   const decodeName = (value) => {
@@ -3958,7 +4026,13 @@ async function discoverPythonPayloads(searchPaths, venv, { includeVenv = true } 
   };
   const addPayload = async (path, kind) => {
     const sourceBefore = await lstat(path, { bigint: true });
-    const target = await realpath(path);
+    let target;
+    try {
+      target = await realpath(path);
+    } catch (error) {
+      if (sourceBefore.isSymbolicLink() && error?.code === "ENOENT") return;
+      throw error;
+    }
     const targetValue = await lstat(target, { bigint: true });
     if (!targetValue.isFile() || targetValue.isSymbolicLink()) {
       fail(`Python payload is not a regular file: ${path}`);
@@ -3969,18 +4043,22 @@ async function discoverPythonPayloads(searchPaths, venv, { includeVenv = true } 
     snapshots.set(path, { source: sourceBefore, target: targetValue });
     if (payloads.size > MAX_PYTHON_PAYLOAD_FILES) fail("Python payload inventory exceeded its file bound");
   };
-  const scanDirectory = async (path, scripts = false) => {
-    const before = await lstat(path, { bigint: true });
-    if (!before.isDirectory() || before.isSymbolicLink() || (await realpath(path)) !== path) {
-      fail(`Python payload directory is not canonical: ${path}`);
+  const scanDirectory = async (logicalPath, physicalPath, scripts, includePackageData, activeTargets) => {
+    const before = await lstat(physicalPath, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink() || (await realpath(physicalPath)) !== physicalPath) {
+      fail(`Python payload directory is not canonical: ${logicalPath}`);
     }
-    directories.set(path, pythonDirectoryRecord(path, before));
+    if (activeTargets.has(physicalPath)) fail(`Python linked package directory cycle includes ${logicalPath}`);
+    const active = new Set(activeTargets);
+    active.add(physicalPath);
+    directories.set(physicalPath, pythonDirectoryRecord(physicalPath, before));
     if (directories.size > MAX_PYTHON_PAYLOAD_DIRECTORIES) {
       fail("Python payload directory inventory exceeded its bound");
     }
-    accountPath(path);
+    accountPath(logicalPath);
+    if (logicalPath !== physicalPath) accountPath(physicalPath);
     const values = [];
-    const stream = await opendir(path, { encoding: process.platform === "win32" ? "utf8" : "buffer" });
+    const stream = await opendir(physicalPath, { encoding: process.platform === "win32" ? "utf8" : "buffer" });
     try {
       for await (const entry of stream) {
         entries += 1;
@@ -3997,17 +4075,41 @@ async function discoverPythonPayloads(searchPaths, venv, { includeVenv = true } 
     }
     values.sort((left, right) => Buffer.compare(left.bytes, right.bytes));
     for (const entry of values) {
-      const child = join(path, entry.name);
+      const child = join(logicalPath, entry.name);
       const value = await lstat(child, { bigint: true });
       if (value.isDirectory() && !value.isSymbolicLink()) {
-        await scanDirectory(child, scripts);
+        const target = await realpath(child);
+        await scanDirectory(child, target, scripts, includePackageData, active);
         continue;
       }
-      const kind = scripts ? "script" : pythonPayloadKind(entry.name);
+      if (value.isSymbolicLink()) {
+        let target;
+        try {
+          target = await realpath(child);
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw error;
+        }
+        const targetValue = await lstat(target, { bigint: true });
+        if (targetValue.isDirectory() && !targetValue.isSymbolicLink()) {
+          if (!followDirectoryLinks) fail(`Python package directory link is unsupported: ${child}`);
+          linkedDirectories.push({
+            path: child,
+            sourceSnapshot: value,
+            target,
+            targetSnapshot: targetValue
+          });
+          await scanDirectory(child, target, scripts, includePackageData, active);
+          continue;
+        }
+      }
+      const kind = scripts ? "script" : pythonPayloadKind(entry.name, includePackageData);
       if (kind !== null && (value.isFile() || value.isSymbolicLink())) await addPayload(child, kind);
     }
-    const after = await lstat(path, { bigint: true });
-    if (!sameImmutableSnapshot(before, after)) fail(`Python payload directory ${path} changed while inspected`);
+    const after = await lstat(physicalPath, { bigint: true });
+    if (!sameImmutableSnapshot(before, after)) {
+      fail(`Python payload directory ${logicalPath} changed while inspected`);
+    }
   };
   for (const candidate of [...new Set(searchPaths)]) {
     let value;
@@ -4017,24 +4119,28 @@ async function discoverPythonPayloads(searchPaths, venv, { includeVenv = true } 
       if (error?.code === "ENOENT") continue;
       throw error;
     }
-    if (value.isDirectory() && !value.isSymbolicLink()) await scanDirectory(await realpath(candidate));
-    else if (value.isFile() || value.isSymbolicLink()) await addPayload(candidate, "import-archive");
+    if (value.isDirectory() && !value.isSymbolicLink()) {
+      const target = await realpath(candidate);
+      await scanDirectory(candidate, target, false, complete.has(candidate), new Set());
+    } else if (value.isFile() || value.isSymbolicLink()) await addPayload(candidate, "import-archive");
     else fail(`Python import search path is unsupported: ${candidate}`);
   }
   if (includeVenv) {
     const scriptsRoot = join(venv, process.platform === "win32" ? "Scripts" : "bin");
-    await scanDirectory(await realpath(scriptsRoot), true);
+    const target = await realpath(scriptsRoot);
+    await scanDirectory(target, target, true, false, new Set());
     await addPayload(join(venv, "pyvenv.cfg"), "venv-configuration");
   }
   const byPath = (left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8"));
   return {
     directories: [...directories.values()].sort(byPath),
+    linkedDirectories,
     payloads: [...payloads.values()].sort(byPath),
     snapshots
   };
 }
 
-async function writePinnedPythonSnapshotFile(pin, destination, snapshotRoot) {
+async function writePinnedPythonSnapshotFile(pin, destination, snapshotRoot, options) {
   const parent = dirname(destination);
   await mkdir(parent, { mode: 0o700, recursive: true });
   const canonicalParent = await realpath(parent);
@@ -4044,43 +4150,67 @@ async function writePinnedPythonSnapshotFile(pin, destination, snapshotRoot) {
   await verifyPinnedPythonPayload(pin);
   let output;
   try {
-    output = await open(
-      destination,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
-      0o600
-    );
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(64 * 1024);
-    let offset = 0;
-    while (offset < pin.size) {
-      const { bytesRead } = await pin.handle.read(buffer, 0, Math.min(buffer.length, pin.size - offset), offset);
-      if (bytesRead === 0) fail(`Python source payload ${pin.path} ended while it was snapshotted`);
-      let written = 0;
-      while (written < bytesRead) {
-        const result = await output.write(buffer, written, bytesRead - written, offset + written);
-        if (result.bytesWritten === 0) fail("Python package snapshot write made no progress");
-        written += result.bytesWritten;
+    if (process.platform === "linux") {
+      await copyFile(
+        `/proc/self/fd/${String(pin.handle.fd)}`,
+        destination,
+        constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE
+      );
+      await options.afterPythonSnapshotCopyForTest?.({ destination, source: pin.path });
+      output = await open(destination, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    } else {
+      output = await open(
+        destination,
+        constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
+        0o600
+      );
+      const buffer = Buffer.alloc(1024 * 1024);
+      let offset = 0;
+      while (offset < pin.size) {
+        const { bytesRead } = await pin.handle.read(buffer, 0, Math.min(buffer.length, pin.size - offset), offset);
+        if (bytesRead === 0) fail(`Python source payload ${pin.path} ended while it was snapshotted`);
+        let written = 0;
+        while (written < bytesRead) {
+          const result = await output.write(buffer, written, bytesRead - written, offset + written);
+          if (result.bytesWritten === 0) fail("Python package snapshot write made no progress");
+          written += result.bytesWritten;
+        }
+        offset += bytesRead;
       }
-      hash.update(buffer.subarray(0, bytesRead));
-      offset += bytesRead;
+      await options.afterPythonSnapshotCopyForTest?.({ destination, source: pin.path });
     }
+    const unsealed = await output.stat({ bigint: true });
+    const unsealedNamed = await lstat(destination, { bigint: true });
+    if (
+      !unsealed.isFile() ||
+      unsealed.nlink !== 1n ||
+      unsealedNamed.isSymbolicLink() ||
+      !sameImmutableSnapshot(unsealed, unsealedNamed) ||
+      unsealed.size !== BigInt(pin.size) ||
+      (await realpath(destination)) !== destination ||
+      (await digestPinnedPayload(output, unsealed, `Python package snapshot ${destination}`)) !== pin.digest
+    ) {
+      fail(`Python package snapshot ${destination} was not descriptor-bound before sealing`);
+    }
+    await output.chmod(0o400);
     await output.sync();
     const value = await output.stat({ bigint: true });
-    if (!value.isFile() || value.nlink !== 1n || value.size !== BigInt(pin.size) || hash.digest("hex") !== pin.digest) {
+    if (!value.isFile() || value.nlink !== 1n || (value.mode & 0o777n) !== 0o400n || value.size !== BigInt(pin.size)) {
       fail(`Python package snapshot ${destination} does not match its pinned source`);
     }
-    await output.close();
-    output = undefined;
-    await chmod(destination, 0o400);
+    await options.afterPythonSnapshotDescriptorWriteForTest?.({ destination, source: pin.path });
     const named = await lstat(destination, { bigint: true });
     if (
       !named.isFile() ||
       named.isSymbolicLink() ||
       named.nlink !== 1n ||
+      !sameImmutableSnapshot(value, named) ||
       (await realpath(destination)) !== destination
     ) {
       fail(`Python package snapshot ${destination} is not one private regular file`);
     }
+    await output.close();
+    output = undefined;
   } catch (error) {
     await finishWithOwnedCleanup(error, [
       { label: `Python package snapshot ${destination}`, run: () => output?.close() }
@@ -4104,7 +4234,13 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
     );
   }
   layoutState.pythonSourceRootPins = rootPins;
-  const source = await discoverPythonPayloads(externalRoots, layoutState.layout.venv, { includeVenv: false });
+  const source = await discoverPythonPayloads(externalRoots, layoutState.layout.venv, {
+    completeRoots: externalRoots,
+    followDirectoryLinks: true,
+    includeVenv: false
+  });
+  layoutState.pythonSourceDirectories = source.directories;
+  layoutState.pythonSourceLinkedDirectories = source.linkedDirectories;
   const opened = await openPythonPayloadSet(source.payloads, source.snapshots, "source");
   layoutState.pythonSourcePayloadPins = opened.pins;
   layoutState.pythonSourcePayloadSummary = opened.summary;
@@ -4115,9 +4251,12 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
   for (const [index, pin] of rootPins.entries()) {
     await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)}`);
   }
+  await verifyPythonDirectorySelection(source.directories, "source");
+  await verifyPythonLinkedDirectories(source.linkedDirectories, "source");
   for (const pin of opened.pins) await verifyPinnedPythonPayload(pin);
 
   const snapshotRoots = [];
+  const digestMappings = [];
   for (const [index, root] of externalRoots.entries()) {
     const snapshotRoot = join(layoutState.layout.pythonPackageSnapshot, `root-${String(index).padStart(4, "0")}`);
     await mkdir(snapshotRoot, { mode: 0o700 });
@@ -4129,14 +4268,86 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
         fail(`Python source payload ${pin.path} escaped its package root`);
       }
       const destination = join(snapshotRoot, suffix);
-      await writePinnedPythonSnapshotFile(pin, destination, snapshotRoot);
+      await writePinnedPythonSnapshotFile(pin, destination, snapshotRoot, options);
+      digestMappings.push({
+        destination,
+        sha256: pin.digest,
+        size: pin.size,
+        source: pin.path
+      });
     }
   }
   for (const [index, pin] of rootPins.entries()) {
     await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)} after snapshot`);
   }
+  await verifyPythonDirectorySelection(source.directories, "source after snapshot");
+  await verifyPythonLinkedDirectories(source.linkedDirectories, "source after snapshot");
   for (const pin of opened.pins) await verifyPinnedPythonPayload(pin);
-  return { snapshotRoots, sourceManifest: opened.summary };
+  digestMappings.sort((left, right) =>
+    Buffer.compare(Buffer.from(left.destination, "utf8"), Buffer.from(right.destination, "utf8"))
+  );
+  return {
+    digestMapping: {
+      files: digestMappings.length,
+      sha256: sha256(Buffer.from(JSON.stringify(digestMappings), "utf8"))
+    },
+    snapshotRoots,
+    sourceManifest: opened.summary
+  };
+}
+
+async function pinSealedPythonDirectory(path) {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat({ bigint: true });
+    const named = await lstat(path, { bigint: true });
+    if (
+      !opened.isDirectory() ||
+      named.isSymbolicLink() ||
+      !sameImmutableSnapshot(opened, named) ||
+      (await realpath(path)) !== path
+    ) {
+      fail(`Python execution namespace directory ${path} is not private`);
+    }
+    if (process.platform !== "win32") await handle.chmod(0o500);
+    const sealed = await handle.stat({ bigint: true });
+    const sealedNamed = await lstat(path, { bigint: true });
+    if (
+      !sealed.isDirectory() ||
+      !sameImmutableSnapshot(sealed, sealedNamed) ||
+      (process.platform !== "win32" && (sealed.mode & 0o777n) !== 0o500n) ||
+      (await realpath(path)) !== path
+    ) {
+      fail(`Python execution namespace directory ${path} was not sealed through its descriptor`);
+    }
+    return { handle, path, snapshot: sealed };
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [
+      { label: `Python execution namespace directory ${path}`, run: () => handle?.close() }
+    ]);
+  }
+}
+
+async function sealPythonExecutionNamespace(layoutState, snapshotRoots) {
+  const discovered = await discoverPythonPayloads(snapshotRoots, layoutState.layout.venv, {
+    completeRoots: snapshotRoots,
+    includeVenv: false
+  });
+  const paths = [...discovered.directories.map(({ path }) => path).sort((left, right) => right.length - left.length)];
+  const pins = [];
+  try {
+    for (const path of [...new Set(paths)]) pins.push(await pinSealedPythonDirectory(path));
+  } catch (error) {
+    await finishWithOwnedCleanup(
+      error,
+      pins.map((pin, index) => ({
+        label: `Python execution namespace directory ${String(index)}`,
+        run: () => pin.handle.close()
+      }))
+    );
+  }
+  layoutState.pythonNamespaceDirectoryPins = pins;
 }
 
 async function preparePythonImportBoundary(
@@ -4163,8 +4374,9 @@ async function preparePythonImportBoundary(
       ? join(layoutState.layout.venv, "Lib", "site-packages")
       : join(layoutState.layout.venv, runtime.platlibdir, version, "site-packages");
   await fileIdentity(privateSite, "directory");
-  const candidates =
-    process.platform === "win32"
+  const candidates = options.onlyAdditionalPackageRootsForTest
+    ? []
+    : process.platform === "win32"
       ? [join(runtime.basePrefix, "Lib", "site-packages")]
       : [
           join(runtime.basePrefix, "local", runtime.platlibdir, version, "site-packages"),
@@ -4182,15 +4394,18 @@ async function preparePythonImportBoundary(
     if (root.includes("\n") || root.includes("\r")) fail("Python package root contains a line break");
   }
   const snapshot = await createPythonPackageSnapshot(layoutState, externalRoots, options);
+  layoutState.pythonSnapshotRoots = snapshot.snapshotRoots;
   const pathConfiguration = join(privateSite, "openwrangler-pinned-packages.pth");
   await writeFile(
     pathConfiguration,
     `import sys; sys.dont_write_bytecode=True; sys.modules['sitecustomize']=sys; sys.modules['usercustomize']=sys\n${snapshot.snapshotRoots.join("\n")}\n`,
     { flag: "wx", mode: 0o400 }
   );
+  await sealPythonExecutionNamespace(layoutState, [...snapshot.snapshotRoots, privateSite]);
   const preload = await discoverPythonPayloads(
     [...runtime.sysPath, privateSite, ...snapshot.snapshotRoots],
-    layoutState.layout.venv
+    layoutState.layout.venv,
+    { completeRoots: snapshot.snapshotRoots }
   );
   layoutState.pythonExpectedSysPath = [...runtime.sysPath, privateSite, ...snapshot.snapshotRoots];
   layoutState.pythonPayloadDiscoverySnapshots = preload.snapshots;
@@ -4198,6 +4413,7 @@ async function preparePythonImportBoundary(
   const preloadManifest = await bindPythonPayloads(layoutState, preload.payloads, "preload");
   await options.afterPythonPreinventoryForTest?.({
     externalRoots,
+    digestMapping: snapshot.digestMapping,
     pathConfiguration,
     payloads: JSON.parse(layoutState.pythonPayloadSelection),
     privateSite,
@@ -4205,10 +4421,23 @@ async function preparePythonImportBoundary(
   });
   await bindPythonDirectories(layoutState, JSON.parse(layoutState.pythonDirectorySelection), "prelaunch");
   await bindPythonPayloads(layoutState, JSON.parse(layoutState.pythonPayloadSelection), "prelaunch");
+  await options.afterPythonNamespaceVerificationForTest?.({
+    payloads: JSON.parse(layoutState.pythonPayloadSelection),
+    snapshotRoots: snapshot.snapshotRoots
+  });
+  await bindPythonDirectories(layoutState, JSON.parse(layoutState.pythonDirectorySelection), "startup");
+  await bindPythonPayloads(layoutState, JSON.parse(layoutState.pythonPayloadSelection), "startup");
   return {
+    digestMapping: snapshot.digestMapping,
     externalRoots,
     preloadManifest,
     privateSite,
+    runtime: {
+      basePrefix: runtime.basePrefix,
+      preSitePrefix: runtime.preSitePrefix,
+      preSitePrefixMode: runtime.preSitePrefixMode,
+      version: `${String(runtime.major)}.${String(runtime.minor)}.${String(runtime.micro)}`
+    },
     snapshotRoots: snapshot.snapshotRoots,
     sourceManifest: snapshot.sourceManifest,
     venvConfiguration
@@ -4314,8 +4543,10 @@ async function bootstrapPythonEnvironment(assignmentPath, assignment, layoutStat
     failure: null,
     importBoundary: {
       externalRoots: importBoundary.externalRoots,
+      digestMapping: importBoundary.digestMapping,
       privateSite: importBoundary.privateSite,
       preloadManifest: importBoundary.preloadManifest,
+      runtime: importBoundary.runtime,
       snapshotRoots: importBoundary.snapshotRoots,
       sourceManifest: importBoundary.sourceManifest,
       venvConfiguration: importBoundary.venvConfiguration
@@ -4354,13 +4585,20 @@ async function verifyLayout(layoutState) {
     await verifyPinnedExecutable(layoutState.pythonExecutablePin);
   }
   for (const pin of layoutState.pythonPayloadPins ?? []) {
-    await verifyPinnedPythonPayload(pin);
+    await verifyPinnedPythonPayload(pin, { rehash: true });
   }
   for (const pin of layoutState.pythonSourcePayloadPins ?? []) {
-    await verifyPinnedPythonPayload(pin);
+    await verifyPinnedPythonPayload(pin, { rehash: true });
   }
   for (const [index, pin] of (layoutState.pythonSourceRootPins ?? []).entries()) {
     await verifyPinnedPythonSourceRoot(pin, `Python package source root ${String(index)} final`);
+  }
+  if (layoutState.pythonSourceDirectories) {
+    await verifyPythonDirectorySelection(layoutState.pythonSourceDirectories, "source final");
+  }
+  await verifyPythonLinkedDirectories(layoutState.pythonSourceLinkedDirectories, "source final");
+  for (const [index, pin] of (layoutState.pythonNamespaceDirectoryPins ?? []).entries()) {
+    await verifyPinnedDirectory(pin, `Python execution namespace directory ${String(index)}`);
   }
   if (layoutState.pythonDirectories) {
     await verifyPythonDirectorySelection(layoutState.pythonDirectories, "final");
@@ -4499,7 +4737,10 @@ async function runQualification({
   afterExecutableSnapshotWriteForTest,
   afterGitExecutableSnapshotWriteForTest,
   afterGitWrapperPreparedForTest,
+  afterPythonNamespaceVerificationForTest,
   afterPythonPreinventoryForTest,
+  afterPythonSnapshotCopyForTest,
+  afterPythonSnapshotDescriptorWriteForTest,
   afterPythonSourceDiscoveryForTest,
   additionalPythonPackageRootsForTest,
   assignmentPath,
@@ -4514,6 +4755,7 @@ async function runQualification({
   commandRunnerForTest,
   cleanupActionsForTest = [],
   environment = process.env,
+  onlyAdditionalPythonPackageRootsForTest = false,
   pytestTempAfterOpenForTest,
   pytestTempLimitsForTest,
   pytestTempMountIdentityForTest,
@@ -4570,7 +4812,11 @@ async function runQualification({
       bootstrap = await bootstrapPythonEnvironment(assignmentPath, assignment, layoutState, environment, {
         ownedRunnerForTest: bootstrapCommandRunnerForTest,
         additionalPackageRootsForTest: additionalPythonPackageRootsForTest,
+        onlyAdditionalPackageRootsForTest: onlyAdditionalPythonPackageRootsForTest,
+        afterPythonNamespaceVerificationForTest,
         afterPythonPreinventoryForTest,
+        afterPythonSnapshotCopyForTest,
+        afterPythonSnapshotDescriptorWriteForTest,
         afterPythonSourceDiscoveryForTest,
         platformForTest: bootstrapCommandPlatformForTest,
         terminationGraceMs,
@@ -4781,6 +5027,7 @@ function parseCommandLine(arguments_) {
 }
 
 const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
+  cpythonPreSitePrefixMode,
   finishWithOwnedCleanup,
   isSupportedCpythonVersion,
   parseGitConfigManifestBytes,

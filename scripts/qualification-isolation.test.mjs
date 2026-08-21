@@ -8,6 +8,7 @@ import {
   chmod,
   copyFile,
   link,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -886,7 +887,22 @@ test("pins repository Python and its package inventory independently for each ta
     );
     assert.match(valueReceipt.bootstrap.importBoundary.preloadManifest.sha256, /^[0-9a-f]{64}$/u);
     assert.match(valueReceipt.bootstrap.importBoundary.sourceManifest.sha256, /^[0-9a-f]{64}$/u);
+    assert.equal(
+      valueReceipt.bootstrap.importBoundary.digestMapping.files,
+      valueReceipt.bootstrap.importBoundary.sourceManifest.files
+    );
+    assert.match(valueReceipt.bootstrap.importBoundary.digestMapping.sha256, /^[0-9a-f]{64}$/u);
     assert.match(valueReceipt.bootstrap.importBoundary.venvConfiguration.version, /^3\.(?:10|11|12|13|14)\./u);
+    const { minor } = valueReceipt.bootstrap.importBoundary.venvConfiguration;
+    assert.equal(
+      valueReceipt.bootstrap.importBoundary.runtime.version,
+      valueReceipt.bootstrap.importBoundary.venvConfiguration.version
+    );
+    assert.equal(valueReceipt.bootstrap.importBoundary.runtime.preSitePrefixMode, minor >= 14 ? "venv" : "base");
+    assert.equal(
+      valueReceipt.bootstrap.importBoundary.runtime.preSitePrefix,
+      minor >= 14 ? valueReceipt.environment.venv : valueReceipt.bootstrap.importBoundary.runtime.basePrefix
+    );
     assert.equal(
       valueReceipt.pythonInventory.before.packages.some((package_) => package_.metadataPath.startsWith(peerRoot)),
       false
@@ -898,6 +914,10 @@ test("pins repository Python and its package inventory independently for each ta
 test("admits only the supported CPython 3.10 through 3.14 pre-site contract", () => {
   for (const minor of [10, 11, 12, 13, 14]) {
     assert.equal(QUALIFICATION_ISOLATION_TEST_BOUNDARY.isSupportedCpythonVersion(3, minor), true);
+    assert.equal(
+      QUALIFICATION_ISOLATION_TEST_BOUNDARY.cpythonPreSitePrefixMode(3, minor),
+      minor >= 14 ? "venv" : "base"
+    );
   }
   for (const [major, minor] of [
     [2, 14],
@@ -907,6 +927,151 @@ test("admits only the supported CPython 3.10 through 3.14 pre-site contract", ()
   ]) {
     assert.equal(QUALIFICATION_ISOLATION_TEST_BOUNDARY.isSupportedCpythonVersion(major, minor), false);
   }
+});
+
+test("binds snapshot mode and destination identity before descriptor close", async (context) => {
+  const value = await fixture(context, "python-snapshot-descriptor-binding");
+  const task = await addTask(value, "python-snapshot-descriptor-binding");
+  const shared = join(value.root, "descriptor-python-packages");
+  const external = join(value.root, "external-mode-target.py");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "qualification_descriptor_probe.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  await writeFile(external, "VALUE = 2\n", { flag: "wx", mode: 0o600 });
+  const modeBefore = Number((await lstat(external, { bigint: true })).mode & 0o777n);
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      afterPythonSnapshotDescriptorWriteForTest: async ({ destination }) => {
+        if (!destination.endsWith("qualification_descriptor_probe.py")) return;
+        await rename(destination, `${destination}.retained`);
+        await symlink(external, destination, "file");
+      },
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python package snapshot .* is not one private regular file/u
+  );
+  assert.equal(Number((await lstat(external, { bigint: true })).mode & 0o777n), modeBefore);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("rejects a pre-seal hardlink without changing the external target mode", async (context) => {
+  const value = await fixture(context, "python-snapshot-hardlink-binding");
+  const task = await addTask(value, "python-snapshot-hardlink-binding");
+  const shared = join(value.root, "hardlink-python-packages");
+  const external = join(value.root, "external-hardlink-target.py");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "qualification_hardlink_probe.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  await writeFile(external, "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  const modeBefore = Number((await lstat(external, { bigint: true })).mode & 0o777n);
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      afterPythonSnapshotCopyForTest: async ({ destination }) => {
+        if (!destination.endsWith("qualification_hardlink_probe.py")) return;
+        await rename(destination, `${destination}.retained`);
+        await link(external, destination);
+      },
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python package snapshot .* was not descriptor-bound before sealing/u
+  );
+  assert.equal(Number((await lstat(external, { bigint: true })).mode & 0o777n), modeBefore);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("rejects a post-verification execution-namespace A-to-B-to-A restoration", async (context) => {
+  const value = await fixture(context, "python-namespace-restoration");
+  const task = await addTask(value, "python-namespace-restoration");
+  const shared = join(value.root, "namespace-python-packages");
+  const marker = join(value.root, "restored-namespace-executed.txt");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "qualification_namespace_probe.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      afterPythonNamespaceVerificationForTest: async ({ snapshotRoots }) => {
+        const root = snapshotRoots[0];
+        const retained = `${root}.retained`;
+        const attacker = `${root}.attacker`;
+        await chmod(join(root, ".."), 0o700);
+        await mkdir(attacker, { mode: 0o700 });
+        await writeFile(
+          join(attacker, "sitecustomize.py"),
+          `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text('executed\\n', encoding='utf-8')\n`,
+          { flag: "wx", mode: 0o400 }
+        );
+        await rename(root, retained);
+        await rename(attacker, root);
+        await rename(root, attacker);
+        await rename(retained, root);
+      },
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python (?:startup directory|execution namespace directory).* changed|identity changed/u
+  );
+  assert.equal(existsSync(marker), false);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("snapshots package data, linked package directories, and versioned native libraries", async (context) => {
+  const value = await fixture(context, "python-complete-package-payload");
+  const task = await addTask(value, "python-complete-package-payload");
+  const shared = join(value.root, "complete-python-packages");
+  const linkedTarget = join(value.root, "linked-package-target");
+  await mkdir(join(linkedTarget, "data"), { mode: 0o700, recursive: true });
+  await writeFile(join(linkedTarget, "__init__.py"), "VALUE = 'linked-package'\n", { flag: "wx", mode: 0o600 });
+  await writeFile(join(linkedTarget, "data", "payload.json"), '{"value":42}\n', { flag: "wx", mode: 0o600 });
+  await mkdir(shared, { mode: 0o700 });
+  await symlink(
+    linkedTarget,
+    join(shared, "qualification_linked_package"),
+    process.platform === "win32" ? "junction" : "dir"
+  );
+  await writeFile(join(shared, "libqualification_payload.so.1.2"), "versioned-native-payload\n", {
+    flag: "wx",
+    mode: 0o600
+  });
+  await writeFile(join(shared, "qualification-package.data"), "unclassified-package-data\n", {
+    flag: "wx",
+    mode: 0o600
+  });
+  const resultPath = join(task.assignment.stateRoot, "temp", "complete-python-payload.json");
+  const valueReceipt = await runQualification({
+    additionalPythonPackageRootsForTest: [shared],
+    assignmentPath: task.assignmentPath,
+    command: [process.execPath, child, "complete-python-payload", "--result", resultPath],
+    environment: runnerEnvironment(),
+    onlyAdditionalPythonPackageRootsForTest: true,
+    terminationGraceMs: 5_000,
+    timeoutMs: 120_000,
+    writeOutput: false
+  });
+  assert.equal(valueReceipt.eligible, true);
+  assert.deepEqual(JSON.parse(await readFile(resultPath, "utf8")), {
+    data: { value: 42 },
+    native: "versioned-native-payload",
+    value: "linked-package"
+  });
+  assert.ok(valueReceipt.bootstrap.importBoundary.sourceManifest.kinds["package-data"] > 0);
+  assert.ok(valueReceipt.bootstrap.importBoundary.sourceManifest.kinds["native-extension"] > 0);
 });
 
 test("rejects a package-root A-to-B-to-A restoration before site startup", async (context) => {
@@ -927,6 +1092,7 @@ test("rejects a package-root A-to-B-to-A restoration before site startup", async
       assignmentPath: task.assignmentPath,
       command: [process.execPath, child, "record"],
       environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
       terminationGraceMs: 5_000,
       timeoutMs: 120_000,
       writeOutput: false
@@ -949,10 +1115,11 @@ test("rejects a verified snapshot replacement before Python can import it", asyn
   await assert.rejects(
     runQualification({
       additionalPythonPackageRootsForTest: [shared],
-      afterPythonPreinventoryForTest: async ({ payloads }) => {
+      afterPythonNamespaceVerificationForTest: async ({ payloads }) => {
         const target = payloads.find(({ path }) => path.endsWith("qualification_snapshot_probe.py"))?.path;
         assert.ok(target);
         const retained = `${target}.retained`;
+        await chmod(join(target, ".."), 0o700);
         await rename(target, retained);
         await writeFile(
           target,
@@ -963,11 +1130,12 @@ test("rejects a verified snapshot replacement before Python can import it", asyn
       assignmentPath: task.assignmentPath,
       command: [process.execPath, child, "record"],
       environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
       terminationGraceMs: 5_000,
       timeoutMs: 120_000,
       writeOutput: false
     }),
-    /Python (?:prelaunch directory|payload) .* changed during qualification/u
+    /Python (?:startup directory|payload) .* changed during qualification/u
   );
   assert.equal(existsSync(marker), false);
   assert.equal((await receipt(task)).eligible, false);
@@ -991,6 +1159,7 @@ test("shadows a symlinked ambient sitecustomize with the pinned task boundary", 
     assignmentPath: task.assignmentPath,
     command: [process.execPath, child, "record"],
     environment: runnerEnvironment(),
+    onlyAdditionalPythonPackageRootsForTest: true,
     terminationGraceMs: 5_000,
     timeoutMs: 120_000,
     writeOutput: false
@@ -1025,6 +1194,9 @@ test("rejects a symlinked or reparse-point package root", async (context) => {
 
 test("rejects every newly exposed Python package payload class", async (context) => {
   const value = await fixture(context, "python-inventory-mutation");
+  const shared = join(value.root, "minimal-python-packages");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "minimal_package.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
   for (const kind of [
     "source",
     "case-source",
@@ -1038,9 +1210,11 @@ test("rejects every newly exposed Python package payload class", async (context)
     const task = await addTask(value, `python-inventory-${kind}`);
     await assert.rejects(
       runQualification({
+        additionalPythonPackageRootsForTest: [shared],
         assignmentPath: task.assignmentPath,
         command: [process.execPath, child, "mutate-python-inventory", "--kind", kind],
         environment: runnerEnvironment(),
+        onlyAdditionalPythonPackageRootsForTest: true,
         terminationGraceMs: 5_000,
         timeoutMs: 120_000,
         writeOutput: false
@@ -1057,11 +1231,16 @@ test("rejects every newly exposed Python package payload class", async (context)
 test("rejects a restored mutation of an already pinned Python payload", async (context) => {
   const value = await fixture(context, "python-payload-restored-mutation");
   const task = await addTask(value, "python-payload-restored-mutation");
+  const shared = join(value.root, "minimal-python-packages");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "minimal_package.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
   await assert.rejects(
     runQualification({
+      additionalPythonPackageRootsForTest: [shared],
       assignmentPath: task.assignmentPath,
       command: [process.execPath, child, "replace-python-payload"],
       environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
       terminationGraceMs: 5_000,
       timeoutMs: 120_000,
       writeOutput: false
@@ -1076,11 +1255,16 @@ test("rejects a restored mutation of an already pinned Python payload", async (c
 test("rejects an atomic Python payload swap even when the original pathname is restored", async (context) => {
   const value = await fixture(context, "python-payload-atomic-swap");
   const task = await addTask(value, "python-payload-atomic-swap");
+  const shared = join(value.root, "minimal-python-packages");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "minimal_package.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
   await assert.rejects(
     runQualification({
+      additionalPythonPackageRootsForTest: [shared],
       assignmentPath: task.assignmentPath,
       command: [process.execPath, child, "swap-python-payload"],
       environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
       terminationGraceMs: 5_000,
       timeoutMs: 120_000,
       writeOutput: false
@@ -1118,6 +1302,7 @@ test("pins shared path configuration before startup without executing shared pth
     assignmentPath: task.assignmentPath,
     command: [process.execPath, child, "record"],
     environment: runnerEnvironment(),
+    onlyAdditionalPythonPackageRootsForTest: true,
     terminationGraceMs: 5_000,
     timeoutMs: 120_000,
     writeOutput: false
@@ -1149,9 +1334,14 @@ test("rejects a pth insertion after preinventory before any startup code can run
   const value = await fixture(context, "python-preinventory-pth-swap");
   const task = await addTask(value, "python-preinventory-pth-swap");
   const marker = join(value.root, "late-pth-executed.txt");
+  const shared = join(value.root, "minimal-python-packages");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "minimal_package.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
   await assert.rejects(
     runQualification({
+      additionalPythonPackageRootsForTest: [shared],
       afterPythonPreinventoryForTest: async ({ privateSite }) => {
+        await chmod(privateSite, 0o700);
         await writeFile(
           join(privateSite, "late-hostile.pth"),
           `import pathlib; pathlib.Path(${JSON.stringify(marker)}).write_text('executed\\n', encoding='utf-8')\n`,
@@ -1161,6 +1351,7 @@ test("rejects a pth insertion after preinventory before any startup code can run
       assignmentPath: task.assignmentPath,
       command: [process.execPath, child, "record"],
       environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
       terminationGraceMs: 5_000,
       timeoutMs: 120_000,
       writeOutput: false
@@ -1174,11 +1365,16 @@ test("rejects a pth insertion after preinventory before any startup code can run
 test("fails hard before protected paths reopen when Python inventory loses tree ownership", async (context) => {
   const value = await fixture(context, "python-inventory-tree-ownership");
   const task = await addTask(value, "python-inventory-tree-ownership");
+  const shared = join(value.root, "minimal-python-packages");
+  await mkdir(shared, { mode: 0o700 });
+  await writeFile(join(shared, "minimal_package.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
   await assert.rejects(
     runQualification({
+      additionalPythonPackageRootsForTest: [shared],
       assignmentPath: task.assignmentPath,
       command: [process.execPath, child, "record"],
       environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
       pythonInventoryAfterRunnerForTest: async () => {
         await appendFile(task.assignmentPath, "\n", "utf8");
         return {
