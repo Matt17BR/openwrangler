@@ -225,7 +225,47 @@ export async function writePackagedGridClipboard(
   timeoutMs = packagedGridClipboardOperationTimeoutMs
 ): Promise<void> {
   const boundedValue = validatePriorPackagedClipboard(value);
-  await runPackagedGridClipboardOperation(() => hostClipboard.writeText(boundedValue), timeoutMs);
+  await runNoncancelablePackagedGridClipboardWrite(() => hostClipboard.writeText(boundedValue), timeoutMs);
+}
+
+function runNoncancelablePackagedGridClipboardWrite<T>(operation: () => Thenable<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let softDeadlineReached = false;
+    let settled = false;
+    // Clipboard writes cannot be cancelled. The soft deadline classifies the operation, but the journey retains
+    // ownership until settlement; a write that never settles is left to the outer editor/process deadline.
+    const timeout = setTimeout(
+      () => {
+        softDeadlineReached = true;
+      },
+      Math.max(1, timeoutMs)
+    );
+    const finish = (complete: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      complete();
+    };
+
+    let pending: PromiseLike<T>;
+    try {
+      pending = operation();
+    } catch {
+      finish(() => reject(new PackagedGridClipboardOperationFailure()));
+      return;
+    }
+    void Promise.resolve(pending).then(
+      (value) =>
+        finish(() => {
+          if (softDeadlineReached) {
+            reject(new PackagedGridClipboardOperationFailure());
+          } else {
+            resolve(value);
+          }
+        }),
+      () => finish(() => reject(new PackagedGridClipboardOperationFailure()))
+    );
+  });
 }
 
 function runPackagedGridClipboardOperation<T>(operation: () => Thenable<T>, timeoutMs: number): Promise<T> {
