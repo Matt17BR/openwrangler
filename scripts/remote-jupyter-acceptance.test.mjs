@@ -24,6 +24,7 @@ import {
   runRemoteJupyterAcceptanceLifecycle,
   startRemoteJupyterAcceptanceFixture
 } from "./remote-jupyter-acceptance.mjs";
+import { readRemoteRPackageLockFile } from "./remote-r-package-lock.mjs";
 import {
   createEditorAcceptancePrivatePathIdentityLatch,
   createEditorAcceptancePrivatePathSafetyPolicy,
@@ -52,6 +53,7 @@ const BOUNDED_RUNNER_ENVIRONMENT = Object.freeze(
     ].filter((entry) => typeof entry[1] === "string")
   )
 );
+const REMOTE_R_PACKAGE_LOCK = await readRemoteRPackageLockFile();
 
 function createFakeChild(pid = 12345) {
   const child = new EventEmitter();
@@ -204,14 +206,24 @@ function createFakeDocker({ alterResult } = {}) {
       state.imageTag = valueAfter(input.args, "--tag");
       const dockerfile = valueAfter(input.args, "--file");
       const imageId = dockerfile.endsWith("Dockerfile.r.base") ? BASE_IMAGE_ID : IMAGE_ID;
-      state.images.set(state.ownerId, { imageId, imageTag: state.imageTag, ownerId: state.ownerId });
+      const lockArgument = valuesAfter(input.args, "--build-arg").find((value) =>
+        value.startsWith("OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256=")
+      );
+      state.images.set(state.ownerId, {
+        imageId,
+        imageTag: state.imageTag,
+        ownerId: state.ownerId,
+        completeLockDigest: lockArgument?.slice("OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256=".length)
+      });
       result = success(`${imageId}\n`);
     } else if (command === "image" && operation === "inspect") {
       const reference = input.args.at(-1);
       const image = [...state.images.values()].find(
         (candidate) => candidate.imageId === reference || candidate.imageTag === reference
       );
-      result = image ? success(`${image.imageId}\t${image.ownerId}\n`) : { exitCode: 1, stdout: "", stderr: "missing" };
+      result = image
+        ? success(`${image.imageId}\t${image.ownerId}\t${image.completeLockDigest ?? ""}\n`)
+        : { exitCode: 1, stdout: "", stderr: "missing" };
     } else if (command === "run") {
       state.containerName = valueAfter(input.args, "--name");
       state.hostname = input.args.find((value) => value.startsWith("--hostname="))?.slice("--hostname=".length);
@@ -256,6 +268,10 @@ function valueAfter(args, flag) {
   const index = args.indexOf(flag);
   assert.notEqual(index, -1, `Expected ${flag} in ${args.join(" ")}`);
   return args[index + 1];
+}
+
+function valuesAfter(args, flag) {
+  return args.flatMap((value, index) => (value === flag ? [args[index + 1]] : []));
 }
 
 function argumentCount(args, value) {
@@ -397,11 +413,11 @@ linuxTest("the R fixture selects its fixed Dockerfile and exact IRkernel", async
   );
   assert.match(builds[1].args[builds[1].args.indexOf("--tag") + 1], /^openwrangler-remote-r-jupyter:/u);
   assert.equal(argumentCount(builds[0].args, "--build-arg"), 0);
-  assert.equal(argumentCount(builds[1].args, "--build-arg"), 1);
-  assert.equal(
-    valueAfter(builds[1].args, "--build-arg"),
-    `OPEN_WRANGLER_REMOTE_R_BASE_IMAGE=${valueAfter(builds[0].args, "--tag")}`
-  );
+  assert.equal(argumentCount(builds[1].args, "--build-arg"), 2);
+  assert.deepEqual(valuesAfter(builds[1].args, "--build-arg"), [
+    `OPEN_WRANGLER_REMOTE_R_BASE_IMAGE=${valueAfter(builds[0].args, "--tag")}`,
+    `OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256=${REMOTE_R_PACKAGE_LOCK.digest}`
+  ]);
   for (const build of builds) {
     for (const flag of ["--quiet", "--no-cache", "--pull=false", "--file", "--label", "--tag"]) {
       assert.equal(argumentCount(build.args, flag), 1, `expected one ${flag} in ${build.args.join(" ")}`);
@@ -1616,7 +1632,7 @@ linuxTest("an unproven built-image label latches uncertainty without cleanup acc
   const fake = createFakeDocker({
     alterResult({ input, result }) {
       if (input.args[0] === "image" && input.args[1] === "inspect") {
-        return success(`${IMAGE_ID}\tsomeone-else\n`);
+        return success(`${IMAGE_ID}\tsomeone-else\t\n`);
       }
       return result;
     }
@@ -1637,6 +1653,38 @@ linuxTest("an unproven built-image label latches uncertainty without cleanup acc
     false
   );
   assert.equal(fake.state.imagePresent, true);
+});
+
+linuxTest("an R image complete-lock label drift latches ownership uncertainty before handoff", async () => {
+  const fake = createFakeDocker({
+    alterResult({ input, result, state }) {
+      if (input.args[0] === "image" && input.args[1] === "inspect" && input.args.at(-1) === IMAGE_ID) {
+        const image = [...state.images.values()].find((candidate) => candidate.imageId === IMAGE_ID);
+        return success(`${IMAGE_ID}\t${image.ownerId}\t${"f".repeat(64)}\n`);
+      }
+      return result;
+    }
+  });
+
+  let error;
+  try {
+    await startWithFake(fake, {
+      fixtureKind: "r",
+      fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(remoteJupyterOwnershipMayBeLive(error));
+  assert.match(error.message, /runtime image ownership could not be established/u);
+  assert.equal(
+    fake.commands.some(({ args }) => args[0] === "run"),
+    false
+  );
+  assert.equal(
+    fake.commands.some(({ args }) => args[0] === "image" && args[1] === "rm"),
+    false
+  );
 });
 
 linuxTest("cleanup refuses mutation when the Docker engine identity changes and latches uncertainty", async () => {
@@ -1661,6 +1709,23 @@ linuxTest("cleanup refuses mutation when the Docker engine identity changes and 
   const commandCount = fake.commands.length;
   await assert.rejects(fixture.cleanup(), /ownership-uncertain/u);
   assert.equal(fake.commands.length, commandCount);
+});
+
+linuxTest("R cleanup revalidates the exact complete-lock receipt before image removal", async () => {
+  const fake = createFakeDocker();
+  const fixture = await startWithFake(fake, {
+    fixtureKind: "r",
+    fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+  });
+  const runtimeImage = [...fake.state.images.values()].find((image) => image.imageId === IMAGE_ID);
+  runtimeImage.completeLockDigest = "e".repeat(64);
+
+  await assert.rejects(fixture.cleanup(), /disappearance could not be proven/u);
+  assert.equal(
+    fake.commands.some(({ args }) => args[0] === "image" && args[1] === "rm" && args.at(-1) === IMAGE_ID),
+    false
+  );
+  assert.equal(fake.state.images.has(runtimeImage.ownerId), true);
 });
 
 linuxTest("cleanup fails when disappearance cannot be attested", async () => {
@@ -1998,7 +2063,7 @@ test("the container definition pins its base and direct wheels and never receive
   assert.equal(REMOTE_JUPYTER_SETUP_HEARTBEAT_MS, 60_000);
 });
 
-test("the R container definition pins R, package snapshots, and its exact kernelspec", async () => {
+test("the R container definition installs only the verified complete archive lock", async () => {
   const baseDockerfile = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r.base"), "utf8");
   const dockerfile = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r"), "utf8");
   const dockerignore = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", ".dockerignore"), "utf8");
@@ -2012,19 +2077,11 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.ok(
     dockerfile.startsWith("ARG OPEN_WRANGLER_REMOTE_R_BASE_IMAGE\nFROM ${OPEN_WRANGLER_REMOTE_R_BASE_IMAGE}\n")
   );
-  assert.match(dockerfile, /^ARG R_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-03-10$/mu);
-  assert.match(dockerfile, /^ARG R_SUPPLEMENTAL_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-06-01$/mu);
-  for (const [name, version] of [
-    ["IRKERNEL_VERSION", "1.3.2"],
-    ["JSONLITE_VERSION", "2.0.0"],
-    ["RLANG_VERSION", "1.1.7"],
-    ["TIBBLE_VERSION", "3.3.1"],
-    ["DATA_TABLE_VERSION", "1.18.2.1"],
-    ["COLLAPSE_VERSION", "2.1.7"],
-    ["NANOPARQUET_VERSION", "0.5.1"]
-  ]) {
-    assert.match(dockerfile, new RegExp(`^ARG ${name}=${version.replaceAll(".", "\\.")}$`, "mu"));
-  }
+  assert.match(dockerfile, /^ARG OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256$/mu);
+  assert.match(
+    dockerfile,
+    /^LABEL io\.openwrangler\.remote-jupyter\.r-lock-sha256=\$\{OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256\}$/mu
+  );
   assert.match(baseDockerfile, /--only-binary=:all:/u);
   assert.match(baseDockerfile, /--require-hashes/u);
   assert.match(baseDockerfile, /--requirement \/opt\/openwrangler\/requirements\.r\.txt/u);
@@ -2040,14 +2097,11 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   for (const forbidden of [/apt-get/u, /python3 -m venv/u, /python -I -m pip install/u, /COPY requirements\.r\.txt/u]) {
     assert.doesNotMatch(dockerfile, forbidden);
   }
-  assert.match(dockerfile, /supplemental_repository <- Sys\.getenv\("R_SUPPLEMENTAL_REPOSITORY"\)/u);
-  assert.match(dockerfile, /collapse = Sys\.getenv\("COLLAPSE_VERSION"\)/u);
-  assert.match(dockerfile, /nanoparquet = Sys\.getenv\("NANOPARQUET_VERSION"\)/u);
-  assert.match(dockerfile, /install\.packages\(c\("collapse", "nanoparquet"\), repos = supplemental_repository/u);
-  assert.match(dockerfile, /as\.character\(getRversion\(\)\) == "4\.5\.2"/u);
-  assert.match(dockerfile, /identical\(actual, expected\)/u);
-  assert.match(dockerfile, /name = "openwrangler-r-remote-acceptance"/u);
-  assert.match(dockerfile, /displayname = "R \(Open Wrangler Remote\)"/u);
+  assert.doesNotMatch(dockerfile, /install\.packages|R_REPOSITORY|R_SUPPLEMENTAL_REPOSITORY/u);
+  assert.match(dockerfile, /COPY r-packages\.lock\.json install-r-packages\.py \/opt\/openwrangler\//u);
+  assert.match(dockerfile, /python -I \/opt\/openwrangler\/install-r-packages\.py/u);
+  assert.match(dockerfile, /--expected-lock-sha256="\$\{OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256\}"/u);
+  assert.match(dockerfile, /^ENV R_LIBS_SITE=\/opt\/openwrangler\/r-library$/mu);
   assert.match(dockerfile, /^USER 65532:65532$/mu);
   assert.match(dockerfile, /^ENTRYPOINT \["python", "-I", "\/opt\/openwrangler\/server\.py"\]$/mu);
   assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(dockerfile), false);
@@ -2061,6 +2115,8 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.match(dockerignore, /^!Dockerfile\.r\.base$/mu);
   assert.match(dockerignore, /^!requirements\.r\.in$/mu);
   assert.match(dockerignore, /^!requirements\.r\.txt$/mu);
+  assert.match(dockerignore, /^!r-packages\.lock\.json$/mu);
+  assert.match(dockerignore, /^!install-r-packages\.py$/mu);
   for (const phase of [
     "jupyter-r-remote-base-build",
     "jupyter-r-remote-runtime-build",

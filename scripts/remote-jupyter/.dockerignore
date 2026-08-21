@@ -6,5 +6,7 @@
 !requirements.in
 !requirements.r.txt
 !requirements.r.in
+!r-packages.lock.json
+!install-r-packages.py
 !inject-token.py
 !server.py

@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { readRemoteRPackageLockFile } from "./remote-r-package-lock.mjs";
+
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
 
 export const REMOTE_JUPYTER_INPUT_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.in");
@@ -247,11 +249,16 @@ export async function checkRemoteRJupyterLockFiles() {
 }
 
 async function main() {
-  const [pythonFixture, rFixture] = await Promise.all([checkRemoteJupyterLockFiles(), checkRemoteRJupyterLockFiles()]);
+  const [pythonFixture, rFixture, rPackages] = await Promise.all([
+    checkRemoteJupyterLockFiles(),
+    checkRemoteRJupyterLockFiles(),
+    readRemoteRPackageLockFile()
+  ]);
   const server = pythonFixture.directEntries.find(({ name }) => name === "jupyter-server");
   process.stdout.write(
     `Remote Jupyter locks are canonical: Python ${pythonFixture.lockedEntries.length} packages, ` +
-      `R ${rFixture.lockedEntries.length} packages, jupyter-server ${server?.version}.\n`
+      `R ${rFixture.lockedEntries.length} Python packages and ${rPackages.packageCount} locked R archives, ` +
+      `jupyter-server ${server?.version}, R lock ${rPackages.digest}.\n`
   );
 }
 

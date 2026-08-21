@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -21,6 +23,15 @@ import {
   validateRemoteJupyterLock,
   validateRemoteRJupyterLock
 } from "./remote-jupyter-lock.mjs";
+import {
+  REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES,
+  REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES,
+  REMOTE_R_PACKAGE_LOCK_PATH,
+  REMOTE_R_PACKAGE_LOCK_PROTOCOL,
+  readRemoteRPackageLockFile,
+  remoteRPackageLockDigest,
+  validateRemoteRPackageLock
+} from "./remote-r-package-lock.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
 
@@ -43,6 +54,132 @@ test("the R fixture has a separate server-only lock without Python dataframe eng
   for (const forbidden of ["duckdb", "fsspec", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
     assert.equal(names.has(forbidden), false);
   }
+});
+
+test("the remote R archive lock is complete, canonical, bounded, and category-exact", async () => {
+  const result = await readRemoteRPackageLockFile();
+  assert.equal(result.lock.protocol, REMOTE_R_PACKAGE_LOCK_PROTOCOL);
+  assert.equal(result.lock.target.rVersion, "4.5.2");
+  assert.equal(result.lock.target.codename, "noble");
+  assert.equal(result.lock.target.architecture, "x86_64");
+  assert.equal(result.digest, remoteRPackageLockDigest(await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8")));
+  assert.ok(result.packageCount >= 20 && result.packageCount <= 128);
+  assert.ok(result.aggregateBytes > 0 && result.aggregateBytes <= REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES);
+  assert.deepEqual(
+    result.lock.roots.runtime.map(({ name }) => name),
+    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]
+  );
+  assert.deepEqual(result.lock.roots.fixtures, [{ name: "collapse", repository: "supplemental" }]);
+  const packages = new Map(result.lock.packages.map((entry) => [entry.name, entry]));
+  assert.equal(packages.get("collapse").direct, false);
+  assert.equal(packages.get("collapse").category, "fixture");
+  assert.equal(packages.get("Rcpp").category, "fixture");
+  for (const name of ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]) {
+    assert.equal(packages.get(name)?.direct, true);
+    assert.equal(packages.get(name)?.category, "runtime");
+  }
+  for (const entry of result.lock.packages) {
+    assert.ok(entry.bytes <= REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES);
+    for (const dependency of entry.dependencies) {
+      assert.ok(packages.get(dependency).installOrder < entry.installOrder);
+    }
+  }
+});
+
+test("the remote R archive lock rejects closure, category, URL, bound, duplicate, and canonical drift", async () => {
+  const text = await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8");
+  const lock = JSON.parse(text);
+  const mutate = (callback) => {
+    const candidate = structuredClone(lock);
+    callback(candidate);
+    return `${JSON.stringify(candidate, null, 2)}\n`;
+  };
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => (candidate.packages.find(({ name }) => name === "collapse").direct = true))
+      ),
+    /runtime-direct classification/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => (candidate.packages.find(({ name }) => name === "Rcpp").category = "runtime"))
+      ),
+    /category reachability/u
+  );
+  assert.throws(
+    () => validateRemoteRPackageLock(mutate((candidate) => candidate.packages.pop())),
+    /missing dependency|root or dependency/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => {
+          const packageEntry = candidate.packages.find(({ name }) => name === "IRkernel");
+          packageEntry.sourceUrl = packageEntry.sourceUrl.replace("IRkernel_", "IRdisplay_");
+        })
+      ),
+    /source URL/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => {
+          candidate.packages[0].url = candidate.packages[0].url.replace("https://", "http://");
+        })
+      ),
+    /archive URL/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => {
+          const packageEntry = candidate.packages.find(({ name }) => name === "Rcpp");
+          packageEntry.repository = "primary";
+          packageEntry.sourceUrl = candidate.repositories[0].url + `/Rcpp_${packageEntry.version}.tar.gz`;
+        })
+      ),
+    /crossed its canonical repository/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => (candidate.packages[0].bytes = REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES + 1))
+      ),
+    /archive bounds/u
+  );
+  assert.throws(
+    () => validateRemoteRPackageLock(text.replace('  "protocol":', '  "protocol": "duplicate",\n  "protocol":')),
+    /strict JSON/u
+  );
+  assert.throws(() => validateRemoteRPackageLock(text.replace('  "target"', ' "target"')), /not canonical/u);
+});
+
+test("the dependency-free Python installer independently validates the exact complete lock", async (t) => {
+  const lockText = await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8");
+  const digest = remoteRPackageLockDigest(lockText);
+  const installer = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "install-r-packages.py");
+  const exact = spawnSync(
+    "python3",
+    ["-I", installer, "--manifest", REMOTE_R_PACKAGE_LOCK_PATH, "--expected-lock-sha256", digest, "--validate-only"],
+    { cwd: REPOSITORY_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  assert.equal(exact.status, 0, exact.stderr);
+  assert.equal(exact.signal, null);
+  assert.match(exact.stdout, new RegExp(`validated remote R package lock ${digest}`, "u"));
+
+  const directory = await mkdtemp(join(tmpdir(), "ow-r-lock-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const mutated = join(directory, "lock.json");
+  await writeFile(mutated, lockText.replace('"bytes": 9472', '"bytes": 9473'), "utf8");
+  const rejected = spawnSync(
+    "python3",
+    ["-I", installer, "--manifest", mutated, "--expected-lock-sha256", digest, "--validate-only"],
+    { cwd: REPOSITORY_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /digest does not match/u);
 });
 
 test("the remote Jupyter lock rejects a vulnerable server regression", async () => {
