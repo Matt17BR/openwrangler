@@ -338,8 +338,13 @@ describe("delimited-file import prompts", () => {
       true,
       true
     ]);
-    expect(importOptionMocks.executeCommand).toHaveBeenCalledTimes(4);
-    expect(importOptionMocks.executeCommand).toHaveBeenCalledWith("workbench.action.focusQuickOpen");
+    expect(importOptionMocks.executeCommand.mock.calls.map(([command]) => command)).toEqual([
+      "workbench.action.focusActiveEditorGroup",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen"
+    ]);
   });
 
   it("offers explicit UTF-16 byte-order recovery choices", async () => {
@@ -406,6 +411,44 @@ describe("delimited-file import prompts", () => {
     });
   });
 
+  it("does not publish the first prompt before active-editor focus settles", async () => {
+    chooseFirstItems();
+    importOptionMocks.showInputBox.mockImplementation(async (options) => options?.value);
+    let settleFocus!: () => void;
+    importOptionMocks.executeCommand.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          settleFocus = resolve;
+        })
+    );
+
+    const prompt = promptImportOptions(vscode.Uri.file("/tmp/data.csv"));
+    try {
+      expect(importOptionMocks.executeCommand).toHaveBeenCalledOnce();
+      expect(importOptionMocks.executeCommand).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
+      expect(importOptionMocks.showQuickPick).not.toHaveBeenCalled();
+      expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
+    } finally {
+      settleFocus();
+    }
+
+    await expect(prompt).resolves.toEqual({
+      delimiter: ",",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    expect(importOptionMocks.showQuickPick).toHaveBeenCalledTimes(3);
+    expect(importOptionMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(importOptionMocks.executeCommand.mock.calls.map(([command]) => command)).toEqual([
+      "workbench.action.focusActiveEditorGroup",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen"
+    ]);
+  });
+
   it("falls back to the editor's native focus behavior when a fork omits the focus command", async () => {
     chooseFirstItems();
     importOptionMocks.showInputBox.mockImplementation(async (options) => options?.value);
@@ -417,7 +460,33 @@ describe("delimited-file import prompts", () => {
       quoteChar: '"',
       hasHeader: true
     });
-    expect(importOptionMocks.executeCommand).toHaveBeenCalledTimes(4);
+    expect(importOptionMocks.executeCommand.mock.calls.map(([command]) => command)).toEqual([
+      "workbench.action.focusActiveEditorGroup",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen"
+    ]);
+  });
+
+  it("rechecks cancellation after active-editor focus settles", async () => {
+    let cancelled = false;
+    const cancellation = {
+      get isCancellationRequested() {
+        return cancelled;
+      }
+    } as vscode.CancellationToken;
+    importOptionMocks.executeCommand.mockImplementationOnce(async () => {
+      cancelled = true;
+    });
+
+    await expect(promptImportOptions(vscode.Uri.file("/tmp/data.csv"), undefined, cancellation)).rejects.toBeInstanceOf(
+      ImportCancelledError
+    );
+    expect(importOptionMocks.executeCommand).toHaveBeenCalledOnce();
+    expect(importOptionMocks.executeCommand).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
+    expect(importOptionMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
   });
 
   it.each(["delimiter", "custom delimiter", "encoding", "header", "quote"] as const)(
@@ -448,6 +517,7 @@ describe("delimited-file import prompts", () => {
     await expect(promptImportOptions(vscode.Uri.file("/tmp/data.parquet"))).resolves.toBeUndefined();
     expect(importOptionMocks.showQuickPick).not.toHaveBeenCalled();
     expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
+    expect(importOptionMocks.executeCommand).not.toHaveBeenCalled();
   });
 });
 
