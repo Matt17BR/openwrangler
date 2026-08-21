@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import pandasMimeV2Contract from "../../fixtures/notebook-pandas-mime-v2-contract.json";
 import {
   isNotebookLiveResultHandle,
   NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS,
@@ -111,6 +112,123 @@ describe("notebook output", () => {
         summaries: []
       })
     ).toBeUndefined();
+  });
+
+  it("enforces the shared Python-producer Pandas row-axis contract", () => {
+    expect(pandasMimeV2Contract).toEqual({
+      schemaVersion: 1,
+      pandasRowAxisCases: [
+        {
+          name: "positional-range-index",
+          rowAxis: { kind: "positional", levelNames: [] },
+          expectedRows: [{}, {}]
+        },
+        {
+          name: "named-index",
+          rowAxis: { kind: "index", levelNames: ["record_id"] },
+          expectedRows: [{ rowLabel: "10" }, { rowLabel: "20" }]
+        },
+        {
+          name: "one-level-multi-index",
+          rowAxis: { kind: "index", levelNames: ["region"] },
+          expectedRows: [{ rowLabel: "north" }, { rowLabel: "south" }]
+        },
+        {
+          name: "named-multi-index",
+          rowAxis: { kind: "multiIndex", levelNames: ["region", "sequence"] },
+          expectedRows: [{ rowLabel: "north · 1" }, { rowLabel: "south · 2" }]
+        }
+      ],
+      nonPandasBackends: ["polars", "duckdb"]
+    });
+
+    for (const { name, rowAxis, expectedRows } of pandasMimeV2Contract.pandasRowAxisCases) {
+      const rows = expectedRows.map((expectedRow, rowNumber) => ({
+        ...page.rows[0],
+        id: `r:${rowNumber}`,
+        rowNumber,
+        values: page.rows[0].values.map((value) => ({ ...value })),
+        ...(Object.prototype.hasOwnProperty.call(expectedRow, "rowLabel")
+          ? { rowLabel: (expectedRow as { rowLabel: string }).rowLabel }
+          : {})
+      }));
+      const normalized = normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata: {
+          ...metadata,
+          backend: "pandas",
+          rowAxis,
+          shape: { rows: rows.length, columns: 1 },
+          filteredShape: { rows: rows.length, columns: 1 }
+        },
+        page: { ...page, limit: rows.length, totalRows: rows.length, rows },
+        summaries: []
+      });
+
+      expect(normalized?.metadata.rowAxis, name).toEqual(rowAxis);
+      expect(
+        normalized?.page.rows.map((row) => Object.prototype.hasOwnProperty.call(row, "rowLabel")),
+        name
+      ).toEqual(expectedRows.map((row) => Object.prototype.hasOwnProperty.call(row, "rowLabel")));
+      expect(
+        normalized?.page.rows.map((row) => row.rowLabel),
+        name
+      ).toEqual(
+        expectedRows.map((row) =>
+          Object.prototype.hasOwnProperty.call(row, "rowLabel") ? (row as { rowLabel: string }).rowLabel : undefined
+        )
+      );
+
+      if (rowAxis.kind === "positional") {
+        expect(
+          normalizeNotebookOutputPayload({
+            mimeVersion: 2,
+            metadata: {
+              ...metadata,
+              backend: "pandas",
+              rowAxis,
+              shape: { rows: 1, columns: 1 },
+              filteredShape: { rows: 1, columns: 1 }
+            },
+            page: {
+              ...page,
+              limit: 1,
+              totalRows: 1,
+              rows: [{ ...page.rows[0], rowLabel: null }]
+            },
+            summaries: []
+          })
+        ).toBeUndefined();
+      }
+    }
+
+    expect(
+      normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata: { ...metadata, backend: "pandas" },
+        page,
+        summaries: []
+      })
+    ).toBeUndefined();
+
+    for (const backend of pandasMimeV2Contract.nonPandasBackends) {
+      expect(
+        normalizeNotebookOutputPayload({ mimeVersion: 2, metadata: { ...metadata, backend }, page, summaries: [] })
+          ?.metadata.backend
+      ).toBe(backend);
+      expect(
+        normalizeNotebookOutputPayload({
+          mimeVersion: 2,
+          metadata: {
+            ...metadata,
+            backend,
+            rowAxis: pandasMimeV2Contract.pandasRowAxisCases[0].rowAxis
+          },
+          page,
+          summaries: []
+        })
+      ).toBeUndefined();
+    }
   });
 
   it("discards saved profiles so captured rows remain the only source of truth", () => {
