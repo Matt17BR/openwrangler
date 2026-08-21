@@ -1,5 +1,5 @@
 import { constants as fileSystemConstants } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
+import { lstat, open, opendir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -24,7 +24,10 @@ export const WEBVIEW_STYLE_LIMITS = Object.freeze({
   classNameCodePoints: 256,
   classReferenceTokens: 16_384,
   cssTokens: 100_000,
+  directoryEntries: 256,
   nestingDepth: 32,
+  typescriptAstDepth: 1_024,
+  typescriptAstNodes: 200_000,
   totalWork: 2 * 1024 * 1024
 });
 
@@ -47,7 +50,7 @@ const GROUP_RULE_AT_KEYWORDS = new Set([
   "supports"
 ]);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const defaultFileSystem = Object.freeze({ lstat, open, readdir });
+const defaultFileSystem = Object.freeze({ lstat, open, opendir });
 const directoryOpenFlags =
   fileSystemConstants.O_RDONLY |
   (fileSystemConstants.O_DIRECTORY ?? 0) |
@@ -165,9 +168,28 @@ async function withStableDirectoryChain(root, targetDirectory, filesystem, label
 }
 
 async function readStableDirectory(root, path, filesystem, label) {
-  return withStableDirectoryChain(root, path, filesystem, label, () =>
-    filesystem.readdir(path, { withFileTypes: true })
-  );
+  return withStableDirectoryChain(root, path, filesystem, label, async () => {
+    let directory;
+    let failure;
+    const entries = [];
+    try {
+      directory = await filesystem.opendir(path);
+      while (true) {
+        const entry = await directory.read();
+        if (entry === null) break;
+        if (entries.length >= WEBVIEW_STYLE_LIMITS.directoryEntries) {
+          throw new Error(
+            `${label} exceeds the ${WEBVIEW_STYLE_LIMITS.directoryEntries}-entry directory inventory limit.`
+          );
+        }
+        entries.push(entry);
+      }
+    } catch (error) {
+      failure = error;
+    }
+    await closeHandles(directory === undefined ? [] : [directory], failure);
+    return entries;
+  });
 }
 
 async function readDescriptorBytes(handle, expectedSize, label) {
@@ -196,8 +218,13 @@ async function readBoundedFile(root, path, maxBytes, label, filesystem) {
   containedRelativePath(absoluteRoot, absolutePath, label);
   return withStableDirectoryChain(absoluteRoot, dirname(absolutePath), filesystem, label, async () => {
     const namedBefore = await filesystem.lstat(absolutePath, { bigint: true });
-    if (!namedBefore.isFile() || namedBefore.isSymbolicLink() || namedBefore.size > BigInt(maxBytes)) {
-      throw new Error(`${label} must be a no-follow regular file no larger than ${maxBytes} bytes.`);
+    if (
+      !namedBefore.isFile() ||
+      namedBefore.isSymbolicLink() ||
+      namedBefore.nlink !== 1n ||
+      namedBefore.size > BigInt(maxBytes)
+    ) {
+      throw new Error(`${label} must be a single-link no-follow regular file no larger than ${maxBytes} bytes.`);
     }
     let handle;
     let result;
@@ -675,15 +702,25 @@ function unwrapExpression(expression) {
 }
 
 function expressionHasBoundary(expression, side) {
-  const current = unwrapExpression(expression);
-  if (ts.isStringLiteralLike(current)) {
-    return side === "start" ? stringStartsWithWhitespace(current.text) : stringEndsWithWhitespace(current.text);
+  const pending = [expression];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = unwrapExpression(pending.pop());
+    nodes += 1;
+    if (nodes > WEBVIEW_STYLE_LIMITS.typescriptAstNodes) {
+      throw new Error("A static class boundary expression exceeds the TypeScript AST node limit.");
+    }
+    if (ts.isStringLiteralLike(current)) {
+      if (!(side === "start" ? stringStartsWithWhitespace(current.text) : stringEndsWithWhitespace(current.text))) {
+        return false;
+      }
+    } else if (ts.isConditionalExpression(current)) {
+      pending.push(current.whenTrue, current.whenFalse);
+    } else if (current.kind !== ts.SyntaxKind.NullKeyword && current.kind !== ts.SyntaxKind.UndefinedKeyword) {
+      return false;
+    }
   }
-  if (ts.isConditionalExpression(current)) {
-    return expressionHasBoundary(current.whenTrue, side) && expressionHasBoundary(current.whenFalse, side);
-  }
-  if (current.kind === ts.SyntaxKind.NullKeyword || current.kind === ts.SyntaxKind.UndefinedKeyword) return true;
-  return false;
+  return true;
 }
 
 function addStaticClassText(value, boundaries, state, label) {
@@ -730,237 +767,426 @@ function arrayJoinedByWhitespace(expression) {
     return undefined;
   }
   let receiver = unwrapExpression(current.expression.expression);
+  let depth = 0;
   while (ts.isCallExpression(receiver) && propertyName(receiver.expression) === "filter") {
+    depth += 1;
+    if (depth > WEBVIEW_STYLE_LIMITS.typescriptAstDepth) {
+      throw new Error("A static class join exceeds the TypeScript AST nesting limit.");
+    }
     receiver = unwrapExpression(receiver.expression.expression);
   }
   return ts.isArrayLiteralExpression(receiver) ? receiver : undefined;
 }
 
 function collectClassExpression(expression, boundaries, state, label) {
-  const current = unwrapExpression(expression);
-  const joined = arrayJoinedByWhitespace(current);
-  if (joined !== undefined) {
-    for (const element of joined.elements) {
-      if (!ts.isSpreadElement(element)) collectClassExpression(element, { left: true, right: true }, state, label);
+  const pending = [{ boundaries, depth: 0, expression }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const task = pending.pop();
+    if (task.depth > WEBVIEW_STYLE_LIMITS.typescriptAstDepth) {
+      throw new Error(`${label} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstDepth}-level class-expression limit.`);
     }
-    return;
-  }
-  if (ts.isStringLiteralLike(current)) {
-    addStaticClassText(current.text, boundaries, state, label);
-    return;
-  }
-  if (ts.isConditionalExpression(current)) {
-    collectClassExpression(current.whenTrue, boundaries, state, label);
-    collectClassExpression(current.whenFalse, boundaries, state, label);
-    return;
-  }
-  if (ts.isTemplateExpression(current)) {
-    const parts = [current.head, ...current.templateSpans.map(({ literal }) => literal)];
-    addStaticClassText(
-      parts[0].text,
-      {
-        left: boundaries.left,
-        right:
-          current.templateSpans.length === 0
-            ? boundaries.right
-            : expressionHasBoundary(current.templateSpans[0].expression, "start")
-      },
-      state,
-      label
-    );
-    for (let index = 0; index < current.templateSpans.length; index += 1) {
-      const span = current.templateSpans[index];
-      const before = parts[index].text;
-      const after = parts[index + 1].text;
-      collectClassExpression(
-        span.expression,
-        {
-          left: stringEndsWithWhitespace(before) || (before === "" && index === 0 && boundaries.left),
-          right:
-            stringStartsWithWhitespace(after) ||
-            (after === "" && index === current.templateSpans.length - 1 && boundaries.right)
-        },
-        state,
-        label
+    nodes += 1;
+    if (nodes > WEBVIEW_STYLE_LIMITS.typescriptAstNodes) {
+      throw new Error(`${label} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstNodes}-node class-expression limit.`);
+    }
+    const current = unwrapExpression(task.expression);
+    const joined = arrayJoinedByWhitespace(current);
+    if (joined !== undefined) {
+      for (let index = joined.elements.length - 1; index >= 0; index -= 1) {
+        const element = joined.elements[index];
+        if (!ts.isSpreadElement(element)) {
+          pending.push({ boundaries: { left: true, right: true }, depth: task.depth + 1, expression: element });
+        }
+      }
+      continue;
+    }
+    if (ts.isStringLiteralLike(current)) {
+      addStaticClassText(current.text, task.boundaries, state, label);
+      continue;
+    }
+    if (ts.isConditionalExpression(current)) {
+      pending.push(
+        { boundaries: task.boundaries, depth: task.depth + 1, expression: current.whenFalse },
+        { boundaries: task.boundaries, depth: task.depth + 1, expression: current.whenTrue }
       );
-      const nextExpression = current.templateSpans[index + 1]?.expression;
+      continue;
+    }
+    if (ts.isTemplateExpression(current)) {
+      const parts = [current.head, ...current.templateSpans.map(({ literal }) => literal)];
       addStaticClassText(
-        after,
+        parts[0].text,
         {
-          left: expressionHasBoundary(span.expression, "end"),
-          right: nextExpression === undefined ? boundaries.right : expressionHasBoundary(nextExpression, "start")
+          left: task.boundaries.left,
+          right:
+            current.templateSpans.length === 0
+              ? task.boundaries.right
+              : expressionHasBoundary(current.templateSpans[0].expression, "start")
         },
         state,
         label
       );
+      for (let index = current.templateSpans.length - 1; index >= 0; index -= 1) {
+        const span = current.templateSpans[index];
+        const before = parts[index].text;
+        const after = parts[index + 1].text;
+        const nextExpression = current.templateSpans[index + 1]?.expression;
+        addStaticClassText(
+          after,
+          {
+            left: expressionHasBoundary(span.expression, "end"),
+            right: nextExpression === undefined ? task.boundaries.right : expressionHasBoundary(nextExpression, "start")
+          },
+          state,
+          label
+        );
+        pending.push({
+          boundaries: {
+            left: stringEndsWithWhitespace(before) || (before === "" && index === 0 && task.boundaries.left),
+            right:
+              stringStartsWithWhitespace(after) ||
+              (after === "" && index === current.templateSpans.length - 1 && task.boundaries.right)
+          },
+          depth: task.depth + 1,
+          expression: span.expression
+        });
+      }
+      continue;
     }
-    return;
-  }
-  if (ts.isBinaryExpression(current)) {
+    if (!ts.isBinaryExpression(current)) continue;
     if (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-      collectClassExpression(current.right, boundaries, state, label);
-      return;
-    }
-    if (
+      pending.push({ boundaries: task.boundaries, depth: task.depth + 1, expression: current.right });
+    } else if (
       current.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
       current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
     ) {
-      collectClassExpression(current.left, boundaries, state, label);
-      collectClassExpression(current.right, boundaries, state, label);
-      return;
-    }
-    if (current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-      collectClassExpression(
-        current.left,
-        { left: boundaries.left, right: expressionHasBoundary(current.right, "start") },
-        state,
-        label
+      pending.push(
+        { boundaries: task.boundaries, depth: task.depth + 1, expression: current.right },
+        { boundaries: task.boundaries, depth: task.depth + 1, expression: current.left }
       );
-      collectClassExpression(
-        current.right,
-        { left: expressionHasBoundary(current.left, "end"), right: boundaries.right },
-        state,
-        label
+    } else if (current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      pending.push(
+        {
+          boundaries: { left: expressionHasBoundary(current.left, "end"), right: task.boundaries.right },
+          depth: task.depth + 1,
+          expression: current.right
+        },
+        {
+          boundaries: { left: task.boundaries.left, right: expressionHasBoundary(current.right, "start") },
+          depth: task.depth + 1,
+          expression: current.left
+        }
       );
     }
   }
 }
 
-function bindingContainsName(name, expected) {
-  if (ts.isIdentifier(name)) return name.text === expected;
-  return name.elements.some(
-    (element) => !ts.isOmittedExpression(element) && bindingContainsName(element.name, expected)
+function immediateAstChildren(node) {
+  const children = [];
+  ts.forEachChild(node, (child) => {
+    children.push(child);
+  });
+  return children;
+}
+
+function walkAst(document, budget, label, visitor) {
+  const pending = [{ depth: 0, node: document }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const { depth, node } = pending.pop();
+    if (depth > WEBVIEW_STYLE_LIMITS.typescriptAstDepth) {
+      throw new Error(`${label} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstDepth}-level TypeScript AST limit.`);
+    }
+    nodes += 1;
+    if (nodes > WEBVIEW_STYLE_LIMITS.typescriptAstNodes) {
+      throw new Error(`${label} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstNodes}-node TypeScript AST limit.`);
+    }
+    budget.consume(1, label);
+    visitor(node);
+    const children = immediateAstChildren(node);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push({ depth: depth + 1, node: children[index] });
+    }
+  }
+}
+
+function functionScopeNode(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
   );
 }
 
-function hasRuntimeBinding(document, expected, budget, label) {
-  let found = false;
-  const visit = (node) => {
-    if (found) return;
-    budget.consume(1, label);
-    if (
-      ((ts.isVariableDeclaration(node) || ts.isParameter(node)) && bindingContainsName(node.name, expected)) ||
-      (ts.isCatchClause(node) &&
-        node.variableDeclaration !== undefined &&
-        bindingContainsName(node.variableDeclaration.name, expected)) ||
-      ((ts.isFunctionDeclaration(node) ||
-        ts.isFunctionExpression(node) ||
-        ts.isClassDeclaration(node) ||
-        ts.isClassExpression(node) ||
-        ts.isEnumDeclaration(node) ||
-        ts.isModuleDeclaration(node)) &&
-        node.name !== undefined &&
-        ts.isIdentifier(node.name) &&
-        node.name.text === expected) ||
-      (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly && node.name.text === expected) ||
-      (ts.isImportClause(node) && !node.isTypeOnly && node.name?.text === expected) ||
-      (ts.isNamespaceImport(node) && !node.parent.isTypeOnly && node.name.text === expected) ||
-      (ts.isImportSpecifier(node) && !node.isTypeOnly && !node.parent.parent.isTypeOnly && node.name.text === expected)
-    ) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(document);
-  return found;
+function nestedScopeNode(node) {
+  return (
+    functionScopeNode(node) ||
+    ts.isBlock(node) ||
+    ts.isCatchClause(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node)
+  );
 }
 
-function documentMethodCall(expression, methods, allowGlobalDocument) {
+function newScope(parent, kind) {
+  return { bindings: new Map(), kind, parent };
+}
+
+function nearestVarScope(scope) {
+  let current = scope;
+  while (current.kind !== "function" && current.kind !== "source") current = current.parent;
+  return current;
+}
+
+function declareIdentifier(scope, identifier, bindings, declarationBindings, initializer) {
+  let binding = scope.bindings.get(identifier.text);
+  if (binding === undefined) {
+    binding = {
+      ambiguous: false,
+      collectionSource: undefined,
+      initializer,
+      name: identifier.text,
+      reassigned: false,
+      scope,
+      state: "unknown"
+    };
+    scope.bindings.set(identifier.text, binding);
+    bindings.push(binding);
+  } else {
+    binding.ambiguous = true;
+  }
+  declarationBindings.set(identifier, binding);
+  return binding;
+}
+
+function declareBindingName(scope, name, bindings, declarationBindings, initializer) {
+  const pending = [name];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (ts.isIdentifier(current)) {
+      declareIdentifier(scope, current, bindings, declarationBindings, current === name ? initializer : undefined);
+      continue;
+    }
+    for (let index = current.elements.length - 1; index >= 0; index -= 1) {
+      const element = current.elements[index];
+      if (!ts.isOmittedExpression(element)) pending.push(element.name);
+    }
+  }
+}
+
+function resolveBinding(identifier, nodeScopes) {
+  let scope = nodeScopes.get(identifier);
+  while (scope !== undefined) {
+    const binding = scope.bindings.get(identifier.text);
+    if (binding !== undefined) return binding;
+    scope = scope.parent;
+  }
+  return undefined;
+}
+
+function markAssignmentTarget(expression, nodeScopes) {
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) {
+    const binding = resolveBinding(current, nodeScopes);
+    if (binding !== undefined) binding.reassigned = true;
+    return;
+  }
+  const pending = [];
+  if (ts.isArrayLiteralExpression(current)) pending.push(...current.elements);
+  if (ts.isObjectLiteralExpression(current)) pending.push(...current.properties);
+  while (pending.length > 0) {
+    const target = pending.pop();
+    if (ts.isSpreadElement(target) || ts.isSpreadAssignment(target)) {
+      pending.push(target.expression);
+    } else if (ts.isShorthandPropertyAssignment(target)) {
+      pending.push(target.name);
+    } else if (ts.isPropertyAssignment(target)) {
+      pending.push(target.initializer);
+    } else if (ts.isArrayLiteralExpression(target)) {
+      pending.push(...target.elements);
+    } else if (ts.isObjectLiteralExpression(target)) {
+      pending.push(...target.properties);
+    } else if (ts.isIdentifier(target)) {
+      const binding = resolveBinding(target, nodeScopes);
+      if (binding !== undefined) binding.reassigned = true;
+    }
+  }
+}
+
+function buildLexicalDomAnalysis(document, budget, label) {
+  const rootScope = newScope(undefined, "source");
+  const nodeScopes = new WeakMap();
+  const declarationBindings = new WeakMap();
+  const bindings = [];
+  const pending = [{ depth: 0, incomingScope: rootScope, node: document }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const { depth, incomingScope, node } = pending.pop();
+    if (depth > WEBVIEW_STYLE_LIMITS.typescriptAstDepth) {
+      throw new Error(`${label} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstDepth}-level TypeScript AST limit.`);
+    }
+    nodes += 1;
+    if (nodes > WEBVIEW_STYLE_LIMITS.typescriptAstNodes) {
+      throw new Error(`${label} exceeds the ${WEBVIEW_STYLE_LIMITS.typescriptAstNodes}-node TypeScript AST limit.`);
+    }
+    budget.consume(1, label);
+
+    const scope =
+      node === document
+        ? rootScope
+        : nestedScopeNode(node)
+          ? newScope(incomingScope, functionScopeNode(node) ? "function" : "block")
+          : incomingScope;
+    nodeScopes.set(node, scope);
+
+    if (ts.isVariableDeclaration(node)) {
+      const declarationList = ts.isVariableDeclarationList(node.parent) ? node.parent : undefined;
+      const declarationScope =
+        declarationList !== undefined && (declarationList.flags & ts.NodeFlags.BlockScoped) === 0
+          ? nearestVarScope(scope)
+          : scope;
+      declareBindingName(declarationScope, node.name, bindings, declarationBindings, node.initializer);
+    } else if (ts.isParameter(node)) {
+      declareBindingName(scope, node.name, bindings, declarationBindings, undefined);
+    } else if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) {
+      if (node.name !== undefined)
+        declareIdentifier(incomingScope, node.name, bindings, declarationBindings, undefined);
+    } else if (ts.isFunctionExpression(node) && node.name !== undefined) {
+      declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
+    } else if (ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node) || ts.isImportEqualsDeclaration(node)) {
+      if (ts.isIdentifier(node.name)) declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
+    } else if (ts.isImportClause(node) && !node.isTypeOnly && node.name !== undefined) {
+      declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
+    } else if (ts.isNamespaceImport(node) && !node.parent.isTypeOnly) {
+      declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
+    } else if (ts.isImportSpecifier(node) && !node.isTypeOnly && !node.parent.parent.isTypeOnly) {
+      declareIdentifier(scope, node.name, bindings, declarationBindings, undefined);
+    }
+
+    const children = immediateAstChildren(node);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push({ depth: depth + 1, incomingScope: scope, node: children[index] });
+    }
+  }
+
+  const analysis = { bindings, declarationBindings, nodeScopes };
+  walkAst(document, budget, label, (node) => {
+    if (
+      ts.isForOfStatement(node) &&
+      ts.isVariableDeclarationList(node.initializer) &&
+      node.initializer.declarations.length === 1 &&
+      ts.isIdentifier(node.initializer.declarations[0].name)
+    ) {
+      const binding = declarationBindings.get(node.initializer.declarations[0].name);
+      if (binding !== undefined) binding.collectionSource = node.expression;
+    } else if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+      if (!ts.isVariableDeclarationList(node.initializer)) markAssignmentTarget(node.initializer, nodeScopes);
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    ) {
+      markAssignmentTarget(node.left, nodeScopes);
+    }
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)
+    ) {
+      markAssignmentTarget(node.operand, nodeScopes);
+    }
+  });
+
+  for (let pass = 0; pass <= bindings.length; pass += 1) {
+    let changed = false;
+    for (const binding of bindings) {
+      budget.consume(1, label);
+      if (binding.ambiguous || binding.reassigned || binding.state !== "unknown") continue;
+      let state;
+      if (binding.collectionSource !== undefined && domCollectionExpression(binding.collectionSource, analysis)) {
+        state = "dom";
+      } else if (binding.initializer !== undefined && domExpression(binding.initializer, analysis)) {
+        state = "dom";
+      } else if (binding.initializer !== undefined && domCollectionExpression(binding.initializer, analysis)) {
+        state = "collection";
+      }
+      if (state !== undefined) {
+        binding.state = state;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return analysis;
+}
+
+function isGlobalIdentifier(node, expected, domState) {
+  return ts.isIdentifier(node) && node.text === expected && resolveBinding(node, domState.nodeScopes) === undefined;
+}
+
+function documentMethodCall(expression, methods, domState) {
   const current = unwrapExpression(expression);
   return (
-    allowGlobalDocument &&
     ts.isCallExpression(current) &&
     ts.isPropertyAccessExpression(current.expression) &&
-    ts.isIdentifier(current.expression.expression) &&
-    current.expression.expression.text === "document" &&
+    isGlobalIdentifier(current.expression.expression, "document", domState) &&
     methods.has(current.expression.name.text)
   );
 }
 
 function domExpression(expression, domState) {
   const current = unwrapExpression(expression);
-  if (ts.isIdentifier(current)) return domState.bindings.has(current.text);
-  if (
-    documentMethodCall(
-      current,
-      new Set(["createElement", "getElementById", "querySelector"]),
-      domState.allowGlobalDocument
-    )
-  ) {
+  if (ts.isIdentifier(current)) return resolveBinding(current, domState.nodeScopes)?.state === "dom";
+  if (documentMethodCall(current, new Set(["createElement", "getElementById", "querySelector"]), domState)) {
     return true;
   }
   return (
-    domState.allowGlobalDocument &&
     ts.isPropertyAccessExpression(current) &&
-    ts.isIdentifier(current.expression) &&
-    current.expression.text === "document" &&
+    isGlobalIdentifier(current.expression, "document", domState) &&
     ["body", "documentElement"].includes(current.name.text)
   );
 }
 
 function domCollectionExpression(expression, domState) {
-  const current = unwrapExpression(expression);
-  if (ts.isIdentifier(current)) return domState.collections.has(current.text);
+  let current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) return resolveBinding(current, domState.nodeScopes)?.state === "collection";
   if (
     documentMethodCall(
       current,
       new Set(["getElementsByClassName", "getElementsByTagName", "querySelectorAll"]),
-      domState.allowGlobalDocument
+      domState
     )
   ) {
     return true;
   }
-  return (
-    ts.isCallExpression(current) &&
-    ts.isPropertyAccessExpression(current.expression) &&
-    ts.isIdentifier(current.expression.expression) &&
-    current.expression.expression.text === "Array" &&
-    current.expression.name.text === "from" &&
-    current.arguments[0] !== undefined &&
-    domCollectionExpression(current.arguments[0], domState)
-  );
-}
-
-function discoverDomBindings(document, budget, label) {
-  const domState = {
-    allowGlobalDocument: !hasRuntimeBinding(document, "document", budget, label),
-    bindings: new Set(),
-    collections: new Set()
-  };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const visit = (node) => {
-      budget.consume(1, label);
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
-        if (domExpression(node.initializer, domState) && !domState.bindings.has(node.name.text)) {
-          domState.bindings.add(node.name.text);
-          changed = true;
-        }
-        if (domCollectionExpression(node.initializer, domState) && !domState.collections.has(node.name.text)) {
-          domState.collections.add(node.name.text);
-          changed = true;
-        }
-      }
-      if (
-        ts.isForOfStatement(node) &&
-        ts.isVariableDeclarationList(node.initializer) &&
-        node.initializer.declarations.length === 1 &&
-        ts.isIdentifier(node.initializer.declarations[0].name) &&
-        domCollectionExpression(node.expression, domState)
-      ) {
-        const name = node.initializer.declarations[0].name.text;
-        if (!domState.bindings.has(name)) {
-          domState.bindings.add(name);
-          changed = true;
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(document);
+  for (let depth = 0; depth <= WEBVIEW_STYLE_LIMITS.typescriptAstDepth; depth += 1) {
+    if (
+      !ts.isCallExpression(current) ||
+      !ts.isPropertyAccessExpression(current.expression) ||
+      !isGlobalIdentifier(current.expression.expression, "Array", domState) ||
+      current.expression.name.text !== "from" ||
+      current.arguments[0] === undefined
+    ) {
+      return false;
+    }
+    current = unwrapExpression(current.arguments[0]);
+    if (ts.isIdentifier(current)) return resolveBinding(current, domState.nodeScopes)?.state === "collection";
+    if (
+      documentMethodCall(
+        current,
+        new Set(["getElementsByClassName", "getElementsByTagName", "querySelectorAll"]),
+        domState
+      )
+    ) {
+      return true;
+    }
   }
-  return domState;
+  return false;
 }
 
 function classNameAssignment(node, domState) {
@@ -990,7 +1216,10 @@ function classListArguments(node, domState) {
   ) {
     return [];
   }
-  if (method === "toggle") return node.arguments.slice(0, 1);
+  if (method === "toggle") {
+    const force = node.arguments[1] === undefined ? undefined : unwrapExpression(node.arguments[1]);
+    return force?.kind === ts.SyntaxKind.FalseKeyword ? [] : node.arguments.slice(0, 1);
+  }
   if (method === "replace") return node.arguments.slice(1, 2);
   return method === "add" ? [...node.arguments] : [];
 }
@@ -1065,10 +1294,9 @@ function classReferences(source, path, budget, state) {
   if (document.parseDiagnostics.length > 0) {
     throw new Error(`${path} must parse before its class references can prove selector ownership.`);
   }
-  const domState = discoverDomBindings(document, budget, path);
+  const domState = buildLexicalDomAnalysis(document, budget, path);
   const moduleSpecifiers = [];
-  const visit = (node) => {
-    budget.consume(1, path);
+  walkAst(document, budget, path, (node) => {
     const specifier = runtimeModuleSpecifier(node);
     if (specifier !== undefined) moduleSpecifiers.push(specifier);
     if (intrinsicJsxClassAttribute(node) && node.initializer !== undefined) {
@@ -1086,9 +1314,7 @@ function classReferences(source, path, budget, state) {
       const attribute = setAttributeClassArgument(node, domState);
       if (attribute !== undefined) collectClassExpression(attribute, { left: true, right: true }, state, path);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(document);
+  });
   return moduleSpecifiers;
 }
 
