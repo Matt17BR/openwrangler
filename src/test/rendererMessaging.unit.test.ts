@@ -23,7 +23,10 @@ const rendererMocks = vi.hoisted(() => ({
   capture: vi.fn(),
   request: vi.fn(),
   bridgeDisposals: 0,
-  registerFormatters: true
+  registerFormatters: true,
+  configurationListeners: [] as Array<(event: { affectsConfiguration(section: string): boolean }) => void>,
+  extensionListeners: [] as Array<() => void>,
+  visibleEditorListeners: [] as Array<() => void>
 }));
 
 vi.mock("vscode", () => ({
@@ -67,11 +70,25 @@ vi.mock("vscode", () => ({
       rendererMocks.activeEditorReads += 1;
       return rendererMocks.activeNotebookEditor;
     },
-    showErrorMessage: rendererMocks.showErrorMessage
+    showErrorMessage: rendererMocks.showErrorMessage,
+    onDidChangeVisibleNotebookEditors: (listener: () => void) => {
+      rendererMocks.visibleEditorListeners.push(listener);
+      return { dispose: () => undefined };
+    }
   },
   workspace: {
     get notebookDocuments() {
       return rendererMocks.notebookDocuments;
+    },
+    onDidChangeConfiguration: (listener: (event: { affectsConfiguration(section: string): boolean }) => void) => {
+      rendererMocks.configurationListeners.push(listener);
+      return { dispose: () => undefined };
+    }
+  },
+  extensions: {
+    onDidChange: (listener: () => void) => {
+      rendererMocks.extensionListeners.push(listener);
+      return { dispose: () => undefined };
     }
   }
 }));
@@ -121,6 +138,9 @@ describe("notebook renderer messaging", () => {
     rendererMocks.request.mockReset();
     rendererMocks.bridgeDisposals = 0;
     rendererMocks.registerFormatters = true;
+    rendererMocks.configurationListeners.length = 0;
+    rendererMocks.extensionListeners.length = 0;
+    rendererMocks.visibleEditorListeners.length = 0;
   });
 
   it("opens the primary renderer action as the exact current live variable without pinning the saved backend", () => {
@@ -404,10 +424,14 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("1") });
     await settleMessages();
 
-    expect(tracker.bindInlineUpgrade).toHaveBeenCalledWith(exactEditor, {
-      byteLength: 37,
-      sha256: "a".repeat(64)
-    });
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledWith(
+      exactEditor,
+      {
+        byteLength: 37,
+        sha256: "a".repeat(64)
+      },
+      expect.anything()
+    );
     expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual([
       "openSession",
       "getPage",
@@ -428,9 +452,24 @@ describe("notebook renderer messaging", () => {
         }
       }
     });
-    expect(binding.dispose).toHaveBeenCalledOnce();
+    expect(binding.dispose).not.toHaveBeenCalled();
     expect(rendererMocks.bridgeDisposals).toBe(1);
     expect(rendererMocks.activeEditorReads).toBe(0);
+
+    binding.invalidate();
+    await settleMessages();
+    expect(rendererMocks.inlinePosts[1]).toEqual({
+      editor: exactEditor,
+      message: {
+        kind: "openWrangler.inlineRevoke",
+        protocol: 1,
+        token: "1".repeat(32),
+        outputItemId: "output-1",
+        byteLength: 37,
+        sha256: "a".repeat(64)
+      }
+    });
+    expect(binding.dispose).toHaveBeenCalledOnce();
   });
 
   it("accepts the bounded upgrade protocol on the shared ordinary renderer channel", async () => {
@@ -453,7 +492,13 @@ describe("notebook renderer messaging", () => {
     };
     rendererMocks.request
       .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata, page: saved.page, summaries: [] })
-      .mockResolvedValueOnce({ kind: "page", revision: 3, metadata: liveMetadata, page: saved.page })
+      .mockResolvedValueOnce({
+        kind: "page",
+        revision: 3,
+        viewRequestId: `inline-${"3".repeat(32)}`,
+        metadata: liveMetadata,
+        page: saved.page
+      })
       .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "live-session" });
 
     rendererMocks.listener?.({ editor: exactEditor, message: inlineCandidate("3") });
@@ -466,6 +511,74 @@ describe("notebook renderer messaging", () => {
       kind: "openWrangler.inlineUpgrade",
       token: "3".repeat(32)
     });
+  });
+
+  it("revokes a published upgrade when Open Wrangler stops owning notebook previews", async () => {
+    const document = notebook("file:///workspace/provider-revoke.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    register({ bindInlineUpgrade: vi.fn(() => binding) });
+    const saved = validPayload() as ReturnType<typeof validPayload> & {
+      metadata: Record<string, unknown>;
+      page: Record<string, unknown>;
+    };
+    const liveMetadata = {
+      ...saved.metadata,
+      sessionId: "live-session",
+      revision: 3,
+      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
+    };
+    rendererMocks.request
+      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata })
+      .mockResolvedValueOnce({
+        kind: "page",
+        revision: 3,
+        viewRequestId: `inline-${"9".repeat(32)}`,
+        metadata: liveMetadata,
+        page: saved.page
+      })
+      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "live-session" });
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("9") });
+    await settleMessages();
+    expect(rendererMocks.inlinePosts).toHaveLength(1);
+
+    rendererMocks.registerFormatters = false;
+    for (const listener of rendererMocks.configurationListeners) {
+      listener({ affectsConfiguration: (section) => section === "openWrangler.notebookPreviewProvider" });
+    }
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts[1]?.message).toMatchObject({
+      kind: "openWrangler.inlineRevoke",
+      token: "9".repeat(32),
+      outputItemId: "output-9"
+    });
+    expect(binding.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a queued pre-eligibility candidate when its exact sender disappears", async () => {
+    const document = notebook("file:///workspace/queued-sender.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    const pending = deferred<ReturnType<typeof inlineBinding> | undefined>();
+    register({ bindInlineUpgrade: vi.fn(() => pending.promise) });
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("0") });
+    await Promise.resolve();
+    rendererMocks.visibleNotebookEditors.splice(0);
+    for (const listener of rendererMocks.visibleEditorListeners) listener();
+    pending.resolve(binding);
+    await settleMessages();
+
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.request).not.toHaveBeenCalled();
+    expect(rendererMocks.inlinePosts).toEqual([]);
+    expect(binding.dispose).toHaveBeenCalledOnce();
   });
 
   it("closes a correlated session before rejecting mismatched runtime metadata", async () => {
@@ -488,6 +601,84 @@ describe("notebook renderer messaging", () => {
     await settleMessages();
 
     expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(rendererMocks.inlinePosts).toEqual([]);
+    expect(binding.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a valid page when cleanup acknowledges a different session", async () => {
+    const document = notebook("file:///workspace/wrong-close.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    register({ bindInlineUpgrade: vi.fn(() => binding) });
+    const saved = validPayload() as ReturnType<typeof validPayload> & {
+      metadata: Record<string, unknown>;
+      page: Record<string, unknown>;
+    };
+    const liveMetadata = {
+      ...saved.metadata,
+      sessionId: "live-session",
+      revision: 3,
+      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
+    };
+    rendererMocks.request
+      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata })
+      .mockResolvedValueOnce({
+        kind: "page",
+        revision: 3,
+        viewRequestId: `inline-${"7".repeat(32)}`,
+        metadata: liveMetadata,
+        page: saved.page
+      })
+      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "different-session" });
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("7") });
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts).toEqual([]);
+    expect(binding.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["missing correlation", undefined, 3, false],
+    ["stale correlation", "inline-stale", 3, false],
+    ["stale revision", `inline-${"8".repeat(32)}`, 2, false],
+    ["changed schema", `inline-${"8".repeat(32)}`, 3, true]
+  ])("rejects a private page with %s", async (_label, viewRequestId, revision, changedSchema) => {
+    const document = notebook("file:///workspace/page-correlation.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    register({ bindInlineUpgrade: vi.fn(() => binding) });
+    const saved = validPayload() as ReturnType<typeof validPayload> & {
+      metadata: Record<string, unknown>;
+      page: Record<string, unknown>;
+    };
+    const liveMetadata = {
+      ...saved.metadata,
+      sessionId: "live-session",
+      revision: 3,
+      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
+    };
+    const pageMetadata = changedSchema
+      ? { ...liveMetadata, schema: [{ ...(liveMetadata.schema as Array<Record<string, unknown>>)[0], id: "c:other" }] }
+      : liveMetadata;
+    rendererMocks.request
+      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata })
+      .mockResolvedValueOnce({
+        kind: "page",
+        revision,
+        ...(viewRequestId ? { viewRequestId } : {}),
+        metadata: pageMetadata,
+        page: saved.page
+      })
+      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "live-session" });
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("8") });
+    await settleMessages();
+
     expect(rendererMocks.inlinePosts).toEqual([]);
     expect(binding.dispose).toHaveBeenCalledOnce();
   });
@@ -613,6 +804,8 @@ function inlineCandidate(digit: string): unknown {
 }
 
 function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) {
+  let current = true;
+  const invalidationListeners = new Set<() => void>();
   return {
     cell: {},
     notebook: document,
@@ -620,9 +813,21 @@ function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) 
     executionOrder: 1,
     sourceFingerprint: "b".repeat(64),
     kernelBinding: {},
-    isCurrent: vi.fn(() => true),
-    hasCurrentKernel: vi.fn(async () => true),
-    dispose: vi.fn()
+    isCurrent: vi.fn(() => current),
+    hasCurrentKernel: vi.fn(async () => current),
+    onDidInvalidate(listener: () => void) {
+      invalidationListeners.add(listener);
+      return { dispose: () => invalidationListeners.delete(listener) };
+    },
+    invalidate() {
+      if (!current) return;
+      current = false;
+      for (const listener of invalidationListeners) listener();
+    },
+    dispose: vi.fn(() => {
+      current = false;
+      invalidationListeners.clear();
+    })
   };
 }
 

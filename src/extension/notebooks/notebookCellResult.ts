@@ -37,8 +37,15 @@ export interface InlineNotebookCellResultBinding extends vscode.Disposable {
   readonly executionOrder: number;
   readonly sourceFingerprint: string;
   readonly kernelBinding: ExecutedNotebookCellResultBinding;
+  readonly onDidInvalidate: vscode.Event<void>;
   isCurrent(): boolean;
   hasCurrentKernel(): Promise<boolean>;
+}
+
+interface InlineRawOutputMatch {
+  readonly cell: vscode.NotebookCell;
+  readonly output: vscode.NotebookCellOutput;
+  readonly item: vscode.NotebookCellOutputItem;
 }
 
 export interface NotebookCellResultTrackerDiagnostics {
@@ -243,6 +250,7 @@ interface NotebookExecutionState {
 
 export class NotebookCellResultTracker implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
+  private readonly inlineChanged = new vscode.EventEmitter<void>();
   private readonly notebookStates = new WeakMap<vscode.NotebookDocument, NotebookExecutionState>();
   private readonly activeStates = new Set<NotebookExecutionState>();
   private readonly eligibleCells = new WeakMap<vscode.NotebookCell, ExecutedCellEligibility>();
@@ -284,6 +292,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     if (!isSupportedNotebook(event.notebook)) return;
     const state = this.stateFor(event.notebook);
     let changed = false;
+    const inlineProvenanceChanged = event.contentChanges.length > 0 || event.cellChanges.length > 0;
 
     for (const contentChange of event.contentChanges) {
       for (const removedCell of contentChange.removedCells) {
@@ -348,14 +357,17 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     }
 
     if (changed) this.changed.fire();
+    if (inlineProvenanceChanged) this.inlineChanged.fire();
   }
 
   forgetNotebook(notebook: vscode.NotebookDocument): void {
     const state = this.notebookStates.get(notebook);
-    if (!state) return;
-    this.notebookStates.delete(notebook);
-    this.activeStates.delete(state);
-    if (this.clearState(state)) this.changed.fire();
+    if (state) {
+      this.notebookStates.delete(notebook);
+      this.activeStates.delete(state);
+      if (this.clearState(state)) this.changed.fire();
+    }
+    this.inlineChanged.fire();
   }
 
   current(cell: vscode.NotebookCell): ExecutedCellEligibility | undefined {
@@ -375,79 +387,61 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     return eligibility;
   }
 
-  bindInlineUpgrade(
+  async bindInlineUpgrade(
     editor: vscode.NotebookEditor,
-    candidate: InlineNotebookOutputCandidate
-  ): InlineNotebookCellResultBinding | undefined {
+    candidate: InlineNotebookOutputCandidate,
+    cancellation?: vscode.CancellationToken
+  ): Promise<InlineNotebookCellResultBinding | undefined> {
     if (
+      !this.started ||
+      cancellation?.isCancellationRequested ||
       !isInlineUpgradeCandidate(candidate) ||
       !isExactVisibleNotebookEditor(editor) ||
       !isSupportedNotebook(editor.notebook)
     ) {
       return undefined;
     }
-    let cells: readonly vscode.NotebookCell[];
-    try {
-      cells = editor.notebook.getCells();
-    } catch {
-      return undefined;
-    }
-    if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
+    const rawMatch = findInlineRawOutputMatch(editor, candidate);
+    if (!rawMatch || rawMatch.output.metadata?.outputType !== "execute_result") return undefined;
+    const immediate = this.current(rawMatch.cell);
+    if (immediate) return this.createInlineUpgradeBinding(editor, candidate, rawMatch, immediate);
 
-    let visitedItems = 0;
-    let scannedBytes = 0;
-    let match:
-      | {
-          readonly cell: vscode.NotebookCell;
-          readonly output: vscode.NotebookCellOutput;
-          readonly item: vscode.NotebookCellOutputItem;
-          readonly eligibility: ExecutedCellEligibility;
+    return new Promise((resolve) => {
+      let settled = false;
+      let observedInspection = this.pendingCells.has(rawMatch.cell) || this.kernelObservations.has(rawMatch.cell);
+      const subscriptions: vscode.Disposable[] = [];
+      const finish = (binding: InlineNotebookCellResultBinding | undefined): void => {
+        if (settled) {
+          binding?.dispose();
+          return;
         }
-      | undefined;
-    for (const cell of cells) {
-      const eligibility = this.current(cell);
-      if (!eligibility) continue;
-      for (const output of cell.outputs) {
-        if (output.metadata?.outputType !== "execute_result") continue;
-        visitedItems += output.items.length;
-        if (visitedItems > INLINE_UPGRADE_MAX_OUTPUT_ITEMS) return undefined;
-        for (const item of output.items) {
-          if (item.mime !== "text/html" || item.data.byteLength !== candidate.byteLength) continue;
-          if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - item.data.byteLength) return undefined;
-          scannedBytes += item.data.byteLength;
-          if (!matchesInlineUpgradeBytes(item.data, candidate)) continue;
-          if (match) return undefined;
-          match = { cell, output, item, eligibility };
+        settled = true;
+        for (const subscription of subscriptions.splice(0)) subscription.dispose();
+        resolve(binding);
+      };
+      const inspect = (): void => {
+        if (
+          settled ||
+          !this.started ||
+          cancellation?.isCancellationRequested ||
+          !matchesInlineRawOutput(editor, candidate, rawMatch)
+        ) {
+          finish(undefined);
+          return;
         }
-      }
-    }
-    if (!match) return undefined;
-
-    let active = true;
-    const { cell, output, item, eligibility } = match;
-    const isCurrent = (): boolean =>
-      active &&
-      isExactVisibleNotebookEditor(editor) &&
-      isExactCellInNotebook(cell, editor.notebook) &&
-      this.current(cell) === eligibility &&
-      cell.outputs.includes(output) &&
-      output.metadata?.outputType === "execute_result" &&
-      output.items.includes(item) &&
-      item.mime === "text/html" &&
-      matchesInlineUpgradeBytes(item.data, candidate);
-    return {
-      cell,
-      notebook: editor.notebook,
-      editor,
-      executionOrder: eligibility.executionOrder,
-      sourceFingerprint: eligibility.sourceFingerprint,
-      kernelBinding: eligibility.binding,
-      isCurrent,
-      hasCurrentKernel: async () => isCurrent() && (await this.hasCurrentKernel(cell, eligibility)) && isCurrent(),
-      dispose: () => {
-        active = false;
-      }
-    };
+        const eligibility = this.current(rawMatch.cell);
+        if (eligibility) {
+          finish(this.createInlineUpgradeBinding(editor, candidate, rawMatch, eligibility));
+          return;
+        }
+        const inspectionActive = this.pendingCells.has(rawMatch.cell) || this.kernelObservations.has(rawMatch.cell);
+        if (inspectionActive) observedInspection = true;
+        else if (observedInspection) finish(undefined);
+      };
+      subscriptions.push(this.inlineChanged.event(inspect));
+      if (cancellation) subscriptions.push(cancellation.onCancellationRequested(() => finish(undefined)));
+      inspect();
+    });
   }
 
   diagnosticsForTesting(): NotebookCellResultTrackerDiagnostics | undefined {
@@ -465,7 +459,10 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     const current = await isExecutedNotebookCellResultKernelCurrent(eligibility.notebook, eligibility.binding);
     if (current || this.eligibleCells.get(cell) !== eligibility) return current;
     const state = this.notebookStates.get(eligibility.notebook);
-    if (state && this.forgetCell(state, cell)) this.changed.fire();
+    if (state && this.forgetCell(state, cell)) {
+      this.changed.fire();
+      this.inlineChanged.fire();
+    }
     return false;
   }
 
@@ -474,7 +471,47 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     this.started = false;
     for (const state of this.activeStates) this.clearState(state);
     this.activeStates.clear();
+    this.inlineChanged.fire();
     this.changed.dispose();
+    this.inlineChanged.dispose();
+  }
+
+  private createInlineUpgradeBinding(
+    editor: vscode.NotebookEditor,
+    candidate: InlineNotebookOutputCandidate,
+    rawMatch: InlineRawOutputMatch,
+    eligibility: ExecutedCellEligibility
+  ): InlineNotebookCellResultBinding {
+    let active = true;
+    const invalidated = new vscode.EventEmitter<void>();
+    const subscriptions: vscode.Disposable[] = [];
+    const isCurrent = (): boolean =>
+      active && this.current(rawMatch.cell) === eligibility && matchesInlineRawOutput(editor, candidate, rawMatch);
+    const stop = (notify: boolean): void => {
+      if (!active) return;
+      active = false;
+      if (notify) invalidated.fire();
+      for (const subscription of subscriptions.splice(0)) subscription.dispose();
+      invalidated.dispose();
+    };
+    subscriptions.push(
+      this.inlineChanged.event(() => {
+        if (!isCurrent()) stop(true);
+      })
+    );
+    return {
+      cell: rawMatch.cell,
+      notebook: editor.notebook,
+      editor,
+      executionOrder: eligibility.executionOrder,
+      sourceFingerprint: eligibility.sourceFingerprint,
+      kernelBinding: eligibility.binding,
+      onDidInvalidate: invalidated.event,
+      isCurrent,
+      hasCurrentKernel: async () =>
+        isCurrent() && (await this.hasCurrentKernel(rawMatch.cell, eligibility)) && isCurrent(),
+      dispose: () => stop(false)
+    };
   }
 
   private stateFor(notebook: vscode.NotebookDocument): NotebookExecutionState {
@@ -586,22 +623,28 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             binding?.dispose();
             state.trackedCells.delete(cell);
             if (probeAttempted) this.recordDiagnostic("rejected", "probe-rejected");
+            this.inlineChanged.fire();
             return;
           }
           const eligibility: ExecutedCellEligibility = { ...pending, binding };
           eligibility.invalidationSubscription = binding.onDidInvalidate(() => {
-            if (this.eligibleCells.get(cell) === eligibility && this.forgetCell(state, cell)) this.changed.fire();
+            if (this.eligibleCells.get(cell) === eligibility && this.forgetCell(state, cell)) {
+              this.changed.fire();
+              this.inlineChanged.fire();
+            }
           });
           if (!binding.isValid()) {
             eligibility.invalidationSubscription.dispose();
             binding.dispose();
             state.trackedCells.delete(cell);
             this.recordDiagnostic("rejected", "probe-rejected");
+            this.inlineChanged.fire();
             return;
           }
           this.eligibleCells.set(cell, eligibility);
           this.recordDiagnostic("eligible");
           this.changed.fire();
+          this.inlineChanged.fire();
         },
         () => {
           if (this.pendingCells.get(cell) !== pending) return;
@@ -622,6 +665,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     pending.activeBinding?.dispose();
     delete pending.activeBinding;
     this.disposeObservation(pending.observation);
+    this.inlineChanged.fire();
     return true;
   }
 
@@ -782,6 +826,48 @@ export class NotebookCellResultTracker implements vscode.Disposable {
       this.disposeObservation(pending);
     }, NOTEBOOK_RESULT_OUTPUT_GRACE_MS);
   }
+}
+
+function findInlineRawOutputMatch(
+  editor: vscode.NotebookEditor,
+  candidate: InlineNotebookOutputCandidate
+): InlineRawOutputMatch | undefined {
+  if (!isExactVisibleNotebookEditor(editor)) return undefined;
+  let cells: readonly vscode.NotebookCell[];
+  try {
+    cells = editor.notebook.getCells();
+  } catch {
+    return undefined;
+  }
+  if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
+
+  let visitedItems = 0;
+  let scannedBytes = 0;
+  let match: InlineRawOutputMatch | undefined;
+  for (const cell of cells) {
+    for (const output of cell.outputs) {
+      visitedItems += output.items.length;
+      if (visitedItems > INLINE_UPGRADE_MAX_OUTPUT_ITEMS) return undefined;
+      for (const item of output.items) {
+        if (item.mime !== "text/html" || item.data.byteLength !== candidate.byteLength) continue;
+        if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - item.data.byteLength) return undefined;
+        scannedBytes += item.data.byteLength;
+        if (!matchesInlineUpgradeBytes(item.data, candidate)) continue;
+        if (match) return undefined;
+        match = { cell, output, item };
+      }
+    }
+  }
+  return match;
+}
+
+function matchesInlineRawOutput(
+  editor: vscode.NotebookEditor,
+  candidate: InlineNotebookOutputCandidate,
+  expected: InlineRawOutputMatch
+): boolean {
+  const current = findInlineRawOutputMatch(editor, candidate);
+  return current?.cell === expected.cell && current.output === expected.output && current.item === expected.item;
 }
 
 function isExactCellInNotebook(cell: vscode.NotebookCell, notebook: vscode.NotebookDocument): boolean {

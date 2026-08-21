@@ -52,6 +52,7 @@ interface InlineUpgradeCandidate {
   readonly sha256: string;
   readonly element: HTMLElement;
   readonly signal: AbortSignal;
+  readonly ordinaryNodes: readonly ChildNode[];
   enhancement?: HTMLElement;
 }
 
@@ -85,7 +86,7 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
 
   context.onDidReceiveMessage((message) => {
     const accepted = parseInlineUpgradeResponse(message);
-    if (!accepted || completed.has(accepted.outputItemId)) return;
+    if (!accepted) return;
     const candidate = candidates.get(accepted.outputItemId);
     if (
       !candidate ||
@@ -96,14 +97,26 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
     ) {
       return;
     }
+    if (accepted.kind === "openWrangler.inlineRevoke") {
+      restoreOrdinaryHtml(candidate);
+      candidates.delete(candidate.outputItemId);
+      completed.delete(candidate.outputItemId);
+      return;
+    }
+    if (completed.has(accepted.outputItemId)) return;
     const payload = normalizeNotebookOutputPayload(accepted.payload);
     if (!payload) return;
-    const enhancement = document.createElement("section");
-    enhancement.dataset.openWranglerInlineUpgrade = "true";
-    enhancement.appendChild(renderPayload(payload, context));
-    candidate.element.appendChild(enhancement);
-    candidate.enhancement = enhancement;
-    completed.add(candidate.outputItemId);
+    try {
+      const enhancement = document.createElement("section");
+      enhancement.dataset.openWranglerInlineUpgrade = "true";
+      enhancement.appendChild(renderPayload(payload, context));
+      if (!hasExactChildren(candidate.element, candidate.ordinaryNodes)) return;
+      candidate.element.replaceChildren(enhancement);
+      candidate.enhancement = enhancement;
+      completed.add(candidate.outputItemId);
+    } catch {
+      restoreOrdinaryHtml(candidate);
+    }
   });
 
   builtin.experimental_registerHtmlRenderingHook({
@@ -119,6 +132,7 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       }
       let candidate: InlineUpgradeCandidate;
       try {
+        const ordinaryNodes = [...element.childNodes];
         const bytes = outputItem.data();
         if (bytes.byteLength === 0 || bytes.byteLength > INLINE_UPGRADE_MAX_HTML_BYTES) return;
         candidate = {
@@ -127,12 +141,14 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
           byteLength: bytes.byteLength,
           sha256: await sha256(bytes),
           element,
-          signal
+          signal,
+          ordinaryNodes
         };
       } catch {
         return;
       }
-      if (signal.aborted || candidates.has(outputItem.id)) return;
+      if (signal.aborted || candidates.has(outputItem.id) || !hasExactChildren(element, candidate.ordinaryNodes))
+        return;
       candidates.set(outputItem.id, candidate);
       signal.addEventListener(
         "abort",
@@ -140,7 +156,7 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
           if (candidates.get(outputItem.id) !== candidate) return;
           candidates.delete(outputItem.id);
           completed.delete(outputItem.id);
-          candidate.enhancement?.remove();
+          restoreOrdinaryHtml(candidate);
           context.postMessage?.({
             kind: "openWrangler.inlineCancel",
             protocol: INLINE_UPGRADE_PROTOCOL,
@@ -169,17 +185,25 @@ function isHtmlRendererContext(context: RendererContext): context is HtmlRendere
 
 function parseInlineUpgradeResponse(message: unknown):
   | {
+      readonly kind: "openWrangler.inlineUpgrade";
       readonly token: string;
       readonly outputItemId: string;
       readonly byteLength: number;
       readonly sha256: string;
       readonly payload: unknown;
     }
+  | {
+      readonly kind: "openWrangler.inlineRevoke";
+      readonly token: string;
+      readonly outputItemId: string;
+      readonly byteLength: number;
+      readonly sha256: string;
+    }
   | undefined {
   if (typeof message !== "object" || message === null) return undefined;
   const candidate = message as Record<string, unknown>;
   if (
-    candidate.kind !== "openWrangler.inlineUpgrade" ||
+    (candidate.kind !== "openWrangler.inlineUpgrade" && candidate.kind !== "openWrangler.inlineRevoke") ||
     candidate.protocol !== INLINE_UPGRADE_PROTOCOL ||
     typeof candidate.token !== "string" ||
     candidate.token.length !== 32 ||
@@ -191,18 +215,42 @@ function parseInlineUpgradeResponse(message: unknown):
     typeof candidate.sha256 !== "string" ||
     candidate.sha256.length !== 64 ||
     !/^[a-f0-9]{64}$/u.test(candidate.sha256) ||
-    !Object.hasOwn(candidate, "payload") ||
-    Object.keys(candidate).length !== 7
+    (candidate.kind === "openWrangler.inlineUpgrade"
+      ? !Object.hasOwn(candidate, "payload") || Object.keys(candidate).length !== 7
+      : Object.hasOwn(candidate, "payload") || Object.keys(candidate).length !== 6)
   ) {
     return undefined;
   }
-  return candidate as {
-    token: string;
-    outputItemId: string;
-    byteLength: number;
-    sha256: string;
-    payload: unknown;
-  };
+  return candidate as unknown as
+    | {
+        kind: "openWrangler.inlineUpgrade";
+        token: string;
+        outputItemId: string;
+        byteLength: number;
+        sha256: string;
+        payload: unknown;
+      }
+    | {
+        kind: "openWrangler.inlineRevoke";
+        token: string;
+        outputItemId: string;
+        byteLength: number;
+        sha256: string;
+      };
+}
+
+function hasExactChildren(element: HTMLElement, expected: readonly ChildNode[]): boolean {
+  const current = element.childNodes;
+  return current.length === expected.length && expected.every((node, index) => current[index] === node);
+}
+
+function restoreOrdinaryHtml(candidate: InlineUpgradeCandidate): void {
+  const enhancement = candidate.enhancement;
+  if (!enhancement) return;
+  if (hasExactChildren(candidate.element, [enhancement])) {
+    candidate.element.replaceChildren(...candidate.ordinaryNodes);
+  }
+  delete candidate.enhancement;
 }
 
 function isBoundedOutputItemId(value: unknown): value is string {

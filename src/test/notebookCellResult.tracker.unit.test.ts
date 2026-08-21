@@ -47,10 +47,12 @@ describe("executed notebook cell result tracker", () => {
       sha256: createHash("sha256").update(bytes).digest("hex")
     };
 
-    const binding = tracker.bindInlineUpgrade(exactEditor, candidate);
+    const binding = await tracker.bindInlineUpgrade(exactEditor, candidate);
 
     expect(binding?.cell).toBe(first);
     expect(binding?.isCurrent()).toBe(true);
+    const invalidated = vi.fn();
+    binding?.onDidInvalidate(invalidated);
 
     const replacementEditor = { notebook: document } as NotebookEditor;
     mocks.visibleEditors.splice(0, 1, replacementEditor);
@@ -61,10 +63,57 @@ describe("executed notebook cell result tracker", () => {
     const duplicate = codeCell(document, 2, [output(new TextDecoder().decode(bytes), "text/html")]);
     setCells(document, [first, duplicate]);
     await recordExecutionAndWait(duplicate);
-    expect(tracker.bindInlineUpgrade(exactEditor, candidate)).toBeUndefined();
+    expect(await tracker.bindInlineUpgrade(exactEditor, candidate)).toBeUndefined();
     mocks.bindings[0]?.invalidate();
     expect(binding?.isCurrent()).toBe(false);
+    expect(invalidated).toHaveBeenCalledOnce();
     binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("queues the first HTML candidate until its exact eligibility inspection settles", async () => {
+    const document = notebook("file:///inline-upgrade-before-eligibility.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>first</td></tr></table>");
+    const cell = codeCell(document, 1, [output(new TextDecoder().decode(bytes), "text/html")]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    const queued = tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+    await recordExecutionAndWait(cell);
+
+    const binding = await queued;
+    expect(binding?.cell).toBe(cell);
+    expect(binding?.isCurrent()).toBe(true);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("rejects a byte-identical raw HTML output that is ineligible for a live result", async () => {
+    const document = notebook("file:///inline-upgrade-ineligible-duplicate.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>same</td></tr></table>");
+    const eligible = codeCell(document, 1, [output(new TextDecoder().decode(bytes), "text/html")]);
+    const ordinary = codeCell(document, 2, [output(new TextDecoder().decode(bytes), "text/html", "display_data")]);
+    setCells(document, [eligible, ordinary]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(eligible);
+
+    expect(
+      await tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex")
+      })
+    ).toBeUndefined();
     tracker.dispose();
   });
 
@@ -86,7 +135,7 @@ describe("executed notebook cell result tracker", () => {
     await recordExecutionAndWait(first);
 
     expect(
-      tracker.bindInlineUpgrade(exactEditor, {
+      await tracker.bindInlineUpgrade(exactEditor, {
         byteLength: items[0]!.data.byteLength,
         sha256: createHash("sha256").update(items[0]!.data).digest("hex")
       })

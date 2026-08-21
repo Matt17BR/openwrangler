@@ -63,7 +63,29 @@ describe("notebook renderer", () => {
     receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: canonicalPayload(1, "frame") });
     receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: canonicalPayload(1, "frame") });
     expect(element.querySelectorAll("[data-open-wrangler-inline-upgrade]")).toHaveLength(1);
+    expect(element.querySelector("[data-original-html]")).toBeNull();
+    expect(element.querySelectorAll("table")).toHaveLength(1);
+
+    receiver?.({
+      kind: "openWrangler.inlineRevoke",
+      protocol: 1,
+      token: candidate.token,
+      outputItemId: "output-1",
+      byteLength: candidate.byteLength,
+      sha256: candidate.sha256
+    });
+    expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
     expect(element.querySelector("[data-original-html]")).toBe(ordinary);
+    expect(element.querySelectorAll("table")).toHaveLength(1);
+
+    await hook?.postRender({ id: "output-1", mime: "text/html", data: () => bytes }, element, controller.signal);
+    const replacementCandidate = postMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    receiver?.({
+      ...replacementCandidate,
+      kind: "openWrangler.inlineUpgrade",
+      payload: canonicalPayload(1, "frame")
+    });
+    expect(element.querySelector("[data-original-html]")).toBeNull();
 
     controller.abort();
     expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
@@ -71,7 +93,7 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenLastCalledWith({
       kind: "openWrangler.inlineCancel",
       protocol: 1,
-      token: candidate.token,
+      token: replacementCandidate.token,
       outputItemId: "output-1"
     });
   });
