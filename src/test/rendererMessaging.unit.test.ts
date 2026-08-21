@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, NotebookDocument, NotebookEditor, Uri } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import { NOTEBOOK_OUTPUT_LIMITS } from "../shared/notebookOutput";
 
 interface RendererEvent {
   editor: NotebookEditor;
@@ -525,6 +526,226 @@ describe("notebook renderer messaging", () => {
       kind: "openWrangler.inlineUpgrade",
       token: "3".repeat(32)
     });
+  });
+
+  it("retains only compact authority for eight near-limit published payloads", async () => {
+    const documents = Array.from({ length: 8 }, (_, index) => notebook(`file:///workspace/near-limit-${index}.ipynb`));
+    const editors = documents.map((document) => editor(document));
+    rendererMocks.notebookDocuments.push(...documents);
+    rendererMocks.visibleNotebookEditors.push(...editors);
+    const bindings = new Map(
+      editors.map((candidateEditor) => [candidateEditor, inlineBinding(candidateEditor.notebook, candidateEditor)])
+    );
+    register({ bindInlineUpgrade: vi.fn((candidateEditor: NotebookEditor) => bindings.get(candidateEditor)) });
+    installNearLimitRuntimeResponses();
+    const cloneSpy = vi.spyOn(globalThis, "structuredClone").mockImplementation(() => {
+      throw new Error("Published inline payloads must not be cloned into operation state.");
+    });
+    try {
+      for (let index = 0; index < editors.length; index += 1) {
+        rendererMocks.inlineListener?.({ editor: editors[index]!, message: inlineCandidate(index.toString(16)) });
+      }
+      await settleMessages();
+
+      const upgrades = rendererMocks.inlinePosts.filter(
+        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineUpgrade"
+      );
+      expect(upgrades).toHaveLength(8);
+      expect(cloneSpy).not.toHaveBeenCalled();
+      const serializedBytes = Buffer.byteLength(
+        JSON.stringify((upgrades[0]?.message as { payload?: unknown }).payload),
+        "utf8"
+      );
+      expect(serializedBytes).toBeGreaterThan(15 * 1024 * 1024);
+      expect(serializedBytes).toBeLessThanOrEqual(NOTEBOOK_OUTPUT_LIMITS.bytes);
+    } finally {
+      cloneSpy.mockRestore();
+    }
+  }, 30_000);
+
+  it("atomically retires a settling replay and keeps its late completion inert beside a replacement", async () => {
+    const document = notebook("file:///workspace/settling-replay.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const lateBinding = inlineBinding(document, exactEditor);
+    const replacementBinding = inlineBinding(document, exactEditor);
+    const pending = deferred<typeof lateBinding | undefined>();
+    let cancellation: { readonly isCancellationRequested: boolean } | undefined;
+    const tracker = {
+      bindInlineUpgrade: vi
+        .fn((_editor, _candidate, token) => {
+          cancellation = token;
+          return pending.promise;
+        })
+        .mockImplementationOnce((_editor, _candidate, token) => {
+          cancellation = token;
+          return pending.promise;
+        })
+        .mockImplementationOnce(async () => replacementBinding)
+    };
+    register(tracker);
+    installCanonicalRuntimeResponses(document, "b");
+    const replay = inlineCandidate("a");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await Promise.resolve();
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMicrotasks();
+    expect(cancellation?.isCancellationRequested).toBe(true);
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRevoke"
+    ]);
+
+    rendererMocks.inlineListener?.({
+      editor: exactEditor,
+      message: { ...inlineCandidate("b"), outputItemId: replay.outputItemId }
+    });
+    await settleMessages();
+    expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
+      kind: "openWrangler.inlineUpgrade",
+      token: "b".repeat(32)
+    });
+
+    pending.resolve(lateBinding);
+    await settleMessages();
+    expect(lateBinding.dispose).toHaveBeenCalledOnce();
+    expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
+      kind: "openWrangler.inlineUpgrade",
+      token: "b".repeat(32)
+    });
+  });
+
+  it("retires an already-published exact replay before any later live action", async () => {
+    const document = notebook("file:///workspace/published-replay.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
+    register(tracker);
+    installCanonicalRuntimeResponses(document, "c");
+    const replay = inlineCandidate("c");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMessages();
+    const upgrade = rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown };
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMessages();
+    expect(binding.dispose).toHaveBeenCalledOnce();
+    expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({ kind: "openWrangler.inlineRevoke" });
+
+    rendererMocks.inlineListener?.({
+      editor: exactEditor,
+      message: { kind: "openInOpenWrangler", payload: upgrade.payload }
+    });
+    await settleMessages();
+    expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
+    await settleMessages();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+  });
+
+  it("retires both sides of an active token collision before responding", async () => {
+    const document = notebook("file:///workspace/token-collision.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
+    register(tracker);
+    installCanonicalRuntimeResponses(document, "4");
+    const first = inlineCandidate("4");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: first });
+    await settleMessages();
+    const postsBeforeCollision = rendererMocks.inlinePosts.length;
+    rendererMocks.inlineListener?.({
+      editor: exactEditor,
+      message: { ...first, outputItemId: "colliding-output", sha256: "b".repeat(64) }
+    });
+    await settleMessages();
+
+    expect(binding.dispose).toHaveBeenCalledOnce();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(rendererMocks.inlinePosts.slice(postsBeforeCollision).map(({ message }) => message)).toEqual([
+      {
+        kind: "openWrangler.inlineRevoke",
+        protocol: 1,
+        token: "4".repeat(32),
+        outputItemId: "output-4",
+        byteLength: 37,
+        sha256: "a".repeat(64)
+      },
+      {
+        kind: "openWrangler.inlineRevoke",
+        protocol: 1,
+        token: "4".repeat(32),
+        outputItemId: "colliding-output",
+        byteLength: 37,
+        sha256: "b".repeat(64)
+      }
+    ]);
+  });
+
+  it("bounds retired replay receipts and evicts the oldest deterministically", async () => {
+    const document = notebook("file:///workspace/retired-receipts.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(async () => undefined) };
+    register(tracker);
+
+    for (let index = 0; index < 129; index += 1) {
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: indexedInlineCandidate(index) });
+      await settleMicrotasks();
+    }
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(129);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: indexedInlineCandidate(128) });
+    await settleMicrotasks();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(129);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: indexedInlineCandidate(0) });
+    await settleMicrotasks();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(130);
+  });
+
+  it("makes late renderer events and operation settlement inert after disposal", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = notebook("file:///workspace/disposed-upgrades.ipynb");
+      const exactEditor = editor(document);
+      rendererMocks.notebookDocuments.push(document);
+      rendererMocks.visibleNotebookEditors.push(exactEditor);
+      const binding = inlineBinding(document, exactEditor);
+      const capture = deferred<ReturnType<typeof validPayload>>();
+      rendererMocks.capture.mockReturnValue(capture.promise);
+      const tracker = { bindInlineUpgrade: vi.fn(async () => binding) };
+      const { context } = register(tracker);
+
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("d") });
+      await settleMicrotasks();
+      expect(binding.listenerCount()).toBe(1);
+      expect(rendererMocks.capture).toHaveBeenCalledOnce();
+      for (const subscription of context.subscriptions) subscription.dispose();
+      const terminalPosts = rendererMocks.inlinePosts.length;
+
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("e") });
+      binding.invalidate();
+      capture.resolve(validPayload());
+      await settleMicrotasks();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+      expect(binding.dispose).toHaveBeenCalledOnce();
+      expect(binding.listenerCount()).toBe(0);
+      expect(rendererMocks.inlinePosts).toHaveLength(terminalPosts);
+      expect(rendererMocks.request).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("revokes a published upgrade when Open Wrangler stops owning notebook previews", async () => {
@@ -1193,6 +1414,18 @@ function inlineCandidate(digit: string): {
   };
 }
 
+function indexedInlineCandidate(index: number): ReturnType<typeof inlineCandidate> {
+  const token = index.toString(16).padStart(32, "0");
+  return {
+    kind: "openWrangler.inlineCandidate",
+    protocol: 1,
+    token,
+    outputItemId: `indexed-output-${index}`,
+    byteLength: 37,
+    sha256: "a".repeat(64)
+  };
+}
+
 function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) {
   let current = true;
   const invalidationListeners = new Set<() => void>();
@@ -1209,6 +1442,7 @@ function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) 
       invalidationListeners.add(listener);
       return { dispose: () => invalidationListeners.delete(listener) };
     },
+    listenerCount: () => invalidationListeners.size,
     invalidate() {
       if (!current) return;
       current = false;
@@ -1296,6 +1530,63 @@ function installCanonicalRuntimeResponses(
       };
     }
     return { kind: "sessionClosed", sessionId: request.sessionId };
+  });
+}
+
+function installNearLimitRuntimeResponses(): void {
+  const schema = [{ id: "c:0", name: "payload", position: 0, rawType: "string", type: "string", nullable: false }];
+  const display = "d".repeat(60_000);
+  const raw = "r".repeat(20_000);
+  const rows = Array.from({ length: 200 }, (_, rowNumber) => ({
+    id: `r:${rowNumber}`,
+    rowNumber,
+    values: [{ kind: "string", raw, display, isNull: false, isNaN: false }]
+  }));
+  const sources = new Map<string, { kind: "notebookVariable"; label: string; variableName: string; uri: string }>();
+  rendererMocks.request.mockImplementation(async (request) => {
+    const sessionId = request.requestedSessionId ?? request.sessionId;
+    if (!sessionId) throw new Error("The near-limit fixture requires an exact session identity.");
+    if (request.kind === "openSession") {
+      if (request.source.kind !== "notebookVariable" || request.source.variableName === undefined) {
+        throw new Error("The near-limit fixture requires a notebook-variable source.");
+      }
+      sources.set(sessionId, {
+        kind: "notebookVariable",
+        label: request.source.label,
+        variableName: request.source.variableName,
+        uri: request.source.uri
+      });
+    }
+    const source = sources.get(sessionId);
+    if (!source) throw new Error("The near-limit fixture lost its exact source.");
+    const metadata = {
+      ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
+      sessionId,
+      revision: 3,
+      source,
+      shape: { rows: 200, columns: 1 },
+      filteredShape: { rows: 200, columns: 1 },
+      schema
+    };
+    if (request.kind === "openSession") {
+      return {
+        kind: "sessionOpened",
+        metadata,
+        page: { offset: 0, limit: 1, totalRows: 200, columnIds: ["c:0"], rows: rows.slice(0, 1) },
+        summaries: []
+      };
+    }
+    if (request.kind === "getPage") {
+      return {
+        kind: "page",
+        revision: request.revision,
+        viewRequestId: request.viewRequestId,
+        metadata,
+        page: { offset: 0, limit: 200, totalRows: 200, columnIds: ["c:0"], rows }
+      };
+    }
+    sources.delete(sessionId);
+    return { kind: "sessionClosed", sessionId };
   });
 }
 
