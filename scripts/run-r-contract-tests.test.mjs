@@ -9,6 +9,7 @@ import {
   createRContractPhases,
   orderRContractPhases,
   parseRContractSelection,
+  readPsProcessIdentity,
   R_CONTRACT_SHARD_ALIASES,
   R_CONTRACT_SHARDS,
   R_FRAME_CONTRACT_CASES,
@@ -494,6 +495,77 @@ test("Windows R contract phases launch through the existing Job Object superviso
   assert.deepEqual(launches[0].args, phase.args);
 });
 
+test("the Windows empty-tree marker is removed before the combined 4 MiB user-output budget", async () => {
+  const [phase] = phases();
+  const token = "00000000-0000-4000-8000-000000000695";
+  const marker = Buffer.from(`OPEN_WRANGLER_WINDOWS_JOB_EMPTY:${token}\n`, "ascii");
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  await runRContractPhase(
+    { ...phase, environment: { ...phase.environment, SYSTEMROOT: "C:\\Windows" } },
+    {
+      platform: "win32",
+      randomToken: () => token,
+      spawnProcess: () => {
+        const child = new EventEmitter();
+        child.stdin = new PassThrough();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.stdin.setEncoding("utf8");
+        child.stdin.on("data", (frame) => {
+          if (JSON.parse(frame.trim()).command !== "launch") return;
+          child.stdout.end(Buffer.alloc(1024 * 1024, 0x6f));
+          child.stderr.write(Buffer.alloc(3 * 1024 * 1024, 0x65));
+          child.stderr.write(marker.subarray(0, 17));
+          child.stderr.end(marker.subarray(17));
+          queueMicrotask(() => child.emit("close", 0, null));
+        });
+        return child;
+      },
+      writeOutput: (chunk) => {
+        stdoutBytes += chunk.length;
+      },
+      writeError: (chunk) => {
+        stderrBytes += chunk.length;
+      },
+      writeLine: () => {}
+    }
+  );
+  assert.equal(stdoutBytes, 1024 * 1024);
+  assert.equal(stderrBytes, 3 * 1024 * 1024);
+
+  await assert.rejects(
+    runRContractPhase(
+      { ...phase, timeoutMs: 500, environment: { ...phase.environment, SYSTEMROOT: "C:\\Windows" } },
+      {
+        platform: "win32",
+        randomToken: () => token,
+        spawnProcess: () => {
+          const child = new EventEmitter();
+          child.stdin = new PassThrough();
+          child.stdout = new PassThrough();
+          child.stderr = new PassThrough();
+          child.stdin.setEncoding("utf8");
+          child.stdin.on("data", (frame) => {
+            const command = JSON.parse(frame.trim()).command;
+            if (command === "launch") {
+              child.stdout.end(Buffer.alloc(1024 * 1024, 0x6f));
+              child.stderr.end(Buffer.concat([Buffer.alloc(3 * 1024 * 1024 + 1, 0x65), marker]));
+            } else if (command === "terminate") {
+              queueMicrotask(() => child.emit("close", null, "SIGKILL"));
+            }
+          });
+          return child;
+        },
+        writeOutput: () => {},
+        writeError: () => {},
+        writeLine: () => {}
+      }
+    ),
+    /exceeded its 4194304-byte stdout\/stderr bound/u
+  );
+});
+
 test("a Windows post-spawn control failure terminates and latches before a later phase", async () => {
   const first = { ...phases()[0], environment: { ...phases()[0].environment, SYSTEMROOT: "C:\\Windows" } };
   const second = { ...phases()[1], environment: { ...phases()[1].environment, SYSTEMROOT: "C:\\Windows" } };
@@ -529,8 +601,8 @@ test("a Windows post-spawn control failure terminates and latches before a later
   assert.match(failure.errors[0].errors[1].message, /did not provide one exact empty-tree attestation/u);
 });
 
-function processIdentity(pid, parentPid, startIdentity, ownerMarked = false) {
-  return { pid, parentPid, groupId: pid, state: "S", startIdentity, ownerMarked };
+function processIdentity(pid, parentPid, startIdentity, ownerMarked = false, signalIdentityBound = true) {
+  return { pid, parentPid, groupId: pid, state: "S", startIdentity, ownerMarked, signalIdentityBound };
 }
 
 test("POSIX ownership follows marker-free descendants and binds every signal to a stable identity", () => {
@@ -553,7 +625,7 @@ test("POSIX ownership follows marker-free descendants and binds every signal to 
   ]);
 });
 
-test("POSIX ownership never signals a PID reused after an observed descendant exits", () => {
+test("POSIX ownership retires one identity and tracks an owned reuse of the same PID", () => {
   const processes = new Map([
     [62_001, processIdentity(62_001, 1, "root")],
     [62_002, processIdentity(62_002, 62_001, "owned-child")]
@@ -565,10 +637,35 @@ test("POSIX ownership never signals a PID reused after an observed descendant ex
     signalProcess: (pid, signal) => signals.push([pid, signal]),
     observationIntervalMs: 60_000
   });
-  processes.set(62_002, processIdentity(62_002, 62_001, "foreign-reuse"));
+  processes.delete(62_002);
+  tracker.observe();
+  processes.set(62_002, processIdentity(62_002, 62_001, "owned-reuse"));
   tracker.signal("SIGKILL");
   tracker.stop();
-  assert.deepEqual(signals, [[62_001, "SIGKILL"]]);
+  assert.deepEqual(signals, [
+    [62_001, "SIGKILL"],
+    [62_002, "SIGKILL"]
+  ]);
+});
+
+test("POSIX ownership does not adopt a foreign reuse of a retired PID", () => {
+  const processes = new Map([
+    [62_101, processIdentity(62_101, 1, "root")],
+    [62_102, processIdentity(62_102, 62_101, "owned-child")]
+  ]);
+  const signals = [];
+  const tracker = createPosixProcessTracker(62_101, "owner", {
+    readProcessIdentity: (pid) => processes.get(pid),
+    listProcessIdentities: () => [...processes.values()],
+    signalProcess: (pid, signal) => signals.push([pid, signal]),
+    observationIntervalMs: 60_000
+  });
+  processes.delete(62_102);
+  tracker.observe();
+  processes.set(62_102, processIdentity(62_102, 99, "foreign-reuse"));
+  tracker.signal("SIGKILL");
+  tracker.stop();
+  assert.deepEqual(signals, [[62_101, "SIGKILL"]]);
 });
 
 test("POSIX ownership fails closed when an observed descendant becomes unverifiable", async () => {
@@ -593,6 +690,69 @@ test("POSIX ownership fails closed when an observed descendant becomes unverifia
   assert.throws(() => tracker.observe(), /process tree became unverifiable.*permission denied/u);
   assert.equal((await tracker.failure).processTreeUnsettled, true);
   tracker.stop();
+});
+
+test("POSIX ownership fails closed on a stalled observer or weak signal identity", async () => {
+  const stable = processIdentity(63_101, 1, "root");
+  let observerStalled = false;
+  const stalledSignals = [];
+  const stalledTracker = createPosixProcessTracker(63_101, "owner", {
+    readProcessIdentity: () => stable,
+    listProcessIdentities: () => {
+      if (observerStalled) throw new Error("process observation exceeded its fixed deadline");
+      return [stable];
+    },
+    signalProcess: (pid, signal) => stalledSignals.push([pid, signal]),
+    observationIntervalMs: 60_000
+  });
+  observerStalled = true;
+  assert.throws(() => stalledTracker.signal("SIGTERM"), /process observation exceeded its fixed deadline/u);
+  assert.equal((await stalledTracker.failure).processTreeUnsettled, true);
+  assert.deepEqual(stalledSignals, []);
+  stalledTracker.stop();
+
+  const weak = processIdentity(63_201, 1, "coarse-ps-time", true, false);
+  const weakSignals = [];
+  const weakTracker = createPosixProcessTracker(63_201, "owner", {
+    readProcessIdentity: () => weak,
+    listProcessIdentities: () => [weak],
+    signalProcess: (pid, signal) => weakSignals.push([pid, signal]),
+    observationIntervalMs: 60_000
+  });
+  assert.throws(() => weakTracker.signal("SIGTERM"), /has no signal-bound identity/u);
+  assert.equal((await weakTracker.failure).processTreeUnsettled, true);
+  assert.deepEqual(weakSignals, []);
+  weakTracker.stop();
+});
+
+test("non-Linux POSIX process observation owns a fixed deadline and weak signal identity", () => {
+  let invocation;
+  assert.throws(
+    () =>
+      readPsProcessIdentity(63_301, {
+        execute: (command, args, options) => {
+          invocation = { command, args, options };
+          const error = new Error("spawnSync ps ETIMEDOUT");
+          error.code = "ETIMEDOUT";
+          throw error;
+        }
+      }),
+    /process 63301 could not be verified.*ETIMEDOUT/u
+  );
+  assert.equal(invocation.command, "ps");
+  assert.deepEqual(invocation.options, {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+    timeout: 250,
+    killSignal: "SIGKILL",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+
+  const identity = readPsProcessIdentity(63_302, {
+    execute: () => "63302 1 63302 Fri Aug 21 12:00:00 2026 fixture\n"
+  });
+  assert.equal(identity.startIdentity, "Fri Aug 21 12:00:00 2026");
+  assert.equal(identity.signalIdentityBound, false);
 });
 
 test("phase output is byte-bounded and settles before suppressing every later phase", async () => {

@@ -17,6 +17,7 @@ const POSIX_OWNER_ENVIRONMENT_KEY = "OPEN_WRANGLER_R_CONTRACT_OWNER";
 const PROCESS_TERMINATION_GRACE_MS = 2_000;
 const PROCESS_KILL_GRACE_MS = 5_000;
 const POSIX_PROCESS_OBSERVATION_INTERVAL_MS = 10;
+const POSIX_PROCESS_OBSERVATION_DEADLINE_MS = 250;
 const R_CONTRACT_PHASE_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const WINDOWS_JOB_SETTLEMENT_MS = 15_000;
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
@@ -397,7 +398,8 @@ function parseLinuxProcessIdentity(pid, contents) {
     parentPid: Number(fields[1]),
     groupId: Number(fields[2]),
     state: fields[0],
-    startIdentity: fields[19]
+    startIdentity: fields[19],
+    signalIdentityBound: true
   });
 }
 
@@ -432,16 +434,19 @@ function parsePsProcessIdentity(line) {
     groupId: Number(match[3]),
     state: "?",
     startIdentity: match[4],
-    command: match[5]
+    command: match[5],
+    signalIdentityBound: false
   });
 }
 
-function readPsProcessIdentity(pid) {
+export function readPsProcessIdentity(pid, { execute = execFileSync } = {}) {
   let output;
   try {
-    output = execFileSync("ps", ["-ww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
+    output = execute("ps", ["-ww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 64 * 1024,
+      timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
+      killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "ignore"]
     });
   } catch (error) {
@@ -462,6 +467,8 @@ function listPosixProcessIdentities(ownerToken) {
     const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
+      timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
+      killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "ignore"]
     });
     const marker = `${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`;
@@ -489,6 +496,10 @@ function sameProcessIdentity(left, right) {
   return left?.pid === right?.pid && left?.startIdentity === right?.startIdentity;
 }
 
+function processIdentityKey(identity) {
+  return `${identity.pid}:${identity.startIdentity}`;
+}
+
 export function createPosixProcessTracker(
   rootPid,
   ownerToken,
@@ -503,7 +514,7 @@ export function createPosixProcessTracker(
     throw new Error("The R contract phase did not expose an owned POSIX process.");
   }
   const observed = new Map();
-  const retiredPids = new Set();
+  const retiredIdentities = new Set();
   let failure;
   let resolveFailure;
   const failurePromise = new Promise((resolveValue) => {
@@ -514,6 +525,10 @@ export function createPosixProcessTracker(
     failure = new Error(`The R contract process tree became unverifiable: ${error.message}`, { cause: error });
     failure.processTreeUnsettled = true;
     resolveFailure(failure);
+  };
+  const retire = (expected) => {
+    observed.delete(expected.pid);
+    retiredIdentities.add(processIdentityKey(expected));
   };
   const verifiedIdentity = (expected) => {
     let current;
@@ -529,10 +544,9 @@ export function createPosixProcessTracker(
   };
   const observe = () => {
     if (failure) throw failure;
-    for (const [pid, expected] of observed) {
+    for (const expected of observed.values()) {
       if (!verifiedIdentity(expected)) {
-        observed.delete(pid);
-        retiredPids.add(pid);
+        retire(expected);
       }
     }
     let snapshot;
@@ -555,8 +569,11 @@ export function createPosixProcessTracker(
     while (changed) {
       changed = false;
       for (const identity of pending.values()) {
-        if (observed.has(identity.pid) || retiredPids.has(identity.pid)) continue;
-        const belongs = identity.pid === rootPid || identity.ownerMarked === true || observed.has(identity.parentPid);
+        if (observed.has(identity.pid) || retiredIdentities.has(processIdentityKey(identity))) continue;
+        const belongs =
+          sameProcessIdentity(identity, rootIdentity) ||
+          identity.ownerMarked === true ||
+          observed.has(identity.parentPid);
         if (!belongs) continue;
         let verified;
         try {
@@ -572,12 +589,13 @@ export function createPosixProcessTracker(
     }
     return observed.size;
   };
+  let rootIdentity;
   try {
-    const root = readProcessIdentity(rootPid);
-    if (!root || root.state === "Z") {
+    rootIdentity = readProcessIdentity(rootPid);
+    if (!rootIdentity || rootIdentity.state === "Z") {
       throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
     }
-    observed.set(rootPid, root);
+    observed.set(rootPid, rootIdentity);
     observe();
   } catch (error) {
     latch(error);
@@ -604,10 +622,18 @@ export function createPosixProcessTracker(
     signal: (signal) => {
       observe();
       for (const expected of [...observed.values()].sort((left, right) => left.pid - right.pid)) {
-        if (!verifiedIdentity(expected)) {
-          observed.delete(expected.pid);
-          retiredPids.add(expected.pid);
+        const verified = verifiedIdentity(expected);
+        if (!verified) {
+          retire(expected);
           continue;
+        }
+        if (expected.signalIdentityBound !== true || verified.signalIdentityBound !== true) {
+          latch(
+            new Error(
+              `process ${expected.pid} has no signal-bound identity on this POSIX platform; refusing to signal it`
+            )
+          );
+          throw failure;
         }
         try {
           signalProcess(expected.pid, signal);
@@ -616,8 +642,7 @@ export function createPosixProcessTracker(
             latch(error);
             throw failure;
           }
-          observed.delete(expected.pid);
-          retiredPids.add(expected.pid);
+          retire(expected);
         }
       }
     },
@@ -725,30 +750,31 @@ function createWindowsJobStderrProtocol(stream, token, writeError, outputBudget)
   const attestation = new Promise((resolveValue) => {
     resolveAttestation = resolveValue;
   });
+  const publishUserOutput = (output, buffer) => {
+    if (buffer.length === 0) return;
+    const reserved = outputBudget.reserve(buffer, "stderr");
+    if (reserved) output.push(reserved);
+  };
   const output = new Transform({
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (!outputBudget.reserve(buffer, "stderr")) {
-        callback();
-        return;
-      }
       const combined = pending.length === 0 ? buffer : Buffer.concat([pending, buffer]);
       let offset = 0;
       while (true) {
         const match = combined.indexOf(marker, offset);
         if (match < 0) break;
-        if (match > offset) this.push(combined.subarray(offset, match));
+        if (match > offset) publishUserOutput(this, combined.subarray(offset, match));
         markerCount += 1;
         offset = match + marker.length;
       }
       const remaining = combined.subarray(offset);
       const publishLength = Math.max(0, remaining.length - (marker.length - 1));
-      if (publishLength > 0) this.push(remaining.subarray(0, publishLength));
+      if (publishLength > 0) publishUserOutput(this, remaining.subarray(0, publishLength));
       pending = Buffer.from(remaining.subarray(publishLength));
       callback();
     },
     flush(callback) {
-      if (pending.length > 0) this.push(pending);
+      publishUserOutput(this, pending);
       pending = Buffer.alloc(0);
       resolveAttestation(markerCount === 1);
       callback();
