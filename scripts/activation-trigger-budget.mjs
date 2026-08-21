@@ -954,12 +954,28 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   const checker = lexicalBindingChecker(sourceFile, source, file);
   const origins = new Map();
   const wrapperCalls = new Set();
-  const authority = createLoaderOriginAuthority(checker, origins, wrapperCalls, [
-    ...variableDeclarations,
-    ...functionDeclarations
-  ]);
+  const maximumDependencyEdges = boundedUpperLimit(
+    options.maximumLoaderDependencyEdges ?? syntaxNodes.length,
+    syntaxNodes.length,
+    "loader dependency edges",
+    true
+  );
+  const authority = createLoaderOriginAuthority(
+    checker,
+    origins,
+    wrapperCalls,
+    [...variableDeclarations, ...functionDeclarations],
+    maximumDependencyEdges
+  );
   for (const declaration of importDeclarations) collectCreateRequireImport(declaration, authority);
   propagateLoaderOrigins(authority);
+
+  const exportedLoaderEscapes = exportedLoaderBindings(sourceFile, syntaxNodes, authority);
+  if (exportedLoaderEscapes.length > 0) {
+    throw new Error(
+      `Activation inventory loader binding escapes through export (${exportedLoaderEscapes.join(", ")}): ${file}`
+    );
+  }
 
   const loaderEscapes = unsupportedLoaderAliasUses(sourceFile, syntaxNodes, authority);
   if (loaderEscapes.length > 0) {
@@ -983,11 +999,14 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   return { dynamicEdges, staticSpecifiers };
 }
 
-function createLoaderOriginAuthority(checker, origins, wrapperCalls, declarations) {
+function createLoaderOriginAuthority(checker, origins, wrapperCalls, declarations, maximumDependencyEdges) {
   const dependents = new Map();
   let dependencyEdges = 0;
   for (const declaration of declarations) {
     for (const symbol of loaderDependencySymbols(declaration, checker)) {
+      if (dependencyEdges >= maximumDependencyEdges) {
+        throw new Error("Activation inventory loader dependency graph exceeded its linear edge bound.");
+      }
       const entries = dependents.get(symbol) ?? [];
       entries.push(declaration);
       dependents.set(symbol, entries);
@@ -1009,13 +1028,58 @@ function createLoaderOriginAuthority(checker, origins, wrapperCalls, declaration
   return authority;
 }
 
-function loaderDependencySymbols(declaration, checker) {
-  let expression;
-  if (ts.isVariableDeclaration(declaration)) {
-    expression = declaration.initializer;
-  } else if (declaration.body?.statements.length === 1 && ts.isReturnStatement(declaration.body.statements[0])) {
-    expression = declaration.body.statements[0].expression;
+function exportedLoaderBindings(sourceFile, syntaxNodes, authority) {
+  const escapes = [];
+  const appendBinding = (name) => {
+    if (ts.isIdentifier(name)) {
+      const kind = identifierLoaderOrigin(name, authority);
+      if (kind) escapes.push(`${name.text}:${kind}@${name.getStart(sourceFile)}`);
+      return;
+    }
+    for (const element of name.elements) {
+      if (!ts.isOmittedExpression(element)) appendBinding(element.name);
+    }
+  };
+
+  for (const node of syntaxNodes) {
+    if (ts.isVariableStatement(node) && hasExportModifier(node)) {
+      for (const declaration of node.declarationList.declarations) appendBinding(declaration.name);
+      continue;
+    }
+    if (ts.isFunctionDeclaration(node) && hasExportModifier(node)) {
+      const wrapper = functionLoaderCall(node, authority);
+      const kind = node.name ? identifierLoaderOrigin(node.name, authority) : wrapper?.kind;
+      if (kind) escapes.push(`${node.name?.text ?? "default"}:${kind}@${node.getStart(sourceFile)}`);
+      continue;
+    }
+    if (ts.isExportAssignment(node)) {
+      const kind = loaderExpressionOrigin(node.expression, authority);
+      if (kind) escapes.push(`default:${kind}@${node.getStart(sourceFile)}`);
+      continue;
+    }
+    if (
+      ts.isExportDeclaration(node) &&
+      !node.moduleSpecifier &&
+      node.exportClause &&
+      ts.isNamedExports(node.exportClause)
+    ) {
+      for (const element of node.exportClause.elements) {
+        if (node.isTypeOnly || element.isTypeOnly) continue;
+        const symbol = authority.checker.getExportSpecifierLocalTargetSymbol(element);
+        const kind = symbol ? authority.origins.get(symbol) : undefined;
+        if (kind) escapes.push(`${element.name.text}:${kind}@${element.getStart(sourceFile)}`);
+      }
+    }
   }
+  return escapes.slice(0, 32);
+}
+
+function hasExportModifier(node) {
+  return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+}
+
+function loaderDependencySymbols(declaration, checker) {
+  const expression = loaderDependencyExpression(declaration);
   if (!expression) return [];
   const symbols = new Set();
   const pending = [expression];
@@ -1030,6 +1094,35 @@ function loaderDependencySymbols(declaration, checker) {
     for (const child of children) pending.push(child);
   }
   return symbols;
+}
+
+function loaderDependencyExpression(declaration) {
+  if (ts.isVariableDeclaration(declaration)) {
+    if (!declaration.initializer) return undefined;
+    const initializer = unwrapExpression(declaration.initializer);
+    if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+      return callableLoaderDependencyExpression(initializer.parameters, initializer.body);
+    }
+    return ts.isCallExpression(initializer) ? initializer.expression : initializer;
+  }
+  if (ts.isFunctionDeclaration(declaration) && declaration.body) {
+    return callableLoaderDependencyExpression(declaration.parameters, declaration.body);
+  }
+  return undefined;
+}
+
+function callableLoaderDependencyExpression(parameters, body) {
+  if (parameters.length !== 1 || !ts.isIdentifier(parameters[0].name)) return undefined;
+  let expression;
+  if (ts.isBlock(body)) {
+    if (body.statements.length !== 1 || !ts.isReturnStatement(body.statements[0])) return undefined;
+    expression = body.statements[0].expression;
+  } else {
+    expression = body;
+  }
+  if (!expression) return undefined;
+  expression = unwrapExpression(expression);
+  return ts.isCallExpression(expression) && expression.arguments.length === 1 ? expression.expression : undefined;
 }
 
 function propagateLoaderOrigins(authority) {

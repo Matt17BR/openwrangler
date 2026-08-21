@@ -350,6 +350,45 @@ test("loader alias propagation is linear and cycle-safe across forward chains", 
   });
 });
 
+test("transitive discovery fails closed for exported loader declarations and re-exports", async () => {
+  const exportedLoaders = [
+    ["variable", "export const exportedLoader = require;\n"],
+    ["function", "export function exportedLoader(specifier) { return require(specifier); }\n"],
+    ["named re-export", "const exportedLoader = require;\nexport { exportedLoader };\n"]
+  ];
+  for (const [name, loaderSource] of exportedLoaders) {
+    await withSourceFixture(async (root) => {
+      const sourceRoot = path.join(root, "src/extension");
+      await writeFile(path.join(sourceRoot, "entry.ts"), 'export { exportedLoader } from "./loader.js";\n', "utf8");
+      await writeFile(path.join(sourceRoot, "loader.ts"), loaderSource, "utf8");
+
+      await assert.rejects(
+        measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"]),
+        /loader binding escapes through export/u,
+        `${name} loader exports must not escape the file-local binding authority`
+      );
+    });
+  }
+});
+
+test("loader dependency graph construction does not rescan overlapping nested declaration subtrees", async () => {
+  let nestedSource = 'const leaf = require;\nleaf("./nested-owner.js");\n';
+  for (let index = 0; index < 96; index += 1) {
+    nestedSource = `const nested${index} = () => {\n${nestedSource}};\n`;
+  }
+
+  await withInventoryFixture(
+    nestedSource,
+    { activationEvents: [], contributes: { commands: [] } },
+    async (report) => {
+      assert.deepEqual(report.dynamicEdges.discovered, [
+        { key: "src/extension/fixture.ts|require|./nested-owner.js", occurrences: 1 }
+      ]);
+    },
+    { maximumLoaderDependencyEdges: 8 }
+  );
+});
+
 test("the syntax authority rejects loader aliases that escape through unsupported storage", async () => {
   await withInventoryFixture(
     `
