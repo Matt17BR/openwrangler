@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
   existsSync,
   fstatSync,
+  linkSync,
   lstatSync,
+  mkdirSync,
+  mkdtempSync,
   openSync,
+  opendirSync,
   readdirSync,
   readFileSync,
-  readSync
+  readSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
 } from "node:fs";
-import { isAbsolute, posix, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
@@ -33,18 +44,14 @@ import {
 import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
-const workflow = (name) => parseYaml(readFileSync(workflowPath(name), "utf8"));
-const ci = workflow("ci.yml");
-const cross = workflow("cross-platform.yml");
-const codeql = workflow("codeql.yml");
-const performance = workflow("performance.yml");
-const releasedJupyter = workflow("released-jupyter.yml");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const WORKFLOW_INVENTORY_LIMIT = 128;
 const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAPABILITY_GRAPH_PATH = "scripts/fixtures/ci-capabilities.json";
+const WORKFLOW_DIRECTORY = ".github/workflows";
 const CAPABILITY_WORKFLOW_FILES = Object.freeze({
   pull_request: ".github/workflows/ci.yml",
   codeql: ".github/workflows/codeql.yml",
@@ -65,41 +72,114 @@ const CAPABILITY_WORKFLOW_TERMINALS = Object.freeze({
 });
 const CAPABILITY_FILES = new Set([CAPABILITY_GRAPH_PATH, ...Object.values(CAPABILITY_WORKFLOW_FILES)]);
 
-function assertContainedNoFollowPath(relativePath) {
-  assert.equal(CAPABILITY_FILES.has(relativePath), true, `${relativePath} is not an allowlisted capability file`);
-  const absolutePath = resolve(REPOSITORY_ROOT, ...relativePath.split("/"));
-  const containedPath = relative(REPOSITORY_ROOT, absolutePath);
-  assert.equal(isAbsolute(containedPath), false, `${relativePath} must stay below the repository root`);
-  assert.doesNotMatch(containedPath, /^(?:\.\.(?:[/\\]|$))/u, `${relativePath} escapes the repository root`);
-
-  let currentPath = REPOSITORY_ROOT;
-  const root = lstatSync(currentPath, { bigint: true });
-  assert.equal(root.isDirectory(), true, "repository root must remain a directory");
-  assert.equal(root.isSymbolicLink(), false, "repository root must not be a symbolic link");
-  const components = relativePath.split("/");
-  for (const [index, component] of components.entries()) {
-    currentPath = resolve(currentPath, component);
-    const status = lstatSync(currentPath, { bigint: true });
-    assert.equal(status.isSymbolicLink(), false, `${relativePath} must not traverse a symbolic link`);
-    const finalComponent = index === components.length - 1;
-    assert.equal(
-      finalComponent ? status.isFile() : status.isDirectory(),
-      true,
-      `${relativePath} has an unexpected filesystem type`
-    );
-  }
-  return absolutePath;
+function fileIdentity(status) {
+  return Object.freeze({
+    ctimeNs: status.ctimeNs,
+    dev: status.dev,
+    gid: status.gid,
+    ino: status.ino,
+    mode: status.mode,
+    mtimeNs: status.mtimeNs,
+    nlink: status.nlink,
+    size: status.size,
+    uid: status.uid
+  });
 }
 
-function readBoundedCapabilityFile(relativePath) {
-  const absolutePath = assertContainedNoFollowPath(relativePath);
-  const before = lstatSync(absolutePath, { bigint: true });
-  assert.ok(before.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
-  const descriptor = openSync(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+function sameFileIdentity(left, right) {
+  return Object.keys(left).every((key) => left[key] === right[key]);
+}
+
+function canonicalContainedPath(root, relativePath, allowedPaths) {
+  assert.equal(typeof relativePath, "string", "bounded repository paths must be strings");
+  assert.doesNotMatch(relativePath, /[\\\0]/u, `${relativePath} must use a canonical repository-relative path`);
+  assert.equal(posix.normalize(relativePath), relativePath, `${relativePath} must be normalized`);
+  assert.equal(
+    relativePath.startsWith("../") || relativePath.startsWith("/"),
+    false,
+    `${relativePath} escapes the root`
+  );
+  if (allowedPaths !== undefined) {
+    assert.equal(allowedPaths.has(relativePath), true, `${relativePath} is not an allowlisted repository file`);
+  }
+  const canonicalRoot = realpathSync.native(resolve(root));
+  assert.equal(canonicalRoot, resolve(root), "the repository root must be one canonical directory");
+  const absolutePath = resolve(canonicalRoot, ...relativePath.split("/"));
+  const containedPath = relative(canonicalRoot, absolutePath);
+  assert.equal(isAbsolute(containedPath), false, `${relativePath} must stay below the repository root`);
+  assert.doesNotMatch(containedPath, /^(?:\.\.(?:[/\\]|$))/u, `${relativePath} escapes the repository root`);
+  return { absolutePath, canonicalRoot };
+}
+
+function openDirectoryChain(root, components) {
+  const receipts = [];
+  let currentPath = root;
   try {
+    for (const component of [undefined, ...components]) {
+      if (component !== undefined) currentPath = resolve(currentPath, component);
+      const before = lstatSync(currentPath, { bigint: true });
+      assert.equal(before.isDirectory(), true, `${currentPath} must remain a directory`);
+      assert.equal(before.isSymbolicLink(), false, `${currentPath} must not be a symbolic link`);
+      const descriptor = openSync(
+        currentPath,
+        constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+      );
+      const opened = fstatSync(descriptor, { bigint: true });
+      if (!opened.isDirectory() || !sameFileIdentity(fileIdentity(before), fileIdentity(opened))) {
+        closeSync(descriptor);
+        throw new Error(`${currentPath} changed while its directory identity was pinned`);
+      }
+      receipts.push({ descriptor, identity: fileIdentity(opened), path: currentPath });
+    }
+    return receipts;
+  } catch (error) {
+    closeDirectoryChain(receipts);
+    throw error;
+  }
+}
+
+function revalidateDirectoryChain(receipts) {
+  for (const receipt of receipts) {
+    const descriptorStatus = fstatSync(receipt.descriptor, { bigint: true });
+    const pathStatus = lstatSync(receipt.path, { bigint: true });
+    assert.equal(descriptorStatus.isDirectory(), true, `${receipt.path} descriptor must remain a directory`);
+    assert.equal(pathStatus.isDirectory(), true, `${receipt.path} path must remain a directory`);
+    assert.equal(pathStatus.isSymbolicLink(), false, `${receipt.path} path must not become a symbolic link`);
+    assert.equal(
+      sameFileIdentity(fileIdentity(descriptorStatus), receipt.identity) &&
+        sameFileIdentity(fileIdentity(pathStatus), receipt.identity),
+      true,
+      `${receipt.path} directory identity changed while reading`
+    );
+  }
+}
+
+function closeDirectoryChain(receipts) {
+  for (const receipt of [...receipts].reverse()) closeSync(receipt.descriptor);
+}
+
+function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root = REPOSITORY_ROOT } = {}) {
+  const { absolutePath, canonicalRoot } = canonicalContainedPath(root, relativePath, allowedPaths);
+  const components = relativePath.split("/");
+  const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1));
+  let descriptor;
+  try {
+    hooks.afterDirectoryOpen?.({ directories, relativePath });
+    const before = lstatSync(absolutePath, { bigint: true });
+    assert.equal(before.isFile(), true, `${relativePath} must be a regular file`);
+    assert.equal(before.isSymbolicLink(), false, `${relativePath} must not be a symbolic link`);
+    assert.equal(before.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
+    assert.ok(before.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+    descriptor = openSync(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const opened = fstatSync(descriptor, { bigint: true });
     assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
-    assert.deepEqual([opened.dev, opened.ino], [before.dev, before.ino], `${relativePath} changed before open`);
+    assert.equal(opened.nlink, 1n, `${relativePath} must remain unlinked`);
+    assert.equal(
+      sameFileIdentity(fileIdentity(opened), fileIdentity(before)),
+      true,
+      `${relativePath} changed before open`
+    );
+    hooks.afterFileOpen?.({ descriptor, relativePath });
 
     const chunks = [];
     let total = 0;
@@ -111,40 +191,124 @@ function readBoundedCapabilityFile(relativePath) {
       if (read === 0) break;
       chunks.push(chunk.subarray(0, read));
       total += read;
+      hooks.afterChunk?.({ descriptor, relativePath, total });
     }
     assert.ok(total <= CAPABILITY_FILE_LIMIT, `${relativePath} exceeds the capability file limit`);
+    hooks.afterRead?.({ descriptor, relativePath });
 
+    const bytes = Buffer.concat(chunks, total);
+    const verification = Buffer.allocUnsafe(total);
+    let verificationOffset = 0;
+    while (verificationOffset < total) {
+      const read = readSync(
+        descriptor,
+        verification,
+        verificationOffset,
+        total - verificationOffset,
+        verificationOffset
+      );
+      if (read === 0) throw new Error(`${relativePath} changed while its bytes were revalidated`);
+      verificationOffset += read;
+    }
+    assert.equal(bytes.equals(verification), true, `${relativePath} content changed while reading`);
     const after = fstatSync(descriptor, { bigint: true });
-    const pathAfter = lstatSync(assertContainedNoFollowPath(relativePath), { bigint: true });
-    assert.deepEqual(
-      [after.dev, after.ino, after.size],
-      [opened.dev, opened.ino, opened.size],
+    const pathAfter = lstatSync(absolutePath, { bigint: true });
+    assert.equal(
+      sameFileIdentity(fileIdentity(after), fileIdentity(opened)),
+      true,
       `${relativePath} changed while reading`
     );
-    assert.deepEqual(
-      [pathAfter.dev, pathAfter.ino, pathAfter.size],
-      [after.dev, after.ino, after.size],
+    assert.equal(pathAfter.isFile() && !pathAfter.isSymbolicLink() && pathAfter.nlink === 1n, true);
+    assert.equal(
+      sameFileIdentity(fileIdentity(pathAfter), fileIdentity(after)),
+      true,
       `${relativePath} path identity changed while reading`
     );
     assert.equal(BigInt(total), after.size, `${relativePath} returned incomplete bytes`);
-    return Buffer.concat(chunks, total).toString("utf8");
+    revalidateDirectoryChain(directories);
+    return Object.freeze({ bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
   } finally {
-    closeSync(descriptor);
+    if (descriptor !== undefined) closeSync(descriptor);
+    closeDirectoryChain(directories);
   }
 }
 
-function loadCapabilityDocuments(graph) {
+function readDirectoryInventory(directoryPath) {
+  const directory = opendirSync(directoryPath);
+  const entries = [];
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      assert.ok(entries.length < WORKFLOW_INVENTORY_LIMIT, "workflow inventory exceeds its file-count limit");
+      assert.ok(Buffer.byteLength(entry.name, "utf8") <= 255, "workflow inventory contains an oversized name");
+      entries.push(entry.name);
+    }
+  } finally {
+    directory.closeSync();
+  }
+  return entries.filter((name) => /\.ya?ml$/u.test(name)).sort();
+}
+
+function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } = {}) {
+  const { absolutePath: directoryPath, canonicalRoot } = canonicalContainedPath(root, WORKFLOW_DIRECTORY);
+  const directories = openDirectoryChain(canonicalRoot, WORKFLOW_DIRECTORY.split("/"));
+  try {
+    const firstNames = readDirectoryInventory(directoryPath);
+    hooks.afterFirstInventory?.({ directoryPath, firstNames });
+    const secondNames = readDirectoryInventory(directoryPath);
+    assert.deepEqual(secondNames, firstNames, "workflow inventory changed while it was enumerated");
+    revalidateDirectoryChain(directories);
+    const paths = firstNames.map((name) => workflowPath(name));
+    const allowedPaths = new Set(paths);
+    const snapshots = Object.fromEntries(
+      paths.map((path) => {
+        const snapshot = readBoundedNoFollowFile(path, { allowedPaths, hooks: hooks.file, root: canonicalRoot });
+        return [path, Object.freeze({ ...snapshot, document: parseYaml(snapshot.bytes.toString("utf8")) })];
+      })
+    );
+    hooks.afterFiles?.({ directoryPath, paths, snapshots });
+    assert.deepEqual(readDirectoryInventory(directoryPath), firstNames, "workflow inventory changed after reading");
+    revalidateDirectoryChain(directories);
+    return Object.freeze(snapshots);
+  } finally {
+    closeDirectoryChain(directories);
+  }
+}
+
+function readBoundedCapabilityFile(relativePath, options = {}) {
+  assert.equal(CAPABILITY_FILES.has(relativePath), true, `${relativePath} is not an allowlisted capability file`);
+  return readBoundedNoFollowFile(relativePath, { ...options, allowedPaths: CAPABILITY_FILES }).bytes.toString("utf8");
+}
+
+function loadCapabilityDocuments(graph, workflowInventory = repositoryWorkflowInventory) {
   assert.deepEqual(Object.keys(graph.workflows).sort(), Object.keys(CAPABILITY_WORKFLOW_FILES).sort());
   return Object.fromEntries(
     Object.entries(CAPABILITY_WORKFLOW_FILES).map(([id, file]) => {
       assert.equal(graph.workflows[id]?.file, file, `${id} must use its fixed workflow file`);
-      return [id, parseYaml(readBoundedCapabilityFile(file))];
+      const document = workflowInventory[file]?.document;
+      assert.ok(document, `${file} must exist in the bounded workflow inventory`);
+      return [id, document];
     })
   );
 }
 
 const capabilityGraph = JSON.parse(readBoundedCapabilityFile(CAPABILITY_GRAPH_PATH));
+const repositoryWorkflowInventory = loadRepositoryWorkflowInventory();
+const repositoryWorkflowNames = Object.keys(repositoryWorkflowInventory)
+  .map((path) => posix.basename(path))
+  .sort();
+const workflow = (name) => {
+  const snapshot = repositoryWorkflowInventory[workflowPath(name)];
+  assert.ok(snapshot, `${name} is absent from the bounded workflow inventory`);
+  return snapshot.document;
+};
 const capabilityDocuments = loadCapabilityDocuments(capabilityGraph);
+const ci = capabilityDocuments.pull_request;
+const cross = workflow("cross-platform.yml");
+const codeql = capabilityDocuments.codeql;
+const performance = workflow("performance.yml");
+const releasedJupyter = workflow("released-jupyter.yml");
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
@@ -594,7 +758,7 @@ function assertRequiredCapabilityJob(job, workflowId, jobId) {
   );
 }
 
-function assertCapabilityGraph(graph, documents) {
+function assertCapabilityGraph(graph, documents, workflowInventory = repositoryWorkflowInventory) {
   assert.equal(graph.version, 1);
   assert.deepEqual(Object.keys(graph.workflows).sort(), Object.keys(CAPABILITY_WORKFLOW_FILES).sort());
   assert.deepEqual(Object.keys(graph.capabilities), CAPABILITY_NAMES);
@@ -672,13 +836,19 @@ function assertCapabilityGraph(graph, documents) {
   const requiredChecks = graph.capabilities.source_coverage.requiredChecks;
   assert.deepEqual(requiredChecks, ["validate", "CodeQL gate"]);
   assert.equal(new Set(requiredChecks).size, requiredChecks.length, "required check names must be unique");
-  const declaredChecks = Object.entries(documents).flatMap(([workflowId, document]) =>
-    Object.entries(document.jobs ?? {}).map(([jobId, job]) => ({ workflowId, jobId, job }))
+  const completeDocuments = Object.fromEntries(
+    Object.entries(workflowInventory).map(([path, snapshot]) => [path, snapshot.document ?? snapshot])
+  );
+  for (const [workflowId, document] of Object.entries(documents)) {
+    completeDocuments[graph.workflows[workflowId].file] = document;
+  }
+  const declaredChecks = Object.entries(completeDocuments).flatMap(([path, document]) =>
+    Object.entries(document.jobs ?? {}).map(([jobId, job]) => ({ job, jobId, path }))
   );
   for (const checkName of requiredChecks) {
     const owners = declaredChecks.filter(({ job }) => job?.name === checkName);
     assert.equal(owners.length, 1, `${checkName} must name exactly one declared job`);
-    assertCapabilityJobFatal(owners[0].job, `${owners[0].workflowId}:${owners[0].jobId}`);
+    assertCapabilityJobFatal(owners[0].job, `${owners[0].path}:${owners[0].jobId}`);
   }
   assert.equal(documents.pull_request.jobs.validate.name, "validate");
   assert.ok(Object.hasOwn(documents.codeql.on ?? {}, "pull_request"));
@@ -1079,6 +1249,78 @@ test("every stack layer classifies its complete cumulative prefix without droppi
   }
 });
 
+test("classifier CLI reads the real cumulative stack graph instead of the direct pull-request base", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-stack-graph-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const runGit = (...arguments_) =>
+    execFileSync("git", arguments_, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const commit = (message) => {
+    runGit("add", "-A");
+    runGit(
+      "-c",
+      "user.name=Open Wrangler Tests",
+      "-c",
+      "user.email=tests@openwrangler.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      message
+    );
+    return runGit("rev-parse", "HEAD");
+  };
+  runGit("init", "--quiet");
+  const stackBaseSha = commit("stack base");
+  mkdirSync(join(root, "python", "openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "python", "openwrangler_runtime", "export_target.py"), "# first stack owner\n");
+  const pullRequestBaseSha = commit("first stack owner");
+  mkdirSync(join(root, "r", "openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "r", "openwrangler_runtime", "kernel_agent.R"), "# second stack owner\n");
+  const pullRequestHeadSha = commit("second stack owner");
+  const outputPath = join(root, "classifier-output.txt");
+  const runClassifier = (stacked) => {
+    writeFileSync(outputPath, "");
+    const stdout = execFileSync(process.execPath, [resolve(REPOSITORY_ROOT, "scripts/ci-path-classification.mjs")], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CI_BASE_SHA: pullRequestBaseSha,
+        CI_EVENT_NAME: "pull_request",
+        CI_HEAD_SHA: pullRequestHeadSha,
+        CI_STACK_BASE_SHA: stacked ? stackBaseSha : "",
+        CI_STACK_POSITION: stacked ? "2" : "",
+        CI_STACK_SIZE: stacked ? "2" : "",
+        GITHUB_OUTPUT: outputPath
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return {
+      outputs: Object.fromEntries(
+        readFileSync(outputPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split("="))
+      ),
+      stdout
+    };
+  };
+
+  const ordinary = runClassifier(false);
+  assert.equal(ordinary.outputs.windows_unique_required, "false");
+  assert.match(ordinary.stdout, new RegExp(`base=${pullRequestBaseSha}`, "u"));
+  const stacked = runClassifier(true);
+  assert.deepEqual(stacked.outputs, {
+    r_contract_required: "true",
+    canonical_editor_required: "true",
+    visual_accessibility_required: "false",
+    windows_unique_required: "true"
+  });
+  assert.match(stacked.stdout, new RegExp(`base=${stackBaseSha} head=${pullRequestHeadSha} stacked=true`, "u"));
+});
+
 test("ordinary pull requests fall back to their exact base while partial stack metadata fails closed", () => {
   const pullRequestBaseSha = "1".repeat(40);
   const pullRequestHeadSha = "2".repeat(40);
@@ -1122,13 +1364,27 @@ test("CI exposes only the current pull-request owners", () => {
 
 test("machine-readable capabilities bind correct events, fatal providers, and mandatory final fan-in", () => {
   assert.equal(ci.env.OPEN_WRANGLER_CI_CAPABILITY_GRAPH, "scripts/fixtures/ci-capabilities.json");
+  assert.deepEqual(repositoryWorkflowNames, [
+    "candidate-acceptance.yml",
+    "ci.yml",
+    "codeql.yml",
+    "cross-platform.yml",
+    "daily-preview.yml",
+    "open-vsx-promotion.yml",
+    "performance.yml",
+    "release-candidate.yml",
+    "released-jupyter.yml",
+    "stable-release.yml"
+  ]);
   assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, capabilityDocuments));
 });
 
 test("capability workflow sources stay on the fixed bounded no-follow allowlist", () => {
   for (const [workflowId, file] of Object.entries(CAPABILITY_WORKFLOW_FILES)) {
     assert.equal(capabilityGraph.workflows[workflowId].file, file);
-    assert.ok(Buffer.byteLength(readBoundedCapabilityFile(file), "utf8") <= CAPABILITY_FILE_LIMIT);
+    const source = readBoundedCapabilityFile(file);
+    assert.ok(Buffer.byteLength(source, "utf8") <= CAPABILITY_FILE_LIMIT);
+    assert.equal(source, repositoryWorkflowInventory[file].bytes.toString("utf8"));
   }
   for (const file of ["package.json", "../outside.yml", ".github/workflows/unknown.yml"]) {
     const graph = structuredClone(capabilityGraph);
@@ -1136,6 +1392,99 @@ test("capability workflow sources stay on the fixed bounded no-follow allowlist"
     assert.throws(() => loadCapabilityDocuments(graph), /fixed workflow file/u);
   }
 });
+
+test("bounded workflow reads reject aliasing, oversize, and in-place content drift", (context) => {
+  const createFixture = (contents = "name: fixture\n") => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-read-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    const relativePath = ".github/workflows/fixture.yml";
+    const path = join(root, relativePath);
+    writeFileSync(path, contents);
+    return { path, relativePath, root };
+  };
+  const readFixture = (fixture, hooks) =>
+    readBoundedNoFollowFile(fixture.relativePath, {
+      allowedPaths: new Set([fixture.relativePath]),
+      hooks,
+      root: fixture.root
+    });
+
+  const valid = createFixture();
+  const snapshot = readFixture(valid);
+  assert.equal(snapshot.bytes.toString("utf8"), "name: fixture\n");
+  assert.equal(snapshot.sha256, createHash("sha256").update(snapshot.bytes).digest("hex"));
+
+  const oversized = createFixture("x".repeat(CAPABILITY_FILE_LIMIT + 1));
+  assert.throws(() => readFixture(oversized), /exceeds the capability file limit/u);
+
+  const hardLinked = createFixture();
+  linkSync(hardLinked.path, join(hardLinked.root, "alias.yml"));
+  assert.throws(() => readFixture(hardLinked), /hard-linked aliases/u);
+
+  const sameSize = createFixture("a".repeat(4096));
+  assert.throws(
+    () =>
+      readFixture(sameSize, {
+        afterRead() {
+          writeFileSync(sameSize.path, "b".repeat(4096));
+        }
+      }),
+    /content changed|changed while reading/u
+  );
+
+  const torn = createFixture("a".repeat(32 * 1024));
+  let changed = false;
+  assert.throws(
+    () =>
+      readFixture(torn, {
+        afterChunk({ total }) {
+          if (!changed && total >= 16 * 1024) {
+            changed = true;
+            writeFileSync(torn.path, "b".repeat(32 * 1024));
+          }
+        }
+      }),
+    /content changed|changed while reading/u
+  );
+
+  if (process.platform !== "win32") {
+    const symbolic = createFixture();
+    const target = join(symbolic.root, "target.yml");
+    writeFileSync(target, "name: target\n");
+    rmSync(symbolic.path);
+    symlinkSync(target, symbolic.path);
+    assert.throws(() => readFixture(symbolic), /regular file|symbolic link/u);
+  }
+});
+
+test(
+  "bounded workflow reads reject intermediate ancestor replacement",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-ancestor-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const relativePath = ".github/workflows/fixture.yml";
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    mkdirSync(join(root, ".github-replacement", "workflows"), { recursive: true });
+    writeFileSync(join(root, relativePath), "name: owned\n");
+    writeFileSync(join(root, ".github-replacement", "workflows", "fixture.yml"), "name: replacement\n");
+    assert.throws(
+      () =>
+        readBoundedNoFollowFile(relativePath, {
+          allowedPaths: new Set([relativePath]),
+          hooks: {
+            afterFileOpen() {
+              renameSync(join(root, ".github"), join(root, ".github-owned"));
+              renameSync(join(root, ".github-replacement"), join(root, ".github"));
+            }
+          },
+          root
+        }),
+      /identity changed/u
+    );
+  }
+);
 
 test("capability mutations reject remove, skip, nonfatal, and disconnected evidence", () => {
   const mutations = [
@@ -1186,6 +1535,20 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   const duplicateCheckOwner = structuredClone(capabilityDocuments);
   duplicateCheckOwner.codeql.jobs["analyze-python"].name = "validate";
   assert.throws(() => assertCapabilityGraph(capabilityGraph, duplicateCheckOwner), /exactly one declared job/u);
+  const duplicateOutsideCapabilities = Object.fromEntries(
+    Object.entries(repositoryWorkflowInventory).map(([path, snapshot]) => [
+      path,
+      { document: structuredClone(snapshot.document) }
+    ])
+  );
+  duplicateOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.duplicate = {
+    name: "CodeQL gate",
+    runs_on: "ubuntu-latest"
+  };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, duplicateOutsideCapabilities),
+    /exactly one declared job/u
+  );
 
   const missingStackTrigger = structuredClone(capabilityGraph);
   missingStackTrigger.workflows.codeql.activityTypes = missingStackTrigger.workflows.codeql.activityTypes.filter(
@@ -1982,9 +2345,7 @@ test("CodeQL has two always-on explicit analyzers, preserves required names, and
 });
 
 test("workflow action inventory is exact, immutable, recursive, and fail closed", () => {
-  const names = readdirSync(".github/workflows")
-    .filter((entry) => /\.ya?ml$/u.test(entry))
-    .sort();
+  const names = repositoryWorkflowNames;
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
   assert.equal(inventory.external.length, 146);
@@ -2016,7 +2377,9 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
   movedReviewedCallsite[movedIndex][1] = "$.jobs.jupyter.steps[99].uses";
   assert.throws(() => assertReviewedDependencyActionCallsites(movedReviewedCallsite));
 
-  const sources = names.map((entry) => readFileSync(workflowPath(entry), "utf8")).join("\n");
+  const sources = names
+    .map((entry) => repositoryWorkflowInventory[workflowPath(entry)].bytes.toString("utf8"))
+    .join("\n");
   assert.doesNotMatch(sources, /@(v[0-9]+|main|master)(?:\s|$)/u);
   const rejectedSetupJava = ["f2beeba1d6a0d932", "cac8325f70a8ce911775ff96"].join("");
   assert.equal(sources.includes(rejectedSetupJava), false);
@@ -2306,7 +2669,7 @@ test("automation retains the exact Node and npm toolchain authority", () => {
   assert.equal(packageJson.engines.node, ">=22.22.0 <23");
   assert.equal(packageJson.packageManager, "npm@10.9.4");
   let setupNodeCount = 0;
-  for (const name of readdirSync(".github/workflows").filter((entry) => entry.endsWith(".yml"))) {
+  for (const name of repositoryWorkflowNames.filter((entry) => entry.endsWith(".yml"))) {
     const document = workflow(name);
     for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
       for (const [stepIndex, step] of (job.steps ?? []).entries()) {
