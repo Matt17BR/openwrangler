@@ -488,6 +488,85 @@ test("cleaning-history claims bind Undo targets and restrictions to their semant
   }
 });
 
+test("cleaning-history universal and restrictive wording cannot hide capability contradictions", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "All committed steps can be undone.",
+    "Both committed steps may be restored by Undo.",
+    "Multiple applied steps can be restored.",
+    "Just the latest applied step can be edited.",
+    "Only one committed step can be modified.",
+    "Just two committed steps can be edited.",
+    "Not every committed step can be edited.",
+    "Not all committed steps can be edited.",
+    "Both committed steps cannot be edited.",
+    "Multiple committed steps cannot be edited.",
+    "No other committed step can be edited.",
+    "All but one committed step can be edited.",
+    "Every committed step except the latest can be edited.",
+    "All but the latest committed step can be undone.",
+    "Undo can restore all of them.",
+    "They can both be undone.",
+    "The committed steps remain visible and both can be undone.",
+    "The committed steps remain visible and they cannot all be edited.",
+    "`All` committed steps can be **undone**.",
+    "Undo can restore [both of them](#cleaning-history).",
+    "Not e&#118;ery committed step can be *edited*.",
+    "No **other** committed step can be ed&#x69;ted."
+  ];
+
+  for (const example of contradictions) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+});
+
+test("cleaning-history wording preserves exact latest Undo and native single-invocation scope", () => {
+  const model = cleaningHistoryModel();
+  const truthful = [
+    "All committed steps can be inspected, edited, or deleted.",
+    "Both native Edit and Delete actions operate on one selected committed step per invocation.",
+    "Multiple committed steps may be edited in one plan.",
+    "The native Edit command changes just one selected committed step per invocation.",
+    "One selected committed step can be edited at a time.",
+    "Undo is available only for the most recent committed step.",
+    "The native Undo command targets just the latest committed step.",
+    "Both the native menu and toolbar expose Undo only for the latest committed step.",
+    "All native surfaces expose Undo only for the latest committed step.",
+    "Multiple native surfaces expose Undo only for the latest committed step."
+  ];
+
+  for (const example of truthful) {
+    const documents = cleaningHistoryDocuments(model);
+    documents["README.md"] = documents["README.md"].replace(
+      "<!-- cleaning-history-capabilities:readme-transformations:end -->",
+      `<!-- cleaning-history-capabilities:readme-transformations:end -->\n${example}`
+    );
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents
+        }),
+      example
+    );
+  }
+});
+
 test("a code example cannot hide a separate rendered inline contradiction", () => {
   const model = cleaningHistoryModel();
   const documents = cleaningHistoryDocuments(model);
