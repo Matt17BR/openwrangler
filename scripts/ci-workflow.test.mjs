@@ -60,12 +60,16 @@ import {
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
 import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
+import { inspectVsixEntries } from "./vsix-contents.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const MAX_BOUNDED_REPOSITORY_FILE_BYTES = 512 * 1024;
+const PACKAGE_IGNORE_FILE_LIMIT = 64 * 1024;
+const TESTING_DOCUMENTATION_FILE_LIMIT = 512 * 1024;
 const CAPABILITY_JSON_DEPTH_LIMIT = 64;
 const CAPABILITY_JSON_NODE_LIMIT = 20_000;
 const CAPABILITY_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
@@ -223,7 +227,14 @@ function closeDirectoryChain(receipts, primaryError) {
   return failure;
 }
 
-function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root = REPOSITORY_ROOT } = {}) {
+function readBoundedNoFollowFile(
+  relativePath,
+  { allowedPaths, hooks = {}, maxBytes = CAPABILITY_FILE_LIMIT, root = REPOSITORY_ROOT } = {}
+) {
+  assert.ok(
+    Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= MAX_BOUNDED_REPOSITORY_FILE_BYTES,
+    "bounded repository file limit is invalid"
+  );
   const { absolutePath, canonicalRoot } = canonicalContainedPath(root, relativePath, allowedPaths);
   const components = relativePath.split("/");
   const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1), hooks);
@@ -236,13 +247,13 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
     const opened = fstatSync(descriptor, { bigint: true });
     assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
     assert.equal(opened.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
-    assert.ok(opened.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+    assert.ok(opened.size <= BigInt(maxBytes), `${relativePath} exceeds the capability file limit`);
     hooks.afterFileDescriptorOpen?.({ descriptor, relativePath });
     const pathOpened = lstatSync(absolutePath, { bigint: true });
     assert.equal(pathOpened.isFile(), true, `${relativePath} path must remain a regular file`);
     assert.equal(pathOpened.isSymbolicLink(), false, `${relativePath} path must not be a symbolic link`);
     assert.equal(pathOpened.nlink, 1n, `${relativePath} path must not have hard-linked aliases`);
-    assert.ok(pathOpened.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+    assert.ok(pathOpened.size <= BigInt(maxBytes), `${relativePath} exceeds the capability file limit`);
     assert.equal(
       sameFileIdentity(fileIdentity(opened), fileIdentity(pathOpened)),
       true,
@@ -254,7 +265,7 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
     const chunks = [];
     let total = 0;
     while (true) {
-      const remaining = CAPABILITY_FILE_LIMIT + 1 - total;
+      const remaining = maxBytes + 1 - total;
       if (remaining <= 0) throw new Error(`${relativePath} exceeds the capability file limit`);
       const chunk = Buffer.allocUnsafe(Math.min(16 * 1024, remaining));
       const read = readSync(descriptor, chunk, 0, chunk.length, null);
@@ -263,7 +274,7 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
       total += read;
       hooks.afterChunk?.({ descriptor, relativePath, total });
     }
-    assert.ok(total <= CAPABILITY_FILE_LIMIT, `${relativePath} exceeds the capability file limit`);
+    assert.ok(total <= maxBytes, `${relativePath} exceeds the capability file limit`);
     hooks.afterRead?.({ descriptor, relativePath });
 
     const bytes = Buffer.concat(chunks, total);
@@ -305,6 +316,18 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
   }
   if (failure !== undefined) throw failure;
   return result;
+}
+
+function readBoundedRepositoryText(relativePath, maxBytes) {
+  const bytes = readBoundedNoFollowFile(relativePath, {
+    allowedPaths: new Set([relativePath]),
+    maxBytes
+  }).bytes;
+  try {
+    return CAPABILITY_UTF8_DECODER.decode(bytes);
+  } catch (cause) {
+    throw new Error(`${relativePath} is not valid UTF-8`, { cause });
+  }
 }
 
 function readExactChildReadinessMarker(
@@ -813,6 +836,11 @@ function loadCapabilityDocuments(graph, workflowInventory = repositoryWorkflowIn
 
 const capabilityGraph = parseBoundedCapabilityJson(CAPABILITY_GRAPH_PATH);
 const repositoryWorkflowInventory = loadRepositoryWorkflowInventory();
+const packageIgnore = readBoundedRepositoryText(".vscodeignore", PACKAGE_IGNORE_FILE_LIMIT);
+const testingDocumentation = readBoundedRepositoryText("docs/testing.md", TESTING_DOCUMENTATION_FILE_LIMIT).replace(
+  /\s+/gu,
+  " "
+);
 const repositoryWorkflowNames = Object.keys(repositoryWorkflowInventory)
   .map((path) => posix.basename(path))
   .sort();
@@ -3790,8 +3818,23 @@ test("required result owner rejects missing, skipped, cancelled, failed, and sel
   assert.equal(resultEnvironmentKey("r-contract-kernel"), "R_CONTRACT_KERNEL_RESULT");
 });
 
-test("Cross is manual and scheduled only with exact platform and R 4.4 owners", () => {
+test("Cross is manual and scheduled only with exact platform, dependency-cohort, and R 4.4 owners", () => {
   assertCrossScheduledOwners(cross);
+
+  const exhaustiveCrossTopologyRecords = [
+    /Cross runs only on manual dispatch and schedule,[^.]+R 4\.4 qualification\./u,
+    /Cross has no pull-request trigger; its manual dispatch and weekly schedule retain [^.]+R 4\.4 qualification\./u
+  ].map((pattern) => {
+    const record = testingDocumentation.match(pattern)?.[0];
+    assert.ok(record, `missing exhaustive Cross topology record: ${pattern.source}`);
+    return record;
+  });
+  for (const record of exhaustiveCrossTopologyRecords) {
+    assert.match(
+      record,
+      /the exact `python-runtime-dependency-cohorts` job that installs and exercises every declared dependency\/Python qualification pair/u
+    );
+  }
 
   const pullRequestDrift = structuredClone(cross);
   pullRequestDrift.on.pull_request = { branches: ["main"] };
@@ -4305,7 +4348,8 @@ test("pull-request and merge-group workflows cancel only obsolete candidates whi
 });
 
 test("repository-only roots remain excluded from the VSIX inventory", () => {
-  const ignored = new Set(readFileSync(".vscodeignore", "utf8").split(/\r?\n/gu).filter(Boolean));
+  const ignored = new Set(packageIgnore.split(/\r?\n/gu).filter(Boolean));
+  const dependencyAuthoritySource = "python/runtime-dependencies.json";
   for (const path of [
     "docs/**",
     "AGENTS.md",
@@ -4313,10 +4357,19 @@ test("repository-only roots remain excluded from the VSIX inventory", () => {
     "SECURITY.md",
     "SUPPORT.md",
     ".node-version",
-    ".npmrc"
+    ".npmrc",
+    dependencyAuthoritySource
   ]) {
     assert.equal(ignored.has(path), true, `${path} must stay outside the extension package.`);
   }
+  const packagedDependencyAuthority = `extension/${dependencyAuthoritySource}`;
+  assert.deepEqual(
+    inspectVsixEntries([packagedDependencyAuthority], {
+      requireRFrameContract: false,
+      requireVendoredJsYaml: false
+    }).forbidden,
+    [packagedDependencyAuthority]
+  );
   const rSubtreeExclusions = [...ignored].filter((path) => path.startsWith("r/"));
   assert.deepEqual(rSubtreeExclusions, ["r/tests/**", "r/dependencies/**"]);
   const excludedRRoots = rSubtreeExclusions.map((path) => path.slice(0, -3));

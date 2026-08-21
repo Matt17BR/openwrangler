@@ -158,6 +158,44 @@ def test_pip_failure_is_not_success_and_retains_marker_without_postcheck(integri
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    "record_contents",
+    [None, "foreign_package/__init__.py,,\n"],
+    ids=["missing-record", "foreign-record"],
+)
+def test_validation_requires_the_distribution_to_own_the_imported_module(
+    integrity_runtime: IntegrityRuntime,
+    record_contents: str | None,
+) -> None:
+    token = str(uuid.uuid4())
+    process = _arm_install(integrity_runtime, token)
+    marker = _only_marker(integrity_runtime, token)
+    _authorize(process, token)
+
+    assert _finish(process) == (0, b"", b"")
+    before = marker.read_bytes()
+    record = _integrity_fixture_record(integrity_runtime)
+    if record_contents is None:
+        record.unlink()
+    else:
+        record.write_text(record_contents, encoding="utf-8")
+
+    rejected = _run(integrity_runtime, "validate", _validate_request(integrity_runtime, token))
+    assert rejected.returncode == 13
+    assert _frames(rejected.stdout) == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
+    assert rejected.stderr == b""
+    assert marker.read_bytes() == before
+    assert _check_count(integrity_runtime) == 2
+
+    _write_integrity_fixture_record(record)
+    restored = _run(integrity_runtime, "validate", _validate_request(integrity_runtime, token))
+    assert restored.returncode == 0
+    assert _frames(restored.stdout) == [{"kind": "validated", "protocol": PROTOCOL, "token": token}]
+    assert restored.stderr == b""
+    assert _check_count(integrity_runtime) == 3
+    assert not marker.exists()
+
+
 def test_eof_before_go_runs_no_pip_owned_command(integrity_runtime: IntegrityRuntime) -> None:
     token = str(uuid.uuid4())
     process = _arm_install(integrity_runtime, token)
@@ -269,6 +307,15 @@ def _write_dependency(site_packages: Path) -> None:
     package.mkdir()
     (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
     _write_distribution(site_packages, "ow-integrity-fixture", "1.2.3")
+    _write_integrity_fixture_record(site_packages / "ow_integrity_fixture-1.2.3.dist-info" / "RECORD")
+
+
+def _integrity_fixture_record(runtime: IntegrityRuntime) -> Path:
+    return _site_packages(runtime.executable) / "ow_integrity_fixture-1.2.3.dist-info" / "RECORD"
+
+
+def _write_integrity_fixture_record(record: Path) -> None:
+    record.write_text("ow_integrity_fixture/__init__.py,,\n", encoding="utf-8")
 
 
 def _write_distribution(site_packages: Path, name: str, version: str, *, requires: str | None = None) -> None:
