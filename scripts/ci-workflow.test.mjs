@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   closeSync,
   constants,
@@ -360,21 +361,57 @@ function readExactChildReadinessMarker(
   });
 }
 
-function waitForChildSettlement(child, timeoutMs = WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const deadline = setTimeout(
-      () => rejectPromise(new Error("FIFO child did not settle after termination")),
-      timeoutMs
-    );
-    child.once("error", (error) => {
-      clearTimeout(deadline);
-      rejectPromise(error);
-    });
+function observeChildSettlement(child) {
+  const state = { closed: false, errors: [] };
+  const result = new Promise((resolvePromise) => {
+    const onError = (error) => state.errors.push(error);
+    child.on("error", onError);
     child.once("close", (code, signal) => {
-      clearTimeout(deadline);
+      state.closed = true;
+      child.off("error", onError);
       resolvePromise({ code, signal });
     });
   });
+  return { result, state };
+}
+
+async function terminateObservedChild(
+  child,
+  observation,
+  control,
+  {
+    cancelDeadline = clearTimeout,
+    scheduleDeadline = setTimeout,
+    settlementTimeoutMs = WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS,
+    termGraceMs = WORKFLOW_FIFO_TERM_GRACE_MS
+  } = {}
+) {
+  const faults = [];
+  const signal = (name) => {
+    try {
+      if (!child.kill(name)) faults.push(new Error(`${name} returned false`));
+    } catch (error) {
+      faults.push(error);
+    }
+  };
+  const escalation = scheduleDeadline(() => {
+    if (!observation.state.closed) signal("SIGKILL");
+  }, termGraceMs);
+  const settlementDeadline = scheduleDeadline(() => {
+    if (!observation.state.closed) {
+      faults.push(new Error("FIFO child did not close before its settlement deadline"));
+      signal("SIGKILL");
+    }
+  }, settlementTimeoutMs);
+  signal("SIGTERM");
+  const close = await observation.result;
+  cancelDeadline(escalation);
+  cancelDeadline(settlementDeadline);
+  faults.unshift(...observation.state.errors);
+  if (!(control.readableEnded || control.destroyed)) {
+    faults.push(new Error("FIFO child control pipe remained live after close"));
+  }
+  return { close, faults };
 }
 
 async function waitForMonotonicDelay(delayMs) {
@@ -1807,6 +1844,128 @@ test("FIFO child readiness accepts exactly one bounded marker before its deadlin
   await assert.rejects(lateResult, /arrived after its deadline/u);
 });
 
+test("FIFO child settlement retains ownership through errors, failed signals, timeouts, and late close", async () => {
+  class SyntheticChild extends EventEmitter {
+    constructor(signalOutcomes) {
+      super();
+      this.exitCode = null;
+      this.killCalls = [];
+      this.signalCode = null;
+      this.signalOutcomes = [...signalOutcomes];
+      this.stdio = [null, null, null, new PassThrough()];
+    }
+
+    kill(signal) {
+      this.killCalls.push(signal);
+      const outcome = this.signalOutcomes.shift() ?? true;
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    }
+
+    close(signal) {
+      this.signalCode = signal;
+      this.stdio[3].destroy();
+      this.emit("close", null, signal);
+    }
+  }
+
+  const createDeadlines = () => {
+    const timers = [];
+    return {
+      cancelDeadline(timer) {
+        timer.cancelled = true;
+      },
+      run(delayMs) {
+        for (const timer of timers) {
+          if (!timer.cancelled && !timer.fired && timer.delayMs === delayMs) {
+            timer.fired = true;
+            timer.callback();
+          }
+        }
+      },
+      scheduleDeadline(callback, delayMs) {
+        const timer = { callback, cancelled: false, delayMs, fired: false };
+        timers.push(timer);
+        return timer;
+      },
+      timers
+    };
+  };
+  const startSettlement = (child, deadlines) => {
+    const observation = observeChildSettlement(child);
+    return {
+      observation,
+      result: terminateObservedChild(child, observation, child.stdio[3], {
+        cancelDeadline: deadlines.cancelDeadline,
+        scheduleDeadline: deadlines.scheduleDeadline,
+        settlementTimeoutMs: 2,
+        termGraceMs: 1
+      })
+    };
+  };
+  const assertPending = async (promise) => {
+    const state = await Promise.race([promise.then(() => "settled"), Promise.resolve("pending")]);
+    assert.equal(state, "pending");
+  };
+  const assertReleased = (child, deadlines) => {
+    assert.equal(child.stdio[3].destroyed, true, "the synthetic fd3 pipe must be released before settlement");
+    assert.equal(child.listenerCount("error"), 0, "the child error observer must be released after close");
+    assert.ok(deadlines.timers.every((timer) => timer.fired || timer.cancelled));
+  };
+
+  const errorChild = new SyntheticChild([true]);
+  const errorDeadlines = createDeadlines();
+  const errorObservation = observeChildSettlement(errorChild);
+  const childError = new Error("synthetic child error before close");
+  errorChild.emit("error", childError);
+  const errorResult = terminateObservedChild(errorChild, errorObservation, errorChild.stdio[3], {
+    cancelDeadline: errorDeadlines.cancelDeadline,
+    scheduleDeadline: errorDeadlines.scheduleDeadline,
+    settlementTimeoutMs: 2,
+    termGraceMs: 1
+  });
+  await assertPending(errorResult);
+  errorChild.close("SIGTERM");
+  assert.deepEqual((await errorResult).faults, [childError]);
+  assertReleased(errorChild, errorDeadlines);
+
+  for (const termOutcome of [false, new Error("synthetic SIGTERM failure")]) {
+    const child = new SyntheticChild([termOutcome, true]);
+    const deadlines = createDeadlines();
+    const settlement = startSettlement(child, deadlines);
+    assert.deepEqual(child.killCalls, ["SIGTERM"]);
+    deadlines.run(1);
+    assert.deepEqual(child.killCalls, ["SIGTERM", "SIGKILL"]);
+    await assertPending(settlement.result);
+    child.close("SIGKILL");
+    const result = await settlement.result;
+    assert.equal(result.faults.length, 1);
+    assert.match(result.faults[0].message, /SIGTERM/u);
+    assertReleased(child, deadlines);
+  }
+
+  const lateChild = new SyntheticChild([false, false, false]);
+  const lateDeadlines = createDeadlines();
+  const lateSettlement = startSettlement(lateChild, lateDeadlines);
+  lateDeadlines.run(1);
+  lateDeadlines.run(2);
+  assert.deepEqual(lateChild.killCalls, ["SIGTERM", "SIGKILL", "SIGKILL"]);
+  await assertPending(lateSettlement.result);
+  assert.equal(lateChild.stdio[3].destroyed, false, "timeout must not release ownership before close");
+  lateChild.close("SIGKILL");
+  const lateResult = await lateSettlement.result;
+  assert.deepEqual(
+    lateResult.faults.map((fault) => fault.message),
+    [
+      "SIGTERM returned false",
+      "SIGKILL returned false",
+      "FIFO child did not close before its settlement deadline",
+      "SIGKILL returned false"
+    ]
+  );
+  assertReleased(lateChild, lateDeadlines);
+});
+
 test(
   "bounded workflow reads reject a FIFO promptly instead of blocking before type validation",
   { skip: process.platform === "win32" },
@@ -1824,14 +1983,10 @@ test(
       [fileURLToPath(import.meta.url), WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT, fifoPath],
       { stdio: ["ignore", "ignore", "ignore", "pipe"] }
     );
+    const observation = observeChildSettlement(legacy);
     const control = legacy.stdio[3];
     assert.notEqual(control, null, "the legacy FIFO probe requires its private readiness channel");
-    const settlement = waitForChildSettlement(
-      legacy,
-      WORKFLOW_FIFO_READINESS_TIMEOUT_MS + WORKFLOW_FIFO_LEGACY_BLOCK_MS + WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS
-    );
-    let escalation;
-    let settled;
+    const faults = [];
     try {
       await readExactChildReadinessMarker(control);
       const blockStartedAt = nodePerformance.now();
@@ -1842,26 +1997,34 @@ test(
       );
       assert.equal(legacy.exitCode, null, "the preimage child must remain blocked after its readiness marker");
       assert.equal(legacy.signalCode, null, "the preimage child must remain unsignalled until its deadline");
-    } finally {
-      if (legacy.exitCode === null && legacy.signalCode === null) {
-        assert.equal(legacy.kill("SIGTERM"), true, "the blocked legacy child must accept bounded termination");
-        escalation = setTimeout(() => {
-          if (legacy.exitCode === null && legacy.signalCode === null) legacy.kill("SIGKILL");
-        }, WORKFLOW_FIFO_TERM_GRACE_MS);
-      }
-      try {
-        settled = await settlement;
-      } finally {
-        if (escalation !== undefined) clearTimeout(escalation);
-      }
+    } catch (error) {
+      faults.push(error);
     }
-    assert.equal(settled.code, null);
-    assert.ok(
-      settled.signal === "SIGTERM" || settled.signal === "SIGKILL",
-      `the legacy FIFO child settled with unexpected signal ${settled.signal}`
-    );
-    assert.equal(legacy.signalCode, settled.signal);
-    assert.equal(control.readableEnded, true, "the private readiness channel must be completely settled");
+    const settlement = await terminateObservedChild(legacy, observation, control, {
+      settlementTimeoutMs:
+        WORKFLOW_FIFO_READINESS_TIMEOUT_MS + WORKFLOW_FIFO_LEGACY_BLOCK_MS + WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS
+    });
+    faults.push(...settlement.faults);
+    if (settlement.close.code !== null) {
+      faults.push(new Error(`the legacy FIFO child exited with code ${settlement.close.code}`));
+    }
+    if (settlement.close.signal !== "SIGTERM" && settlement.close.signal !== "SIGKILL") {
+      faults.push(new Error(`the legacy FIFO child settled with unexpected signal ${settlement.close.signal}`));
+    }
+    if (legacy.signalCode !== settlement.close.signal) {
+      faults.push(
+        new Error(`the legacy FIFO child's signal ${legacy.signalCode} did not match close ${settlement.close.signal}`)
+      );
+    }
+    if (!control.readableEnded) {
+      faults.push(new Error("the private readiness channel did not end before child close"));
+    }
+    if (faults.length > 0) {
+      throw new AggregateError(
+        faults,
+        `the legacy FIFO child failed settlement: ${faults.map((fault) => fault.message).join("; ")}`
+      );
+    }
 
     const startedAt = nodePerformance.now();
     const corrected = spawnSync(
