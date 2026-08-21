@@ -826,26 +826,46 @@ function escapeRegularExpression(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
+function strategyMultiplicityIsUnevaluable(job) {
+  if (!Object.hasOwn(job ?? {}, "strategy")) return false;
+  const strategy = job.strategy;
+  if (strategy === null || Array.isArray(strategy) || typeof strategy !== "object") return true;
+  const entries = Object.entries(strategy);
+  if (entries.length === 0 || Object.hasOwn(strategy, "matrix")) return true;
+  return entries.some(([key, value]) => {
+    if (key === "fail-fast") return typeof value !== "boolean";
+    if (key === "max-parallel") return !Number.isSafeInteger(value) || value <= 0;
+    return true;
+  });
+}
+
 function requiredCheckName(jobId, job) {
-  const isMatrixJob =
-    job?.strategy !== null && typeof job?.strategy === "object" && Object.hasOwn(job.strategy, "matrix");
+  const multiplicityIsUnevaluable = strategyMultiplicityIsUnevaluable(job);
   const name = job?.name;
   if (name === undefined) {
     return Object.freeze({
-      exact: isMatrixJob ? undefined : jobId,
+      exact: multiplicityIsUnevaluable ? undefined : jobId,
       mayEqual: (required) => required === jobId
     });
   }
   assert.equal(typeof name, "string", `${jobId} check name must be text when present`);
   assert.notEqual(name, "", `${jobId} check name must not be empty`);
   if (!name.includes("${{")) {
-    return Object.freeze({ exact: isMatrixJob ? undefined : name, mayEqual: (required) => required === name });
+    return Object.freeze({
+      exact: multiplicityIsUnevaluable ? undefined : name,
+      mayEqual: (required) => required === name
+    });
   }
   const expression = /\$\{\{[^{}]{1,1024}\}\}/gu;
-  const parts = name.split(expression);
-  const reconstructedLength = parts.reduce((total, part) => total + part.length, 0);
-  const expressionLength = [...name.matchAll(expression)].reduce((total, match) => total + match[0].length, 0);
-  if (reconstructedLength + expressionLength !== name.length) {
+  const matches = [...name.matchAll(expression)];
+  const parts = [];
+  let cursor = 0;
+  for (const match of matches) {
+    parts.push(name.slice(cursor, match.index));
+    cursor = match.index + match[0].length;
+  }
+  parts.push(name.slice(cursor));
+  if (matches.length === 0 || parts.some((part) => part.includes("${{") || part.includes("}}"))) {
     return Object.freeze({ exact: undefined, mayEqual: () => true });
   }
   const pattern = new RegExp(`^${parts.map(escapeRegularExpression).join(".*")}$`, "u");
@@ -1788,6 +1808,17 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
     () => assertCapabilityGraph(capabilityGraph, namedMatrixRequiredCheck),
     /unevaluable possible check-name collision/u
   );
+  for (const strategy of [{}, [], 0, null, "literal", "${{ needs.setup.outputs.strategy }}"]) {
+    const unknownStrategyRequiredCheck = structuredClone(capabilityDocuments);
+    unknownStrategyRequiredCheck.pull_request.jobs.validate.strategy = strategy;
+    assert.throws(
+      () => assertCapabilityGraph(capabilityGraph, unknownStrategyRequiredCheck),
+      /unevaluable possible check-name collision/u
+    );
+  }
+  const provenNonMatrixStrategy = structuredClone(capabilityDocuments);
+  provenNonMatrixStrategy.pull_request.jobs.validate.strategy = { "fail-fast": false, "max-parallel": 1 };
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, provenNonMatrixStrategy));
   const wrongFallbackRequiredCheck = structuredClone(capabilityDocuments);
   delete wrongFallbackRequiredCheck.codeql.jobs["codeql-gate"].name;
   assert.throws(() => assertCapabilityGraph(capabilityGraph, wrongFallbackRequiredCheck), /exactly one declared job/u);
@@ -1808,6 +1839,17 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
     () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, ambiguousOutsideCapabilities),
     /unevaluable possible check-name collision/u
   );
+  for (const name of ["${{ format('{0}', matrix.required_check) }}", "${{ " + "x".repeat(1025) + " }}"]) {
+    const unparsedExpressionOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+    unparsedExpressionOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.unparsed = {
+      name,
+      "runs-on": "ubuntu-latest"
+    };
+    assert.throws(
+      () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, unparsedExpressionOutsideCapabilities),
+      /unevaluable possible check-name collision/u
+    );
+  }
 
   const missingStackTrigger = structuredClone(capabilityGraph);
   missingStackTrigger.workflows.codeql.activityTypes = missingStackTrigger.workflows.codeql.activityTypes.filter(
