@@ -96,6 +96,54 @@ describe("notebook renderer", () => {
       token: replacementCandidate.token,
       outputItemId: "output-1"
     });
+
+    postMessage.mockClear();
+    const retainedControllers: AbortController[] = [];
+    for (let index = 0; index < 128; index += 1) {
+      const retainedController = new AbortController();
+      retainedControllers.push(retainedController);
+      const retainedElement = document.createElement("div");
+      retainedElement.appendChild(document.createElement("table"));
+      await hook?.postRender(
+        { id: `retained-${index}`, mime: "text/html", data: () => bytes },
+        retainedElement,
+        retainedController.signal
+      );
+    }
+    const freshController = new AbortController();
+    const freshElement = document.createElement("div");
+    freshElement.appendChild(document.createElement("table"));
+    await hook?.postRender(
+      { id: "fresh-after-128", mime: "text/html", data: () => bytes },
+      freshElement,
+      freshController.signal
+    );
+    expect(postMessage.mock.calls.at(-1)?.[0]).toMatchObject({
+      kind: "openWrangler.inlineCandidate",
+      outputItemId: "fresh-after-128"
+    });
+    for (const retainedController of retainedControllers) retainedController.abort();
+    freshController.abort();
+
+    vi.useFakeTimers();
+    try {
+      postMessage.mockClear();
+      const deadlineElement = document.createElement("div");
+      const deadlineOrdinary = document.createElement("table");
+      deadlineElement.appendChild(deadlineOrdinary);
+      await hook?.postRender(
+        { id: "deadline-output", mime: "text/html", data: () => bytes },
+        deadlineElement,
+        new AbortController().signal
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(deadlineElement.firstChild).toBe(deadlineOrdinary);
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "deadline-output" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows compact capture paging and forwards only the validated canonical payload", () => {

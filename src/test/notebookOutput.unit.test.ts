@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   isNotebookLiveResultHandle,
+  NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS,
   OPEN_WRANGLER_MIME_V2,
   normalizeNotebookOutputPayload
 } from "../shared/notebookOutput";
+import notebookOutputContract from "../../fixtures/notebook-output-contract.json";
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const page = {
@@ -43,6 +45,11 @@ const metadata = {
 };
 
 describe("notebook output", () => {
+  it("shares the canonical default capture bound with notebook producers", () => {
+    expect(notebookOutputContract).toEqual({ defaultCaptureRows: 200 });
+    expect(NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS).toBe(notebookOutputContract.defaultCaptureRows);
+  });
+
   it("uses the canonical MIME v2 payload", () => {
     expect(OPEN_WRANGLER_MIME_V2).toBe("application/vnd.openwrangler.viewer.v2+json");
     const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [] });

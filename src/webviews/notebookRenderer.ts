@@ -43,6 +43,7 @@ const INLINE_UPGRADE_PROTOCOL = 1;
 const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
 const INLINE_UPGRADE_MAX_CANDIDATES = 128;
 const INLINE_UPGRADE_OUTPUT_ID_CHARACTERS = 256;
+const INLINE_UPGRADE_TERMINAL_DEADLINE_MS = 10_000;
 let htmlUpgradeRegistration: Promise<void> | undefined;
 
 interface InlineUpgradeCandidate {
@@ -53,6 +54,7 @@ interface InlineUpgradeCandidate {
   readonly element: HTMLElement;
   readonly signal: AbortSignal;
   readonly ordinaryNodes: readonly ChildNode[];
+  deadline?: ReturnType<typeof setTimeout>;
   enhancement?: HTMLElement;
 }
 
@@ -98,9 +100,7 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       return;
     }
     if (accepted.kind === "openWrangler.inlineRevoke") {
-      restoreOrdinaryHtml(candidate);
-      candidates.delete(candidate.outputItemId);
-      completed.delete(candidate.outputItemId);
+      retireHtmlUpgradeCandidate(context, candidates, completed, candidate, false);
       return;
     }
     if (completed.has(accepted.outputItemId)) return;
@@ -114,8 +114,10 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       candidate.element.replaceChildren(enhancement);
       candidate.enhancement = enhancement;
       completed.add(candidate.outputItemId);
+      if (candidate.deadline) clearTimeout(candidate.deadline);
+      candidate.deadline = undefined;
     } catch {
-      restoreOrdinaryHtml(candidate);
+      retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
     }
   });
 
@@ -125,8 +127,7 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
         signal.aborted ||
         outputItem.mime !== "text/html" ||
         !isBoundedOutputItemId(outputItem.id) ||
-        candidates.has(outputItem.id) ||
-        candidates.size >= INLINE_UPGRADE_MAX_CANDIDATES
+        candidates.has(outputItem.id)
       ) {
         return;
       }
@@ -149,20 +150,20 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       }
       if (signal.aborted || candidates.has(outputItem.id) || !hasExactChildren(element, candidate.ordinaryNodes))
         return;
+      if (candidates.size >= INLINE_UPGRADE_MAX_CANDIDATES) {
+        const oldest = candidates.values().next().value as InlineUpgradeCandidate | undefined;
+        if (oldest) retireHtmlUpgradeCandidate(context, candidates, completed, oldest, true);
+      }
       candidates.set(outputItem.id, candidate);
+      candidate.deadline = setTimeout(
+        () => retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true),
+        INLINE_UPGRADE_TERMINAL_DEADLINE_MS
+      );
       signal.addEventListener(
         "abort",
         () => {
           if (candidates.get(outputItem.id) !== candidate) return;
-          candidates.delete(outputItem.id);
-          completed.delete(outputItem.id);
-          restoreOrdinaryHtml(candidate);
-          context.postMessage?.({
-            kind: "openWrangler.inlineCancel",
-            protocol: INLINE_UPGRADE_PROTOCOL,
-            token: candidate.token,
-            outputItemId: candidate.outputItemId
-          });
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
         },
         { once: true }
       );
@@ -176,6 +177,29 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       });
     }
   });
+}
+
+function retireHtmlUpgradeCandidate(
+  context: HtmlRendererContext,
+  candidates: Map<string, InlineUpgradeCandidate>,
+  completed: Set<string>,
+  candidate: InlineUpgradeCandidate,
+  notifyHost: boolean
+): void {
+  if (candidates.get(candidate.outputItemId) !== candidate) return;
+  candidates.delete(candidate.outputItemId);
+  completed.delete(candidate.outputItemId);
+  if (candidate.deadline) clearTimeout(candidate.deadline);
+  candidate.deadline = undefined;
+  restoreOrdinaryHtml(candidate);
+  if (notifyHost) {
+    context.postMessage?.({
+      kind: "openWrangler.inlineCancel",
+      protocol: INLINE_UPGRADE_PROTOCOL,
+      token: candidate.token,
+      outputItemId: candidate.outputItemId
+    });
+  }
 }
 
 function isHtmlRendererContext(context: RendererContext): context is HtmlRendererContext {
