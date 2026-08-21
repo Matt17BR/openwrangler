@@ -827,10 +827,10 @@ function escapeRegularExpression(value) {
 }
 
 function requiredCheckName(jobId, job) {
+  const isMatrixJob =
+    job?.strategy !== null && typeof job?.strategy === "object" && Object.hasOwn(job.strategy, "matrix");
   const name = job?.name;
   if (name === undefined) {
-    const isMatrixJob =
-      job?.strategy !== null && typeof job?.strategy === "object" && Object.hasOwn(job.strategy, "matrix");
     return Object.freeze({
       exact: isMatrixJob ? undefined : jobId,
       mayEqual: (required) => required === jobId
@@ -838,7 +838,9 @@ function requiredCheckName(jobId, job) {
   }
   assert.equal(typeof name, "string", `${jobId} check name must be text when present`);
   assert.notEqual(name, "", `${jobId} check name must not be empty`);
-  if (!name.includes("${{")) return Object.freeze({ exact: name, mayEqual: (required) => required === name });
+  if (!name.includes("${{")) {
+    return Object.freeze({ exact: isMatrixJob ? undefined : name, mayEqual: (required) => required === name });
+  }
   const expression = /\$\{\{[^{}]{1,1024}\}\}/gu;
   const parts = name.split(expression);
   const reconstructedLength = parts.reduce((total, part) => total + part.length, 0);
@@ -1782,7 +1784,10 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   );
   const namedMatrixRequiredCheck = structuredClone(matrixFallbackRequiredCheck);
   namedMatrixRequiredCheck.pull_request.jobs.validate.name = "validate";
-  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, namedMatrixRequiredCheck));
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, namedMatrixRequiredCheck),
+    /unevaluable possible check-name collision/u
+  );
   const wrongFallbackRequiredCheck = structuredClone(capabilityDocuments);
   delete wrongFallbackRequiredCheck.codeql.jobs["codeql-gate"].name;
   assert.throws(() => assertCapabilityGraph(capabilityGraph, wrongFallbackRequiredCheck), /exactly one declared job/u);
