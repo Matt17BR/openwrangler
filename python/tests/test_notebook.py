@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime, timedelta, tzinfo
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
@@ -111,12 +114,32 @@ def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
         True,
         42,
         1.25,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        Decimal("1.2300"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        date(2026, 8, 21),
+        datetime(2026, 8, 21, 12, 30),
+        timedelta(days=1, seconds=2),
+        np.int64(7),
+        np.float32(1.5),
+        np.datetime64("2026-08-21"),
+        np.timedelta64(1, "D"),
+        pd.NA,
+        pd.NaT,
+        pd.Timestamp("2026-08-21T12:30:00+02:00"),
+        pd.Timedelta(1, unit="ns"),
         b"\x00\xff",
+        np.bytes_(b"\x00\xff"),
         "line\nvalue",
+        np.str_("numpy text"),
         ["north", 1, None, True],
         ['quote"\n\\', b"\x00"],
         ("north", 1),
         {"region": "north", "sequence": 1, "missing": None},
+        {"decimal": Decimal("1.2300"), "date": date(2026, 8, 21), "duration": timedelta(seconds=2)},
     ]
     for value in values:
         cell = normalize_cell(value)
@@ -210,15 +233,106 @@ def test_pandas_row_axis_formatter_enforces_the_graph_node_budget_before_reading
 
 
 def test_pandas_row_axis_formatter_rejects_unknown_displays_without_stringifying_them():
+    conversions = []
+
     class HostileDisplay:
         def __str__(self):
+            conversions.append("unknown")
             raise AssertionError("Unknown row-axis values must not be stringified")
 
-    with pytest.raises(EngineError, match="unsupported display value"):
-        pandas_engine._pandas_row_axis_value(HostileDisplay(), "Pandas row-index label")
+    class TimedeltaLookalike:
+        __module__ = "pandas.hostile"
+        value = 1
 
-    with pytest.raises(EngineError, match="unsupported mapping key"):
-        pandas_engine._pandas_row_axis_value({HostileDisplay(): "value"}, "Pandas row-index label")
+        def __str__(self):
+            conversions.append("pandas-lookalike")
+            raise AssertionError("Pandas module/name lookalikes must not be stringified")
+
+    TimedeltaLookalike.__name__ = "Timedelta"
+
+    class NumpyGenericLookalike:
+        __module__ = "numpy"
+
+    NumpyGenericLookalike.__name__ = "generic"
+
+    class HostileNumpyLookalike(NumpyGenericLookalike):
+        def item(self):
+            conversions.append("numpy-lookalike")
+            raise AssertionError("NumPy MRO lookalikes must not be converted")
+
+    class HostileDecimal(Decimal):
+        def __str__(self):
+            conversions.append("decimal-subclass")
+            raise AssertionError("Decimal subclasses must not be stringified")
+
+    class HostileDate(date):
+        def isoformat(self):
+            conversions.append("date-subclass")
+            raise AssertionError("Date subclasses must not be formatted")
+
+    class HostileTimezone(tzinfo):
+        def utcoffset(self, _value):
+            conversions.append("timezone")
+            raise AssertionError("Untrusted timezone implementations must not be formatted")
+
+    hostile_values = [
+        HostileDisplay(),
+        TimedeltaLookalike(),
+        HostileNumpyLookalike(),
+        HostileDecimal("1.25"),
+        HostileDate(2026, 8, 21),
+        datetime(2026, 8, 21, 12, 30, tzinfo=HostileTimezone()),
+    ]
+    for value in hostile_values:
+        with pytest.raises(EngineError, match="unsupported display value"):
+            pandas_engine._pandas_row_axis_value(value, "Pandas row-index label")
+    assert conversions == []
+
+    for value in hostile_values[:-1]:
+        with pytest.raises(EngineError, match="unsupported mapping key"):
+            pandas_engine._pandas_row_axis_value({value: "value"}, "Pandas row-index label")
+    assert conversions == []
+
+
+def test_pandas_row_axis_formatter_bounds_decimal_text_before_canonical_allocation(monkeypatch):
+    canonicalized = []
+    original_decimal_text = pandas_engine._pandas_row_axis_decimal_text
+
+    def observe_decimal_text(value):
+        canonicalized.append(value)
+        return original_decimal_text(value)
+
+    monkeypatch.setattr(pandas_engine, "_pandas_row_axis_decimal_text", observe_decimal_text)
+    exact_boundary = Decimal("1" * 1_024)
+    assert pandas_engine._pandas_row_axis_value(exact_boundary, "Pandas row-index label") == "1" * 1_024
+    assert canonicalized == [exact_boundary]
+
+    for oversized in (Decimal("1" * 1_025), Decimal("1" * 10_000)):
+        with pytest.raises(EngineError, match="exceeds 1024 characters"):
+            pandas_engine._pandas_row_axis_value(oversized, "Pandas row-index label")
+    with pytest.raises(EngineError, match="exceeds 1024 characters"):
+        pandas_engine._pandas_row_axis_value({Decimal("1" * 1_025): "value"}, "Pandas row-index label")
+    assert canonicalized == [exact_boundary]
+
+    assert pandas_engine._pandas_row_axis_value(Decimal("1E+999999"), "Pandas row-index label") == "1E+999999"
+    assert pandas_engine._pandas_row_axis_value(Decimal("NaN" + ("1" * 10_000)), "Pandas row-index label") == "null"
+
+
+def test_pandas_row_axis_formatter_collapses_normalized_mapping_keys_with_last_value_wins():
+    value = {
+        1: "integer-first",
+        "middle": 0,
+        "1": "string-last",
+        Decimal("2"): "decimal-first",
+        "2": "string-last",
+    }
+    expected = normalize_cell(value)["display"]
+    actual = pandas_engine._pandas_row_axis_value(value, "Pandas row-index label")
+
+    assert actual == expected == '{"1":"string-last","middle":0,"2":"string-last"}'
+    assert actual.count('"1":') == 1
+    assert actual.count('"2":') == 1
+    assert list(json.loads(actual)) == ["1", "middle", "2"]
 
 
 def test_pandas_snapshot_rejects_an_oversized_binary_index_before_base64_allocation(monkeypatch):
