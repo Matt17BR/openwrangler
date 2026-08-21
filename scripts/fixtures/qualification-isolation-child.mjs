@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { access, appendFile, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { QUALIFICATION_ENVIRONMENT_CONTRACT } from "../qualification-isolation.mjs";
 
 function argument(name) {
@@ -203,13 +203,18 @@ if (mode === "hold") {
       env: process.env,
       windowsHide: true
     }).trim();
-  runGit(["init", "--quiet", "--initial-branch=main"]);
+  execFileSync("git", ["-C", repository, "init", "--quiet", "--initial-branch=main"], {
+    cwd: process.cwd(),
+    env: process.env,
+    windowsHide: true
+  });
   runGit(["config", "--local", "user.name", "Open Wrangler nested fixture"]);
   runGit(["config", "--local", "user.email", "nested-fixture@openwrangler.invalid"]);
   await writeFile(join(repository, "fixture.txt"), "fixture\n", { flag: "wx", mode: 0o600 });
   runGit(["add", "fixture.txt"]);
   runGit(["commit", "--quiet", "-m", "nested fixture"]);
   const nestedHead = runGit(["rev-parse", "HEAD"]);
+  const privatePointer = (await readFile(join(repository, ".git"), "utf8")).trim();
   const topLevelHeadFromPrivateRoot = execFileSync("git", ["-C", process.cwd(), "rev-parse", "HEAD"], {
     cwd: repository,
     encoding: "utf8",
@@ -235,8 +240,11 @@ if (mode === "hold") {
       authorName,
       committerEmail,
       committerName,
+      gitHome: process.env.HOME,
+      gitXdgConfig: process.env.XDG_CONFIG_HOME,
       nestedHead,
       nestedHeadFromWorktree,
+      privatePointer,
       repository,
       topLevelHead,
       topLevelHeadFromPrivateRoot,
@@ -288,10 +296,14 @@ if (mode === "hold") {
   runGit(["init", "--quiet", "--initial-branch=main"]);
   runGit(["config", "--local", "user.name", "Open Wrangler nested fixture"]);
   runGit(["config", "--local", "user.email", "nested-fixture@openwrangler.invalid"]);
-  await writeFile(join(repository, ".gitattributes"), "fixture.txt diff=qualification-attack\n", {
-    flag: "wx",
-    mode: 0o600
-  });
+  await writeFile(
+    join(repository, ".gitattributes"),
+    "fixture.txt diff=qualification-attack filter=qualification-attack\n",
+    {
+      flag: "wx",
+      mode: 0o600
+    }
+  );
   await writeFile(join(repository, "fixture.txt"), "fixture\n", { flag: "wx", mode: 0o600 });
   runGit(["add", ".gitattributes", "fixture.txt"]);
   runGit(["commit", "--quiet", "-m", "nested fixture"]);
@@ -401,17 +413,40 @@ if (mode === "hold") {
     }
   );
 } else if (mode === "mutate-python-inventory") {
+  const kind = argument("--kind");
   const purelib = execFileSync(
     process.env.OPEN_WRANGLER_PYTHON,
     ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
     { encoding: "utf8", env: process.env, windowsHide: true }
   ).trim();
-  const metadata = join(purelib, "qualification_escape-1.0.dist-info");
-  await mkdir(metadata, { mode: 0o700 });
-  await writeFile(join(metadata, "METADATA"), "Metadata-Version: 2.1\nName: qualification-escape\nVersion: 1.0\n", {
-    flag: "wx",
-    mode: 0o600
-  });
+  const mutations = {
+    "entry-point": [
+      join(purelib, "qualification_escape-1.0.dist-info", "entry_points.txt"),
+      "[console_scripts]\nqualification-escape = qualification_escape:main\n"
+    ],
+    native: [
+      join(purelib, process.platform === "win32" ? "qualification_escape.pyd" : "qualification_escape.so"),
+      "native-placeholder\n"
+    ],
+    path: [join(purelib, "qualification_escape.pth"), "qualification_escape\n"],
+    record: [join(purelib, "qualification_escape-1.0.dist-info", "RECORD"), "qualification_escape.py,,\n"],
+    source: [join(purelib, "qualification_escape.py"), "def main():\n    return None\n"]
+  };
+  assert.ok(Object.hasOwn(mutations, kind), `unknown Python payload mutation ${kind}`);
+  const [path, bytes] = mutations[kind];
+  await mkdir(dirname(path), { mode: 0o700, recursive: true });
+  await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+} else if (mode === "replace-python-payload") {
+  const target = execFileSync(
+    process.env.OPEN_WRANGLER_PYTHON,
+    ["-I", "-c", "import pathlib,pip; print(pathlib.Path(pip.__file__).resolve())"],
+    { encoding: "utf8", env: process.env, windowsHide: true }
+  ).trim();
+  const targetSuffix = relative(process.env.VIRTUAL_ENV, target);
+  assert.ok(targetSuffix !== "" && !targetSuffix.startsWith("..") && !isAbsolute(targetSuffix));
+  const original = await readFile(target);
+  await writeFile(target, Buffer.concat([original, Buffer.from("# temporary mutation\n", "utf8")]));
+  await writeFile(target, original);
 } else if (mode === "mutate-git-config") {
   execFileSync("git", ["config", "user.name", "Mutated qualification fixture"], {
     cwd: process.cwd(),

@@ -24,6 +24,10 @@ const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 const MAX_GIT_CONFIG_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_GIT_INDEX_BYTES = 256 * 1024 * 1024;
 const MAX_PYTHON_INVENTORY_BYTES = 4 * 1024 * 1024;
+const MAX_PYTHON_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_PYTHON_PAYLOAD_FILES = 100_000;
+const MAX_PYTHON_PAYLOAD_FILE_BYTES = 512 * 1024 * 1024;
+const MAX_PYTHON_PAYLOAD_PATH_BYTES = 16 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_PYTEST_TEMP_BYTES = 2 * 1024 * 1024 * 1024;
@@ -1489,7 +1493,9 @@ const binding = ${JSON.stringify({
     gitExecutableSha256: gitExecutableLaunch.record.sha256,
     gitExecutableSize: gitExecutableLaunch.record.snapshot.size,
     platform: process.platform,
+    privateHome: join(assignment.stateRoot, "home"),
     privateGitRoot: join(assignment.stateRoot, "git", "metadata"),
+    privateXdgConfig: join(assignment.stateRoot, "xdg", "config"),
     safeConfigArguments: safeGitConfigArguments(),
     stateRoot: assignment.stateRoot,
     windowsPowerShell,
@@ -1854,7 +1860,6 @@ for (const key of Object.keys(environment)) {
   const upper = key.toUpperCase();
   if (upper === "EMAIL" || upper.startsWith("GIT_")) delete environment[key];
 }
-Object.assign(environment, binding.configSelectionEnvironment);
 environment.GIT_OPTIONAL_LOCKS = "0";
 environment.GIT_NO_REPLACE_OBJECTS = "1";
 environment.GIT_PAGER = "";
@@ -1870,6 +1875,18 @@ if (!usesAssignedWorktree && !isInside(binding.stateRoot, effectiveCwd)) {
 }
 if (usesAssignedWorktree) requireReadOnlyAssignedCommand(arguments_);
 else requirePrivateTaskCommand(arguments_, effectiveCwd);
+if (usesAssignedWorktree) {
+  Object.assign(environment, binding.configSelectionEnvironment);
+} else {
+  const disabledConfig = binding.platform === "win32" ? "NUL" : "/dev/null";
+  environment.GIT_ATTR_NOSYSTEM = "1";
+  environment.GIT_CONFIG_GLOBAL = disabledConfig;
+  environment.GIT_CONFIG_NOSYSTEM = "1";
+  environment.GIT_CONFIG_SYSTEM = disabledConfig;
+  environment.HOME = binding.privateHome;
+  environment.USERPROFILE = binding.privateHome;
+  environment.XDG_CONFIG_HOME = binding.privateXdgConfig;
+}
 const commandArguments = usesAssignedWorktree
   ? hardenedAssignedArguments(arguments_)
   : hardenedPrivateArguments(arguments_, effectiveCwd);
@@ -1913,7 +1930,7 @@ if (binding.platform === "win32") {
   ].join("\\n");
   const encoded = Buffer.from(source, "utf16le").toString("base64");
   result = spawnSync(binding.windowsPowerShell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
-    cwd,
+    cwd: effectiveCwd,
     env: environment,
     stdio: "inherit",
     windowsHide: true
@@ -1924,7 +1941,7 @@ if (binding.platform === "win32") {
     verifyOpenedExecutable(handle);
     result = spawnSync("/proc/self/fd/3", commandArguments, {
       argv0: binding.gitExecutable,
-      cwd,
+      cwd: effectiveCwd,
       env: environment,
       stdio: ["inherit", "inherit", "inherit", handle],
       windowsHide: true
@@ -3115,13 +3132,270 @@ async function verifyVenvPythonIdentity(before) {
   }
 }
 
+async function digestPinnedPayload(handle, expected, label) {
+  const opened = await handle.stat({ bigint: true });
+  if (
+    !opened.isFile() ||
+    opened.size < 0n ||
+    opened.size > BigInt(MAX_PYTHON_PAYLOAD_FILE_BYTES) ||
+    !sameImmutableSnapshot(expected, opened)
+  ) {
+    fail(`${label} identity or size is invalid`);
+  }
+  const hash = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  while (offset < Number(opened.size)) {
+    const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, Number(opened.size) - offset), offset);
+    if (bytesRead === 0) fail(`${label} ended before its pinned size`);
+    hash.update(buffer.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
+  const completed = await handle.stat({ bigint: true });
+  if (!sameImmutableSnapshot(opened, completed)) fail(`${label} changed while it was hashed`);
+  return hash.digest("hex");
+}
+
+async function openPinnedPythonPayload(value) {
+  let handle;
+  try {
+    handle = await open(value.target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat({ bigint: true });
+    const sourceBefore = await lstat(value.path, { bigint: true });
+    const targetBefore = await lstat(value.target, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      targetBefore.isSymbolicLink() ||
+      !sameImmutableSnapshot(opened, targetBefore) ||
+      (await realpath(value.path)) !== value.target ||
+      (await realpath(value.target)) !== value.target
+    ) {
+      fail(`Python payload ${value.path} is not one stable regular file`);
+    }
+    const digest = await digestPinnedPayload(handle, opened, `Python payload ${value.path}`);
+    const sourceAfter = await lstat(value.path, { bigint: true });
+    const targetAfter = await lstat(value.target, { bigint: true });
+    if (
+      !sameImmutableSnapshot(sourceBefore, sourceAfter) ||
+      !sameImmutableSnapshot(opened, targetAfter) ||
+      (await realpath(value.path)) !== value.target
+    ) {
+      fail(`Python payload ${value.path} changed while it was pinned`);
+    }
+    return {
+      digest,
+      handle,
+      kind: value.kind,
+      path: value.path,
+      size: Number(opened.size),
+      snapshot: opened,
+      sourceSnapshot: sourceBefore,
+      target: value.target
+    };
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [{ label: `Python payload ${value.path}`, run: () => handle?.close() }]);
+  }
+}
+
+async function verifyPinnedPythonPayload(value) {
+  const source = await lstat(value.path, { bigint: true });
+  const target = await lstat(value.target, { bigint: true });
+  if (
+    !sameImmutableSnapshot(value.sourceSnapshot, source) ||
+    !sameImmutableSnapshot(value.snapshot, target) ||
+    (await realpath(value.path)) !== value.target ||
+    (await realpath(value.target)) !== value.target ||
+    (await digestPinnedPayload(value.handle, value.snapshot, `Python payload ${value.path}`)) !== value.digest
+  ) {
+    fail(`Python payload ${value.path} changed during qualification`);
+  }
+}
+
+function validatePythonPayloadSelection(payloads, phase) {
+  if (!Array.isArray(payloads) || payloads.length === 0 || payloads.length > MAX_PYTHON_PAYLOAD_FILES) {
+    fail(`Python ${phase} payload selection is invalid`);
+  }
+  const result = [];
+  let pathBytes = 0;
+  let previousPath = null;
+  const kinds = new Set([
+    "entry-point",
+    "import-archive",
+    "native-extension",
+    "path-configuration",
+    "python-bytecode",
+    "python-source",
+    "record",
+    "script",
+    "venv-configuration"
+  ]);
+  for (const payload of payloads) {
+    assertExactKeys(payload, ["kind", "path", "target"], `Python ${phase} payload`);
+    if (
+      typeof payload.kind !== "string" ||
+      !kinds.has(payload.kind) ||
+      typeof payload.path !== "string" ||
+      !isAbsolute(payload.path) ||
+      typeof payload.target !== "string" ||
+      !isAbsolute(payload.target)
+    ) {
+      fail(`Python ${phase} payload selection is invalid`);
+    }
+    pathBytes += Buffer.byteLength(payload.path, "utf8") + Buffer.byteLength(payload.target, "utf8");
+    if (
+      pathBytes > MAX_PYTHON_PAYLOAD_PATH_BYTES ||
+      (previousPath !== null &&
+        Buffer.compare(Buffer.from(payload.path, "utf8"), Buffer.from(previousPath, "utf8")) <= 0)
+    ) {
+      fail(`Python ${phase} payload selection is ambiguous or oversized`);
+    }
+    previousPath = payload.path;
+    result.push(payload);
+  }
+  return { pathBytes, values: result };
+}
+
+function pythonPayloadSummary(pins, pathBytes) {
+  const kinds = {};
+  let bytes = 0;
+  const records = pins.map((pin) => {
+    bytes += pin.size;
+    kinds[pin.kind] = (kinds[pin.kind] ?? 0) + 1;
+    return {
+      kind: pin.kind,
+      path: pin.path,
+      sha256: pin.digest,
+      size: pin.size,
+      target: pin.target
+    };
+  });
+  if (bytes > MAX_PYTHON_PAYLOAD_BYTES) fail("Python payload inventory exceeds its byte bound");
+  const manifest = Buffer.from(JSON.stringify(records), "utf8");
+  if (manifest.length > MAX_PYTHON_PAYLOAD_PATH_BYTES) fail("Python payload manifest exceeds its byte bound");
+  return {
+    bytes,
+    files: pins.length,
+    kinds: Object.fromEntries(Object.entries(kinds).sort(([left], [right]) => left.localeCompare(right))),
+    pathBytes,
+    sha256: sha256(manifest)
+  };
+}
+
+async function bindPythonPayloads(layoutState, payloads, phase) {
+  const selection = validatePythonPayloadSelection(payloads, phase);
+  const serialized = JSON.stringify(selection.values);
+  if (phase === "after") {
+    if (serialized !== layoutState.pythonPayloadSelection) {
+      const before = JSON.parse(layoutState.pythonPayloadSelection);
+      const maximum = Math.max(before.length, selection.values.length);
+      let changed = "count";
+      for (let index = 0; index < maximum; index += 1) {
+        if (JSON.stringify(before[index]) !== JSON.stringify(selection.values[index])) {
+          changed = before[index]?.path ?? selection.values[index]?.path ?? "count";
+          break;
+        }
+      }
+      fail(`task Python payload selection changed during qualification at ${changed}`);
+    }
+    for (const pin of layoutState.pythonPayloadPins) await verifyPinnedPythonPayload(pin);
+    return layoutState.pythonPayloadSummary;
+  }
+  const pins = [];
+  try {
+    let bytes = 0;
+    for (const payload of selection.values) {
+      const pin = await openPinnedPythonPayload(payload);
+      pins.push(pin);
+      bytes += pin.size;
+      if (bytes > MAX_PYTHON_PAYLOAD_BYTES) fail("Python payload inventory exceeds its byte bound");
+    }
+  } catch (error) {
+    await finishWithOwnedCleanup(
+      error,
+      pins.map((pin, index) => ({ label: `Python payload ${String(index)}`, run: () => pin.handle.close() }))
+    );
+  }
+  layoutState.pythonPayloadPins = pins;
+  layoutState.pythonPayloadSelection = serialized;
+  layoutState.pythonPayloadSummary = pythonPayloadSummary(pins, selection.pathBytes);
+  return layoutState.pythonPayloadSummary;
+}
+
+async function closePythonPayloadPins(layoutState) {
+  await finishWithOwnedCleanup(
+    null,
+    (layoutState?.pythonPayloadPins ?? []).map((pin, index) => ({
+      label: `Python payload ${String(index)}`,
+      run: () => pin.handle.close()
+    }))
+  );
+}
+
+class OwnedProcessTreeError extends Error {}
+
+function requireOwnedProcessTree(result, label) {
+  if (!result.treeEmpty) {
+    throw new OwnedProcessTreeError(`${label} process tree could not be attested empty`);
+  }
+}
+
 const PYTHON_INVENTORY_SCRIPT = [
+  "import importlib.machinery as machinery",
   "import importlib.metadata as metadata",
   "import hashlib",
   "import json",
   "import os",
   "import site",
   "import sys",
+  "import sysconfig",
+  `MAX_FILES = ${String(MAX_PYTHON_PAYLOAD_FILES)}`,
+  `MAX_PATH_BYTES = ${String(MAX_PYTHON_PAYLOAD_PATH_BYTES)}`,
+  "payloads = {}",
+  "walked_entries = 0",
+  "walked_path_bytes = 0",
+  "extension_suffixes = tuple(sorted(set(machinery.EXTENSION_SUFFIXES), key=len, reverse=True))",
+  "def payload_kind(name, scripts=False):",
+  "    if scripts: return 'script'",
+  "    if name == 'RECORD': return 'record'",
+  "    if name == 'entry_points.txt': return 'entry-point'",
+  "    if name.endswith('.pth'): return 'path-configuration'",
+  "    if name.endswith(extension_suffixes): return 'native-extension'",
+  "    if name.endswith(tuple(machinery.SOURCE_SUFFIXES)): return 'python-source'",
+  "    if name.endswith(tuple(machinery.BYTECODE_SUFFIXES)): return 'python-bytecode'",
+  "    return None",
+  "def add_payload(path, kind):",
+  "    global walked_path_bytes",
+  "    absolute = os.path.abspath(path)",
+  "    target = os.path.realpath(absolute)",
+  "    if not os.path.isfile(target): raise RuntimeError('Python payload is not a regular file: ' + absolute)",
+  "    walked_path_bytes += len(os.fsencode(absolute)) + len(os.fsencode(target))",
+  "    if walked_path_bytes > MAX_PATH_BYTES: raise RuntimeError('Python payload path inventory exceeded its bound')",
+  "    payloads[absolute] = {'kind': kind, 'path': absolute, 'target': target}",
+  "    if len(payloads) > MAX_FILES: raise RuntimeError('Python payload inventory exceeded its file bound')",
+  "def scan_root(root, scripts=False):",
+  "    global walked_entries, walked_path_bytes",
+  "    for current, directories, files in os.walk(root, topdown=True, followlinks=False):",
+  "        directories.sort()",
+  "        files.sort()",
+  "        walked_entries += len(directories) + len(files)",
+  "        walked_path_bytes += sum(len(os.fsencode(os.path.join(current, name))) for name in directories)",
+  "        if walked_entries > MAX_FILES * 8 or walked_path_bytes > MAX_PATH_BYTES:",
+  "            raise RuntimeError('Python payload discovery exceeded its bound')",
+  "        for name in files:",
+  "            kind = payload_kind(name, scripts)",
+  "            if kind is not None: add_payload(os.path.join(current, name), kind)",
+  "roots = []",
+  "for value in sys.path:",
+  "    if not value: continue",
+  "    absolute = os.path.abspath(value)",
+  "    if os.path.isdir(absolute): roots.append((absolute, False))",
+  "    elif os.path.isfile(absolute): add_payload(absolute, 'import-archive')",
+  "for root, scripts in sorted(set(roots)):",
+  "    scan_root(root, scripts)",
+  "venv_configuration = os.path.join(os.path.realpath(sys.prefix), 'pyvenv.cfg')",
+  "if os.path.isfile(venv_configuration): add_payload(venv_configuration, 'venv-configuration')",
+  "entry_point_names = set()",
   "packages = []",
   "for distribution in metadata.distributions():",
   "    name = distribution.metadata.get('Name')",
@@ -3132,8 +3406,14 @@ const PYTHON_INVENTORY_SCRIPT = [
   "    if os.path.isfile(metadata_file):",
   "        with open(metadata_file, 'rb') as handle:",
   "            metadata_digest = hashlib.file_digest(handle, 'sha256').hexdigest()",
+  "    entry_point_names.update(entry.name for entry in distribution.entry_points if entry.name and os.sep not in entry.name and (os.altsep is None or os.altsep not in entry.name))",
   "    packages.append({'location': os.path.realpath(str(distribution.locate_file(''))), 'metadataPath': metadata_path, 'metadataSha256': metadata_digest, 'name': name or '', 'version': version or ''})",
   "packages.sort(key=lambda value: (value['name'].casefold(), value['name'], value['version'], value['metadataPath']))",
+  "scripts_root = os.path.abspath(sysconfig.get_path('scripts'))",
+  "for name in sorted(entry_point_names):",
+  "    for candidate in (name, name + '.exe', name + '-script.py'):",
+  "        path = os.path.join(scripts_root, candidate)",
+  "        if os.path.isfile(path): add_payload(path, 'script')",
   "payload = {",
   "    'basePrefix': os.path.realpath(sys.base_prefix),",
   "    'cacheTag': sys.implementation.cache_tag,",
@@ -3141,6 +3421,7 @@ const PYTHON_INVENTORY_SCRIPT = [
   "    'executableRealpath': os.path.realpath(sys.executable),",
   "    'isolated': bool(sys.flags.isolated),",
   "    'packages': packages,",
+  "    'payloads': sorted(payloads.values(), key=lambda value: (value['path'], value['kind'], value['target'])),",
   "    'prefix': os.path.realpath(sys.prefix),",
   "    'pythonVersion': list(sys.version_info[:3]),",
   "    'sysPath': [os.path.realpath(value) for value in sys.path],",
@@ -3173,10 +3454,12 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
       timeoutMs: 30_000
     }
   );
+  requireOwnedProcessTree(result, `task Python ${phase} inventory`);
   const failure = resultFailure(result, `task Python ${phase} inventory`);
   if (failure) fail(failure);
   const pin = await openPinnedRegularFile(inventoryPath, MAX_PYTHON_INVENTORY_BYTES, `Python ${phase} inventory`);
   let inventory;
+  let payloadManifest;
   try {
     inventory = JSON.parse(decodeStrictUtf8(pin.bytes, `Python ${phase} inventory`));
     assertExactKeys(
@@ -3188,6 +3471,7 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
         "executableRealpath",
         "isolated",
         "packages",
+        "payloads",
         "prefix",
         "pythonVersion",
         "sysPath",
@@ -3208,7 +3492,8 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
       inventory.cacheTag.length === 0 ||
       !Array.isArray(inventory.sysPath) ||
       !inventory.sysPath.every((value) => typeof value === "string" && isAbsolute(value)) ||
-      !Array.isArray(inventory.packages)
+      !Array.isArray(inventory.packages) ||
+      !Array.isArray(inventory.payloads)
     ) {
       fail(`Python ${phase} inventory does not bind the private interpreter`);
     }
@@ -3231,6 +3516,7 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
         fail(`Python ${phase} package inventory is invalid`);
       }
     }
+    payloadManifest = await bindPythonPayloads(layoutState, inventory.payloads, phase);
   } catch (error) {
     await finishWithOwnedCleanup(error, [{ label: `Python ${phase} inventory`, run: () => pin.handle.close() }]);
   }
@@ -3244,8 +3530,10 @@ async function capturePythonInventory(assignment, layoutState, hostEnvironment, 
     executable: layoutState.layout.pythonExecutable,
     executableRealpath: layoutState.pythonEntry.target,
     executableSha256: result.executable.sha256,
-    packageInventorySha256: sha256(Buffer.from(JSON.stringify(inventory.packages), "utf8"))
+    packageInventorySha256: sha256(Buffer.from(JSON.stringify(inventory.packages), "utf8")),
+    payloadManifest
   };
+  delete normalized.payloads;
   return {
     identity: normalized,
     result
@@ -3382,6 +3670,9 @@ async function verifyLayout(layoutState) {
   }
   if (layoutState.pythonExecutablePin) {
     await verifyPinnedExecutable(layoutState.pythonExecutablePin);
+  }
+  for (const pin of layoutState.pythonPayloadPins ?? []) {
+    await verifyPinnedPythonPayload(pin);
   }
   if (layoutState.pytestTempTree) {
     const afterAccounting = await inspectPrivateTree(
@@ -3532,6 +3823,7 @@ async function runQualification({
   pytestTempAfterOpenForTest,
   pytestTempLimitsForTest,
   pytestTempMountIdentityForTest,
+  pythonInventoryAfterRunnerForTest,
   posixMissingControlPipeForTest,
   posixOuterSettlementMsForTest,
   posixSupervisorSourceForTest,
@@ -3591,6 +3883,7 @@ async function runQualification({
       });
       if (bootstrap.failure) failures.push(bootstrap.failure);
     } catch (error) {
+      if (error instanceof OwnedProcessTreeError) throw error;
       failures.push(error instanceof Error ? error.message : String(error));
     }
     let result = {
@@ -3657,7 +3950,7 @@ async function runQualification({
           "after",
           {
             assignmentPath,
-            ownedRunnerForTest: bootstrapCommandRunnerForTest,
+            ownedRunnerForTest: pythonInventoryAfterRunnerForTest ?? bootstrapCommandRunnerForTest,
             platformForTest: bootstrapCommandPlatformForTest,
             terminationGraceMs,
             windowsJobSupervisorScript: bootstrapWindowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
@@ -3669,6 +3962,7 @@ async function runQualification({
           fail("task Python interpreter or package inventory changed during qualification");
         }
       } catch (error) {
+        if (error instanceof OwnedProcessTreeError) throw error;
         failures.push(error instanceof Error ? error.message : String(error));
       }
     }
@@ -3759,6 +4053,7 @@ async function runQualification({
   await finishWithOwnedCleanup(primaryError, [
     { label: "private Git executable launch", run: () => closeExecutableLaunch(layoutState?.gitExecutableLaunch) },
     { label: "private Python executable owner", run: () => closePinnedExecutable(layoutState?.pythonExecutablePin) },
+    { label: "private Python payload owners", run: () => closePythonPayloadPins(layoutState) },
     ...(layoutState?.runnerFilePins ?? []).map(({ label, pin }) => ({
       label,
       run: () => pin.handle.close()

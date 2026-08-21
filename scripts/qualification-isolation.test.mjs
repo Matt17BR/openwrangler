@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import {
   access,
+  appendFile,
   chmod,
   copyFile,
   link,
@@ -549,7 +550,14 @@ test("strips authoritative Git controls from nested fixture commits and seals Gi
   assert.equal(nestedResult.authorEmail, "nested-fixture@openwrangler.invalid");
   assert.equal(nestedResult.committerName, nestedResult.authorName);
   assert.equal(nestedResult.committerEmail, nestedResult.authorEmail);
+  assert.match(nestedResult.gitHome, new RegExp(`^${task.assignment.stateRoot}`, "u"));
+  assert.match(nestedResult.gitXdgConfig, new RegExp(`^${task.assignment.stateRoot}`, "u"));
   assert.equal(nestedResult.nestedHeadFromWorktree, nestedResult.nestedHead);
+  assert.match(nestedResult.privatePointer, /^gitdir: /u);
+  assert.match(
+    nestedResult.privatePointer,
+    new RegExp(task.assignment.stateRoot.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u")
+  );
   assert.equal(nestedResult.topLevelHead, task.assignment.head);
   assert.equal(nestedResult.topLevelHeadFromPrivateRoot, task.assignment.head);
   assert.equal(nestedResult.topLevelStatus, "");
@@ -771,6 +779,11 @@ test("suppresses inherited signing, format, external-diff, and textconv helpers"
       "\ttrustExitCode = true",
       '[diff "qualification-attack"]',
       `\ttextconv = ${helperConfigPath}`,
+      '[filter "qualification-attack"]',
+      `\tclean = ${helperConfigPath}`,
+      `\tprocess = ${helperConfigPath}`,
+      "\trequired = true",
+      `\tsmudge = ${helperConfigPath}`,
       "[interactive]",
       `\tdiffFilter = ${helperConfigPath}`,
       ""
@@ -824,6 +837,11 @@ test("pins repository Python and its package inventory independently for each ta
     assert.deepEqual(valueReceipt.pythonInventory.before, valueReceipt.pythonInventory.after);
     assert.equal(valueReceipt.pythonInventory.before.executable, valueReceipt.environment.pythonExecutable);
     assert.equal(valueReceipt.pythonInventory.before.prefix, valueReceipt.environment.venv);
+    assert.match(valueReceipt.pythonInventory.before.payloadManifest.sha256, /^[0-9a-f]{64}$/u);
+    assert.ok(valueReceipt.pythonInventory.before.payloadManifest.files > 0);
+    assert.ok(valueReceipt.pythonInventory.before.payloadManifest.bytes > 0);
+    assert.ok(valueReceipt.pythonInventory.before.payloadManifest.kinds["python-source"] > 0);
+    assert.ok(valueReceipt.pythonInventory.before.payloadManifest.kinds["native-extension"] > 0);
     assert.ok(valueReceipt.pythonInventory.before.packages.some((package_) => package_.name === "pytest"));
     const executableSuffix = relative(valueReceipt.environment.venv, valueReceipt.environment.pythonExecutable);
     assert.ok(executableSuffix !== "" && !executableSuffix.startsWith("..") && !isAbsolute(executableSuffix));
@@ -865,24 +883,73 @@ test("pins repository Python and its package inventory independently for each ta
   }
 });
 
-test("rejects a qualification that changes its private Python package inventory", async (context) => {
+test("rejects every newly exposed Python package payload class", async (context) => {
   const value = await fixture(context, "python-inventory-mutation");
-  const task = await addTask(value, "python-inventory-mutation");
+  for (const kind of ["source", "native", "path", "entry-point", "record"]) {
+    const task = await addTask(value, `python-inventory-${kind}`);
+    await assert.rejects(
+      runQualification({
+        assignmentPath: task.assignmentPath,
+        command: [process.execPath, child, "mutate-python-inventory", "--kind", kind],
+        environment: runnerEnvironment(),
+        terminationGraceMs: 5_000,
+        timeoutMs: 120_000,
+        writeOutput: false
+      }),
+      /task Python payload selection changed during qualification/u
+    );
+    const valueReceipt = await receipt(task);
+    assert.equal(valueReceipt.eligible, false);
+    assert.equal(valueReceipt.pythonInventory.after, null);
+    assert.match(valueReceipt.pythonInventory.before.payloadManifest.sha256, /^[0-9a-f]{64}$/u);
+  }
+});
+
+test("rejects a restored mutation of an already pinned Python payload", async (context) => {
+  const value = await fixture(context, "python-payload-restored-mutation");
+  const task = await addTask(value, "python-payload-restored-mutation");
   await assert.rejects(
     runQualification({
       assignmentPath: task.assignmentPath,
-      command: [process.execPath, child, "mutate-python-inventory"],
+      command: [process.execPath, child, "replace-python-payload"],
       environment: runnerEnvironment(),
       terminationGraceMs: 5_000,
       timeoutMs: 120_000,
       writeOutput: false
     }),
-    /task Python interpreter or package inventory changed during qualification/u
+    /Python payload .* changed during qualification/u
   );
   const valueReceipt = await receipt(task);
   assert.equal(valueReceipt.eligible, false);
-  assert.notDeepEqual(valueReceipt.pythonInventory.before, valueReceipt.pythonInventory.after);
-  assert.ok(valueReceipt.pythonInventory.after.packages.some((package_) => package_.name === "qualification-escape"));
+  assert.equal(valueReceipt.pythonInventory.after, null);
+});
+
+test("fails hard before protected paths reopen when Python inventory loses tree ownership", async (context) => {
+  const value = await fixture(context, "python-inventory-tree-ownership");
+  const task = await addTask(value, "python-inventory-tree-ownership");
+  await assert.rejects(
+    runQualification({
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      pythonInventoryAfterRunnerForTest: async () => {
+        await appendFile(task.assignmentPath, "\n", "utf8");
+        return {
+          lingeringDescendants: true,
+          signal: null,
+          spawnError: null,
+          status: null,
+          timedOut: false,
+          treeEmpty: false
+        };
+      },
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /task Python after inventory process tree could not be attested empty/u
+  );
+  assert.equal((await readFile(join(task.assignment.stateRoot, "artifacts", "qualification-receipt.json"))).length, 0);
 });
 
 test("routes pytest cache and temporary state through the private task root", async (context) => {
