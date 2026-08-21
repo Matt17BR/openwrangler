@@ -15,6 +15,29 @@ export interface PivotWiderJourneyDependencies {
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
 }
 
+export interface PivotWiderCellLocator {
+  count(): Promise<number>;
+}
+
+export async function materializeExactPivotWiderCell<TCell extends PivotWiderCellLocator>(
+  locate: () => TCell,
+  reveal: () => Promise<void>
+): Promise<TCell> {
+  let cell = locate();
+  const initialCount = await cell.count();
+  assert.ok(initialCount === 0 || initialCount === 1, "The exact Pivot wider cell must not be ambiguous.");
+  if (initialCount === 1) return cell;
+
+  await reveal();
+  cell = locate();
+  assert.equal(await cell.count(), 1, "The exact Pivot wider cell must be materialized after its one reveal.");
+  return cell;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 async function activatePivotWiderPreviewOnce(
   previewButton: Locator,
   immediatelyBeforeClick?: () => void
@@ -32,7 +55,7 @@ async function readCommittedPivotWiderPreviewCells(
   testing: TestApi,
   sessionId: string,
   revision: number,
-  outputs: readonly Readonly<{ position: number }>[],
+  outputs: readonly Readonly<{ id: string; name: string; position: number }>[],
   expectedFirstValue: string,
   reacquireApp: (phase: string) => Promise<Locator>,
   waitFor: PivotWiderJourneyDependencies["waitFor"]
@@ -43,12 +66,41 @@ async function readCommittedPivotWiderPreviewCells(
   }>
 > {
   return consumeLayoutCommittedRendererValue(testing, sessionId, revision, waitFor, async (receipt) => {
-    const app = await reacquireLayoutCommittedRendererTarget(testing, sessionId, receipt, () =>
+    let app = await reacquireLayoutCommittedRendererTarget(testing, sessionId, receipt, () =>
       reacquireApp("Pivot wider committed preview")
     );
     const cells: Array<Readonly<{ text: string; missing: boolean }>> = [];
     for (const [index, output] of outputs.entries()) {
-      const cell = app.locator(`td[data-grid-row="0"][data-grid-column="${output.position}"]`);
+      const selector = `td[data-grid-row="0"][data-grid-column="${output.position}"]`;
+      const cell = await materializeExactPivotWiderCell(
+        () => app.locator(selector),
+        async () => {
+          const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+          await columnSearch.fill(output.name);
+          const option = app.getByRole("option", {
+            name: new RegExp(`^${escapeRegExp(output.name)}, `, "u")
+          });
+          await option.waitFor({ state: "visible", timeout: 10_000 });
+          assert.equal(await option.count(), 1, "Pivot wider reveal requires one exact generated output option.");
+          await columnSearch.press("Enter");
+          await waitFor(
+            () => {
+              const current = testing.panelSynchronizationReceipt(sessionId);
+              return (
+                testing.activeSession()?.viewState.selectedColumnId === output.id &&
+                testing.panelHydrated(sessionId) &&
+                sameRendererSynchronizationReceipt(receipt, current) &&
+                current?.layoutTransitionPending === false
+              );
+            },
+            10_000,
+            `the current renderer to reveal Pivot wider output ${output.name}`
+          );
+          app = await reacquireLayoutCommittedRendererTarget(testing, sessionId, receipt, () =>
+            reacquireApp(`Pivot wider output ${output.name}`)
+          );
+        }
+      );
       if (index === 0) {
         await cell.getByText(expectedFirstValue, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
       } else {

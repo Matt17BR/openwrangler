@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "pandasRowAxisCases": [
+    {
+      "name": "positional-range-index",
+      "rowAxis": {
+        "kind": "positional",
+        "levelNames": []
+      },
+      "expectedRows": [{}, {}]
+    },
+    {
+      "name": "named-index",
+      "rowAxis": {
+        "kind": "index",
+        "levelNames": ["record_id"]
+      },
+      "expectedRows": [{ "rowLabel": "10" }, { "rowLabel": "20" }]
+    },
+    {
+      "name": "one-level-multi-index",
+      "rowAxis": {
+        "kind": "index",
+        "levelNames": ["region"]
+      },
+      "expectedRows": [{ "rowLabel": "north" }, { "rowLabel": "south" }]
+    },
+    {
+      "name": "named-multi-index",
+      "rowAxis": {
+        "kind": "multiIndex",
+        "levelNames": ["region", "sequence"]
+      },
+      "expectedRows": [{ "rowLabel": "north · 1" }, { "rowLabel": "south · 2" }]
+    }
+  ],
+  "nonPandasBackends": ["polars", "duckdb"]
+}

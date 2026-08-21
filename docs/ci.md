@@ -38,6 +38,11 @@ checks use the cumulative stack base. Making the same SHA ready or draft does no
 synchronization, reopen, and base edits still trigger both CI and CodeQL. The independent `CodeQL gate` remains
 required on every layer.
 
+GitHub merge-queue candidates enter through `merge_group: checks_requested`. That synthetic merged-tree SHA runs
+the full conservative owner union plus both required result gates; it does not reuse a pull-request head result or
+path-prune the integration object. Queue candidates may replace manual branch-current replays only after the active
+ruleset requires `validate` and `CodeQL gate` on the `merge_group` result.
+
 <!-- BEGIN GENERATED CI CAPABILITIES -->
 
 ### Enforced workflow capabilities
@@ -45,7 +50,7 @@ required on every layer.
 This section is generated from `scripts/fixtures/ci-capabilities.json` and checked against the workflow graph.
 Job display names and YAML ordering are not part of the contract; job IDs, events, fatality, reachability, and final fan-in are.
 
-- `source_coverage`: trigger `pull_request`; provider `.github/workflows/ci.yml:validate`; mandatory final fan-in `.github/workflows/ci.yml:validate`; required checks `validate`, `CodeQL gate`.
+- `source_coverage`: trigger `pull_request`; merge queue trigger `merge_group:checks_requested`; provider `.github/workflows/ci.yml:validate`; mandatory final fan-in `.github/workflows/ci.yml:validate`; required checks `validate`, `CodeQL gate`.
 - `installed_candidate`: trigger `workflow_dispatch`; provider `.github/workflows/candidate-acceptance.yml:acceptance`; mandatory final fan-in `.github/workflows/release-candidate.yml:qualify`.
 - `artifact_provenance`: trigger `workflow_dispatch`; provider `.github/workflows/release-candidate.yml:package`; mandatory final fan-in `.github/workflows/release-candidate.yml:qualify`.
 - `release_fan_in`: trigger `workflow_dispatch`; provider `.github/workflows/release-candidate.yml:qualify`; mandatory final fan-in `.github/workflows/release-candidate.yml:qualify`.

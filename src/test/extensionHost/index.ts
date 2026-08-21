@@ -255,8 +255,8 @@ import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   dispatchExtensionHostPhase,
   dispatchPlatformSmokeJourney,
-  GRID_RANGE_COPY_SELECTOR,
   parseExtensionHostPhaseSelection,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   type DataWranglerCoexistencePhase
 } from "./phaseDispatch";
 import { createFocusedReleasedRAcceptanceHandlers } from "./focusedReleasedRAcceptance";
@@ -548,7 +548,7 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "action-icon-light.svg"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const phaseSelection = parseExtensionHostPhaseSelection(process.env, process.platform);
-  const { phase, selector: testSelector, testPython } = phaseSelection;
+  const { phase, testPython } = phaseSelection;
   if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
       .getConfiguration("openWrangler")
@@ -953,17 +953,22 @@ export async function run(): Promise<void> {
       recordAcceptanceProgress(`${coexistencePhase}:complete`);
       console.log(`Open Wrangler real Data Wrangler coexistence ${coexistencePhase} acceptance passed.`);
     },
-    releasedJupyter: async (releasedPhase) => {
+    releasedJupyter: async (releasedPhase, releasedSelector) => {
       assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
       recordAcceptanceProgress(`${releasedPhase}:start`);
       if (releasedPhase === "jupyter-pyspark") {
-        await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
+        await exerciseReleasedPySparkJupyterExtension(
+          testing,
+          extension,
+          testPython,
+          releasedSelector === PYSPARK_PRERELEASE_DENIAL_SELECTOR ? "prerelease-denial" : "stable-qualification"
+        );
       } else if (releasedPhase === "jupyter-r" || releasedPhase === "jupyter-r-remote") {
         const coverage = releasedRAcceptanceCoverageProfile({
           editor: phaseSelection.editor,
           phase: releasedPhase,
           platform: phaseSelection.platform,
-          selector: testSelector === GRID_RANGE_COPY_SELECTOR ? undefined : testSelector
+          selector: releasedSelector
         });
         await exerciseReleasedRJupyterExtension(testing, extension, releasedPhase, coverage);
       } else {

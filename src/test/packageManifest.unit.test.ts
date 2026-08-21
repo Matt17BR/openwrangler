@@ -100,7 +100,7 @@ describe("Marketplace and walkthrough copy", () => {
       "DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only."
     );
     expect(walkthrough?.description).toContain(
-      "Local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
+      "Local stable/final PySpark 4.2.x Classic/Connect batch DataFrames are notebook-only and view-only."
     );
     expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
       "Use the notebook toolbar for live Python or R dataframes."

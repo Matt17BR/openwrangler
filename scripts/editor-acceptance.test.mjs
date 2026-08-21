@@ -3078,7 +3078,7 @@ test("editor phases validate and forward exact focused selectors", async () => {
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy"/u
+      /test selector must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
@@ -3106,6 +3106,25 @@ test("editor phases validate and forward exact focused selectors", async () => {
         options
       ),
       /requires the "jupyter-allow" phase in the Cursor editor/u
+    );
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          ...input,
+          editor: { name: "Cursor", key: "cursor", version: "3.15.19", executable: "fake-editor" },
+          phase: "jupyter-pyspark",
+          testSelector: "pyspark-prerelease-denial"
+        },
+        options
+      ),
+      /requires the "jupyter-pyspark" phase in VS Code/u
+    );
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        { ...input, phase: "jupyter-allow", testSelector: "pyspark-prerelease-denial" },
+        options
+      ),
+      /requires the "jupyter-pyspark" phase in VS Code/u
     );
 
     let launchedEnvironment;
@@ -3148,6 +3167,24 @@ test("editor phases validate and forward exact focused selectors", async () => {
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "grid-range-copy");
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "platform-smoke");
+
+    await runEditorAcceptancePhase(
+      { ...input, phase: "jupyter-pyspark", testSelector: "pyspark-prerelease-denial" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "pyspark-prerelease-denial");
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "jupyter-pyspark");
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_EDITOR, "vscode");
 
     await runEditorAcceptancePhase(
       { ...input, testSelector: "core-operations" },

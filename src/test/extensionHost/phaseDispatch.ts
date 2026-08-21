@@ -1,6 +1,7 @@
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   EXTENSION_HOST_TEST_SELECTORS as RELEASED_JUPYTER_TEST_SELECTORS,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   releasedJupyterScenario
 } from "./releasedJupyterScenarios";
 import type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase } from "./releasedJupyterScenarios";
@@ -11,7 +12,7 @@ export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
   GRID_RANGE_COPY_SELECTOR
 ] as const);
 type ExtensionHostPhaseSelector = ExtensionHostTestSelector | typeof GRID_RANGE_COPY_SELECTOR;
-export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR };
+export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, PYSPARK_PRERELEASE_DENIAL_SELECTOR };
 export type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase };
 
 export type DataWranglerCoexistencePhase =
@@ -41,7 +42,10 @@ export interface ExtensionHostPhaseHandlers {
   readonly focusedRLiterateDocuments: () => Promise<void>;
   readonly platformSmoke: () => Promise<void>;
   readonly pythonEnvironment: () => Promise<void>;
-  readonly releasedJupyter: (phase: ReleasedJupyterDispatchPhase) => Promise<void>;
+  readonly releasedJupyter: (
+    phase: ReleasedJupyterDispatchPhase,
+    selector: ExtensionHostTestSelector | undefined
+  ) => Promise<void>;
   readonly remoteWorkspace: () => Promise<void>;
   readonly seed: () => Promise<void>;
 }
@@ -52,10 +56,10 @@ export interface PlatformSmokeJourneyHandlers {
 }
 
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
-  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy".';
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy".';
 
 export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
-  "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r; grid-range-copy requires platform-smoke.";
+  "candidate-compatibility-seam requires jupyter-allow in Cursor; pyspark-prerelease-denial requires jupyter-pyspark in VS Code; every R selector requires jupyter-r; grid-range-copy requires platform-smoke.";
 
 const extensionHostTestSelectors = new Set<string>(EXTENSION_HOST_TEST_SELECTORS);
 
@@ -125,7 +129,7 @@ export async function dispatchExtensionHostPhase(
     return true;
   }
   if (releasedJupyter?.runnerKey === "released-jupyter") {
-    await handlers.releasedJupyter(releasedJupyter.phaseId);
+    await handlers.releasedJupyter(releasedJupyter.phaseId, releasedJupyter.selector);
     return true;
   }
   if (selection.phase === "python-environment") {

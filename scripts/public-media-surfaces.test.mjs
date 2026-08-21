@@ -1063,7 +1063,7 @@ test("GitHub verification is pinned to the caller-supplied README commit", () =>
 
 test("surface content and versions fail closed on stale publication", () => {
   assert.deepEqual(PUBLIC_SURFACE_CONTENT, [
-    "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.",
+    "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4.2.x notebook viewing, and preview native R.",
     "Open files",
     "The active filter matches 14,287 rows."
   ]);
