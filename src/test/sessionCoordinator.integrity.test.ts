@@ -32,9 +32,12 @@ const step: TransformStep = {
 
 describe("SessionCoordinator response integrity", () => {
   it("rejects kind, action, session, and view-correlation mismatches without publishing state", async () => {
-    const update = vi.fn(async () => undefined);
+    let stored: unknown;
+    const update = vi.fn(async (_key: string, value: unknown) => {
+      stored = value;
+    });
     const workspaceState = {
-      get: vi.fn((_key: string, fallback?: unknown) => fallback),
+      get: vi.fn((_key: string, fallback?: unknown) => stored ?? fallback),
       update,
       keys: vi.fn(() => [])
     } as unknown as Memento;
@@ -124,7 +127,8 @@ describe("SessionCoordinator response integrity", () => {
       expect(coordinator.activeSession()).toEqual(baselineSnapshot);
       expect(coordinator.diagnostics()).toEqual(baselineDiagnostics);
     }
-    expect(update).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(stored).toEqual({});
     expect(activeChanges).not.toHaveBeenCalled();
   });
 

@@ -15,6 +15,8 @@ type Listener<T> = (value: T) => unknown;
 
 const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
+  registrationAttempt: 0,
+  failRegistrationAttempt: undefined as number | undefined,
   trusted: true,
   terminals: [] as Array<{ name: string; sendText: ReturnType<typeof vi.fn> }>,
   activeTerminal: undefined as { name: string; sendText: ReturnType<typeof vi.fn> } | undefined,
@@ -79,6 +81,10 @@ vi.mock("vscode", () => {
     ProgressLocation: { Notification: 15 },
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
+        mocks.registrationAttempt += 1;
+        if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+          throw new Error(`R interactive registration failed at ${id}`);
+        }
         mocks.commands.set(id, handler);
         return { dispose: () => mocks.commands.delete(id) };
       },
@@ -92,6 +98,10 @@ vi.mock("vscode", () => {
         return mocks.textDocuments;
       },
       onDidGrantWorkspaceTrust: (listener: Listener<void>) => {
+        mocks.registrationAttempt += 1;
+        if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+          throw new Error("R interactive trust-listener registration failed");
+        }
         mocks.trustListeners.add(listener);
         return { dispose: () => mocks.trustListeners.delete(listener) };
       }
@@ -107,10 +117,18 @@ vi.mock("vscode", () => {
         return mocks.activeEditor;
       },
       onDidChangeActiveTerminal: (listener: Listener<unknown>) => {
+        mocks.registrationAttempt += 1;
+        if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+          throw new Error("R interactive active-listener registration failed");
+        }
         mocks.activeTerminalListeners.add(listener);
         return { dispose: () => mocks.activeTerminalListeners.delete(listener) };
       },
       onDidCloseTerminal: (listener: Listener<unknown>) => {
+        mocks.registrationAttempt += 1;
+        if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+          throw new Error("R interactive close-listener registration failed");
+        }
         mocks.closeTerminalListeners.add(listener);
         return { dispose: () => mocks.closeTerminalListeners.delete(listener) };
       },
@@ -160,6 +178,8 @@ const tibble = { name: "orders", backend: "r" as const, dataframeFlavor: "r.tibb
 describe("active R session commands", () => {
   beforeEach(() => {
     mocks.commands.clear();
+    mocks.registrationAttempt = 0;
+    mocks.failRegistrationAttempt = undefined;
     mocks.trusted = true;
     mocks.terminals = [];
     mocks.activeTerminal = undefined;
@@ -184,6 +204,45 @@ describe("active R session commands", () => {
     mocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     mocks.bridgeArguments.length = 0;
     mocks.bridgeDispose.mockClear();
+  });
+
+  it("rolls back real R listeners, provider, and prior command after grouped registration fails", () => {
+    mocks.failRegistrationAttempt = 5;
+    const context = { extensionPath: "/extension", subscriptions: [] } as unknown as ExtensionContext;
+
+    expect(() =>
+      registerRInteractiveCommands(
+        context,
+        coordinatorMock() as unknown as SessionCoordinator,
+        { create: vi.fn() } as unknown as RInteractiveTransportFactory,
+        { create: vi.fn() } as unknown as RVscodeWorkspaceWatcherFactory
+      )
+    ).toThrow("R interactive registration failed");
+
+    expect(context.subscriptions).toEqual([]);
+    expect(mocks.commands.size).toBe(0);
+    expect(mocks.activeTerminalListeners.size).toBe(0);
+    expect(mocks.closeTerminalListeners.size).toBe(0);
+    expect(mocks.trustListeners.size).toBe(0);
+  });
+
+  it("rolls back the first real R listener when the constructor's next listener throws", () => {
+    mocks.failRegistrationAttempt = 2;
+    const context = { extensionPath: "/extension", subscriptions: [] } as unknown as ExtensionContext;
+
+    expect(() =>
+      registerRInteractiveCommands(
+        context,
+        coordinatorMock() as unknown as SessionCoordinator,
+        { create: vi.fn() } as unknown as RInteractiveTransportFactory,
+        { create: vi.fn() } as unknown as RVscodeWorkspaceWatcherFactory
+      )
+    ).toThrow("R interactive close-listener registration failed");
+
+    expect(context.subscriptions).toEqual([]);
+    expect(mocks.activeTerminalListeners.size).toBe(0);
+    expect(mocks.closeTerminalListeners.size).toBe(0);
+    expect(mocks.trustListeners.size).toBe(0);
   });
 
   it("picks and opens a live dataframe from an explicit active-R command", async () => {

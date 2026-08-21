@@ -13,6 +13,8 @@ type CommandHandler = (...args: unknown[]) => unknown;
 const mocks = vi.hoisted(() => ({
   trusted: true,
   commands: new Map<string, CommandHandler>(),
+  registrationAttempt: 0,
+  failRegistrationAttempt: undefined as number | undefined,
   providers: [] as Array<{ notebookType: string; provider: NotebookCellStatusBarItemProvider }>,
   notebookDocuments: [] as NotebookDocument[],
   visibleEditors: [] as NotebookEditor[],
@@ -35,6 +37,12 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("vscode", () => {
+  const beginRegistration = (label: string): void => {
+    mocks.registrationAttempt += 1;
+    if (mocks.registrationAttempt === mocks.failRegistrationAttempt) {
+      throw new Error(`notebook cell result registration failed at ${label}`);
+    }
+  };
   class EventEmitter<T> {
     private readonly listeners = new Set<(value: T) => void>();
     readonly event = (listener: (value: T) => void) => {
@@ -66,14 +74,22 @@ vi.mock("vscode", () => {
     ProgressLocation: { Notification: 15 },
     commands: {
       registerCommand(id: string, handler: CommandHandler) {
+        beginRegistration(id);
         mocks.commands.set(id, handler);
-        return { dispose: () => undefined };
+        return { dispose: () => mocks.commands.delete(id) };
       }
     },
     notebooks: {
       registerNotebookCellStatusBarItemProvider(notebookType: string, provider: NotebookCellStatusBarItemProvider) {
-        mocks.providers.push({ notebookType, provider });
-        return { dispose: () => undefined };
+        beginRegistration(notebookType);
+        const registration = { notebookType, provider };
+        mocks.providers.push(registration);
+        return {
+          dispose: () => {
+            const index = mocks.providers.indexOf(registration);
+            if (index >= 0) mocks.providers.splice(index, 1);
+          }
+        };
       }
     },
     workspace: {
@@ -84,12 +100,24 @@ vi.mock("vscode", () => {
         return mocks.notebookDocuments;
       },
       onDidChangeNotebookDocument(listener: (event: unknown) => void) {
+        beginRegistration("onDidChangeNotebookDocument");
         mocks.notebookChanges.push(listener);
-        return { dispose: () => undefined };
+        return {
+          dispose: () => {
+            const index = mocks.notebookChanges.indexOf(listener);
+            if (index >= 0) mocks.notebookChanges.splice(index, 1);
+          }
+        };
       },
       onDidCloseNotebookDocument(listener: (document: NotebookDocument) => void) {
+        beginRegistration("onDidCloseNotebookDocument");
         mocks.notebookCloses.push(listener);
-        return { dispose: () => undefined };
+        return {
+          dispose: () => {
+            const index = mocks.notebookCloses.indexOf(listener);
+            if (index >= 0) mocks.notebookCloses.splice(index, 1);
+          }
+        };
       }
     },
     window: {
@@ -148,6 +176,8 @@ export function notebookCellResultMocks(): typeof mocks {
 
 export function resetNotebookCellResultTest(): void {
   mocks.trusted = true;
+  mocks.registrationAttempt = 0;
+  mocks.failRegistrationAttempt = undefined;
   mocks.commands.clear();
   mocks.providers.length = 0;
   mocks.notebookDocuments.length = 0;

@@ -39,6 +39,39 @@ describe("SessionRuntimeEstablisher", () => {
     expect(result.session.publicId).toBe(result.response.metadata.sessionId);
   });
 
+  it("closes an initial runtime whose response names a different immutable source before persistence", async () => {
+    const workspaceState = {
+      get: vi.fn(),
+      update: vi.fn(),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const response = openedResponse("wrong-source-runtime");
+    const wrongSource = { ...openRequest.source, path: "/workspace/other.csv" };
+    const requests: OpenWranglerRequest[] = [];
+    const delegate = bridge(async (request): Promise<OpenWranglerResponse> => {
+      requests.push(request);
+      if (request.kind === "openSession") {
+        return { ...response, metadata: { ...response.metadata, source: wrongSource } };
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected source-validation request: ${request.kind}`);
+    });
+
+    await expect(
+      establisher(workspaceState).establish(delegate, openRequest, undefined, undefined, hooks())
+    ).resolves.toMatchObject({
+      established: false,
+      response: {
+        kind: "error",
+        code: "invalid_runtime_response",
+        message: expect.stringContaining("immutable source")
+      }
+    });
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(workspaceState.get).not.toHaveBeenCalled();
+    expect(workspaceState.update).not.toHaveBeenCalled();
+  });
+
   it("reopens immutable original data only when saved cleaning replay fails", async () => {
     const savedStep: TransformStep = {
       id: "invalid-for-source",

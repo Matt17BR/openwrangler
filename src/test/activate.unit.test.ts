@@ -2,344 +2,193 @@ import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const lifecycle = vi.hoisted(() => ({
-  bridge: {
-    shutdown: vi.fn(),
-    reportDiagnostic: vi.fn(),
-    declineRuntimeDependencyRevalidationForTesting: vi.fn()
-  },
-  coordinator: {
-    shutdown: vi.fn(),
-    createBridge: vi.fn(),
-    testingRequestExecutionCheckpoint: vi.fn()
-  },
-  coordinatedBridge: {
-    request: vi.fn(),
-    cancelViewRequests: vi.fn()
-  },
-  pickleWorkers: {
-    run: vi.fn(),
-    shutdown: vi.fn()
-  },
-  pythonVariables: {
-    onDidChangeVariables: () => ({ dispose: vi.fn() }),
-    snapshot: () => undefined,
-    diagnosticsForTesting: vi.fn(),
-    dispose: vi.fn()
-  },
-  rVariables: {
-    onDidChangeVariables: () => ({ dispose: vi.fn() }),
-    snapshot: () => undefined,
-    startAutomaticDiscovery: vi.fn(),
-    shutdown: vi.fn(),
-    dispose: vi.fn()
-  },
-  notebookCellResults: {
-    start: vi.fn(),
-    dispose: vi.fn(),
-    diagnosticsForTesting: vi.fn()
-  },
-  notebookPreviews: {
-    dispose: vi.fn()
-  },
-  panels: {
-    disposePanelForSession: vi.fn(),
-    retireRendererForSessionForTesting: vi.fn()
-  }
+  startBeforeFirstYield: vi.fn(),
+  extensionApiForCurrentEnvironment: vi.fn(),
+  dispose: vi.fn(),
+  shutdown: vi.fn()
 }));
 
-vi.mock("../extension/pythonBridge", () => ({
-  PythonBridge: vi.fn(function MockPythonBridge() {
-    return lifecycle.bridge;
+vi.mock("../extension/lazyActivationOwners", () => ({
+  LazyActivationOwners: vi.fn(function MockLazyActivationOwners() {
+    return lifecycle;
   })
 }));
 
-vi.mock("../extension/sessionCoordinator", () => ({
-  SessionCoordinator: vi.fn(function MockSessionCoordinator() {
-    return lifecycle.coordinator;
-  })
-}));
+import { MAX_SYNCHRONOUS_ACTIVATION_MS, activate, deactivate, isCursorAppName } from "../extension/activate";
 
-vi.mock("../extension/files/fileOpen", () => ({ registerFileCommands: vi.fn() }));
-vi.mock("../extension/files/trustedPickleConversion", () => ({ registerTrustedPickleConversion: vi.fn() }));
-vi.mock("../extension/files/trustedPickleWorker", () => ({
-  TrustedPickleWorkerLifecycle: vi.fn(function MockTrustedPickleWorkerLifecycle() {
-    return lifecycle.pickleWorkers;
-  })
-}));
-vi.mock("../extension/notebooks/jupyterBridge", () => ({ registerNotebookCommands: vi.fn() }));
-vi.mock("../extension/notebooks/notebookCellResult", () => ({
-  NotebookCellResultTracker: vi.fn(function MockNotebookCellResultTracker() {
-    return lifecycle.notebookCellResults;
-  }),
-  registerNotebookCellResultAction: vi.fn()
-}));
-vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
-  registerPythonInteractiveCommands: vi.fn(() => lifecycle.pythonVariables)
-}));
-vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
-vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
-  NotebookPreviewCoordinator: vi.fn(function MockNotebookPreviewCoordinator() {
-    return lifecycle.notebookPreviews;
-  })
-}));
-vi.mock("../extension/runtimeCommands", () => ({ registerRuntimeCommands: vi.fn() }));
-vi.mock("../extension/r/rDocumentCommands", () => ({ registerRDocumentCommands: vi.fn() }));
-vi.mock("../extension/r/rInteractiveCommands", () => ({
-  registerRInteractiveCommands: vi.fn(() => lifecycle.rVariables)
-}));
-vi.mock("../extension/nativeViews", () => ({ registerNativeViews: vi.fn(() => ({})) }));
-vi.mock("../extension/webviewPanel", () => ({
-  OpenWranglerPanel: lifecycle.panels
-}));
-
-import { activate, deactivate, isCursorAppName } from "../extension/activate";
-import { registerNativeViews } from "../extension/nativeViews";
-import { NotebookCellResultTracker, registerNotebookCellResultAction } from "../extension/notebooks/notebookCellResult";
-import { NotebookPreviewCoordinator } from "../extension/notebooks/notebookPreviewCoordinator";
-import { registerRInteractiveCommands } from "../extension/r/rInteractiveCommands";
-
-describe("extension deactivation", () => {
-  const originalExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
-
+describe("extension activation boundary", () => {
   beforeEach(async () => {
-    delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    await deactivate();
+    lifecycle.startBeforeFirstYield.mockReset();
+    lifecycle.extensionApiForCurrentEnvironment.mockReset().mockResolvedValue(undefined);
+    lifecycle.dispose.mockReset();
+    lifecycle.shutdown.mockReset().mockResolvedValue(undefined);
     (vscode.env as { appName: string }).appName = "Visual Studio Code";
-    lifecycle.bridge.shutdown.mockReset().mockResolvedValue(undefined);
-    lifecycle.bridge.reportDiagnostic.mockReset();
-    lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting.mockReset().mockResolvedValue(false);
-    lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
-    lifecycle.pickleWorkers.run.mockReset();
-    lifecycle.pickleWorkers.shutdown.mockReset().mockResolvedValue(undefined);
-    lifecycle.rVariables.shutdown.mockReset().mockResolvedValue(undefined);
-    lifecycle.rVariables.startAutomaticDiscovery.mockReset();
-    lifecycle.notebookCellResults.start.mockReset();
-    lifecycle.notebookCellResults.dispose.mockReset();
-    lifecycle.notebookCellResults.diagnosticsForTesting.mockReset();
-    lifecycle.notebookPreviews.dispose.mockReset();
-    lifecycle.pythonVariables.diagnosticsForTesting.mockReset();
-    lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
-    lifecycle.panels.retireRendererForSessionForTesting.mockReset();
-    lifecycle.coordinatedBridge.request.mockReset();
-    lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
-    lifecycle.coordinator.createBridge.mockReset().mockReturnValue(lifecycle.coordinatedBridge);
-    vi.mocked(registerRInteractiveCommands).mockClear();
-    vi.mocked(registerNativeViews).mockClear();
-    await activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
   });
 
   afterEach(async () => {
-    lifecycle.bridge.shutdown.mockResolvedValue(undefined);
-    lifecycle.coordinator.shutdown.mockResolvedValue(undefined);
-    lifecycle.pickleWorkers.shutdown.mockResolvedValue(undefined);
+    lifecycle.shutdown.mockResolvedValue(undefined);
     await deactivate();
     vi.restoreAllMocks();
-    if (originalExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
-    else process.env.OPEN_WRANGLER_EXTENSION_TESTS = originalExtensionTests;
   });
 
-  it("waits for coordinator shutdown before starting bridge shutdown", async () => {
-    const coordinatorGate = deferred<void>();
-    lifecycle.coordinator.shutdown.mockReturnValue(coordinatorGate.promise);
-
-    const deactivation = deactivate();
-    expect(lifecycle.pickleWorkers.shutdown).toHaveBeenCalledOnce();
-    expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce());
-
-    coordinatorGate.resolve();
-    await expect(deactivation).resolves.toBeUndefined();
-    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
-  });
-
-  it("passes the registered active-R provider to the native Operations view", () => {
-    expect(registerRInteractiveCommands).toHaveBeenCalledOnce();
-    expect(registerRInteractiveCommands).toHaveBeenCalledWith(expect.anything(), lifecycle.coordinator);
-    expect(registerNativeViews).toHaveBeenCalledOnce();
-    expect(registerNativeViews).toHaveBeenCalledWith(
-      expect.anything(),
-      lifecycle.coordinator,
-      lifecycle.pythonVariables,
-      lifecycle.rVariables
+  it("starts formatter-sensitive activation gates before the first yield", async () => {
+    const contextGate = deferred<void>();
+    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
+      () => contextGate.promise as unknown as Thenable<undefined>
     );
-    expect(lifecycle.rVariables.startAutomaticDiscovery).toHaveBeenCalledOnce();
+
+    const activation = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+    expect(lifecycle.extensionApiForCurrentEnvironment).not.toHaveBeenCalled();
+    contextGate.resolve();
+    await activation;
+    expect(lifecycle.extensionApiForCurrentEnvironment).toHaveBeenCalledOnce();
   });
 
-  it("waits for active pickle workers before starting coordinator or bridge shutdown", async () => {
-    const workerGate = deferred<void>();
-    lifecycle.pickleWorkers.shutdown.mockReturnValue(workerGate.promise);
+  it("fails real synchronous activation work that exceeds the dependency-free elapsed budget", async () => {
+    vi.spyOn(performance, "now")
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_000 + MAX_SYNCHRONOUS_ACTIVATION_MS + 1);
 
-    const deactivation = deactivate();
-    expect(lifecycle.pickleWorkers.shutdown).toHaveBeenCalledOnce();
-    expect(lifecycle.coordinator.shutdown).not.toHaveBeenCalled();
-    expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
+    await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toThrow(
+      `synchronous activation exceeded its ${MAX_SYNCHRONOUS_ACTIVATION_MS} ms dependency-free budget`
+    );
 
-    workerGate.resolve();
-    await expect(deactivation).resolves.toBeUndefined();
-    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
-    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.extensionApiForCurrentEnvironment).not.toHaveBeenCalled();
   });
 
-  it("waits for active R cleanup before starting coordinator or bridge shutdown", async () => {
-    const rGate = deferred<void>();
-    lifecycle.rVariables.shutdown.mockReturnValue(rGate.promise);
+  it("publishes the exact editor-title context before completing activation", async () => {
+    (vscode.env as { appName: string }).appName = "Cursor Nightly";
+    const executeCommand = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
 
-    const deactivation = deactivate();
-    await Promise.resolve();
-    expect(lifecycle.rVariables.shutdown).toHaveBeenCalledOnce();
-    expect(lifecycle.coordinator.shutdown).not.toHaveBeenCalled();
-    expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
+    await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
 
-    rGate.resolve();
-    await expect(deactivation).resolves.toBeUndefined();
-    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
-    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.forceNotebookEditorTitleAction", true);
   });
 
-  it("preserves a sole coordinator failure after still shutting down the bridge", async () => {
-    const coordinatorFailure = new Error("coordinator drain failed");
-    lifecycle.coordinator.shutdown.mockRejectedValue(coordinatorFailure);
+  it("shuts down an already-started visible-notebook owner when the title context fails", async () => {
+    const failure = new Error("setContext unavailable");
+    const visibleNotebookOwnerStarted = vi.fn();
+    const visibleNotebookOwnerDisposed = vi.fn();
+    lifecycle.startBeforeFirstYield.mockImplementationOnce(visibleNotebookOwnerStarted);
+    lifecycle.shutdown.mockImplementationOnce(async () => visibleNotebookOwnerDisposed());
+    vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(failure);
 
-    await expect(deactivate()).rejects.toBe(coordinatorFailure);
-    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+    await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toBe(failure);
+
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    expect(visibleNotebookOwnerStarted).toHaveBeenCalledOnce();
+    expect(visibleNotebookOwnerDisposed).toHaveBeenCalledOnce();
+    expect(lifecycle.dispose).not.toHaveBeenCalled();
+    await deactivate();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
   });
 
-  it("preserves a sole bridge shutdown failure", async () => {
-    const bridgeFailure = new Error("runtime exit was not confirmed");
-    lifecycle.bridge.shutdown.mockRejectedValue(bridgeFailure);
+  it("preserves activation and shutdown failures together", async () => {
+    const activationFailure = new Error("setContext unavailable");
+    const firstShutdownFailure = new Error("owner cleanup failed");
+    const secondShutdownFailure = new Error("output cleanup failed");
+    vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(activationFailure);
+    lifecycle.shutdown.mockRejectedValueOnce(
+      new AggregateError([firstShutdownFailure, secondShutdownFailure], "ordered owner cleanup failures")
+    );
 
-    await expect(deactivate()).rejects.toBe(bridgeFailure);
-  });
-
-  it("aggregates worker, coordinator, and bridge failures in shutdown order", async () => {
-    const workerFailure = new Error("pickle worker exit was not confirmed");
-    const coordinatorFailure = new Error("coordinator drain failed");
-    const bridgeFailure = new Error("runtime exit was not confirmed");
-    lifecycle.pickleWorkers.shutdown.mockRejectedValue(workerFailure);
-    lifecycle.coordinator.shutdown.mockRejectedValue(coordinatorFailure);
-    lifecycle.bridge.shutdown.mockRejectedValue(bridgeFailure);
-
-    const error = await deactivate().catch((reason: unknown) => reason);
+    const error = await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext).catch(
+      (reason: unknown) => reason
+    );
 
     expect(error).toBeInstanceOf(AggregateError);
-    expect((error as AggregateError).errors).toEqual([workerFailure, coordinatorFailure, bridgeFailure]);
-    expect((error as Error).message).toBe(
-      "Open Wrangler extension deactivation encountered multiple shutdown failures."
+    expect((error as AggregateError).errors).toEqual([activationFailure, firstShutdownFailure, secondShutdownFailure]);
+  });
+
+  it("returns only the owner-provided environment-gated API", async () => {
+    const api = { testing: { sentinel: true } };
+    lifecycle.extensionApiForCurrentEnvironment.mockResolvedValue(api);
+
+    await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).resolves.toBe(api);
+  });
+
+  it("does not publish a late activation after shutdown begins", async () => {
+    const contextGate = deferred<void>();
+    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
+      () => contextGate.promise as unknown as Thenable<undefined>
     );
+    const activation = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+
+    const shutdown = deactivate();
+    contextGate.resolve();
+
+    await expect(activation).rejects.toThrow("activation was cancelled");
+    await shutdown;
+    expect(lifecycle.extensionApiForCurrentEnvironment).not.toHaveBeenCalled();
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
   });
 
-  it("exposes exact bridge shutdown only through the environment-gated test API", async () => {
-    await deactivate();
-    lifecycle.bridge.shutdown.mockReset().mockResolvedValue(undefined);
-    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-
-    const api = await activate({
-      subscriptions: [],
-      workspaceState: {}
-    } as unknown as vscode.ExtensionContext);
-    await expect(api?.testing?.shutdownRuntimeBridgeForTesting()).resolves.toBeUndefined();
-
-    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
-  });
-
-  it("exposes coordinator-owned queued view cancellation only through the environment-gated test API", async () => {
-    await deactivate();
-    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-
-    const api = await activate({
-      subscriptions: [],
-      workspaceState: {}
-    } as unknown as vscode.ExtensionContext);
-    api?.testing?.cancelViewRequests("session-a", ["profile-a"]);
-
-    expect(lifecycle.coordinatedBridge.cancelViewRequests).toHaveBeenCalledWith("session-a", ["profile-a"]);
-  });
-
-  it("exposes exact renderer retirement only through the environment-gated test API", async () => {
-    await deactivate();
-    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-    lifecycle.panels.retireRendererForSessionForTesting.mockReturnValue(true);
-
-    const api = await activate({
-      subscriptions: [],
-      workspaceState: {}
-    } as unknown as vscode.ExtensionContext);
-
-    expect(api?.testing?.retirePanelRenderer("session-a")).toBe(true);
-    expect(lifecycle.panels.retireRendererForSessionForTesting).toHaveBeenCalledOnce();
-    expect(lifecycle.panels.retireRendererForSessionForTesting).toHaveBeenCalledWith("session-a");
-  });
-
-  it("exposes exact scheduler and notebook-result diagnostics only through the environment-gated test API", async () => {
-    await deactivate();
-    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-    lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReturnValue({
-      sessionId: "session-a",
-      state: "active",
-      lane: "background",
-      requestKind: "getSummary",
-      viewRequestId: "profile-a"
-    });
-    lifecycle.notebookCellResults.diagnosticsForTesting.mockReturnValue({
-      stage: "unseen",
-      statusItem: "not-requested",
-      reason: undefined
-    } as never);
-    lifecycle.pythonVariables.diagnosticsForTesting.mockReturnValue({
-      invocation: 2,
-      stage: "selecting-kernel",
-      lastActiveStage: "selecting-kernel",
-      stages: ["dispatching-cell", "waiting-for-cell-publication", "selecting-kernel"]
-    });
-
-    const api = await activate({
-      subscriptions: [],
-      workspaceState: {}
-    } as unknown as vscode.ExtensionContext);
-
-    expect(api?.testing?.requestExecutionCheckpoint("session-a", "getSummary", "profile-a")).toEqual({
-      sessionId: "session-a",
-      state: "active",
-      lane: "background",
-      requestKind: "getSummary",
-      viewRequestId: "profile-a"
-    });
-    expect(lifecycle.coordinator.testingRequestExecutionCheckpoint).toHaveBeenCalledWith(
-      "session-a",
-      "getSummary",
-      "profile-a"
+  it("rejects a concurrent activation instead of overwriting its unfinished owner", async () => {
+    const contextGate = deferred<void>();
+    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
+      () => contextGate.promise as unknown as Thenable<undefined>
     );
-    expect(api?.testing?.notebookCellResultDiagnostics()).toEqual({
-      stage: "unseen",
-      statusItem: "not-requested",
-      reason: undefined
-    });
-    expect(lifecycle.notebookCellResults.diagnosticsForTesting).toHaveBeenCalledOnce();
-    expect(api?.testing?.pythonInteractiveDiagnostics()).toEqual({
-      invocation: 2,
-      stage: "selecting-kernel",
-      lastActiveStage: "selecting-kernel",
-      stages: ["dispatching-cell", "waiting-for-cell-publication", "selecting-kernel"]
-    });
-    expect(lifecycle.pythonVariables.diagnosticsForTesting).toHaveBeenCalledOnce();
+    const first = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+
+    await expect(activate({ subscriptions: [] } as unknown as vscode.ExtensionContext)).rejects.toThrow(
+      "already active or activating"
+    );
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+
+    contextGate.resolve();
+    await first;
   });
 
-  it("exposes only a decline path for dependency revalidation through the environment-gated test API", async () => {
+  it("waits for unfinished shutdown before reactivation constructs another owner", async () => {
+    vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
+    await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+    const shutdownGate = deferred<void>();
+    lifecycle.shutdown.mockReturnValueOnce(shutdownGate.promise);
+
+    const shutdown = deactivate();
+    const reactivation = activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+    await Promise.resolve();
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledOnce();
+
+    shutdownGate.resolve();
+    await shutdown;
+    await reactivation;
+    expect(lifecycle.startBeforeFirstYield).toHaveBeenCalledTimes(2);
+  });
+
+  it("delegates terminal cleanup exactly once", async () => {
+    await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+
     await deactivate();
-    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    await deactivate();
 
-    const api = await activate({
-      subscriptions: [],
-      workspaceState: {}
-    } as unknown as vscode.ExtensionContext);
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+  });
 
-    await expect(api?.testing?.declineRuntimeDependencyRevalidation()).resolves.toBe(false);
-    expect(lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting).toHaveBeenCalledOnce();
+  it("shares one ordered failure across concurrent deactivate calls", async () => {
+    const shutdown = deferred<void>();
+    const firstFailure = new Error("notebook cleanup failed");
+    const secondFailure = new Error("R cleanup failed");
+    const cleanupFailure = new AggregateError([firstFailure, secondFailure], "ordered cleanup failures");
+    await activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
+    lifecycle.shutdown.mockReturnValueOnce(shutdown.promise);
 
-    const testingApi = api?.testing as unknown as Record<string, unknown>;
-    expect(testingApi.authorizeRuntimeDependencyRevalidation).toBeUndefined();
-    expect(testingApi.runtimeDependencyRevalidationToken).toBeUndefined();
-    expect(testingApi.runtimeDependencyRevalidationTarget).toBeUndefined();
-    expect(testingApi.clearRuntimeDependencyMarker).toBeUndefined();
+    const first = deactivate();
+    const second = deactivate();
+
+    expect(second).toBe(first);
+    expect(lifecycle.shutdown).toHaveBeenCalledOnce();
+    shutdown.reject(cleanupFailure);
+    const failures = await Promise.all([
+      first.catch((error: unknown) => error),
+      second.catch((error: unknown) => error)
+    ]);
+    expect(failures).toEqual([cleanupFailure, cleanupFailure]);
   });
 
   it.each([
@@ -352,72 +201,14 @@ describe("extension deactivation", () => {
   ])("classifies the editor host name %j without broad fork guessing", (appName, expected) => {
     expect(isCursorAppName(appName)).toBe(expected);
   });
-
-  it.each([
-    ["Cursor", true],
-    ["Visual Studio Code", false]
-  ])("publishes the immutable editor-title override for %s", async (appName, expected) => {
-    await deactivate();
-    (vscode.env as { appName: string }).appName = appName;
-    const executeCommand = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
-
-    await activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
-
-    expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.forceNotebookEditorTitleAction", expected);
-  });
-
-  it("observes first-cell execution while waiting for the editor-title override", async () => {
-    await deactivate();
-    lifecycle.coordinator.createBridge.mockClear();
-    lifecycle.notebookCellResults.start.mockClear();
-    vi.mocked(NotebookCellResultTracker).mockClear();
-    vi.mocked(NotebookPreviewCoordinator).mockClear();
-    vi.mocked(registerNotebookCellResultAction).mockClear();
-    const contextGate = deferred<void>();
-    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
-      () => contextGate.promise as unknown as Thenable<undefined>
-    );
-
-    const activation = activate({
-      subscriptions: [],
-      workspaceState: {}
-    } as unknown as vscode.ExtensionContext);
-    await Promise.resolve();
-    expect(NotebookCellResultTracker).toHaveBeenCalledOnce();
-    expect(NotebookPreviewCoordinator).toHaveBeenCalledOnce();
-    expect(lifecycle.notebookCellResults.start).toHaveBeenCalledOnce();
-    expect(registerNotebookCellResultAction).not.toHaveBeenCalled();
-    expect(lifecycle.coordinator.createBridge).not.toHaveBeenCalled();
-
-    contextGate.resolve(undefined);
-    await activation;
-    expect(lifecycle.coordinator.createBridge).toHaveBeenCalledOnce();
-    expect(registerNotebookCellResultAction).toHaveBeenCalledWith(
-      expect.anything(),
-      lifecycle.coordinator,
-      lifecycle.notebookCellResults
-    );
-  });
-
-  it("fails activation before services register when the editor-title override cannot be published", async () => {
-    await deactivate();
-    lifecycle.coordinator.createBridge.mockClear();
-    const failure = new Error("setContext unavailable");
-    vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(failure);
-
-    await expect(
-      activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext)
-    ).rejects.toBe(failure);
-    expect(lifecycle.coordinator.createBridge).not.toHaveBeenCalled();
-    expect(lifecycle.notebookPreviews.dispose).toHaveBeenCalledOnce();
-    expect(lifecycle.notebookCellResults.dispose).toHaveBeenCalledOnce();
-  });
 });
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void; reject(error: unknown): void } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
     resolve = innerResolve;
+    reject = innerReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }

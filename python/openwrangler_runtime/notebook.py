@@ -114,6 +114,8 @@ def build_payload(
             "filterModel": filter_model,
             "steps": [],
         }
+        if engine.name == "pandas":
+            metadata["rowAxis"] = engine.row_axis(frame)
         payload = {
             "mimeVersion": 2,
             "metadata": metadata,

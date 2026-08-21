@@ -120,7 +120,9 @@ describe("NumericHistogram", () => {
   });
 
   it("keeps the active status in the existing single-line caption space", () => {
-    const stylesheet = readFileSync(resolve("src/webviews/styles.css"), "utf8");
+    const stylesheet = ["grid.css", "grid-insights.css"]
+      .map((file) => readFileSync(resolve("src/webviews/styles", file), "utf8"))
+      .join("\n");
     expect(stylesheet).toMatch(
       /\.miniChartCaption\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/u
     );

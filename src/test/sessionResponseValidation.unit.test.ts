@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { OpenWranglerBridge } from "../extension/dataBridge";
+import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
+import { SessionRuntimeCleanup } from "../extension/sessionRuntimeCleanup";
+import { SessionRuntimeEstablisher } from "../extension/sessionRuntimeEstablisher";
+import { SessionRuntimeStateRestorer } from "../extension/sessionRuntimeStateRestorer";
 import type {
   ColumnSchema,
   DataDiff,
@@ -241,6 +246,12 @@ describe("session response validation", () => {
     };
     const response: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
     expect(sessionOpenedResponseMismatch(request, response, true)).toBeUndefined();
+    expect(
+      sessionOpenedResponseMismatch(request, {
+        ...response,
+        metadata: { ...metadata, source: { ...metadata.source, label: "other" } }
+      })
+    ).toBe("metadata reported a different immutable source");
 
     const cases: Array<[string, SessionOpenedResponse]> = [
       [
@@ -265,6 +276,88 @@ describe("session response validation", () => {
     for (const [expected, candidate] of cases) {
       expect(sessionOpenedResponseMismatch(request, candidate, true)).toBe(expected);
     }
+  });
+
+  it("publishes a JSON-roundtripped Parquet open when undefined optional source fields are omitted", async () => {
+    const request: OpenSessionRequest = {
+      kind: "openSession",
+      source: {
+        kind: "file",
+        label: "sales.parquet",
+        path: "/workspace/sales.parquet",
+        uri: "file:///workspace/sales.parquet",
+        variableName: undefined,
+        importOptions: undefined
+      },
+      backend: "polars",
+      mode: "editing",
+      pageSize: 10,
+      columnOffset: 0,
+      columnLimit: 2
+    };
+    const runtimeResponse = JSON.parse(
+      JSON.stringify({
+        kind: "sessionOpened",
+        metadata: { ...metadata, revision: 0, source: request.source },
+        page: { ...page, limit: 10 },
+        summaries: []
+      })
+    ) as SessionOpenedResponse;
+    const delegate: OpenWranglerBridge = { request: vi.fn(async () => runtimeResponse) };
+    const result = await new SessionRuntimeEstablisher(
+      new SessionRuntimeCleanup(() => true),
+      new SessionRuntimeStateRestorer(),
+      new SessionPersistenceStore()
+    ).establish(delegate, request, undefined, undefined, {
+      isCoordinatorAvailable: () => true,
+      executeSessionRequest: vi.fn(async () => {
+        throw new Error("The established session should not dispatch another request.");
+      })
+    });
+
+    expect(result).toMatchObject({
+      established: true,
+      response: { kind: "sessionOpened", metadata: { source: request.source } },
+      session: { openRequest: { source: request.source } }
+    });
+    expect(delegate.request).toHaveBeenCalledOnce();
+  });
+
+  it("normalizes undefined nested import options without weakening present source values", () => {
+    const request: OpenSessionRequest = {
+      kind: "openSession",
+      source: {
+        kind: "file",
+        label: "sales.csv",
+        path: "/workspace/sales.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: undefined, hasHeader: undefined }
+      },
+      backend: "polars",
+      mode: "editing",
+      pageSize: 10,
+      columnOffset: 0,
+      columnLimit: 2
+    };
+    const response: SessionOpenedResponse = {
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        source: JSON.parse(JSON.stringify(request.source)) as SessionMetadata["source"]
+      },
+      page,
+      summaries: []
+    };
+
+    expect(sessionOpenedResponseMismatch(request, response, true)).toBeUndefined();
+    expect(
+      sessionOpenedResponseMismatch(request, {
+        ...response,
+        metadata: {
+          ...response.metadata,
+          source: { ...response.metadata.source, importOptions: { delimiter: ";", encoding: "utf-8" } }
+        }
+      })
+    ).toBe("metadata reported a different immutable source");
   });
 });
 

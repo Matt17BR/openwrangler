@@ -1,0 +1,359 @@
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.webviewErrorSurface {
+  box-sizing: border-box;
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 12px;
+  min-height: 100vh;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.webviewErrorSurface h1,
+.webviewErrorSurface p {
+  margin: 0;
+}
+
+.webviewErrorSurface p {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+
+.webviewErrorIcon {
+  color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-editorWarning-foreground));
+  font-size: 28px;
+}
+
+.webviewErrorReloadButton {
+  min-height: 30px;
+}
+
+.appWorkspace {
+  display: contents;
+}
+
+.app-error {
+  align-items: flex-start;
+  padding: 24px;
+}
+
+.errorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.importOptionsStatus {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.sessionModeChangeStatus {
+  background: var(--vscode-editorWidget-background);
+  border-top: 1px solid var(--vscode-panel-border);
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+}
+
+.toolbarIdentity {
+  min-width: 15ch;
+  display: grid;
+  gap: 2px;
+}
+
+.toolbarIdentity strong,
+.toolbarIdentity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbarIdentity strong {
+  font-size: 13px;
+}
+
+.toolbarIdentity span {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.modeBadge {
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  text-transform: uppercase;
+}
+
+.backendBadge {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  text-transform: uppercase;
+}
+
+.backendButton {
+  align-items: center;
+  background: transparent;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.backendButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-foreground);
+}
+
+.backendButton .codicon {
+  font-size: 10px;
+}
+
+.sessionBadge {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.orderingHelp,
+.sessionModeHelp {
+  position: relative;
+}
+
+.sessionModeHelp {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.orderingBadge,
+.sessionModeBadge {
+  align-items: center;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 4px;
+  list-style: none;
+}
+
+.orderingBadge::-webkit-details-marker,
+.sessionModeBadge::-webkit-details-marker {
+  display: none;
+}
+
+.orderingBadge:focus-visible,
+.sessionModeBadge:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.orderingBadge .codicon,
+.sessionModeBadge .codicon {
+  font-size: 11px;
+}
+
+.orderingHelpText,
+.sessionModeHelpText {
+  background: var(--vscode-editorHoverWidget-background);
+  border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  position: absolute;
+  right: 0;
+  text-transform: none;
+  top: calc(100% + 6px);
+  white-space: normal;
+  width: max-content;
+  z-index: 30;
+}
+
+.orderingHelpText {
+  max-width: min(320px, calc(100vw - 32px));
+}
+
+.sessionModeHelpText {
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.toolbarActions > button,
+.toolbarActions > span,
+.toolbarActions > details {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.toolbarButton {
+  align-items: center;
+  color: var(--vscode-foreground);
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border);
+  display: inline-flex;
+  gap: 5px;
+}
+
+.toolbarButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.toolbarPlan {
+  align-items: center;
+  border-left: 1px solid var(--vscode-panel-border);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 8px;
+}
+
+.toolbarPlanStatus {
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  font-size: 12px;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.cleaningActions,
+.diffStats {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.draftReview {
+  align-items: center;
+  background: var(--vscode-diffEditor-unchangedRegionBackground, var(--vscode-editorGroupHeader-tabsBackground));
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-height: 36px;
+  padding: 5px 10px;
+}
+
+.draftReviewHeading {
+  align-items: baseline;
+  display: flex;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.draftReviewHeading > .codicon {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.draftReviewLabel {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.draftReviewDiff {
+  flex: 1 1 280px;
+}
+
+.draftReview > .cleaningActions {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.draftReviewWarnings {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.draftReviewWarnings > span {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  font-size: 11px;
+  margin: 0;
+  padding: 4px 7px;
+}
+
+.inspectionBadge {
+  background: var(--vscode-badge-background, var(--vscode-button-background));
+  border: 1px solid var(--vscode-textLink-foreground, var(--vscode-focusBorder));
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground, var(--vscode-button-foreground));
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  text-transform: uppercase;
+}
+
+.inspectionPanel {
+  background: var(--vscode-diffEditor-unchangedRegionBackground, var(--vscode-panel-background));
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  max-height: min(24vh, 210px);
+  overflow: auto;
+  padding: 8px 12px;
+}
+
+.inspectionPanel > header {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.inspectionPanel > header > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.inspectionPanel > header span,
+.inspectionPanel > [role="status"] {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
