@@ -367,6 +367,57 @@ describe("DataGrid clipboard interactions", () => {
     expect(writeText).toHaveBeenCalledTimes(2);
   });
 
+  it("dismisses a pre-restore range menu before its action can copy the replacement selection", async () => {
+    const rendered = renderGrid("view-a", page, metadata, 0);
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 51);
+    openClipboardMenu(milan, 52);
+
+    rendered.rerender(grid("view-a", page, metadata, 1));
+    expect(screen.getByText("1 cell selected, row 1, column 1")).toBeTruthy();
+    const staleMenu = screen.queryByRole("menu", { name: "Cell and range actions for city" });
+    if (staleMenu) {
+      fireEvent.click(within(staleMenu).getByRole("menuitem", { name: "Copy selection" }));
+      await act(async () => Promise.resolve());
+    }
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByText(/Copied|Could not write/u)).toBeNull();
+  });
+
+  it.each(["success", "fallback"] as const)(
+    "makes a delayed menu copy %s inert after a same-view restore",
+    async (outcome) => {
+      const delayedWrite = deferred<void>();
+      writeText.mockImplementationOnce(() => delayedWrite.promise);
+      const execCommand = vi.fn(() => true);
+      Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+      const rendered = renderGrid("view-a", page, metadata, 0);
+      const milan = screen.getByRole("cell", { name: "Milan" });
+      const emptySales = screen.getByRole("cell", { name: "" });
+      pointerDrag(milan, emptySales, 53);
+      openClipboardMenu(milan, 54);
+      fireEvent.click(
+        within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+          name: "Copy selection"
+        })
+      );
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+      rendered.rerender(grid("view-a", page, metadata, 1));
+      if (outcome === "success") await act(async () => delayedWrite.resolve());
+      else await act(async () => delayedWrite.reject(new Error("stale menu adapter denial")));
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(screen.queryByText(/Copied 2 by 2|Could not write/u)).toBeNull();
+      expect(document.activeElement).not.toBe(emptySales);
+      expect(screen.getByText("1 cell selected, row 1, column 1")).toBeTruthy();
+    }
+  );
+
   it("makes a toolbar copy inert when its exact view is replaced before fallback", async () => {
     const delayedWrite = deferred<void>();
     writeText.mockImplementationOnce(() => delayedWrite.promise);
@@ -843,11 +894,11 @@ function dispatchPage(
   });
 }
 
-function renderGrid(viewContextId = "view-a", activePage = page, activeMetadata = metadata) {
-  return render(grid(viewContextId, activePage, activeMetadata));
+function renderGrid(viewContextId = "view-a", activePage = page, activeMetadata = metadata, restoreVersion = 0) {
+  return render(grid(viewContextId, activePage, activeMetadata, restoreVersion));
 }
 
-function grid(viewContextId: string, activePage = page, activeMetadata = metadata) {
+function grid(viewContextId: string, activePage = page, activeMetadata = metadata, restoreVersion = 0) {
   return (
     <DataGrid
       metadata={activeMetadata}
@@ -857,6 +908,7 @@ function grid(viewContextId: string, activePage = page, activeMetadata = metadat
       defaultColumnWidth={190}
       insightsOnOpen={false}
       viewContextId={viewContextId}
+      viewStateRestoreVersion={restoreVersion}
       onPage={() => undefined}
       onSortColumn={() => undefined}
       onOpenFilter={() => undefined}

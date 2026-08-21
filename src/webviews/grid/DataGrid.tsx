@@ -334,6 +334,7 @@ export function DataGrid({
     viewContextId: logicalViewContext
   });
   const cellFilterMenuTarget = cellActionMenu.target;
+  const dismissCellActionMenu = cellActionMenu.dismiss;
 
   useLayoutEffect(() => {
     viewStateRef.current = viewState;
@@ -488,6 +489,7 @@ export function DataGrid({
     focusRequested.current = false;
     pointerSelectionFocusRequest.current = undefined;
     preserveGridFocusAfterScroll.current = false;
+    dismissCellActionMenu();
     finishPointerSelection(undefined, false);
     setFocusedCell({ row, column });
     resetGridClipboardSelection({ row, column });
@@ -502,7 +504,13 @@ export function DataGrid({
       height: scroller.clientHeight
     });
     appliedViewStateRestoreVersion.current = viewStateRestoreVersion;
-  }, [finishPointerSelection, resetGridClipboardSelection, viewStateRestoreVersion, writeProgrammaticViewport]);
+  }, [
+    dismissCellActionMenu,
+    finishPointerSelection,
+    resetGridClipboardSelection,
+    viewStateRestoreVersion,
+    writeProgrammaticViewport
+  ]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
