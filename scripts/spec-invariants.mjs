@@ -21,6 +21,8 @@ const CLEANING_HISTORY_PRODUCTION_AUTHORITY_MAX_BYTES = 32 * 1024;
 const CLEANING_HISTORY_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const CLEANING_HISTORY_SECTION_MAX_BYTES = 128 * 1024;
 const CLEANING_HISTORY_INLINE_TOKEN_MAX = 4096;
+const CLEANING_HISTORY_WORD_TOKEN_MAX = 4096;
+const CLEANING_HISTORY_PREDICATE_TOKEN_MAX = 512;
 const CLEANING_HISTORY_JSON_MAX_DEPTH = 8;
 const CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES = 64;
 const CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES = 128;
@@ -1000,6 +1002,7 @@ function assertExclusiveClaimBlock(document, path, heading, marker, claims) {
 const cleaningHistoryClauseConnectors = new Set([
   "and",
   "or",
+  "plus",
   "but",
   "however",
   "whereas",
@@ -1009,6 +1012,7 @@ const cleaningHistoryClauseConnectors = new Set([
   "yet"
 ]);
 const cleaningHistoryAnaphors = new Set([
+  "another",
   "all",
   "both",
   "each",
@@ -1032,6 +1036,8 @@ const cleaningHistoryAnaphors = new Set([
 ]);
 const cleaningHistoryLatestWords = new Set(["latest", "newest", "last", "final"]);
 const cleaningHistoryMultiWords = new Set([
+  "additional",
+  "another",
   "both",
   "couple",
   "dozen",
@@ -1074,13 +1080,17 @@ const cleaningHistoryIntrinsicNegativeWords = new Set([
   "unmodifiable",
   "unsupported"
 ]);
+const cleaningHistoryActorWords = new Set(["anyone", "people", "person", "someone", "user", "users"]);
 const cleaningHistoryGrammarWords = new Set([
   "a",
   "about",
+  "additional",
   "after",
+  "already",
   "all",
   "an",
   "and",
+  "another",
   "any",
   "apart",
   "applied",
@@ -1159,6 +1169,7 @@ const cleaningHistoryGrammarWords = new Set([
   "others",
   "part",
   "per",
+  "plus",
   "preceding",
   "previous",
   "prior",
@@ -1210,22 +1221,51 @@ const cleaningHistoryGrammarWords = new Set([
   ...cleaningHistoryMultiWords
 ]);
 
-function cleaningHistoryTokens(value) {
-  return (
-    value
-      .replace(/\bcan't\b/giu, "cannot")
-      .replace(/\b(are|could|did|do|does|had|has|have|is|might|must|should|was|were|will|would)n't\b/giu, "$1 not")
-      .replace(/([\p{L}])-([\p{L}])/gu, "$1$2")
-      .toLowerCase()
-      .match(/[\p{L}\p{N}']+|[:,]/gu) ?? []
-  );
+function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBudget) {
+  const normalized = value
+    .replace(/\bcan't\b/giu, "cannot")
+    .replace(/\b(are|could|did|do|does|had|has|have|is|might|must|should|was|were|will|would)n't\b/giu, "$1 not")
+    .replace(/\bcleaning-(plan|steps?|operations?|history|workflow)\b/giu, "cleaning $1")
+    .replace(/([\p{L}])-([\p{L}])/gu, "$1$2")
+    .toLowerCase();
+  const tokens = [];
+  let predicateCount = 0;
+  for (const match of normalized.matchAll(/[\p{L}\p{N}']+|[:,]/gu)) {
+    if (tokens.length >= remainingTokenBudget) {
+      throw new Error(
+        `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_WORD_TOKEN_MAX}-word-token work limit.`
+      );
+    }
+    const token = match[0];
+    if (cleaningHistoryPredicateKind(token) !== undefined || ["order", "ordering", "sequence"].includes(token)) {
+      if (predicateCount >= remainingPredicateBudget) {
+        throw new Error(
+          `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_PREDICATE_TOKEN_MAX}-predicate-token work limit.`
+        );
+      }
+      predicateCount += 1;
+    }
+    tokens.push(token);
+  }
+  return { predicateCount, tokens };
 }
 
 function cleaningHistoryStatements(rendered) {
-  return rendered
-    .split(/[.!?;\n]+/gu)
-    .map((value) => cleaningHistoryTokens(value))
-    .filter((tokens) => tokens.length > 0);
+  const statements = [];
+  let predicateCount = 0;
+  let tokenCount = 0;
+  for (const value of rendered.split(/[.!?;\n]+/gu)) {
+    const result = cleaningHistoryTokens(
+      value,
+      CLEANING_HISTORY_WORD_TOKEN_MAX - tokenCount,
+      CLEANING_HISTORY_PREDICATE_TOKEN_MAX - predicateCount
+    );
+    const { tokens } = result;
+    predicateCount += result.predicateCount;
+    tokenCount += tokens.length;
+    if (tokens.length > 0) statements.push(tokens);
+  }
+  return statements;
 }
 
 function cleaningHistorySegments(tokens) {
@@ -1255,7 +1295,15 @@ function cleaningHistorySegments(tokens) {
 function isCleaningHistoryNoun(tokens, index) {
   const token = tokens[index];
   const nearby = tokens.slice(Math.max(0, index - 4), index + 1);
-  const qualified = nearby.some((candidate) => ["applied", "cleaning", "committed"].includes(candidate));
+  const following = tokens.slice(index + 1, index + 4);
+  const followingQualifier = following.findIndex((candidate) =>
+    ["applied", "cleaning", "committed"].includes(candidate)
+  );
+  const postQualified =
+    followingQualifier >= 0 &&
+    following.slice(0, followingQualifier).every((candidate) => ["already", "once", "previously"].includes(candidate));
+  const qualified =
+    nearby.some((candidate) => ["applied", "cleaning", "committed"].includes(candidate)) || postQualified;
   if (token === "transformation" || token === "transformations") return true;
   if (token === "step" || token === "steps") return qualified;
   if (token === "operation" || token === "operations") return qualified;
@@ -1292,7 +1340,9 @@ function cleaningHistoryPredicateKind(token) {
     return "edit";
   }
   if (
-    /^(?:delete|deletes|deleted|deleting|deletable|undeletable|nondeletable|erase|erases|erased|erasing)$/u.test(token)
+    /^(?:delete|deletes|deleted|deleting|deletable|undeletable|nondeletable|erase|erases|erased|erasing|remove|removes|removed|removing)$/u.test(
+      token
+    )
   ) {
     return "delete";
   }
@@ -1318,7 +1368,7 @@ function cleaningHistoryPredicateCandidate(tokens, index) {
   const kind = cleaningHistoryPredicateKind(tokens[index]);
   if (kind !== undefined) return kind;
   if (
-    tokens[index] === "ordering" &&
+    ["order", "ordering"].includes(tokens[index]) &&
     tokens.some((token) => /^(?:change|changed|changes|changing|mutable|reorder|reordered|reordering)$/u.test(token))
   ) {
     return "reorder";
@@ -1350,6 +1400,18 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
       !(["step", "steps"].includes(token) && before.some((candidate) => ["this", "that"].includes(candidate)))
   );
   const personalActorOnly = unrelatedBefore < 0 && before.some((token) => ["i", "we", "you"].includes(token));
+  const actorFirst =
+    before.some((token) => cleaningHistoryActorWords.has(token) || ["i", "we", "you"].includes(token)) &&
+    before.every(
+      (token) =>
+        isCleaningHistoryGrammarToken(token) ||
+        cleaningHistoryActorWords.has(token) ||
+        ["i", "we", "you"].includes(token)
+    );
+  const directCleaningObject =
+    cleaningAfter >= 0 &&
+    after.slice(0, cleaningAfter).every((token) => isCleaningHistoryGrammarToken(token)) &&
+    actorFirst;
   const statusModifier = ["readonly", "unable", "unavailable", "unsupported"].includes(tokens[predicateIndex]);
   if (statusModifier) {
     const unrelatedAfter = after.findIndex(
@@ -1361,6 +1423,9 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
   }
   if (cleaningBefore >= 0 && (unrelatedBefore < 0 || unrelatedBefore > cleaningBefore)) {
     return { owner: "cleaning", scope: cleaningHistoryScope(before), explicit: true };
+  }
+  if (directCleaningObject) {
+    return { owner: "cleaning", scope: cleaningHistoryScope(after), explicit: true };
   }
   if (unrelatedBefore >= 0) return { owner: "unrelated", scope: "unknown", explicit: true };
   if (cleaningAfter >= 0 && (before.length === 0 || personalActorOnly)) {
@@ -1392,18 +1457,16 @@ function cleaningHistorySemanticPredicateIndex(kind, tokens, initialIndex) {
 
 function cleaningHistoryPredicatePolarity(record) {
   const before = record.segmentTokens.slice(0, record.predicateIndex + 1);
+  const clause = record.clauseTokens;
   let negatives = before.filter((token) => ["cannot", "never", "not"].includes(token)).length;
   negatives += before.filter((token) => cleaningHistoryIntrinsicNegativeWords.has(token)).length;
   const noOtherLatest =
-    record.statementTokens.includes("no") &&
-    record.statementTokens.some((token) => ["other", "others"].includes(token)) &&
-    cleaningHistoryScope(record.statementTokens) === "latest";
+    clause.includes("no") &&
+    clause.some((token) => ["other", "others"].includes(token)) &&
+    cleaningHistoryScope(clause) === "latest";
   if (!noOtherLatest && before.some((token) => ["no", "none", "neither"].includes(token))) negatives += 1;
-  const exceptionIndex = cleaningHistoryExceptionIndex(record.statementTokens);
-  const targetTokens = record.statementTokens.slice(
-    record.statementPredicateIndex + 1,
-    exceptionIndex < 0 ? undefined : exceptionIndex
-  );
+  const exceptionIndex = cleaningHistoryExceptionIndex(clause);
+  const targetTokens = clause.slice(record.clausePredicateIndex + 1, exceptionIndex < 0 ? undefined : exceptionIndex);
   if (
     !noOtherLatest &&
     targetTokens.some(
@@ -1418,18 +1481,27 @@ function cleaningHistoryPredicatePolarity(record) {
 }
 
 function cleaningHistoryExceptionIndex(tokens) {
-  return tokens.findIndex(
-    (token, index) =>
+  let universalSeen = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (["all", "every"].includes(token)) universalSeen = true;
+    if (
       ["except", "unless", "apart", "save"].includes(token) ||
       (token === "than" && ["other", "others"].includes(tokens[index - 1])) ||
-      (token === "but" && tokens.slice(0, index).some((candidate) => ["all", "every"].includes(candidate)))
-  );
+      (token === "but" && universalSeen) ||
+      (token === "exception" &&
+        (tokens[index - 1] === "with" || (tokens[index - 1] === "the" && tokens[index - 2] === "with")))
+    ) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function cleaningHistoryException(record) {
-  const index = cleaningHistoryExceptionIndex(record.statementTokens);
+  const index = cleaningHistoryExceptionIndex(record.clauseTokens);
   if (index < 0) return { present: false, validLatest: false };
-  const tokens = record.statementTokens.slice(index + 1);
+  const tokens = record.clauseTokens.slice(index + 1);
   const antecedent = record.antecedent?.owner === "cleaning" ? record.antecedent : record.subject;
   const hasLatest =
     cleaningHistoryScope(tokens) === "latest" ||
@@ -1461,11 +1533,23 @@ function cleaningHistoryException(record) {
 }
 
 function cleaningHistoryHasMultiTarget(tokens) {
-  return (
-    tokens.some((token) => cleaningHistoryMultiWords.has(token) || /^(?:[2-9]|[1-9][0-9]+)$/u.test(token)) ||
-    (tokens.includes("more") && tokens.includes("than") && tokens.includes("one")) ||
-    (tokens.includes("one") && tokens.includes("or") && tokens.includes("more"))
-  );
+  if (tokens.some((token) => ["entries", "operations", "steps", "transformations"].includes(token))) return true;
+  const cardinalityTargetsCleaning = (index) => {
+    for (let candidateIndex = index + 1; candidateIndex < tokens.length; candidateIndex += 1) {
+      const token = tokens[candidateIndex];
+      if (isCleaningHistoryNoun(tokens, candidateIndex) || ["one", "ones"].includes(token)) return true;
+      if (!isCleaningHistoryGrammarToken(token)) return false;
+    }
+    return true;
+  };
+  return tokens.some((token, index) => {
+    const explicitMulti = cleaningHistoryMultiWords.has(token) || /^(?:[2-9]|[1-9][0-9]+)$/u.test(token);
+    const compoundMulti =
+      token === "one" &&
+      ((tokens[index - 1] === "than" && tokens[index - 2] === "more") ||
+        (tokens[index + 1] === "or" && tokens[index + 2] === "more"));
+    return (explicitMulti || compoundMulti) && cardinalityTargetsCleaning(index);
+  });
 }
 
 function cleaningHistoryInvocationScoped(tokens) {
@@ -1483,8 +1567,15 @@ function cleaningHistoryPredicateRecords(rendered) {
   let previousStatementSubject;
   for (const statementTokens of cleaningHistoryStatements(rendered)) {
     let currentSubject;
+    let continuationRecord;
+    let pendingClausePrefix;
     const statementRecords = [];
     for (const segment of cleaningHistorySegments(statementTokens)) {
+      const clausePrefix =
+        pendingClausePrefix !== undefined && (pendingClausePrefix.exception || segment.separatorBefore === "but")
+          ? [...pendingClausePrefix.tokens, segment.separatorBefore]
+          : [];
+      pendingClausePrefix = undefined;
       const initialPredicates = segment.tokens.flatMap((token, index) => {
         const kind = cleaningHistoryPredicateCandidate(segment.tokens, index);
         return kind === undefined ? [] : [{ kind, index }];
@@ -1510,6 +1601,26 @@ function cleaningHistoryPredicateRecords(rendered) {
         subject = { ...currentSubject, explicit: false };
       }
       if (subject.owner !== "none" && subject.owner !== "anaphor") currentSubject = subject;
+      if (predicates.length === 0) {
+        const exceptionContinuation =
+          continuationRecord !== undefined &&
+          cleaningHistoryExceptionIndex(continuationRecord.clauseTokens) >= 0 &&
+          ["and", "or", "plus"].includes(segment.separatorBefore);
+        const cleaningContinuation =
+          continuationRecord?.kind === "undo" && segment.separatorBefore !== undefined && subject.owner !== "unrelated";
+        if (exceptionContinuation || cleaningContinuation) {
+          continuationRecord.clauseTokens.push(segment.separatorBefore, ...segment.tokens);
+        } else {
+          continuationRecord = undefined;
+        }
+        const exceptionPrefix = cleaningHistoryExceptionIndex(segment.tokens) >= 0;
+        if (
+          subject.owner !== "unrelated" &&
+          (exceptionPrefix || segment.tokens.some((token) => ["all", "every"].includes(token)))
+        ) {
+          pendingClausePrefix = { exception: exceptionPrefix, tokens: segment.tokens };
+        }
+      }
       for (const predicate of predicates.filter(Boolean)) {
         const predicateIndex = cleaningHistorySemanticPredicateIndex(predicate.kind, segment.tokens, predicate.index);
         let recordSubject = cleaningHistorySubject(segment.tokens, predicateIndex);
@@ -1529,18 +1640,18 @@ function cleaningHistoryPredicateRecords(rendered) {
         ) {
           recordSubject = { owner: "cleaning", scope: "unknown", explicit: false };
         }
-        const statementPredicateIndex = segment.startIndex + predicateIndex;
         const record = {
           kind: predicate.kind,
           segmentTokens: segment.tokens,
-          statementTokens,
+          clauseTokens: [...clausePrefix, ...segment.tokens],
+          clausePredicateIndex: clausePrefix.length + predicateIndex,
           predicateIndex,
-          statementPredicateIndex,
           subject: recordSubject,
           antecedent: currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject
         };
         statementRecords.push(record);
         records.push(record);
+        continuationRecord = predicate.kind === "undo" ? record : undefined;
       }
     }
     const lastSubject =
@@ -1553,8 +1664,7 @@ function cleaningHistoryPredicateRecords(rendered) {
 function cleaningHistoryRecordContradicts(record) {
   if (record.subject.owner !== "cleaning") return false;
   const polarity = cleaningHistoryPredicatePolarity(record);
-  const statement = record.statementTokens;
-  const localTokens = record.kind === "undo" ? statement : record.segmentTokens;
+  const localTokens = record.clauseTokens;
   const latest = record.subject.scope === "latest" || cleaningHistoryScope(localTokens) === "latest";
   const prior =
     record.subject.scope === "prior" || localTokens.some((token) => cleaningHistoryPriorWords.includes(token));
@@ -1563,10 +1673,15 @@ function cleaningHistoryRecordContradicts(record) {
   );
   const exception = cleaningHistoryException(record);
   if (record.kind === "undo") {
-    const targetTokens = statement.slice(record.statementPredicateIndex);
+    const targetTokens = localTokens.slice(record.clausePredicateIndex);
     const noOtherLatest =
-      latest && statement.includes("no") && statement.some((token) => ["other", "others"].includes(token));
-    const exactPositiveLatest = polarity === "positive" && latest && (exclusive || noOtherLatest) && !prior;
+      latest && localTokens.includes("no") && localTokens.some((token) => ["other", "others"].includes(token));
+    const exactPositiveLatest =
+      polarity === "positive" &&
+      latest &&
+      (exclusive || noOtherLatest) &&
+      !prior &&
+      !cleaningHistoryHasMultiTarget(targetTokens);
     const priorOnlyDenial = polarity === "negative" && prior && !latest && !exception.present;
     const exactNegativeException = polarity === "negative" && exception.validLatest;
     if (noOtherLatest && exception.validLatest) return false;
@@ -1576,13 +1691,13 @@ function cleaningHistoryRecordContradicts(record) {
     return prior || cleaningHistoryHasMultiTarget(targetTokens) || record.subject.scope === "set" || !latest;
   }
   if (record.kind === "reorder") return polarity === "positive";
-  if (cleaningHistoryInvocationScoped(statement)) return false;
+  if (cleaningHistoryInvocationScoped(localTokens)) return false;
   if (polarity === "negative") return true;
   const restrictsImplementedCapability =
     exception.present ||
     (exclusive && (latest || record.subject.scope !== "set")) ||
     (exclusive && cleaningHistoryHasMultiTarget(localTokens)) ||
-    (statement.includes("all") && statement.includes("but"));
+    (localTokens.includes("all") && localTokens.includes("but"));
   return restrictsImplementedCapability;
 }
 
