@@ -13,6 +13,7 @@ const sources = Object.freeze({
   cursorAcquisitionSource: read("scripts/cursor-acquisition.mjs"),
   candidateWorkflowSource: read(".github/workflows/candidate-acceptance.yml"),
   ciWorkflowSource: read(".github/workflows/ci.yml"),
+  crossWorkflowSource: read(".github/workflows/cross-platform.yml"),
   readmeSource: read("README.md"),
   releasingSource: read("docs/releasing.md"),
   architectureSource: read("docs/architecture.md"),
@@ -139,19 +140,56 @@ test("every active editor-version assignment is structurally classified", () => 
     "VSCODE_TEST_VERSION: stable",
     "VSCODE_TEST_VERSION: 1.130.0 # VSCODE_TEST_VERSION: stable"
   );
-  assert.match(
-    inspect({ candidateWorkflowSource: inlineCommentAlias }).join(" "),
-    /structural editor-version assignment/u
-  );
+  assert.match(inspect({ candidateWorkflowSource: inlineCommentAlias }).join(" "), /effective editor version/u);
 
   const mixedRPlatformPhases = sources.candidateWorkflowSource.replace(
     "          VSCODE_TEST_VERSION: stable\n      - name: Upload platform R core failure diagnostics",
     "          VSCODE_TEST_VERSION: 1.130.0\n      - name: Upload platform R core failure diagnostics"
   );
-  assert.match(
-    inspect({ candidateWorkflowSource: mixedRPlatformPhases }).join(" "),
-    /structural editor-version assignment/u
+  assert.match(inspect({ candidateWorkflowSource: mixedRPlatformPhases }).join(" "), /effective editor version/u);
+});
+
+test("semantic workflow inspection resolves inherited, command, escaped, quoted, and explicit assignments", () => {
+  const inheritedPinned = sources.candidateWorkflowSource
+    .replace("name: Candidate acceptance\n", "name: Candidate acceptance\nenv:\n  VSCODE_TEST_VERSION: 1.130.0\n")
+    .replace(
+      "          VSCODE_TEST_VERSION: stable\n      - name: Upload platform native R frame failure diagnostics",
+      "      - name: Upload platform native R frame failure diagnostics"
+    );
+  assert.match(inspect({ candidateWorkflowSource: inheritedPinned }).join(" "), /effective editor version/u);
+
+  const commandOverride = sources.candidateWorkflowSource.replace(
+    "run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
+    "run: VSCODE_TEST_VERSION=1.130.0 node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
   );
+  assert.match(inspect({ candidateWorkflowSource: commandOverride }).join(" "), /effective editor version/u);
+  const quotedCommandOverride = sources.candidateWorkflowSource.replace(
+    "run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
+    'run: env "VSCODE_TEST_VERSION=1.130.0" node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix'
+  );
+  assert.match(
+    inspect({ candidateWorkflowSource: quotedCommandOverride }).join(" "),
+    /unsupported command-level editor-version reference/u
+  );
+
+  for (const replacement of [
+    '          "VSCODE_TEST_\\u0056ERSION": 1.130.0',
+    '          "VSCODE_TEST_VERSION": 1.130.0',
+    "          ? VSCODE_TEST_VERSION\n          : 1.130.0"
+  ]) {
+    const encoded = sources.candidateWorkflowSource.replace(
+      "          VSCODE_TEST_VERSION: stable\n      - name: Upload platform native R frame failure diagnostics",
+      `${replacement}\n      - name: Upload platform native R frame failure diagnostics`
+    );
+    assert.match(inspect({ candidateWorkflowSource: encoded }).join(" "), /effective editor version/u);
+  }
+
+  const prototypeKey = sources.candidateWorkflowSource.replace(
+    "name: Candidate acceptance\n",
+    "name: Candidate acceptance\n__proto__:\n  polluted: true\n"
+  );
+  assert.match(inspect({ candidateWorkflowSource: prototypeKey }).join(" "), /bounded jobs mapping/u);
+  assert.equal(Object.prototype.polluted, undefined);
 });
 
 test("the exact Antigravity smoke stays separate and bound to its immutable record", () => {
@@ -238,6 +276,71 @@ test("canonical smoke and public ownership records reject coexistence contradict
   );
 });
 
+test("visible records reject hidden or appended compatibility contradictions anywhere in public text", () => {
+  const parityStart = sources.featureParitySource.indexOf("The compatibility authority records VS Code on");
+  const parityEnd = sources.featureParitySource.indexOf("\n\n", parityStart);
+  assert.ok(parityStart >= 0 && parityEnd > parityStart);
+  const parityRecord = sources.featureParitySource.slice(parityStart, parityEnd);
+  assert.match(
+    inspect({
+      featureParitySource: sources.featureParitySource.replace(
+        parityRecord,
+        `<!-- hidden compatibility claim\n${parityRecord}\n-->`
+      )
+    }).join(" "),
+    /docs\/feature-parity\.md/u
+  );
+
+  for (const source of [
+    "readmeSource",
+    "releasingSource",
+    "architectureSource",
+    "featureParitySource",
+    "testingSource",
+    "ciDocumentationSource"
+  ]) {
+    assert.match(
+      inspect({
+        [source]: `${sources[source]}\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n`
+      }).join(" "),
+      /Cursor may not own/u
+    );
+  }
+});
+
+test("Native R source and installed-artifact ownership are independently exact", () => {
+  const wrongArchitectureOwnership = sources.architectureSource.replace(
+    "Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts.",
+    "Protected pull-request CI solely owns the direct R 4.4/4.5 contract."
+  );
+  assert.match(
+    inspect({ architectureSource: wrongArchitectureOwnership }).join(" "),
+    /Native R source ownership|direct R 4\.4/u
+  );
+  assert.match(
+    inspect({
+      crossWorkflowSource: sources.crossWorkflowSource.replace('r-version: "4.4"', 'r-version: "4.5"')
+    }).join(" "),
+    /Native R source ownership/u
+  );
+  assert.match(
+    inspect({ candidateWorkflowSource: sources.candidateWorkflowSource.replace('r: "4.4.3"', 'r: "4.5.2"') }).join(" "),
+    /installed-artifact matrix|Native R platform owner/u
+  );
+});
+
+test("the compatibility authority does not couple PR 802 operation-catalog prose", () => {
+  assert.deepEqual(
+    inspect({
+      architectureSource: sources.architectureSource.replace(
+        "exact ordered 32 operations",
+        "exact ordered thirty-two operations"
+      )
+    }),
+    []
+  );
+});
+
 test("public claims assign Cursor only its exact Linux compatibility seam", () => {
   assert.doesNotMatch(sources.architectureSource, /macOS\/Windows VS Code\/Cursor/u);
   assert.doesNotMatch(sources.architectureSource, /runs both in VS Code and Cursor/u);
@@ -246,7 +349,7 @@ test("public claims assign Cursor only its exact Linux compatibility seam", () =
   assert.doesNotMatch(sources.ciDocumentationSource, /Linux executes those selectors in\s+VS Code and Cursor/u);
 });
 
-test("near-cap duplicate workflow jobs retain bounded diagnostics", () => {
+test("near-cap duplicate workflow jobs fail semantically with bounded diagnostics", () => {
   const duplicateJob = "  repeated_lane:\n    runs-on: ubuntu-24.04\n";
   const targetBytes = 1_900_000;
   const repeats = Math.floor(
@@ -257,7 +360,7 @@ test("near-cap duplicate workflow jobs retain bounded diagnostics", () => {
   });
   assert.ok(diagnostics.length <= 64, `retained ${diagnostics.length} diagnostics`);
   assert.ok(Buffer.byteLength(diagnostics.join("\n"), "utf8") <= 16 * 1024);
-  assert.match(diagnostics.join(" "), /diagnostic retention limit/u);
+  assert.match(diagnostics.join(" "), /valid semantic YAML/u);
 });
 
 test("workflow ownership and Native R release seams fail closed on drift", () => {

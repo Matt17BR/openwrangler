@@ -768,13 +768,16 @@ through a non-matrix job. The reusable workflow, rather than either caller, owns
 VS Code owns the one full generic packaged journey. Linux Cursor and the generic macOS/Windows VS Code cells run
 the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate
 `r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then
-`kernel-restart`. Protected pull-request CI solely owns the direct R 4.4/4.5 contract; candidate acceptance consumes
-installed-artifact or live external evidence. Linux local R uses exactly two non-cancelling shard cells: lifecycle
+`kernel-restart`. The candidate `r_platform` matrix runs installed-artifact VS Code journeys with R 4.4.3 on Ubuntu, R 4.5.2 on macOS, and R 4.5.2 on Windows.
+Scheduled/manual Cross owns the direct R 4.4 source qualification, while protected pull-request CI owns the direct R 4.5 source contracts.
+Candidate acceptance consumes installed-artifact or live external evidence. Linux local R uses exactly two non-cancelling shard cells: lifecycle
 executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
 `literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
 partitions scheduling while keeping the installed Clone lifecycle in the existing core phase, the unchanged complete
 value and categorical slices, one comprehensive Linux native-frame owner, and representative native/restart seams on
-every hosted platform. The dedicated direct R catalog contract now gives every one of the exact ordered 32 operations
+every hosted platform.
+
+The dedicated direct R catalog contract now gives every one of the exact ordered 32 operations
 a fresh-session live/generated replay, and the TypeScript export contract binds the same bridge/public catalog order
 to exact clipboard and atomic-save bytes for distinct executable operation-labelled buffers. This local-source
 evidence is not hosted installed/performance evidence. The unhosted addition changes no candidate selector, job,

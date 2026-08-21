@@ -120,8 +120,7 @@ The release tier adds the expensive product checks that no longer run on every p
 - focused packaged VS Code `platform-smoke` OS compatibility on macOS and Windows, without native-R setup or
   execution, while one pinned Linux Cursor smoke owns the lifecycle/renderer-replacement/narrow-grid/reveal-state
   fork-compatibility seam;
-- native-R platform acceptance in a separate macOS/Windows matrix, with fresh VS Code-only core, native-frame, and
-  kernel-restart phases;
+- native-R platform acceptance in a separate Ubuntu, macOS, and Windows matrix: R 4.4.3 on Ubuntu and R 4.5.2 on macOS and Windows, with fresh VS Code-only core, native-frame, and kernel-restart phases;
 - released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs uses VS Code only for complete
   local and remote Python and R coverage; Cursor owns no Jupyter or R phase, and the complete value and categorical
   catalogs are owned once by Linux VS Code;
