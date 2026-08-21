@@ -1,7 +1,9 @@
 import { constants as fsConstants } from "node:fs";
+import { execFile } from "node:child_process";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import vm from "node:vm";
 import ts from "typescript";
 
@@ -17,28 +19,50 @@ const maximumViewContributionGroups = 256;
 const maximumSyntaxTokens = 500_000;
 const maximumSyntaxNesting = 512;
 const maximumSyntaxNodes = 250_000;
+const maximumActivationChildOutputBytes = 64 * 1024;
+const activationMeasurementChildFlag = "--measure-dependency-free-activation-child";
+const execFileAsync = promisify(execFile);
 export const maximumDependencyFreeActivationMs = 2_000;
 
-export const activationTriggerBudgets = Object.freeze({
+export const activationTriggerContract = defineActivationTriggerContract({
   unrelated: {
+    events: [],
     roots: ["src/extension/activate.ts"],
     maximumModules: 3,
     maximumBytes: 48 * 1024,
     forbidden: ["pythonBridge.ts", "r/", "notebooks/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   utility: {
+    events: [
+      "onCommand:openWrangler.openWalkthrough",
+      "onCommand:openWrangler.openSettings",
+      "onCommand:openWrangler.reportIssue"
+    ],
     roots: ["src/extension/activate.ts"],
     maximumModules: 3,
     maximumBytes: 48 * 1024,
     forbidden: ["pythonBridge.ts", "r/", "notebooks/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   "notebook-preview": {
+    events: ["onCommand:openWrangler.chooseNotebookPreviewProvider"],
     roots: ["src/extension/activate.ts", "src/extension/notebooks/notebookPreviewCoordinator.ts"],
     maximumModules: 24,
     maximumBytes: 320 * 1024,
     forbidden: ["pythonBridge.ts", "r/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   notebook: {
+    events: [
+      "onCommand:openWrangler.launchDataViewer",
+      "onCommand:openWrangler.openNotebookVariable",
+      "onCommand:openWrangler.openNotebookCellResult",
+      "onCommand:openWrangler.runPythonCellAndOpenVariable",
+      "onCommand:openWrangler.refreshNotebookVariables",
+      "onCommand:openWrangler.openCachedNotebookVariable",
+      "onCommand:openWrangler.checkJupyterIntegration",
+      "onRenderer:openWrangler.renderer",
+      "onNotebook:jupyter-notebook",
+      "onNotebook:interactive"
+    ],
     roots: [
       "src/extension/activate.ts",
       "src/extension/sessionCoordinator.ts",
@@ -53,12 +77,19 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["pythonBridge.ts", "r/rInteractiveCommands.ts", "files/fileOpen.ts", "nativeViews.ts"]
   },
   runtime: {
+    events: [
+      "onCommand:openWrangler.changeRuntime",
+      "onCommand:openWrangler.clearRuntime",
+      "onCommand:openWrangler.installRuntimeDependencies",
+      "onCommand:openWrangler.revalidateRuntimeDependencies"
+    ],
     roots: ["src/extension/activate.ts", "src/extension/pythonBridge.ts", "src/extension/runtimeCommands.ts"],
     maximumModules: 36,
     maximumBytes: 512 * 1024,
     forbidden: ["r/", "notebooks/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   "trusted-pickle": {
+    events: ["onCommand:openWrangler.convertTrustedPickle"],
     roots: [
       "src/extension/activate.ts",
       "src/extension/pythonBridge.ts",
@@ -70,6 +101,12 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["r/", "notebooks/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   r: {
+    events: [
+      "onCommand:openWrangler.openRDataframe",
+      "onCommand:openWrangler.openRInteractiveVariable",
+      "onCommand:openWrangler.refreshRInteractiveVariables",
+      "onCommand:openWrangler.openCachedRInteractiveVariable"
+    ],
     roots: [
       "src/extension/activate.ts",
       "src/extension/sessionCoordinator.ts",
@@ -80,6 +117,7 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["pythonBridge.ts", "notebooks/pythonInteractiveCommands.ts", "files/fileOpen.ts", "nativeViews.ts"]
   },
   "r-document": {
+    events: ["onCommand:openWrangler.runRDocument"],
     roots: [
       "src/extension/activate.ts",
       "src/extension/sessionCoordinator.ts",
@@ -96,6 +134,12 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["pythonBridge.ts", "files/fileOpen.ts", "nativeViews.ts"]
   },
   "custom-editor": {
+    events: [
+      "onCommand:openWrangler.openFile",
+      "onCommand:openWrangler.changeImportOptions",
+      "onCommand:openWrangler.openPath",
+      "onCustomEditor:openWrangler.viewer"
+    ],
     roots: [
       "src/extension/activate.ts",
       "src/extension/sessionCoordinator.ts",
@@ -107,12 +151,37 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["r/", "notebooks/pythonInteractiveCommands.ts", "nativeViews.ts"]
   },
   "native-view": {
+    events: [
+      "onCommand:openWrangler.startOperation",
+      "onCommand:openWrangler.applyStep",
+      "onCommand:openWrangler.discardStep",
+      "onCommand:openWrangler.editLatestStep",
+      "onCommand:openWrangler.editSelectedStep",
+      "onCommand:openWrangler.deleteSelectedStep",
+      "onCommand:openWrangler.selectStep",
+      "onCommand:openWrangler.undoStep",
+      "onCommand:openWrangler.openViewSort",
+      "onCommand:openWrangler.moveViewSortUp",
+      "onCommand:openWrangler.moveViewSortDown",
+      "onCommand:openWrangler.removeViewSort",
+      "onCommand:openWrangler.copyCode",
+      "onCommand:openWrangler.exportCode",
+      "onCommand:openWrangler.insertNotebookCode",
+      "onCommand:openWrangler.insertRDocumentCode",
+      "onCommand:openWrangler.exportData",
+      "onCommand:openWrangler.openSourceFile",
+      "onView:openWrangler.summary",
+      "onView:openWrangler.filters",
+      "onView:openWrangler.cleaningSteps",
+      "onView:openWrangler.codePreview"
+    ],
     roots: ["src/extension/activate.ts", "src/extension/sessionCoordinator.ts", "src/extension/nativeViews.ts"],
     maximumModules: 96,
     maximumBytes: 1700 * 1024,
     forbidden: ["pythonBridge.ts", "files/fileOpen.ts", "notebooks/pythonInteractiveCommands.ts"]
   },
   "native-live": {
+    events: ["onCommand:openWrangler.refreshLiveDataframes", "onView:openWrangler.operations"],
     roots: [
       "src/extension/activate.ts",
       "src/extension/sessionCoordinator.ts",
@@ -129,6 +198,19 @@ export const activationTriggerBudgets = Object.freeze({
     forbidden: ["pythonBridge.ts", "files/fileOpen.ts"]
   }
 });
+
+export const activationTriggerBudgets = Object.freeze(
+  Object.fromEntries(
+    Object.entries(activationTriggerContract).map(([trigger, { events: _events, ...budget }]) => [
+      trigger,
+      Object.freeze(budget)
+    ])
+  )
+);
+
+export const activationEventClassifications = classifyActivationEvents(
+  Object.fromEntries(Object.entries(activationTriggerContract).map(([trigger, contract]) => [trigger, contract.events]))
+);
 
 export const dynamicEdgeClassifications = freezeClassifications({
   "src/extension/lazyActivationOwners.ts|require|./notebooks/notebookPreviewCoordinator": ["notebook-preview"],
@@ -184,72 +266,6 @@ export const dynamicEdgeClassifications = freezeClassifications({
   "src/extension/lazyActivationOwners.ts|import|./runtimeCommands.js": ["runtime", "test-api"],
   "src/extension/lazyActivationOwners.ts|import|./nativeViews.js": ["native-view", "native-live", "test-api"],
   "src/extension/lazyActivationOwners.ts|import|./webviewPanel.js": ["test-api"]
-});
-
-export const activationEventClassifications = classifyActivationEvents({
-  "custom-editor": [
-    "onCommand:openWrangler.openFile",
-    "onCommand:openWrangler.changeImportOptions",
-    "onCommand:openWrangler.openPath",
-    "onCustomEditor:openWrangler.viewer"
-  ],
-  "trusted-pickle": ["onCommand:openWrangler.convertTrustedPickle"],
-  notebook: [
-    "onCommand:openWrangler.launchDataViewer",
-    "onCommand:openWrangler.openNotebookVariable",
-    "onCommand:openWrangler.openNotebookCellResult",
-    "onCommand:openWrangler.runPythonCellAndOpenVariable",
-    "onCommand:openWrangler.refreshNotebookVariables",
-    "onCommand:openWrangler.openCachedNotebookVariable",
-    "onCommand:openWrangler.checkJupyterIntegration",
-    "onRenderer:openWrangler.renderer",
-    "onNotebook:jupyter-notebook",
-    "onNotebook:interactive"
-  ],
-  r: [
-    "onCommand:openWrangler.openRDataframe",
-    "onCommand:openWrangler.openRInteractiveVariable",
-    "onCommand:openWrangler.refreshRInteractiveVariables",
-    "onCommand:openWrangler.openCachedRInteractiveVariable"
-  ],
-  "r-document": ["onCommand:openWrangler.runRDocument"],
-  "notebook-preview": ["onCommand:openWrangler.chooseNotebookPreviewProvider"],
-  runtime: [
-    "onCommand:openWrangler.changeRuntime",
-    "onCommand:openWrangler.clearRuntime",
-    "onCommand:openWrangler.installRuntimeDependencies",
-    "onCommand:openWrangler.revalidateRuntimeDependencies"
-  ],
-  "native-view": [
-    "onCommand:openWrangler.startOperation",
-    "onCommand:openWrangler.applyStep",
-    "onCommand:openWrangler.discardStep",
-    "onCommand:openWrangler.editLatestStep",
-    "onCommand:openWrangler.editSelectedStep",
-    "onCommand:openWrangler.deleteSelectedStep",
-    "onCommand:openWrangler.selectStep",
-    "onCommand:openWrangler.undoStep",
-    "onCommand:openWrangler.openViewSort",
-    "onCommand:openWrangler.moveViewSortUp",
-    "onCommand:openWrangler.moveViewSortDown",
-    "onCommand:openWrangler.removeViewSort",
-    "onCommand:openWrangler.copyCode",
-    "onCommand:openWrangler.exportCode",
-    "onCommand:openWrangler.insertNotebookCode",
-    "onCommand:openWrangler.insertRDocumentCode",
-    "onCommand:openWrangler.exportData",
-    "onCommand:openWrangler.openSourceFile",
-    "onView:openWrangler.summary",
-    "onView:openWrangler.filters",
-    "onView:openWrangler.cleaningSteps",
-    "onView:openWrangler.codePreview"
-  ],
-  "native-live": ["onCommand:openWrangler.refreshLiveDataframes", "onView:openWrangler.operations"],
-  utility: [
-    "onCommand:openWrangler.openWalkthrough",
-    "onCommand:openWrangler.openSettings",
-    "onCommand:openWrangler.reportIssue"
-  ]
 });
 
 export async function measureActivationTriggers(repositoryRoot = defaultRepositoryRoot) {
@@ -317,19 +333,55 @@ export async function measureDependencyFreeActivation(
     throw new Error("Dependency-free activation delay injection is outside its bounded test range.");
   }
   const root = path.resolve(repositoryRoot);
+  const startedAt = globalThis.performance.now();
+  let childMeasurement;
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [fileURLToPath(import.meta.url), activationMeasurementChildFlag, root, String(synchronousRegistrationDelayMs)],
+      {
+        cwd: root,
+        encoding: "utf8",
+        maxBuffer: maximumActivationChildOutputBytes,
+        timeout: maximumDependencyFreeActivationMs + 10_000,
+        windowsHide: true
+      }
+    );
+    childMeasurement = parseActivationChildMeasurement(stdout, stderr);
+  } catch (error) {
+    childMeasurement = { failure: boundedActivationFailure(error) };
+  }
+  const elapsedMs = Math.max(0, globalThis.performance.now() - startedAt);
+  const failure =
+    childMeasurement.failure ??
+    (elapsedMs > maximumDependencyFreeActivationMs
+      ? `Cold dependency-free activation exceeded its ${maximumDependencyFreeActivationMs} ms elapsed budget.`
+      : undefined);
+  return {
+    elapsedMs,
+    maximumMs: maximumDependencyFreeActivationMs,
+    withinBudget: failure === undefined,
+    ...(failure === undefined ? {} : { failure })
+  };
+}
+
+async function measureDependencyFreeActivationInProcess(repositoryRoot, synchronousRegistrationDelayMs) {
+  const root = path.resolve(repositoryRoot);
   const aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes);
   const [activateSource, ownersSource] = await Promise.all([
     readBoundedRegularFile(root, path.resolve(root, "src/extension/activate.ts"), aggregateBudget),
     readBoundedRegularFile(root, path.resolve(root, "src/extension/lazyActivationOwners.ts"), aggregateBudget)
   ]);
-  let virtualElapsedMs = 0;
   let delayInjected = false;
-  const clock = synchronousRegistrationDelayMs === 0 ? globalThis.performance : { now: () => virtualElapsedMs };
   const disposable = () => ({ dispose: () => undefined });
   const register = () => {
     if (!delayInjected) {
       delayInjected = true;
-      virtualElapsedMs += synchronousRegistrationDelayMs;
+      const delayEndsAt = globalThis.performance.now() + synchronousRegistrationDelayMs;
+      while (globalThis.performance.now() < delayEndsAt) {
+        // Deliberately synchronous: the child process makes the elapsed gate
+        // observe injected registration work without stalling the test runner.
+      }
     }
     return disposable();
   };
@@ -355,7 +407,7 @@ export async function measureDependencyFreeActivation(
   const sandbox = {
     AggregateError,
     console,
-    performance: clock,
+    performance: globalThis.performance,
     process: { env: {}, platform: process.platform },
     Promise,
     setTimeout,
@@ -371,33 +423,50 @@ export async function measureDependencyFreeActivation(
     throw new Error(`Dependency-free activation unexpectedly loaded ${id}.`);
   });
   const context = { subscriptions: [] };
-  const startedAt = clock.now();
   let failure;
-  let elapsedMs;
   try {
-    const activated = activation.activate(context);
-    elapsedMs = Math.max(0, clock.now() - startedAt);
-    await activated;
+    await activation.activate(context);
   } catch (error) {
-    failure = error instanceof Error ? error.message : String(error);
+    failure = boundedActivationFailure(error);
   } finally {
     try {
       await activation.deactivate();
     } catch (error) {
-      failure ??= error instanceof Error ? error.message : String(error);
+      failure ??= boundedActivationFailure(error);
     }
   }
-  elapsedMs ??= Math.max(0, clock.now() - startedAt);
   const declaredMaximumMs = activation.MAX_SYNCHRONOUS_ACTIVATION_MS;
   if (declaredMaximumMs !== maximumDependencyFreeActivationMs) {
     failure = `Activation declares ${String(declaredMaximumMs)} ms instead of ${maximumDependencyFreeActivationMs} ms.`;
   }
-  return {
-    elapsedMs,
-    maximumMs: maximumDependencyFreeActivationMs,
-    withinBudget: failure === undefined && elapsedMs <= maximumDependencyFreeActivationMs,
-    ...(failure === undefined ? {} : { failure })
-  };
+  return failure === undefined ? {} : { failure };
+}
+
+function parseActivationChildMeasurement(stdout, stderr) {
+  if (Buffer.byteLength(stdout, "utf8") > maximumActivationChildOutputBytes || stderr.length > 0) {
+    throw new Error("Dependency-free activation child emitted unexpected or oversized output.");
+  }
+  let value;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    throw new Error("Dependency-free activation child emitted an invalid receipt.");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Dependency-free activation child emitted a malformed receipt.");
+  }
+  if (Object.keys(value).some((key) => key !== "failure")) {
+    throw new Error("Dependency-free activation child emitted an unexpected receipt field.");
+  }
+  if (value.failure !== undefined && (typeof value.failure !== "string" || value.failure.length > 512)) {
+    throw new Error("Dependency-free activation child emitted an invalid failure.");
+  }
+  return value;
+}
+
+function boundedActivationFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/[\r\n\t]+/gu, " ").slice(0, 512);
 }
 
 export function activationBudgetFailures(report, budgets = activationTriggerBudgets) {
@@ -847,7 +916,7 @@ async function readBoundedRegularFile(
 
 function syntaxRuntimeInventory(source, file, options = {}) {
   preflightTypeScriptSyntax(source, file, options);
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, scriptKind(file));
+  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file));
   const parseDiagnostic = sourceFile.parseDiagnostics?.[0];
   if (parseDiagnostic) {
     throw new Error(`Activation inventory source has invalid TypeScript syntax (TS${parseDiagnostic.code}): ${file}`);
@@ -933,7 +1002,7 @@ function syntaxRuntimeInventory(source, file, options = {}) {
     }
   }
 
-  const loaderEscapes = propertyLoaderEscapes(
+  const loaderEscapes = unsupportedLoaderAliasUses(
     sourceFile,
     importAliases,
     requireAliases,
@@ -942,7 +1011,7 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   );
   if (loaderEscapes.length > 0) {
     throw new Error(
-      `Activation inventory loader alias escapes through an object property (${loaderEscapes.join(", ")}): ${file}`
+      `Activation inventory loader alias escapes through unsupported use (${loaderEscapes.join(", ")}): ${file}`
     );
   }
 
@@ -961,7 +1030,7 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   return { dynamicEdges, staticSpecifiers };
 }
 
-function propertyLoaderEscapes(
+function unsupportedLoaderAliasUses(
   sourceFile,
   importAliases,
   requireAliases,
@@ -969,34 +1038,93 @@ function propertyLoaderEscapes(
   createRequireNamespaces
 ) {
   const escapes = [];
-  const loaderKind = (expression) => {
-    const value = unwrapExpression(expression);
-    if (!ts.isIdentifier(value)) return undefined;
-    if (importAliases.has(value.text)) return "import";
-    if (requireAliases.has(value.text)) return "require";
-    if (createRequireAliases.has(value.text)) return "createRequire";
-    return createRequireNamespaces.has(value.text) ? "createRequireNamespace" : undefined;
+  const loaderKind = (identifier) => {
+    if (importAliases.has(identifier.text)) return "import";
+    if (requireAliases.has(identifier.text)) return "require";
+    if (createRequireAliases.has(identifier.text)) return "createRequire";
+    return createRequireNamespaces.has(identifier.text) ? "createRequireNamespace" : undefined;
   };
   const visit = (node) => {
-    if (ts.isPropertyAssignment(node)) {
-      const kind = loaderKind(node.initializer);
-      if (kind) escapes.push(`${node.name.getText(sourceFile)}:${kind}`);
-    } else if (ts.isShorthandPropertyAssignment(node)) {
-      const kind = loaderKind(node.name);
-      if (kind) escapes.push(`${node.name.text}:${kind}`);
-    } else if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      (ts.isPropertyAccessExpression(unwrapExpression(node.left)) ||
-        ts.isElementAccessExpression(unwrapExpression(node.left)))
-    ) {
-      const kind = loaderKind(node.right);
-      if (kind) escapes.push(`${node.left.getText(sourceFile)}:${kind}`);
+    if (ts.isIdentifier(node)) {
+      const kind = loaderKind(node);
+      if (kind && !isSupportedLoaderIdentifierUse(node, kind)) {
+        escapes.push(`${node.text}:${kind}@${node.getStart(sourceFile)}`);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return escapes;
+  return escapes.slice(0, 32);
+}
+
+function isSupportedLoaderIdentifierUse(identifier, kind) {
+  const parent = identifier.parent;
+  if (
+    (ts.isVariableDeclaration(parent) && parent.name === identifier) ||
+    (ts.isFunctionDeclaration(parent) && parent.name === identifier) ||
+    (ts.isImportSpecifier(parent) && (parent.name === identifier || parent.propertyName === identifier)) ||
+    (ts.isNamespaceImport(parent) && parent.name === identifier) ||
+    (ts.isBindingElement(parent) && (parent.name === identifier || parent.propertyName === identifier))
+  ) {
+    return true;
+  }
+
+  const expression = outerWrappedExpression(identifier);
+  if (
+    ts.isVariableDeclaration(expression.parent) &&
+    expression.parent.initializer === expression &&
+    ts.isIdentifier(expression.parent.name)
+  ) {
+    return true;
+  }
+  if (kind === "import" || kind === "require") {
+    if (
+      kind === "require" &&
+      ts.isPropertyAccessExpression(expression.parent) &&
+      expression.parent.expression === expression &&
+      (expression.parent.name.text === "resolve" || expression.parent.name.text === "cache")
+    ) {
+      return true;
+    }
+    return ts.isCallExpression(expression.parent) && expression.parent.expression === expression;
+  }
+
+  let factoryCallee = expression;
+  if (kind === "createRequireNamespace") {
+    const property = expression.parent;
+    if (
+      !ts.isPropertyAccessExpression(property) ||
+      property.expression !== expression ||
+      property.name.text !== "createRequire"
+    ) {
+      return false;
+    }
+    factoryCallee = outerWrappedExpression(property);
+  }
+  const factoryCall = factoryCallee.parent;
+  if (!ts.isCallExpression(factoryCall) || factoryCall.expression !== factoryCallee) return false;
+  const assignedCall = outerWrappedExpression(factoryCall);
+  return (
+    ts.isVariableDeclaration(assignedCall.parent) &&
+    assignedCall.parent.initializer === assignedCall &&
+    ts.isIdentifier(assignedCall.parent.name)
+  );
+}
+
+function outerWrappedExpression(expression) {
+  let current = expression;
+  while (
+    current.parent &&
+    (ts.isParenthesizedExpression(current.parent) ||
+      ts.isAsExpression(current.parent) ||
+      ts.isTypeAssertionExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent)) &&
+    current.parent.expression === current
+  ) {
+    current = current.parent;
+  }
+  return current;
 }
 
 function scriptKind(file) {
@@ -1220,6 +1348,23 @@ function freezeClassifications(classifications) {
   );
 }
 
+function defineActivationTriggerContract(contract) {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(contract).map(([trigger, entry]) => [
+        trigger,
+        Object.freeze({
+          events: Object.freeze([...entry.events]),
+          roots: Object.freeze([...entry.roots]),
+          maximumModules: entry.maximumModules,
+          maximumBytes: entry.maximumBytes,
+          forbidden: Object.freeze([...entry.forbidden])
+        })
+      ])
+    )
+  );
+}
+
 function classifyActivationEvents(groups) {
   const classifications = {};
   for (const [trigger, events] of Object.entries(groups)) {
@@ -1360,6 +1505,22 @@ async function main() {
   if (failures.length > 0) process.exitCode = 1;
 }
 
+async function activationMeasurementChildMain() {
+  const repositoryRoot = process.argv[3];
+  const synchronousRegistrationDelayMs = Number(process.argv[4]);
+  if (
+    !repositoryRoot ||
+    !Number.isSafeInteger(synchronousRegistrationDelayMs) ||
+    synchronousRegistrationDelayMs < 0 ||
+    synchronousRegistrationDelayMs > maximumDependencyFreeActivationMs + 1
+  ) {
+    throw new Error("Dependency-free activation child received invalid bounded arguments.");
+  }
+  const measurement = await measureDependencyFreeActivationInProcess(repositoryRoot, synchronousRegistrationDelayMs);
+  process.stdout.write(JSON.stringify(measurement));
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  await main();
+  if (process.argv[2] === activationMeasurementChildFlag) await activationMeasurementChildMain();
+  else await main();
 }
