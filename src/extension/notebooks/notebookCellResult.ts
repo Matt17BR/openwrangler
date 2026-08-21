@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type { SessionSource } from "../../shared/protocol";
@@ -19,6 +20,26 @@ import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 const OPEN_NOTEBOOK_CELL_RESULT_COMMAND = "openWrangler.openNotebookCellResult";
 const NOTEBOOK_RESULT_OUTPUT_GRACE_MS = 10_000;
 const NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS = 10_000;
+const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
+const INLINE_UPGRADE_MAX_SCAN_BYTES = 16 * 1024 * 1024;
+const INLINE_UPGRADE_MAX_CELLS = 10_000;
+const INLINE_UPGRADE_MAX_OUTPUT_ITEMS = 100_000;
+
+export interface InlineNotebookOutputCandidate {
+  readonly byteLength: number;
+  readonly sha256: string;
+}
+
+export interface InlineNotebookCellResultBinding extends vscode.Disposable {
+  readonly cell: vscode.NotebookCell;
+  readonly notebook: vscode.NotebookDocument;
+  readonly editor: vscode.NotebookEditor;
+  readonly executionOrder: number;
+  readonly sourceFingerprint: string;
+  readonly kernelBinding: ExecutedNotebookCellResultBinding;
+  isCurrent(): boolean;
+  hasCurrentKernel(): Promise<boolean>;
+}
 
 export interface NotebookCellResultTrackerDiagnostics {
   readonly stage: "unseen" | "awaiting-result" | "completion-kernel" | "probe" | "eligible" | "rejected";
@@ -352,6 +373,81 @@ export class NotebookCellResultTracker implements vscode.Disposable {
       return undefined;
     }
     return eligibility;
+  }
+
+  bindInlineUpgrade(
+    editor: vscode.NotebookEditor,
+    candidate: InlineNotebookOutputCandidate
+  ): InlineNotebookCellResultBinding | undefined {
+    if (
+      !isInlineUpgradeCandidate(candidate) ||
+      !isExactVisibleNotebookEditor(editor) ||
+      !isSupportedNotebook(editor.notebook)
+    ) {
+      return undefined;
+    }
+    let cells: readonly vscode.NotebookCell[];
+    try {
+      cells = editor.notebook.getCells();
+    } catch {
+      return undefined;
+    }
+    if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
+
+    let visitedItems = 0;
+    let scannedBytes = 0;
+    let match:
+      | {
+          readonly cell: vscode.NotebookCell;
+          readonly output: vscode.NotebookCellOutput;
+          readonly item: vscode.NotebookCellOutputItem;
+          readonly eligibility: ExecutedCellEligibility;
+        }
+      | undefined;
+    for (const cell of cells) {
+      const eligibility = this.current(cell);
+      if (!eligibility) continue;
+      for (const output of cell.outputs) {
+        if (output.metadata?.outputType !== "execute_result") continue;
+        visitedItems += output.items.length;
+        if (visitedItems > INLINE_UPGRADE_MAX_OUTPUT_ITEMS) return undefined;
+        for (const item of output.items) {
+          if (item.mime !== "text/html" || item.data.byteLength !== candidate.byteLength) continue;
+          if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - item.data.byteLength) return undefined;
+          scannedBytes += item.data.byteLength;
+          if (!matchesInlineUpgradeBytes(item.data, candidate)) continue;
+          if (match) return undefined;
+          match = { cell, output, item, eligibility };
+        }
+      }
+    }
+    if (!match) return undefined;
+
+    let active = true;
+    const { cell, output, item, eligibility } = match;
+    const isCurrent = (): boolean =>
+      active &&
+      isExactVisibleNotebookEditor(editor) &&
+      isExactCellInNotebook(cell, editor.notebook) &&
+      this.current(cell) === eligibility &&
+      cell.outputs.includes(output) &&
+      output.metadata?.outputType === "execute_result" &&
+      output.items.includes(item) &&
+      item.mime === "text/html" &&
+      matchesInlineUpgradeBytes(item.data, candidate);
+    return {
+      cell,
+      notebook: editor.notebook,
+      editor,
+      executionOrder: eligibility.executionOrder,
+      sourceFingerprint: eligibility.sourceFingerprint,
+      kernelBinding: eligibility.binding,
+      isCurrent,
+      hasCurrentKernel: async () => isCurrent() && (await this.hasCurrentKernel(cell, eligibility)) && isCurrent(),
+      dispose: () => {
+        active = false;
+      }
+    };
   }
 
   diagnosticsForTesting(): NotebookCellResultTrackerDiagnostics | undefined {
@@ -754,6 +850,36 @@ async function observeKernelWithinDeadline(
 
 function isSupportedNotebook(notebook: vscode.NotebookDocument): boolean {
   return notebook.notebookType === "jupyter-notebook" || notebook.notebookType === "interactive";
+}
+
+function isExactVisibleNotebookEditor(editor: vscode.NotebookEditor): boolean {
+  const notebook = editor?.notebook;
+  if (
+    !vscode.workspace.isTrusted ||
+    !notebook ||
+    notebook.isClosed ||
+    !vscode.workspace.notebookDocuments.includes(notebook) ||
+    !isSoleOpenNotebookDocument(notebook)
+  ) {
+    return false;
+  }
+  const editors = vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook === notebook);
+  return editors.length === 1 && editors[0] === editor;
+}
+
+function isInlineUpgradeCandidate(candidate: InlineNotebookOutputCandidate): boolean {
+  return (
+    Number.isSafeInteger(candidate.byteLength) &&
+    candidate.byteLength > 0 &&
+    candidate.byteLength <= INLINE_UPGRADE_MAX_HTML_BYTES &&
+    /^[a-f0-9]{64}$/u.test(candidate.sha256)
+  );
+}
+
+function matchesInlineUpgradeBytes(data: Uint8Array, candidate: InlineNotebookOutputCandidate): boolean {
+  return (
+    data.byteLength === candidate.byteLength && createHash("sha256").update(data).digest("hex") === candidate.sha256
+  );
 }
 
 function isPositiveExecutionOrder(value: number | undefined): value is number {

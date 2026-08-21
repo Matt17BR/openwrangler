@@ -9,10 +9,25 @@ interface RendererOutputItem {
   json(): unknown;
 }
 
+interface HtmlRendererOutputItem {
+  readonly id: string;
+  readonly mime: string;
+  data(): Uint8Array;
+}
+
 interface RendererContext {
   setState?(state: unknown): void;
   getState?(): unknown;
   postMessage?(message: unknown): void;
+}
+
+interface HtmlRendererContext extends RendererContext {
+  getRenderer(id: "vscode.builtin-renderer"): Promise<{
+    experimental_registerHtmlRenderingHook(hook: {
+      postRender(outputItem: HtmlRendererOutputItem, element: HTMLElement, signal: AbortSignal): Promise<void>;
+    }): unknown;
+  }>;
+  onDidReceiveMessage(listener: (message: unknown) => void): void;
 }
 
 interface RendererApi {
@@ -24,8 +39,29 @@ const INLINE_PAGE_SIZES = [10, 20, 50, 100] as const;
 const INLINE_LABEL_CHARACTERS = 256;
 const INLINE_COLUMN_CHARACTERS = 128;
 const INLINE_CELL_CHARACTERS = 512;
+const INLINE_UPGRADE_PROTOCOL = 1;
+const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
+const INLINE_UPGRADE_MAX_CANDIDATES = 128;
+const INLINE_UPGRADE_OUTPUT_ID_CHARACTERS = 256;
+let htmlUpgradeRegistration: Promise<void> | undefined;
+
+interface InlineUpgradeCandidate {
+  readonly outputItemId: string;
+  readonly token: string;
+  readonly byteLength: number;
+  readonly sha256: string;
+  readonly element: HTMLElement;
+  readonly signal: AbortSignal;
+  enhancement?: HTMLElement;
+}
 
 export function activate(context: RendererContext): RendererApi {
+  if (isHtmlRendererContext(context)) {
+    // Both contributions deliberately share this bundle, and VS Code supplies
+    // the same context capabilities to each. Register the dependent hook once
+    // while always returning the ordinary MIME renderer API.
+    htmlUpgradeRegistration ??= activateHtmlUpgrade(context).catch(() => undefined);
+  }
   return {
     renderOutputItem(outputItem, element) {
       const payload = normalizeNotebookOutputPayload(outputItem.json());
@@ -40,6 +76,158 @@ export function activate(context: RendererContext): RendererApi {
       element.appendChild(renderPayload(payload, context));
     }
   };
+}
+
+async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> {
+  const builtin = await context.getRenderer("vscode.builtin-renderer");
+  const candidates = new Map<string, InlineUpgradeCandidate>();
+  const completed = new Set<string>();
+
+  context.onDidReceiveMessage((message) => {
+    const accepted = parseInlineUpgradeResponse(message);
+    if (!accepted || completed.has(accepted.outputItemId)) return;
+    const candidate = candidates.get(accepted.outputItemId);
+    if (
+      !candidate ||
+      candidate.signal.aborted ||
+      candidate.token !== accepted.token ||
+      candidate.byteLength !== accepted.byteLength ||
+      candidate.sha256 !== accepted.sha256
+    ) {
+      return;
+    }
+    const payload = normalizeNotebookOutputPayload(accepted.payload);
+    if (!payload) return;
+    const enhancement = document.createElement("section");
+    enhancement.dataset.openWranglerInlineUpgrade = "true";
+    enhancement.appendChild(renderPayload(payload, context));
+    candidate.element.appendChild(enhancement);
+    candidate.enhancement = enhancement;
+    completed.add(candidate.outputItemId);
+  });
+
+  builtin.experimental_registerHtmlRenderingHook({
+    async postRender(outputItem, element, signal) {
+      if (
+        signal.aborted ||
+        outputItem.mime !== "text/html" ||
+        !isBoundedOutputItemId(outputItem.id) ||
+        candidates.has(outputItem.id) ||
+        candidates.size >= INLINE_UPGRADE_MAX_CANDIDATES
+      ) {
+        return;
+      }
+      let candidate: InlineUpgradeCandidate;
+      try {
+        const bytes = outputItem.data();
+        if (bytes.byteLength === 0 || bytes.byteLength > INLINE_UPGRADE_MAX_HTML_BYTES) return;
+        candidate = {
+          outputItemId: outputItem.id,
+          token: randomToken(),
+          byteLength: bytes.byteLength,
+          sha256: await sha256(bytes),
+          element,
+          signal
+        };
+      } catch {
+        return;
+      }
+      if (signal.aborted || candidates.has(outputItem.id)) return;
+      candidates.set(outputItem.id, candidate);
+      signal.addEventListener(
+        "abort",
+        () => {
+          if (candidates.get(outputItem.id) !== candidate) return;
+          candidates.delete(outputItem.id);
+          completed.delete(outputItem.id);
+          candidate.enhancement?.remove();
+          context.postMessage?.({
+            kind: "openWrangler.inlineCancel",
+            protocol: INLINE_UPGRADE_PROTOCOL,
+            token: candidate.token,
+            outputItemId: candidate.outputItemId
+          });
+        },
+        { once: true }
+      );
+      context.postMessage?.({
+        kind: "openWrangler.inlineCandidate",
+        protocol: INLINE_UPGRADE_PROTOCOL,
+        token: candidate.token,
+        outputItemId: candidate.outputItemId,
+        byteLength: candidate.byteLength,
+        sha256: candidate.sha256
+      });
+    }
+  });
+}
+
+function isHtmlRendererContext(context: RendererContext): context is HtmlRendererContext {
+  const candidate = context as Partial<HtmlRendererContext>;
+  return typeof candidate.getRenderer === "function" && typeof candidate.onDidReceiveMessage === "function";
+}
+
+function parseInlineUpgradeResponse(message: unknown):
+  | {
+      readonly token: string;
+      readonly outputItemId: string;
+      readonly byteLength: number;
+      readonly sha256: string;
+      readonly payload: unknown;
+    }
+  | undefined {
+  if (typeof message !== "object" || message === null) return undefined;
+  const candidate = message as Record<string, unknown>;
+  if (
+    candidate.kind !== "openWrangler.inlineUpgrade" ||
+    candidate.protocol !== INLINE_UPGRADE_PROTOCOL ||
+    typeof candidate.token !== "string" ||
+    candidate.token.length !== 32 ||
+    !/^[a-f0-9]{32}$/u.test(candidate.token) ||
+    !isBoundedOutputItemId(candidate.outputItemId) ||
+    !Number.isSafeInteger(candidate.byteLength) ||
+    (candidate.byteLength as number) < 1 ||
+    (candidate.byteLength as number) > INLINE_UPGRADE_MAX_HTML_BYTES ||
+    typeof candidate.sha256 !== "string" ||
+    candidate.sha256.length !== 64 ||
+    !/^[a-f0-9]{64}$/u.test(candidate.sha256) ||
+    !Object.hasOwn(candidate, "payload") ||
+    Object.keys(candidate).length !== 7
+  ) {
+    return undefined;
+  }
+  return candidate as {
+    token: string;
+    outputItemId: string;
+    byteLength: number;
+    sha256: string;
+    payload: unknown;
+  };
+}
+
+function isBoundedOutputItemId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= INLINE_UPGRADE_OUTPUT_ID_CHARACTERS * 2 &&
+    Array.from(value).length <= INLINE_UPGRADE_OUTPUT_ID_CHARACTERS
+  );
+}
+
+function randomToken(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return hex(bytes);
+}
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const owned = new Uint8Array(bytes.byteLength);
+  owned.set(bytes);
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", owned.buffer)));
+}
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 function renderPayload(payload: NotebookOutputPayload, context: RendererContext): HTMLElement {

@@ -53,6 +53,7 @@ interface PackageManifest {
     notebookRenderer?: Array<{
       id?: string;
       requiresMessaging?: string;
+      entrypoint?: string | { extends?: string; path?: string };
     }>;
     walkthroughs?: Array<{
       id?: string;
@@ -654,5 +655,18 @@ describe("notebook renderer contribution", () => {
       expect.objectContaining({ id: "openWrangler.renderer", requiresMessaging: "optional" })
     );
     expect(manifest.contributes?.configuration?.properties).not.toHaveProperty("openWrangler.renderer.enabled");
+  });
+
+  it("extends the built-in HTML renderer without replacing ordinary HTML ownership", () => {
+    expect(manifest.activationEvents).toContain("onRenderer:openWrangler.inlineHtmlUpgrade");
+    expect(manifest.contributes?.notebookRenderer).toContainEqual({
+      id: "openWrangler.inlineHtmlUpgrade",
+      displayName: "Open Wrangler Inline HTML Upgrade",
+      entrypoint: {
+        extends: "vscode.builtin-renderer",
+        path: "./media/notebookRenderer.js"
+      },
+      requiresMessaging: "always"
+    });
   });
 });

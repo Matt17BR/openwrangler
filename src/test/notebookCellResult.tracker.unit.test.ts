@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, NotebookEditor } from "vscode";
 import {
@@ -28,6 +29,69 @@ const { NotebookCellResultTracker, notebookCellResultStatusItem, registerNoteboo
 describe("executed notebook cell result tracker", () => {
   beforeEach(() => {
     resetNotebookCellResultTest();
+  });
+
+  it("binds one exact current HTML output and rejects byte-identical ambiguity", async () => {
+    const document = notebook("file:///inline-upgrade.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>1</td></tr></table>");
+    const first = codeCell(document, 1, [output(new TextDecoder().decode(bytes), "text/html")]);
+    setCells(document, [first]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(first);
+    const candidate = {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    };
+
+    const binding = tracker.bindInlineUpgrade(exactEditor, candidate);
+
+    expect(binding?.cell).toBe(first);
+    expect(binding?.isCurrent()).toBe(true);
+
+    const replacementEditor = { notebook: document } as NotebookEditor;
+    mocks.visibleEditors.splice(0, 1, replacementEditor);
+    expect(binding?.isCurrent()).toBe(false);
+    mocks.visibleEditors.splice(0, 1, exactEditor);
+    expect(binding?.isCurrent()).toBe(true);
+
+    const duplicate = codeCell(document, 2, [output(new TextDecoder().decode(bytes), "text/html")]);
+    setCells(document, [first, duplicate]);
+    await recordExecutionAndWait(duplicate);
+    expect(tracker.bindInlineUpgrade(exactEditor, candidate)).toBeUndefined();
+    mocks.bindings[0]?.invalidate();
+    expect(binding?.isCurrent()).toBe(false);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("fails closed before hashing more than the bounded HTML candidate budget", async () => {
+    const document = notebook("file:///inline-upgrade-scan-bound.ipynb");
+    const bytes = new Uint8Array(32 * 1024);
+    const items = Array.from({ length: 513 }, (_, index) => {
+      const data = new Uint8Array(bytes);
+      new DataView(data.buffer).setUint32(0, index);
+      return { mime: "text/html", data };
+    });
+    const first = codeCell(document, 1, [{ metadata: { outputType: "execute_result" }, items }]);
+    setCells(document, [first]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(first);
+
+    expect(
+      tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: items[0]!.data.byteLength,
+        sha256: createHash("sha256").update(items[0]!.data).digest("hex")
+      })
+    ).toBeUndefined();
+    tracker.dispose();
   });
 
   it("retains a first dataframe execution that finishes before commands and providers register", async () => {

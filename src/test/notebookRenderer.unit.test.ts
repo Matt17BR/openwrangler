@@ -2,6 +2,80 @@ import { describe, expect, it, vi } from "vitest";
 import { activate } from "../webviews/notebookRenderer";
 
 describe("notebook renderer", () => {
+  it("registers the supported built-in HTML postRender hook for inline upgrades", async () => {
+    let receiver: ((message: unknown) => void) | undefined;
+    let hook:
+      | {
+          postRender(
+            item: { id: string; mime: string; data(): Uint8Array },
+            element: HTMLElement,
+            signal: AbortSignal
+          ): Promise<void>;
+        }
+      | undefined;
+    const registerHook = vi.fn((value) => {
+      hook = value;
+    });
+    const getRenderer = vi.fn(async () => ({ experimental_registerHtmlRenderingHook: registerHook }));
+    const postMessage = vi.fn();
+
+    const api = activate({
+      getRenderer,
+      onDidReceiveMessage: (listener: (message: unknown) => void) => {
+        receiver = listener;
+      },
+      postMessage
+    } as never);
+    await Promise.resolve();
+
+    expect(getRenderer).toHaveBeenCalledWith("vscode.builtin-renderer");
+    expect(registerHook).toHaveBeenCalledOnce();
+    expect(api.renderOutputItem).toBeTypeOf("function");
+    const secondGetRenderer = vi.fn(async () => ({ experimental_registerHtmlRenderingHook: registerHook }));
+    const secondApi = activate({
+      getRenderer: secondGetRenderer,
+      onDidReceiveMessage: vi.fn(),
+      postMessage: vi.fn()
+    } as never);
+    expect(secondApi.renderOutputItem).toBeTypeOf("function");
+    expect(secondGetRenderer).not.toHaveBeenCalled();
+    expect(registerHook.mock.calls[0]?.[0]).toMatchObject({ postRender: expect.any(Function) });
+
+    const controller = new AbortController();
+    const element = document.createElement("div");
+    const ordinary = document.createElement("table");
+    ordinary.dataset.originalHtml = "true";
+    element.appendChild(ordinary);
+    const bytes = new TextEncoder().encode("<table><tr><td>1</td></tr></table>");
+    await hook?.postRender({ id: "output-1", mime: "text/html", data: () => bytes }, element, controller.signal);
+    const candidate = postMessage.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(candidate).toEqual({
+      kind: "openWrangler.inlineCandidate",
+      protocol: 1,
+      token: expect.stringMatching(/^[a-f0-9]{32}$/u),
+      outputItemId: "output-1",
+      byteLength: bytes.byteLength,
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/u)
+    });
+
+    receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: { mimeVersion: 2 } });
+    expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
+    receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: canonicalPayload(1, "frame") });
+    receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: canonicalPayload(1, "frame") });
+    expect(element.querySelectorAll("[data-open-wrangler-inline-upgrade]")).toHaveLength(1);
+    expect(element.querySelector("[data-original-html]")).toBe(ordinary);
+
+    controller.abort();
+    expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
+    expect(element.querySelector("[data-original-html]")).toBe(ordinary);
+    expect(postMessage).toHaveBeenLastCalledWith({
+      kind: "openWrangler.inlineCancel",
+      protocol: 1,
+      token: candidate.token,
+      outputItemId: "output-1"
+    });
+  });
+
   it("shows compact capture paging and forwards only the validated canonical payload", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");

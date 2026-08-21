@@ -211,6 +211,7 @@
     "onView:openWrangler.cleaningSteps",
     "onView:openWrangler.codePreview",
     "onRenderer:openWrangler.renderer",
+    "onRenderer:openWrangler.inlineHtmlUpgrade",
     "onNotebook:jupyter-notebook",
     "onNotebook:interactive"
   ],
@@ -600,6 +601,15 @@
         "mimeTypes": [
           "application/vnd.openwrangler.viewer.v2+json"
         ]
+      },
+      {
+        "id": "openWrangler.inlineHtmlUpgrade",
+        "displayName": "Open Wrangler Inline HTML Upgrade",
+        "entrypoint": {
+          "extends": "vscode.builtin-renderer",
+          "path": "./media/notebookRenderer.js"
+        },
+        "requiresMessaging": "always"
       }
     ],
     "walkthroughs": [
