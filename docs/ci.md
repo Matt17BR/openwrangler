@@ -42,7 +42,8 @@ installed library, package/tree receipt, or executable package state is restored
 
 Pull requests retain both selected R 4.5 owners without the temporary pull-request R 4.4 compatibility carrier.
 Cross no longer has a pull-request trigger or classifier carriers; its manual dispatch and weekly schedule run the
-macOS/Windows runtime matrix, Windows dependency guards, and the lock-backed R 4.4 qualification. CodeQL retains the
+macOS/Windows runtime matrix, Windows dependency guards, the exact `python-runtime-dependency-cohorts` job that installs
+and exercises every declared dependency/Python qualification pair, and the lock-backed R 4.4 qualification. CodeQL retains the
 `Analyze (javascript-typescript)` and `Analyze (python)` jobs as two always-on analyzers and requires both exact results
 through `CodeQL gate`.
 

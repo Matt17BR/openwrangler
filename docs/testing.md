@@ -151,8 +151,9 @@ matrix for release candidates or changes that cross those boundaries.
   direct R subprocess. These runner bounds do not change editor phase, editor inactivity, or runtime-operation
   deadlines. The current PR workflow starts two selected R 4.5 owners after classification and beside the invariant
   core: the kernel-agent shard and a fail-complete serial pair containing the remaining protocol shards. The temporary R 4.4 pull-request carrier is retired; the
-  manual and scheduled Cross workflow owns the lock-backed R 4.4 qualification. Every owner consumes its exact dated
-  lock through the strict private-library path above. The contract also
+  manual and scheduled Cross workflow owns the exact `python-runtime-dependency-cohorts` job that installs and exercises
+  every declared dependency/Python qualification pair, plus the lock-backed R 4.4 qualification. Every R owner consumes
+  its exact dated lock through the strict private-library path above. The contract also
   runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,

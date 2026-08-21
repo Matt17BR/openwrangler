@@ -432,7 +432,8 @@ portable, TypeScript, Python 3.10, audit, schema, documentation, and license bou
 outputs select the paired R 4.5 owners, canonical package/editor owner,
 visual/accessibility owner, and Windows unique-risk owner. Missing or malformed classification fails open to all four,
 and the sole `validate` fan-in fails closed on every required result. Scheduled/manual Cross retains its
-macOS/Windows runtime, Windows dependency checks, and R 4.4 qualification. CodeQL runs explicit always-on JavaScript/TypeScript
+macOS/Windows runtime, Windows dependency checks, the exact `python-runtime-dependency-cohorts` job that installs and
+exercises every declared dependency/Python qualification pair, and R 4.4 qualification. CodeQL runs explicit always-on JavaScript/TypeScript
 and Python analyzers and joins them through `CodeQL gate`. Pushes to `main` retain CI and both CodeQL analyzers;
 publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
 

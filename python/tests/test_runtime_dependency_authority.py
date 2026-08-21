@@ -395,6 +395,54 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
         authority.load_authority(oversized)
 
 
+def test_python_qualification_cases_and_boundaries_stay_inside_supported_interval(tmp_path: Path) -> None:
+    assert authority._python_major_minor("3.10") == ("3.10", Version("3.10"))
+    assert authority._python_major_minor("3.14") == ("3.14", Version("3.14"))
+
+    baseline = _authority_json()
+    invalid: list[tuple[str, dict[str, Any], str]] = []
+
+    for python_version in ("3.9", "3.15"):
+        qualification = copy.deepcopy(baseline)
+        qualification["dependencies"][0]["qualification"]["qualifiedCases"][0]["pythonVersion"] = python_version
+        invalid.append(
+            (
+                f"qualification-{python_version}",
+                qualification,
+                "invalid_authority_qualification",
+            )
+        )
+
+        boundary = copy.deepcopy(baseline)
+        ipython = next(item for item in boundary["dependencies"] if item["id"] == "ipython")
+        ipython["pythonCompatibility"]["pythonMaximumVersionExclusive"] = python_version
+        invalid.append(
+            (
+                f"boundary-{python_version}",
+                boundary,
+                "invalid_authority_compatibility",
+            )
+        )
+
+    coordinated = copy.deepcopy(baseline)
+    ipython = next(item for item in coordinated["dependencies"] if item["id"] == "ipython")
+    for case in ipython["qualification"]["qualifiedCases"]:
+        case["pythonVersion"] = "3.15"
+    ipython["pythonCompatibility"]["pythonMaximumVersionExclusive"] = "3.15"
+    invalid.append(
+        (
+            "coordinated-3.15",
+            coordinated,
+            "invalid_authority_qualification",
+        )
+    )
+
+    for name, value, code in invalid:
+        path = _write_authority(tmp_path / f"{name}.json", value)
+        with pytest.raises(authority.AuthorityError, match=f"^{code}$"):
+            authority.load_authority(path)
+
+
 @pytest.mark.parametrize("failure", [RecursionError, MemoryError, ValueError])
 def test_parser_resource_failures_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]

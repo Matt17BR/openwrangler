@@ -64,6 +64,7 @@ _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _DISTRIBUTION = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
 _PYTHON_MAJOR_MINOR = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 SUPPORTED_PYTHON_MINIMUM = Version("3.10")
+SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE = Version("3.15")
 
 
 class AuthorityError(Exception):
@@ -290,7 +291,7 @@ def _python_major_minor(
         or version.is_postrelease
         or version.local is not None
         or len(version.release) != 2
-        or version < SUPPORTED_PYTHON_MINIMUM
+        or not SUPPORTED_PYTHON_MINIMUM <= version < SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE
     ):
         _fail(code)
     return text, version
